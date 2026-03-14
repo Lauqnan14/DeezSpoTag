@@ -1595,6 +1595,57 @@ function isAuthRedirectResponse(response) {
     return false;
 }
 
+async function getApiErrorMessage(response, fallbackMessage) {
+    if (!response) {
+        return fallbackMessage;
+    }
+
+    if (isAuthRedirectResponse(response)) {
+        return 'Login required to continue. Refresh the page and sign in again.';
+    }
+
+    const contentType = (response.headers?.get('content-type') || '').toLowerCase();
+
+    if (contentType.includes('application/json')) {
+        try {
+            const payload = await response.clone().json();
+            if (payload && typeof payload === 'object') {
+                const candidate = payload.message || payload.error || payload.title || payload.detail;
+                if (typeof candidate === 'string' && candidate.trim()) {
+                    return candidate.trim();
+                }
+            }
+        } catch {
+            // Ignore JSON parse failures and continue to plain-text parsing.
+        }
+    }
+
+    let text = '';
+    try {
+        text = await response.text();
+    } catch {
+        return fallbackMessage;
+    }
+
+    const trimmed = (text || '').trim();
+    if (!trimmed) {
+        return fallbackMessage;
+    }
+
+    // Avoid surfacing full HTML documents (login/error pages) in toast notifications.
+    const leadingChunk = trimmed.slice(0, 512).toLowerCase();
+    if (leadingChunk.includes('<!doctype html') || leadingChunk.includes('<html')) {
+        return `Request failed (HTTP ${response.status}). Check server logs for details.`;
+    }
+
+    const compact = trimmed.replace(/\s+/g, ' ');
+    if (compact.length <= 260) {
+        return compact;
+    }
+
+    return `${compact.slice(0, 257)}...`;
+}
+
 function setAppleMusicTokenFieldValue(fieldId, value) {
     const field = document.getElementById(fieldId);
     if (!field) {
@@ -2521,13 +2572,22 @@ async function generateSpotifyBlob() {
     try {
         const response = await fetch(`/api/spotify-credentials/accounts/${encodeURIComponent(name)}/generate`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json'
+            },
             body: JSON.stringify({ region })
         });
 
+        if (isAuthRedirectResponse(response)) {
+            showToast('Login required to generate Spotify credentials', 'error');
+            return;
+        }
+
         if (!response.ok) {
-            const message = await response.text();
-            showToast(message || 'Failed to generate Spotify credentials', 'error');
+            const message = await getApiErrorMessage(response, 'Failed to generate Spotify credentials');
+            showToast(message, 'error');
             return;
         }
 
@@ -2701,12 +2761,20 @@ async function saveSpotifyWebPlayerCookies() {
     try {
         const response = await fetch('/api/spotify-credentials/web-player', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json'
+            },
             body: JSON.stringify({ spDc, spKey, userAgent, cookies })
         });
+        if (isAuthRedirectResponse(response)) {
+            showToast('Login required to save Spotify web player cookies', 'error');
+            return;
+        }
         if (!response.ok) {
-            const message = await response.text();
-            showToast(message || 'Failed to save Spotify web player cookies', 'error');
+            const message = await getApiErrorMessage(response, 'Failed to save Spotify web player cookies');
+            showToast(message, 'error');
             return;
         }
         showToast('Spotify web player cookies saved', 'success');
@@ -2777,10 +2845,18 @@ function capitalizeSpotifyPlan(plan) {
 
 async function logoutSpotify() {
     try {
-        const logoutResponse = await fetch('/api/spotify-credentials/logout', { method: 'POST' });
+        const logoutResponse = await fetch('/api/spotify-credentials/logout', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        });
+        if (isAuthRedirectResponse(logoutResponse)) {
+            showToast('Login required to logout Spotify credentials', 'error');
+            return;
+        }
         if (!logoutResponse.ok) {
-            const message = await logoutResponse.text();
-            showToast(message || 'Failed to logout', 'error');
+            const message = await getApiErrorMessage(logoutResponse, 'Failed to logout');
+            showToast(message, 'error');
             return;
         }
         spotifyConfigLoadSequence++;
@@ -2799,10 +2875,18 @@ async function logoutSpotify() {
 
 async function disconnectPlatform(url, statusElementId, bindings) {
     try {
-        const response = await fetch(url, { method: 'POST' });
+        const response = await fetch(url, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        });
+        if (isAuthRedirectResponse(response)) {
+            showToast('Login required to disconnect credentials', 'error');
+            return;
+        }
         if (!response.ok) {
-            const message = await response.text();
-            showToast(message || 'Failed to disconnect', 'error');
+            const message = await getApiErrorMessage(response, 'Failed to disconnect');
+            showToast(message, 'error');
             return;
         }
         applyPlatformDisconnectState(url, statusElementId, bindings);
