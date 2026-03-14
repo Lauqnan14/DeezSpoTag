@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using System.Threading;
@@ -389,7 +390,8 @@ public sealed class LibraryScanRunner
 
     private void ClearThumbnailCache()
     {
-        var thumbPath = Path.Join(_environment.ContentRootPath, "Data", "library-thumbs");
+        var dataRoot = AppDataPathResolver.ResolveDataRootOrDefault(Path.Join(_environment.ContentRootPath, "Data"));
+        var thumbPath = Path.Join(dataRoot, "library-thumbs");
         try
         {
             if (Directory.Exists(thumbPath))

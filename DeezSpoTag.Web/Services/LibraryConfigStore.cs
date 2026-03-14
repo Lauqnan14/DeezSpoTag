@@ -1,5 +1,6 @@
 using System.Globalization;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.Hosting;
 
 namespace DeezSpoTag.Web.Services;
@@ -18,7 +19,8 @@ public sealed class LibraryConfigStore
     {
         _repository = repository;
         _logger = logger;
-        var logDir = Path.Join(environment.ContentRootPath, "Data", "logs");
+        var dataRoot = AppDataPathResolver.ResolveDataRootOrDefault(Path.Join(environment.ContentRootPath, "Data"));
+        var logDir = Path.Join(dataRoot, "logs");
         Directory.CreateDirectory(logDir);
         _activityLogPath = Path.Join(logDir, "activities.log");
     }

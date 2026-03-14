@@ -12,7 +12,7 @@ public sealed class MoodMixPreferencesStore
     public MoodMixPreferencesStore(IWebHostEnvironment env, ILogger<MoodMixPreferencesStore> logger)
     {
         _logger = logger;
-        var dataDir = Path.Join(env.ContentRootPath, "Data", "mixes");
+        var dataDir = Path.Join(AppDataPaths.GetDataRoot(env), "mixes");
         Directory.CreateDirectory(dataDir);
         _filePath = Path.Join(dataDir, "mood-preferences.json");
     }

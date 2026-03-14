@@ -15,13 +15,13 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
     private readonly DeezerArtistImageService _imageService;
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly ISpotifyArtworkResolver _spotifyArtworkResolver;
-    private readonly IWebHostEnvironment _environment;
     private readonly ILogger<LibraryArtistImageQueueService> _logger;
     private readonly Channel<QueueItem> _channel = Channel.CreateUnbounded<QueueItem>();
     private readonly Dictionary<long, QueueItem> _queueItems = new();
     private readonly object _queueLock = new();
-    private string QueuePath => Path.Join(_environment.ContentRootPath, "Data", "artist-image-queue.json");
-    private string ImageCacheDir => Path.Join(_environment.ContentRootPath, "Data", "library-artist-images");
+    private readonly string _dataRoot;
+    private string QueuePath => Path.Join(_dataRoot, "artist-image-queue.json");
+    private string ImageCacheDir => Path.Join(_dataRoot, "library-artist-images");
 
     public LibraryArtistImageQueueService(
         LibraryRepository repository,
@@ -37,8 +37,8 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
         _imageService = imageService;
         _appleCatalogService = appleCatalogService;
         _spotifyArtworkResolver = spotifyArtworkResolver;
-        _environment = environment;
         _logger = logger;
+        _dataRoot = AppDataPaths.GetDataRoot(environment);
     }
 
     public async Task EnqueueMissingAsync(CancellationToken cancellationToken)

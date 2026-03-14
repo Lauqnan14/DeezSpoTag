@@ -88,23 +88,29 @@ If your host uses Compose v1, replace `docker compose` with `docker-compose`.
 ### Required `.env` Values
 
 - `DEEZSPOTAG_DATA_PATH`
+- `APPLE_WRAPPER_DATA_PATH`
+- `APPLE_WRAPPER_SESSION_PATH`
 - `DOWNLOADS_PATH`
 - `LIBRARY_PATH`
 
 ### Current Runtime Model
 
-- `deezspotag`, `apple-wrapper`, and `socket-proxy` run on an internal bridge network.
-- `deezspotag` is published on `${DEEZSPOTAG_PORT}` (default `8668`).
-- `apple-wrapper` is reached over service DNS (`apple-wrapper`) on ports `10020/20020/30020`.
-- `socket-proxy` mediates Docker API access for wrapper orchestration.
-- Wrapper state persists under:
-  - `${DEEZSPOTAG_DATA_PATH}/apple-wrapper/data`
-  - named volume: `apple_wrapper_session`
-- `apple-wrapper` uses `pid: host` + `ipc: host` + unconfined seccomp/apparmor for `proot` compatibility on NAS/older kernels.
+- `deezspotag` and `apple-wrapper` run in Docker `network_mode: host` (Linux host networking).
+- `deezspotag` binds directly on host port `8668`.
+- `apple-wrapper` binds directly on host ports `10020/20020/30020`.
+- `deezspotag` reaches `apple-wrapper` via `127.0.0.1` in host mode.
+- App and wrapper state persist in host bind-mount paths.
+- Compose auto-creates:
+  - `DEEZSPOTAG_DATA_PATH`
+  - `APPLE_WRAPPER_DATA_PATH`
+  - `APPLE_WRAPPER_SESSION_PATH`
+- Compose does not auto-create:
+  - `DOWNLOADS_PATH`
+  - `LIBRARY_PATH`
 
 ## Security Notes
 
-- `socket-proxy` is safer than mounting raw Docker socket directly into the app, but still privileged.
+- Host networking reduces network isolation between containers and the host.
 - Keep the stack behind a reverse proxy and HTTPS when exposed externally.
 - Restrict external access by network policy, IP rules, and/or upstream auth.
 - Use strong credentials and rotate tokens regularly.
@@ -121,7 +127,6 @@ See `CONTRIBUTING.md`.
 
 - `deezspotag`: main web app and orchestration runtime.
 - `apple-wrapper`: external Apple helper runtime.
-- `socket-proxy`: controlled Docker API access layer.
 - Data roots:
   - App state and config: `/data`
   - Downloads: `/downloads`
