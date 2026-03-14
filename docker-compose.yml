@@ -1,49 +1,57 @@
 services:
   deezspotag:
     container_name: deezspotag
-    image: ${DEEZSPOTAG_IMAGE:-ghcr.io/lauqnan14/deezspotag-web:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${DEEZSPOTAG_IMAGE:-deezspotag-web:local}
+    pull_policy: never
     network_mode: host
-    user: "${PUID:-1026}:${PGID:-100}"
+    user: "${PUID:-1000}:${PGID:-1000}"
     env_file:
       - path: .env
         required: false
     environment:
       DEEZSPOTAG_APPLE_WRAPPER_MODE: external
       DEEZSPOTAG_APPLE_WRAPPER_HOST: 127.0.0.1
+      DEEZSPOTAG_DATA_DIR: /data
+      DEEZSPOTAG_CONFIG_DIR: /data
     volumes:
       # Auto-create app state folder if missing.
       - type: bind
-        source: ${DEEZSPOTAG_DATA_PATH:-/volume1/docker/deezspotag/data}
+        source: ${DEEZSPOTAG_DATA_PATH:-./DeezSpoTag.Workers/bin/Debug/net8.0/Data}
         target: /data
         bind:
           create_host_path: true
       # Compatibility path for images that still write under /app/Data.
       - type: bind
-        source: ${DEEZSPOTAG_APPDATA_PATH:-/volume1/docker/deezspotag/app-data}
+        source: ${DEEZSPOTAG_APPDATA_PATH:-./DeezSpoTag.Workers/bin/Debug/net8.0/Data}
         target: /app/Data
         bind:
           create_host_path: true
-      # Do not auto-create media folders; fail fast if path is wrong/missing.
+      # Local defaults stay inside the repo and are auto-created for first run.
       - type: bind
-        source: ${DOWNLOADS_PATH:-/volume1/downloads}
+        source: ${DOWNLOADS_PATH:-./Data/downloads}
         target: /downloads
         bind:
-          create_host_path: false
+          create_host_path: true
       - type: bind
-        source: ${LIBRARY_PATH:-/volume1/music}
+        source: ${LIBRARY_PATH:-./Data/library}
         target: /library
         read_only: true
         bind:
-          create_host_path: false
+          create_host_path: true
     restart: unless-stopped
 
   apple-wrapper:
     container_name: apple-wrapper
-    image: ${APPLE_WRAPPER_IMAGE:-ghcr.io/lauqnan14/deezspotag-apple-wrapper:latest}
+    build:
+      context: .
+      dockerfile: Tools/AppleMusicWrapper/Dockerfile
+    image: ${APPLE_WRAPPER_IMAGE:-apple-wrapper:local}
+    pull_policy: never
     network_mode: host
     init: true
-    pid: host
-    ipc: host
     security_opt:
       - seccomp:unconfined
       - apparmor:unconfined
@@ -53,13 +61,25 @@ services:
     volumes:
       # Auto-create wrapper state folders if missing.
       - type: bind
-        source: ${APPLE_WRAPPER_DATA_PATH:-/volume1/docker/deezspotag/apple-wrapper/data}
+        source: ${APPLE_WRAPPER_DATA_PATH:-./Data/apple-wrapper/data}
         target: /opt/apple-wrapper/data
         bind:
           create_host_path: true
       - type: bind
-        source: ${APPLE_WRAPPER_SESSION_PATH:-/volume1/docker/deezspotag/apple-wrapper/session}
+        source: ${APPLE_WRAPPER_SESSION_PATH:-./Data/apple-wrapper/session}
         target: /opt/apple-wrapper/rootfs/data/data/com.apple.android.music
         bind:
           create_host_path: true
+      # Match the local wrapper runtime setup (setup-rootfs-mounts.sh).
+      - type: bind
+        source: /proc
+        target: /opt/apple-wrapper/rootfs/proc
+        read_only: true
+      - type: bind
+        source: /sys
+        target: /opt/apple-wrapper/rootfs/sys
+        read_only: true
+      - type: bind
+        source: /dev/pts
+        target: /opt/apple-wrapper/rootfs/dev/pts
     restart: unless-stopped

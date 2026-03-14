@@ -896,6 +896,20 @@ public sealed class SpotifyBlobService
             throw new InvalidOperationException($"Failed to install Spotify auth requirements: {installResult.Error}");
         }
 
+        // Ensure legacy setup.py-based vendor packages can build wheels in runtime containers.
+        var wheelInstallResult = await RunProcessAsync(
+            pythonPath,
+            configRoot,
+            cancellationToken,
+            "-m",
+            "pip",
+            "install",
+            "wheel");
+        if (!wheelInstallResult.Success)
+        {
+            throw new InvalidOperationException($"Failed to install Python wheel tooling for Spotify auth: {wheelInstallResult.Error}");
+        }
+
         var packageInstallResult = await RunProcessAsync(
             pythonPath,
             configRoot,
@@ -903,7 +917,6 @@ public sealed class SpotifyBlobService
             "-m",
             "pip",
             "install",
-            "-e",
             vendorRoot);
         if (!packageInstallResult.Success)
         {

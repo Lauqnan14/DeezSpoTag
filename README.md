@@ -71,8 +71,7 @@ curl -L -o .env https://raw.githubusercontent.com/Lauqnan14/DeezSpoTag/main/src/
 Then configure `.env` and start:
 
 ```bash
-docker compose pull
-docker compose up -d
+docker compose up -d --build
 ```
 
 Open:
@@ -85,7 +84,7 @@ If your host uses Compose v1, replace `docker compose` with `docker-compose`.
 
 ## Quick Setup
 
-### Required `.env` Values
+### Common `.env` Values
 
 - `DEEZSPOTAG_DATA_PATH`
 - `APPLE_WRAPPER_DATA_PATH`
@@ -96,7 +95,8 @@ If your host uses Compose v1, replace `docker compose` with `docker-compose`.
 ### Current Runtime Model
 
 - `deezspotag` and `apple-wrapper` run in Docker `network_mode: host` (Linux host networking).
-- `deezspotag` binds directly on host port `8668`.
+- `deezspotag` runs the published app from the release image (`dotnet DeezSpoTag.Web.dll`).
+- `deezspotag` app state/config in-container uses `/data`, backed by the host Workers data path bind mount.
 - `apple-wrapper` binds directly on host ports `10020/20020/30020`.
 - `deezspotag` reaches `apple-wrapper` via `127.0.0.1` in host mode.
 - App and wrapper state persist in host bind-mount paths.
@@ -104,9 +104,49 @@ If your host uses Compose v1, replace `docker compose` with `docker-compose`.
   - `DEEZSPOTAG_DATA_PATH`
   - `APPLE_WRAPPER_DATA_PATH`
   - `APPLE_WRAPPER_SESSION_PATH`
-- Compose does not auto-create:
   - `DOWNLOADS_PATH`
   - `LIBRARY_PATH`
+
+### Host `.NET` + Docker Apple Wrapper (Parity Gate)
+
+Use this flow when you want to run the web app locally via `dotnet run` but keep Apple wrapper in Docker:
+
+```bash
+docker compose stop deezspotag
+docker compose up -d --build apple-wrapper
+```
+
+Then start the app locally with Workers data paths:
+
+```bash
+export DEEZSPOTAG_DATA_DIR=DeezSpoTag.Workers/bin/Debug/net8.0/Data
+export DEEZSPOTAG_CONFIG_DIR=DeezSpoTag.Workers/bin/Debug/net8.0/Data
+export DEEZSPOTAG_APPLE_WRAPPER_HOST=127.0.0.1
+dotnet run --project DeezSpoTag.Web/DeezSpoTag.Web.csproj -c Debug
+```
+
+Expected wrapper endpoints from host:
+
+- `127.0.0.1:10020`
+- `127.0.0.1:20020`
+- `127.0.0.1:30020`
+
+### Parity Smoke Test
+
+Validate that the release Docker image contains the same critical feature stack used by debug workflows:
+
+```bash
+./scripts/docker-dev.sh parity
+```
+
+This checks:
+
+- media tools (`ffmpeg`, `mp4box`, `mp4decrypt`)
+- Python + Essentia import
+- analyzer assets (`Tools/vibe_analyzer.py`, `Tools/models`)
+- bundled Apple wrapper helper (`apple-wrapper-runv2`)
+- application HTTP startup on localhost
+- clean-start bootstrap with temporary writable app data
 
 ## Security Notes
 
@@ -128,9 +168,9 @@ See `CONTRIBUTING.md`.
 - `deezspotag`: main web app and orchestration runtime.
 - `apple-wrapper`: external Apple helper runtime.
 - Data roots:
-  - App state and config: `/data`
+  - App state and config in container: `/data` (mapped to host Workers data directory)
   - Downloads: `/downloads`
-  - Library scan mount: `/library/music` (read-only by default)
+  - Library scan mount: `/library` (read-only by default)
 
 ---
 

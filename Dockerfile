@@ -30,23 +30,6 @@ WORKDIR /tmp/media-tools
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl unzip; \
-    install -m 0755 -d /etc/apt/keyrings; \
-    curl -fsSL https://dist.gpac.io/gpac/linux/gpg.asc -o /etc/apt/keyrings/gpac.asc; \
-    chmod a+r /etc/apt/keyrings/gpac.asc; \
-    codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")"; \
-    printf '%s\n' \
-      "Types: deb" \
-      "URIs: https://dist.gpac.io/gpac/linux/debian" \
-      "Suites: ${codename}" \
-      "Components: main" \
-      "Signed-By: /etc/apt/keyrings/gpac.asc" \
-      > /etc/apt/sources.list.d/gpac.sources; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends gpac; \
-    mp4box_path="$(command -v MP4Box || true)"; \
-    if [ -z "$mp4box_path" ]; then mp4box_path="$(command -v mp4box || true)"; fi; \
-    if [ -z "$mp4box_path" ]; then echo "MP4Box not found after GPAC install." >&2; exit 1; fi; \
-    install -m 0755 "$mp4box_path" /usr/local/bin/mp4box; \
     curl -fL -sS -o bento4.zip "$BENTO4_URL"; \
     if [ -n "$BENTO4_SHA256" ]; then echo "$BENTO4_SHA256  bento4.zip" | sha256sum -c -; fi; \
     mkdir -p /tmp/bento4; \
@@ -62,14 +45,30 @@ ARG DEEZSPOTAG_BUILD_VERSION=dev
 ARG ESSENTIA_TF_WHEEL_URL=https://files.pythonhosted.org/packages/f0/5f/7283634ee1d5d195d75986adc98a2309fab2df121a4618f3826eb2073d29/essentia_tensorflow-2.1b6.dev1389-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssl ca-certificates python3 python3-venv python3-pip curl aria2 ffmpeg \
+    && apt-get install -y --no-install-recommends openssl ca-certificates python3 python3-venv python3-pip curl aria2 ffmpeg unzip \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://dist.gpac.io/gpac/linux/gpg.asc -o /etc/apt/keyrings/gpac.asc \
+    && chmod a+r /etc/apt/keyrings/gpac.asc \
+    && codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")" \
+    && printf '%s\n' \
+      "Types: deb" \
+      "URIs: https://dist.gpac.io/gpac/linux/debian" \
+      "Suites: ${codename}" \
+      "Components: main" \
+      "Signed-By: /etc/apt/keyrings/gpac.asc" \
+      > /etc/apt/sources.list.d/gpac.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gpac \
+    && mp4box_path="$(command -v MP4Box || true)" \
+    && if [ -z "$mp4box_path" ]; then mp4box_path="$(command -v mp4box || true)"; fi \
+    && if [ -z "$mp4box_path" ]; then echo "MP4Box not found after GPAC install." >&2; exit 1; fi \
+    && install -m 0755 "$mp4box_path" /usr/local/bin/mp4box \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1001 appuser \
-    && useradd --uid 1001 --gid 1001 --no-create-home --shell /sbin/nologin appuser
+    && useradd --uid 1001 --gid 1001 --create-home --home-dir /home/appuser --shell /usr/sbin/nologin appuser
 
 COPY docker/openssl-legacy.cnf /etc/ssl/openssl-legacy.cnf
 
-COPY --from=media-tools /usr/local/bin/mp4box /usr/local/bin/mp4box
 COPY --from=media-tools /usr/local/bin/mp4decrypt /usr/local/bin/mp4decrypt
 
 RUN set -eux; \
@@ -98,6 +97,7 @@ RUN set -eux; \
 
 ENV OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf \
     OPENSSL_MODULES=/usr/lib/x86_64-linux-gnu/ossl-modules \
+    HOME=/home/appuser \
     DEEZSPOTAG_CONFIG_DIR=/data \
     DEEZSPOTAG_DATA_DIR=/data \
     DEEZSPOTAG_BUILD_VERSION=${DEEZSPOTAG_BUILD_VERSION} \
