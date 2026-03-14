@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deezspot-spotizerr-phoenix"
+version = "1.2.0"
+description = "Downloads songs, albums or playlists from deezer and spotify (clone from deezloader)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "GNU Affero General Public License v3"}
+authors = [
+    {name = "spotizerr-phoenix", email = "spotizerrphoenix@proton.me"}
+]
+
+dependencies = [
+    "mutagen==1.47.0",
+    "pycryptodome==3.23.0",
+    "requests==2.32.3",
+    "tqdm==4.67.1",
+    "fastapi==0.116.1",
+    "uvicorn[standard]==0.35.0",
+    "librespot-spotizerr-phoenix",
+    "rapidfuzz==3.13.0",
+    "spotipy==2.25.1"
+]
+
+[project.urls]
+Homepage = "https://lavaforge.org/spotizerrphoenix/deezspot-spotizerr-phoenix"
+Repository = "https://lavaforge.org/spotizerrphoenix/deezspot-spotizerr-phoenix.git"
+Documentation = "https://lavaforge.org/spotizerrphoenix/deezspot-spotizerr-phoenix/src/branch/main/README.md"
+
+[tool.setuptools.packages.find]
+include = ["deezspot", "deezspot.*"]

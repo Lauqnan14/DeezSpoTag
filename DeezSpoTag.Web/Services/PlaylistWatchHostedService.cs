@@ -1,0 +1,240 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Services.Library;
+
+namespace DeezSpoTag.Web.Services;
+
+public sealed class PlaylistWatchHostedService : BackgroundService
+{
+    private readonly IServiceProvider _serviceProvider;
+    private readonly ILogger<PlaylistWatchHostedService> _logger;
+    private readonly SemaphoreSlim _runLock = new(1, 1);
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _itemLocks = new();
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastRun = new();
+    private int _roundRobinIndex;
+
+    public PlaylistWatchHostedService(
+        IServiceProvider serviceProvider,
+        ILogger<PlaylistWatchHostedService> logger)
+    {
+        _serviceProvider = serviceProvider;
+        _logger = logger;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        _logger.LogInformation("Playlist watch service started.");
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            await RunOnceAsync(stoppingToken);
+
+            try
+            {
+                var delay = GetWatchInterval();
+                await Task.Delay(delay, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+
+        _logger.LogInformation("Playlist watch service stopped.");
+    }
+
+    private TimeSpan GetWatchInterval()
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var settingsService = scope.ServiceProvider.GetRequiredService<DeezSpoTagSettingsService>();
+        var settings = settingsService.LoadSettings();
+        var seconds = settings.WatchPollIntervalSeconds;
+        if (seconds < 1)
+        {
+            seconds = 1;
+        }
+        return TimeSpan.FromSeconds(seconds);
+    }
+
+    private async Task RunOnceAsync(CancellationToken stoppingToken)
+    {
+        if (!await _runLock.WaitAsync(0, stoppingToken))
+        {
+            return;
+        }
+
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var settingsService = scope.ServiceProvider.GetRequiredService<DeezSpoTagSettingsService>();
+            var settings = settingsService.LoadSettings();
+            if (!settings.WatchEnabled)
+            {
+                _logger.LogDebug("Watchlist disabled in settings.");
+                return;
+            }
+
+            var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+            if (!repository.IsConfigured)
+            {
+                _logger.LogDebug("Watchlist skipped - library DB not configured.");
+                return;
+            }
+
+            var playlists = await repository.GetPlaylistWatchlistAsync(stoppingToken);
+            var artists = await repository.GetWatchlistAsync(stoppingToken);
+            var items = BuildWatchItems(playlists, artists);
+            if (items.Count == 0)
+            {
+                return;
+            }
+
+            await ProcessWatchItemsAsync(items, settings, scope.ServiceProvider, stoppingToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Playlist watch run failed.");
+        }
+        finally
+        {
+            _runLock.Release();
+        }
+    }
+
+    private async Task ProcessWatchItemsAsync(
+        IReadOnlyList<WatchItem> items,
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        IServiceProvider serviceProvider,
+        CancellationToken stoppingToken)
+    {
+        var maxItemsPerRun = Math.Clamp(settings.WatchMaxItemsPerRun, 1, items.Count);
+        var startIndex = _roundRobinIndex % items.Count;
+        var processed = 0;
+        var lastVisitedIndex = -1;
+
+        for (var offset = 0; offset < items.Count && processed < maxItemsPerRun; offset++)
+        {
+            stoppingToken.ThrowIfCancellationRequested();
+
+            var index = (startIndex + offset) % items.Count;
+            lastVisitedIndex = index;
+            var item = items[index];
+            if (!IsEligible(item, settings))
+            {
+                continue;
+            }
+
+            var wasProcessed = await TryProcessItemAsync(item, serviceProvider, stoppingToken);
+            if (wasProcessed)
+            {
+                processed++;
+            }
+        }
+
+        _roundRobinIndex = lastVisitedIndex >= 0
+            ? (lastVisitedIndex + 1) % items.Count
+            : (startIndex + 1) % items.Count;
+    }
+
+    private async Task<bool> TryProcessItemAsync(
+        WatchItem item,
+        IServiceProvider serviceProvider,
+        CancellationToken stoppingToken)
+    {
+        var itemLock = _itemLocks.GetOrAdd(item.Key, _ => new SemaphoreSlim(1, 1));
+        if (!await itemLock.WaitAsync(0, stoppingToken))
+        {
+            return false;
+        }
+
+        try
+        {
+            await RunItemAsync(item, serviceProvider, stoppingToken);
+            _lastRun[item.Key] = DateTimeOffset.UtcNow;
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Playlist watch item run failed for {WatchItemKey}", item.Key);
+            return false;
+        }
+        finally
+        {
+            itemLock.Release();
+        }
+    }
+
+    private static List<WatchItem> BuildWatchItems(
+        IReadOnlyList<PlaylistWatchlistDto> playlists,
+        IReadOnlyList<WatchlistArtistDto> artists)
+    {
+        var items = new List<WatchItem>(playlists.Count + artists.Count);
+        foreach (var playlist in playlists)
+        {
+            if (playlist == null || string.IsNullOrWhiteSpace(playlist.SourceId))
+            {
+                continue;
+            }
+            var key = $"playlist:{playlist.Source}:{playlist.SourceId}";
+            items.Add(new WatchItem("playlist", key, playlist, null));
+        }
+
+        foreach (var artist in artists)
+        {
+            var key = $"artist:{artist.ArtistId}";
+            items.Add(new WatchItem("artist", key, null, artist));
+        }
+
+        return items;
+    }
+
+    private bool IsEligible(WatchItem item, DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
+    {
+        if (!_lastRun.TryGetValue(item.Key, out var lastRunUtc))
+        {
+            return true;
+        }
+
+        var delaySeconds = item.Kind == "artist"
+            ? settings.WatchDelayBetweenArtistsSeconds
+            : settings.WatchDelayBetweenPlaylistsSeconds;
+        var delay = TimeSpan.FromSeconds(Math.Max(1, delaySeconds));
+        return DateTimeOffset.UtcNow - lastRunUtc >= delay;
+    }
+
+    private static async Task RunItemAsync(
+        WatchItem item,
+        IServiceProvider serviceProvider,
+        CancellationToken stoppingToken)
+    {
+        if (item.Kind == "playlist" && item.Playlist != null)
+        {
+            var watcher = serviceProvider.GetRequiredService<PlaylistWatchService>();
+            await watcher.CheckPlaylistWatchItemAsync(item.Playlist, stoppingToken);
+            return;
+        }
+
+        if (item.Kind == "artist" && item.Artist != null)
+        {
+            var watcher = serviceProvider.GetRequiredService<ArtistWatchService>();
+            await watcher.CheckArtistWatchItemAsync(item.Artist, stoppingToken);
+        }
+    }
+
+    private sealed record WatchItem(
+        string Kind,
+        string Key,
+        PlaylistWatchlistDto? Playlist,
+        WatchlistArtistDto? Artist);
+}

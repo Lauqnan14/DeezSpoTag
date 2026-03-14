@@ -1,0 +1,83 @@
+# Build output
+**/bin/
+**/obj/
+publish/
+artifacts/
+TestResults/
+test-results/
+
+# Sonar and local tooling output
+.sonarqube/
+.sonar-coverage/
+.sonar-coverage-test/
+.sonarqube.stale.*/
+.sonar-coverage.stale.*/
+coverage-report/
+coverage*.xml
+reports/
+DeezSpoTag.Web/Tools/venv/
+.jscpd-report/
+.scan.lock
+
+# Local caches and temp files
+.gocache/
+.gomodcache/
+.tmp_wheels/
+.claude/
+.tools/
+*.tmp
+*.temp
+*.deb
+
+# Runtime data and credentials
+Data/**
+Data/**/*.db
+Data/**/login.json
+Data/**/autotag/*.json
+DeezSpoTag.Web/Data/**
+DeezSpoTag.Workers/Data/**
+DeezSpoTag.Workers/bin/**/Data/**
+DeezSpoTag.Web/bin/**/Data/**
+DeezSpoTag.Web/Music Video Downloads/**
+DeezSpoTag.Web/smb_/**
+DeezSpoTag Diagnostic/
+**/.venv/
+**/venv/
+Tools/AppleMusicWrapper/runtime/app/rootfs/
+Tools/AppleMusicWrapper/runv2/apple-wrapper-runv2
+Tools/AppleMusicWrapper/runtime/app/.backup-ref-swap/
+DeezSpoTag.Web/wwwroot/images/recommendations/
+DeezSpoTag.Web/wwwroot/images/meloday/
+DeezSpoTag.Web/Tools/models/
+DeezSpoTag.Web/spotify/auth/
+DeezSpoTag.Web/spotify/blobs/
+DeezSpoTag.Web/credentials.json
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Logs and diagnostics
+*.log
+*.binlog
+build_diag*.txt
+msbuild*.log
+msbuild*.binlog
+services_restore_support_diag.txt
+tmp_build.log
+build_out.txt
+build.log
+build2.binlog
+msbuild*.txt
+cancel
+content_copy
+delete
+done_all
+
+# IDE/editor
+.vscode/
+.idea/
+*.user
+*.suo
+*.swp

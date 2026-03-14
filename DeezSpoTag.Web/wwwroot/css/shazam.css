@@ -1,0 +1,259 @@
+.shz-shell {
+    padding: 24px;
+}
+
+.shz-header {
+    margin-bottom: 18px;
+}
+
+.shz-title {
+    margin: 0;
+    font-size: 30px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.shz-subtitle {
+    margin-top: 8px;
+    color: var(--text-secondary);
+}
+
+.shz-status {
+    margin-bottom: 18px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+.shz-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 18px;
+    padding: 14px;
+    border-radius: 12px;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-secondary);
+}
+
+.shz-toolbar-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 240px;
+}
+
+.shz-toolbar label {
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.shz-toolbar select {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+
+.shz-toolbar-hint {
+    color: var(--text-muted);
+    font-size: 12px;
+    max-width: 360px;
+    line-height: 1.4;
+}
+
+.shz-section {
+    margin-bottom: 22px;
+    padding: 16px;
+    border-radius: 12px;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-secondary);
+}
+
+.shz-section.is-hidden {
+    display: none;
+}
+
+.shz-section-title {
+    margin: 0 0 12px;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.shz-grid {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+
+.shz-card {
+    border: 1px solid var(--border-secondary);
+    border-radius: 12px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+}
+
+.shz-card--match .shz-card-top {
+    padding: 16px;
+}
+
+.shz-card--match .shz-art {
+    width: 96px;
+    height: 96px;
+}
+
+.shz-card--match .shz-track {
+    font-size: 18px;
+}
+
+.shz-card-top {
+    display: flex;
+    gap: 12px;
+    padding: 12px;
+}
+
+.shz-art {
+    width: 70px;
+    height: 70px;
+    border-radius: 8px;
+    background: var(--bg-quaternary);
+    flex-shrink: 0;
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+    color: var(--text-muted);
+    font-size: 22px;
+}
+
+.shz-art img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.shz-meta {
+    min-width: 0;
+}
+
+.shz-track {
+    margin: 0;
+    font-weight: 700;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.shz-artist {
+    margin: 4px 0;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.shz-details {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    display: grid;
+    gap: 2px;
+}
+
+.shz-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px 12px;
+}
+
+.shz-actions__primary {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.shz-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    color: var(--text-primary);
+    background: var(--bg-quaternary);
+    padding: 6px 10px;
+    font-size: 12px;
+    text-decoration: none;
+    cursor: pointer;
+    transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.shz-action .material-icons {
+    font-size: 16px;
+}
+
+.shz-action:hover {
+    border-color: var(--primary-color);
+    color: var(--text-primary);
+}
+
+.shz-action:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.shz-action.is-playing {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+}
+
+.shz-action.is-loading {
+    opacity: 0.7;
+    cursor: wait;
+}
+
+.shz-actions__links {
+    display: inline-flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.shz-link {
+    border: 1px solid transparent;
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+    text-decoration: none;
+}
+
+.shz-link:hover {
+    border-color: var(--primary-color);
+    color: var(--text-primary);
+}
+
+@media (max-width: 900px) {
+    .shz-shell {
+        padding: 14px;
+    }
+
+    .shz-title {
+        font-size: 24px;
+    }
+
+    .shz-toolbar {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}

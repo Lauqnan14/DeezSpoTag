@@ -1,0 +1,69 @@
+name: Publish Python Package to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  pypi-publish:
+    name: Upload release to PyPI
+    runs-on: docker
+    environment:
+      name: pypi
+      url: https://pypi.org/p/librespot-spotizerr-phoenix
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Get version from tag
+      id: get_version
+      run: |
+        echo "Original GITHUB_REF_NAME: ${GITHUB_REF_NAME}"
+        # Extract actual tag from ref (e.g., refs/tags/v1.2.3 -> v1.2.3 or 1.2.3)
+        TAG_FROM_REF="${GITHUB_REF_NAME##*/}"
+        echo "Extracted tag from ref: $TAG_FROM_REF"
+        # Strip 'v' prefix if present (e.g., v1.2.3 -> 1.2.3)
+        FINAL_VERSION="${TAG_FROM_REF#v}"
+        echo "Final version for build: $FINAL_VERSION"
+        echo "VERSION=$FINAL_VERSION" >> $GITHUB_OUTPUT
+
+    - name: Update version in setup.py
+      run: |
+        VERSION_TAG=${{ steps.get_version.outputs.VERSION }}
+        sed -i "s/version=\"[^\"]*\"/version=\"${VERSION_TAG}\"/" setup.py
+        echo "Updated setup.py to version $VERSION_TAG for build:"
+        cat setup.py
+
+    - name: Update version in librespot/__init__.py
+      run: |
+        VERSION_TAG=${{ steps.get_version.outputs.VERSION }}
+        sed -i "s/version_name = \".*\"/version_name = \"${VERSION_TAG}\"/" librespot/__init__.py
+        echo "Updated librespot/__init__.py to version $VERSION_TAG for build:"
+        cat librespot/__init__.py
+
+    - name: Set up Python
+      uses: astral-sh/setup-uv@v3
+      with:
+        version: "latest" 
+
+    - name: Install Python 3.11
+      run: uv python install 3.11
+
+    - name: Create virtual environment
+      run: uv venv --python 3.11
+
+    - name: Install build dependencies
+      run: |
+        uv pip install build twine
+
+    - name: Build package
+      run: uv run python -m build
+
+    - name: Publish package to PyPI
+      env:
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+      run: |
+        uv run python -m twine upload dist/*

@@ -1,0 +1,206 @@
+@{
+    ViewData["Title"] = "Tag Editor - DeezSpoTag";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+@section Styles {
+<link rel="stylesheet" href="~/css/quicktag.css" asp-append-version="true" />
+}
+
+<div id="quicktag-app" class="qt-page">
+    <div class="qt-shell">
+        <aside class="qt-left-panel" aria-label="Folder browser panel">
+            <div class="qt-panel-title">Folder Browser</div>
+            <div class="qt-library-row">
+                <select id="qtLibrarySelect" class="qt-input qt-select" aria-label="Audio library selector"></select>
+            </div>
+            <div class="qt-search-wrap qt-left-search">
+                <i class="fas fa-search"></i>
+                <input type="text" id="qtSearch" class="qt-search-input" placeholder="Search tracks, folders, files" autocomplete="off" />
+            </div>
+            <div class="qt-path-row">
+                <input type="text" id="qtPathInput" class="qt-input" autocomplete="off" spellcheck="false" />
+                <button type="button" id="qtPathUp" class="qt-btn qt-btn-icon" title="Parent folder">
+                    <i class="fas fa-level-up-alt"></i>
+                </button>
+                <button type="button" id="qtPathReload" class="qt-btn qt-btn-icon" title="Reload">
+                    <i class="fas fa-sync-alt"></i>
+                </button>
+            </div>
+            <input type="text" id="qtFolderFilter" class="qt-input qt-mt-sm" placeholder="Filter folders/files" autocomplete="off" />
+            <div id="qtFolderList" class="qt-folder-list" aria-live="polite"></div>
+            <section class="qt-artwork-editor" aria-label="Artwork editor">
+                <div class="qt-panel-title qt-panel-title-spaced">Artwork</div>
+                <div class="qt-artwork-main">
+                    <div class="qt-artwork-preview-wrap">
+                        <img id="qtArtworkPreview" class="qt-artwork-preview" alt="Artwork preview" />
+                        <div id="qtArtworkPlaceholder" class="qt-artwork-placeholder">No artwork</div>
+                    </div>
+                    <div class="qt-artwork-nav">
+                        <button type="button" id="qtArtworkPrev" class="qt-btn qt-btn-icon" title="Previous artwork">
+                            <i class="fas fa-arrow-up"></i>
+                        </button>
+                        <button type="button" id="qtArtworkNext" class="qt-btn qt-btn-icon" title="Next artwork">
+                            <i class="fas fa-arrow-down"></i>
+                        </button>
+                    </div>
+                </div>
+                <div id="qtArtworkContext" class="qt-artwork-context">No Images</div>
+                <div id="qtArtworkMeta" class="qt-artwork-meta">Select one or more tracks to edit artwork.</div>
+                <div class="qt-artwork-mode">
+                    <button type="button" id="qtArtworkKeep" class="qt-btn qt-btn-outline">&lt;keep&gt;</button>
+                    <button type="button" id="qtArtworkBlank" class="qt-btn qt-btn-outline">&lt;blank&gt;</button>
+                </div>
+                <input type="text" id="qtArtworkDescription" class="qt-input" placeholder="Enter a description" autocomplete="off" />
+                <select id="qtArtworkType" class="qt-input qt-select" aria-label="Artwork type">
+                    <option value="0">Other</option>
+                    <option value="1">File Icon</option>
+                    <option value="2">Other File Icon</option>
+                    <option value="3">Cover (front)</option>
+                    <option value="4">Cover (back)</option>
+                    <option value="5">Leaflet page</option>
+                    <option value="6">Media</option>
+                    <option value="7">Lead artist</option>
+                    <option value="8">Artist</option>
+                    <option value="9">Conductor</option>
+                    <option value="10">Band</option>
+                    <option value="11">Composer</option>
+                    <option value="12">Lyricist</option>
+                    <option value="13">Recording Location</option>
+                    <option value="14">During recording</option>
+                    <option value="15">During performance</option>
+                    <option value="16">Movie/video screen capture</option>
+                    <option value="17">A bright coloured fish</option>
+                    <option value="18">Illustration</option>
+                    <option value="19">Band/artist logotype</option>
+                    <option value="20">Publisher/Studio logotype</option>
+                </select>
+                <div class="qt-artwork-actions">
+                    <button type="button" id="qtArtworkAdd" class="qt-btn qt-btn-outline">Add cover</button>
+                    <button type="button" id="qtArtworkChange" class="qt-btn qt-btn-outline">Change cover</button>
+                    <button type="button" id="qtArtworkRemove" class="qt-btn qt-btn-outline">Remove cover</button>
+                    <button type="button" id="qtArtworkCopy" class="qt-btn qt-btn-outline">Copy cover</button>
+                    <button type="button" id="qtArtworkPaste" class="qt-btn qt-btn-outline">Paste cover</button>
+                    <button type="button" id="qtArtworkSaveToFile" class="qt-btn qt-btn-outline">Save cover to file</button>
+                </div>
+                <input id="qtArtworkFile" type="file" accept="image/*" hidden />
+            </section>
+        </aside>
+        <div class="qt-resizer qt-resizer--left" data-resizer="left"></div>
+        <main class="qt-main-panel">
+            <div class="qt-stats" id="qtStats"></div>
+            <div id="qtGridViewport" class="qt-grid-viewport">
+                <div class="qt-column-head" aria-hidden="true">
+                    <div class="qt-col-title">Title</div>
+                    <div class="qt-col-artist">Artist</div>
+                    <div class="qt-col-album">Album</div>
+                    <div class="qt-col-album-artist">Album Artist</div>
+                    <div class="qt-col-composer">Composer</div>
+                    <div class="qt-col-mood">Mood</div>
+                    <div class="qt-col-energy">Energy</div>
+                    <div class="qt-col-genre">Genre</div>
+                    <div class="qt-col-year">Year</div>
+                    <div class="qt-col-track">Track</div>
+                    <div class="qt-col-disc">Disc</div>
+                    <div class="qt-col-bpm">BPM</div>
+                    <div class="qt-col-key">Key</div>
+                    <div class="qt-col-publisher">Publisher</div>
+                    <div class="qt-col-copyright">Copyright</div>
+                    <div class="qt-col-language">Language</div>
+                    <div class="qt-col-lyricist">Lyricist</div>
+                    <div class="qt-col-conductor">Conductor</div>
+                    <div class="qt-col-isrc">ISRC</div>
+                    <div class="qt-col-custom">Custom</div>
+                    <div class="qt-col-filename">Filename</div>
+                    <div class="qt-col-bitrate">Bitrate</div>
+                    <div class="qt-col-duration">Duration</div>
+                    <div class="qt-col-filesize">Size</div>
+                </div>
+
+                <div id="qtEmptyState" class="qt-empty-state">
+                    <div class="qt-empty-title">No folder selected</div>
+                    <div class="qt-empty-subtitle">Select a folder, playlist, or audio file from the left panel.</div>
+                    <div class="qt-keybind-hints">
+                        <span><kbd>Space</kbd> Play/Pause</span>
+                        <span><kbd>Ctrl</kbd> + <kbd>S</kbd> Save selected</span>
+                        <span><kbd>↑</kbd>/<kbd>↓</kbd> Change track</span>
+                    </div>
+                </div>
+
+                <div id="qtTrackList" class="qt-track-list" aria-live="polite"></div>
+            </div>
+            <div class="qt-main-actions" aria-label="Tag editor actions">
+                <button type="button" id="qtSaveSelected" class="qt-btn qt-btn-primary">Save selected</button>
+            </div>
+        </main>
+        <div class="qt-resizer qt-resizer--right" data-resizer="right"></div>
+        <aside class="qt-right-panel" aria-label="Tag editor controls panel">
+            <div class="qt-panel-title">Tag Editor Controls</div>
+            <div class="qt-right-actions">
+                <button type="button" id="qtAddNote" class="qt-btn">Add custom note</button>
+                <button type="button" id="qtSortValues" class="qt-btn qt-btn-outline">Sort values</button>
+                <button type="button" id="qtDumpSelected" class="qt-btn qt-btn-outline">Inspect tags</button>
+            </div>
+            <div class="qt-column-tools">
+                <div class="qt-panel-title">Columns</div>
+                <select id="qtColumnPreset" class="qt-input qt-select" aria-label="Column preset">
+                    <option value="puddletag-full">Puddletag Full</option>
+                    <option value="quicktag-core">QuickTag Core</option>
+                    <option value="library-review">Library Review</option>
+                </select>
+                <div id="qtColumnToggles" class="qt-column-toggles"></div>
+            </div>
+            <div id="qtCustomGroups" class="qt-custom-groups"></div>
+            <div class="qt-panel-title qt-panel-title-spaced">Tag Sources</div>
+            <div class="qt-tag-sources">
+                <div class="qt-tag-source-row">
+                    <label for="qtTagSourceProvider" class="qt-tag-source-label">Source:</label>
+                    <select id="qtTagSourceProvider" class="qt-input qt-select" aria-label="Tag source provider">
+                        <option value="spotify">Spotify</option>
+                        <option value="deezer">Deezer</option>
+                        <option value="boomplay">Boomplay</option>
+                        <option value="apple">Apple Music</option>
+                        <option value="shazam">Shazam</option>
+                        <option value="musicbrainz">MusicBrainz</option>
+                        <option value="acoustid">AcoustID</option>
+                        <option value="amazon">Amazon</option>
+                        <option value="discogs">Discogs</option>
+                    </select>
+                </div>
+                <button type="button" id="qtTagSourceSearch" class="qt-btn qt-btn-outline">Search</button>
+                <div id="qtTagSourceStatus" class="qt-tag-source-status" aria-live="polite">Select a track, then click Search.</div>
+                <select id="qtTagSourceResults" class="qt-input qt-tag-source-results" size="8" aria-label="Tag source results">
+                </select>
+                <div id="qtTagSourceResultMeta" class="qt-tag-source-result-meta"></div>
+                <button type="button" id="qtTagSourceApplyCover" class="qt-btn qt-btn-xs qt-btn-outline qt-mt-sm" style="display:none;">Apply Source Cover</button>
+                <button type="button" id="qtTagSourceApplyAll" class="qt-btn qt-btn-xs qt-btn-outline qt-mt-sm" style="display:none;">Apply All Fields</button>
+            </div>
+        </aside>
+    </div>
+
+    <div class="qt-footer">
+        <div class="qt-moods" id="qtMoodBar"></div>
+        <div class="qt-genres" id="qtGenreBar"></div>
+        <div class="qt-player">
+            <div class="qt-player-meta" id="qtPlayerMeta">No track selected</div>
+            <div class="qt-player-controls">
+                <button type="button" id="qtPrevTrack" class="qt-btn qt-btn-icon" title="Previous track">
+                    <i class="fas fa-step-backward"></i>
+                </button>
+                <button type="button" id="qtPlayPause" class="qt-btn qt-btn-icon" title="Play/Pause">
+                    <i class="fas fa-play"></i>
+                </button>
+                <button type="button" id="qtNextTrack" class="qt-btn qt-btn-icon" title="Next track">
+                    <i class="fas fa-step-forward"></i>
+                </button>
+                <input type="range" id="qtSeek" min="0" max="0" step="0.01" value="0" />
+                <input type="range" id="qtVolume" min="0" max="1" step="0.01" value="0.5" />
+            </div>
+            <audio id="qtAudio" preload="metadata"></audio>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script src="~/js/quicktag.js" asp-append-version="true"></script>
+}

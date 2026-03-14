@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyTitle>DeezSpoTag API</AssemblyTitle>
+    <AssemblyDescription>DeezSpoTag REST API and SignalR Hub</AssemblyDescription>
+    <Copyright>Copyright © 2025</Copyright>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.8.1" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.24" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DeezSpoTag.Core\DeezSpoTag.Core.csproj" />
+    <ProjectReference Include="..\DeezSpoTag.Services\DeezSpoTag.Services.csproj" />
+    <ProjectReference Include="..\DeezSpoTag.Integrations\DeezSpoTag.Integrations.csproj" />
+  </ItemGroup>
+
+</Project>

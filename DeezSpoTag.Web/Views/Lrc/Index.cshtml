@@ -1,0 +1,253 @@
+@{
+    ViewData["Title"] = "LRC Editor";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<link rel="stylesheet" href="~/css/lrc-editor.css" asp-append-version="true" />
+
+<div class="lrc-editor-page">
+    <div class="card lrc-card">
+        <div class="card-body">
+            <div class="lrc-header">
+                <h3 class="lrc-title">
+                    <a href="https://en.wikipedia.org/wiki/LRC_(file_format)" target="_blank" rel="noreferrer">LRC</a> Editor &amp; Timing Tool
+                    <span class="js-required" title="This page requires JavaScript to function properly"></span>
+                </h3>
+                <div class="lrc-header-actions">
+                    <button class="btn btn-link" title="How-To &amp; Keyboard shortcuts" id="shortcut-info" data-bs-toggle="modal" data-bs-target="#shortcutModal">
+                        <span class="fa fa-info-circle"></span>
+                    </button>
+                </div>
+            </div>
+
+            <fieldset class="lrc-panel">
+                <legend>Audio Player</legend>
+                <div id="lrcPlayer">
+                    <div class="player-controls">
+                        <div class="btn-group">
+                            <button class="btn btn-primary" id="audiofilebtn" title="Browse library folders">
+                                <span class="fa fa-upload"></span>
+                            </button>
+                            <button class="btn btn-secondary" id="playbackbtn" title="Play/Pause" disabled>
+                                <span class="fa fa-play"></span>
+                            </button>
+                            <button class="btn btn-secondary" id="stopbtn" title="Stop" disabled>
+                                <span class="fa fa-stop"></span>
+                            </button>
+                            <span class="input-group-text volume">
+                                <button class="btn btn-secondary btn-sm" id="volumedown" title="Decrease volume">
+                                    <span class="fa fa-volume-down fa-lg"></span>
+                                </button>
+                                <span id="volumedisp" class="mx-2">&hellip;</span>
+                                <button class="btn btn-secondary btn-sm" id="volumeup" title="Increase volume">
+                                    <span class="fa fa-volume-up fa-lg"></span>
+                                </button>
+                            </span>
+                        </div>
+                    </div>
+                    <div class="player-state">
+                        <div class="progress-wrap" id="seekWrap" title="Seek">
+                            <input type="range" min="0" max="100" value="0" class="progress-range" id="seekbar">
+                            <div class="entry-sticks" id="entrySticks"></div>
+                        </div>
+                        <div class="status">
+                            <span class="status-time">
+                                <span class="status-position" id="position">&hellip;</span> /
+                                <span class="status-duration" id="duration">&hellip;</span>
+                            </span>
+                            <span class="status-filetype" id="statusFileType"></span>
+                            <span class="status-filename" id="statusFileName" data-nofile="No track selected">No track selected</span>
+                        </div>
+                    </div>
+                </div>
+            </fieldset>
+
+            <fieldset class="lrc-panel">
+                <legend>String Timing</legend>
+                <div id="timings">
+                    <div class="controls">
+                        <div class="btn-group w-100">
+                            <button class="btn btn-primary" id="lrcmodebtn" data-syncmode="Switch to sync mode" data-editmode="Switch to edit mode" disabled>
+                                <span class="modename">&hellip;</span>
+                            </button>
+                            <div class="btn-group">
+                                <button class="btn btn-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                                    <span class="fa fa-file-import me-2"></span>Import
+                                </button>
+                                <div class="dropdown-menu">
+                                    <button class="dropdown-item" id="lrcfilebtn">
+                                        <strong><span class="fa fa-file-upload me-2"></span>Import .LRC file</strong>
+                                    </button>
+                                    <button class="dropdown-item" id="lrcpastebtn" data-bs-toggle="modal" data-bs-target="#rawLyricsModal">
+                                        <span class="fa fa-clipboard me-2"></span>Import raw lyrics
+                                    </button>
+                                    <div class="dropdown-divider"></div>
+                                    <button class="dropdown-item" id="lrcfromlibrarybtn">
+                                        <span class="fa fa-database me-2"></span>Load existing .LRC (library)
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="btn-group">
+                                <button class="btn btn-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                                    <span class="fa fa-file-export me-2"></span>Export
+                                </button>
+                                <div class="dropdown-menu">
+                                    <button class="dropdown-item" id="lrcexportbtn">
+                                        <strong><span class="fa fa-file-code me-2"></span>Export as .LRC (with metadata)</strong>
+                                    </button>
+                                    <button class="dropdown-item" id="lrcexportnometabtn">
+                                        <span class="fa fa-file me-2"></span>Export as .LRC (without metadata)
+                                    </button>
+                                    <div class="dropdown-divider"></div>
+                                    <button class="dropdown-item" id="lrcEmbedToggle">
+                                        Embed lyrics in audio is
+                                        <strong class="status text-uppercase" data-true="On" data-false="Off">&hellip;</strong>
+                                    </button>
+                                    <div class="dropdown-divider"></div>
+                                    <button class="dropdown-item" id="lrcmergetogglebtn">
+                                        Merging of identical lines is
+                                        <strong class="status text-uppercase" data-true="On" data-false="Off">&hellip;</strong><br>
+                                        <small class="help-block">Some players do not support multiple timestamps on one lyric line. Disable merging to export one line per timestamp.</small>
+                                    </button>
+                                </div>
+                            </div>
+                            <button class="btn btn-secondary position-relative" id="lrcmetadatabtn" data-bs-toggle="modal" data-bs-target="#metadataModal">
+                                <span class="fa fa-compact-disc me-2"></span>Metadata
+                                <span class="badge rounded-pill bg-primary metadata-count"></span>
+                            </button>
+                            <button class="btn btn-success" id="lrcsavebtn">
+                                <span class="fa fa-save me-2"></span>Save to library
+                            </button>
+                            <button class="btn btn-danger" id="lrcclrbtn">
+                                <span class="fa fa-eraser me-2"></span>Discard lyrics
+                            </button>
+                        </div>
+                    </div>
+                    <div class="editor-wrap">
+                        <div class="editor" id="lrcEditor"></div>
+                        <div class="alert alert-info editor-no-scroll">
+                            <span class="fa fa-info-circle me-2"></span>If your cursor is above the editor it won't automatically scroll the current entry into view.
+                        </div>
+                    </div>
+                </div>
+            </fieldset>
+        </div>
+    </div>
+</div>
+
+<input type="file" id="lrcFileInput" accept=".lrc,text/plain" class="d-none" />
+
+<div class="modal fade" id="trackPickerModal" tabindex="-1" aria-labelledby="trackPickerLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="trackPickerLabel">Browse library folders</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="lrc-browser">
+                    <div class="lrc-browser-path" id="browserPath"></div>
+                    <div class="lrc-browser-list" id="browserList"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="rawLyricsModal" tabindex="-1" aria-labelledby="rawLyricsLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="rawLyricsLabel">Paste raw lyrics</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <textarea class="form-control" id="rawLyricsInput" rows="10" placeholder="Paste one line per lyric"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-primary" id="rawLyricsImportBtn">Import</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="metadataModal" tabindex="-1" aria-labelledby="metadataLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="metadataLabel">Edit LRC metadata fields</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3 lrc-metadata-fields">
+                    <div class="col-md-6">
+                        <label class="form-label" for="lrc-meta-artist">Artist</label>
+                        <input id="lrc-meta-artist" type="text" class="form-control" data-meta-key="ar" placeholder="Artist">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="lrc-meta-album">Album</label>
+                        <input id="lrc-meta-album" type="text" class="form-control" data-meta-key="al" placeholder="Album">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="lrc-meta-title">Title</label>
+                        <input id="lrc-meta-title" type="text" class="form-control" data-meta-key="ti" placeholder="Title">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="lrc-meta-by">Lyrics by</label>
+                        <input id="lrc-meta-by" type="text" class="form-control" data-meta-key="by" placeholder="Lyrics by">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="lrc-meta-length">Audio length</label>
+                        <input id="lrc-meta-length" type="text" class="form-control" data-meta-key="length" placeholder="Length">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="lrc-meta-offset">Global offset (ms)</label>
+                        <input id="lrc-meta-offset" type="text" class="form-control" data-meta-key="offset" placeholder="Offset">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="lrc-meta-creator">Creator</label>
+                        <input id="lrc-meta-creator" type="text" class="form-control" data-meta-key="re" placeholder="Creator">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="lrc-meta-version">Creator version</label>
+                        <input id="lrc-meta-version" type="text" class="form-control" data-meta-key="ve" placeholder="Version">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="shortcutModal" tabindex="-1" aria-labelledby="shortcutLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="shortcutLabel">Keyboard shortcuts</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <h6>Player controls</h6>
+                <ul class="lrc-shortcuts">
+                    <li><kbd>Space</kbd> Play/Pause</li>
+                    <li><kbd>.</kbd> Stop</li>
+                    <li><kbd>Page Up</kbd> / <kbd>Page Down</kbd> Volume up/down</li>
+                    <li><kbd>←</kbd> / <kbd>→</kbd> Seek backward/forward</li>
+                </ul>
+                <h6 class="mt-3">Editor controls</h6>
+                <ul class="lrc-shortcuts">
+                    <li><kbd>Enter</kbd> Set timestamp &amp; move down (sync mode)</li>
+                    <li><kbd>Ctrl</kbd> + <kbd>Enter</kbd> Insert break entry (sync mode)</li>
+                    <li><kbd>↑</kbd> / <kbd>↓</kbd> Move to previous/next entry (sync mode)</li>
+                    <li><kbd>Delete</kbd> Clear timestamp (sync mode)</li>
+                    <li><kbd>Ctrl</kbd> + <kbd>↑</kbd> / <kbd>Ctrl</kbd> + <kbd>↓</kbd> Step timestamp 100ms (edit mode)</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="~/js/lrc-editor.js" asp-append-version="true"></script>

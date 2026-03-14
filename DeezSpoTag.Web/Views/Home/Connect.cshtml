@@ -1,0 +1,469 @@
+@{
+    ViewData["Title"] = "Connect Test - DeezSpoTag";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+@section Styles {
+<style>
+.connect-container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.status-card {
+    background: var(--bg-tertiary);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+    border: 1px solid var(--border-secondary);
+}
+
+.status-header {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 15px;
+    color: var(--text-primary);
+}
+
+.status-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-secondary);
+}
+
+.status-item:last-child {
+    border-bottom: none;
+}
+
+.status-label {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.status-value {
+    color: var(--text-primary);
+    font-family: monospace;
+}
+
+.status-true {
+    color: var(--success-color);
+}
+
+.status-false {
+    color: var(--error-color);
+}
+
+.btn-refresh {
+    background: var(--primary-color);
+    color: var(--text-primary);
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background 0.2s ease;
+}
+
+.btn-refresh:hover {
+    background: var(--primary-hover);
+}
+
+.user-info {
+    background: var(--bg-quaternary);
+    border-radius: 8px;
+    padding: 15px;
+    margin-top: 10px;
+}
+
+.streaming-capabilities {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.capability-item {
+    background: var(--bg-primary);
+    padding: 10px;
+    border-radius: 6px;
+    text-align: center;
+    border: 1px solid var(--border-secondary);
+}
+
+.capability-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 5px;
+}
+
+.capability-status {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.json-display {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 6px;
+    padding: 15px;
+    font-family: monospace;
+    font-size: 12px;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.loading {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 20px;
+}
+
+.toast-notification {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-secondary);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.toast-notification.toast-success {
+    background: var(--success-color);
+    color: var(--text-primary);
+}
+
+.toast-notification.toast-error {
+    background: var(--error-color);
+    color: var(--text-primary);
+}
+
+.toast-notification.toast-warning {
+    background: var(--warning-color);
+    color: var(--text-primary);
+}
+
+.toast-notification.toast-info,
+.toast-notification.toast-loading {
+    background: var(--info-color);
+    color: var(--text-primary);
+}
+</style>
+}
+
+<div class="connect-container">
+    <h1>Connect Test</h1>
+    <p>This page tests the persistent login functionality like deezspotag connect endpoint.</p>
+
+    <div class="status-card">
+        <div class="status-header">Connection Status</div>
+        <div id="connection-status">
+            <div class="loading">Loading connection status...</div>
+        </div>
+        <button class="btn-refresh" onclick="refreshConnection()">Refresh Connection</button>
+    </div>
+
+    <div class="status-card">
+        <div class="status-header">Raw Response</div>
+        <div id="raw-response" class="json-display">
+            Loading...
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+let lastConnectData = null;
+
+// EXACT PORT: Toast notification system like deezspotag
+function showToast(message, type = 'info', dismiss = true, id = null) {
+    // Remove existing toast with same ID
+    if (id) {
+        const existingToast = document.querySelector(`[data-toast-id="${id}"]`);
+        if (existingToast) {
+            existingToast.remove();
+        }
+    }
+    
+    const toast = document.createElement('div');
+    toast.className = `toast-notification toast-${type}`;
+    
+    if (id) {
+        toast.setAttribute('data-toast-id', id);
+    }
+    
+    // EXACT PORT: Toast styling like deezspotag
+    toast.style.position = 'fixed';
+    toast.style.top = '20px';
+    toast.style.right = '20px';
+    toast.style.padding = '12px 20px';
+    toast.style.borderRadius = '6px';
+    toast.style.fontWeight = '500';
+    toast.style.zIndex = '10000';
+    toast.style.maxWidth = '400px';
+    toast.style.wordWrap = 'break-word';
+    toast.style.transition = 'all 0.3s ease';
+    toast.style.transform = 'translateX(100%)';
+    
+    if (type === 'loading') {
+        toast.innerHTML = `<span style="margin-right: 8px;">⏳</span>${message}`;
+    }
+    
+    if (type !== 'loading') {
+        toast.textContent = message;
+    }
+    
+    document.body.appendChild(toast);
+    
+    // Animate in
+    setTimeout(() => {
+        toast.style.transform = 'translateX(0)';
+    }, 10);
+    
+    // Auto-dismiss if specified
+    if (dismiss) {
+        setTimeout(() => {
+            if (toast.parentNode) {
+                toast.style.transform = 'translateX(100%)';
+                setTimeout(() => {
+                    if (toast.parentNode) {
+                        toast.remove();
+                    }
+                }, 300);
+            }
+        }, type === 'loading' ? 10000 : 5000); // Loading toasts stay longer
+    }
+}
+
+async function loadConnectionStatus() {
+    try {
+        console.log('Loading connection status...');
+        
+        const response = await fetch('/api/connect');
+        const data = await response.json();
+        
+        lastConnectData = data;
+        console.log('Connect response:', data);
+        
+        // EXACT PORT: Handle auto-login like deezspotag main.ts
+        if (data.autologin && data.singleUser && data.singleUser.hasStoredCredentials) {
+            console.log('Auto-login required, attempting server-side auto-login...');
+            await attemptAutoLogin();
+            return; // Will reload after login
+        }
+        
+        displayConnectionStatus(data);
+        displayRawResponse(data);
+        
+    } catch (error) {
+        console.error('Error loading connection status:', error);
+        document.getElementById('connection-status').innerHTML = `
+            <div style="color: var(--error-color);">
+                Error loading connection status: ${error.message}
+            </div>
+        `;
+        document.getElementById('raw-response').textContent = `Error: ${error.message}`;
+    }
+}
+
+// EXACT PORT: Auto-login function like deezspotag main.ts
+async function attemptAutoLogin() {
+    try {
+        console.log('Attempting stored auto-login...');
+        
+        // EXACT PORT: Show "Logging in..." toast like deezspotag
+        showToast('Logging in...', 'loading', false, 'login-toast');
+        
+        // Show loading state
+        document.getElementById('connection-status').innerHTML = `
+            <div class="loading">Logging in automatically...</div>
+        `;
+        
+        const response = await fetch('/api/login/auto-login', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        const result = await response.json();
+        console.log('Auto-login result:', result);
+        
+        if (result.status === 1 || result.status === 3) {
+            // Login successful - EXACT PORT: Show "Logged in" toast like deezspotag
+            showToast('Logged in', 'success', true, 'login-toast');
+            console.log('Auto-login successful, reloading connection status...');
+            setTimeout(() => loadConnectionStatus(), 1000); // Reload after 1 second
+        } else if (result.status === 2) {
+            // Already logged in - EXACT PORT: Show "Already logged in" toast like deezspotag
+            showToast('Already logged in', 'success', true, 'login-toast');
+            console.log('Already logged in, reloading connection status...');
+            setTimeout(() => loadConnectionStatus(), 1000);
+        } else if (result.status === 0) {
+            // Login failed - EXACT PORT: Show "Couldn't log in" toast like deezspotag
+            showToast("Couldn't log in", 'error', true, 'login-toast');
+            console.log('Auto-login failed:', result);
+            displayConnectionStatus(lastConnectData);
+            displayRawResponse(lastConnectData);
+        } else if (result.status === -1) {
+            // Deezer not available - EXACT PORT: Show deezer not available toast like deezspotag
+            showToast('Deezer is not available in your country. You should use a VPN.', 'error', true, 'login-toast');
+            console.log('Deezer not available:', result);
+            displayConnectionStatus(lastConnectData);
+            displayRawResponse(lastConnectData);
+        } else {
+            // Unknown status
+            showToast("Couldn't log in", 'error', true, 'login-toast');
+            console.log('Auto-login failed with unknown status:', result);
+            displayConnectionStatus(lastConnectData);
+            displayRawResponse(lastConnectData);
+        }
+        
+    } catch (error) {
+        console.error('Error during auto-login:', error);
+        // EXACT PORT: Show network error toast like deezspotag
+        showToast('The app can\'t reach Deezer. Check your internet connection, your firewall or your antivirus.', 'error', true, 'login-toast');
+        displayConnectionStatus(lastConnectData);
+        displayRawResponse(lastConnectData);
+    }
+}
+
+function displayConnectionStatus(data) {
+    const container = document.getElementById('connection-status');
+    
+    const isLoggedIn = data.currentUser !== null;
+    const user = data.currentUser;
+    
+    let html = `
+        <div class="status-item">
+            <span class="status-label">Auto-login Attempted:</span>
+            <span class="status-value ${data.autologin ? 'status-true' : 'status-false'}">
+                ${data.autologin ? 'Yes' : 'No'}
+            </span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Logged In:</span>
+            <span class="status-value ${isLoggedIn ? 'status-true' : 'status-false'}">
+                ${isLoggedIn ? 'Yes' : 'No'}
+            </span>
+        </div>
+        <div class="status-item">
+            <span class="status-label">Deezer Available:</span>
+            <span class="status-value ${data.deezerAvailable ? 'status-true' : 'status-false'}">
+                ${data.deezerAvailable ? 'Yes' : 'No'}
+            </span>
+        </div>
+    `;
+    
+    if (isLoggedIn && user) {
+        html += `
+            <div class="user-info">
+                <div class="status-header">User Information</div>
+                <div class="status-item">
+                    <span class="status-label">User ID:</span>
+                    <span class="status-value">${user.id || 'N/A'}</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Name:</span>
+                    <span class="status-value">${user.name || 'N/A'}</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Country:</span>
+                    <span class="status-value">${user.country || 'N/A'}</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Language:</span>
+                    <span class="status-value">${user.language || 'N/A'}</span>
+                </div>
+                
+                <div class="streaming-capabilities">
+                    <div class="capability-item">
+                        <div class="capability-label">Lossless</div>
+                        <div class="capability-status ${user.can_stream_lossless ? 'status-true' : 'status-false'}">
+                            ${user.can_stream_lossless ? 'Available' : 'Not Available'}
+                        </div>
+                    </div>
+                    <div class="capability-item">
+                        <div class="capability-label">High Quality</div>
+                        <div class="capability-status ${user.can_stream_hq ? 'status-true' : 'status-false'}">
+                            ${user.can_stream_hq ? 'Available' : 'Not Available'}
+                        </div>
+                    </div>
+                    <div class="capability-item">
+                        <div class="capability-label">Basic Quality</div>
+                        <div class="capability-status status-true">
+                            Available
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+    
+    if (data.singleUser) {
+        html += `
+            <div class="status-item">
+                <span class="status-label">Single User Mode:</span>
+                <span class="status-value status-true">Enabled</span>
+            </div>
+        `;
+    }
+    
+    if (data.queue) {
+        const queueCount = Object.keys(data.queue.queue || {}).length;
+        html += `
+            <div class="status-item">
+                <span class="status-label">Queue Items:</span>
+                <span class="status-value">${queueCount}</span>
+            </div>
+        `;
+    }
+    
+    container.innerHTML = html;
+}
+
+function displayRawResponse(data) {
+    const container = document.getElementById('raw-response');
+    container.textContent = JSON.stringify(data, null, 2);
+}
+
+async function refreshConnection() {
+    document.getElementById('connection-status').innerHTML = '<div class="loading">Refreshing...</div>';
+    document.getElementById('raw-response').textContent = 'Refreshing...';
+    
+    await loadConnectionStatus();
+}
+
+async function refreshUserData() {
+    try {
+        console.log('Refreshing user data...');
+        
+        const response = await fetch('/api/connect/refresh', {
+            method: 'POST'
+        });
+        const result = await response.json();
+        
+        console.log('Refresh result:', result);
+        
+        if (result.success) {
+            // Reload connection status to see updated data
+            await loadConnectionStatus();
+        } else {
+            DeezSpoTag.ui.alert(`Failed to refresh user data: ${result.message}`, { title: 'Connection' });
+        }
+        
+    } catch (error) {
+        console.error('Error refreshing user data:', error);
+        DeezSpoTag.ui.alert(`Error refreshing user data: ${error.message}`, { title: 'Connection' });
+    }
+}
+
+// Load connection status when page loads
+document.addEventListener('DOMContentLoaded', loadConnectionStatus);
+
+// Auto-refresh every 30 seconds
+setInterval(loadConnectionStatus, 30000);
+</script>
+}

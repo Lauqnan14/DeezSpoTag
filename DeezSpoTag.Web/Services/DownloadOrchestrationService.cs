@@ -1,0 +1,1320 @@
+using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Integrations.Plex;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
+using Microsoft.AspNetCore.Hosting;
+
+namespace DeezSpoTag.Web.Services;
+
+public sealed class DownloadOrchestrationService : BackgroundService
+{
+    private sealed record AutoTagStages(bool HasEnrichment, bool HasEnhancement);
+    private sealed record EnhancementTarget(
+        string FolderId,
+        string RootPath,
+        string? FolderProfileReference,
+        TimeSpan? ScheduleInterval,
+        bool IsDue,
+        DateTimeOffset? LastRunAtUtc);
+    private sealed record AutomationProfileContext(List<TaggingProfile> Profiles, AutoTagDefaultsDto Defaults, TaggingProfile? DefaultProfile);
+    private sealed record PipelineRunContext(
+        DateTimeOffset PipelineStartedAt,
+        string AutomationConfigJson,
+        AutoTagStages Stages,
+        bool ResumeEnhancementAfterDownload);
+    private sealed record PipelineEnhancementResult(bool ShouldExitPipeline, bool PausedForDownload);
+    private sealed record EnhancementTargetPlan(List<EnhancementTarget> Targets, List<EnhancementTarget> DueTargets);
+    private sealed record EnhancementTargetRunResult(bool Attempted, bool PausedForDownload);
+    private sealed record EnhancementExecutionResult(List<EnhancementTarget> AttemptedTargets, bool PausedForDownload, bool AbortedForDownload);
+    public sealed record DownloadGateDecision(bool Allowed, string Message, bool EnhancementPaused);
+    private sealed class EnhancementScheduleState
+    {
+        public Dictionary<string, DateTimeOffset> LastRunByFolderId { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static readonly Regex ScheduleTokenRegex = new(
+        @"^\s*(\d+)\s*([dhwm])\s*$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase,
+        TimeSpan.FromMilliseconds(250));
+    private static readonly JsonSerializerOptions ScheduleJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true
+    };
+
+    private readonly DownloadQueueRepository _queueRepository;
+    private readonly LibraryRepository _libraryRepository;
+    private readonly AutoTagService _autoTagService;
+    private readonly TaggingProfileService _profileService;
+    private readonly AutoTagDefaultsStore _defaultsStore;
+    private readonly AutoTagConfigBuilder _configBuilder;
+    private readonly DeezSpoTagSettingsService _settingsService;
+    private readonly LibraryScanRunner _scanRunner;
+    private readonly PlatformAuthService _platformAuthService;
+    private readonly PlexApiClient _plexApiClient;
+    private readonly TrackAnalysisBackgroundService _analysisService;
+    private readonly VibeAnalysisSettingsStore _vibeSettingsStore;
+    private readonly LibraryConfigStore _configStore;
+    private readonly ILogger<DownloadOrchestrationService> _logger;
+    private readonly string _enhancementSchedulePath;
+    private readonly SemaphoreSlim _pipelineLock = new(1, 1);
+    private readonly SemaphoreSlim _enhancementPauseLock = new(1, 1);
+    private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(10);
+    private readonly TimeSpan _downloadIdleDelay = TimeSpan.FromSeconds(15);
+
+    private DateTimeOffset? _queueIdleSince;
+    private DateTimeOffset _lastPipelineCompletedAt = DateTimeOffset.UtcNow;
+    private bool _pipelineRequested;
+    private bool _taggingInProgress;
+    private volatile bool _enhancementStageRunning;
+    private volatile bool _enhancementPauseRequested;
+    private volatile bool _enhancementResumePending;
+    private string? _activeEnhancementJobId;
+
+    public DownloadOrchestrationService(
+        IServiceProvider serviceProvider,
+        IWebHostEnvironment env,
+        ILogger<DownloadOrchestrationService> logger)
+    {
+        _queueRepository = serviceProvider.GetRequiredService<DownloadQueueRepository>();
+        _libraryRepository = serviceProvider.GetRequiredService<LibraryRepository>();
+        _autoTagService = serviceProvider.GetRequiredService<AutoTagService>();
+        _profileService = serviceProvider.GetRequiredService<TaggingProfileService>();
+        _defaultsStore = serviceProvider.GetRequiredService<AutoTagDefaultsStore>();
+        _settingsService = serviceProvider.GetRequiredService<DeezSpoTagSettingsService>();
+        _configBuilder = serviceProvider.GetRequiredService<AutoTagConfigBuilder>();
+        _scanRunner = serviceProvider.GetRequiredService<LibraryScanRunner>();
+        _platformAuthService = serviceProvider.GetRequiredService<PlatformAuthService>();
+        _plexApiClient = serviceProvider.GetRequiredService<PlexApiClient>();
+        _analysisService = serviceProvider.GetRequiredService<TrackAnalysisBackgroundService>();
+        _vibeSettingsStore = serviceProvider.GetRequiredService<VibeAnalysisSettingsStore>();
+        _configStore = serviceProvider.GetRequiredService<LibraryConfigStore>();
+        _logger = logger;
+
+        var configuredDataDir = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_DIR");
+        var dataRoot = string.IsNullOrWhiteSpace(configuredDataDir)
+            ? Path.Join(env.ContentRootPath, "Data")
+            : configuredDataDir;
+        var autoTagDataDir = Path.Join(dataRoot, "autotag");
+        Directory.CreateDirectory(autoTagDataDir);
+        _enhancementSchedulePath = Path.Join(autoTagDataDir, "enhancement-schedule-state.json");
+    }
+
+    public bool TaggingInProgress => _taggingInProgress || _autoTagService.HasRunningJobs();
+
+    public async Task<DownloadGateDecision> EvaluateDownloadGateAsync(CancellationToken cancellationToken = default)
+    {
+        if (!TaggingInProgress)
+        {
+            return new DownloadGateDecision(true, string.Empty, false);
+        }
+
+        string? runningEnhancementJobId = null;
+        var hasEnhancementStage = _enhancementStageRunning || _autoTagService.TryGetRunningEnhancementJobId(out runningEnhancementJobId);
+        if (hasEnhancementStage)
+        {
+            var paused = await TryPauseEnhancementForIncomingDownloadAsync(runningEnhancementJobId, cancellationToken);
+            if (paused || !TaggingInProgress)
+            {
+                return new DownloadGateDecision(true, string.Empty, paused);
+            }
+        }
+
+        if (_autoTagService.TryGetRunningEnrichmentJobId(out var runningEnrichmentJobId))
+        {
+            var paused = await TryPauseEnrichmentForIncomingDownloadAsync(runningEnrichmentJobId);
+            if (paused || !TaggingInProgress)
+            {
+                return new DownloadGateDecision(true, string.Empty, false);
+            }
+        }
+
+        if (_autoTagService.TryGetAnyRunningJobId(out var runningJobId))
+        {
+            var paused = await TryPauseAnyRunningAutoTagForIncomingDownloadAsync(runningJobId);
+            if (paused || !TaggingInProgress)
+            {
+                return new DownloadGateDecision(true, string.Empty, false);
+            }
+
+            return new DownloadGateDecision(false, "Downloads paused while AutoTag is still stopping.", false);
+        }
+
+        _logger.LogWarning("AutoTag reported running jobs but no active job id was found. Allowing download.");
+        return new DownloadGateDecision(true, string.Empty, false);
+    }
+
+    public void MarkDownloadQueued()
+    {
+        _pipelineRequested = true;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await TickAsync(stoppingToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Download orchestration tick failed.");
+            }
+
+            try
+            {
+                await Task.Delay(_pollInterval, stoppingToken);
+            }
+            catch (TaskCanceledException)
+            {
+                break;
+            }
+        }
+    }
+
+    private async Task TickAsync(CancellationToken cancellationToken)
+    {
+        var hasActiveDownloads = await _queueRepository.HasActiveDownloadsAsync(cancellationToken);
+        if (hasActiveDownloads)
+        {
+            _queueIdleSince = null;
+            return;
+        }
+
+        _queueIdleSince ??= DateTimeOffset.UtcNow;
+        var idleDuration = DateTimeOffset.UtcNow - _queueIdleSince.Value;
+        var hasPendingPostDownloadEnrichment = await HasPendingPostDownloadEnrichmentAsync(cancellationToken);
+        if (hasPendingPostDownloadEnrichment)
+        {
+            _pipelineRequested = true;
+        }
+
+        if (!_pipelineRequested)
+        {
+            if (idleDuration < _downloadIdleDelay)
+            {
+                return;
+            }
+
+            if (_autoTagService.HasRunningJobs())
+            {
+                return;
+            }
+
+            if (!await _pipelineLock.WaitAsync(0, cancellationToken))
+            {
+                return;
+            }
+
+            try
+            {
+                await RunScheduledEnhancementIfDueAsync(cancellationToken);
+            }
+            finally
+            {
+                _pipelineLock.Release();
+            }
+            return;
+        }
+
+        if (idleDuration < _downloadIdleDelay)
+        {
+            return;
+        }
+
+        if (_autoTagService.HasRunningJobs())
+        {
+            return;
+        }
+
+        if (!await _pipelineLock.WaitAsync(0, cancellationToken))
+        {
+            return;
+        }
+
+        try
+        {
+            await RunPipelineAsync(cancellationToken);
+        }
+        finally
+        {
+            _pipelineLock.Release();
+        }
+    }
+
+    private async Task RunPipelineAsync(CancellationToken cancellationToken)
+    {
+        var context = await PreparePipelineRunContextAsync(cancellationToken);
+        if (context is null)
+        {
+            return;
+        }
+
+        await RunPipelineEnrichmentAsync(context, cancellationToken);
+        var enhancementResult = await RunPipelineEnhancementAsync(context, cancellationToken);
+        if (enhancementResult.ShouldExitPipeline)
+        {
+            if (enhancementResult.PausedForDownload)
+            {
+                _enhancementResumePending = true;
+                _pipelineRequested = true;
+                _queueIdleSince = null;
+                _lastPipelineCompletedAt = context.PipelineStartedAt;
+            }
+            return;
+        }
+
+        if (context.Stages.HasEnhancement)
+        {
+            _enhancementResumePending = false;
+        }
+
+        if (!await EnsurePipelineStillIdleAsync(cancellationToken))
+        {
+            return;
+        }
+
+        await RunPostAutoTagStagesAsync(cancellationToken);
+        _lastPipelineCompletedAt = context.PipelineStartedAt;
+    }
+
+    private async Task<PipelineRunContext?> PreparePipelineRunContextAsync(CancellationToken cancellationToken)
+    {
+        var pipelineStartedAt = DateTimeOffset.UtcNow;
+        _pipelineRequested = false;
+        _enhancementPauseRequested = false;
+
+        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+        {
+            _logger.LogInformation("Orchestration skipped: downloads became active again.");
+            return null;
+        }
+
+        var settings = _settingsService.LoadSettings();
+        if (string.IsNullOrWhiteSpace(settings.DownloadLocation))
+        {
+            _logger.LogWarning("Orchestration skipped: download location is not configured.");
+            _lastPipelineCompletedAt = pipelineStartedAt;
+            return null;
+        }
+
+        var configJson = await GetAutoTagConfigJsonAsync();
+        if (string.IsNullOrWhiteSpace(configJson))
+        {
+            _logger.LogWarning("Orchestration skipped: no AutoTag profile or last config available.");
+            _lastPipelineCompletedAt = pipelineStartedAt;
+            return null;
+        }
+
+        return new PipelineRunContext(
+            pipelineStartedAt,
+            configJson,
+            GetAutoTagStages(configJson),
+            _enhancementResumePending);
+    }
+
+    private async Task RunPipelineEnrichmentAsync(PipelineRunContext context, CancellationToken cancellationToken)
+    {
+        if (context.Stages.HasEnrichment && !context.ResumeEnhancementAfterDownload)
+        {
+            await RunPostDownloadEnrichmentAsync(context.AutomationConfigJson, cancellationToken);
+            return;
+        }
+
+        var message = context.Stages.HasEnrichment
+            ? "Automation: enrichment skipped while resuming paused enhancement run."
+            : "Automation: post-download enrichment skipped (no enrichment tags configured).";
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            message));
+    }
+
+    private async Task RunPostDownloadEnrichmentAsync(string automationConfigJson, CancellationToken cancellationToken)
+    {
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            "Automation: post-download enrichment starting."));
+
+        AutoTagJob? enrichmentJob = null;
+        try
+        {
+            _taggingInProgress = true;
+            var enrichmentConfig = ClearEnhancementTags(automationConfigJson);
+            var profileContext = await BuildAutomationProfileContextAsync();
+            var enrichmentProfile = profileContext.DefaultProfile;
+            var settings = _settingsService.LoadSettings();
+            enrichmentJob = await _autoTagService.StartJob(
+                settings.DownloadLocation,
+                enrichmentConfig,
+                "automation",
+                enrichmentProfile?.Technical,
+                enrichmentProfile?.Id,
+                enrichmentProfile?.Name);
+            await WaitForJobCompletionAsync(enrichmentJob, cancellationToken);
+        }
+        finally
+        {
+            _taggingInProgress = false;
+        }
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"Automation: enrichment finished (status={enrichmentJob?.Status ?? "skipped"})."));
+    }
+
+    private async Task<PipelineEnhancementResult> RunPipelineEnhancementAsync(PipelineRunContext context, CancellationToken cancellationToken)
+    {
+        var hasAnyStages = context.Stages.HasEnrichment || context.Stages.HasEnhancement;
+        if (!context.Stages.HasEnhancement)
+        {
+            await LogNoEnhancementConfiguredAsync(hasAnyStages);
+            return new PipelineEnhancementResult(false, false);
+        }
+
+        if (!context.ResumeEnhancementAfterDownload)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                "Automation: enhancement deferred to scheduled runs (not chained with post-download enrichment)."));
+            return new PipelineEnhancementResult(false, false);
+        }
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            "Automation: enhancement resume pending; running library scan and Plex scan before enhancement."));
+
+        var preEnhancementScanReady = await RunLibraryAndPlexSyncAsync("before enhancement resume", cancellationToken);
+        if (!preEnhancementScanReady)
+        {
+            _pipelineRequested = true;
+            _queueIdleSince = null;
+            _lastPipelineCompletedAt = context.PipelineStartedAt;
+            return new PipelineEnhancementResult(true, false);
+        }
+
+        var pausedForDownload = await RunEnhancementStageAsync(
+            context.AutomationConfigJson,
+            forceRunEvenIfNotDue: true,
+            sourceLabel: "resume",
+            cancellationToken: cancellationToken);
+        return new PipelineEnhancementResult(pausedForDownload, pausedForDownload);
+    }
+
+    private Task LogNoEnhancementConfiguredAsync(bool hasAnyStages)
+    {
+        if (hasAnyStages)
+        {
+            _enhancementResumePending = false;
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                "Automation: enhancement skipped (no gap-fill tags configured)."));
+            return Task.CompletedTask;
+        }
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            "Automation: post-download enrichment skipped (no enrichment/enhancement tags configured)."));
+        return Task.CompletedTask;
+    }
+
+    private async Task<bool> EnsurePipelineStillIdleAsync(CancellationToken cancellationToken)
+    {
+        if (!await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+        {
+            return true;
+        }
+
+        _logger.LogInformation("Automation halted: downloads started during AutoTag.");
+        _pipelineRequested = true;
+        return false;
+    }
+
+    private async Task RunPostAutoTagStagesAsync(CancellationToken cancellationToken)
+    {
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            "Automation: library scan starting after AutoTag."));
+
+        await _scanRunner.RunAsync(
+            refreshImages: false,
+            reset: false,
+            folderId: null,
+            skipSpotifyFetch: false,
+            cacheSpotifyImages: false,
+            cancellationToken: cancellationToken);
+
+        await TriggerPlexScanAsync(cancellationToken);
+
+        var vibeSettings = await _vibeSettingsStore.LoadAsync();
+        if (vibeSettings.Enabled)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                "Automation: vibe analysis starting after library scan."));
+
+            await _analysisService.AnalyzeNowAsync(Math.Clamp(vibeSettings.BatchSize, 10, 500), cancellationToken);
+        }
+        else
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                "Automation: vibe analysis skipped (disabled)."));
+        }
+    }
+
+    private async Task<bool> HasPendingPostDownloadEnrichmentAsync(CancellationToken cancellationToken)
+    {
+        var queueItems = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
+        return queueItems.Any(item =>
+            item.DestinationFolderId.HasValue
+            && string.Equals(item.Status, "completed", StringComparison.OrdinalIgnoreCase)
+            && item.UpdatedAt > _lastPipelineCompletedAt);
+    }
+
+    private async Task RunScheduledEnhancementIfDueAsync(CancellationToken cancellationToken)
+    {
+        if (_enhancementResumePending)
+        {
+            return;
+        }
+
+        if (await HasPendingPostDownloadEnrichmentAsync(cancellationToken))
+        {
+            _pipelineRequested = true;
+            return;
+        }
+
+        var configJson = await GetAutoTagConfigJsonAsync();
+        if (string.IsNullOrWhiteSpace(configJson))
+        {
+            return;
+        }
+
+        var stages = GetAutoTagStages(configJson);
+        if (!stages.HasEnhancement)
+        {
+            return;
+        }
+
+        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+        {
+            return;
+        }
+
+        var paused = await RunEnhancementStageAsync(
+            configJson,
+            forceRunEvenIfNotDue: false,
+            sourceLabel: "schedule",
+            quietWhenNoDue: true,
+            cancellationToken: cancellationToken);
+
+        if (paused)
+        {
+            _enhancementResumePending = true;
+            _pipelineRequested = true;
+            _queueIdleSince = null;
+        }
+    }
+
+    private async Task<bool> RunEnhancementStageAsync(
+        string automationConfigJson,
+        bool forceRunEvenIfNotDue,
+        string sourceLabel,
+        bool quietWhenNoDue = false,
+        CancellationToken cancellationToken = default)
+    {
+        var plan = await BuildEnhancementTargetPlanAsync(forceRunEvenIfNotDue, quietWhenNoDue, cancellationToken);
+        if (plan is null)
+        {
+            return false;
+        }
+
+        var profileContext = await BuildAutomationProfileContextAsync();
+        var executionResult = await ExecuteEnhancementTargetsAsync(
+            plan.DueTargets,
+            profileContext,
+            automationConfigJson,
+            sourceLabel,
+            cancellationToken);
+
+        if (executionResult.AbortedForDownload)
+        {
+            return false;
+        }
+
+        if (executionResult.AttemptedTargets.Count > 0)
+        {
+            await UpdateEnhancementScheduleStateAsync(executionResult.AttemptedTargets, DateTimeOffset.UtcNow);
+        }
+
+        return executionResult.PausedForDownload;
+    }
+
+    private async Task<EnhancementTargetPlan?> BuildEnhancementTargetPlanAsync(
+        bool forceRunEvenIfNotDue,
+        bool quietWhenNoDue,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var targets = await ResolveEnhancementTargetsAsync(now, cancellationToken);
+        var dueTargets = targets.Where(target => target.IsDue).ToList();
+        var skippedBySchedule = targets.Where(target => !target.IsDue).ToList();
+
+        if (forceRunEvenIfNotDue && targets.Count > 0 && dueTargets.Count == 0)
+        {
+            dueTargets = targets.ToList();
+            skippedBySchedule = new List<EnhancementTarget>();
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                "Automation: forcing enhancement resume for interrupted run (bypassing schedule delay)."));
+        }
+
+        if (!quietWhenNoDue)
+        {
+            LogSkippedEnhancementTargets(skippedBySchedule, now);
+        }
+
+        if (targets.Count == 0)
+        {
+            if (!quietWhenNoDue)
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    "Automation: enhancement skipped (no AutoTag-enabled folders with schedules)."));
+            }
+
+            return null;
+        }
+
+        if (dueTargets.Count == 0)
+        {
+            if (!quietWhenNoDue)
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    "Automation: enhancement skipped (no folders due by schedule)."));
+            }
+
+            return null;
+        }
+
+        return new EnhancementTargetPlan(targets, dueTargets);
+    }
+
+    private void LogSkippedEnhancementTargets(IEnumerable<EnhancementTarget> skippedTargets, DateTimeOffset now)
+    {
+        foreach (var skipped in skippedTargets)
+        {
+            var wait = skipped.ScheduleInterval.HasValue && skipped.LastRunAtUtc.HasValue
+                ? skipped.ScheduleInterval.Value - (now - skipped.LastRunAtUtc.Value)
+                : TimeSpan.Zero;
+            var waitSuffix = wait > TimeSpan.Zero
+                ? $" next due in {(int)Math.Ceiling(wait.TotalDays)} day(s)"
+                : string.Empty;
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"Automation: enhancement skipped for {skipped.RootPath} (schedule not due).{waitSuffix}"));
+        }
+    }
+
+    private async Task<EnhancementExecutionResult> ExecuteEnhancementTargetsAsync(
+        IEnumerable<EnhancementTarget> dueTargets,
+        AutomationProfileContext profileContext,
+        string automationConfigJson,
+        string sourceLabel,
+        CancellationToken cancellationToken)
+    {
+        var attemptedTargets = new List<EnhancementTarget>();
+        foreach (var target in dueTargets)
+        {
+            if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+            {
+                _logger.LogInformation("Automation halted: downloads started before enhancement target {RootPath}.", target.RootPath);
+                _pipelineRequested = true;
+                _queueIdleSince = null;
+                return new EnhancementExecutionResult(attemptedTargets, false, true);
+            }
+
+            var runResult = await RunEnhancementTargetAsync(
+                target,
+                profileContext,
+                automationConfigJson,
+                sourceLabel,
+                cancellationToken);
+            if (runResult.Attempted)
+            {
+                attemptedTargets.Add(target);
+            }
+
+            if (runResult.PausedForDownload)
+            {
+                return new EnhancementExecutionResult(attemptedTargets, true, false);
+            }
+        }
+
+        return new EnhancementExecutionResult(attemptedTargets, false, false);
+    }
+
+    private async Task<EnhancementTargetRunResult> RunEnhancementTargetAsync(
+        EnhancementTarget target,
+        AutomationProfileContext profileContext,
+        string automationConfigJson,
+        string sourceLabel,
+        CancellationToken cancellationToken)
+    {
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"Automation: enhancement ({sourceLabel}) starting for {target.RootPath}."));
+
+        AutoTagJob? enhancementJob = null;
+        try
+        {
+            _taggingInProgress = true;
+            var enhancementProfile = ResolveAutomationProfileForFolder(
+                profileContext,
+                target.FolderId,
+                target.FolderProfileReference);
+            var profileConfigJson = enhancementProfile != null
+                ? (_configBuilder.BuildConfigJson(enhancementProfile) ?? automationConfigJson)
+                : automationConfigJson;
+            var enhancementConfig = ClearEnrichmentTags(profileConfigJson);
+            if (!GetAutoTagStages(enhancementConfig).HasEnhancement)
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    $"Automation: enhancement skipped for {target.RootPath} (profile has no enhancement tags)."));
+                return new EnhancementTargetRunResult(true, false);
+            }
+
+            enhancementJob = await _autoTagService.StartJob(
+                target.RootPath,
+                enhancementConfig,
+                "automation",
+                enhancementProfile?.Technical,
+                enhancementProfile?.Id,
+                enhancementProfile?.Name);
+            MarkEnhancementStageStarted(enhancementJob);
+            await WaitForJobCompletionAsync(enhancementJob, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Automation enhancement failed for target {RootPath}.", target.RootPath);
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "error",
+                $"Automation: enhancement failed for {target.RootPath} ({ex.Message})."));
+            return new EnhancementTargetRunResult(true, false);
+        }
+        finally
+        {
+            MarkEnhancementStageFinished();
+            _taggingInProgress = false;
+        }
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"Automation: enhancement ({sourceLabel}) finished for {target.RootPath} (status={enhancementJob?.Status ?? "skipped"})."));
+
+        if (enhancementJob != null
+            && string.Equals(enhancementJob.Status, "canceled", StringComparison.OrdinalIgnoreCase)
+            && _enhancementPauseRequested)
+        {
+            _enhancementResumePending = true;
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"Automation: enhancement paused for incoming downloads ({target.RootPath})."));
+            return new EnhancementTargetRunResult(false, true);
+        }
+
+        var attempted = enhancementJob != null
+            && !string.Equals(enhancementJob.Status, "canceled", StringComparison.OrdinalIgnoreCase);
+        return new EnhancementTargetRunResult(attempted, false);
+    }
+
+    private async Task<bool> RunLibraryAndPlexSyncAsync(string phaseLabel, CancellationToken cancellationToken)
+    {
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"Automation: library scan starting {phaseLabel}."));
+
+        await _scanRunner.RunAsync(
+            refreshImages: false,
+            reset: false,
+            folderId: null,
+            skipSpotifyFetch: false,
+            cacheSpotifyImages: false,
+            cancellationToken: cancellationToken);
+
+        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+        {
+            _logger.LogInformation("Automation halted: downloads started during library scan ({PhaseLabel}).", phaseLabel);
+            return false;
+        }
+
+        await TriggerPlexScanAsync(cancellationToken);
+
+        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+        {
+            _logger.LogInformation("Automation halted: downloads started during Plex scan ({PhaseLabel}).", phaseLabel);
+            return false;
+        }
+
+        return true;
+    }
+
+    private void MarkEnhancementStageStarted(AutoTagJob? job)
+    {
+        _enhancementPauseRequested = false;
+        _enhancementStageRunning = true;
+        _activeEnhancementJobId = job?.Id;
+    }
+
+    private void MarkEnhancementStageFinished()
+    {
+        _enhancementStageRunning = false;
+        _activeEnhancementJobId = null;
+    }
+
+    private async Task<bool> TryPauseEnhancementForIncomingDownloadAsync(string? fallbackEnhancementJobId, CancellationToken cancellationToken)
+    {
+        if (!_enhancementStageRunning && string.IsNullOrWhiteSpace(fallbackEnhancementJobId))
+        {
+            return false;
+        }
+
+        if (_enhancementPauseRequested)
+        {
+            return true;
+        }
+
+        await _enhancementPauseLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_enhancementPauseRequested)
+            {
+                return true;
+            }
+
+            var jobId = _activeEnhancementJobId;
+            if (string.IsNullOrWhiteSpace(jobId))
+            {
+                jobId = fallbackEnhancementJobId;
+            }
+            if (string.IsNullOrWhiteSpace(jobId))
+            {
+                return false;
+            }
+
+            _enhancementPauseRequested = true;
+            var orchestrationManagedEnhancement = _enhancementStageRunning
+                && !string.IsNullOrWhiteSpace(_activeEnhancementJobId)
+                && string.Equals(_activeEnhancementJobId, jobId, StringComparison.OrdinalIgnoreCase);
+
+            if (orchestrationManagedEnhancement)
+            {
+                _enhancementResumePending = true;
+                _pipelineRequested = true;
+                _queueIdleSince = null;
+            }
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                "Automation: enhancement pause requested for incoming download."));
+
+            var stopped = await _autoTagService.StopJobAsync(jobId);
+            if (stopped)
+            {
+                _logger.LogInformation("Automation enhancement job {JobId} pause requested for incoming download.", jobId);
+            }
+            else
+            {
+                _logger.LogInformation("Automation enhancement job {JobId} could not be paused (already stopped).", jobId);
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to request enhancement pause for incoming download.");
+            return false;
+        }
+        finally
+        {
+            _enhancementPauseLock.Release();
+        }
+    }
+
+    private async Task<bool> TryPauseEnrichmentForIncomingDownloadAsync(string? enrichmentJobId)
+    {
+        if (string.IsNullOrWhiteSpace(enrichmentJobId))
+        {
+            return false;
+        }
+
+        try
+        {
+            _pipelineRequested = true;
+            _queueIdleSince = null;
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                "Automation: enrichment pause requested for incoming download."));
+
+            var stopped = await _autoTagService.StopJobAsync(enrichmentJobId);
+            if (stopped)
+            {
+                _logger.LogInformation("Automation enrichment job {JobId} pause requested for incoming download.", enrichmentJobId);
+            }
+            else
+            {
+                _logger.LogInformation("Automation enrichment job {JobId} could not be paused (already stopped).", enrichmentJobId);
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to request enrichment pause for incoming download.");
+            return false;
+        }
+    }
+
+    private async Task<bool> TryPauseAnyRunningAutoTagForIncomingDownloadAsync(string? jobId)
+    {
+        if (string.IsNullOrWhiteSpace(jobId))
+        {
+            return false;
+        }
+
+        try
+        {
+            _pipelineRequested = true;
+            _queueIdleSince = null;
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                "Automation: active AutoTag job pause requested for incoming download."));
+
+            var stopped = await _autoTagService.StopJobAsync(jobId);
+            if (stopped)
+            {
+                _logger.LogInformation("AutoTag job {JobId} pause requested for incoming download.", jobId);
+            }
+            else
+            {
+                _logger.LogInformation("AutoTag job {JobId} could not be paused (already stopped).", jobId);
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to request AutoTag pause for incoming download.");
+            return false;
+        }
+    }
+
+    private async Task TriggerPlexScanAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                "Automation: Plex scan starting after library scan."));
+
+            var authState = await _platformAuthService.LoadAsync();
+            var plex = authState.Plex;
+            if (string.IsNullOrWhiteSpace(plex?.Url) || string.IsNullOrWhiteSpace(plex.Token))
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    "Automation: Plex scan skipped (Plex is not configured)."));
+                return;
+            }
+
+            var sections = await _plexApiClient.GetLibrarySectionsAsync(plex.Url, plex.Token, cancellationToken);
+            var musicSections = sections
+                .Where(section => string.Equals(section.Type, "artist", StringComparison.OrdinalIgnoreCase))
+                .Where(section => !section.Title.Contains("audiobook", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (musicSections.Count == 0)
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    "Automation: Plex scan skipped (no music libraries found)."));
+                return;
+            }
+
+            var refreshed = 0;
+            foreach (var section in musicSections)
+            {
+                refreshed += await _plexApiClient.RefreshLibraryAsync(plex.Url, plex.Token, section.Key, cancellationToken)
+                    ? 1
+                    : 0;
+            }
+
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"Automation: Plex scan requested for {musicSections.Count} music libraries (refreshed={refreshed})."));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Automation Plex scan failed.");
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "error",
+                $"Automation: Plex scan failed ({ex.Message})."));
+        }
+    }
+
+    private async Task<string?> GetAutoTagConfigJsonAsync()
+    {
+        var profiles = await _profileService.LoadAsync();
+        var defaults = await _defaultsStore.LoadAsync();
+
+        TaggingProfile? profile = null;
+        if (!string.IsNullOrWhiteSpace(defaults.DefaultFileProfile))
+        {
+            profile = profiles.FirstOrDefault(item =>
+                string.Equals(item.Name, defaults.DefaultFileProfile, StringComparison.OrdinalIgnoreCase))
+                ?? profiles.FirstOrDefault(item =>
+                    string.Equals(item.Id, defaults.DefaultFileProfile, StringComparison.OrdinalIgnoreCase));
+        }
+
+        profile ??= profiles.FirstOrDefault(item => item.IsDefault) ?? profiles.FirstOrDefault();
+        if (profile is null)
+        {
+            return _autoTagService.TryGetLastConfigJson();
+        }
+
+        return _configBuilder.BuildConfigJson(profile) ?? _autoTagService.TryGetLastConfigJson();
+    }
+
+    private static AutoTagStages GetAutoTagStages(string configJson)
+    {
+        if (string.IsNullOrWhiteSpace(configJson))
+        {
+            return new AutoTagStages(false, false);
+        }
+
+        try
+        {
+            if (JsonNode.Parse(configJson) is not JsonObject root)
+            {
+                return new AutoTagStages(false, false);
+            }
+
+            var enrichmentCount = ReadArrayCount(root, "tags");
+            var enhancementCount = ReadArrayCount(root, "gapFillTags");
+            return new AutoTagStages(enrichmentCount > 0, enhancementCount > 0);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) {
+            return new AutoTagStages(false, false);
+        }
+    }
+
+    private static string ClearEnhancementTags(string configJson)
+    {
+        return ClearStageTags(configJson, clearEnrichment: false, clearEnhancement: true);
+    }
+
+    private static string ClearEnrichmentTags(string configJson)
+    {
+        return ClearStageTags(configJson, clearEnrichment: true, clearEnhancement: false);
+    }
+
+    private static string ClearStageTags(string configJson, bool clearEnrichment, bool clearEnhancement)
+    {
+        if (string.IsNullOrWhiteSpace(configJson))
+        {
+            return configJson;
+        }
+
+        try
+        {
+            if (JsonNode.Parse(configJson) is not JsonObject root)
+            {
+                return configJson;
+            }
+
+            if (clearEnrichment)
+            {
+                root["tags"] = new JsonArray();
+            }
+
+            if (clearEnhancement)
+            {
+                root["gapFillTags"] = new JsonArray();
+            }
+
+            return root.ToJsonString(new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                WriteIndented = true
+            });
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) {
+            return configJson;
+        }
+    }
+
+    private static int ReadArrayCount(JsonObject root, string key)
+    {
+        return root[key] is JsonArray array ? array.Count : 0;
+    }
+
+    private async Task<AutomationProfileContext> BuildAutomationProfileContextAsync()
+    {
+        var profiles = await _profileService.LoadAsync();
+        var defaults = await _defaultsStore.LoadAsync();
+        var defaultProfile = ResolveProfileReference(profiles, defaults.DefaultFileProfile)
+            ?? profiles.FirstOrDefault(profile => profile.IsDefault)
+            ?? profiles.FirstOrDefault();
+        return new AutomationProfileContext(profiles, defaults, defaultProfile);
+    }
+
+    private static TaggingProfile? ResolveAutomationProfileForFolder(
+        AutomationProfileContext context,
+        string folderId,
+        string? folderProfileReference)
+    {
+        if (!string.IsNullOrWhiteSpace(folderProfileReference))
+        {
+            var assignedProfile = ResolveProfileReference(context.Profiles, folderProfileReference);
+            if (assignedProfile != null)
+            {
+                return assignedProfile;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(folderId)
+            && context.Defaults.LibraryProfiles is { Count: > 0 }
+            && context.Defaults.LibraryProfiles.TryGetValue(folderId, out var reference))
+        {
+            var folderProfile = ResolveProfileReference(context.Profiles, reference);
+            if (folderProfile != null)
+            {
+                return folderProfile;
+            }
+        }
+
+        return context.DefaultProfile;
+    }
+
+    private static TaggingProfile? ResolveProfileReference(IEnumerable<TaggingProfile> profiles, string? reference)
+    {
+        if (profiles == null || string.IsNullOrWhiteSpace(reference))
+        {
+            return null;
+        }
+
+        var value = reference.Trim();
+        return profiles.FirstOrDefault(profile =>
+            string.Equals(profile.Id, value, StringComparison.OrdinalIgnoreCase))
+            ?? profiles.FirstOrDefault(profile =>
+                string.Equals(profile.Name, value, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task<List<EnhancementTarget>> ResolveEnhancementTargetsAsync(DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        if (!_libraryRepository.IsConfigured)
+        {
+            return new List<EnhancementTarget>();
+        }
+
+        var folders = await _libraryRepository.GetFoldersAsync(cancellationToken);
+        var defaults = await _defaultsStore.LoadAsync();
+        var schedules = defaults.LibrarySchedules ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var state = await LoadEnhancementScheduleStateAsync();
+        var targets = new List<EnhancementTarget>();
+
+        foreach (var folder in folders)
+        {
+            if (!folder.Enabled
+                || !folder.AutoTagEnabled
+                || string.IsNullOrWhiteSpace(folder.RootPath))
+            {
+                continue;
+            }
+
+            var key = folder.Id.ToString();
+            schedules.TryGetValue(key, out var rawSchedule);
+            var hasInterval = TryParseScheduleInterval(rawSchedule, out var interval);
+            if (!hasInterval)
+            {
+                continue;
+            }
+            var lastRun = state.LastRunByFolderId.TryGetValue(key, out var storedLastRun)
+                ? storedLastRun
+                : (DateTimeOffset?)null;
+            var isDue = !lastRun.HasValue || (now - lastRun.Value) >= interval;
+
+            targets.Add(new EnhancementTarget(
+                key,
+                folder.RootPath,
+                folder.AutoTagProfileId,
+                interval,
+                isDue,
+                lastRun));
+        }
+
+        return targets;
+    }
+
+    private static bool TryParseScheduleInterval(string? rawSchedule, out TimeSpan interval)
+    {
+        interval = default;
+
+        if (string.IsNullOrWhiteSpace(rawSchedule))
+        {
+            return false;
+        }
+
+        var normalized = rawSchedule.Trim().ToLowerInvariant();
+        var match = ScheduleTokenRegex.Match(normalized);
+        if (match.Success
+            && int.TryParse(match.Groups[1].Value, out var amount)
+            && amount > 0)
+        {
+            var unit = match.Groups[2].Value;
+            interval = unit switch
+            {
+                "h" => TimeSpan.FromHours(amount),
+                "d" => TimeSpan.FromDays(amount),
+                "w" => TimeSpan.FromDays(amount * 7d),
+                "m" => TimeSpan.FromDays(amount * 30d),
+                _ => default
+            };
+            return interval > TimeSpan.Zero;
+        }
+
+        if (int.TryParse(normalized, out var days) && days > 0)
+        {
+            interval = TimeSpan.FromDays(days);
+            return true;
+        }
+
+        return false;
+    }
+
+    private async Task<EnhancementScheduleState> LoadEnhancementScheduleStateAsync()
+    {
+        try
+        {
+            if (!File.Exists(_enhancementSchedulePath))
+            {
+                return new EnhancementScheduleState();
+            }
+
+            var json = await File.ReadAllTextAsync(_enhancementSchedulePath);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new EnhancementScheduleState();
+            }
+
+            var loaded = JsonSerializer.Deserialize<EnhancementScheduleState>(json, ScheduleJsonOptions);
+            return loaded ?? new EnhancementScheduleState();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to load enhancement schedule state.");
+            return new EnhancementScheduleState();
+        }
+    }
+
+    private async Task UpdateEnhancementScheduleStateAsync(IEnumerable<EnhancementTarget> attemptedTargets, DateTimeOffset completedAtUtc)
+    {
+        var targets = attemptedTargets.ToList();
+        if (targets.Count == 0)
+        {
+            return;
+        }
+
+        var state = await LoadEnhancementScheduleStateAsync();
+        foreach (var target in targets)
+        {
+            state.LastRunByFolderId[target.FolderId] = completedAtUtc;
+        }
+
+        await SaveEnhancementScheduleStateAsync(state);
+    }
+
+    private async Task SaveEnhancementScheduleStateAsync(EnhancementScheduleState state)
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(state, ScheduleJsonOptions);
+            await File.WriteAllTextAsync(_enhancementSchedulePath, json);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to save enhancement schedule state.");
+        }
+    }
+
+    private Task WaitForJobCompletionAsync(AutoTagJob job, CancellationToken cancellationToken)
+    {
+        if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.CompletedTask;
+        }
+
+        var completion = new TaskCompletionSource<AutoTagJob>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void Handler(AutoTagJob completed)
+        {
+            if (string.Equals(completed.Id, job.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                completion.TrySetResult(completed);
+            }
+        }
+
+        _autoTagService.JobCompleted += Handler;
+
+        return WaitForCompletionAsync(completion.Task, Handler, cancellationToken);
+    }
+
+    private async Task WaitForCompletionAsync(
+        Task completionTask,
+        Action<AutoTagJob> handler,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await completionTask.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            _autoTagService.JobCompleted -= handler;
+        }
+    }
+}

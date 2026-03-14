@@ -1,0 +1,39 @@
+.spotify-card-art {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1 / 1;
+    border-radius: 12px;
+    background-size: cover;
+    background-position: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 24px;
+}
+
+.spotify-card-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.spotify-card-subtitle {
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.spotify-card-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}

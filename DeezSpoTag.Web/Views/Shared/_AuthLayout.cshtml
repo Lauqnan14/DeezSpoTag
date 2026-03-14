@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>@ViewData["Title"] - DeezSpoTag</title>
+    <partial name="_CommonHeadAssets" />
+</head>
+<body>
+    <main class="main-content auth-main-content" id="mainContent">
+        @RenderBody()
+    </main>
+
+    @{
+        ViewData["IncludeSignalR"] = true;
+    }
+    <partial name="_CommonFooterScripts" />
+</body>
+</html>

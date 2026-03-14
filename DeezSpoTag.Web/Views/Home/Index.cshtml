@@ -1,0 +1,42 @@
+@{
+    ViewData["Title"] = "DeezSpoTag - Automated Music Experience";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+@section Styles {
+<link rel="stylesheet" href="~/css/home-top-genres.css" asp-append-version="true" />
+<link rel="stylesheet" href="~/css/home-index.css" asp-append-version="true" />
+}
+
+<header class="header">
+    <div id="home-greeting" class="spotify-home-greeting">Loading greeting...</div>
+    <h1 class="welcome-title">Welcome to DeezSpoTag</h1>
+</header>
+
+<section class="search-section">
+    <!-- Unified Search Bar (like deezspotag) -->
+    <div class="search-card">
+        <div class="unified-search-container">
+            <div class="search-input-wrapper">
+                <input type="text" id="unified-search" class="unified-search-input"
+                       placeholder="Search Deezer tracks, albums, artists, playlists... or paste Spotify/Apple Music/YouTube/SoundCloud/Tidal/Boomplay/Qobuz/Bandcamp/Pandora links to map to Deezer">
+            </div>
+            <button id="unified-search-btn" class="unified-search-btn action-btn action-btn-sm">
+                Search
+            </button>
+        </div>
+    </div>
+</section>
+
+<section class="home-sections">
+    <div
+        id="home-sections"
+        data-spotify-home-autorefresh="@((ViewData["SpotifyHomeFeedAutoRefreshEnabled"] as bool?) == true ? "true" : "false")"
+        data-spotify-home-refresh-hours="@(ViewData["SpotifyHomeFeedAutoRefreshHours"] ?? 2)">
+    </div>
+</section>
+
+@section Scripts {
+<script src="~/js/home-view-helpers.js" asp-append-version="true"></script>
+<script src="~/js/home-index.js" asp-append-version="true"></script>
+}

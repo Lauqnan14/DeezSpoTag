@@ -1,0 +1,29 @@
+<Project>
+  <PropertyGroup>
+    <!-- Prevent .NET SDK workload resolver failures in minimal SDK environments -->
+    <MSBuildEnableWorkloadResolver>false</MSBuildEnableWorkloadResolver>
+    <!-- Avoid intermittent MSBuild task failures under heavy IO / low disk by disabling parallel project builds -->
+    <BuildInParallel>false</BuildInParallel>
+    <RestoreBuildInParallel>false</RestoreBuildInParallel>
+    <!-- Static graph restore intermittently fails in constrained environments; disable it -->
+    <RestoreUseStaticGraphEvaluation>false</RestoreUseStaticGraphEvaluation>
+    <!-- Disable NuGet vulnerability audit in offline/restricted environments to avoid NU1900 noise -->
+    <NuGetAudit>false</NuGetAudit>
+
+    <!-- Centralized versioning:
+         - VersionPrefix tracks major.minor.patch
+         - VersionRevision tracks per-change revision (0-9), then rolls patch -->
+    <VersionPrefix>0.1.1</VersionPrefix>
+    <VersionRevision>2</VersionRevision>
+    <Version>$(VersionPrefix)</Version>
+    <AssemblyVersion>$(VersionPrefix).$(VersionRevision)</AssemblyVersion>
+    <FileVersion>$(VersionPrefix).$(VersionRevision)</FileVersion>
+    <InformationalVersion>$(VersionPrefix).$(VersionRevision)</InformationalVersion>
+  </PropertyGroup>
+
+  <Target Name="EnforceNoReferencesFolder" BeforeTargets="PrepareForBuild">
+    <Error
+      Condition="Exists('$(MSBuildThisFileDirectory)References')"
+      Text="Top-level References folder is no longer supported. Move required assets into active project paths." />
+  </Target>
+</Project>

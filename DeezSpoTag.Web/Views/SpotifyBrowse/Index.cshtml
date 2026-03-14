@@ -1,0 +1,428 @@
+@{
+    ViewData["Title"] = "Spotify Browse";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+@section Styles {
+<link rel="stylesheet" href="~/css/home-top-genres.css" asp-append-version="true" />
+<link rel="stylesheet" href="~/css/spotify-card-shared.css" asp-append-version="true" />
+<style>
+.header {
+    margin-bottom: 24px;
+}
+.welcome-title {
+    font-size: 30px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    color: var(--primary-color);
+}
+.section-title {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.spotify-home-section {
+    margin-top: 20px;
+}
+.home-section {
+    margin-bottom: 24px;
+}
+.home-section-title {
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.spotify-home-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+.spotify-home-greeting {
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+.spotify-home-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(var(--art-grid-min), 1fr));
+    gap: 16px;
+}
+.spotify-card {
+    width: 100%;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 14px;
+    padding: 12px;
+    display: grid;
+    gap: 8px;
+    cursor: pointer;
+    transition: border-color 0.2s ease, transform 0.2s ease;
+}
+.spotify-card:hover {
+    border-color: var(--primary-color);
+    transform: translateY(-2px);
+}
+.spotify-card-art {
+    background: var(--bg-secondary);
+}
+.empty-section {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-dim);
+    font-style: italic;
+}
+.browse-load-more {
+    display: flex;
+    justify-content: center;
+    margin-top: 16px;
+}
+</style>
+}
+
+<header class="header">
+    <h1 class="welcome-title">Spotify Browse</h1>
+</header>
+
+<section class="spotify-home-section">
+    <div class="section-title" id="browse-title">Spotify Browse</div>
+    <div class="spotify-home-meta">
+        <div id="browse-status" class="spotify-home-greeting">Loading Spotify browse category...</div>
+        <button type="button" class="action-btn action-btn-sm" onclick="refreshBrowseCategory()">Refresh</button>
+    </div>
+    <div id="browse-debug" class="multisource-empty" style="display:none;"></div>
+    <div id="browse-sections">
+        <div class="empty-section">Loading Spotify browse category...</div>
+    </div>
+    <div class="browse-load-more" id="browse-load-more" style="display:none;">
+        <button type="button" class="action-btn action-btn-sm" onclick="loadBrowseCategory()">Load more</button>
+    </div>
+</section>
+
+@section Scripts {
+<script src="~/js/home-view-helpers.js" asp-append-version="true"></script>
+<script>
+const categoryId = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["CategoryId"] ?? ""));
+const categoryUri = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["CategoryUri"] ?? ""));
+const categoryTitle = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["CategoryTitle"] ?? ""));
+const browseSection = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["BrowseSection"] ?? ""));
+
+let browseOffset = 0;
+const browseLimit = 5;
+const browseCooldownMs = 1500;
+let lastBrowseRequestAt = 0;
+let browseTotal = null;
+let browseLoading = false;
+let browseRow = null;
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function buildSpotifyWebUrl(uri) {
+    if (!uri) return '';
+    if (uri.startsWith('http://') || uri.startsWith('https://')) {
+        return uri;
+    }
+    if (uri.startsWith('spotify:')) {
+        const parts = uri.split(':');
+        if (parts.length >= 3) {
+            return `https://open.spotify.com/${parts[1]}/${parts[2]}`;
+        }
+    }
+    return '';
+}
+
+function parseSpotifyUrl(url) {
+    if (!url) return null;
+    const match = url.match(/open\.spotify\.com\/(album|playlist|track|show|episode|artist)\/([a-zA-Z0-9]+)/);
+    if (!match) return null;
+    return { type: match[1], id: match[2] };
+}
+
+const showToast = window.HomeViewHelpers?.showToast ?? ((message) => {
+    console.warn('Toast helper unavailable:', message);
+});
+
+async function openSpotifyItem(item) {
+    if (!item) {
+        return;
+    }
+    const url = buildSpotifyWebUrl(item.uri || '');
+    if (!url) {
+        return;
+    }
+
+    const parsed = parseSpotifyUrl(url);
+    if (parsed?.id) {
+        if (parsed.type === 'artist') {
+            try {
+                const resolveResponse = await fetch(`/api/spotify/resolve-deezer?url=${encodeURIComponent(`https://open.spotify.com/artist/${parsed.id}`)}`);
+                if (resolveResponse.ok) {
+                    const resolved = await resolveResponse.json();
+                    if (resolved?.available && resolved?.deezerId) {
+                        window.location.href = `/Artist?id=${encodeURIComponent(resolved.deezerId)}&source=deezer`;
+                        return;
+                    }
+                }
+            } catch (error) {
+                console.warn('Artist resolve failed:', error);
+            }
+
+            if (item.name) {
+                window.location.href = `/Search?term=${encodeURIComponent(item.name)}&type=artist`;
+                return;
+            }
+
+            showToast('No Deezer match found for this artist.', 'info');
+            return;
+        }
+        window.location.href = `/Tracklist?id=${encodeURIComponent(parsed.id)}&type=${encodeURIComponent(parsed.type || 'album')}&source=spotify`;
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/availability/spotify?url=${encodeURIComponent(url)}`);
+        if (!response.ok) {
+            throw new Error(`Availability failed: ${response.status}`);
+        }
+        const data = await response.json();
+        if (data?.deezerUrl) {
+            window.location.href = data.deezerUrl;
+            return;
+        }
+    } catch (error) {
+        console.warn('Deezer match failed, falling back:', error);
+    }
+
+    showToast('No Deezer match found for this item.', 'info');
+}
+
+function renderSpotifyItem(item) {
+    if (!item) return '';
+    const title = escapeHtml(item.name || '');
+    const subtitle = escapeHtml(item.artists || item.description || '');
+    const cover = item.coverUrl || item.imageUrl || item.image_url || '';
+    const type = escapeHtml(item.type || '');
+    const meta = type ? `${type}` : '';
+    const artStyle = cover ? `style="background-image: url('${cover}');"` : '';
+    return `
+        <div class="spotify-card" data-spotify-uri="${escapeHtml(item.uri || '')}">
+            <div class="spotify-card-art" ${artStyle}>${cover ? '' : '🎵'}</div>
+            <div class="spotify-card-title">${title}</div>
+            ${subtitle ? `<div class="spotify-card-subtitle">${subtitle}</div>` : ''}
+            ${meta ? `<div class="spotify-card-meta"><span>${meta}</span></div>` : ''}
+        </div>
+    `;
+}
+
+function resetBrowseSection() {
+    const container = document.getElementById('browse-sections');
+    const titleText = categoryTitle || 'Spotify Browse';
+    document.getElementById('browse-title').textContent = titleText;
+    container.innerHTML = `
+        <div class="home-section">
+            <div class="home-section-title">${escapeHtml(titleText)}</div>
+            <div class="spotify-home-row" id="browse-row"></div>
+        </div>
+    `;
+    browseRow = document.getElementById('browse-row');
+}
+
+function updateBrowseStatus(text) {
+    const status = document.getElementById('browse-status');
+    if (status) {
+        status.textContent = text;
+    }
+}
+
+function updateLoadMoreVisibility() {
+    const loadMore = document.getElementById('browse-load-more');
+    if (!loadMore) return;
+    if (browseSection) {
+        loadMore.style.display = 'none';
+        return;
+    }
+    if (browseTotal !== null && browseOffset >= browseTotal) {
+        loadMore.style.display = 'none';
+        return;
+    }
+    loadMore.style.display = browseOffset > 0 ? 'flex' : 'none';
+}
+
+function renderBrowseCategoryCard(item) {
+    const id = escapeHtml(item.id || item.categoryId || '');
+    const name = escapeHtml(item.name || item.title || id);
+    const coverUrl = item.image_url || item.imageUrl || item.coverUrl || '';
+    const artStyle = coverUrl ? `style="background-image: url('${escapeHtml(coverUrl)}');"` : '';
+    const subtitle = escapeHtml(item.section || 'Spotify');
+    return `
+        <div class="top-genres-card top-genres-card--thumb" data-browse-category="${id}" data-browse-name="${name}" style="position: relative;">
+            <div class="top-genres-platform" style="--platform-icon: url('/images/availability/spotify.svg');"></div>
+            <div class="top-genres-content">
+                <div class="top-genres-title">${name}</div>
+                <div class="top-genres-subtitle">${subtitle}</div>
+            </div>
+            <div class="top-genres-art" ${artStyle}></div>
+        </div>
+    `;
+}
+
+async function loadBrowseSectionCategories() {
+    const container = document.getElementById('browse-sections');
+    const titleText = browseSection || 'Spotify Browse';
+    document.getElementById('browse-title').textContent = titleText;
+    updateBrowseStatus('Loading Spotify browse categories...');
+    container.innerHTML = '<div class="empty-section">Loading Spotify browse categories...</div>';
+
+    try {
+        const response = await fetch('/api/spotify/home-feed/browse');
+        if (!response.ok) {
+            throw new Error(`Browse categories failed: ${response.status}`);
+        }
+        const data = await response.json();
+        if (!data?.success || !Array.isArray(data.categories)) {
+            throw new Error(data?.error || 'Browse categories unavailable');
+        }
+
+        const categories = data.categories.filter(cat => {
+            const section = (cat.section || '').toString().trim();
+            return section === browseSection;
+        });
+
+        if (!categories.length) {
+            container.innerHTML = '<div class="empty-section">No Spotify browse categories available</div>';
+            updateBrowseStatus('No categories available');
+            return;
+        }
+
+        container.innerHTML = `
+            <div class="home-section">
+                <div class="home-section-title">${escapeHtml(titleText)}</div>
+                <div class="top-genres-grid">
+                    ${categories.map(renderBrowseCategoryCard).join('')}
+                </div>
+            </div>
+        `;
+
+        container.addEventListener('click', (event) => {
+            const card = event.target.closest('.top-genres-card');
+            if (!card) return;
+            const catId = card.getAttribute('data-browse-category') || '';
+            const catName = card.getAttribute('data-browse-name') || '';
+            if (!catId) return;
+            const params = new URLSearchParams();
+            params.set('categoryId', catId);
+            if (catName) params.set('title', catName);
+            window.location.href = `/Spotify/Browse?${params.toString()}`;
+        });
+
+        updateBrowseStatus(`Showing ${categories.length} categories`);
+    } catch (error) {
+        console.error('Failed to load Spotify browse categories:', error);
+        container.innerHTML = '<div class="empty-section">Failed to load Spotify browse categories</div>';
+        updateBrowseStatus('Spotify browse unavailable');
+    }
+}
+
+async function loadBrowseCategory(reset = false) {
+    if (browseLoading) return;
+    browseLoading = true;
+    const now = Date.now();
+    const elapsed = now - lastBrowseRequestAt;
+    if (elapsed < browseCooldownMs) {
+        await new Promise(resolve => setTimeout(resolve, browseCooldownMs - elapsed));
+    }
+    lastBrowseRequestAt = Date.now();
+
+    if (reset) {
+        browseOffset = 0;
+        browseTotal = null;
+        resetBrowseSection();
+    }
+
+    updateBrowseStatus('Loading Spotify browse category...');
+
+    const params = new URLSearchParams();
+    if (categoryId) params.set('categoryId', categoryId);
+    if (categoryUri) params.set('uri', categoryUri);
+    params.set('offset', browseOffset.toString());
+    params.set('limit', browseLimit.toString());
+
+    try {
+        const response = await fetch(`/api/spotify/home-feed/browse/category?${params.toString()}`);
+        if (!response.ok) {
+            throw new Error(`Browse category failed: ${response.status}`);
+        }
+        const data = await response.json();
+        if (!data?.success) {
+            if (data?.error && data.error.toString().includes('rate limited')) {
+                const retryAfter = Number.isFinite(data.retryAfterSeconds) ? data.retryAfterSeconds : 30;
+                updateBrowseStatus(`Spotify rate limited. Retrying in ${retryAfter}s...`);
+                updateLoadMoreVisibility();
+                setTimeout(() => loadBrowseCategory(false), retryAfter * 1000);
+                return;
+            }
+            throw new Error(data?.error || 'Browse category failed');
+        }
+
+        const items = Array.isArray(data.items) ? data.items : [];
+        if (browseRow && items.length > 0) {
+            browseRow.insertAdjacentHTML('beforeend', items.map(renderSpotifyItem).join(''));
+        }
+        browseOffset += items.length;
+        browseTotal = Number.isFinite(data.total) ? data.total : browseTotal;
+
+        if (browseOffset === 0) {
+            const container = document.getElementById('browse-sections');
+            if (container) {
+                container.innerHTML = '<div class="empty-section">No playlists found in this category.</div>';
+            }
+        }
+
+        updateBrowseStatus(`Showing ${browseOffset}${browseTotal ? ` of ${browseTotal}` : ''} playlists`);
+        updateLoadMoreVisibility();
+    } catch (error) {
+        console.error('Failed to load Spotify browse category:', error);
+        const container = document.getElementById('browse-sections');
+        if (container) {
+            container.innerHTML = '<div class="empty-section">Failed to load Spotify browse category</div>';
+        }
+        updateBrowseStatus('Spotify browse category unavailable');
+        updateLoadMoreVisibility();
+    } finally {
+        browseLoading = false;
+    }
+}
+
+function refreshBrowseCategory() {
+    loadBrowseCategory(true);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    resetBrowseSection();
+    if (browseSection && !categoryId && !categoryUri) {
+        loadBrowseSectionCategories();
+        return;
+    }
+    loadBrowseCategory(true);
+
+    document.body.addEventListener('click', (event) => {
+        const card = event.target.closest('.spotify-card');
+        if (!card) return;
+        const uri = card.getAttribute('data-spotify-uri');
+        if (!uri) return;
+        openSpotifyItem({ uri });
+    });
+});
+</script>
+}

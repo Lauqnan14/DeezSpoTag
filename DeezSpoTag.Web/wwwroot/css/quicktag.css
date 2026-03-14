@@ -1,0 +1,1158 @@
+.qt-page {
+    --qt-primary: var(--primary-color);
+    --qt-secondary: var(--secondary-color);
+    --qt-bg: var(--bg-primary);
+    --qt-surface: var(--bg-secondary);
+    --qt-surface-2: var(--bg-tertiary);
+    --qt-muted: var(--text-muted);
+    --qt-muted-2: var(--text-dim);
+    --qt-text: var(--text-primary);
+    --qt-border: var(--border-secondary);
+    --qt-danger: var(--error-color);
+    --qt-left-col: 280px;
+    --qt-right-col: 180px;
+
+    color: var(--qt-text);
+    background:
+        radial-gradient(1200px 420px at 8% -10%, color-mix(in srgb, var(--qt-primary) 18%, transparent), transparent 70%),
+        radial-gradient(960px 520px at 100% 0%, color-mix(in srgb, var(--qt-secondary) 16%, transparent), transparent 72%),
+        linear-gradient(180deg, color-mix(in srgb, var(--qt-bg) 90%, black) 0%, var(--qt-bg) 100%);
+    border-radius: 16px;
+    border: 1px solid var(--qt-border);
+    height: calc(100vh - 110px);
+    min-height: calc(100vh - 110px);
+    max-height: calc(100vh - 110px);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow: hidden;
+}
+
+.qt-shell {
+    display: grid;
+    grid-template-columns: var(--qt-left-col) 0 minmax(0, 1fr) 0 var(--qt-right-col);
+    gap: 0;
+    column-gap: 0;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.qt-left-panel  { margin-right: 5px; }
+
+.qt-resizer {
+    width: 6px;
+    cursor: col-resize;
+    position: relative;
+    z-index: 5;
+    margin: 8px 0;
+    border-radius: 3px;
+    transition: background 0.15s;
+}
+
+.qt-resizer::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 2px;
+    height: 32px;
+    background: var(--qt-border, #333);
+    border-radius: 1px;
+    transition: background 0.15s, height 0.15s;
+}
+
+.qt-resizer:hover::after,
+.qt-resizer.qt-resizer--active::after {
+    background: var(--qt-primary, #6c8ef5);
+    height: 48px;
+}
+
+.qt-resizer:hover,
+.qt-resizer.qt-resizer--active {
+    background: rgba(108, 142, 245, 0.08);
+}
+
+.qt-left-panel,
+.qt-right-panel {
+    min-height: 0;
+    background: color-mix(in srgb, var(--qt-surface) 92%, black);
+    border: 1px solid var(--qt-border);
+    border-radius: 12px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+.qt-main-panel {
+    --qt-track-columns: 260px 190px 190px 190px 170px 120px 120px 190px 84px 84px 84px 84px 84px 320px;
+
+    min-height: 0;
+    margin: 0 5px;
+    background: color-mix(in srgb, var(--qt-surface) 92%, black);
+    border: 1px solid var(--qt-border);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+}
+
+.qt-main-actions {
+    position: absolute;
+    right: 16px;
+    bottom: 16px;
+    z-index: 6;
+    display: flex;
+    justify-content: flex-end;
+    pointer-events: none;
+}
+
+.qt-main-actions .qt-btn {
+    pointer-events: auto;
+    min-width: 148px;
+    box-shadow:
+        0 18px 36px color-mix(in srgb, black 46%, transparent),
+        0 0 0 1px color-mix(in srgb, var(--qt-primary) 16%, transparent);
+}
+
+.qt-panel-title {
+    color: var(--qt-muted);
+    letter-spacing: 0.08em;
+    font-size: 11px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+}
+
+.qt-panel-title-spaced {
+    margin-top: 10px;
+}
+
+.qt-path-row {
+    display: flex;
+    gap: 6px;
+}
+
+.qt-library-row {
+    margin-bottom: 8px;
+}
+
+.qt-input,
+.qt-search-input {
+    width: 100%;
+    background: color-mix(in srgb, var(--qt-surface-2) 82%, black);
+    color: var(--qt-text);
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+    line-height: 1.2;
+    outline: none;
+}
+
+.qt-select {
+    appearance: none;
+    background-image:
+        linear-gradient(45deg, transparent 50%, var(--qt-muted) 50%),
+        linear-gradient(135deg, var(--qt-muted) 50%, transparent 50%);
+    background-position:
+        calc(100% - 16px) calc(50% - 2px),
+        calc(100% - 11px) calc(50% - 2px);
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    padding-right: 28px;
+}
+
+.qt-input:focus,
+.qt-search-input:focus {
+    border-color: color-mix(in srgb, var(--qt-primary), white 20%);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--qt-primary), transparent 30%);
+}
+
+.qt-mt-sm {
+    margin-top: 8px;
+}
+
+.qt-btn {
+    border: 1px solid var(--qt-border);
+    background: color-mix(in srgb, var(--qt-surface-2) 84%, black);
+    color: var(--qt-text);
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-size: 13px;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.qt-btn:hover {
+    background: color-mix(in srgb, var(--qt-surface-2) 90%, var(--qt-primary) 10%);
+    border-color: color-mix(in srgb, var(--qt-primary) 30%, var(--qt-border));
+}
+
+.qt-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.qt-btn-icon {
+    width: 34px;
+    min-width: 34px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.qt-btn-primary {
+    border-color: color-mix(in srgb, var(--qt-primary) 50%, var(--qt-border));
+    background: linear-gradient(180deg, color-mix(in srgb, var(--qt-primary) 86%, white 14%) 0%, var(--qt-primary) 100%);
+    color: var(--bg-primary);
+    font-weight: 700;
+}
+
+.qt-btn-primary:hover {
+    filter: brightness(1.08);
+}
+
+.qt-btn-outline {
+    background: transparent;
+    border-color: var(--qt-border);
+}
+
+.qt-folder-list {
+    margin-top: 8px;
+    background: color-mix(in srgb, var(--qt-surface) 76%, black);
+    border: 1px solid var(--qt-border);
+    border-radius: 10px;
+    overflow: auto;
+    min-height: 180px;
+    max-height: 46vh;
+    flex: 0 1 auto;
+}
+
+.qt-artwork-editor {
+    margin-top: 10px;
+    border: 1px solid var(--qt-border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--qt-surface) 78%, black);
+    padding: 8px;
+    display: grid;
+    gap: 8px;
+    flex: 0 0 auto;
+}
+
+.qt-artwork-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+}
+
+.qt-artwork-preview-wrap {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--qt-border) 84%, transparent);
+    background: color-mix(in srgb, var(--qt-surface-2) 82%, black);
+    overflow: hidden;
+}
+
+.qt-artwork-preview {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: none;
+}
+
+.qt-artwork-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--qt-muted-2);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.qt-artwork-meta {
+    font-size: 12px;
+    line-height: 1.35;
+    color: var(--qt-muted);
+    border: 1px solid color-mix(in srgb, var(--qt-border) 78%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--qt-surface-2) 72%, black);
+    padding: 6px 8px;
+    min-height: 34px;
+}
+
+.qt-artwork-context {
+    font-size: 12px;
+    color: var(--qt-muted);
+    text-align: center;
+}
+
+.qt-artwork-nav {
+    display: grid;
+    gap: 6px;
+}
+
+.qt-artwork-mode {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+}
+
+.qt-artwork-mode .qt-btn.is-selected {
+    background: color-mix(in srgb, var(--qt-primary) 20%, transparent);
+    border-color: color-mix(in srgb, var(--qt-primary) 42%, var(--qt-border));
+    color: var(--qt-text);
+}
+
+.qt-artwork-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+}
+
+.qt-folder-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    font-size: 13px;
+    color: var(--qt-muted);
+    cursor: pointer;
+    border-bottom: 1px solid color-mix(in srgb, var(--qt-border) 72%, transparent);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.qt-folder-item:last-child {
+    border-bottom: none;
+}
+
+.qt-folder-item:hover,
+.qt-folder-item.is-active {
+    background: color-mix(in srgb, var(--qt-primary) 14%, transparent);
+    color: var(--qt-text);
+}
+
+.qt-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px;
+    border-bottom: 1px solid var(--qt-border);
+}
+
+.qt-search-wrap {
+    position: relative;
+    flex: 1;
+}
+
+.qt-search-wrap i {
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--qt-muted-2);
+}
+
+.qt-left-search {
+    flex: 0 0 auto;
+    margin-bottom: 8px;
+}
+
+.qt-search-input {
+    padding-left: 30px;
+}
+
+.qt-sort-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.qt-sort-chip {
+    background: color-mix(in srgb, var(--qt-surface-2) 86%, black);
+    color: var(--qt-muted);
+    border: 1px solid transparent;
+    border-radius: 16px;
+    font-size: 12px;
+    line-height: 1;
+    padding: 6px 9px;
+    cursor: pointer;
+}
+
+.qt-sort-chip:hover {
+    color: var(--qt-text);
+    border-color: var(--qt-border);
+}
+
+.qt-sort-chip.is-active {
+    background: color-mix(in srgb, var(--qt-primary) 20%, transparent);
+    color: var(--qt-text);
+    border-color: color-mix(in srgb, var(--qt-primary) 42%, var(--qt-border));
+}
+
+.qt-stats {
+    font-size: 12px;
+    color: var(--qt-muted);
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--qt-border);
+}
+
+.qt-grid-viewport {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    position: relative;
+    padding-bottom: 84px;
+}
+
+.qt-column-head {
+    display: grid;
+    grid-template-columns: var(--qt-track-columns);
+    gap: 10px;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--qt-border);
+    background: color-mix(in srgb, var(--qt-surface) 90%, black);
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    min-width: max-content;
+}
+
+.qt-column-head > div {
+    color: var(--qt-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.qt-empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    padding: 24px;
+    color: var(--qt-muted);
+}
+
+.qt-empty-title {
+    color: var(--qt-primary);
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 8px;
+}
+
+.qt-empty-subtitle {
+    font-size: 14px;
+    margin-bottom: 18px;
+}
+
+.qt-keybind-hints {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 13px;
+}
+
+.qt-keybind-hints kbd {
+    border: 1px solid color-mix(in srgb, var(--qt-border) 86%, transparent);
+    background: color-mix(in srgb, var(--qt-surface-2) 86%, black);
+    border-radius: 5px;
+    padding: 2px 6px;
+    color: var(--qt-text);
+}
+
+.qt-track-list {
+    padding: 8px;
+    min-width: max-content;
+}
+
+.qt-track {
+    display: grid;
+    grid-template-columns: var(--qt-track-columns);
+    gap: 10px;
+    align-items: center;
+    min-height: 72px;
+    margin-bottom: 8px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--qt-border) 80%, transparent);
+    background: color-mix(in srgb, var(--qt-surface) 88%, transparent);
+    cursor: pointer;
+    transition: all 0.12s ease;
+    position: relative;
+    width: max-content;
+}
+
+.qt-track:hover {
+    background: color-mix(in srgb, var(--qt-surface-2) 84%, var(--qt-primary) 8%);
+}
+
+.qt-track.is-selected {
+    border-color: color-mix(in srgb, var(--qt-primary) 46%, var(--qt-border));
+    background: color-mix(in srgb, var(--qt-primary) 14%, transparent);
+}
+
+.qt-track.is-selected::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    border-radius: 10px 0 0 10px;
+    background: var(--qt-primary);
+}
+
+.qt-track-art {
+    width: 40px;
+    height: 40px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid color-mix(in srgb, var(--qt-border) 80%, transparent);
+    background: color-mix(in srgb, var(--qt-bg) 90%, black);
+}
+
+.qt-track-art--empty {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--qt-muted-2);
+}
+
+.qt-track-title-cell {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.qt-track-title,
+.qt-track-artist,
+.qt-track-album,
+.qt-track-album-artist,
+.qt-track-composer,
+.qt-track-genre,
+.qt-track-year,
+.qt-track-track,
+.qt-track-disc,
+.qt-track-bpm,
+.qt-track-key {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.qt-track-title {
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.qt-track-artist,
+.qt-track-album,
+.qt-track-album-artist,
+.qt-track-composer,
+.qt-track-genre,
+.qt-track-year,
+.qt-track-track,
+.qt-track-disc,
+.qt-track-bpm,
+.qt-track-key {
+    font-size: 13px;
+    color: var(--qt-muted);
+}
+
+.qt-track-mood {
+    justify-self: start;
+}
+
+.qt-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--qt-border) 80%, transparent);
+    padding: 4px 9px;
+    font-size: 12px;
+    color: var(--qt-text);
+    background: color-mix(in srgb, var(--qt-surface-2) 86%, black);
+    cursor: pointer;
+}
+
+.qt-chip.qt-mood-chip {
+    padding: 0.4rem 0.8rem;
+    border-radius: 8px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: none;
+    border: 1px solid rgb(var(--qt-mood-rgb, 0 212 255));
+    color: rgb(var(--qt-mood-rgb, 0 212 255));
+    background: rgb(var(--qt-mood-rgb, 0 212 255) / 0.18);
+}
+
+.qt-chip.is-tag {
+    border-radius: 5px;
+    padding: 3px 8px;
+    margin: 0;
+}
+
+.qt-track-stars {
+    letter-spacing: 2px;
+    color: var(--warning-color);
+    font-size: 16px;
+    white-space: nowrap;
+}
+
+.qt-track-stars button {
+    all: unset;
+    cursor: pointer;
+    opacity: 0.34;
+}
+
+.qt-track-stars button.is-on {
+    opacity: 1;
+}
+
+.qt-track-custom {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+    min-width: 0;
+}
+
+.qt-track-custom .qt-chip {
+    background: color-mix(in srgb, var(--qt-primary) 15%, transparent);
+    border-color: color-mix(in srgb, var(--qt-primary) 30%, var(--qt-border));
+}
+
+.qt-track-empty {
+    font-size: 12px;
+    color: var(--qt-muted-2);
+}
+
+.is-col-hidden {
+    display: none !important;
+}
+
+.qt-inline-edit {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: text;
+    min-height: 1.25rem;
+    padding: 2px 5px;
+    border-radius: 6px;
+    border-bottom: 1px dashed transparent;
+}
+
+.qt-inline-edit:hover {
+    border-bottom-color: color-mix(in srgb, var(--qt-primary) 55%, transparent);
+}
+
+.qt-inline-edit:focus {
+    outline: none;
+    background: color-mix(in srgb, var(--qt-primary) 12%, transparent);
+    border-bottom-color: color-mix(in srgb, var(--qt-primary) 75%, transparent);
+}
+
+.qt-inline-edit.is-empty {
+    cursor: text;
+}
+
+.qt-inline-edit.is-empty:empty::before {
+    content: attr(data-placeholder);
+    color: var(--qt-muted-2);
+}
+
+.qt-right-actions {
+    display: grid;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.qt-column-tools {
+    border: 1px solid var(--qt-border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--qt-surface) 78%, black);
+    padding: 8px;
+    margin-bottom: 8px;
+}
+
+.qt-column-toggles {
+    margin-top: 8px;
+    max-height: 150px;
+    overflow: auto;
+    display: grid;
+    gap: 4px;
+}
+
+.qt-custom-groups {
+    overflow: visible;
+    min-height: auto;
+    border: 1px solid var(--qt-border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--qt-surface) 78%, black);
+    padding: 8px;
+    flex: 0 0 auto;
+}
+
+.qt-custom-group {
+    border: 1px solid color-mix(in srgb, var(--qt-border) 80%, transparent);
+    border-radius: 8px;
+    padding: 8px;
+    margin-bottom: 8px;
+    background: color-mix(in srgb, var(--qt-surface) 90%, transparent);
+}
+
+.qt-custom-group:last-child {
+    margin-bottom: 0;
+}
+
+.qt-custom-title {
+    font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+
+.qt-custom-values {
+    display: grid;
+    gap: 5px;
+}
+
+.qt-custom-add {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.qt-custom-add-input {
+    min-width: 0;
+    padding: 6px 8px;
+    font-size: 12px;
+}
+
+.qt-custom-add-btn {
+    white-space: nowrap;
+    padding: 6px 10px;
+    font-size: 12px;
+}
+
+.qt-tag-sources {
+    border: 1px solid var(--qt-border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--qt-surface) 78%, black);
+    padding: 8px;
+    display: grid;
+    gap: 8px;
+}
+
+.qt-tag-source-row {
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+}
+
+.qt-tag-source-label {
+    font-size: 12px;
+    color: var(--qt-muted);
+}
+
+.qt-tag-source-status {
+    border: 1px solid color-mix(in srgb, var(--qt-border) 78%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--qt-surface-2) 72%, black);
+    color: var(--qt-muted);
+    font-size: 12px;
+    line-height: 1.35;
+    padding: 6px 8px;
+    min-height: 34px;
+}
+
+.qt-tag-source-status.is-warning {
+    color: color-mix(in srgb, #ffb74d 80%, white 20%);
+}
+
+.qt-tag-source-status.is-error {
+    color: color-mix(in srgb, var(--qt-danger) 85%, white 15%);
+}
+
+.qt-tag-source-status.is-success {
+    color: color-mix(in srgb, var(--qt-primary) 80%, white 20%);
+}
+
+.qt-tag-source-results {
+    min-height: 180px;
+    height: 180px;
+    padding: 4px;
+    font-size: 12px;
+}
+
+.qt-tag-source-results option {
+    padding: 4px;
+}
+
+.qt-tag-source-result-meta {
+    color: var(--qt-muted);
+    font-size: 12px;
+    line-height: 1.35;
+    min-height: 18px;
+}
+
+/* Source metadata row — rendered inline in the track grid */
+.qt-source-row {
+    border-color: color-mix(in srgb, var(--qt-primary, #6c8ef5) 30%, var(--qt-border));
+    background: color-mix(in srgb, var(--qt-primary, #6c8ef5) 6%, var(--qt-surface));
+    cursor: default;
+    min-height: 48px;
+    margin-top: -4px;
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+}
+
+.qt-source-row .qt-source-cell {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    overflow: hidden;
+}
+
+.qt-source-row .qt-source-cell > span {
+    flex: 1 1 0%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--qt-text, #ccc);
+    font-size: 13px;
+}
+
+.qt-source-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--qt-primary, #6c8ef5);
+    border: 1px solid color-mix(in srgb, var(--qt-primary, #6c8ef5) 40%, transparent);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--qt-primary, #6c8ef5) 10%, transparent);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.qt-source-apply {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    color: var(--qt-primary, #6c8ef5);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: bold;
+    opacity: 0;
+    transition: opacity 0.12s, border-color 0.12s, background 0.12s;
+}
+
+.qt-source-cell:hover .qt-source-apply,
+.qt-track-title-cell:hover .qt-source-apply {
+    opacity: 1;
+}
+
+.qt-source-apply:hover {
+    border-color: var(--qt-primary, #6c8ef5);
+    background: color-mix(in srgb, var(--qt-primary, #6c8ef5) 14%, transparent);
+}
+
+.qt-source-loading {
+    padding: 10px 12px;
+    color: var(--qt-muted, #888);
+    font-size: 12px;
+}
+
+@keyframes qt-source-flash {
+    0% { background: rgba(108, 245, 142, 0.25); }
+    100% { background: transparent; }
+}
+
+.qt-source-applied {
+    animation: qt-source-flash 0.6s ease-out;
+}
+
+.qt-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--qt-muted);
+    cursor: pointer;
+}
+
+.qt-checkbox input {
+    accent-color: var(--qt-primary);
+}
+
+.qt-checkbox.is-custom span {
+    color: color-mix(in srgb, var(--qt-primary) 88%, white 12%);
+}
+
+.qt-footer {
+    background: color-mix(in srgb, var(--qt-surface) 92%, black);
+    border: 1px solid var(--qt-border);
+    border-radius: 12px;
+    padding: 6px 10px 10px;
+    flex-shrink: 0;
+}
+
+.qt-moods,
+.qt-genres {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+
+.qt-mood,
+.qt-genre {
+    border-radius: 8px;
+    padding: 0.4rem 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: none;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.12s ease;
+}
+
+.qt-genre {
+    border: 1px solid color-mix(in srgb, var(--qt-border) 88%, transparent);
+    color: var(--qt-muted);
+    background: color-mix(in srgb, var(--qt-surface-2) 88%, black);
+}
+
+.qt-genre:hover,
+.qt-genre.is-selected {
+    color: var(--qt-text);
+    background: color-mix(in srgb, var(--qt-primary) 18%, transparent);
+    border-color: color-mix(in srgb, var(--qt-primary) 42%, var(--qt-border));
+}
+
+.qt-mood {
+    border: 1px solid rgb(var(--qt-mood-rgb, 0 212 255));
+    color: rgb(var(--qt-mood-rgb, 0 212 255));
+    background: rgb(var(--qt-mood-rgb, 0 212 255) / 0.16);
+}
+
+.qt-mood:hover,
+.qt-mood.is-selected {
+    background: rgb(var(--qt-mood-rgb, 0 212 255) / 0.24);
+    border-color: rgb(var(--qt-mood-rgb, 0 212 255));
+}
+
+.qt-mood.is-selected,
+.qt-chip.qt-mood-chip.is-selected {
+    box-shadow: 0 0 0 1px rgb(var(--qt-mood-rgb, 0 212 255) / 0.35) inset;
+}
+
+.qt-mood-tone-happy {
+    --qt-mood-rgb: 255 204 0;
+}
+
+.qt-mood-tone-sad {
+    --qt-mood-rgb: 51 102 255;
+}
+
+.qt-mood-tone-bright {
+    --qt-mood-rgb: 58 209 84;
+}
+
+.qt-mood-tone-dark {
+    --qt-mood-rgb: 138 92 246;
+}
+
+.qt-mood-tone-angry {
+    --qt-mood-rgb: 255 68 68;
+}
+
+.qt-mood-tone-relaxed {
+    --qt-mood-rgb: 0 214 186;
+}
+
+.qt-mood-tone-lovely {
+    --qt-mood-rgb: 255 61 154;
+}
+
+.qt-mood-tone-powerful {
+    --qt-mood-rgb: 0 191 255;
+}
+
+.qt-mood-tone-sexy {
+    --qt-mood-rgb: 199 55 255;
+}
+
+.qt-mood-tone-default {
+    --qt-mood-rgb: 0 212 255;
+}
+
+.qt-player {
+    border-top: 1px solid var(--qt-border);
+    padding-top: 8px;
+}
+
+.qt-player-meta {
+    font-size: 13px;
+    color: var(--qt-muted);
+    margin-bottom: 7px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.qt-player-controls {
+    display: grid;
+    grid-template-columns: auto auto auto minmax(180px, 1fr) 100px;
+    gap: 8px;
+    align-items: center;
+}
+
+.qt-player input[type="range"] {
+    width: 100%;
+    accent-color: var(--qt-primary);
+}
+
+.qt-loading,
+.qt-error-inline {
+    font-size: 13px;
+    margin: 8px;
+    color: var(--qt-muted);
+}
+
+.qt-error-inline {
+    color: var(--qt-danger);
+}
+
+@media (max-width: 1500px) {
+    .qt-page {
+        --qt-left-col: 250px;
+        --qt-right-col: 170px;
+    }
+
+    .qt-main-panel {
+        --qt-track-columns: minmax(200px, 2fr) minmax(130px, 1.2fr) minmax(130px, 1.2fr) minmax(130px, 1.1fr) minmax(120px, 1fr) 90px 100px minmax(120px, 1fr) 56px 58px 58px 58px 58px minmax(150px, 1.2fr);
+    }
+}
+
+@media (max-width: 1180px) {
+    .qt-shell {
+        grid-template-columns: 1fr;
+    }
+
+    .qt-resizer {
+        display: none;
+    }
+
+    .qt-left-panel,
+    .qt-right-panel,
+    .qt-main-panel {
+        margin: 0;
+    }
+
+    .qt-left-panel,
+    .qt-right-panel {
+        max-height: 240px;
+        overflow-y: auto;
+    }
+
+    .qt-folder-list {
+        min-height: 120px;
+    }
+
+    .qt-main-panel {
+        --qt-track-columns: minmax(180px, 2fr) minmax(120px, 1.1fr) minmax(120px, 1.1fr) minmax(120px, 1.1fr) minmax(110px, 1fr) 85px 95px minmax(110px, 1fr) 52px 54px 54px 54px 54px minmax(130px, 1fr);
+    }
+
+    .qt-column-head > div,
+    .qt-track-title,
+    .qt-track-artist,
+    .qt-track-album,
+    .qt-track-album-artist,
+    .qt-track-composer,
+    .qt-track-genre,
+    .qt-track-year,
+    .qt-track-track,
+    .qt-track-disc,
+    .qt-track-bpm,
+    .qt-track-key {
+        font-size: 12px;
+    }
+
+    .qt-tag-source-row {
+        grid-template-columns: 1fr;
+        gap: 6px;
+    }
+}
+
+@media (max-width: 700px) {
+    .qt-page {
+        height: auto;
+        min-height: auto;
+        max-height: none;
+        padding: 8px;
+        overflow: visible;
+    }
+
+    .qt-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .qt-player-controls {
+        grid-template-columns: auto auto auto;
+    }
+
+    #qtSeek,
+    #qtVolume {
+        grid-column: 1 / -1;
+    }
+
+    .qt-main-actions {
+        right: 12px;
+        bottom: 12px;
+    }
+
+    .qt-main-actions .qt-btn {
+        min-width: 0;
+    }
+}

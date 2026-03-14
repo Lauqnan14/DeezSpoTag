@@ -1,0 +1,131 @@
+@{
+    ViewData["Title"] = "About - DeezSpoTag";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+
+    var references = new[]
+    {
+        new { Project = "Apple Music Downloader (runv2)", Creators = "Sendy McSenderson and contributors", Url = "https://github.com/zhaarey/apple-music-downloader" },
+        new { Project = "Apple Music API", Creators = "Myp3a and contributors", Url = "https://github.com/Myp3a/apple-music-api" },
+        new { Project = "Deemixrr", Creators = "TheUltimateC0der and contributors", Url = "https://github.com/TheUltimateC0der/Deemixrr" },
+        new { Project = "MusicMover", Creators = "MusicMoveArr and contributors", Url = "https://github.com/MusicMoveArr/MusicMover" },
+        new { Project = "Quality Scanner (whatsmybitrate-main)", Creators = "oren-cohen and contributors", Url = "https://github.com/oren-cohen/whatsmybitrate" },
+        new { Project = "ShazamIO", Creators = "dotX12 and contributors", Url = "https://github.com/dotX12/ShazamIO" },
+        new { Project = "SoulSync", Creators = "Nezreka and contributors", Url = "https://github.com/Nezreka/SoulSync" },
+        new { Project = "SpotiFLAC Desktop", Creators = "afkarxyz and contributors", Url = "https://github.com/afkarxyz/SpotiFLAC" },
+        new { Project = "SPotiFLAC Mobile", Creators = "zarzet and contributors", Url = "https://github.com/zarzet/SpotiFLAC-Mobile" },
+        new { Project = "Wolframe Spotify Canvas", Creators = "squeeeezy and contributors", Url = "https://github.com/squeeeezy/Wolframe-spotify-canvas" },
+        new { Project = "Boomplay Music Downloader", Creators = "OkoyaUsman and contributors", Url = "https://github.com/OkoyaUsman/boomplay" },
+        new { Project = "deemix", Creators = "bambanah and contributors", Url = "https://github.com/bambanah/deemix" },
+        new { Project = "lidify", Creators = "Chevron7Locked and contributors", Url = "https://github.com/Chevron7Locked/lidify" },
+        new { Project = "OneTagger", Creators = "Marekkon5 and contributors", Url = "https://github.com/Marekkon5/onetagger" },
+        new { Project = "MusicBrainz Picard", Creators = "MetaBrainz and contributors", Url = "https://github.com/metabrainz/picard" },
+        new { Project = "puddletag", Creators = "puddletag contributors", Url = "https://github.com/puddletag/puddletag" },
+        new { Project = "Qobuz Artist Discography", Creators = "pawllo01 and contributors", Url = "https://github.com/pawllo01/qobuz-artist-discography" },
+        new { Project = "ReFreezer", Creators = "DJDoubleD and contributors", Url = "https://github.com/DJDoubleD/ReFreezer" },
+        new { Project = "spotizerr-phoenix", Creators = "spotizerrphoenix contributors", Url = "https://lavaforge.org/spotizerrphoenix/spotizerr-phoenix" },
+        new { Project = "syrics-web", Creators = "akashrchandran and contributors", Url = "https://github.com/akashrchandran/syrics-web-react" },
+        new { Project = "ATL .NET", Creators = "Zeugma440 and contributors", Url = "https://github.com/Zeugma440/atldotnet" },
+        new { Project = "tone", Creators = "sandreas and contributors", Url = "https://github.com/sandreas/tone" }
+    };
+}
+
+@section Styles {
+<style>
+.about-page {
+    color: var(--text-primary);
+}
+
+.about-page h1,
+.about-page h2,
+.about-page h3,
+.about-page h4,
+.about-page p,
+.about-page li,
+.about-page td,
+.about-page th {
+    color: var(--text-primary);
+}
+
+.about-page .about-subtle {
+    color: var(--text-muted);
+}
+
+.about-page .about-table {
+    --bs-table-bg: var(--bg-secondary);
+    --bs-table-striped-bg: color-mix(in srgb, var(--bg-darker) 85%, var(--bg-secondary));
+    --bs-table-hover-bg: color-mix(in srgb, var(--primary-color) 10%, var(--bg-secondary));
+    --bs-table-color: var(--text-primary);
+    --bs-table-border-color: var(--border-secondary);
+}
+
+.about-page .about-table thead th {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-secondary);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.about-page .about-table td {
+    vertical-align: middle;
+}
+
+.about-page .about-link {
+    color: var(--primary-color);
+}
+
+.about-page .about-link:hover {
+    color: var(--primary-color);
+    text-decoration: underline;
+}
+</style>
+}
+
+<div class="container-fluid d-flex flex-column gap-4 about-page">
+    <div class="card bg-darker border-secondary">
+        <div class="card-body">
+            <h1 class="welcome-title mb-2">About DeezSpoTag</h1>
+            <p class="about-subtle mb-3">
+                This project was made possible by open-source creators, maintainers, contributors, and the users who test, report issues, and keep these ecosystems alive.
+            </p>
+            <p class="mb-2">
+                Thank you to everyone behind the referenced projects listed below.
+            </p>
+            <p class="mb-0">
+                Attribution includes separate acknowledgements for <strong>SpotiFLAC Desktop</strong> and <strong>SPotiFLAC Mobile</strong> because they are distinct projects/maintainers.
+            </p>
+        </div>
+    </div>
+
+    <div class="card bg-darker border-secondary">
+        <div class="card-body">
+            <h3 class="mb-3">Referenced Projects</h3>
+            <p class="about-subtle mb-3">
+                Upstream repository links are shown below (mostly GitHub, with one non-GitHub upstream).
+            </p>
+            <div class="table-responsive">
+                <table class="table table-dark table-hover about-table mb-0">
+                    <thead>
+                        <tr>
+                            <th scope="col">Project</th>
+                            <th scope="col">Creators / Community</th>
+                            <th scope="col">Repository</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var item in references.OrderBy(x => x.Project, System.StringComparer.OrdinalIgnoreCase))
+                    {
+                        <tr>
+                            <td><strong>@item.Project</strong></td>
+                            <td>@item.Creators</td>
+                            <td><a class="about-link text-decoration-none" href="@item.Url" target="_blank" rel="noopener noreferrer">@item.Url</a></td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+</div>

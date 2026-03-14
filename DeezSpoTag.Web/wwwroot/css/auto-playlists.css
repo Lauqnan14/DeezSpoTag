@@ -1,0 +1,716 @@
+.auto-playlists-page {
+    padding: 28px 32px 48px;
+    color: var(--text-primary);
+}
+
+.auto-playlists-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 24px;
+    margin-bottom: 24px;
+}
+
+.auto-playlists-header h1 {
+    margin: 0 0 8px;
+    font-size: 32px;
+}
+
+.auto-playlists-header p {
+    margin: 0;
+    opacity: 0.7;
+}
+
+.auto-playlists-meta {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    opacity: 0.7;
+}
+
+.media-tab-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 24px;
+    margin-bottom: 24px;
+}
+
+.media-tab-header h2 {
+    margin: 0 0 6px;
+    font-size: 22px;
+    font-weight: 700;
+}
+
+.media-tab-header p {
+    margin: 0;
+    color: var(--text-muted);
+}
+
+.auto-section {
+    margin-top: 28px;
+}
+
+.auto-section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.auto-section-header h2 {
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0 0 6px;
+}
+
+.auto-section-header p {
+    margin: 0;
+    color: var(--text-muted);
+}
+
+.library-playlist-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(var(--art-grid-min), 1fr));
+    gap: 18px;
+}
+
+.library-playlist-card {
+    background: var(--bg-secondary);
+    border: 1px solid color-mix(in srgb, var(--primary-color) 25%, transparent);
+    border-radius: 14px;
+    overflow: hidden;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.library-playlist-card:hover {
+    transform: translateY(-2px);
+    border-color: color-mix(in srgb, var(--primary-color) 45%, transparent);
+}
+
+.library-playlist-cover {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    background: color-mix(in srgb, var(--bg-tertiary) 80%, transparent);
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+}
+
+.library-playlist-cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.library-playlist-body {
+    padding: 14px 16px 16px;
+    display: grid;
+    gap: 8px;
+}
+
+.library-playlist-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.library-playlist-desc {
+    margin: 0;
+    font-size: 13px;
+    opacity: 0.7;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.library-playlist-meta {
+    display: flex;
+    gap: 12px;
+    font-size: 12px;
+    opacity: 0.7;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.auto-tools-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.auto-tools-grid--recommendations {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 248px), 1fr));
+    gap: 16px;
+    align-items: start;
+}
+
+.auto-tool-card {
+    background: var(--bg-tertiary);
+    border-radius: 16px;
+    border: 1px solid var(--border-secondary);
+    padding: 22px;
+    display: grid;
+    gap: 12px;
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.35);
+    transition: all 0.2s ease;
+}
+
+.auto-tool-card:hover {
+    transform: translateY(-1px);
+    border-color: var(--border-primary);
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.45);
+}
+
+.auto-tools-grid--recommendations .recommendation-tool-card {
+    width: auto;
+    min-width: 0;
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.recommendation-tool-cover {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    overflow: hidden;
+    border-bottom: 1px solid color-mix(in srgb, var(--primary-color) 28%, transparent);
+    background: color-mix(in srgb, var(--bg-primary) 80%, transparent);
+}
+
+.recommendation-tool-cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.recommendation-tool-cover-placeholder {
+    width: 100%;
+    height: 100%;
+    display: grid;
+    place-items: center;
+    padding: 10px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.recommendation-tool-body {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    min-width: 0;
+}
+
+.recommendation-tool-card .auto-tool-header {
+    display: grid;
+    gap: 8px;
+    align-items: start;
+}
+
+.recommendation-tool-card .auto-tool-badge {
+    justify-self: start;
+}
+
+.recommendation-tool-card .auto-tool-title {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+    overflow-wrap: anywhere;
+    line-height: 1.3;
+}
+
+.recommendation-tool-card .auto-tool-desc {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+    overflow-wrap: anywhere;
+    line-height: 1.45;
+}
+
+.recommendation-tool-card .auto-tool-meta {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+    flex-wrap: wrap;
+    row-gap: 6px;
+}
+
+.auto-tool-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.auto-tool-title {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.auto-tool-badge {
+    background: color-mix(in srgb, var(--primary-color) 18%, transparent);
+    color: var(--primary-color);
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.auto-tool-meta {
+    display: flex;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.auto-tool-desc {
+    margin: 0;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.auto-playlists-empty {
+    border-radius: 14px;
+    border: 1px dashed color-mix(in srgb, var(--primary-color) 30%, transparent);
+    padding: 28px;
+    color: var(--text-muted);
+}
+
+@media (max-width: 992px) {
+    .auto-playlists-page {
+        padding: 22px 20px 36px;
+    }
+
+    .auto-playlists-header,
+    .media-tab-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .library-playlist-grid {
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    }
+
+    .auto-tool-card {
+        padding: 18px;
+    }
+}
+
+@media (max-width: 768px) {
+    .auto-playlists-page {
+        padding: 22px 18px 32px;
+    }
+
+    .library-playlist-grid {
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
+
+    .auto-tool-meta,
+    .auto-playlists-meta {
+        flex-wrap: wrap;
+    }
+}
+
+@media (max-width: 640px) {
+    .auto-playlists-header,
+    .media-tab-header {
+        gap: 14px;
+    }
+
+    .auto-playlists-header h1 {
+        font-size: 26px;
+    }
+
+    .auto-tool-card {
+        padding: 16px;
+    }
+
+    .auto-tool-actions {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+    }
+
+    .auto-tool-actions .btn {
+        width: 100%;
+    }
+}
+
+.favorites-root {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.favorites-section {
+    border-radius: 16px;
+    border: 1px solid var(--border-primary);
+    background: color-mix(in srgb, var(--bg-secondary) 92%, transparent);
+    padding: 18px;
+}
+
+.favorites-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 14px;
+}
+
+.favorites-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.favorites-icon {
+    width: 22px;
+    height: 22px;
+    object-fit: contain;
+}
+
+.favorites-status {
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.favorites-status.is-connected {
+    color: var(--primary-color);
+}
+
+.favorites-status.is-error {
+    color: var(--accent-warm);
+}
+
+.favorites-subsection {
+    display: grid;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.favorites-subsection-title {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+}
+
+.favorites-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(var(--art-grid-min), 1fr));
+    gap: 16px;
+}
+
+.favorites-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--border-primary) 70%, transparent);
+    background: color-mix(in srgb, var(--bg-tertiary) 94%, transparent);
+    transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.favorites-card:hover {
+    transform: translateY(-2px);
+    border-color: var(--primary-color);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+
+.favorites-cover {
+    width: var(--art-card-size);
+    height: var(--art-card-size);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-primary) 80%, transparent);
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    align-self: center;
+}
+
+.favorites-cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.favorites-body {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.favorites-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text-primary);
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.favorites-subtitle {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.favorites-meta {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.favorites-empty {
+    display: none;
+    border-radius: 12px;
+    border: 1px dashed color-mix(in srgb, var(--primary-color) 30%, transparent);
+    padding: 14px 16px;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.favorites-empty.is-visible {
+    display: block;
+}
+
+@media (max-width: 768px) {
+    .favorites-section {
+        padding: 14px;
+    }
+
+    .favorites-card {
+        grid-template-columns: 48px 1fr;
+    }
+
+    .favorites-cover {
+        width: var(--art-thumb-size);
+        height: var(--art-thumb-size);
+    }
+}
+
+/* Small phone breakpoints */
+@media (max-width: 576px) {
+    .auto-playlists-page {
+        padding: 16px 14px 28px;
+    }
+
+    .library-playlist-grid {
+        grid-template-columns: repeat(auto-fit, minmax(var(--art-grid-min), 1fr));
+        gap: 14px;
+    }
+
+    .library-playlist-body {
+        padding: 10px 12px 12px;
+    }
+
+    .library-playlist-title {
+        font-size: 14px;
+    }
+
+    .library-playlist-desc {
+        font-size: 12px;
+    }
+
+    .favorites-grid {
+        grid-template-columns: repeat(auto-fit, minmax(var(--art-grid-min), 1fr));
+        gap: 12px;
+    }
+
+    .favorites-cover {
+        width: var(--art-card-size);
+        height: var(--art-card-size);
+    }
+}
+
+@media (max-width: 480px) {
+    .auto-playlists-page {
+        padding: 14px 12px 24px;
+    }
+
+    .auto-playlists-header h1 {
+        font-size: 22px;
+    }
+
+    .library-playlist-grid {
+        grid-template-columns: repeat(auto-fit, minmax(var(--art-grid-min), 1fr));
+        gap: 12px;
+    }
+
+    .library-playlist-body {
+        padding: 8px 10px 10px;
+    }
+
+    .library-playlist-title {
+        font-size: 13px;
+    }
+
+    .library-playlist-desc {
+        font-size: 11px;
+    }
+
+    .favorites-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .favorites-card {
+        flex-direction: row;
+        gap: 14px;
+        padding: 12px;
+    }
+
+    .favorites-cover {
+        width: var(--art-thumb-size);
+        height: var(--art-thumb-size);
+        flex-shrink: 0;
+    }
+
+    .favorites-body {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .auto-tool-card {
+        padding: 14px;
+    }
+
+    .auto-tool-title {
+        font-size: 14px;
+    }
+}
+
+@media (max-width: 400px) {
+    .auto-playlists-page {
+        padding: 12px 10px 20px;
+    }
+
+    .auto-playlists-header h1 {
+        font-size: 20px;
+    }
+
+    .auto-playlists-meta {
+        font-size: 11px;
+        gap: 10px;
+    }
+
+    .library-playlist-grid {
+        gap: 10px;
+    }
+
+    .library-playlist-card {
+        border-radius: 10px;
+    }
+
+    .favorites-cover {
+        width: var(--art-thumb-size);
+        height: var(--art-thumb-size);
+    }
+
+    .favorites-title {
+        font-size: 13px;
+    }
+
+    .favorites-subtitle {
+        font-size: 11px;
+    }
+}
+
+@media (max-width: 375px) {
+    .library-playlist-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .auto-section-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .auto-section-header h2 {
+        font-size: 18px;
+    }
+}
+
+@media (max-width: 320px) {
+    .auto-playlists-page {
+        padding: 10px 8px 16px;
+    }
+
+    .auto-playlists-header h1 {
+        font-size: 18px;
+    }
+
+    .library-playlist-body {
+        padding: 6px 8px 8px;
+    }
+
+    .library-playlist-title {
+        font-size: 12px;
+    }
+
+    .auto-tool-card {
+        padding: 10px;
+        border-radius: 12px;
+    }
+
+    .favorites-section {
+        padding: 10px;
+        border-radius: 12px;
+    }
+
+    .favorites-card {
+        padding: 10px;
+    }
+
+    .favorites-cover {
+        width: var(--art-thumb-size);
+        height: var(--art-thumb-size);
+    }
+}

@@ -1,0 +1,84 @@
+@{
+    ViewData["Title"] = "How do I get my own ARL?";
+}
+
+<section class="page-content">
+    <div class="container">
+        <h1>How do I get my own ARL?</h1>
+        <p>
+            Deezer keeps track of login session by using a cookie called ARL.
+            DeezSpoTag uses that cookie to get the metadata that it needs to download the tracks from Deezer.
+            ARLs last for 3 months, after that Deezer asks you to log in again. The same method is used in deezspotag.
+            Following one of the guides below you can get your own account ARL.
+        </p>
+        <p><strong>Use this method only if email and password doesn't work.</strong></p>
+
+        <h2>Chrome (Easy way)</h2>
+        <ol>
+            <li>Open Chrome</li>
+            <li>Go to www.deezer.com and log into your account</li>
+            <li>Click on the little "lock" icon next the URL</li>
+            <li>Click on Cookies &gt; deezer.com &gt; cookies &gt; arl</li>
+            <li>Select the string next to Content, and Copy</li>
+            <li>That's your ARL, now you can use it in the app</li>
+        </ol>
+
+        <h2>Chrome</h2>
+        <ol>
+            <li>Open Chrome</li>
+            <li>Go to www.deezer.com and log into your account</li>
+            <li>After logging in press F12 to open up Developer Tools</li>
+            <li>Go under the Application tab (if you don't see it click the double arrow)</li>
+            <li>Open the cookie dropdown</li>
+            <li>Select www.deezer.com</li>
+            <li>Find the <code>arl</code> cookie (It should be 192 chars long)</li>
+            <li>Make sure only copy the value and not the entire cookie</li>
+            <li>That's your ARL, now you can use it in the app</li>
+        </ol>
+
+        <h2>Firefox</h2>
+        <ol>
+            <li>Open Firefox</li>
+            <li>Go to www.deezer.com and log into your account</li>
+            <li>After logging in press F12 to open up Developer Tools</li>
+            <li>Go under the Storage tab (if you don't see it click the double arrow)</li>
+            <li>Open the cookie dropdown</li>
+            <li>Select www.deezer.com</li>
+            <li>Find the <code>arl</code> cookie (It should be 192 chars long)</li>
+            <li>Make sure only copy the value and not the entire cookie</li>
+            <li>That's your ARL, now you can use it in the app</li>
+        </ol>
+    </div>
+</section>
+
+<style>
+.page-content {
+    padding: 32px 0;
+    color: var(--text-primary);
+}
+
+.page-content h1 {
+    font-size: 32px;
+    margin-bottom: 16px;
+}
+
+.page-content h2 {
+    margin-top: 24px;
+    margin-bottom: 12px;
+}
+
+.page-content p,
+.page-content li {
+    line-height: 1.6;
+}
+
+@@media (max-width: 768px) {
+    .page-content {
+        padding: 20px 0;
+    }
+
+    .page-content h1 {
+        font-size: 26px;
+    }
+}
+</style>

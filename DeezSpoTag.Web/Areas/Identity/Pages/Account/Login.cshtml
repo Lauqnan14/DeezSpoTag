@@ -1,0 +1,39 @@
+@page
+@model DeezSpoTag.Web.Areas.Identity.Pages.Account.LoginModel
+
+@{
+    ViewData["Title"] = "Log in";
+    Layout = "/Views/Shared/_AuthLayout.cshtml";
+}
+
+<div class="auth-center">
+    <form class="col-11 col-sm-9 col-md-6 col-lg-4 col-xl-3 text-center" method="post">
+        <div class="mb-4">
+            <a class="d-inline-flex align-items-center justify-content-center" asp-area="" asp-controller="Home" asp-action="Index">
+                <img src="~/images/logo.svg" class="auth-logo" alt="DeezSpoTag logo" />
+            </a>
+            <h2 class="auth-title mt-3">Sign In</h2>
+        </div>
+        @if (ViewData.ModelState.TryGetValue(string.Empty, out var modelErrorEntry) &&
+             modelErrorEntry?.Errors.Count > 0)
+        {
+            <div class="text-danger small mb-3" role="alert" aria-live="polite">
+                @foreach (var error in modelErrorEntry.Errors)
+                {
+                    <div>@error.ErrorMessage</div>
+                }
+            </div>
+        }
+        <div class="mb-3">
+            <label for="Input_Username" class="visually-hidden">Username</label>
+            <input asp-for="Input.Username" id="Input_Username" type="text" class="app-modal-input" autocomplete="username" />
+            <span asp-validation-for="Input.Username" class="text-danger small"></span>
+        </div>
+        <div class="mb-4">
+            <label for="Input_Password" class="visually-hidden">Password</label>
+            <input asp-for="Input.Password" id="Input_Password" type="password" class="app-modal-input" autocomplete="current-password" />
+            <span asp-validation-for="Input.Password" class="text-danger small"></span>
+        </div>
+        <button class="btn btn-lg btn-primary w-100" type="submit">Let me in</button>
+    </form>
+</div>

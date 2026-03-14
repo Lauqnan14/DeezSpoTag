@@ -1,0 +1,1639 @@
+@{
+    ViewData["Title"] = "AutoTag Flow - DeezSpoTag";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+@section Styles {
+<link rel="stylesheet" href="~/css/autotag.css" asp-append-version="true" />
+<style>
+/* Stage Header */
+.stage-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border-secondary);
+}
+
+.stage-number {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--primary-color);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 14px;
+}
+
+.stage-title {
+    flex: 1;
+}
+
+.stage-title h5 {
+    margin: 0;
+    font-size: 16px;
+}
+
+.stage-title p {
+    margin: 4px 0 0 0;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+/* Maintenance Stats */
+.maintenance-stats {
+    display: flex;
+    gap: 16px;
+    padding: 16px;
+    background: var(--bg-tertiary);
+    border-radius: 8px;
+    margin-top: 20px;
+}
+
+.maintenance-stat {
+    flex: 1;
+    text-align: center;
+}
+
+.maintenance-stat-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.maintenance-stat-value {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+/* Responsive */
+/* Enrichment Source Items */
+.enrichment-source-item {
+    padding: 16px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+}
+
+.enrichment-source-item .source-header {
+    display: flex;
+    align-items: center;
+}
+
+.enrichment-source-item .source-header i {
+    font-size: 18px;
+}
+
+.enrichment-source-item .source-options {
+    padding: 16px;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    border: 1px solid var(--border-secondary);
+}
+
+.manual-tagging-run-actions {
+    width: 100%;
+    justify-content: flex-end;
+}
+
+.enrichment-source-item .form-row-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px 16px;
+}
+
+/* Prevent hard-refresh flash of hidden tabs before shared CSS loads */
+#autotagTabsContent > .tab-pane {
+    display: none;
+}
+
+#autotagTabsContent > .tab-pane.active {
+    display: block;
+}
+
+/* Keep icon glyph names hidden until Material Icons font is ready */
+.autotag-page.material-icons-pending .material-icons {
+    visibility: hidden;
+}
+
+@@media (max-width: 768px) {
+    .enrichment-source-item .form-row-3 {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+</style>
+}
+
+<div class="container-fluid autotag-page material-icons-pending">
+    <div class="autotag-sticky-shell" id="autotagStickyShell">
+        <div class="d-flex justify-content-between align-items-center mb-4 autotag-hero">
+            <div>
+                <h1 class="welcome-title mb-2">AutoTag Flow</h1>
+                <p class="text-muted">Configure the three-stage enrichment pipeline for your music files.</p>
+            </div>
+            <div class="autotag-actions">
+                <a class="action-btn action-btn-sm" href="/AutoTag/QuickTag">Tag Editor</a>
+                <a class="action-btn action-btn-sm" href="/Activities?tab=autotag-status-content">View Status</a>
+                <button type="button" class="action-btn action-btn-sm" id="autotag-reset">Reset</button>
+                <button type="button" class="action-btn action-btn-sm" id="autotag-save">Save Preferences</button>
+                <button type="button" class="action-btn action-btn-sm" id="autotag-stop">Stop AutoTag</button>
+            </div>
+        </div>
+
+        <!-- Tabs Navigation -->
+        <ul class="nav nav-tabs nav-fill mb-4" id="autotagTabs">
+            <li class="nav-item">
+                <button class="nav-link active" id="autotag-profiles-tab" data-bs-toggle="tab" data-bs-target="#autotag-profiles-panel" type="button" role="tab">
+                    <i class="fas fa-layer-group me-2"></i>Profiles
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="autotag-folders-tab" data-bs-toggle="tab" data-bs-target="#autotag-folders-panel" type="button" role="tab">
+                    <i class="fas fa-folder-tree me-2"></i>Folders
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="autotag-platforms-tab" data-bs-toggle="tab" data-bs-target="#autotag-platforms-panel" type="button" role="tab">
+                    <i class="fas fa-globe me-2"></i>Platforms
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="autotag-stage1-tab" data-bs-toggle="tab" data-bs-target="#autotag-stage1-panel" type="button" role="tab">
+                    <i class="fas fa-download me-2"></i>Download
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="autotag-stage2-tab" data-bs-toggle="tab" data-bs-target="#autotag-stage2-panel" type="button" role="tab">
+                    <i class="fas fa-magic me-2"></i>Enrichment
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="autotag-stage3-tab" data-bs-toggle="tab" data-bs-target="#autotag-stage3-panel" type="button" role="tab">
+                    <i class="fas fa-book me-2"></i>Enhancement
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="autotag-technical-tab" data-bs-toggle="tab" data-bs-target="#autotag-technical-panel" type="button" role="tab">
+                    <i class="fas fa-cog me-2"></i>Technical
+                </button>
+            </li>
+        </ul>
+    </div>
+
+    <div class="tab-content" id="autotagTabsContent">
+        <!-- ==================== TAB 1: PROFILES ==================== -->
+        <div class="tab-pane fade show active" id="autotag-profiles-panel" role="tabpanel">
+            <div class="stage-header">
+                <div class="stage-number"><i class="fas fa-layer-group"></i></div>
+                <div class="stage-title">
+                    <h5>Profiles</h5>
+                    <p>Save and load configuration presets for all AutoTag stages</p>
+                </div>
+            </div>
+
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-layer-group me-2"></i>Profile Manager
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-section-title">Profiles</div>
+                        <div class="download-grid download-grid-2">
+                            <div class="form-group">
+                                <label for="autotag-profile-select">Saved profiles</label>
+                                <select id="autotag-profile-select"></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="autotag-profile-name">Profile name</label>
+                                <input type="text" id="autotag-profile-name" placeholder="My Tagging Profile" />
+                            </div>
+                        </div>
+                        <span class="helper">Profiles store tag sources, platform settings, and advanced options for all three stages.</span>
+                        <span class="helper" id="autotag-profile-summary">No active profile loaded.</span>
+                    </div>
+                    <div class="download-section">
+                        <div class="download-section-title">Actions</div>
+                        <div class="autotag-actions">
+                            <button type="button" class="action-btn action-btn-sm" id="autotag-profile-load">Load</button>
+                            <button type="button" class="action-btn action-btn-sm" id="autotag-profile-save">Save</button>
+                            <button type="button" class="action-btn action-btn-sm" id="autotag-profile-copy">Copy</button>
+                            <button type="button" class="btn-danger action-btn action-btn-sm" id="autotag-profile-delete">Delete</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ==================== TAB 2: FOLDERS ==================== -->
+        <div class="tab-pane fade" id="autotag-folders-panel" role="tabpanel">
+            <script>
+                window.LibraryFolderQualityOptions = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
+                    DeezSpoTag.Services.Download.QualityCatalog.GetLibraryFolderQualityOptions()
+                        .Select(option => new { value = option.Value, label = option.Label })
+                        .ToList()));
+            </script>
+
+            <div class="stage-header">
+                <div class="stage-number"><i class="fas fa-folder-open"></i></div>
+                <div class="stage-title">
+                    <h5>Folders</h5>
+                    <p>Configure library folders and organize file structure for downloads</p>
+                </div>
+            </div>
+
+            <!-- Library Folders -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">
+                        <i class="fas fa-folder-open me-2"></i>Library Folders
+                    </h5>
+                    <button type="button" class="action-btn action-btn-sm" id="addFolderBtn">
+                        <i class="fas fa-plus me-1"></i>Add Folder
+                    </button>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-section-title">Overview</div>
+                        <p class="helper mb-3">Destination folders for tagged downloads. These folders power the Library view.</p>
+                        <p class="helper mb-0" id="downloadLocationHint"></p>
+                    </div>
+
+                    <div class="download-section">
+                        <div class="download-section-title">Folders</div>
+                        <!-- Folder List -->
+                        <div class="folder-table-scroll">
+                            <div class="folder-table-header">
+                                <span>Folder</span>
+                                <span>Path</span>
+                                <span>Quality</span>
+                                <span>Profile</span>
+                                <span>Enhancement</span>
+                                <span>Status</span>
+                                <span>Actions</span>
+                            </div>
+                            <div class="folders-list" id="foldersContainer">
+                                <!-- Folders will be rendered here by JS -->
+                            </div>
+                        </div>
+
+                        <!-- Empty State -->
+                        <div class="folders-empty-state" id="foldersEmptyState">
+                            <i class="fas fa-folder-plus"></i>
+                            <p>No library folders configured</p>
+                            <span class="helper">Click "Add Folder" to create your first library folder</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Add/Edit Folder Modal -->
+            <div class="folder-modal" id="folderModal" style="display: none;">
+                <div class="folder-modal-backdrop"></div>
+                <div class="folder-modal-content">
+                    <div class="folder-modal-header">
+                        <h5 id="folderModalTitle">Add Library Folder</h5>
+                        <button type="button" class="folder-modal-close" id="folderModalClose">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="folder-modal-body">
+                        <input type="hidden" id="folderEditId" value="" />
+                        <div class="form-group">
+                            <label for="folderPath">Folder Path</label>
+                            <div class="path-picker-input">
+                                <input id="folderPath" type="text" placeholder="/music/collection" />
+                                <button type="button" id="browseLibraryFolderPath" class="path-picker-btn" title="Browse server folders">
+                                    <i class="fas fa-folder-open"></i>
+                                    <span class="visually-hidden">Browse server folders</span>
+                                </button>
+                            </div>
+                            <span class="helper">Full path to the library folder</span>
+                        </div>
+                        <div class="form-group">
+                            <label for="folderName">Display Name</label>
+                            <input id="folderName" type="text" placeholder="Main Library" />
+                            <span class="helper">A friendly name for this folder</span>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="folderQuality">Preferred Quality</label>
+                                <select id="folderQuality">
+@foreach (var option in DeezSpoTag.Services.Download.QualityCatalog.GetLibraryFolderQualityOptions())
+{
+                                    <option value="@option.Value" selected="@(option.Value == "27")">@option.Label</option>
+}
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="folderConvertEnabled" />
+                                <label for="folderConvertEnabled">Enable conversion override</label>
+                            </div>
+                            <span class="helper">Optional folder-level conversion rule. If format is blank, the global conversion format is used.</span>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="folderConvertFormat">Convert format (optional)</label>
+                                <select id="folderConvertFormat">
+                                    <option value="">Use global/default</option>
+                                    <option value="mp3">MP3</option>
+                                    <option value="aac">AAC (M4A)</option>
+                                    <option value="alac">ALAC (M4A)</option>
+                                    <option value="ogg">OGG</option>
+                                    <option value="opus">OPUS</option>
+                                    <option value="flac">FLAC</option>
+                                    <option value="wav">WAV</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="folderConvertBitrate">Convert bitrate (optional)</label>
+                                <select id="folderConvertBitrate">
+                                    <option value="">Use global/default</option>
+                                    <option value="AUTO">Auto</option>
+                                    <option value="64">64 kbps</option>
+                                    <option value="96">96 kbps</option>
+                                    <option value="128">128 kbps</option>
+                                    <option value="160">160 kbps</option>
+                                    <option value="192">192 kbps</option>
+                                    <option value="256">256 kbps</option>
+                                    <option value="320">320 kbps</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <div class="form-label">Folder Roles</div>
+                            <div class="checkbox-group folder-role-options">
+                                <label>
+                                    <input type="checkbox" id="folderAtmosDestination" />
+                                    Set as default Atmos destination
+                                </label>
+                                <label>
+                                    <input type="checkbox" id="folderVideoDestination" />
+                                    Set as Video downloads folder
+                                </label>
+                                <label>
+                                    <input type="checkbox" id="folderPodcastDestination" />
+                                    Set as Podcast downloads folder
+                                </label>
+                            </div>
+                            <span class="helper">These update Atmos secondary destination plus global Video/Podcast download locations.</span>
+                        </div>
+                        <div class="folder-modal-note" role="note" aria-live="polite">
+                            <i class="fas fa-circle-info" aria-hidden="true"></i>
+                            <span>AutoTag activation is managed from the folder list and requires an assigned profile.</span>
+                        </div>
+                    </div>
+                    <div class="folder-modal-footer">
+                        <button type="button" class="action-btn action-btn-sm action-btn-secondary" id="folderModalCancel">Cancel</button>
+                        <button type="button" class="action-btn action-btn-sm" id="saveFolder">
+                            <i class="fas fa-floppy-disk" aria-hidden="true"></i>
+                            Save Folder
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Folder Structure -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-sitemap me-2"></i>Folder Structure
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-section-title">Overview</div>
+                        <p class="helper mb-0">Configure how files are organized within library folders. Applied on download, then re-applied after Enrichment.</p>
+                    </div>
+
+                    <div class="download-section">
+                        <div class="download-section-title">Structure</div>
+                        <!-- Structure Options Grid -->
+                        <div class="folder-structure-grid">
+                            <!-- Artist Folder -->
+                            <div class="folder-structure-item">
+                                <div class="folder-structure-toggle">
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" id="createArtistFolder" />
+                                        <label for="createArtistFolder">
+                                            <i class="fas fa-user me-2"></i>Artist Folder
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="folder-structure-template" id="artistNameGroup">
+                                    <input type="text" id="artistNameTemplate" placeholder="%artist%" />
+                                </div>
+                            </div>
+
+                            <!-- Album Folder -->
+                            <div class="folder-structure-item">
+                                <div class="folder-structure-toggle">
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" id="createAlbumFolder" />
+                                        <label for="createAlbumFolder">
+                                            <i class="fas fa-compact-disc me-2"></i>Album Folder
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="folder-structure-template" id="albumNameGroup">
+                                    <input type="text" id="albumNameTemplate" placeholder="%album%" />
+                                </div>
+                            </div>
+
+                            <!-- Playlist Folder -->
+                            <div class="folder-structure-item">
+                                <div class="folder-structure-toggle">
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" id="createPlaylistFolder" />
+                                        <label for="createPlaylistFolder">
+                                            <i class="fas fa-list me-2"></i>Playlist Folder
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="folder-structure-template" id="playlistNameGroup">
+                                    <input type="text" id="playlistNameTemplate" placeholder="%playlist%" />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="download-section">
+                        <div class="download-section-title">Extras</div>
+                        <!-- Additional Options -->
+                        <div class="folder-structure-extras">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="createCDFolder" />
+                                <label for="createCDFolder">Create CD/Disc subfolder for multi-disc albums</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="createStructurePlaylist" />
+                                <label for="createStructurePlaylist">Apply folder structure to playlists</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="createSingleFolder" />
+                                <label for="createSingleFolder">Create separate folder for singles</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="download-section">
+                        <div class="download-section-title">Character Replacement</div>
+                        <!-- Character Replacement -->
+                        <div class="folder-structure-char">
+                            <div class="form-group">
+                                <label for="illegalCharacterReplacer">
+                                    <i class="fas fa-exclamation-triangle me-2"></i>Illegal Character Replacement
+                                </label>
+                                <input type="text" id="illegalCharacterReplacer" value="_" style="max-width: 120px;" />
+                                <span class="helper">Characters like \ / : * ? " &lt; &gt; | will be replaced with this</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="download-section">
+                        <div class="download-section-title">Preview</div>
+                        <!-- Preview -->
+                        <div class="folder-structure-preview">
+                            <div class="form-label"><i class="fas fa-eye me-2"></i>Preview</div>
+                            <div class="folder-preview-tree" id="folderPreviewTree">
+                                <div class="folder-preview-line"><i class="fas fa-folder text-warning"></i> <span>Library</span></div>
+                                <div class="folder-preview-line indent-1"><i class="fas fa-folder text-warning"></i> <span id="previewArtist">Artist Name</span></div>
+                                <div class="folder-preview-line indent-2"><i class="fas fa-folder text-warning"></i> <span id="previewAlbum">Album Name</span></div>
+                                <div class="folder-preview-line indent-3"><i class="fas fa-file-audio text-info"></i> <span>01 - Track.flac</span></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Multi-Artist Handling -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-users me-2"></i>Multi-Artist Handling
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-section-title">Primary Rule</div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="singleAlbumArtist" checked />
+                            <label for="singleAlbumArtist">Single Album Artist (use main artist)</label>
+                        </div>
+                        <span class="helper" id="singleAlbumArtistBehaviorHint">
+                            Enabled: Album Artist is written as one main artist and folders follow the main artist.
+                        </span>
+                    </div>
+                    <div class="download-section" id="autotag-multi-artist-dependent">
+                        <div class="download-section-title">Other Handling</div>
+                        <div class="download-grid download-grid-4">
+                            <div class="form-group">
+                                <label for="multiArtistSeparator">Multi Artist Separator</label>
+                                <select id="multiArtistSeparator">
+                                    <option value="default">Default</option>
+                                    <option value=", ">, (comma)</option>
+                                    <option value=" / ">/ (slash)</option>
+                                    <option value=" & ">& (ampersand)</option>
+                                </select>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="albumVariousArtists" checked />
+                                <label for="albumVariousArtists">Album Various Artists</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="removeDuplicateArtists" checked />
+                                <label for="removeDuplicateArtists">Remove Duplicate Artists</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- File Templates -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-font me-2"></i>File Templates
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-section-title">Track Templates</div>
+                        <div class="download-grid download-grid-2">
+                            <div class="form-group">
+                                <label for="autotag-trackname-template">Track name template</label>
+                                <input type="text" id="autotag-trackname-template" placeholder="%artist% - %title%" />
+                                <details class="template-variables" data-template-variables data-variables="track" data-input="autotag-trackname-template">
+                                    <summary>Available track variables</summary>
+                                    <div class="template-variables-content">
+                                        <div class="template-variables-list"></div>
+                                    </div>
+                                </details>
+                            </div>
+                            <div class="form-group">
+                                <label for="autotag-album-trackname-template">Album track name template</label>
+                                <input type="text" id="autotag-album-trackname-template" placeholder="%tracknumber% - %title%" />
+                                <details class="template-variables" data-template-variables data-variables="album" data-input="autotag-album-trackname-template">
+                                    <summary>Available album track variables</summary>
+                                    <div class="template-variables-content">
+                                        <div class="template-variables-list"></div>
+                                    </div>
+                                </details>
+                            </div>
+                            <div class="form-group">
+                                <label for="autotag-playlist-trackname-template">Playlist track name template</label>
+                                <input type="text" id="autotag-playlist-trackname-template" placeholder="%artist% - %title%" />
+                                <details class="template-variables" data-template-variables data-variables="playlist" data-input="autotag-playlist-trackname-template">
+                                    <summary>Available playlist track variables</summary>
+                                    <div class="template-variables-content">
+                                        <div class="template-variables-list"></div>
+                                    </div>
+                                </details>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ==================== TAB 3: DOWNLOAD ==================== -->
+        <div class="tab-pane fade" id="autotag-stage1-panel" role="tabpanel">
+            <div class="stage-header">
+                <div class="stage-number"><i class="fas fa-download"></i></div>
+                <div class="stage-title">
+                    <h5>Download</h5>
+                    <p>Tags written immediately when files are downloaded from streaming services</p>
+                </div>
+            </div>
+
+            <!-- Tag Sources -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-sort-amount-down me-2"></i>Tag Sources
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="tag-sources-grid">
+                        <!-- Deezer Source -->
+                        <div class="enrichment-source-item">
+                            <div class="switch-row">
+                                <div class="source-header">
+                                    <i class="fab fa-deezer me-2" style="color: #feaa2d;"></i>
+                                    <label class="switch-label" for="metadataSourceDeezerEnabled">Deezer</label>
+                                </div>
+                                <span class="switch">
+                                    <input type="checkbox" id="metadataSourceDeezerEnabled" checked />
+                                    <span class="slider"></span>
+                                </span>
+                            </div>
+                        </div>
+
+                        <!-- Spotify Source -->
+                        <div class="enrichment-source-item">
+                            <div class="switch-row">
+                                <div class="source-header">
+                                    <i class="fab fa-spotify me-2" style="color: #1db954;"></i>
+                                    <label class="switch-label" for="metadataSourceSpotifyEnabled">Spotify</label>
+                                </div>
+                                <span class="switch">
+                                    <input type="checkbox" id="metadataSourceSpotifyEnabled" />
+                                    <span class="slider"></span>
+                                </span>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+
+            <!-- Download Tags -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-download me-2"></i>Download Tags
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="tags-toolbar">
+                        <button class="action-btn action-btn-sm" data-tags-action="enable" data-tags-target="downloadTags">Enable all</button>
+                        <button class="action-btn action-btn-sm" data-tags-action="disable" data-tags-target="downloadTags">Disable all</button>
+                        <button class="action-btn action-btn-sm" data-tags-action="toggle" data-tags-target="downloadTags">Toggle</button>
+                    </div>
+                    <span class="helper" id="download-tags-helper">Select which tags to write during the download process. These are fetched from the download engine or metadata source.</span>
+                    <div class="tags-grid download-tags-grid" id="autotag-download-tags"></div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ==================== TAB 4: ENRICHMENT ==================== -->
+        <div class="tab-pane fade" id="autotag-stage2-panel" role="tabpanel">
+            <div class="stage-header">
+                <div class="stage-number"><i class="fas fa-magic"></i></div>
+                <div class="stage-title">
+                    <h5>Enrichment</h5>
+                    <p>Cross-platform metadata and audio analysis applied before moving to Library</p>
+                    <p class="helper mb-0">Manual for existing files. Downloads trigger AutoTag 15 seconds after the last file completes. Failed downloads are skipped; retries pause while AutoTag runs.</p>
+                </div>
+            </div>
+
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-tags me-2"></i>Enrichment Tags
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-section-title">
+                            Tags
+                            <span class="autotag-tooltip-icon ms-1" title="Tags to fetch from enrichment platforms. These supplement or fill gaps left by download tags." aria-label="Tags to fetch from enrichment platforms. These supplement or fill gaps left by download tags.">
+                                <i class="fas fa-question-circle"></i>
+                            </span>
+                        </div>
+                        <div class="tags-toolbar">
+                            <button class="action-btn action-btn-sm" data-tags-action="enable" data-tags-target="tags">Enable all</button>
+                            <button class="action-btn action-btn-sm" data-tags-action="disable" data-tags-target="tags">Disable all</button>
+                            <button class="action-btn action-btn-sm" data-tags-action="toggle" data-tags-target="tags">Toggle</button>
+                        </div>
+                        <div class="tags-grid enrichment-tags-grid" id="autotag-tags"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-play-circle me-2"></i>Manual Tagging
+                        <span class="autotag-tooltip-icon ms-1" title="Uses Download/Staging folder as source." aria-label="Uses Download/Staging folder as source.">
+                            <i class="fas fa-question-circle"></i>
+                        </span>
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-grid download-grid-2">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="autotag-move-success" />
+                                <label for="autotag-move-success">Move successfully tagged files</label>
+                            </div>
+                            <div class="form-group" id="autotag-move-success-library-group">
+                                <label for="autotag-move-success-library">
+                                    Success library destination
+                                    <span class="autotag-tooltip-icon ms-1" title="Choose where enrichment output is moved after tagging." aria-label="Choose where enrichment output is moved after tagging.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <select id="autotag-move-success-library">
+                                    <option value="">Select library folder</option>
+                                </select>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="autotag-move-failed" />
+                                <label for="autotag-move-failed">Move failed/conflict files to separate folder</label>
+                            </div>
+                            <div class="form-group" id="autotag-move-failed-group">
+                                <label for="autotag-move-failed-path">Failed/Conflict files destination path</label>
+                                <div class="path-picker-input">
+                                    <input type="text" id="autotag-move-failed-path" placeholder="/path/to/conflict" />
+                                    <button type="button" id="browseAutoTagFailedPath" class="path-picker-btn" title="Browse server folders">
+                                        <i class="fas fa-folder-open"></i>
+                                        <span class="visually-hidden">Browse server folders</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="autotag-actions manual-tagging-run-actions mt-3">
+                        <button class="action-btn action-btn-sm" id="autotag-start">Run External AutoTag</button>
+                    </div>
+                    <span class="helper mt-2 d-none" id="autotag-external-start-status"></span>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ==================== TAB 5: ENHANCEMENT ==================== -->
+        <div class="tab-pane fade" id="autotag-stage3-panel" role="tabpanel">
+            <div class="stage-header">
+                <div class="stage-number"><i class="fas fa-layer-group"></i></div>
+                <div class="stage-title">
+                    <h5>Enhancement</h5>
+                    <p>Periodic enrichment and organization for files already in your Library</p>
+                </div>
+            </div>
+
+            <!-- Gap Filling -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-fill-drip me-2"></i>Gap Filling
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-section-title">Tags</div>
+                        <p class="helper mb-3">Automatically fill missing metadata for library files. Uses the same tag options as Enrichment.</p>
+                        <div class="tags-toolbar">
+                            <button class="action-btn action-btn-sm" data-tags-action="enable" data-tags-target="gapFillTags">Enable all</button>
+                            <button class="action-btn action-btn-sm" data-tags-action="disable" data-tags-target="gapFillTags">Disable all</button>
+                            <button class="action-btn action-btn-sm" data-tags-action="toggle" data-tags-target="gapFillTags">Toggle</button>
+                        </div>
+                        <div class="tags-grid gap-fill-tags-grid" id="gap-fill-tags"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Folder Uniformity -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-folder-tree me-2"></i>Folder Uniformity
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-grid download-grid-2">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="enforceFolderStructure" checked />
+                                <label for="enforceFolderStructure">Enforce folder structure on all library files</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="moveMisplacedFiles" checked />
+                                <label for="moveMisplacedFiles">Move misplaced files to correct location</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="renameFilesToTemplate" />
+                                <label for="renameFilesToTemplate">Rename files to match template</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="removeEmptyFolders" />
+                                <label for="removeEmptyFolders">Remove empty folders after reorganization</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="dryRunMode" />
+                                <label for="dryRunMode">Dry-run mode (preview changes without applying)</label>
+                            </div>
+                        </div>
+                        <div class="download-grid download-grid-3 mt-3">
+                            <div class="form-group">
+                                <label for="enhancementFolderUniformityFolder">Library folder scope</label>
+                                <div class="dropdown-select" id="enhancementFolderUniformityFolderDropdown">
+                                    <button type="button" class="dropdown-trigger" id="enhancementFolderUniformityFolderTrigger">All enabled music folders</button>
+                                    <div class="dropdown-menu" id="enhancementFolderUniformityFolderMenu">
+                                        <p class="artwork-order-hint">Leave everything unchecked to use all enabled music folders.</p>
+                                        <div id="enhancementFolderUniformityFolderOptions" class="dropdown-options"></div>
+                                    </div>
+                                </div>
+                                <input type="hidden" id="enhancementFolderUniformityFolder" value="" />
+                            </div>
+                        </div>
+                        <span class="helper" id="folderUniformityStatus">Runs the organizer on selected library scope using these options.</span>
+                        <div class="enhancement-action-row">
+                            <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runFolderUniformity">Run Folder Uniformity</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Quality Checks -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-check-circle me-2"></i>Quality Checks
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-grid download-grid-3">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="flagDuplicates" />
+                                <label for="flagDuplicates">
+                                    Flag duplicate tracks
+                                    <span class="autotag-tooltip-icon ms-1" title="Duplicate Cleaner moves duplicates to %duplicates%." aria-label="Duplicate Cleaner moves duplicates to %duplicates%.">
+                                        <i class="fas fa-info-circle"></i>
+                                    </span>
+                                </label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="flagMissingTags" />
+                                <label for="flagMissingTags">Run missing metadata scan (Quality Scanner)</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="flagMismatchedMetadata" />
+                                <label for="flagMismatchedMetadata">Run mismatched folder/tag scan (Quality Scanner)</label>
+                            </div>
+                        </div>
+                        <div class="download-grid download-grid-3 mt-3">
+                            <div class="form-group">
+                                <label for="enhancementQualityFolder">Library folder scope</label>
+                                <div class="dropdown-select" id="enhancementQualityFolderDropdown">
+                                    <button type="button" class="dropdown-trigger" id="enhancementQualityFolderTrigger">All enabled music folders</button>
+                                    <div class="dropdown-menu" id="enhancementQualityFolderMenu">
+                                        <p class="artwork-order-hint">Leave everything unchecked to use all enabled music folders.</p>
+                                        <div id="enhancementQualityFolderOptions" class="dropdown-options"></div>
+                                    </div>
+                                </div>
+                                <input type="hidden" id="enhancementQualityFolder" value="" />
+                            </div>
+                            <div class="form-group">
+                                <label for="enhancementTechnicalProfilesTrigger">Technical Profiles</label>
+                                <div class="dropdown-select" id="enhancementTechnicalProfilesDropdown">
+                                    <button type="button" class="dropdown-trigger" id="enhancementTechnicalProfilesTrigger">All profiles</button>
+                                    <div class="dropdown-menu" id="enhancementTechnicalProfilesMenu">
+                                        <p class="artwork-order-hint">Leave everything unchecked to allow all technical profiles.</p>
+                                        <div class="fallback-source-toggles technical-profile-options" id="enhancementTechnicalProfilesOptions">
+                                            <div class="helper">Loading technical profiles...</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="checkbox-group align-self-end">
+                                <input type="checkbox" id="enhancementQueueAtmosAlternatives" />
+                                <label for="enhancementQueueAtmosAlternatives">Queue Atmos alternatives</label>
+                            </div>
+                            <div class="checkbox-group align-self-end">
+                                <input type="checkbox" id="enhancementQueueLyricsRefresh" />
+                                <label for="enhancementQueueLyricsRefresh">Queue lyrics refresh</label>
+                            </div>
+                        </div>
+                        <span class="helper" id="enhancementTechnicalProfilesStatus">Profiles are filtered by the selected library folder and scope.</span>
+                        <span class="helper" id="enhancementQualityChecksStatus"></span>
+                        <div class="enhancement-action-row">
+                            <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runEnhancementQualityChecks">Run Selected Checks</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Cover Maintenance -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-image me-2"></i>Library Cover Maintenance
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-grid download-grid-2">
+                            <div class="form-group">
+                                <label for="enhancementCoverFolder">Library folder scope</label>
+                                <div class="dropdown-select" id="enhancementCoverFolderDropdown">
+                                    <button type="button" class="dropdown-trigger" id="enhancementCoverFolderTrigger">All enabled music folders</button>
+                                    <div class="dropdown-menu" id="enhancementCoverFolderMenu">
+                                        <p class="artwork-order-hint">Leave everything unchecked to use all enabled music folders.</p>
+                                        <div class="fallback-source-toggles" id="enhancementCoverFolderOptions"></div>
+                                    </div>
+                                    <input type="hidden" id="enhancementCoverFolder" value="" />
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="coverWorkerCount">Workers</label>
+                                <input type="number" id="coverWorkerCount" value="8" min="1" max="32" />
+                                <span class="helper">Parallel album workers (1-32)</span>
+                            </div>
+                            <div class="checkbox-group align-self-end">
+                                <input type="checkbox" id="replaceMissingCovers" />
+                                <label for="replaceMissingCovers">Replace missing embedded covers</label>
+                            </div>
+                            <div class="checkbox-group align-self-end">
+                                <input type="checkbox" id="syncExternalCovers" />
+                                <label for="syncExternalCovers">Sync external cover.jpg with embedded</label>
+                            </div>
+                            <div class="checkbox-group align-self-end">
+                                <input type="checkbox" id="queueAnimatedArtwork" />
+                                <label for="queueAnimatedArtwork">Queue animated artwork</label>
+                            </div>
+                        </div>
+                        <span class="helper" id="coverMaintenanceStatus">Choose folder scope, then run cover maintenance.</span>
+                        <div class="enhancement-action-row">
+                            <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runCoverMaintenance">Run Cover Maintenance</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ==================== TAB 6: PLATFORMS ==================== -->
+        <div class="tab-pane fade" id="autotag-platforms-panel" role="tabpanel">
+            <div class="stage-header">
+                <div class="stage-number"><i class="fas fa-globe"></i></div>
+                <div class="stage-title">
+                    <h5>Platforms</h5>
+                    <p>Configure metadata source platforms for enrichment and library maintenance</p>
+                </div>
+            </div>
+
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-globe me-2"></i>Platforms
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-section-title">Priority Order</div>
+                        <p class="helper mb-3">Enable and prioritize metadata platforms used for Enrichment and Enhancement.</p>
+                        <div class="platforms-list" id="autotag-platforms"></div>
+                        <span class="helper">Drag enabled platforms to reorder. Disabled platforms show a dim, non-draggable handle.</span>
+                        <span class="helper">Platform-specific preferences are configured in the Technical tab.</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ==================== TAB 7: TECHNICAL ==================== -->
+        <div class="tab-pane fade" id="autotag-technical-panel" role="tabpanel">
+            <div class="stage-header">
+                <div class="stage-number"><i class="fas fa-cog"></i></div>
+                <div class="stage-title">
+                    <h5>Technical</h5>
+                    <p>Advanced settings for tag formats, text processing, and file handling</p>
+                </div>
+            </div>
+
+            <!-- Platform-specific Configuration -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-cogs me-2"></i>Platform-specific Configuration
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-section-title">Platform Preferences</div>
+                        <p class="helper mb-3">All platform-specific settings are shown here, grouped by platform, regardless of enable/login state.</p>
+                        <div id="autotag-platform-options" class="autotag-platform-options"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Artwork Settings (All Stages) -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-image me-2"></i>Artwork Settings (All Stages)
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-grid download-grid-4">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="saveArtwork" checked />
+                                <label for="saveArtwork">Save artwork files</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="saveAnimatedArtwork" />
+                                <label for="saveAnimatedArtwork">Enable animated artwork (Apple)</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="dlAlbumcoverForPlaylist" />
+                                <label for="dlAlbumcoverForPlaylist">Download playlist covers</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="saveArtworkArtist" />
+                                <label for="saveArtworkArtist">Save artist artwork</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="download-section">
+                        <div class="download-section-title">Naming & Formats</div>
+                        <div class="download-grid download-grid-4">
+                            <div class="form-group" id="coverImageTemplateGroup">
+                                <label for="coverImageTemplate">
+                                    Album cover filename template
+                                    <span class="autotag-tooltip-icon ms-1" title="Applied when Save artwork files is enabled." aria-label="Applied when Save artwork files is enabled.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <input type="text" id="coverImageTemplate" placeholder="cover" />
+                            </div>
+                            <div class="form-group" id="artistImageTemplateGroup">
+                                <label for="artistImageTemplate">
+                                    Artist artwork filename template
+                                    <span class="autotag-tooltip-icon ms-1" title="Applied when Save artist artwork is enabled." aria-label="Applied when Save artist artwork is enabled.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <input type="text" id="artistImageTemplate" placeholder="folder" />
+                            </div>
+                            <div class="form-group">
+                                <label for="localArtworkFormat">
+                                    Artwork output format
+                                    <span class="autotag-tooltip-icon ms-1" title="Applies to saved artwork files and embedded artwork format." aria-label="Applies to saved artwork files and embedded artwork format.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <select id="localArtworkFormat">
+                                    <option value="jpg">JPEG</option>
+                                    <option value="png">PNG</option>
+                                    <option value="jpg,png">Both</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="embedMaxQualityCover" class="visually-hidden">Embed max quality artwork</label>
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="embedMaxQualityCover" checked />
+                                    <label for="embedMaxQualityCover">Embed source-max artwork in tags</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="download-section">
+                        <div class="download-section-title">Source Priority</div>
+                        <div class="download-grid download-grid-3 source-priority-row">
+                            <div class="checkbox-group align-self-start source-priority-toggle">
+                                <input type="checkbox" id="artworkFallbackEnabled" checked />
+                                <label for="artworkFallbackEnabled">Enable album artwork fallback</label>
+                            </div>
+                            <div class="form-group source-priority-order" id="artworkFallbackOrderGroup">
+                                <label for="artworkFallbackOrder">
+                                    Album artwork source order
+                                    <span class="autotag-tooltip-icon ms-1" title="Set independently from metadata source. Applies to album cover selection in all stages." aria-label="Set independently from metadata source. Applies to album cover selection in all stages.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <div class="dropdown-select artwork-order-dropdown" id="artworkFallbackOrderDropdown">
+                                    <button type="button" class="dropdown-trigger" id="artworkFallbackOrderTrigger">iTunes → Deezer → Spotify</button>
+                                    <div class="dropdown-menu artwork-order-menu" id="artworkFallbackOrderMenu">
+                                        <p class="artwork-order-hint">Drag to reorder. First item is the preferred source.</p>
+                                        <ul class="artwork-order-list" id="artworkFallbackOrderList">
+                                            <li class="artwork-order-item" draggable="true" data-value="apple">
+                                                <span>iTunes</span>
+                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
+                                            </li>
+                                            <li class="artwork-order-item" draggable="true" data-value="deezer">
+                                                <span>Deezer</span>
+                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
+                                            </li>
+                                            <li class="artwork-order-item" draggable="true" data-value="spotify">
+                                                <span>Spotify</span>
+                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
+                                            </li>
+                                        </ul>
+                                        <p class="artwork-order-hint">Add or remove sources</p>
+                                        <div class="fallback-source-toggles" id="artworkFallbackSources">
+                                            <label class="fallback-source-toggle"><input type="checkbox" data-value="apple" checked /> iTunes</label>
+                                            <label class="fallback-source-toggle"><input type="checkbox" data-value="deezer" checked /> Deezer</label>
+                                            <label class="fallback-source-toggle"><input type="checkbox" data-value="spotify" checked /> Spotify</label>
+                                        </div>
+                                    </div>
+                                </div>
+                                <input type="hidden" id="artworkFallbackOrder" value="apple,deezer,spotify" />
+                            </div>
+                            <div class="form-group source-priority-default" id="artworkDefaultSourceGroup">
+                                <label for="artworkDefaultSource">
+                                    Default album artwork source
+                                    <span class="autotag-tooltip-icon ms-1" title="Used only when album artwork fallback is disabled." aria-label="Used only when album artwork fallback is disabled.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <select id="artworkDefaultSource">
+                                    <option value="apple">iTunes</option>
+                                    <option value="deezer">Deezer</option>
+                                    <option value="spotify">Spotify</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="download-grid download-grid-3 mt-3 source-priority-row">
+                            <div class="checkbox-group align-self-start source-priority-toggle">
+                                <input type="checkbox" id="artistArtworkFallbackEnabled" checked />
+                                <label for="artistArtworkFallbackEnabled">Enable artist artwork fallback</label>
+                            </div>
+                            <div class="form-group source-priority-order" id="artistArtworkFallbackOrderGroup">
+                                <label for="artistArtworkFallbackOrder">
+                                    Artist artwork source order
+                                    <span class="autotag-tooltip-icon ms-1" title="Independent from album artwork source order. Applies to artist image selection in all stages." aria-label="Independent from album artwork source order. Applies to artist image selection in all stages.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <div class="dropdown-select artwork-order-dropdown" id="artistArtworkFallbackOrderDropdown">
+                                    <button type="button" class="dropdown-trigger" id="artistArtworkFallbackOrderTrigger">iTunes → Deezer → Spotify</button>
+                                    <div class="dropdown-menu artwork-order-menu" id="artistArtworkFallbackOrderMenu">
+                                        <p class="artwork-order-hint">Drag to reorder. First item is the preferred source.</p>
+                                        <ul class="artwork-order-list" id="artistArtworkFallbackOrderList">
+                                            <li class="artwork-order-item" draggable="true" data-value="apple">
+                                                <span>iTunes</span>
+                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
+                                            </li>
+                                            <li class="artwork-order-item" draggable="true" data-value="deezer">
+                                                <span>Deezer</span>
+                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
+                                            </li>
+                                            <li class="artwork-order-item" draggable="true" data-value="spotify">
+                                                <span>Spotify</span>
+                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
+                                            </li>
+                                        </ul>
+                                        <p class="artwork-order-hint">Add or remove sources</p>
+                                        <div class="fallback-source-toggles" id="artistArtworkFallbackSources">
+                                            <label class="fallback-source-toggle"><input type="checkbox" data-value="apple" checked /> iTunes</label>
+                                            <label class="fallback-source-toggle"><input type="checkbox" data-value="deezer" checked /> Deezer</label>
+                                            <label class="fallback-source-toggle"><input type="checkbox" data-value="spotify" checked /> Spotify</label>
+                                        </div>
+                                    </div>
+                                </div>
+                                <input type="hidden" id="artistArtworkFallbackOrder" value="apple,deezer,spotify" />
+                            </div>
+                            <div class="form-group source-priority-default" id="artistArtworkDefaultSourceGroup">
+                                <label for="artistArtworkDefaultSource">
+                                    Default artist artwork source
+                                    <span class="autotag-tooltip-icon ms-1" title="Used only when artist artwork fallback is disabled." aria-label="Used only when artist artwork fallback is disabled.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <select id="artistArtworkDefaultSource">
+                                    <option value="apple">iTunes</option>
+                                    <option value="deezer">Deezer</option>
+                                    <option value="spotify">Spotify</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="download-section">
+                        <div class="download-section-title">Encoding</div>
+                        <div class="download-grid download-grid-2">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="coverDescriptionUTF8" />
+                                <label for="coverDescriptionUTF8">Cover description UTF-8</label>
+                            </div>
+                            <div class="form-group">
+                                <label for="jpegImageQuality">JPEG image quality</label>
+                                <input type="number" id="jpegImageQuality" value="90" min="1" max="100" />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Lyrics Settings (All Stages) -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-microphone me-2"></i>Lyrics Settings (All Stages)
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-grid download-grid-2">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="saveLyrics" />
+                                <label for="saveLyrics">Download Lyrics</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="embedLyrics" checked />
+                                <label for="embedLyrics">Embed lyrics in audio tags</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="download-section">
+                        <div class="download-section-title">Source Priority</div>
+                        <div class="download-grid download-grid-3 source-priority-row">
+                            <div class="form-group source-priority-default" id="lyricsDefaultSourceGroup">
+                                <label for="lyricsDefaultSource">
+                                    Default lyrics source
+                                    <span class="autotag-tooltip-icon ms-1" title="Used only when lyrics fallback is disabled." aria-label="Used only when lyrics fallback is disabled.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <select id="lyricsDefaultSource">
+                                    <option value="apple">Apple Music</option>
+                                    <option value="deezer">Deezer</option>
+                                    <option value="spotify">Spotify</option>
+                                    <option value="lrclib">LRCLIB</option>
+                                </select>
+                            </div>
+                            <div class="checkbox-group align-self-start source-priority-toggle">
+                                <input type="checkbox" id="lyricsFallbackEnabled" checked />
+                                <label for="lyricsFallbackEnabled">Enable lyrics fallback</label>
+                            </div>
+                            <div class="form-group source-priority-order" id="lyricsFallbackOrderGroup">
+                                <label for="lyricsFallbackOrder">
+                                    Lyrics source order
+                                    <span class="autotag-tooltip-icon ms-1" title="Set this independently from metadata source. It applies to all stages." aria-label="Set this independently from metadata source. It applies to all stages.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <div class="dropdown-select lyrics-order-dropdown" id="lyricsFallbackOrderDropdown">
+                                    <button type="button" class="dropdown-trigger" id="lyricsFallbackOrderTrigger">apple → deezer → spotify → lrclib</button>
+                                    <div class="dropdown-menu lyrics-order-menu" id="lyricsFallbackOrderMenu">
+                                        <div class="lyrics-order-hint">Drag to reorder. First item is the preferred source.</div>
+                                        <ul class="lyrics-order-list" id="lyricsFallbackOrderList">
+                                            <li class="lyrics-order-item" draggable="true" data-value="apple">
+                                                <span>Apple Music</span>
+                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
+                                            </li>
+                                            <li class="lyrics-order-item" draggable="true" data-value="deezer">
+                                                <span>Deezer</span>
+                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
+                                            </li>
+                                            <li class="lyrics-order-item" draggable="true" data-value="spotify">
+                                                <span>Spotify</span>
+                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
+                                            </li>
+                                            <li class="lyrics-order-item" draggable="true" data-value="lrclib">
+                                                <span>LRCLIB</span>
+                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
+                                            </li>
+                                        </ul>
+                                        <div class="lyrics-order-hint">Add or remove sources</div>
+                                        <div class="fallback-source-toggles" id="lyricsFallbackSources">
+                                            <label class="fallback-source-toggle"><input type="checkbox" data-value="apple" checked /> Apple Music</label>
+                                            <label class="fallback-source-toggle"><input type="checkbox" data-value="deezer" checked /> Deezer</label>
+                                            <label class="fallback-source-toggle"><input type="checkbox" data-value="spotify" checked /> Spotify</label>
+                                            <label class="fallback-source-toggle"><input type="checkbox" data-value="lrclib" checked /> LRCLIB</label>
+                                        </div>
+                                    </div>
+                                    <input type="hidden" id="lyricsFallbackOrder" value="apple,deezer,spotify,lrclib" />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="download-section">
+                        <div class="download-section-title">Format</div>
+                        <div class="download-grid download-grid-2">
+                            <div class="form-group">
+                                <label for="lrcType">
+                                    Lyrics type
+                                    <span class="autotag-tooltip-icon ms-1" title="When both .lrc and .ttml are saved, unsynced .txt lyrics are skipped." aria-label="When both .lrc and .ttml are saved, unsynced .txt lyrics are skipped.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <div class="dropdown-select lyrics-type-dropdown" id="lyricsTypeDropdown">
+                                    <button type="button" class="dropdown-trigger" id="lyricsTypeTrigger">Synced Lyrics, Time Synced Lyrics, Unsynced Lyrics</button>
+                                    <div class="dropdown-menu lyrics-type-menu" id="lyricsTypeMenu">
+                                        <div class="lyrics-order-hint">Select one or more types</div>
+                                        <ul class="lyrics-type-list" id="lyricsTypeList">
+                                            <li class="lyrics-type-item">
+                                                <label>
+                                                    <input type="checkbox" data-value="lyrics" checked />
+                                                    <span>Synced Lyrics</span>
+                                                </label>
+                                            </li>
+                                            <li class="lyrics-type-item">
+                                                <label>
+                                                    <input type="checkbox" data-value="syllable-lyrics" checked />
+                                                    <span>Time Synced Lyrics</span>
+                                                </label>
+                                            </li>
+                                            <li class="lyrics-type-item">
+                                                <label>
+                                                    <input type="checkbox" data-value="unsynced-lyrics" checked />
+                                                    <span>Unsynced Lyrics</span>
+                                                </label>
+                                            </li>
+                                        </ul>
+                                    </div>
+                                    <input type="hidden" id="lrcType" value="lyrics,syllable-lyrics,unsynced-lyrics" />
+                                </div>
+                            </div>
+                            <div class="form-group" id="embedLyricsFormatGroup" style="display: none;">
+                                <label for="lrcFormat">Embedded lyrics format</label>
+                                <select id="lrcFormat">
+                                    <option value="both">LRC + TTML</option>
+                                    <option value="lrc">LRC</option>
+                                    <option value="ttml">TTML</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ID3 & Format Settings -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-file-audio me-2"></i>ID3 & Format Settings
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-section-title">Version</div>
+                        <div class="download-grid download-grid-3">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="autotag-id3v24" />
+                                <label for="autotag-id3v24">Use ID3v2.4 (vs ID3v2.3)</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="saveID3v1" checked />
+                                <label for="saveID3v1">Save ID3v1</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="useNullSeparator" />
+                                <label for="useNullSeparator">Use Null Separator</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="download-section">
+                        <div class="download-section-title">Separators</div>
+                        <div class="download-grid download-grid-3">
+                            <div class="form-group">
+                                <label for="autotag-sep-id3">ID3 Separator</label>
+                                <input type="text" id="autotag-sep-id3" value=", " placeholder="ID3 separator" />
+                            </div>
+                            <div class="form-group">
+                                <label for="autotag-sep-vorbis">Vorbis Separator</label>
+                                <input type="text" id="autotag-sep-vorbis" placeholder="(optional)" />
+                            </div>
+                            <div class="form-group">
+                                <label for="autotag-sep-mp4">MP4 Separator</label>
+                                <input type="text" id="autotag-sep-mp4" value=", " placeholder="MP4 separator" />
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="download-section">
+                        <div class="download-section-title">Language</div>
+                        <div class="form-group">
+                            <label for="autotag-id3-lang">ID3 COMM language (3 letters)</label>
+                            <input type="text" id="autotag-id3-lang" placeholder="eng" maxlength="3" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Text Processing -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-font me-2"></i>Text Processing
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-section-title">Casing</div>
+                        <div class="download-grid download-grid-2">
+                            <div class="form-group">
+                                <label for="titleCasing">Title Casing</label>
+                                <select id="titleCasing">
+                                    <option value="nothing">Nothing</option>
+                                    <option value="capitalize">Capitalize</option>
+                                    <option value="uppercase">UPPERCASE</option>
+                                    <option value="lowercase">lowercase</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="artistCasing">Artist Casing</label>
+                                <select id="artistCasing">
+                                    <option value="nothing">Nothing</option>
+                                    <option value="capitalize">Capitalize</option>
+                                    <option value="uppercase">UPPERCASE</option>
+                                    <option value="lowercase">lowercase</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="download-section">
+                        <div class="download-section-title">Formatting</div>
+                        <div class="download-grid download-grid-2">
+                            <div class="form-group">
+                                <label for="dateFormat">Date Format</label>
+                                <select id="dateFormat">
+                                    <option value="Y-M-D">Year-Month-Day</option>
+                                    <option value="D-M-Y">Day-Month-Year</option>
+                                    <option value="M-D-Y">Month-Day-Year</option>
+                                    <option value="Y">Year only</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="featuredToTitle">Featured To Title</label>
+                                <select id="featuredToTitle">
+                                    <option value="0">No</option>
+                                    <option value="1">Move to title</option>
+                                    <option value="2">Copy to title</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="download-section">
+                        <div class="download-section-title">Options</div>
+                        <div class="download-grid download-grid-3">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="removeAlbumVersion" />
+                                <label for="removeAlbumVersion">Remove Album Version</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="autotag-short-title" />
+                                <label for="autotag-short-title">Use short title (Beatport/Traxsource)</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="autotag-capitalize-genres" />
+                                <label for="autotag-capitalize-genres">Capitalize genres</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="download-section">
+                        <div class="download-section-title">Cleanup</div>
+                        <div class="form-group">
+                            <label for="autotag-title-regex">Title cleanup regex</label>
+                            <input type="text" id="autotag-title-regex" placeholder="e.g. \s*\(.*?\)\s*$" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Style/Genre Handling -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-music me-2"></i>Style/Genre Handling
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-section-title">Handling</div>
+                        <div class="form-group">
+                            <label for="autotag-styles-options">Style/Genre handling</label>
+                            <select id="autotag-styles-options">
+                                <option value="default">Default (all)</option>
+                                <option value="onlyGenres">Only genres</option>
+                                <option value="onlyStyles">Only styles</option>
+                                <option value="mergeToGenres">Merge to Genre</option>
+                                <option value="mergeToStyles">Merge to Style</option>
+                                <option value="stylesToGenre">Write Style to Genre</option>
+                                <option value="genresToStyle">Write Genre to Style</option>
+                                <option value="customTag">Write Style to Custom tag</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group" id="autotag-styles-custom-group" style="display: none;">
+                            <div class="form-label">Custom tag (style)</div>
+                            <div class="download-grid download-grid-3">
+                                <input type="text" id="autotag-styles-id3" placeholder="ID3" />
+                                <input type="text" id="autotag-styles-vorbis" placeholder="Vorbis" />
+                                <input type="text" id="autotag-styles-mp4" placeholder="MP4" />
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="download-section">
+                        <div class="download-section-title">Options</div>
+                        <div class="download-grid download-grid-2">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="autotag-merge-genres" />
+                                <label
+                                    for="autotag-merge-genres"
+                                    title="Merge genres/styles applies only when Genre overwrite is enabled in Tag Overwrite Settings.">
+                                    Merge genres/styles instead of overwrite
+                                </label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="autotag-camelot" />
+                                <label for="autotag-camelot">Use Camelot key notation</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tag Overwrite Settings -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-edit me-2"></i>Tag Overwrite Settings
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-section-title">Overwrite</div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="autotag-overwrite" />
+                            <label for="autotag-overwrite">Overwrite existing tags</label>
+                        </div>
+                    </div>
+                    <div class="download-section">
+                        <div class="download-section-title">Tags</div>
+                        <div class="form-group" id="autotag-overwrite-tags-group">
+                            <div class="form-label">Overwrite only these tags</div>
+                            <div class="tags-grid gap-fill-tags-grid" id="autotag-overwrite-tags"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<script>
+(function revealAutoTagMaterialIconsWhenReady() {
+    const page = document.querySelector('.autotag-page.material-icons-pending');
+    if (!page) {
+        return;
+    }
+
+    const reveal = () => page.classList.remove('material-icons-pending');
+    if (!document.fonts || typeof document.fonts.load !== 'function') {
+        reveal();
+        return;
+    }
+
+    if (document.fonts.check('1em "Material Icons"')) {
+        reveal();
+        return;
+    }
+
+    document.fonts.load('1em "Material Icons"')
+        .then(() => {
+            if (document.fonts.check('1em "Material Icons"')) {
+                reveal();
+            }
+        })
+        .catch(() => {
+            // Keep hidden rather than flashing icon-name fallback text.
+        });
+})();
+
+// Pipeline tab activation helper
+function activatePipelineTab(tabId) {
+    const tab = document.getElementById(tabId);
+    if (tab) {
+        const bsTab = new bootstrap.Tab(tab);
+        bsTab.show();
+    }
+}
+
+// Update pipeline visual when tabs change
+document.addEventListener('DOMContentLoaded', function() {
+    // Toggle visibility helpers
+    document.getElementById('autotag-move-failed')?.addEventListener('change', function() {
+        document.getElementById('autotag-move-failed-group').style.display = this.checked ? 'block' : 'none';
+    });
+
+    // Enrichment timing radio buttons
+    document.querySelectorAll('input[name="enrichmentTiming"]').forEach(radio => {
+        radio.addEventListener('change', function() {
+            document.getElementById('enrichmentScheduleGroup').style.display =
+                this.value === 'scheduled' ? 'block' : 'none';
+        });
+    });
+
+    // Download source toggles
+
+});
+</script>
+
+@section Scripts {
+<script src="~/js/library.js" asp-append-version="true"></script>
+<script src="~/js/autotag.js" asp-append-version="true"></script>
+}

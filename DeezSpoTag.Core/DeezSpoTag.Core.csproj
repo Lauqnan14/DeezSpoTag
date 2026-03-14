@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyTitle>DeezSpoTag Core</AssemblyTitle>
+    <AssemblyDescription>DeezSpoTag Domain Models and Business Logic</AssemblyDescription>
+    <Copyright>Copyright © 2025</Copyright>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.3" />
+  </ItemGroup>
+
+  
+</Project>

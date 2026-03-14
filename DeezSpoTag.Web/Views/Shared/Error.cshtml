@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Error - DeezSpoTag</title>
+    <link href="~/css/themes.css" rel="stylesheet" asp-append-version="true">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .error-container {
+            text-align: center;
+            max-width: 600px;
+        }
+        .error-title {
+            font-size: 48px;
+            font-weight: 700;
+            margin-bottom: 20px;
+            color: var(--primary-color);
+        }
+        .error-message {
+            font-size: 18px;
+            margin-bottom: 30px;
+            color: var(--text-muted);
+        }
+        .error-details {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 30px;
+            text-align: left;
+            font-family: monospace;
+            font-size: 14px;
+            color: var(--error-color);
+        }
+        .back-button {
+            background: var(--primary-color);
+            color: var(--text-primary);
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+            text-decoration: none;
+            display: inline-block;
+            transition: background 0.2s ease;
+        }
+        .back-button:hover {
+            background: var(--primary-hover);
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <h1 class="error-title">Oops!</h1>
+        <p class="error-message">Something went wrong. We're sorry for the inconvenience.</p>
+        
+        @if (ViewData["ErrorMessage"] != null)
+        {
+            <div class="error-details">
+                @ViewData["ErrorMessage"]
+            </div>
+        }
+        
+        <a href="/" class="back-button">Go Back Home</a>
+    </div>
+</body>
+</html>

@@ -1,0 +1,784 @@
+@{
+    ViewData["Title"] = "Statistics - DeezSpoTag";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+@section Styles {
+<style>
+.statistics-container {
+    display: flex;
+    flex-direction: column;
+    color: var(--text-primary);
+}
+
+.statistics-container .card,
+.statistics-container .card-body,
+.statistics-container .card-body p,
+.statistics-container .card-body span,
+.statistics-container .card-body label {
+    color: var(--text-primary);
+}
+
+.statistics-container .card-body .text-muted {
+    color: var(--text-muted);
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 20px;
+}
+
+.stat-card {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 12px;
+    padding: 18px;
+}
+
+.stat-card h4 {
+    margin: 0 0 8px;
+    font-size: 14px;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+.stat-card .stat-value {
+    font-size: 24px;
+    color: var(--text-primary);
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+
+.stat-card .stat-subtitle {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin: 0;
+}
+
+.library-breakdown {
+    margin-top: 24px;
+}
+
+.library-breakdown-title {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 12px;
+}
+
+.library-breakdown-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+}
+
+.library-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 14px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.library-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+}
+
+.library-card-header .library-name {
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.library-card-header .library-id {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.library-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.library-type-badge {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    border-radius: 999px;
+    padding: 3px 8px;
+    border: 1px solid transparent;
+}
+
+.library-type-badge.music {
+    color: #5dd4ff;
+    background: rgba(93, 212, 255, 0.14);
+    border-color: rgba(93, 212, 255, 0.35);
+}
+
+.library-type-badge.video {
+    color: #ffb86b;
+    background: rgba(255, 184, 107, 0.14);
+    border-color: rgba(255, 184, 107, 0.35);
+}
+
+.library-type-badge.podcast {
+    color: #9ef2b6;
+    background: rgba(158, 242, 182, 0.14);
+    border-color: rgba(158, 242, 182, 0.35);
+}
+
+.library-type-badge.mixed {
+    color: #f6f09b;
+    background: rgba(246, 240, 155, 0.14);
+    border-color: rgba(246, 240, 155, 0.35);
+}
+
+.library-type-badge.empty {
+    color: var(--text-muted);
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.08);
+}
+
+.library-card-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 12px;
+}
+
+.library-card-stats .library-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.library-card-stats .library-stat .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+}
+
+.library-card-stats .library-stat .value {
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+}
+
+.detail-panel {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 14px;
+    padding: 16px;
+}
+
+.detail-panel h4 {
+    margin: 0 0 12px;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.breakdown-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.breakdown-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 13px;
+}
+
+.breakdown-item .label {
+    color: var(--text-muted);
+}
+
+.breakdown-item .value {
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+@@media (max-width: 900px) {
+    .stats-grid {
+        gap: 16px;
+    }
+
+    .library-breakdown-grid {
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    }
+
+    .library-card,
+    .stat-card {
+        padding: 14px;
+    }
+}
+
+@@media (max-width: 640px) {
+    .statistics-container {
+        padding: 0 8px;
+    }
+
+    .stats-grid,
+    .library-breakdown-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .library-card-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .library-card-stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+</style>
+}
+
+<div class="container-fluid statistics-container">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h1 class="welcome-title mb-2">Statistics</h1>
+            <p class="text-muted">System health and live operational stats.</p>
+        </div>
+    </div>
+
+    <div class="card bg-darker border-secondary">
+        <div class="card-body">
+            <h3 class="mb-4">System Statistics</h3>
+            <div class="stats-grid">
+                <div class="stat-card card">
+                    <h4>Active Downloads</h4>
+                    <div class="stat-value" id="stat-active-downloads">0</div>
+                    <p class="stat-subtitle">Currently downloading</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Finished Downloads</h4>
+                    <div class="stat-value" id="stat-finished-downloads">0</div>
+                    <p class="stat-subtitle">Completed today</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Download Speed</h4>
+                    <div class="stat-value" id="stat-download-speed">0 KB/s</div>
+                    <p class="stat-subtitle">Combined speed</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Active Syncs</h4>
+                    <div class="stat-value" id="stat-active-syncs">0</div>
+                    <p class="stat-subtitle">Playlists syncing</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>System Uptime</h4>
+                    <div class="stat-value" id="stat-uptime">0m</div>
+                    <p class="stat-subtitle">Application runtime</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Memory Usage</h4>
+                    <div class="stat-value" id="stat-memory">--</div>
+                    <p class="stat-subtitle">Current usage</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card bg-darker border-secondary mt-4">
+        <div class="card-body">
+            <h3 class="mb-4">Library Statistics</h3>
+            <div class="stats-grid">
+                <div class="stat-card card">
+                    <h4>Total Music Artists</h4>
+                    <div class="stat-value" id="stat-library-artists">0</div>
+                    <p class="stat-subtitle">Across music folders</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Total Music Albums</h4>
+                    <div class="stat-value" id="stat-library-albums">0</div>
+                    <p class="stat-subtitle">Across music folders</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Total Music Tracks</h4>
+                    <div class="stat-value" id="stat-library-tracks">0</div>
+                    <p class="stat-subtitle">Across music folders</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Total Videos</h4>
+                    <div class="stat-value" id="stat-library-videos">0</div>
+                    <p class="stat-subtitle">Video destination content</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Total Podcast Episodes</h4>
+                    <div class="stat-value" id="stat-library-podcasts">0</div>
+                    <p class="stat-subtitle">Podcast destination content</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Last Library Scan</h4>
+                    <div class="stat-value" id="stat-library-last-scan">Never</div>
+                    <p class="stat-subtitle">Most recent database update</p>
+                </div>
+            </div>
+
+            <div class="library-breakdown">
+                <h4 class="library-breakdown-title">Per-Library Breakdown</h4>
+                <div id="library-breakdown-grid" class="library-breakdown-grid"></div>
+            </div>
+
+            <div class="library-breakdown">
+                <h4 class="library-breakdown-title">Scan Detail</h4>
+                <div class="stats-grid">
+                    <div class="stat-card card">
+                        <h4>Tracks With Lyrics</h4>
+                        <div class="stat-value" id="stat-library-lyrics">0</div>
+                        <p class="stat-subtitle">Embedded or sidecar lyrics detected</p>
+                    </div>
+                    <div class="stat-card card">
+                        <h4>Synced Lyrics</h4>
+                        <div class="stat-value" id="stat-library-lyrics-synced">0</div>
+                        <p class="stat-subtitle">Tracks with synced lyrics available</p>
+                    </div>
+                    <div class="stat-card card">
+                        <h4>Albums With Animated Artwork</h4>
+                        <div class="stat-value" id="stat-library-animated-artwork">0</div>
+                        <p class="stat-subtitle">Album folders with Apple animated artwork files</p>
+                    </div>
+                </div>
+
+                <div class="detail-grid mt-4">
+                    <div class="detail-panel">
+                        <h4>Lyrics Types</h4>
+                        <div id="library-detail-lyrics-types" class="breakdown-list">
+                            <div class="text-muted">No data yet.</div>
+                        </div>
+                    </div>
+                    <div class="detail-panel">
+                        <h4>Top Technical Profiles</h4>
+                        <div id="library-detail-technical-profiles" class="breakdown-list">
+                            <div class="text-muted">No data yet.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card bg-darker border-secondary mt-4">
+        <div class="card-body">
+            <h3 class="mb-4">Enhancement Maintenance Statistics</h3>
+            <h4 class="library-breakdown-title">Quality Scanner</h4>
+            <div class="stats-grid">
+                <div class="stat-card card">
+                    <h4>Status</h4>
+                    <div class="stat-value" id="stat-enh-quality-status">Idle</div>
+                    <p class="stat-subtitle" id="stat-enh-quality-phase">Ready to scan</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Processed</h4>
+                    <div class="stat-value" id="stat-enh-quality-processed">0</div>
+                    <p class="stat-subtitle">Tracks processed</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Quality Met</h4>
+                    <div class="stat-value" id="stat-enh-quality-met">0</div>
+                    <p class="stat-subtitle">Tracks meeting threshold</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Low Quality</h4>
+                    <div class="stat-value" id="stat-enh-quality-low">0</div>
+                    <p class="stat-subtitle">Tracks below threshold</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Matched</h4>
+                    <div class="stat-value" id="stat-enh-quality-matched">0</div>
+                    <p class="stat-subtitle">Matched for upgrade checks</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Upgrades Queued</h4>
+                    <div class="stat-value" id="stat-enh-quality-upgrades">0</div>
+                    <p class="stat-subtitle">Quality upgrades queued</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Atmos Queued</h4>
+                    <div class="stat-value" id="stat-enh-quality-atmos">0</div>
+                    <p class="stat-subtitle">Atmos alternatives queued</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Duplicates Skipped</h4>
+                    <div class="stat-value" id="stat-enh-quality-dup-skipped">0</div>
+                    <p class="stat-subtitle">Queue duplicates prevented</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>No Match</h4>
+                    <div class="stat-value" id="stat-enh-quality-missed">0</div>
+                    <p class="stat-subtitle">No source match found</p>
+                </div>
+            </div>
+
+            <h4 class="library-breakdown-title mt-4">Duplicate Cleaner (Last Run)</h4>
+            <div class="stats-grid">
+                <div class="stat-card card">
+                    <h4>Status</h4>
+                    <div class="stat-value" id="stat-enh-dup-status">Idle</div>
+                    <p class="stat-subtitle" id="stat-enh-dup-last-run">No run yet</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Files Scanned</h4>
+                    <div class="stat-value" id="stat-enh-dup-scanned">0</div>
+                    <p class="stat-subtitle">Audio files checked</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Duplicates Found</h4>
+                    <div class="stat-value" id="stat-enh-dup-found">0</div>
+                    <p class="stat-subtitle">Duplicate files detected</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Deleted/Moved</h4>
+                    <div class="stat-value" id="stat-enh-dup-deleted">0</div>
+                    <p class="stat-subtitle">Files removed from original location</p>
+                </div>
+                <div class="stat-card card">
+                    <h4>Space Freed</h4>
+                    <div class="stat-value" id="stat-enh-dup-space">0 B</div>
+                    <p class="stat-subtitle">Recovered disk space</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+let systemStatsTimer = null;
+let libraryStatsTimer = null;
+
+function formatBytes(bytes) {
+    const value = Number(bytes ?? 0);
+    if (!Number.isFinite(value) || value <= 0) {
+        return '0 B';
+    }
+
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let size = value;
+    let index = 0;
+    while (size >= 1024 && index < units.length - 1) {
+        size /= 1024;
+        index++;
+    }
+
+    return `${size.toFixed(size >= 100 || index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function formatDateTime(value, fallback = 'Never') {
+    if (!value) {
+        return fallback;
+    }
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return fallback;
+    }
+
+    return date.toLocaleString();
+}
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
+function normalizeLibraryContentType(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'video' || normalized === 'podcast' || normalized === 'mixed' || normalized === 'empty') {
+        return normalized;
+    }
+    return 'music';
+}
+
+function getLibraryTypeLabel(contentType) {
+    switch (contentType) {
+        case 'video':
+            return 'Video';
+        case 'podcast':
+            return 'Podcast';
+        case 'mixed':
+            return 'Mixed';
+        case 'empty':
+            return 'Empty';
+        default:
+            return 'Music';
+    }
+}
+
+function getLibraryMetricSet(library, contentType) {
+    const folderMix = library?.folderMix || {};
+    const unmetQuality = Number(library?.unmetQuality ?? 0);
+    const noLyrics = Number(library?.noLyrics ?? 0);
+    switch (contentType) {
+        case 'video':
+            return [
+                { label: 'Videos', value: Number(library?.videoItems ?? 0) },
+                { label: 'Video Folders', value: Number(folderMix?.video ?? 0) },
+                { label: 'Music Tracks', value: Number(library?.tracks ?? 0) }
+            ];
+        case 'podcast':
+            return [
+                { label: 'Episodes', value: Number(library?.podcastItems ?? 0) },
+                { label: 'Podcast Folders', value: Number(folderMix?.podcast ?? 0) },
+                { label: 'Music Tracks', value: Number(library?.tracks ?? 0) }
+            ];
+        case 'mixed':
+            return [
+                { label: 'Music Tracks', value: Number(library?.tracks ?? 0) },
+                { label: 'Videos', value: Number(library?.videoItems ?? 0) },
+                { label: 'Episodes', value: Number(library?.podcastItems ?? 0) },
+                { label: 'Unmet Quality', value: unmetQuality },
+                { label: 'No Lyrics', value: noLyrics }
+            ];
+        default:
+            return [
+                { label: 'Artists', value: Number(library?.artists ?? 0) },
+                { label: 'Albums', value: Number(library?.albums ?? 0) },
+                { label: 'Tracks', value: Number(library?.tracks ?? 0) },
+                { label: 'Unmet Quality', value: unmetQuality },
+                { label: 'No Lyrics', value: noLyrics }
+            ];
+    }
+}
+
+function applyEnhancementStats(payload) {
+    const qualityStatus = document.getElementById('stat-enh-quality-status');
+    const qualityPhase = document.getElementById('stat-enh-quality-phase');
+    const qualityProcessed = document.getElementById('stat-enh-quality-processed');
+    const qualityMet = document.getElementById('stat-enh-quality-met');
+    const qualityLow = document.getElementById('stat-enh-quality-low');
+    const qualityMatched = document.getElementById('stat-enh-quality-matched');
+    const qualityUpgrades = document.getElementById('stat-enh-quality-upgrades');
+    const qualityAtmos = document.getElementById('stat-enh-quality-atmos');
+    const qualityDuplicateSkipped = document.getElementById('stat-enh-quality-dup-skipped');
+    const qualityMissed = document.getElementById('stat-enh-quality-missed');
+    const duplicateStatus = document.getElementById('stat-enh-dup-status');
+    const duplicateLastRun = document.getElementById('stat-enh-dup-last-run');
+    const duplicateScanned = document.getElementById('stat-enh-dup-scanned');
+    const duplicateFound = document.getElementById('stat-enh-dup-found');
+    const duplicateDeleted = document.getElementById('stat-enh-dup-deleted');
+    const duplicateSpace = document.getElementById('stat-enh-dup-space');
+
+    if (!qualityStatus || !qualityPhase || !qualityProcessed || !qualityMet || !qualityLow
+        || !qualityMatched || !qualityUpgrades || !qualityAtmos || !qualityDuplicateSkipped
+        || !qualityMissed || !duplicateStatus || !duplicateLastRun || !duplicateScanned
+        || !duplicateFound || !duplicateDeleted || !duplicateSpace) {
+        return;
+    }
+
+    const quality = payload?.qualityScanner ?? null;
+    const duplicate = payload?.duplicateCleaner ?? null;
+
+    qualityStatus.textContent = quality?.status ? String(quality.status) : 'idle';
+    qualityPhase.textContent = quality?.phase ? String(quality.phase) : 'Ready to scan';
+    qualityProcessed.textContent = String(quality?.processed ?? 0);
+    qualityMet.textContent = String(quality?.qualityMet ?? 0);
+    qualityLow.textContent = String(quality?.lowQuality ?? 0);
+    qualityMatched.textContent = String(quality?.matched ?? 0);
+    qualityUpgrades.textContent = String(quality?.upgradesQueued ?? 0);
+    qualityAtmos.textContent = String(quality?.atmosQueued ?? 0);
+    qualityDuplicateSkipped.textContent = String(quality?.duplicateSkipped ?? 0);
+    qualityMissed.textContent = String(quality?.matchMissed ?? 0);
+
+    duplicateStatus.textContent = duplicate?.status ? String(duplicate.status) : 'idle';
+    duplicateScanned.textContent = String(duplicate?.filesScanned ?? 0);
+    duplicateFound.textContent = String(duplicate?.duplicatesFound ?? 0);
+    duplicateDeleted.textContent = String(duplicate?.deleted ?? 0);
+    duplicateSpace.textContent = formatBytes(duplicate?.spaceFreedBytes ?? 0);
+
+    if (duplicate?.finishedUtc) {
+        duplicateLastRun.textContent = `Finished ${formatDateTime(duplicate.finishedUtc)}`;
+    } else if (duplicate?.startedUtc) {
+        duplicateLastRun.textContent = `Started ${formatDateTime(duplicate.startedUtc)}`;
+    } else {
+        duplicateLastRun.textContent = 'No run yet';
+    }
+}
+
+function renderBreakdownList(elementId, items) {
+    const element = document.getElementById(elementId);
+    if (!element) {
+        return;
+    }
+
+    const values = Array.isArray(items) ? items : [];
+    if (values.length === 0) {
+        element.innerHTML = '<div class="text-muted">No data yet.</div>';
+        return;
+    }
+
+    element.innerHTML = values.map(item => `
+        <div class="breakdown-item">
+            <span class="label">${escapeHtml(item?.value ?? 'unknown')}</span>
+            <span class="value">${Number(item?.count ?? 0).toLocaleString()}</span>
+        </div>
+    `).join('');
+}
+
+async function initSystemStats() {
+    await loadSystemStats();
+    if (systemStatsTimer) {
+        clearInterval(systemStatsTimer);
+    }
+    systemStatsTimer = setInterval(loadSystemStats, 10000);
+}
+
+async function initLibraryStats() {
+    await loadLibraryStats();
+    if (libraryStatsTimer) {
+        clearInterval(libraryStatsTimer);
+    }
+    libraryStatsTimer = setInterval(loadLibraryStats, 15000);
+}
+
+async function loadSystemStats() {
+    const activeDownloads = document.getElementById('stat-active-downloads');
+    const finishedDownloads = document.getElementById('stat-finished-downloads');
+    const downloadSpeed = document.getElementById('stat-download-speed');
+    const activeSyncs = document.getElementById('stat-active-syncs');
+    const uptime = document.getElementById('stat-uptime');
+    const memory = document.getElementById('stat-memory');
+
+    if (!activeDownloads || !finishedDownloads || !downloadSpeed || !activeSyncs || !uptime || !memory) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/system-stats/details');
+        if (!response.ok) {
+            throw new Error(await response.text());
+        }
+        const data = await response.json();
+        activeDownloads.textContent = data.activeDownloads ?? 0;
+        finishedDownloads.textContent = data.finishedDownloads ?? 0;
+        downloadSpeed.textContent = data.downloadSpeed ?? '0 KB/s';
+        activeSyncs.textContent = data.activeSyncs ?? 0;
+        uptime.textContent = data.uptime ?? '--';
+        memory.textContent = data.memory ?? '--';
+        applyEnhancementStats(data?.enhancement);
+    } catch (error) {
+        activeDownloads.textContent = 0;
+        finishedDownloads.textContent = 0;
+        downloadSpeed.textContent = '0 KB/s';
+        activeSyncs.textContent = 0;
+        uptime.textContent = '--';
+        memory.textContent = '--';
+        applyEnhancementStats(null);
+    }
+}
+
+async function loadLibraryStats() {
+    const totalArtists = document.getElementById('stat-library-artists');
+    const totalAlbums = document.getElementById('stat-library-albums');
+    const totalTracks = document.getElementById('stat-library-tracks');
+    const totalVideos = document.getElementById('stat-library-videos');
+    const totalPodcasts = document.getElementById('stat-library-podcasts');
+    const lastScan = document.getElementById('stat-library-last-scan');
+    const breakdownGrid = document.getElementById('library-breakdown-grid');
+    const lyrics = document.getElementById('stat-library-lyrics');
+    const lyricsSynced = document.getElementById('stat-library-lyrics-synced');
+    const animatedArtwork = document.getElementById('stat-library-animated-artwork');
+
+    if (!totalArtists || !totalAlbums || !totalTracks || !totalVideos || !totalPodcasts || !lastScan || !breakdownGrid
+        || !lyrics || !lyricsSynced || !animatedArtwork) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/library/stats');
+        if (!response.ok) {
+            throw new Error(await response.text());
+        }
+        const data = await response.json();
+        totalArtists.textContent = data?.totals?.artists ?? 0;
+        totalAlbums.textContent = data?.totals?.albums ?? 0;
+        totalTracks.textContent = data?.totals?.tracks ?? 0;
+        totalVideos.textContent = data?.totals?.videoItems ?? 0;
+        totalPodcasts.textContent = data?.totals?.podcastItems ?? 0;
+        lastScan.textContent = data?.lastRunUtc ? new Date(data.lastRunUtc).toLocaleString() : 'Never';
+        lyrics.textContent = data?.detail?.tracksWithLyrics ?? 0;
+        lyricsSynced.textContent = (Number(data?.detail?.tracksWithSyncedLyrics ?? 0) + Number(data?.detail?.tracksWithBothLyrics ?? 0)).toLocaleString();
+        animatedArtwork.textContent = data?.detail?.albumsWithAnimatedArtwork ?? 0;
+        renderBreakdownList('library-detail-lyrics-types', data?.detail?.breakdowns?.lyricsTypes);
+        renderBreakdownList('library-detail-technical-profiles', data?.detail?.breakdowns?.technicalProfiles);
+
+        breakdownGrid.innerHTML = '';
+        const libraries = Array.isArray(data?.libraries) ? data.libraries : [];
+        if (libraries.length === 0) {
+            breakdownGrid.innerHTML = '<div class="text-muted">No library data available yet.</div>';
+            return;
+        }
+
+        libraries.forEach(library => {
+            const contentType = normalizeLibraryContentType(library?.contentType);
+            const typeLabel = getLibraryTypeLabel(contentType);
+            const metrics = getLibraryMetricSet(library, contentType);
+            const metricsMarkup = metrics.map(metric => `
+                    <div class="library-stat">
+                        <span class="label">${escapeHtml(metric.label)}</span>
+                        <span class="value">${Number(metric.value ?? 0).toLocaleString()}</span>
+                    </div>
+                `).join('');
+            const card = document.createElement('div');
+            card.className = 'library-card card';
+            card.innerHTML = `
+                <div class="library-card-header">
+                    <span class="library-name">${escapeHtml(library.name ?? 'Library')}</span>
+                    <div class="library-card-meta">
+                        <span class="library-type-badge ${contentType}">${typeLabel}</span>
+                        <span class="library-id">ID ${library.id ?? '--'}</span>
+                    </div>
+                </div>
+                <div class="library-card-stats">
+                    ${metricsMarkup}
+                </div>
+            `;
+            breakdownGrid.appendChild(card);
+        });
+    } catch (error) {
+        totalArtists.textContent = 0;
+        totalAlbums.textContent = 0;
+        totalTracks.textContent = 0;
+        totalVideos.textContent = 0;
+        totalPodcasts.textContent = 0;
+        lastScan.textContent = 'Never';
+        lyrics.textContent = 0;
+        lyricsSynced.textContent = 0;
+        animatedArtwork.textContent = 0;
+        deezerLinks.textContent = 0;
+        spotifyLinks.textContent = 0;
+        appleLinks.textContent = 0;
+        breakdownGrid.innerHTML = '<div class="text-muted">Unable to load library stats.</div>';
+        renderBreakdownList('library-detail-lyrics-types', []);
+        renderBreakdownList('library-detail-technical-profiles', []);
+    }
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+        initSystemStats();
+        initLibraryStats();
+    });
+} else {
+    initSystemStats();
+    initLibraryStats();
+}
+</script>
+}

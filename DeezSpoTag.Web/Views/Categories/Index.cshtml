@@ -1,0 +1,421 @@
+@{
+    ViewData["Title"] = "Categories";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+@section Styles {
+<style>
+.categories-header {
+    margin-bottom: 20px;
+}
+.categories-title {
+    font-size: 30px;
+    font-weight: 700;
+    color: var(--primary-color);
+}
+.categories-panels {
+    margin-top: 16px;
+}
+.categories-sections .home-section {
+    margin-bottom: 24px;
+}
+.categories-sections .home-section-title {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 12px;
+    color: var(--text-primary);
+}
+.top-genres-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 12px;
+}
+.top-genres-card {
+    width: 100%;
+    min-height: var(--top-genres-card-height, 96px);
+    border-radius: 16px;
+    background: var(--bg-tertiary);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--top-genres-card-height, 96px);
+    align-items: stretch;
+    padding: 0;
+    cursor: pointer;
+    transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+    border: 1px solid var(--border-secondary);
+    overflow: hidden;
+}
+.top-genres-card:hover {
+    border-color: var(--primary-color);
+    background: var(--bg-quaternary);
+    transform: translateY(-2px);
+}
+.top-genres-card--thumb {
+    gap: 12px;
+    gap: 0;
+}
+.top-genres-title {
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    line-height: 1.25;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.top-genres-subtitle {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-top: 4px;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.top-genres-content {
+    min-width: 0;
+    padding: 14px 12px 12px 16px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+}
+.top-genres-art {
+    width: var(--art-thumb-size);
+    height: var(--art-thumb-size);
+    border-radius: 12px;
+    background: var(--bg-secondary);
+    background-size: cover;
+    background-position: center;
+    flex: 0 0 auto;
+    overflow: hidden;
+}
+.top-genres-card--thumb .top-genres-art {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+}
+.top-genres-platform {
+    position: absolute;
+    top: 10px;
+    left: 12px;
+    width: 16px;
+    height: 16px;
+    opacity: 0.9;
+    background-color: var(--text-primary);
+    -webkit-mask: var(--platform-icon) no-repeat center / contain;
+    mask: var(--platform-icon) no-repeat center / contain;
+}
+.empty-section {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-dim);
+    font-style: italic;
+}
+@@media (max-width: 1200px) {
+    .top-genres-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+}
+@@media (max-width: 900px) {
+    .top-genres-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+@@media (max-width: 768px) {
+    .top-genres-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+@@media (max-width: 520px) {
+    .top-genres-grid {
+        grid-template-columns: repeat(1, minmax(0, 1fr));
+    }
+}
+</style>
+}
+
+<header class="categories-header">
+    <h1 class="categories-title">Categories</h1>
+</header>
+
+<ul class="nav nav-tabs nav-fill mb-3" id="categoriesTabs">
+    <li class="nav-item">
+        <button class="nav-link active" id="categories-deezer-tab" data-bs-toggle="tab" data-bs-target="#categories-deezer" type="button" role="tab">Deezer</button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" id="categories-spotify-tab" data-bs-toggle="tab" data-bs-target="#categories-spotify" type="button" role="tab">Spotify</button>
+    </li>
+</ul>
+
+<div class="tab-content categories-panels" id="categoriesTabsContent">
+    <div class="tab-pane fade show active" id="categories-deezer" role="tabpanel">
+        <div id="deezer-status" class="spotify-home-greeting">Loading Deezer categories...</div>
+        <div id="deezer-categories" class="categories-sections">
+            <div class="empty-section">Loading Deezer categories...</div>
+        </div>
+    </div>
+    <div class="tab-pane fade" id="categories-spotify" role="tabpanel">
+        <div id="spotify-status" class="spotify-home-greeting">Loading Spotify categories...</div>
+        <div id="spotify-categories" class="top-genres-grid">
+            <div class="empty-section">Loading Spotify categories...</div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+function normalizeTitle(value) {
+    return (value || '').toString().trim().toLowerCase();
+}
+
+function buildDeezerImageUrlWithSize(imageHash, type = 'cover', size = 1000, quality = 80) {
+    if (!imageHash) {
+        return '';
+    }
+    if (typeof imageHash === 'string' && (imageHash.startsWith('http://') || imageHash.startsWith('https://'))) {
+        return imageHash;
+    }
+    const safeHash = String(imageHash).trim();
+    if (!safeHash) {
+        return '';
+    }
+    return `https://e-cdns-images.dzcdn.net/images/${type}/${safeHash}/${size}x${size}-000000-${quality}-0-0.jpg`;
+}
+
+function buildDeezerImageUrl(imageHash, type = 'cover') {
+    if (!imageHash) {
+        return '';
+    }
+    if (typeof imageHash === 'string' && (imageHash.startsWith('http://') || imageHash.startsWith('https://'))) {
+        return imageHash;
+    }
+    const safeHash = String(imageHash).trim();
+    if (!safeHash) {
+        return '';
+    }
+    return `https://e-cdns-images.dzcdn.net/images/${type}/${safeHash}/1000x1000-000000-80-0-0.jpg`;
+}
+
+function renderCategoryCard(item) {
+    if (!item) return '';
+    const title = escapeHtml(item.title || item.name || '');
+    const source = (item.source || '').toString().toLowerCase();
+    const linked = item.image_linked_item || item.imageLinkedItem || {};
+    const imageType = linked?.type || linked?.TYPE || item.picture_type || item.pictureType || item.imageType || 'playlist';
+    const imageHash = linked?.md5 || linked?.MD5 || item.md5_image || item.md5 || item.imageHash || item.cover?.md5 || item.cover?.MD5 || item.background_image?.md5;
+    const image = source === 'spotify'
+        ? (item.coverUrl || item.imageUrl || item.image || item.picture || item.artwork || '')
+        : (item.image?.thumbUrl
+            || item.image?.thumb
+            || item.image?.fullUrl
+            || item.image?.full
+            || item.image?.url
+            || item.image
+            || item.picture
+            || item.cover
+            || item.artwork
+            || buildDeezerImageUrlWithSize(imageHash, imageType, 250, 80)
+            || buildDeezerImageUrl(imageHash, imageType)
+            || '');
+    const click = source === 'spotify'
+        ? buildSpotifyBrowseClick(item)
+        : buildHomeClick(item);
+    const artStyle = image ? `style="background-image: url('${image}');"` : '';
+    const platformIcon = source === 'spotify' ? 'spotify' : 'deezer';
+    const subtitleValue = item.subtitle
+        || item.artist
+        || item.artists
+        || item.owner
+        || item.ownerName
+        || (source === 'spotify' ? 'Spotify' : source === 'deezer' ? 'Deezer' : '');
+    const subtitle = escapeHtml((subtitleValue || '').toString());
+    return `
+        <div class="top-genres-card top-genres-card--thumb" onclick="${click}" style="position: relative;">
+            <div class="top-genres-platform" style="--platform-icon: url('/images/availability/${platformIcon}.svg');"></div>
+            <div class="top-genres-content">
+                <div class="top-genres-title">${title}</div>
+                ${subtitle ? `<div class="top-genres-subtitle">${subtitle}</div>` : ''}
+            </div>
+            <div class="top-genres-art" ${artStyle}></div>
+        </div>
+    `;
+}
+
+function buildSpotifyBrowseClick(item) {
+    const id = encodeURIComponent(item.id || '');
+    const title = encodeURIComponent(item.title || item.name || '');
+    if (!id) {
+        return 'void(0)';
+    }
+    return `window.location.href='/Spotify/Browse?categoryId=${id}&title=${title}'`;
+}
+
+function buildHomeClick(item) {
+    const encodedId = encodeURIComponent(item.id || '');
+    if (item.target) {
+        const target = item.target.toString();
+        if (target.startsWith('/playlist/')) {
+            return `openTracklist('${encodeURIComponent(target.replace('/playlist/', ''))}', 'playlist')`;
+        }
+        if (target.startsWith('/album/')) {
+            return `openTracklist('${encodeURIComponent(target.replace('/album/', ''))}', 'album')`;
+        }
+        if (target.startsWith('/artist/')) {
+            return `openArtist('${encodeURIComponent(target.replace('/artist/', ''))}')`;
+        }
+        if (target.startsWith('/smarttracklist/')) {
+            return `openTracklist('${encodeURIComponent(target.replace('/smarttracklist/', ''))}', 'smarttracklist')`;
+        }
+        if (target.startsWith('/channels/')) {
+            return `openHomeChannel('${stripLeadingSlashes(target)}')`;
+        }
+        if (target.startsWith('/channels/module/')) {
+            return `openHomeChannel('${stripLeadingSlashes(target)}')`;
+        }
+    }
+    switch (item.type) {
+        case 'playlist':
+            return `openTracklist('${encodedId}', 'playlist')`;
+        case 'album':
+            return `openTracklist('${encodedId}', 'album')`;
+        case 'artist':
+            return `openArtist('${encodedId}')`;
+        case 'show':
+            return `openTracklist('${encodedId}', 'show')`;
+        case 'channel': {
+            const channelTarget = item.target || `channels/${item.id || ''}`;
+            return `openHomeChannel('${channelTarget}')`;
+        }
+        default:
+            return `openTracklist('${encodedId}', 'playlist')`;
+    }
+}
+
+function openTracklist(id, type) {
+    window.location.href = `/Tracklist?id=${id}&type=${type}&source=deezer`;
+}
+
+function openArtist(id) {
+    window.location.href = `/Artist?id=${id}&source=deezer`;
+}
+
+function openHomeChannel(target) {
+    if (!target) return;
+    const normalized = stripLeadingSlashes(target.toString());
+    const params = new URLSearchParams();
+    params.set('channel', normalized);
+    params.set('layout', 'categories');
+    window.location.href = `/Home?${params.toString()}`;
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function stripLeadingSlashes(value) {
+    let out = value || '';
+    while (out.startsWith('/')) {
+        out = out.slice(1);
+    }
+    return out;
+}
+
+function normalizeSpotifyBrowseCategory(item) {
+    if (!item) return null;
+    const id = item.id || item.categoryId || '';
+    const name = item.name || item.title || id;
+    if (!id || !name) return null;
+    return {
+        id,
+        name,
+        title: name,
+        coverUrl: item.image_url || item.imageUrl || item.coverUrl || item.image || item.picture || '',
+        source: 'spotify',
+        type: 'browse-category'
+    };
+}
+
+async function loadDeezerCategories() {
+    const statusEl = document.getElementById('deezer-status');
+    const container = document.getElementById('deezer-categories');
+    try {
+        statusEl.textContent = 'Loading Deezer categories...';
+        const response = await fetch('/api/home');
+        const data = await response.json();
+        const sections = Array.isArray(data?.sections) ? data.sections : [];
+        const baseSection = sections.find(section => {
+            const title = normalizeTitle(section?.title);
+            return title === 'your top genres' || title === 'categories';
+        });
+        const pageTarget = baseSection?.pagePath || baseSection?.related?.target || baseSection?.related?.Target || '';
+        let renderSections = [];
+        if (pageTarget) {
+            const target = stripLeadingSlashes(pageTarget);
+            const channelResp = await fetch(`/api/home?channel=${encodeURIComponent(target)}`);
+            if (channelResp.ok) {
+                const channelData = await channelResp.json();
+                const channelSections = Array.isArray(channelData?.sections) ? channelData.sections : [];
+                renderSections = channelSections.filter(section => Array.isArray(section?.items) && section.items.length > 0);
+            }
+        }
+        if (!renderSections.length && baseSection?.items?.length) {
+            renderSections = [baseSection];
+        }
+        if (!renderSections.length) {
+            container.innerHTML = '<div class="empty-section">No Deezer categories available</div>';
+            statusEl.textContent = 'No Deezer categories available';
+            return;
+        }
+        container.innerHTML = renderSections.map(section => `
+            <div class="home-section">
+                <div class="home-section-title">${escapeHtml(section.title || '')}</div>
+                <div class="top-genres-grid">
+                    ${(section.items || []).map(renderCategoryCard).join('')}
+                </div>
+            </div>
+        `).join('');
+        statusEl.textContent = `Showing ${renderSections.length} Deezer sections`;
+    } catch (error) {
+        console.error('Deezer categories load failed:', error);
+        container.innerHTML = '<div class="empty-section">Failed to load Deezer categories</div>';
+        statusEl.textContent = 'Failed to load Deezer categories';
+    }
+}
+
+async function loadSpotifyCategories() {
+    const statusEl = document.getElementById('spotify-status');
+    const container = document.getElementById('spotify-categories');
+    try {
+        statusEl.textContent = 'Loading Spotify categories...';
+        const response = await fetch('/api/spotify/home-feed/browse');
+        const data = await response.json();
+        if (!response.ok || !data?.success || !Array.isArray(data.categories)) {
+            throw new Error(data?.error || 'Spotify browse categories unavailable');
+        }
+        const items = data.categories
+            .map(normalizeSpotifyBrowseCategory)
+            .filter(Boolean)
+            .filter(item => !/podcast/i.test(item.name || item.title || ''));
+        if (!items.length) {
+            container.innerHTML = '<div class="empty-section">No Spotify categories available</div>';
+            statusEl.textContent = 'No Spotify categories available';
+            return;
+        }
+        container.innerHTML = items.map(renderCategoryCard).join('');
+        statusEl.textContent = `Showing ${items.length} Spotify categories`;
+    } catch (error) {
+        console.error('Spotify categories load failed:', error);
+        container.innerHTML = '<div class="empty-section">Failed to load Spotify categories</div>';
+        statusEl.textContent = 'Failed to load Spotify categories';
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadDeezerCategories();
+    loadSpotifyCategories();
+});
+</script>
+}

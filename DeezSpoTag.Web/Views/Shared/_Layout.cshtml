@@ -1,0 +1,1453 @@
+@inject DeezSpoTag.Web.Services.UserPreferencesStore _userPrefsStore
+@{
+    var _serverPrefs = await _userPrefsStore.LoadAsync();
+    var _serverPrefsJson = System.Text.Json.JsonSerializer.Serialize(_serverPrefs, new System.Text.Json.JsonSerializerOptions
+    {
+        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+    });
+    var _isLoginPage = Context.Request.Path.StartsWithSegments("/Login", StringComparison.OrdinalIgnoreCase);
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>@ViewData["Title"] - DeezSpoTag</title>
+    <partial name="_CommonHeadAssets" />
+    <script>
+        (function () {
+            try {
+                var p = @Html.Raw(_serverPrefsJson);
+                window.__userPrefsData = p;
+                var map = {
+                    'deezspotag-theme':                     p.theme || null,
+                    'sidebarCollapsed':                      p.sidebarCollapsed ? 'true' : 'false',
+                    'tabs-preference-enabled':               p.tabsPreferenceEnabled ? 'true' : 'false',
+                    'pwa-prompt-dismissed':                  p.pwaPromptDismissedAt != null ? String(p.pwaPromptDismissedAt) : null,
+                    'autotag-selected-platforms':            (p.autoTagSelectedPlatforms && p.autoTagSelectedPlatforms.length) ? JSON.stringify(p.autoTagSelectedPlatforms) : null,
+                    'autotag-preferences':                   p.autoTagPreferences != null ? JSON.stringify(p.autoTagPreferences) : null,
+                    'autotag-active-profile-id':             p.autoTagActiveProfileId || null,
+                    'download-destination-folder':           p.downloadDestinationFolderId || null,
+                    'download-destination-folder-stereo':    p.downloadDestinationStereoFolderId || null,
+                    'download-destination-folder-atmos':     p.downloadDestinationAtmosFolderId || null,
+                    'apple-download-notification-mode':      p.appleDownloadNotificationMode || 'detailed',
+                    'deezspotag.quicktag.columns':           (p.quickTagColumns && p.quickTagColumns.length) ? JSON.stringify(p.quickTagColumns) : null,
+                    'deezspotag.quicktag.columnPreset':      p.quickTagColumnPreset || null,
+                    'deezspotag.quicktag.tagSourceProvider': p.quickTagTagSourceProvider || null,
+                    'deezspotag.quicktag.sourceTemplate':    p.quickTagSourceTemplate || null,
+                    'quicktag_left_col':                     p.quickTagPanelLeftWidth != null ? String(p.quickTagPanelLeftWidth) : null,
+                    'quicktag_right_col':                    p.quickTagPanelRightWidth != null ? String(p.quickTagPanelRightWidth) : null,
+                    'lrc-editor-merge':                      p.lrcEditorMerge ? '1' : '0',
+                    'libraryAlbumDestinationFolderId':       p.libraryAlbumDestinationFolderId || null,
+                    'previewVolume':                         String(p.previewVolume != null ? p.previewVolume : 100),
+                    'deezspotag-spotify-cache-schedule':     p.spotifyCacheSchedule || null,
+                    'deezspotag-spotify-cache-last-run':     p.spotifyCacheLastRun != null ? String(p.spotifyCacheLastRun) : null,
+                    'multisource_recent_searches':           p.spotiflacRecentSearches != null ? JSON.stringify(p.spotiflacRecentSearches) : null
+                };
+                Object.keys(map).forEach(function (k) { if (map[k] != null) localStorage.setItem(k, map[k]); });
+                if (p.tabSelections) {
+                    Object.keys(p.tabSelections).forEach(function (k) {
+                        if (k && p.tabSelections[k]) {
+                            localStorage.setItem(k, p.tabSelections[k]);
+                        }
+                    });
+                }
+            } catch (e) {}
+        })();
+    </script>
+    <script>
+        (function () {
+            try {
+                if (localStorage.getItem('sidebarCollapsed') === 'true') {
+                    document.documentElement.classList.add('sidebar-precollapsed');
+                }
+            } catch (e) {
+            }
+        })();
+    </script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+        }
+        
+        .sidebar {
+            width: 250px;
+            background: var(--bg-secondary);
+            padding: 20px 0;
+            border-right: 1px solid var(--border-primary);
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            height: 100vh;
+            z-index: 1000;
+            transition: all 0.3s ease;
+            overflow: hidden;
+            scrollbar-width: none; /* Firefox */
+            -ms-overflow-style: none; /* Internet Explorer 10+ */
+        }
+        
+        /* Hide scrollbars completely during transitions */
+        .sidebar::-webkit-scrollbar {
+            display: none;
+        }
+        
+        .sidebar.collapsed {
+            width: 70px;
+            overflow: hidden;
+            scrollbar-width: none; /* Firefox */
+            -ms-overflow-style: none; /* Internet Explorer 10+ */
+        }
+        
+        .sidebar.collapsed::-webkit-scrollbar {
+            display: none;
+        }
+
+        /* Prevent desktop flash where sidebar briefly renders expanded before JS applies collapsed state */
+        @@media (min-width: 901px) {
+            html.sidebar-precollapsed .sidebar {
+                width: 70px;
+                overflow: hidden;
+            }
+
+            html.sidebar-precollapsed .sidebar-header {
+                padding: 0 10px;
+                justify-content: center;
+            }
+
+            html.sidebar-precollapsed .logo-icon {
+                width: 50px;
+                height: 22px;
+            }
+
+            html.sidebar-precollapsed .sidebar .menu-text {
+                opacity: 0;
+                width: 0;
+            }
+
+            html.sidebar-precollapsed .sidebar .menu-item {
+                padding: 12px 0;
+                justify-content: center;
+                height: 44px;
+                margin: 4px 0;
+                align-items: center;
+                display: flex;
+            }
+
+            html.sidebar-precollapsed .sidebar .menu-icon {
+                margin-right: 0;
+            }
+
+            html.sidebar-precollapsed .main-content {
+                margin-left: 70px;
+            }
+
+            html.sidebar-precollapsed .hamburger {
+                left: 30px;
+            }
+        }
+        
+        .sidebar-header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 20px;
+            margin-bottom: 20px;
+            flex-direction: column;
+        }
+        
+        .sidebar.collapsed .sidebar-header {
+            padding: 0 10px;
+            justify-content: center;
+        }
+        
+        .logo-section {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+            width: 100%;
+        }
+        
+        .logo-icon {
+            width: 200px;
+            height: 90px;
+            border-radius: 8px;
+            background: transparent;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            border: 1px solid transparent;
+            cursor: pointer;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+        }
+
+        .logo-icon:focus-visible {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-color) 30%, transparent 70%);
+        }
+
+        .logo-icon.is-shazam-ready {
+            border-color: color-mix(in srgb, var(--border-primary) 70%, transparent 30%);
+        }
+
+        .logo-icon.is-shazam-listening {
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-color) 45%, transparent 55%);
+            animation: shazamPulse 1.2s ease-in-out infinite;
+        }
+
+        .logo-icon.is-shazam-searching {
+            border-color: var(--secondary-color);
+            opacity: 0.8;
+        }
+
+        .logo-icon.is-shazam-error {
+            border-color: #ef4444;
+            box-shadow: 0 0 0 2px color-mix(in srgb, #ef4444 35%, transparent 65%);
+        }
+
+        @@keyframes shazamPulse {
+            0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary-color) 55%, transparent 45%); }
+            100% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--primary-color) 0%, transparent 100%); }
+        }
+        
+        .logo-icon svg {
+            width: 100%;
+            height: 100%;
+        }
+        
+        /* Collapsed sidebar logo scaling */
+        .sidebar.collapsed .logo-icon {
+            width: 50px;
+            height: 22px;
+        }
+        
+        /* Theme-aware logo styles */
+        .theme-logo .logo-primary-stop {
+            stop-color: var(--primary-color);
+            stop-opacity: 1;
+        }
+        
+        .theme-logo .logo-secondary-stop {
+            stop-color: var(--secondary-color);
+            stop-opacity: 1;
+        }
+        
+        .theme-logo .logo-glow-flood {
+            flood-color: var(--primary-color);
+        }
+        
+        .theme-logo .logo-text-primary-stop {
+            stop-color: var(--text-primary);
+            stop-opacity: 1;
+        }
+        
+        .theme-logo .logo-text-secondary-stop {
+            stop-color: var(--text-secondary);
+            stop-opacity: 1;
+        }
+        
+        .theme-logo .logo-bar-1 {
+            fill: var(--primary-color);
+        }
+        
+        .theme-logo .logo-bar-2 {
+            fill: var(--primary-color);
+            opacity: 0.8;
+        }
+        
+        .theme-logo .logo-bar-3 {
+            fill: var(--secondary-color);
+            opacity: 0.9;
+        }
+        
+        .theme-logo .logo-bar-4 {
+            fill: var(--secondary-color);
+        }
+        
+        .theme-logo .logo-tagline {
+            fill: var(--text-muted);
+        }
+        
+        /* Ensure logo updates when theme changes */
+        .theme-logo {
+            transition: all 0.3s ease;
+        }
+        
+        /* Force SVG to inherit theme colors */
+        .theme-logo * {
+            transition: fill 0.3s ease, stop-color 0.3s ease, flood-color 0.3s ease;
+        }
+        
+        .logo-text {
+            display: none;
+        }
+        
+                
+        .sidebar-menu {
+            flex: 1;
+            padding: 0 10px;
+            overflow-y: auto;
+            scrollbar-width: none; /* Firefox */
+            -ms-overflow-style: none; /* Internet Explorer 10+ */
+            display: flex;
+            flex-direction: column;
+        }
+        
+        /* Hide scrollbars in sidebar menu */
+        .sidebar-menu::-webkit-scrollbar {
+            display: none;
+        }
+        
+        .sidebar.collapsed .sidebar-menu {
+            overflow-y: hidden;
+            overflow-x: hidden;
+            padding: 0 10px; /* Maintain same padding */
+            display: flex;
+            flex-direction: column;
+        }
+        
+                
+        .menu-item {
+            display: flex;
+            align-items: center;
+            padding: 12px 16px;
+            margin: 4px 0;
+            border-radius: 8px;
+            text-decoration: none;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            position: relative;
+            white-space: nowrap;
+            height: 44px; /* Fixed height instead of min-height */
+            box-sizing: border-box;
+        }
+        
+        .menu-item:hover {
+            text-decoration: none;
+        }
+        
+        .menu-item.active {
+            /* Styling handled by themes.css */
+        }
+        
+        .menu-icon {
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 12px;
+            font-size: 16px;
+            flex-shrink: 0;
+            position: relative;
+        }
+        
+        .menu-icon svg {
+            width: 18px;
+            height: 18px;
+            transition: all 0.2s ease;
+        }
+        
+        .menu-text {
+            transition: all 0.3s ease;
+        }
+        
+        .sidebar.collapsed .menu-text {
+            opacity: 0;
+            width: 0;
+        }
+        
+        .sidebar.collapsed .menu-item {
+            padding: 12px 0;
+            justify-content: center;
+            height: 44px; /* Same fixed height as expanded */
+            margin: 4px 0; /* Ensure same margin */
+            align-items: center; /* Explicitly center vertically */
+            display: flex; /* Ensure flex display */
+        }
+        
+        .sidebar.collapsed .menu-icon {
+            margin-right: 0;
+            width: 20px;
+            height: 20px;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        
+        .sidebar.collapsed .menu-icon svg {
+            width: 18px;
+            height: 18px;
+            stroke: currentColor;
+            color: inherit;
+        }
+        
+        /* Tooltip for collapsed sidebar */
+        .sidebar.collapsed .menu-item::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            left: 70px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            white-space: nowrap;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.2s ease;
+            z-index: 1001;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--border-primary);
+        }
+        
+        .sidebar.collapsed .menu-item:hover::after {
+            opacity: 1;
+            visibility: visible;
+        }
+                
+        .main-content {
+            flex: 1;
+            margin-left: 250px;
+            padding: 20px;
+            overflow-y: auto;
+            min-height: 100vh;
+            transition: margin-left 0.3s ease;
+        }
+        
+        .main-content.sidebar-collapsed {
+            margin-left: 70px;
+        }
+        
+        .hamburger {
+            background: none;
+            border: none;
+            color: var(--primary-color);
+            font-size: 20px;
+            cursor: pointer;
+            position: fixed;
+            top: 20px;
+            left: 210px; /* Position within expanded sidebar */
+            z-index: 1001;
+            transition: all 0.2s ease;
+            padding: 8px;
+            border-radius: 6px;
+        }
+        
+        .hamburger:hover {
+            color: var(--text-primary);
+            background: var(--bg-tertiary);
+            transform: scale(1.1);
+        }
+        
+        /* Adjust hamburger position based on sidebar state */
+        .hamburger.sidebar-expanded {
+            left: 210px; /* Right side of expanded sidebar */
+        }
+        
+        .hamburger.sidebar-collapsed {
+            left: 30px; /* Right side of collapsed sidebar */
+        }
+        
+        /* These styles are now handled by themes.css - removing duplicates */
+        
+        /* Tablet/Mobile responsive */
+        @@media (max-width: 1024px) {
+            .sidebar {
+                width: 220px;
+            }
+
+            .main-content {
+                margin-left: 220px;
+            }
+
+            .sidebar.collapsed {
+                width: 70px;
+            }
+
+            .main-content.collapsed {
+                margin-left: 70px;
+            }
+
+            .hamburger {
+                left: 24px !important;
+            }
+        }
+
+        @@media (max-width: 900px) {
+            .hamburger {
+                left: 20px !important; /* Fixed position on mobile */
+            }
+            
+            .hamburger.sidebar-expanded,
+            .hamburger.sidebar-collapsed {
+                left: 20px !important; /* Override desktop positioning */
+            }
+            
+            .sidebar {
+                position: fixed;
+                left: -250px;
+                top: 0;
+                height: 100vh;
+                z-index: 1000;
+                transition: left 0.3s ease;
+                width: 250px !important; /* Override collapsed width on mobile */
+            }
+            
+            .sidebar.open {
+                left: 0 !important;
+            }
+            
+            .sidebar.collapsed {
+                left: -250px !important; /* Hidden by default on mobile */
+                width: 250px !important; /* Ensure full width on mobile */
+            }
+                        
+            .main-content {
+                margin-left: 0 !important;
+                padding: 60px 16px 16px;
+            }
+            
+            .main-content.sidebar-collapsed {
+                margin-left: 0 !important; /* Override collapsed margin on mobile */
+            }
+            
+            /* Reset collapsed styles on mobile */
+            .sidebar.collapsed .menu-text {
+                opacity: 1;
+                width: auto;
+            }
+            
+            .sidebar.collapsed .sidebar-header {
+                padding: 0 20px;
+                justify-content: center;
+            }
+            
+            .sidebar.collapsed .menu-item {
+                padding: 12px 16px;
+                justify-content: flex-start;
+            }
+            
+            .sidebar.collapsed .menu-icon {
+                margin-right: 12px;
+            }
+            
+            .sidebar.collapsed .menu-item::after {
+                display: none; /* Hide tooltips on mobile */
+            }
+        }
+        
+            </style>
+    @await RenderSectionAsync("Styles", required: false)
+</head>
+@{
+    var layoutParam = Context?.Request?.Query["layout"].ToString() ?? string.Empty;
+    var layoutAttr = string.IsNullOrWhiteSpace(layoutParam) ? string.Empty : layoutParam;
+}
+<body data-home-layout="@layoutAttr">
+    <button class="hamburger" onclick="toggleSidebar()">☰</button>
+    
+    <nav class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <div class="logo-section">
+                <div class="logo-icon" id="logoIcon" aria-label="Identify song with Shazam">
+                    <svg width="400" height="180" viewBox="0 0 400 180" xmlns="http://www.w3.org/2000/svg" class="theme-logo">
+                        <defs>
+                            <linearGradient id="sidebarPremiumGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" class="logo-primary-stop" />
+                                <stop offset="100%" class="logo-secondary-stop" />
+                            </linearGradient>
+                            <filter id="sidebarNeonGlow">
+                                <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+                                <feOffset result="offsetblur" in="coloredBlur" dx="0" dy="0"/>
+                                <feFlood class="logo-glow-flood" flood-opacity="0.5"/>
+                                <feComposite in2="offsetblur" operator="in"/>
+                                <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+                            </filter>
+                            <linearGradient id="sidebarTextGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" class="logo-text-primary-stop" />
+                                <stop offset="100%" class="logo-text-secondary-stop" />
+                            </linearGradient>
+                            <filter id="sidebarTextShadow">
+                                <feGaussianBlur in="SourceAlpha" stdDeviation="2"/>
+                                <feOffset dx="0" dy="2" result="offsetblur"/>
+                                <feComponentTransfer><feFuncA type="linear" slope="0.3"/></feComponentTransfer>
+                                <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+                            </filter>
+                        </defs>
+                        <!-- Animated Equalizer Bars -->
+                        <g transform="translate(200, 50)">
+                            <path d="M-45,0 L-22.5,-39 L22.5,-39 L45,0 L22.5,39 L-22.5,39 Z" fill="none" stroke="url(#sidebarPremiumGrad)" stroke-width="2" filter="url(#sidebarNeonGlow)"/>
+                            <path d="M-35,0 L-17.5,-30 L17.5,-30 L35,0 L17.5,30 L-17.5,30 Z" fill="none" stroke="url(#sidebarPremiumGrad)" stroke-width="1" opacity="0.5"/>
+                            <g filter="url(#sidebarNeonGlow)">
+                                <rect x="-20" y="-15" width="5" height="30" class="logo-bar-1">
+                                    <animate attributeName="height" values="30;45;30" dur="0.8s" repeatCount="indefinite"/>
+                                    <animate attributeName="y" values="-15;-22.5;-15" dur="0.8s" repeatCount="indefinite"/>
+                                </rect>
+                                <rect x="-10" y="-20" width="5" height="40" class="logo-bar-2">
+                                    <animate attributeName="height" values="40;25;40" dur="1s" repeatCount="indefinite"/>
+                                    <animate attributeName="y" values="-20;-12.5;-20" dur="1s" repeatCount="indefinite"/>
+                                </rect>
+                                <rect x="0" y="-12" width="5" height="24" class="logo-bar-3">
+                                    <animate attributeName="height" values="24;42;24" dur="0.6s" repeatCount="indefinite"/>
+                                    <animate attributeName="y" values="-12;-21;-12" dur="0.6s" repeatCount="indefinite"/>
+                                </rect>
+                                <rect x="10" y="-18" width="5" height="36" class="logo-bar-4">
+                                    <animate attributeName="height" values="36;20;36" dur="0.9s" repeatCount="indefinite"/>
+                                    <animate attributeName="y" values="-18;-10;-18" dur="0.9s" repeatCount="indefinite"/>
+                                </rect>
+                            </g>
+                        </g>
+                        <!-- DeezSpoTag with no gap -->
+                        <text x="200" y="140" font-family="Helvetica Neue, Arial, sans-serif" font-size="52"
+                        font-weight="700" text-anchor="middle" filter="url(#sidebarTextShadow)"
+                        fill="url(#sidebarPremiumGrad)" letter-spacing="0">
+                        DeezSpoTag
+                        </text>
+                        <!-- Tagline and Decorations -->
+                        <line x1="50" y1="155" x2="350" y2="155" stroke="url(#sidebarPremiumGrad)" stroke-width="1" opacity="0.4"/>
+                        <text x="200" y="175" font-family="Montserrat, sans-serif" font-size="13" font-weight="300" class="logo-tagline" letter-spacing="3" text-anchor="middle">AUTOMATED MUSIC EXPERIENCE</text>
+                        <circle cx="50" cy="155" r="2" fill="url(#sidebarPremiumGrad)" opacity="0.8"/>
+                        <circle cx="350" cy="155" r="2" fill="url(#sidebarPremiumGrad)" opacity="0.8"/>
+                    </svg>
+                </div>
+            </div>
+                    </div>
+        <div class="sidebar-menu">
+            <a href="/" class="menu-item home" data-tooltip="Home">
+                <div class="menu-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 11L12 3L21 11V20A1 1 0 0 1 20 21H4A1 1 0 0 1 3 20V11Z"/>
+                        <path d="M9 21V12H15V21"/>
+                    </svg>
+                </div>
+                <span class="menu-text">Home</span>
+            </a>
+            <a href="/Library" class="menu-item library" data-tooltip="Library">
+                <div class="menu-icon">
+                    <svg width="24" height="24" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round">
+                        <path d="M4 16a4 4 0 0 1 4-4h16l4 6h32a4 4 0 0 1 4 4v28a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4V16Z" fill="none"/>
+                    </svg>
+                </div>
+                <span class="menu-text">Library</span>
+            </a>
+            <a href="/MediaManagement" class="menu-item media-management" data-tooltip="Media Management">
+                <div class="menu-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="2" y="4" width="20" height="16" rx="2" ry="2"/>
+                        <polygon points="10 8 16 12 10 16 10 8"/>
+                    </svg>
+                </div>
+                <span class="menu-text">Media Management</span>
+            </a>
+            <a href="/AutoTag" class="menu-item autotag" data-tooltip="AutoTag">
+                <div class="menu-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 5h16v4H4z"/>
+                        <path d="M4 11h16v8H4z"/>
+                        <path d="M8 8h8"/>
+                        <path d="M9 15h6"/>
+                    </svg>
+                </div>
+                <span class="menu-text">AutoTag</span>
+            </a>
+            <a href="/Activities" class="menu-item activities" data-tooltip="Activities">
+                <div class="menu-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="4 17 9 11 14 14 20 6"/>
+                        <circle cx="4" cy="17" r="1.5"/>
+                        <circle cx="9" cy="11" r="1.5"/>
+                        <circle cx="14" cy="14" r="1.5"/>
+                        <circle cx="20" cy="6" r="1.5"/>
+                    </svg>
+                </div>
+                <span class="menu-text">Activities</span>
+            </a>
+            <a href="/Statistics" class="menu-item statistics" data-tooltip="Statistics">
+                <div class="menu-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 20V10"/>
+                        <path d="M10 20V6"/>
+                        <path d="M16 20V14"/>
+                        <path d="M22 20V4"/>
+                    </svg>
+                </div>
+                <span class="menu-text">Statistics</span>
+            </a>
+            <a href="/Settings" class="menu-item settings" data-tooltip="Settings">
+                <div class="menu-icon">
+                    <svg width="24" height="24" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="3">
+                        <path d="M32 22a10 10 0 1 1 0 20a10 10 0 0 1 0-20Z" fill="none"/>
+                        <path d="M36 2h-8l-2 6a22 22 0 0 0-5 2l-6-2l-6 6l2 6a22 22 0 0 0-2 5l-6 2v8l6 2a22 22 0 0 0 2 5l-2 6l6 6l6-2a22 22 0 0 0 5 2l2 6h8l2-6a22 22 0 0 0 5-2l6 2l6-6l-2-6a22 22 0 0 0 2-5l6-2v-8l-6-2a22 22 0 0 0-2-5l2-6l-6-6l-6 2a22 22 0 0 0-5-2l-2-6Z" fill="none"/>
+                    </svg>
+                </div>
+                <span class="menu-text">Settings</span>
+            </a>
+            <a href="/Login" class="menu-item login" data-tooltip="Login">
+                <div class="menu-icon">
+                    <svg width="24" height="24" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                        <!-- User circle -->
+                        <circle cx="22" cy="20" r="6"/>
+                        <!-- User torso -->
+                        <path d="M14 34c0-5 6-8 8-8s8 3 8 8v2H14v-2Z"/>
+                        <!-- Door outline -->
+                        <path d="M40 12h12a2 2 0 0 1 2 2v36a2 2 0 0 1-2 2H40"/>
+                        <!-- Login arrow -->
+                        <path d="M34 32H54"/>
+                        <polyline points="44 24 54 32 44 40"/>
+                    </svg>
+                </div>
+                <span class="menu-text">Login</span>
+            </a>
+            <a href="/About" class="menu-item about" data-tooltip="About">
+                <div class="menu-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="M12 16v-4"/>
+                        <path d="M12 8h.01"/>
+                    </svg>
+                </div>
+                <span class="menu-text">About</span>
+            </a>
+            <div class="connected-platforms">
+                <div class="connected-platforms-title">
+                    <span class="connected-platforms-title-icon" aria-hidden="true">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M10.5 13.5l3-3"/>
+                            <path d="M8 7h4a5 5 0 0 1 0 10h-4"/>
+                            <path d="M16 17h-4a5 5 0 0 1 0-10h4"/>
+                        </svg>
+                    </span>
+                    <span class="connected-platforms-title-text">Connected Platforms</span>
+                </div>
+                <div class="connected-platforms-icons" id="connectedPlatformsList"></div>
+            </div>
+        </div>
+        <div class="theme-picker-menu" id="themePickerMenu">
+            <button type="button" class="menu-item theme-picker-toggle" id="themePickerToggle" data-tooltip="Themes" data-menu-action="true" aria-expanded="false" aria-controls="themePickerPanel">
+                <span class="menu-icon" aria-hidden="true">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 3a9 9 0 1 0 0 18h.5a2.5 2.5 0 0 0 0-5H12a1.5 1.5 0 0 1 0-3h3.5A5.5 5.5 0 0 0 21 7.5A4.5 4.5 0 0 0 16.5 3H12Z"/>
+                        <circle cx="6.5" cy="10" r="1"/>
+                        <circle cx="9" cy="7.5" r="1"/>
+                        <circle cx="9" cy="12.5" r="1"/>
+                    </svg>
+                </span>
+                <span class="menu-text">Themes</span>
+                <span class="theme-picker-caret" aria-hidden="true">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m6 9 6 6 6-6" />
+                    </svg>
+                </span>
+            </button>
+            <div class="theme-picker-panel" id="themePickerPanel" aria-label="Theme picker" hidden>
+                <button type="button" class="theme-swatch" data-theme="blue" title="Blue" aria-label="Blue theme" aria-pressed="false"></button>
+                <button type="button" class="theme-swatch" data-theme="purple" title="Purple" aria-label="Purple theme" aria-pressed="false"></button>
+                <button type="button" class="theme-swatch" data-theme="green" title="Green" aria-label="Green theme" aria-pressed="false"></button>
+                <button type="button" class="theme-swatch" data-theme="orange" title="Orange" aria-label="Orange theme" aria-pressed="false"></button>
+                <button type="button" class="theme-swatch" data-theme="red" title="Red" aria-label="Red theme" aria-pressed="false"></button>
+                <button type="button" class="theme-swatch" data-theme="teal" title="Teal" aria-label="Teal theme" aria-pressed="false"></button>
+                <button type="button" class="theme-swatch" data-theme="indigo" title="Indigo" aria-label="Indigo theme" aria-pressed="false"></button>
+                <button type="button" class="theme-swatch" data-theme="pink" title="Pink" aria-label="Pink theme" aria-pressed="false"></button>
+                <button type="button" class="theme-swatch" data-theme="amoled-white" title="AMOLED White" aria-label="AMOLED White theme" aria-pressed="false"></button>
+                <button type="button" class="theme-swatch" data-theme="amoled-red" title="AMOLED Red" aria-label="AMOLED Red theme" aria-pressed="false"></button>
+                <button type="button" class="theme-swatch" data-theme="amoled-yellow" title="AMOLED Yellow" aria-label="AMOLED Yellow theme" aria-pressed="false"></button>
+                <button type="button" class="theme-swatch" data-theme="amoled-blue" title="AMOLED Blue" aria-label="AMOLED Blue theme" aria-pressed="false"></button>
+                <button type="button" class="theme-swatch" data-theme="amoled-neon" title="AMOLED Neon" aria-label="AMOLED Neon theme" aria-pressed="false"></button>
+                <button type="button" class="theme-swatch" data-theme="amoled-green" title="AMOLED Green" aria-label="AMOLED Green theme" aria-pressed="false"></button>
+                <button type="button" class="theme-swatch" data-theme="amoled-purple" title="AMOLED Purple" aria-label="AMOLED Purple theme" aria-pressed="false"></button>
+                <button type="button" class="theme-swatch" data-theme="amoled-inverse" title="AMOLED Inverse" aria-label="AMOLED Inverse theme" aria-pressed="false"></button>
+            </div>
+        </div>
+    </nav>
+    
+    <main class="main-content" id="mainContent">
+        <div class="layout-actions">
+            @if (User?.Identity?.IsAuthenticated == true)
+            {
+                <div class="profile-menu">
+                    <button class="profile-trigger" id="profileTrigger" type="button" aria-haspopup="true" aria-expanded="false">
+                        <span class="profile-name" id="profileName">@((User?.Identity?.IsAuthenticated ?? false) ? (User.Identity?.Name ?? "Profile") : "Profile")</span>
+                        <span class="profile-avatar" id="profileAvatar" aria-hidden="true">DS</span>
+                    </button>
+                    <div class="profile-dropdown hidden" id="profileDropdown" role="menu">
+                        <div class="profile-dropdown-header">
+                            <div class="profile-avatar large" id="profileAvatarLarge">DS</div>
+                            <div>
+                                <div class="profile-username" id="profileUsername">@((User?.Identity?.IsAuthenticated ?? false) ? (User.Identity?.Name ?? "User") : "User")</div>
+                                <button class="profile-upload" id="avatarUploadButton" type="button">Upload avatar</button>
+                                <input class="profile-upload-input" id="avatarUploadInput" type="file" accept="image/png,image/jpeg" />
+                            </div>
+                        </div>
+                        <div class="profile-dropdown-actions">
+                            <button class="profile-link" id="changeUsernameButton" type="button">Change username</button>
+                            <button class="profile-link" id="changePasswordButton" type="button">Change password</button>
+                            <form method="post" asp-area="Identity" asp-page="/Account/Logout" asp-route-returnUrl="/Identity/Account/Login">
+                                @Html.AntiForgeryToken()
+                                <button class="profile-link logout" type="submit">Logout</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <a class="profile-link" href="/Identity/Account/Login">Login</a>
+            }
+        </div>
+
+        @RenderBody()
+    </main>
+
+    <div id="pwaInstallPrompt" class="pwa-install hidden" aria-live="polite">
+        <button type="button" class="pwa-install-close" aria-label="Dismiss" data-pwa-dismiss>
+            <span class="material-icons">close</span>
+        </button>
+        <div class="pwa-install-body">
+            <div class="pwa-install-title">Install DeezSpoTag</div>
+            <div class="pwa-install-text" data-pwa-message>
+                Add DeezSpoTag to your home screen for quick access.
+            </div>
+        </div>
+        <button type="button" class="pwa-install-action" data-pwa-install>Install App</button>
+    </div>
+    
+    <script src="~/js/user-preferences.js" asp-append-version="true"></script>
+    @if (!_isLoginPage)
+    {
+        <script src="~/js/shazam-listen.js" asp-append-version="true"></script>
+    }
+    @{
+        ViewData["IncludeSignalR"] = !_isLoginPage;
+    }
+    <partial name="_CommonFooterScripts" />
+    @if (!_isLoginPage)
+    {
+        <script src="~/js/download-logger.js" asp-append-version="true"></script>
+        <script src="~/js/download.js" asp-append-version="true"></script>
+    }
+    
+    <script>
+        // Sidebar state management
+        let sidebarCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
+
+        function isSidebarMobile() {
+            return window.matchMedia('(max-width: 900px)').matches;
+        }
+
+        function applySidebarVisualState(sidebar, mainContent, hamburger, collapsed) {
+            sidebar.classList.toggle('collapsed', collapsed);
+            mainContent.classList.toggle('sidebar-collapsed', collapsed);
+            hamburger.classList.toggle('sidebar-collapsed', collapsed);
+            hamburger.classList.toggle('sidebar-expanded', !collapsed);
+        }
+
+        function closeSidebar(sidebar, mainContent, hamburger, collapsed) {
+            sidebar.classList.remove('open');
+            applySidebarVisualState(sidebar, mainContent, hamburger, collapsed);
+        }
+        
+        // Initialize sidebar state on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            const sidebar = document.getElementById('sidebar');
+            const mainContent = document.getElementById('mainContent');
+            const hamburger = document.querySelector('.hamburger');
+            
+            if (isSidebarMobile()) {
+                closeSidebar(sidebar, mainContent, hamburger, true);
+            } else if (sidebarCollapsed) {
+                closeSidebar(sidebar, mainContent, hamburger, true);
+            } else {
+                closeSidebar(sidebar, mainContent, hamburger, false);
+            }
+            
+            // Set active menu item based on current page
+            setActiveMenuItem();
+            
+            // Handle menu item clicks
+            setupMenuItemHandlers();
+
+            // Remove pre-init class once explicit sidebar classes are applied.
+            document.documentElement.classList.remove('sidebar-precollapsed');
+        });
+
+        // Unified toggle function for both desktop and mobile
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            const mainContent = document.getElementById('mainContent');
+            const hamburger = document.querySelector('.hamburger');
+            
+            if (isSidebarMobile()) {
+                if (sidebar.classList.contains('collapsed')) {
+                    sidebar.classList.remove('collapsed');
+                    sidebar.classList.add('open');
+                    applySidebarVisualState(sidebar, mainContent, hamburger, false);
+                } else {
+                    closeSidebar(sidebar, mainContent, hamburger, true);
+                }
+            } else {
+                sidebarCollapsed = !sidebarCollapsed;
+                closeSidebar(sidebar, mainContent, hamburger, sidebarCollapsed);
+                
+                // Save state to localStorage and server
+                localStorage.setItem('sidebarCollapsed', sidebarCollapsed.toString());
+                if (window.UserPrefs) window.UserPrefs.set('sidebarCollapsed', sidebarCollapsed);
+            }
+        }
+        
+        // Legacy function for backward compatibility
+        function toggleSidebarCollapse() {
+            toggleSidebar();
+        }
+        
+        // Legacy function for backward compatibility
+        function toggleSidebarMobile() {
+            if (isSidebarMobile()) {
+                toggleSidebar();
+            }
+        }
+
+        // Close sidebar when clicking outside on mobile
+        document.addEventListener('click', function(event) {
+            const sidebar = document.getElementById('sidebar');
+            const hamburger = document.querySelector('.hamburger');
+            const mainContent = document.getElementById('mainContent');
+            
+            if (isSidebarMobile() &&
+                !sidebar.contains(event.target) &&
+                !hamburger.contains(event.target) &&
+                sidebar.classList.contains('open')) {
+                closeSidebar(sidebar, mainContent, hamburger, true);
+            }
+        });
+        
+        // Set active menu item based on current page
+        function setActiveMenuItem() {
+            const currentPath = window.location.pathname.toLowerCase();
+            const menuItems = document.querySelectorAll('.menu-item');
+            
+            // Remove all active classes first
+            menuItems.forEach(item => item.classList.remove('active'));
+            
+            // Set active based on current path
+            if (currentPath === '/' || currentPath === '/home') {
+                document.querySelector('.menu-item.home')?.classList.add('active');
+            } else if (currentPath.startsWith('/library')) {
+                document.querySelector('.menu-item.library')?.classList.add('active');
+            } else if (currentPath.startsWith('/mediamanagement')) {
+                document.querySelector('.menu-item.media-management')?.classList.add('active');
+            } else if (currentPath.startsWith('/autotag')) {
+                document.querySelector('.menu-item.autotag')?.classList.add('active');
+            } else if (currentPath.startsWith('/settings')) {
+                document.querySelector('.menu-item.settings')?.classList.add('active');
+            } else if (currentPath.startsWith('/activities')) {
+                document.querySelector('.menu-item.activities')?.classList.add('active');
+            } else if (currentPath.startsWith('/login')) {
+                document.querySelector('.menu-item.login')?.classList.add('active');
+            }
+        }
+        
+        // Setup menu item click handlers
+        function setupMenuItemHandlers() {
+            document.querySelectorAll('.menu-item').forEach(item => {
+                item.addEventListener('click', function(e) {
+                    if (this.dataset.menuAction === 'true') {
+                        return;
+                    }
+
+                    // Don't prevent default for actual links
+                    if (this.getAttribute('href') && 
+                        this.getAttribute('href').startsWith('/') && 
+                        !this.getAttribute('href').startsWith('/#')) {
+                        // This is a real link, let it navigate normally
+                        return;
+                    }
+                    
+                    e.preventDefault();
+                    
+                    // Remove active class from all items
+                    document.querySelectorAll('.menu-item').forEach(i => i.classList.remove('active'));
+                    this.classList.add('active');
+                    
+                    // Handle navigation based on class
+                    if (this.classList.contains('home')) {
+                        window.location.href = '/';
+                    } else if (this.classList.contains('library')) {
+                        window.location.href = '/Library';
+                    } else if (this.classList.contains('media-management')) {
+                        window.location.href = '/MediaManagement';
+                    } else if (this.classList.contains('autotag')) {
+                        window.location.href = '/AutoTag';
+                    } else if (this.classList.contains('settings')) {
+                        window.location.href = '/Settings';
+                    } else if (this.classList.contains('activities')) {
+                        window.location.href = '/Activities';
+                    } else if (this.classList.contains('login')) {
+                        window.location.href = '/Login';
+                    }
+                    
+                });
+            });
+        }
+        
+        // Handle window resize
+        window.addEventListener('resize', function() {
+            const sidebar = document.getElementById('sidebar');
+            const mainContent = document.getElementById('mainContent');
+            const hamburger = document.querySelector('.hamburger');
+            
+            if (isSidebarMobile()) {
+                closeSidebar(sidebar, mainContent, hamburger, true);
+            } else {
+                closeSidebar(sidebar, mainContent, hamburger, sidebarCollapsed);
+            }
+        });
+        
+        // Keyboard shortcuts
+        document.addEventListener('keydown', function(e) {
+            // Ctrl/Cmd + B to toggle sidebar
+            if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+                e.preventDefault();
+                toggleSidebar();
+            }
+        });
+        
+        // Listen for theme changes and update logo
+        window.addEventListener('themeChanged', function(e) {
+            updateLogoColors();
+        });
+        
+        // Function to force logo color update
+        function updateLogoColors() {
+            const logo = document.querySelector('.theme-logo');
+            if (logo) {
+                // Force a repaint by temporarily changing a property
+                logo.style.opacity = '0.99';
+                setTimeout(() => {
+                    logo.style.opacity = '1';
+                }, 10);
+            }
+        }
+        
+        // Initial logo color update
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(updateLogoColors, 100);
+        });
+    </script>
+
+    <script>
+        (function () {
+            var trigger = document.getElementById('profileTrigger');
+            var dropdown = document.getElementById('profileDropdown');
+            var avatar = document.getElementById('profileAvatar');
+            var avatarLarge = document.getElementById('profileAvatarLarge');
+            var profileName = document.getElementById('profileName');
+            var profileUsername = document.getElementById('profileUsername');
+            var uploadButton = document.getElementById('avatarUploadButton');
+            var uploadInput = document.getElementById('avatarUploadInput');
+
+            if (!trigger || !dropdown || !avatar || !profileName) {
+                return;
+            }
+
+            function toggleDropdown(forceOpen) {
+                var isOpen = !dropdown.classList.contains('hidden');
+                var shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : !isOpen;
+                dropdown.classList.toggle('hidden', !shouldOpen);
+                trigger.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+            }
+
+            trigger.addEventListener('click', function () {
+                toggleDropdown();
+            });
+
+            document.addEventListener('click', function (event) {
+                if (!dropdown.contains(event.target) && !trigger.contains(event.target)) {
+                    toggleDropdown(false);
+                }
+            });
+
+            var defaultAvatarUrl = '/images/noavatar.jpg';
+
+            function setAvatarFromUrl(url) {
+                if (!url) {
+                    return;
+                }
+                avatar.style.backgroundImage = 'url(' + url + ')';
+                avatar.classList.add('image');
+                avatar.textContent = '';
+                if (avatarLarge) {
+                    avatarLarge.style.backgroundImage = 'url(' + url + ')';
+                    avatarLarge.classList.add('image');
+                    avatarLarge.textContent = '';
+                }
+            }
+
+            setAvatarFromUrl(defaultAvatarUrl);
+
+            var isAuthenticated = '@(User?.Identity?.IsAuthenticated == true ? "true" : "false")' === 'true';
+            if (isAuthenticated) {
+                fetch('/api/account/profile')
+                    .then(function (res) { return res.ok ? res.json() : null; })
+                    .then(function (data) {
+                        if (!data) return;
+                        var displayName = data.username || 'User';
+                        profileName.textContent = displayName;
+                        if (profileUsername) {
+                            profileUsername.textContent = displayName;
+                        }
+                        if (data.avatarUrl) {
+                            setAvatarFromUrl(data.avatarUrl + '?v=' + Date.now());
+                        }
+                    });
+            }
+
+            if (uploadButton && uploadInput) {
+                uploadButton.addEventListener('click', function () {
+                    uploadInput.click();
+                });
+                uploadInput.addEventListener('change', function () {
+                    if (!uploadInput.files || !uploadInput.files.length) return;
+                    var formData = new FormData();
+                    formData.append('avatar', uploadInput.files[0]);
+                    fetch('/api/account/avatar', {
+                        method: 'POST',
+                        body: formData
+                    }).then(function (res) {
+                        if (!res.ok) {
+                            return res.json().then(function (data) {
+                                throw new Error(data && data.message ? data.message : 'Upload failed');
+                            });
+                        }
+                        return res.json();
+                    }).then(function () {
+                        setAvatarFromUrl('/api/account/avatar?v=' + Date.now());
+                    }).catch(function (err) {
+                        alert(err.message);
+                    });
+                });
+            }
+
+            var changePasswordButton = document.getElementById('changePasswordButton');
+            if (changePasswordButton) {
+                changePasswordButton.addEventListener('click', function () {
+                    var modal = document.getElementById('changePasswordModal');
+                    if (modal) {
+                        modal.classList.remove('hidden');
+                    }
+                });
+            }
+
+            var changeUsernameButton = document.getElementById('changeUsernameButton');
+            if (changeUsernameButton) {
+                changeUsernameButton.addEventListener('click', function () {
+                    var modal = document.getElementById('changeUsernameModal');
+                    if (modal) {
+                        modal.classList.remove('hidden');
+                    }
+                });
+            }
+        })();
+    </script>
+
+    @if (User?.Identity?.IsAuthenticated == true && User.HasClaim("must_change_password", "true"))
+    {
+        <div id="credentialChangeModal" class="app-modal">
+            <div class="app-modal-backdrop"></div>
+            <div class="app-modal-dialog">
+                <div class="app-modal-header">
+                    <h3 class="app-modal-title">Update Login Details</h3>
+                </div>
+                <form id="credentialChangeForm" novalidate>
+                    <div class="app-modal-body">
+                        <p class="app-modal-message">For security, change the default login details now.</p>
+                        <input id="currentPassword" class="app-modal-input" type="password" placeholder="Current password" autocomplete="current-password" />
+                        <input id="newUsername" class="app-modal-input" type="text" placeholder="New username" autocomplete="username" />
+                        <input id="newPassword" class="app-modal-input" type="password" placeholder="New password" autocomplete="new-password" />
+                        <div id="credentialChangeError" class="text-danger small"></div>
+                    </div>
+                    <div class="app-modal-footer">
+                        <button id="credentialChangeSubmit" class="app-modal-action primary" type="button">Save</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <script>
+            (function () {
+                var modal = document.getElementById('credentialChangeModal');
+                if (modal) {
+                    modal.classList.remove('hidden');
+                    var newUsername = document.getElementById('newUsername');
+                    if (newUsername && newUsername.value === '') {
+                        newUsername.value = '@User.Identity?.Name';
+                    }
+                }
+
+                var submit = document.getElementById('credentialChangeSubmit');
+                if (!submit) return;
+
+                submit.addEventListener('click', async function () {
+                    var currentPassword = document.getElementById('currentPassword');
+                    var newUsername = document.getElementById('newUsername');
+                    var newPassword = document.getElementById('newPassword');
+                    var errorBox = document.getElementById('credentialChangeError');
+
+                    if (errorBox) {
+                        errorBox.textContent = '';
+                    }
+
+                    if (!currentPassword.value || !newUsername.value || !newPassword.value) {
+                        if (errorBox) {
+                            errorBox.textContent = 'All fields are required.';
+                        }
+                        return;
+                    }
+
+                    try {
+                        var response = await fetch('/api/account/change-credentials', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                currentPassword: currentPassword.value,
+                                newUsername: newUsername.value,
+                                newPassword: newPassword.value
+                            })
+                        });
+
+                        if (!response.ok) {
+                            var data = await response.json().catch(function () { return null; });
+                            if (errorBox) {
+                                errorBox.textContent = (data && data.message) ? data.message : 'Unable to update login details.';
+                            }
+                            return;
+                        }
+
+                        window.location.reload();
+                    } catch (err) {
+                        if (errorBox) {
+                            errorBox.textContent = 'Unable to update login details.';
+                        }
+                    }
+                });
+            })();
+        </script>
+    }
+
+    @if (User?.Identity?.IsAuthenticated == true)
+    {
+        <div id="changeUsernameModal" class="app-modal hidden">
+            <div class="app-modal-backdrop"></div>
+            <div class="app-modal-dialog">
+                <div class="app-modal-header">
+                    <h3 class="app-modal-title">Change Username</h3>
+                    <button class="app-modal-close" type="button" id="changeUsernameClose">×</button>
+                </div>
+                <form id="changeUsernameForm" novalidate>
+                    <div class="app-modal-body">
+                        <input
+                            id="changeUsernameCurrentUsername"
+                            class="app-modal-input"
+                            type="text"
+                            value="@User.Identity?.Name"
+                            autocomplete="username"
+                            tabindex="-1"
+                            aria-hidden="true"
+                            style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;" />
+                        <input id="changeUsernameCurrentPassword" class="app-modal-input" type="password" placeholder="Current password" autocomplete="current-password" />
+                        <input id="changeUsernameNew" class="app-modal-input" type="text" placeholder="New username" autocomplete="username" />
+                        <div id="changeUsernameError" class="text-danger small"></div>
+                    </div>
+                    <div class="app-modal-footer">
+                        <button id="changeUsernameSubmit" class="app-modal-action primary" type="button">Update username</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div id="changePasswordModal" class="app-modal hidden">
+            <div class="app-modal-backdrop"></div>
+            <div class="app-modal-dialog">
+                <div class="app-modal-header">
+                    <h3 class="app-modal-title">Change Password</h3>
+                    <button class="app-modal-close" type="button" id="changePasswordClose">×</button>
+                </div>
+                <form id="changePasswordForm" novalidate>
+                    <div class="app-modal-body">
+                        <input
+                            id="changePasswordUsername"
+                            class="app-modal-input"
+                            type="text"
+                            value="@User.Identity?.Name"
+                            autocomplete="username"
+                            tabindex="-1"
+                            aria-hidden="true"
+                            style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;" />
+                        <input id="changePasswordCurrent" class="app-modal-input" type="password" placeholder="Current password" autocomplete="current-password" />
+                        <input id="changePasswordNew" class="app-modal-input" type="password" placeholder="New password" autocomplete="new-password" />
+                        <div id="changePasswordError" class="text-danger small"></div>
+                    </div>
+                    <div class="app-modal-footer">
+                        <button id="changePasswordSubmit" class="app-modal-action primary" type="button">Update password</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <script>
+            (function () {
+                var usernameModal = document.getElementById('changeUsernameModal');
+                var usernameCloseButton = document.getElementById('changeUsernameClose');
+                var usernameSubmitButton = document.getElementById('changeUsernameSubmit');
+                var usernameErrorBox = document.getElementById('changeUsernameError');
+                var modal = document.getElementById('changePasswordModal');
+                var closeButton = document.getElementById('changePasswordClose');
+                var submitButton = document.getElementById('changePasswordSubmit');
+                var errorBox = document.getElementById('changePasswordError');
+                if (!modal || !submitButton) return;
+
+                function closeUsernameModal() {
+                    if (!usernameModal) return;
+                    usernameModal.classList.add('hidden');
+                    if (usernameErrorBox) {
+                        usernameErrorBox.textContent = '';
+                    }
+                }
+
+                function closeModal() {
+                    modal.classList.add('hidden');
+                    if (errorBox) {
+                        errorBox.textContent = '';
+                    }
+                }
+
+                if (usernameCloseButton) {
+                    usernameCloseButton.addEventListener('click', closeUsernameModal);
+                }
+
+                if (usernameModal) {
+                    usernameModal.addEventListener('click', function (event) {
+                        if (event.target.classList.contains('app-modal-backdrop')) {
+                            closeUsernameModal();
+                        }
+                    });
+                }
+
+                if (closeButton) {
+                    closeButton.addEventListener('click', closeModal);
+                }
+
+                modal.addEventListener('click', function (event) {
+                    if (event.target.classList.contains('app-modal-backdrop')) {
+                        closeModal();
+                    }
+                });
+
+                submitButton.addEventListener('click', async function () {
+                    var currentPassword = document.getElementById('changePasswordCurrent');
+                    var newPassword = document.getElementById('changePasswordNew');
+
+                    if (errorBox) {
+                        errorBox.textContent = '';
+                    }
+
+                    if (!currentPassword.value || !newPassword.value) {
+                        if (errorBox) {
+                            errorBox.textContent = 'All fields are required.';
+                        }
+                        return;
+                    }
+
+                    try {
+                        var response = await fetch('/api/account/change-password', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                currentPassword: currentPassword.value,
+                                newPassword: newPassword.value
+                            })
+                        });
+
+                        if (!response.ok) {
+                            var data = await response.json().catch(function () { return null; });
+                            if (errorBox) {
+                                errorBox.textContent = (data && data.message) ? data.message : 'Unable to update password.';
+                            }
+                            return;
+                        }
+
+                        closeModal();
+                    } catch (err) {
+                        if (errorBox) {
+                            errorBox.textContent = 'Unable to update password.';
+                        }
+                    }
+                });
+
+                if (usernameSubmitButton) {
+                    usernameSubmitButton.addEventListener('click', async function () {
+                        var currentPassword = document.getElementById('changeUsernameCurrentPassword');
+                        var newUsername = document.getElementById('changeUsernameNew');
+
+                        if (usernameErrorBox) {
+                            usernameErrorBox.textContent = '';
+                        }
+
+                        if (!currentPassword.value || !newUsername.value) {
+                            if (usernameErrorBox) {
+                                usernameErrorBox.textContent = 'All fields are required.';
+                            }
+                            return;
+                        }
+
+                        try {
+                            var response = await fetch('/api/account/change-username', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    currentPassword: currentPassword.value,
+                                    newUsername: newUsername.value
+                                })
+                            });
+
+                            if (!response.ok) {
+                                var data = await response.json().catch(function () { return null; });
+                                if (usernameErrorBox) {
+                                    usernameErrorBox.textContent = (data && data.message) ? data.message : 'Unable to update username.';
+                                }
+                                return;
+                            }
+
+                            closeUsernameModal();
+                            window.location.reload();
+                        } catch (err) {
+                            if (usernameErrorBox) {
+                                usernameErrorBox.textContent = 'Unable to update username.';
+                            }
+                        }
+                    });
+                }
+            })();
+        </script>
+    }
+
+        @await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>

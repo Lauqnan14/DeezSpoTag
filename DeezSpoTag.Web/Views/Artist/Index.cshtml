@@ -1,0 +1,2001 @@
+@{
+    ViewData["Title"] = "Artist";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+@section Styles {
+<link rel="stylesheet" href="~/css/loading-state-shared.css" asp-append-version="true" />
+<style>
+.deezer-artist-page {
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+    padding: 24px;
+    width: 100%;
+    max-width: none;
+    margin: 0;
+}
+
+.artist-hero {
+    position: relative;
+    border-radius: 20px;
+    overflow: hidden;
+    background: var(--bg-secondary);
+    min-height: 260px;
+}
+
+.artist-hero::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image:
+        linear-gradient(120deg, rgba(8, 12, 20, 0.88), rgba(8, 12, 20, 0.35)),
+        var(--hero-image, none);
+    background-size: cover;
+    background-position: center;
+    z-index: 0;
+}
+
+.artist-hero__content {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    gap: 24px;
+    align-items: center;
+    padding: 28px;
+}
+
+.artist-hero__avatar {
+    width: var(--art-avatar-size);
+    height: var(--art-avatar-size);
+    border-radius: 50%;
+    overflow: hidden;
+    flex-shrink: 0;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+    border: 3px solid rgba(255, 255, 255, 0.2);
+    background: var(--bg-tertiary);
+}
+
+.artist-hero__avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.artist-hero__meta {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    color: var(--text-primary);
+    min-width: 0;
+    width: 100%;
+}
+
+.artist-hero__kicker {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--text-secondary);
+}
+
+.artist-hero__title {
+    font-size: 44px;
+    font-weight: 700;
+    margin: 0;
+}
+
+.artist-hero__stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 20px;
+    align-items: center;
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+
+.artist-hero__genres {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.artist-hero__genre {
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.artist-hero__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+}
+
+.artist-hero__actions .download-destination-select {
+    min-width: 220px;
+}
+
+.artist-hero__actions .action-btn--wide,
+.artist-hero__actions .download-destination-select {
+    width: 220px;
+}
+
+.section-card {
+    background: var(--bg-tertiary);
+    border-radius: 16px;
+    padding: 20px 22px;
+    border: 1px solid var(--border-secondary);
+    min-width: 0;
+}
+
+.section-title {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0 0 16px 0;
+    color: var(--text-primary);
+}
+
+.top-tracks-panel .neo-track-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.top-songs-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    column-gap: 18px;
+    overflow: hidden;
+}
+
+.top-song-item {
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    min-height: 62px;
+    border-top: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
+    padding: 7px 0;
+    position: relative;
+    transition: background 0.15s ease;
+}
+
+.top-song-item[data-spotify-url] {
+    cursor: pointer;
+}
+
+.top-song-item[data-spotify-url]:hover .top-song-item__title {
+    color: var(--text-primary);
+}
+
+.top-song-item__thumb {
+    width: 42px;
+    height: 42px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-primary);
+    position: relative;
+    display: block;
+    text-decoration: none;
+}
+
+.top-song-item__thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.top-song-item.is-playing .top-song-item__thumb,
+.top-song-item.is-playing .top-song-item__thumb img {
+    border-radius: 50%;
+}
+
+.top-song-item.is-playing .top-song-item__thumb img {
+    animation: track-art-spin 4.0s linear infinite;
+}
+
+.top-song-item__play {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: none;
+    border-radius: 6px;
+    display: grid;
+    place-items: center;
+    background: transparent;
+    color: #fff;
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease, background 0.15s ease;
+    z-index: 1;
+}
+
+.top-song-item__play .playback-glyph {
+    width: 21px;
+    height: 21px;
+    display: inline-grid;
+    place-items: center;
+}
+
+.top-song-item__play .playback-icon {
+    width: 100%;
+    height: 100%;
+    display: block;
+    fill: currentColor;
+}
+
+.top-song-item__play .playback-icon--pause {
+    display: none;
+}
+
+.top-song-item__play.is-playing .playback-icon--play {
+    display: none;
+}
+
+.top-song-item__play.is-playing .playback-icon--pause {
+    display: block;
+}
+
+.top-song-item__thumb:hover .top-song-item__play,
+.top-song-item__thumb:focus-within .top-song-item__play {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.top-song-item__play:hover,
+.top-song-item__play:focus-visible {
+    background: transparent;
+    color: var(--primary-color);
+}
+
+.top-song-item__placeholder {
+    width: 100%;
+    height: 100%;
+    background: color-mix(in srgb, var(--text-secondary) 22%, transparent);
+}
+
+.top-song-item__info {
+    min-width: 0;
+}
+
+.top-song-item__title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.top-song-item__title {
+    font-size: 16px;
+    line-height: 1.2;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-decoration: none;
+    display: block;
+}
+
+.top-song-item__explicit {
+    width: 20px;
+    height: 20px;
+    border: 1px solid var(--border-primary);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--panel-strong) 78%, transparent);
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1;
+    flex: 0 0 auto;
+}
+
+.top-song-item__album {
+    margin-top: 4px;
+    font-size: 13px;
+    line-height: 1.25;
+    font-weight: 500;
+    letter-spacing: -0.015em;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.top-song-item__more {
+    width: 26px;
+    height: 26px;
+    border: 1px solid var(--border-primary);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-secondary);
+    display: inline-grid;
+    place-items: center;
+    text-decoration: none;
+    cursor: pointer;
+    opacity: 0.95;
+}
+
+.top-song-item__more:hover,
+.top-song-item__more:focus-visible {
+    background: color-mix(in srgb, var(--primary-color) 14%, transparent);
+    border-color: var(--primary-color);
+    color: var(--text-primary);
+    opacity: 1;
+}
+
+@@keyframes track-art-spin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.top-songs-tracklist-link {
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.top-songs-tracklist-link.is-disabled {
+    opacity: 0.8;
+    cursor: default;
+    pointer-events: none;
+}
+
+.artist-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 18px;
+}
+
+.artist-tab {
+    padding: 8px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.artist-tab.active {
+    background: var(--primary-color);
+    color: #fff;
+    border-color: transparent;
+}
+
+.discography-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(var(--art-grid-min), 1fr));
+    gap: 16px;
+}
+
+.discography-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    text-decoration: none;
+    color: inherit;
+}
+
+.discography-card img {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: 12px;
+    object-fit: cover;
+    background: var(--bg-quaternary);
+}
+
+.discography-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.25;
+    word-break: break-word;
+}
+
+.discography-meta {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.empty-state {
+    color: var(--text-muted);
+    font-size: 14px;
+    padding: 10px 0;
+}
+
+.similar-grid,
+.playlist-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(var(--art-grid-min), 1fr));
+    gap: 16px;
+}
+
+.similar-card,
+.playlist-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    text-decoration: none;
+    color: inherit;
+}
+
+.similar-card img,
+.playlist-card img {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: 12px;
+    object-fit: cover;
+    background: var(--bg-quaternary);
+}
+
+.similar-name,
+.playlist-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.25;
+    word-break: break-word;
+}
+
+@@media (max-width: 900px) {
+    .deezer-artist-page {
+        padding: 16px;
+        gap: 20px;
+    }
+
+    .section-card {
+        padding: 16px;
+        border-radius: 14px;
+    }
+
+    .artist-hero__content {
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        padding: 20px 18px;
+        gap: 16px;
+    }
+
+    .artist-hero__title {
+        font-size: 34px;
+    }
+
+    .artist-hero__avatar {
+        width: var(--art-avatar-size);
+        height: var(--art-avatar-size);
+    }
+
+    .artist-hero__stats,
+    .artist-hero__genres {
+        justify-content: center;
+    }
+
+    .artist-hero__actions {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .artist-hero__actions .action-btn--wide,
+    .artist-hero__actions .download-destination-select {
+        width: min(100%, 320px);
+    }
+}
+
+@@media (max-width: 1260px) {
+    .top-songs-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        column-gap: 16px;
+    }
+}
+
+@@media (max-width: 940px) {
+    .top-songs-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .top-song-item__title,
+    .top-song-item__album {
+        font-size: 15px;
+    }
+
+    .artist-tabs {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
+        gap: 8px;
+        padding-bottom: 2px;
+    }
+
+    .artist-tab {
+        flex: 0 0 auto;
+    }
+
+    .discography-grid,
+    .similar-grid,
+    .playlist-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+    }
+}
+
+@@media (max-width: 640px) {
+    .deezer-artist-page {
+        padding: 12px;
+        gap: 16px;
+    }
+
+    .artist-hero {
+        border-radius: 16px;
+        min-height: 0;
+    }
+
+    .artist-hero__content {
+        padding: 16px 14px;
+        gap: 12px;
+    }
+
+    .artist-hero__avatar {
+        width: 112px;
+        height: 112px;
+    }
+
+    .artist-hero__title {
+        font-size: 28px;
+    }
+
+    .artist-hero__kicker {
+        font-size: 11px;
+        letter-spacing: 1.6px;
+    }
+
+    .artist-hero__stats {
+        font-size: 13px;
+    }
+
+    .artist-hero__genre {
+        font-size: 11px;
+    }
+
+    .artist-hero__actions {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+    }
+
+    .artist-hero__actions .download-destination-select {
+        width: 100%;
+    }
+
+    .artist-hero__actions .action-btn--wide {
+        width: 100%;
+    }
+
+    .artist-hero__actions .action-btn {
+        width: 100%;
+    }
+
+    .top-songs-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .top-song-item {
+        grid-template-columns: 42px minmax(0, 1fr) auto;
+        gap: 10px;
+        min-height: 62px;
+    }
+
+    .top-song-item__thumb {
+        width: 42px;
+        height: 42px;
+    }
+
+    .top-song-item__more {
+        width: 26px;
+        height: 26px;
+    }
+
+    .section-title {
+        font-size: 18px;
+        margin-bottom: 12px;
+    }
+
+    .discography-grid,
+    .similar-grid,
+    .playlist-grid {
+        gap: 10px;
+    }
+}
+
+@@media (max-width: 420px) {
+    .artist-hero__title {
+        font-size: 24px;
+    }
+
+    .artist-tab {
+        font-size: 12px;
+        padding: 7px 12px;
+    }
+
+    .top-song-item__title {
+        font-size: 14px;
+    }
+
+    .top-song-item__album {
+        font-size: 12px;
+    }
+}
+</style>
+}
+
+<div id="artist-content" class="deezer-artist-page">
+    <div class="loading-section">
+        <div class="loading-spinner"></div>
+        <p>Loading artist...</p>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+let currentArtistId = '@ViewData["ArtistId"]' || new URLSearchParams(window.location.search).get('id') || '';
+let currentArtistSource = '@ViewData["Source"]' || new URLSearchParams(window.location.search).get('source') || 'deezer';
+let artistData = null;
+let formattedArtistData = null;
+let currentDiscographyTab = '';
+const artistPageCacheTtlMs = 2 * 60 * 60 * 1000;
+const artistPreviewState = {
+    audio: null,
+    trackKey: null,
+    button: null,
+    sourceKey: null
+};
+const artistSpotifyResolveCache = new Map();
+const artistDeezerPlaybackContextCache = new Map();
+const artistDeezerPlaybackContextRequests = new Map();
+let artistTopTracksHandlersBound = false;
+
+document.addEventListener('DOMContentLoaded', function() {
+    if (currentArtistId) {
+        loadArtist(currentArtistId);
+    }
+});
+
+async function loadArtist(artistId) {
+    try {
+        const perfStart = performance.now();
+        const cached = loadArtistPayloadFromCache(artistId, currentArtistSource);
+
+        document.getElementById('artist-content').innerHTML = `
+            <div class="loading-section">
+                <div class="loading-spinner"></div>
+                <p>Loading artist...</p>
+            </div>
+        `;
+        if (cached) {
+            artistData = cached;
+            formattedArtistData = formatArtistData(artistData);
+            displayArtist(formattedArtistData);
+        }
+
+        let response = await fetch(`/api/artist-page?id=${artistId}&source=${currentArtistSource}`);
+        if (!response.ok) {
+            throw new Error(`Failed to load artist: ${response.status}`);
+        }
+        artistData = await response.json();
+        if (currentArtistSource === 'deezer' && !hasArtistExtras(artistData)) {
+            response = await fetch(`/api/artist-page?id=${artistId}&source=${currentArtistSource}&refresh=1`);
+            if (response.ok) {
+                artistData = await response.json();
+            }
+        }
+
+        artistData = mergeArtistPayload(artistData, cached);
+        saveArtistPayloadToCache(artistId, currentArtistSource, artistData);
+        console.log(`[artist] fetch+parse ms=${(performance.now() - perfStart).toFixed(1)}`);
+
+        formattedArtistData = formatArtistData(artistData);
+        displayArtist(formattedArtistData);
+        console.log(`[artist] render ms=${(performance.now() - perfStart).toFixed(1)}`);
+    } catch (error) {
+        console.error('Error loading artist:', error);
+        document.getElementById('artist-content').innerHTML = `
+            <div class="error-section">
+                <h3>Failed to Load Artist</h3>
+                <p>${error.message}</p>
+                <button onclick="loadArtist('${artistId}')" class="btn btn-secondary action-btn">Try Again</button>
+            </div>
+        `;
+    }
+}
+
+function hasArtistExtras(data) {
+    if (!Array.isArray(data?.playlists) || !Array.isArray(data?.related)) {
+        return false;
+    }
+
+    const releases = data?.releases;
+    if (!releases || typeof releases !== 'object') {
+        return false;
+    }
+
+    return Object.values(releases).some(value => Array.isArray(value) && value.length > 0);
+}
+
+function formatArtistData(data) {
+    const releases = {};
+    const releaseDateByAlbumId = new Map();
+    const releaseDateByAlbumTitle = new Map();
+
+    if (data.releases) {
+        Object.keys(data.releases).forEach(tabKey => {
+            const normalizedKey = normalizeReleaseTabKey(tabKey);
+            if (!normalizedKey) {
+                return;
+            }
+            if (data.releases[tabKey] && Array.isArray(data.releases[tabKey])) {
+                const formattedReleases = data.releases[tabKey].map(release => ({
+                    releaseID: release.id,
+                    releaseCover: release.cover_medium || release.cover_small || release.cover || '',
+                    releaseTitle: release.title || '',
+                    releaseDate: release.release_date || '',
+                    releaseTracksNumber: release.nb_tracks || 0,
+                    releaseLink: release.link || '',
+                    releaseType: release.record_type || 'album',
+                    isReleaseExplicit: release.explicit_lyrics || false,
+                    releaseSource: release.source || 'deezer'
+                }));
+
+                formattedReleases.forEach((release) => {
+                    const releaseDate = release.releaseDate || '';
+                    if (releaseDate) {
+                        if (release.releaseID) {
+                            releaseDateByAlbumId.set(String(release.releaseID), releaseDate);
+                        }
+                        const titleKey = String(release.releaseTitle || '').trim().toLowerCase();
+                        if (titleKey) {
+                            releaseDateByAlbumTitle.set(titleKey, releaseDate);
+                        }
+                    }
+                });
+
+                if (!releases[normalizedKey]) {
+                    releases[normalizedKey] = [];
+                }
+                releases[normalizedKey] = releases[normalizedKey].concat(formattedReleases);
+            }
+        });
+    }
+
+    const topTracks = (Array.isArray(data.top_tracks) ? data.top_tracks : []).map((track) => {
+        const enrichedTrack = { ...track };
+        let releaseDate = getTrackReleaseDate(track);
+
+        if (!releaseDate) {
+            const albumId = track?.album?.id ? String(track.album.id) : '';
+            if (albumId && releaseDateByAlbumId.has(albumId)) {
+                releaseDate = releaseDateByAlbumId.get(albumId) || '';
+            }
+        }
+
+        if (!releaseDate) {
+            const albumTitleKey = String(track?.album?.title || '').trim().toLowerCase();
+            if (albumTitleKey && releaseDateByAlbumTitle.has(albumTitleKey)) {
+                releaseDate = releaseDateByAlbumTitle.get(albumTitleKey) || '';
+            }
+        }
+
+        if (releaseDate) {
+            enrichedTrack.release_date = releaseDate;
+            if (track?.album && typeof track.album === 'object') {
+                enrichedTrack.album = {
+                    ...track.album,
+                    release_date: track.album.release_date || releaseDate
+                };
+            }
+        }
+
+        return enrichedTrack;
+    });
+
+    return {
+        artistSource: data.source || currentArtistSource || 'deezer',
+        artistName: data.name || 'Unknown Artist',
+        artistPicture: data.spotify_hero || data.picture_xl || data.picture_big || data.picture_medium || '',
+        artistAvatar: data.picture_medium || data.picture_small || data.picture || data.picture_xl || '',
+        artistGenres: mergeGenres(data.genres, data.local_genres),
+        artistFans: data.nb_fan || 0,
+        artistReleases: releases,
+        artistTopTracks: topTracks,
+        artistRelated: Array.isArray(data.related) ? data.related : [],
+        downloadLink: data.download_link || (data.id ? `https://www.deezer.com/artist/${data.id}` : '')
+    };
+}
+
+function normalizeReleaseTabKey(key) {
+    if (!key) return '';
+    const lowered = String(key).toLowerCase().trim();
+    if (lowered === 'albums' || lowered === 'album') return 'album';
+    if (lowered === 'singles' || lowered === 'single') return 'single';
+    if (lowered === 'singles_eps' || lowered === 'singles and eps' || lowered === 'singles & eps') return 'singles_eps';
+    if (lowered === 'compilations' || lowered === 'compile') return 'compile';
+    if (lowered === 'compilation') return 'compile';
+    if (lowered === 'popular releases' || lowered === 'popular_releases' || lowered === 'popular') return 'popular';
+    if (lowered === 'ep') return 'ep';
+    return lowered;
+}
+
+function orderDiscographyTabs(tabs) {
+    const order = ['popular', 'album', 'single', 'ep', 'singles_eps', 'compile', 'bundle', 'featured', 'more', 'all'];
+    const scored = tabs.map(tab => {
+        const idx = order.indexOf(tab);
+        return {
+            tab,
+            idx: idx === -1 ? Number.MAX_SAFE_INTEGER : idx
+        };
+    });
+    scored.sort((a, b) => a.idx - b.idx || a.tab.localeCompare(b.tab));
+    return scored.map(item => item.tab);
+}
+
+function displayArtist(data) {
+    const container = document.getElementById('artist-content');
+    const availableTabs = orderDiscographyTabs(Object.keys(data.artistReleases));
+    const tabsWithData = orderDiscographyTabs(availableTabs.filter(tab => (data.artistReleases[tab] || []).length > 0));
+    const cachedTab = loadArtistTabFromCache(currentArtistId, currentArtistSource);
+
+    currentDiscographyTab = tabsWithData.includes(cachedTab)
+        ? cachedTab
+        : tabsWithData.includes('popular')
+            ? 'popular'
+            : tabsWithData.includes('album')
+                ? 'album'
+                : (tabsWithData[0] || availableTabs[0] || 'album');
+
+    const heroStyle = data.artistPicture ? `--hero-image: url('${data.artistPicture}')` : '';
+    const genreChips = data.artistGenres.length
+        ? data.artistGenres.map(genre => `<span class="artist-hero__genre">${escapeHtml(genre)}</span>`).join('')
+        : '';
+    const fansText = data.artistFans ? `${formatNumber(data.artistFans)} fans` : 'Fans unavailable';
+
+    const topTracksHtml = renderTopTracks(data.artistTopTracks);
+    const discographyTabs = tabsWithData.length ? tabsWithData : availableTabs;
+
+    const artistHtml = `
+        <section class="artist-hero" style="${heroStyle}">
+            <div class="artist-hero__content">
+                <div class="artist-hero__avatar">
+                    ${data.artistAvatar ? `<img src="${data.artistAvatar}" alt="${escapeHtml(data.artistName)}">` : ''}
+                </div>
+                <div class="artist-hero__meta">
+                    <div class="artist-hero__kicker">Artist</div>
+                    <h1 class="artist-hero__title">${escapeHtml(data.artistName)}</h1>
+                    <div class="artist-hero__stats">
+                        <span>${fansText}</span>
+                    </div>
+                    ${genreChips ? `<div class="artist-hero__genres">${genreChips}</div>` : ''}
+                    <div class="artist-hero__actions">
+                        <button class="btn btn-secondary action-btn action-btn--wide" onclick="downloadArtist('${data.downloadLink}/discography')" ${!data.downloadLink ? 'style="display:none"' : ''}>Download Discography</button>
+                        <button id="watchlistToggle" class="btn btn-primary action-btn" type="button">Monitor Artist</button>
+                        <select id="downloadDestinationArtist" class="form-select download-destination-select"></select>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="section-card top-tracks-panel">
+            <h2 class="section-title">
+                <a id="topSongsTracklistLink" class="top-songs-tracklist-link is-disabled" href="#" aria-disabled="true">Top Songs</a>
+            </h2>
+            <div class="neo-track-list" id="artistTopTracksList">
+                ${topTracksHtml}
+            </div>
+        </section>
+
+        <section class="section-card">
+            <h2 class="section-title">Discography</h2>
+            ${renderDiscographyTabs(discographyTabs)}
+            <div id="discography-grid" class="discography-grid">
+                ${renderDiscography(data.artistReleases[currentDiscographyTab] || [])}
+            </div>
+        </section>
+
+        <section class="section-card">
+            <h2 class="section-title">Similar artists</h2>
+            ${renderRelatedArtists(data.artistRelated)}
+        </section>
+    `;
+
+    container.innerHTML = artistHtml;
+
+    restoreArtistPreviewState();
+    updateTopSongsTracklistLink();
+    bindArtistTopTracksHandlers();
+    initArtistWatchlistToggle(data);
+
+    if (window.DeezSpoTagDownload?.ensureDestinationSelects) {
+        window.DeezSpoTagDownload.ensureDestinationSelects();
+    }
+
+    document.title = `${data.artistName} - DeezSpoTag`;
+}
+
+function renderTopTracks(tracks) {
+    if (!tracks || tracks.length === 0) {
+        return '<div class="empty-state">No top tracks available.</div>';
+    }
+
+    const rows = tracks.slice(0, 9).map((track) => {
+        const source = (track.source || track.artist?.source || track.album?.source || currentArtistSource || 'deezer').toString().toLowerCase();
+        const albumTitle = track.album?.title || '';
+        const albumType = (track.album?.type || (source === 'spotify' ? 'track' : 'album')).toString().toLowerCase();
+        const releaseYear = getTrackYear(track);
+        const trackSubtitle = buildTrackSubtitle(track, albumTitle, albumType, releaseYear);
+        const albumId = track.album?.id || track.id || '';
+        const trackLink = track.link || '';
+        const albumLink = albumId ? `/Tracklist?id=${encodeURIComponent(albumId)}&type=${encodeURIComponent(albumType)}&source=${encodeURIComponent(source)}` : trackLink;
+        const coverUrl = resolveTrackCover(track);
+        const safeTitle = escapeHtml(track.title || '');
+        const coverMarkup = coverUrl
+            ? `<img src="${coverUrl}" alt="${safeTitle}" loading="lazy" decoding="async">`
+            : '<div class="top-song-item__placeholder"></div>';
+        const trackActionLabel = safeTitle ? `Open ${safeTitle}` : 'Open track';
+        const spotifyUrl = source === 'spotify' ? String(trackLink || '') : '';
+        const deezerId = source === 'deezer' ? String(track.id || track.deezer_id || '').trim() : '';
+        const previewUrl = String(track.preview || '');
+        const safeSpotifyUrl = spotifyUrl ? escapeHtml(spotifyUrl) : '';
+        const safePreviewUrl = previewUrl ? escapeHtml(previewUrl) : '';
+        const explicitBadge = track.explicit_lyrics ? '<span class="top-song-item__explicit" aria-label="Explicit">E</span>' : '';
+        const dataAttrs = [];
+        if (safeSpotifyUrl) {
+            dataAttrs.push(`data-spotify-url="${safeSpotifyUrl}"`);
+            if (safeTitle) {
+                dataAttrs.push(`data-spotify-title="${safeTitle}"`);
+            }
+        }
+        const playAttrs = [];
+        if (safeSpotifyUrl) {
+            playAttrs.push(`data-spotify-url="${safeSpotifyUrl}"`);
+        }
+        if (deezerId) {
+            playAttrs.push(`data-deezer-id="${deezerId}"`);
+        }
+        if (safePreviewUrl) {
+            playAttrs.push(`data-preview-url="${safePreviewUrl}"`);
+        }
+        const sourceKey = String(spotifyUrl || previewUrl || deezerId || track.id || '');
+        if (sourceKey) {
+            playAttrs.push(`data-source-key="${escapeHtml(sourceKey)}"`);
+        }
+        const thumbOpen = spotifyUrl
+            ? '<div class="top-song-item__thumb">'
+            : `<a class="top-song-item__thumb" href="${albumLink}" aria-label="${trackActionLabel}">`;
+        const thumbClose = spotifyUrl ? '</div>' : '</a>';
+        const titleMarkup = spotifyUrl
+            ? `<div class="top-song-item__title-row"><div class="top-song-item__title">${safeTitle}</div>${explicitBadge}</div>`
+            : `<div class="top-song-item__title-row"><a class="top-song-item__title" href="${albumLink}">${safeTitle}</a>${explicitBadge}</div>`;
+
+        return `
+            <div class="top-song-item" ${dataAttrs.join(' ')}>
+                ${thumbOpen}
+                    ${coverMarkup}
+                    <button class="top-song-item__play track-action track-play" type="button" ${playAttrs.join(' ')} aria-label="Play ${safeTitle || 'track'} preview">
+                        <span class="playback-glyph" aria-hidden="true">
+                            <svg class="playback-icon playback-icon--play" viewBox="0 0 24 24" focusable="false">
+                                <path d="M8 5v14l11-7z"></path>
+                            </svg>
+                            <svg class="playback-icon playback-icon--pause" viewBox="0 0 24 24" focusable="false">
+                                <path d="M7 5h4v14H7zM13 5h4v14h-4z"></path>
+                            </svg>
+                        </span>
+                    </button>
+                ${thumbClose}
+                <div class="top-song-item__info">
+                    ${titleMarkup}
+                    ${trackSubtitle ? `<div class="top-song-item__album">${escapeHtml(trackSubtitle)}</div>` : ''}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    return `
+        <div class="top-songs-grid">
+            ${rows}
+        </div>
+    `;
+}
+
+function bindArtistTopTracksHandlers() {
+    if (artistTopTracksHandlersBound) {
+        return;
+    }
+    artistTopTracksHandlersBound = true;
+
+    document.addEventListener('click', (event) => {
+        const list = document.getElementById('artistTopTracksList');
+        if (!list) {
+            return;
+        }
+
+        const playButton = event.target.closest('.top-song-item__play');
+        if (playButton && list.contains(playButton)) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            playArtistTrackInApp(playButton);
+            return;
+        }
+
+        const spotifyTarget = event.target.closest('[data-spotify-url]');
+        if (spotifyTarget && list.contains(spotifyTarget)) {
+            const url = spotifyTarget.dataset.spotifyUrl;
+            if (!url) {
+                return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            handleSpotifyRedirect(url);
+        }
+    });
+}
+
+function updateTopSongsTracklistLink() {
+    const link = document.getElementById('topSongsTracklistLink');
+    if (!link) {
+        return;
+    }
+    if (!currentArtistId) {
+        link.setAttribute('href', '#');
+        link.setAttribute('aria-disabled', 'true');
+        link.classList.add('is-disabled');
+        return;
+    }
+
+    const qs = new URLSearchParams();
+    qs.set('id', currentArtistId);
+    qs.set('type', 'artist');
+    qs.set('source', currentArtistSource || 'deezer');
+    link.setAttribute('href', `/Tracklist?${qs.toString()}`);
+    link.setAttribute('aria-disabled', 'false');
+    link.classList.remove('is-disabled');
+}
+
+function setArtistPreviewButtonState(button, isPlaying) {
+    if (!button) {
+        return;
+    }
+    button.classList.toggle('is-playing', isPlaying);
+    const row = button.closest('.top-song-item');
+    if (row) {
+        row.classList.toggle('is-playing', isPlaying);
+    }
+}
+
+function resetArtistPreviewState() {
+    if (artistPreviewState.audio && !artistPreviewState.audio.paused) {
+        artistPreviewState.audio.pause();
+    }
+    if (artistPreviewState.button) {
+        setArtistPreviewButtonState(artistPreviewState.button, false);
+    }
+    artistPreviewState.trackKey = null;
+    artistPreviewState.button = null;
+    artistPreviewState.sourceKey = null;
+}
+
+function restoreArtistPreviewState() {
+    const audio = artistPreviewState.audio;
+    if (!audio || audio.paused || !artistPreviewState.sourceKey) {
+        if (artistPreviewState.button) {
+            setArtistPreviewButtonState(artistPreviewState.button, false);
+        }
+        artistPreviewState.button = null;
+        return;
+    }
+
+    const list = document.getElementById('artistTopTracksList');
+    if (!list) {
+        return;
+    }
+
+    const selector = `.top-song-item__play[data-source-key="${CSS.escape(artistPreviewState.sourceKey)}"]`;
+    const nextButton = list.querySelector(selector);
+    if (!nextButton) {
+        artistPreviewState.button = null;
+        return;
+    }
+
+    artistPreviewState.button = nextButton;
+    setArtistPreviewButtonState(nextButton, true);
+}
+
+function normalizeArtistDeezerPlaybackContext(payload) {
+    if (!window.DeezerPlaybackContext || typeof window.DeezerPlaybackContext.normalize !== 'function') {
+        return null;
+    }
+    return window.DeezerPlaybackContext.normalize(payload);
+}
+
+function buildArtistDeezerStreamUrl(deezerId, context) {
+    if (!window.DeezerPlaybackContext || typeof window.DeezerPlaybackContext.buildStreamUrl !== 'function') {
+        return '';
+    }
+    return window.DeezerPlaybackContext.buildStreamUrl(deezerId, { context: context });
+}
+
+async function fetchArtistDeezerPlaybackContext(deezerId) {
+    if (!window.DeezerPlaybackContext || typeof window.DeezerPlaybackContext.fetchContext !== 'function') {
+        return null;
+    }
+    return await window.DeezerPlaybackContext.fetchContext(deezerId, {
+        cache: artistDeezerPlaybackContextCache,
+        requests: artistDeezerPlaybackContextRequests
+    });
+}
+
+async function playArtistTrackInApp(button) {
+    if (!button) {
+        return;
+    }
+    const spotifyUrl = button.dataset.spotifyUrl || '';
+    const deezerId = button.dataset.deezerId || '';
+    const previewUrl = button.dataset.previewUrl || '';
+    const sourceKey = button.dataset.sourceKey || spotifyUrl || previewUrl || deezerId || '';
+
+    let streamUrl = '';
+    let trackKey = '';
+
+    if (previewUrl) {
+        streamUrl = previewUrl;
+        trackKey = previewUrl;
+    } else if (deezerId) {
+        if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
+            streamUrl = await window.DeezerPlaybackContext.resolveStreamUrl(deezerId, {
+                element: button,
+                cache: artistDeezerPlaybackContextCache,
+                requests: artistDeezerPlaybackContextRequests
+            });
+        } else {
+            const context = await fetchArtistDeezerPlaybackContext(deezerId);
+            streamUrl = buildArtistDeezerStreamUrl(deezerId, context);
+        }
+        trackKey = `deezer:${deezerId}`;
+    } else if (spotifyUrl) {
+        const resolved = await resolveSpotifyUrlToDeezer(spotifyUrl);
+        if (!resolved || resolved.available === false || resolved.type !== 'track' || !resolved.deezerId) {
+            showArtistPlaybackMessage('Track not available for streaming.');
+            return;
+        }
+        button.dataset.deezerId = resolved.deezerId;
+        if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
+            streamUrl = await window.DeezerPlaybackContext.resolveStreamUrl(resolved.deezerId, {
+                element: button,
+                cache: artistDeezerPlaybackContextCache,
+                requests: artistDeezerPlaybackContextRequests
+            });
+        } else {
+            const context = await fetchArtistDeezerPlaybackContext(resolved.deezerId);
+            streamUrl = buildArtistDeezerStreamUrl(resolved.deezerId, context);
+        }
+        trackKey = `deezer:${resolved.deezerId}`;
+    } else {
+        showArtistPlaybackMessage('Preview unavailable.');
+        return;
+    }
+
+    const audio = artistPreviewState.audio ?? new Audio();
+    const list = document.getElementById('artistTopTracksList');
+    const getNextTopTrackButton = () => {
+        if (!list || !artistPreviewState.button) {
+            return null;
+        }
+        const buttons = Array.from(list.querySelectorAll('button.track-play'));
+        const index = buttons.indexOf(artistPreviewState.button);
+        if (index === -1) {
+            return null;
+        }
+        return buttons[index + 1] || null;
+    };
+
+    if (artistPreviewState.trackKey === trackKey && !audio.paused) {
+        audio.pause();
+        if (artistPreviewState.button) {
+            setArtistPreviewButtonState(artistPreviewState.button, false);
+        }
+        return;
+    }
+
+    if (artistPreviewState.button && artistPreviewState.button !== button) {
+        setArtistPreviewButtonState(artistPreviewState.button, false);
+    }
+
+    artistPreviewState.audio = audio;
+    artistPreviewState.trackKey = trackKey;
+    artistPreviewState.button = button;
+    artistPreviewState.sourceKey = sourceKey;
+    setArtistPreviewButtonState(button, true);
+    audio.src = streamUrl;
+    audio.currentTime = 0;
+    audio.onended = () => {
+        const nextButton = getNextTopTrackButton();
+        if (nextButton) {
+            playArtistTrackInApp(nextButton);
+            return;
+        }
+        if (artistPreviewState.button) {
+            setArtistPreviewButtonState(artistPreviewState.button, false);
+        }
+        artistPreviewState.trackKey = null;
+    };
+
+    try {
+        await audio.play();
+    } catch {
+        setArtistPreviewButtonState(button, false);
+        artistPreviewState.trackKey = null;
+        if (artistPreviewState.button === button) {
+            artistPreviewState.button = null;
+        }
+        showArtistPlaybackMessage('Unable to start playback.');
+    }
+}
+
+async function resolveSpotifyUrlToDeezer(url) {
+    if (!url) {
+        return null;
+    }
+    if (artistSpotifyResolveCache.has(url)) {
+        return artistSpotifyResolveCache.get(url);
+    }
+    try {
+        const resolved = await fetchJsonOptional(`/api/spotify/resolve-deezer?url=${encodeURIComponent(url)}`);
+        if (resolved) {
+            artistSpotifyResolveCache.set(url, resolved);
+        }
+        return resolved;
+    } catch {
+        return null;
+    }
+}
+
+async function fetchJsonOptional(url) {
+    const response = await fetch(url);
+    if (response.status === 404) {
+        return null;
+    }
+    if (!response.ok) {
+        return null;
+    }
+    const raw = await response.text();
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed === 'undefined') {
+        return null;
+    }
+    try {
+        return JSON.parse(raw);
+    } catch {
+        return null;
+    }
+}
+
+function parseSpotifyUrl(url) {
+    if (!url) {
+        return null;
+    }
+    const trimmed = url.trim();
+    const uriMatch = trimmed.match(/open\.spotify\.com\/(track|album|artist)\/([A-Za-z0-9]+)/i);
+    if (uriMatch) {
+        return { type: uriMatch[1].toLowerCase(), id: uriMatch[2] };
+    }
+    const uriAltMatch = trimmed.match(/spotify:(track|album|artist):([A-Za-z0-9]+)/i);
+    if (uriAltMatch) {
+        return { type: uriAltMatch[1].toLowerCase(), id: uriAltMatch[2] };
+    }
+    return null;
+}
+
+function parseDeezerArtistUrl(url) {
+    if (!url) {
+        return null;
+    }
+    const trimmed = String(url).trim();
+    const match = trimmed.match(/deezer\.com\/(?:[a-z]{2}\/)?artist\/([0-9]+)/i);
+    if (!match) {
+        return null;
+    }
+    return { id: match[1], source: 'deezer' };
+}
+
+function isLikelySpotifyArtistId(value) {
+    return /^[A-Za-z0-9]{22}$/.test(String(value || '').trim());
+}
+
+function buildRelatedArtistHref(artist) {
+    const fallbackSource = String(currentArtistSource || 'deezer').toLowerCase();
+    const normalizedSource = String(artist?.source || fallbackSource || 'deezer').toLowerCase();
+    const primaryId = String(artist?.id || '').trim();
+    const spotifyId = String(artist?.spotify_id || artist?.spotifyId || '').trim();
+    const deezerId = String(artist?.deezer_id || artist?.deezerId || '').trim();
+
+    if (normalizedSource === 'spotify') {
+        const resolvedSpotifyId = isLikelySpotifyArtistId(primaryId)
+            ? primaryId
+            : (isLikelySpotifyArtistId(spotifyId) ? spotifyId : '');
+        if (resolvedSpotifyId) {
+            return `/Artist?id=${encodeURIComponent(resolvedSpotifyId)}&source=spotify`;
+        }
+        if (isNumericId(deezerId)) {
+            return `/Artist?id=${encodeURIComponent(deezerId)}&source=deezer`;
+        }
+    }
+
+    if (normalizedSource === 'deezer') {
+        const resolvedDeezerId = isNumericId(primaryId) ? primaryId : (isNumericId(deezerId) ? deezerId : '');
+        if (resolvedDeezerId) {
+            return `/Artist?id=${encodeURIComponent(resolvedDeezerId)}&source=deezer`;
+        }
+    }
+
+    if (primaryId) {
+        return `/Artist?id=${encodeURIComponent(primaryId)}&source=${encodeURIComponent(normalizedSource || fallbackSource)}`;
+    }
+
+    const linkCandidate = artist?.link || artist?.source_url || artist?.spotify_url || artist?.deezer_url || '';
+    const spotifyParsed = parseSpotifyUrl(linkCandidate);
+    if (spotifyParsed?.type === 'artist' && spotifyParsed.id) {
+        return `/Artist?id=${encodeURIComponent(spotifyParsed.id)}&source=spotify`;
+    }
+
+    const deezerParsed = parseDeezerArtistUrl(linkCandidate);
+    if (deezerParsed?.id) {
+        return `/Artist?id=${encodeURIComponent(deezerParsed.id)}&source=deezer`;
+    }
+
+    return null;
+}
+
+function handleSpotifyRedirect(url) {
+    const parsed = parseSpotifyUrl(url);
+    if (!parsed?.type || !parsed.id) {
+        window.open(url, '_blank', 'noopener');
+        return;
+    }
+    if (parsed.type === 'artist') {
+        window.location.href = `/Artist?id=${encodeURIComponent(parsed.id)}&source=spotify`;
+        return;
+    }
+    window.location.href = `/Tracklist?id=${encodeURIComponent(parsed.id)}&type=${encodeURIComponent(parsed.type || 'track')}&source=spotify`;
+}
+
+function showArtistPlaybackMessage(message) {
+    if (window.DeezSpoTag?.ui?.showToast) {
+        DeezSpoTag.ui.showToast(message, { type: 'warning' });
+        return;
+    }
+    if (window.DeezSpoTag?.ui?.alert) {
+        DeezSpoTag.ui.alert(message, { title: 'Playback' });
+        return;
+    }
+    console.warn(message);
+}
+
+function showArtistToast(message, isError = false) {
+    if (window.DeezSpoTag?.ui?.showToast) {
+        DeezSpoTag.ui.showToast(message, { type: isError ? 'warning' : 'success' });
+        return;
+    }
+    if (window.DeezSpoTag?.ui?.alert) {
+        DeezSpoTag.ui.alert(message, { title: isError ? 'Error' : 'Info' });
+        return;
+    }
+    console.warn(message);
+}
+
+async function fetchJson(url, options = {}) {
+    const response = await fetch(url, options);
+    if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || `Request failed (${response.status})`);
+    }
+    const raw = await response.text();
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed === 'undefined') {
+        return null;
+    }
+    try {
+        return JSON.parse(raw);
+    } catch {
+        return null;
+    }
+}
+
+function isNumericId(value) {
+    return /^[0-9]+$/.test(String(value || '').trim());
+}
+
+async function refreshArtistWatchlistToggle(button, artistIdValue) {
+    let watching = false;
+    try {
+        const status = await fetchJson(`/api/library/watchlist/${artistIdValue}`);
+        watching = status?.watching === true;
+    } catch {
+        // Allow toggling even if status lookup fails.
+    }
+    button.textContent = watching ? 'Monitoring Artist' : 'Monitor Artist';
+    button.classList.toggle('btn-secondary', watching);
+    button.classList.toggle('btn-primary', !watching);
+    button.dataset.watching = watching ? 'true' : 'false';
+}
+
+async function refreshArtistWatchlistToggleBySpotify(button, spotifyId) {
+    let watching = false;
+    try {
+        const status = await fetchJson(`/api/library/watchlist/spotify/${encodeURIComponent(spotifyId)}`);
+        watching = status?.watching === true;
+    } catch {
+        // Allow toggling even if status lookup fails.
+    }
+    button.textContent = watching ? 'Monitoring Artist' : 'Monitor Artist';
+    button.classList.toggle('btn-secondary', watching);
+    button.classList.toggle('btn-primary', !watching);
+    button.dataset.watching = watching ? 'true' : 'false';
+}
+
+async function initArtistWatchlistToggle(data) {
+    const button = document.getElementById('watchlistToggle');
+    if (!button) {
+        return;
+    }
+    const artistIdValue = (currentArtistId || '').trim();
+    if (!artistIdValue) {
+        button.disabled = true;
+        button.title = 'Artist ID unavailable.';
+        return;
+    }
+
+    const artistName = (data?.artistName || document.querySelector('.artist-hero__title')?.textContent || 'Unknown Artist').trim();
+    const isSpotifySource = String(currentArtistSource || '').toLowerCase() === 'spotify';
+    let resolvedDeezerId = null;
+
+    button.disabled = false;
+    button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+            if (isSpotifySource) {
+                const status = await fetchJson(`/api/library/watchlist/spotify/${encodeURIComponent(artistIdValue)}`);
+                const watching = status?.watching === true;
+                if (watching) {
+                    await fetchJson(`/api/library/watchlist/spotify/${encodeURIComponent(artistIdValue)}`, { method: 'DELETE' });
+                    showArtistToast('Artist removed from watchlist.');
+                } else {
+                    if (!resolvedDeezerId) {
+                        const resolved = await resolveSpotifyUrlToDeezer(`https://open.spotify.com/artist/${artistIdValue}`);
+                        if (resolved?.available && resolved.type === 'artist' && resolved.deezerId) {
+                            resolvedDeezerId = resolved.deezerId;
+                        }
+                    }
+                    await fetchJson('/api/library/watchlist/spotify', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            spotifyId: artistIdValue,
+                            artistName,
+                            deezerId: resolvedDeezerId
+                        })
+                    });
+                    showArtistToast('Artist added to watchlist.');
+                }
+                await refreshArtistWatchlistToggleBySpotify(button, artistIdValue);
+            } else {
+                const status = await fetchJson(`/api/library/watchlist/${artistIdValue}`);
+                const watching = status?.watching === true;
+                if (watching) {
+                    await fetchJson(`/api/library/watchlist/${artistIdValue}`, { method: 'DELETE' });
+                    showArtistToast('Artist removed from watchlist.');
+                } else {
+                    if (!isNumericId(artistIdValue)) {
+                        throw new Error('Artist ID must be numeric.');
+                    }
+                    await fetchJson('/api/library/watchlist', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ artistId: Number(artistIdValue), artistName })
+                    });
+                    showArtistToast('Artist added to watchlist.');
+                }
+                await refreshArtistWatchlistToggle(button, artistIdValue);
+            }
+        } catch (error) {
+            showArtistToast(`Watchlist update failed: ${error.message}`, true);
+        } finally {
+            button.disabled = false;
+        }
+    });
+
+    if (isSpotifySource) {
+        await refreshArtistWatchlistToggleBySpotify(button, artistIdValue);
+    } else {
+        await refreshArtistWatchlistToggle(button, artistIdValue);
+    }
+}
+
+function resolveTrackCover(track) {
+    const album = track?.album || {};
+    const directCover = album.cover_medium || album.cover_small || album.cover_big || album.cover_xl || album.cover || '';
+    if (directCover) {
+        return directCover;
+    }
+
+    const images = Array.isArray(album.images)
+        ? album.images
+        : Array.isArray(track?.images)
+            ? track.images
+            : [];
+    if (images.length > 0) {
+        const image = images.find(img => img?.url) || images[0];
+        if (typeof image === 'string') {
+            return image;
+        }
+        if (image?.url) {
+            return image.url;
+        }
+    }
+
+    return track?.picture_medium || track?.picture || '';
+}
+
+function renderDiscographyTabs(tabs) {
+    if (!tabs || tabs.length === 0) {
+        return '';
+    }
+
+    return `
+        <div class="artist-tabs">
+            ${tabs.map(tabKey => `
+                <button class="artist-tab ${tabKey === currentDiscographyTab ? 'active' : ''}" onclick="switchDiscographyTab('${tabKey}')">
+                    ${getTabDisplayName(tabKey)}
+                </button>
+            `).join('')}
+        </div>
+    `;
+}
+
+function renderDiscography(releases) {
+    if (!releases || releases.length === 0) {
+        return '<div class="empty-state">No releases available.</div>';
+    }
+
+    return releases.map(release => {
+        const year = release.releaseDate ? String(release.releaseDate).slice(0, 4) : '';
+        const link = `/Tracklist?id=${release.releaseID}&type=album${release.releaseSource && release.releaseSource !== 'deezer' ? `&source=${release.releaseSource}` : ''}`;
+        return `
+            <a class="discography-card" href="${link}">
+                <img src="${release.releaseCover}" alt="${escapeHtml(release.releaseTitle)}">
+                <div class="discography-title">${escapeHtml(release.releaseTitle)}</div>
+                <div class="discography-meta">${year}${release.releaseType ? ` • ${escapeHtml(release.releaseType)}` : ''}</div>
+            </a>
+        `;
+    }).join('');
+}
+
+function renderRelatedArtists(artists) {
+    if (!artists || artists.length === 0) {
+        return '<div class="empty-state">No similar artists available.</div>';
+    }
+
+    return `
+        <div class="similar-grid">
+            ${artists.map(artist => {
+                const href = buildRelatedArtistHref(artist);
+                if (!href) {
+                    return `
+                    <div class="similar-card" title="Artist route unavailable">
+                        <img src="${artist.picture_medium || artist.picture || ''}" alt="${escapeHtml(artist.name || '')}">
+                        <div class="similar-name">${escapeHtml(artist.name || '')}</div>
+                    </div>
+                `;
+                }
+                return `
+                <a class="similar-card" href="${href}">
+                    <img src="${artist.picture_medium || artist.picture || ''}" alt="${escapeHtml(artist.name || '')}">
+                    <div class="similar-name">${escapeHtml(artist.name || '')}</div>
+                </a>
+            `;
+            }).join('')}
+        </div>
+    `;
+}
+
+function switchDiscographyTab(tabKey) {
+    currentDiscographyTab = tabKey;
+    saveArtistTabToCache(currentArtistId, currentArtistSource, tabKey);
+
+    document.querySelectorAll('.artist-tab').forEach(tab => {
+        tab.classList.remove('active');
+    });
+    const activeTab = document.querySelector(`[onclick="switchDiscographyTab('${tabKey}')"]`);
+    if (activeTab) {
+        activeTab.classList.add('active');
+    }
+
+    const grid = document.getElementById('discography-grid');
+    if (grid && formattedArtistData) {
+        grid.innerHTML = renderDiscography(formattedArtistData.artistReleases[currentDiscographyTab] || []);
+    }
+}
+
+function mergeGenres(primaryGenres, localGenres) {
+    const merged = new Set();
+    if (Array.isArray(primaryGenres)) {
+        primaryGenres.forEach((g) => {
+            if (g && typeof g === 'string') merged.add(g);
+            if (g && typeof g === 'object' && g.name) merged.add(g.name);
+        });
+    }
+    if (Array.isArray(localGenres)) {
+        localGenres.forEach((g) => {
+            if (g && typeof g === 'string') merged.add(g);
+            if (g && typeof g === 'object' && g.name) merged.add(g.name);
+        });
+    }
+    return Array.from(merged);
+}
+
+function formatNumber(value) {
+    try {
+        return new Intl.NumberFormat().format(value);
+    } catch (error) {
+        return String(value);
+    }
+}
+
+function getTabDisplayName(tabKey) {
+    const tabNames = {
+        'all': 'All',
+        'popular': 'Popular releases',
+        'album': 'Albums',
+        'single': 'Singles',
+        'ep': 'EPs',
+        'singles_eps': 'Singles and EPs',
+        'compile': 'Compilations',
+        'bundle': 'Bundles',
+        'more': 'More Albums',
+        'featured': 'Featured In'
+    };
+    return tabNames[tabKey] || capitalizeFirst(tabKey);
+}
+
+function getTrackReleaseDate(track) {
+    return track?.release_date
+        || track?.releaseDate
+        || track?.album?.release_date
+        || track?.album?.releaseDate
+        || '';
+}
+
+function getTrackYear(track) {
+    const releaseDate = String(getTrackReleaseDate(track) || '');
+    const match = releaseDate.match(/\b(19|20)\d{2}\b/);
+    return match ? match[0] : '';
+}
+
+function buildTrackSubtitle(track, albumTitle, albumType, releaseYear) {
+    const parts = [];
+    if (albumTitle) {
+        parts.push(albumTitle);
+    }
+
+    const normalizedType = String(albumType || '').toLowerCase();
+    const typeLabel = normalizedType === 'single'
+        ? 'Single'
+        : normalizedType === 'ep'
+            ? 'EP'
+            : normalizedType === 'compile' || normalizedType === 'compilation'
+                ? 'Compilation'
+                : normalizedType === 'bundle'
+                    ? 'Bundle'
+                    : normalizedType === 'album'
+                        ? 'Album'
+                        : '';
+    if (typeLabel) {
+        parts.push(typeLabel);
+    }
+
+    if (releaseYear) {
+        parts.push(releaseYear);
+    }
+
+    return parts.join(' • ');
+}
+
+function getArtistPayloadCacheKey(artistId, source) {
+    if (!artistId) {
+        return '';
+    }
+    return `artist-page:${String(source || 'deezer').toLowerCase()}:${artistId}`;
+}
+
+function getArtistTabCacheKey(artistId, source) {
+    if (!artistId) {
+        return '';
+    }
+    return `artist-page-tab:${String(source || 'deezer').toLowerCase()}:${artistId}`;
+}
+
+function loadArtistPayloadFromCache(artistId, source) {
+    const key = getArtistPayloadCacheKey(artistId, source);
+    if (!key) {
+        return null;
+    }
+
+    try {
+        const raw = localStorage.getItem(key);
+        if (!raw) {
+            return null;
+        }
+
+        const parsed = JSON.parse(raw);
+        if (!parsed?.savedAtUtc || !parsed?.payload) {
+            return null;
+        }
+
+        const ageMs = Date.now() - Number(parsed.savedAtUtc);
+        if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > artistPageCacheTtlMs) {
+            localStorage.removeItem(key);
+            return null;
+        }
+
+        return parsed.payload;
+    } catch {
+        return null;
+    }
+}
+
+function saveArtistPayloadToCache(artistId, source, payload) {
+    const key = getArtistPayloadCacheKey(artistId, source);
+    if (!key || !payload || typeof payload !== 'object') {
+        return;
+    }
+
+    try {
+        localStorage.setItem(key, JSON.stringify({
+            savedAtUtc: Date.now(),
+            payload
+        }));
+    } catch {
+    }
+}
+
+function loadArtistTabFromCache(artistId, source) {
+    const key = getArtistTabCacheKey(artistId, source);
+    if (!key) {
+        return '';
+    }
+    try {
+        return localStorage.getItem(key) || '';
+    } catch {
+        return '';
+    }
+}
+
+function saveArtistTabToCache(artistId, source, tab) {
+    const key = getArtistTabCacheKey(artistId, source);
+    if (!key || !tab) {
+        return;
+    }
+    try {
+        localStorage.setItem(key, tab);
+    } catch {
+    }
+}
+
+function getReleaseCount(payload) {
+    const releases = payload?.releases;
+    if (!releases || typeof releases !== 'object') {
+        return 0;
+    }
+
+    return Object.values(releases).reduce((count, value) => {
+        return count + (Array.isArray(value) ? value.length : 0);
+    }, 0);
+}
+
+function mergeArtistPayload(primary, fallback) {
+    if (!primary || typeof primary !== 'object') {
+        return fallback || primary;
+    }
+    if (!fallback || typeof fallback !== 'object') {
+        return primary;
+    }
+
+    const merged = { ...primary };
+    if (getReleaseCount(primary) === 0 && getReleaseCount(fallback) > 0) {
+        merged.releases = fallback.releases;
+    }
+
+    const primaryTopTracks = Array.isArray(primary.top_tracks) ? primary.top_tracks : [];
+    const fallbackTopTracks = Array.isArray(fallback.top_tracks) ? fallback.top_tracks : [];
+    if (primaryTopTracks.length === 0 && fallbackTopTracks.length > 0) {
+        merged.top_tracks = fallbackTopTracks;
+    }
+
+    const primaryRelated = Array.isArray(primary.related) ? primary.related : [];
+    const fallbackRelated = Array.isArray(fallback.related) ? fallback.related : [];
+    if (primaryRelated.length === 0 && fallbackRelated.length > 0) {
+        merged.related = fallbackRelated;
+    }
+
+    if (!merged.picture_xl && fallback.picture_xl) {
+        merged.picture_xl = fallback.picture_xl;
+    }
+    if (!merged.picture_big && fallback.picture_big) {
+        merged.picture_big = fallback.picture_big;
+    }
+    if (!merged.picture_medium && fallback.picture_medium) {
+        merged.picture_medium = fallback.picture_medium;
+    }
+
+    return merged;
+}
+
+function capitalizeFirst(str) {
+    return str.charAt(0).toUpperCase() + str.slice(1);
+}
+
+function downloadArtist(link, metadata = null) {
+    if (window.DeezSpoTagDownload) {
+        window.DeezSpoTagDownload.addToQueue(link, 0, null, metadata ? { metadata } : undefined);
+    } else {
+        downloadUsingApi(link, metadata);
+    }
+}
+
+async function downloadUsingApi(url, metadata = null) {
+    try {
+        const destinationFolderId = window.DeezSpoTagDownload?.getDestinationFolderId(true);
+        if (document.querySelector('.download-destination-select') && !destinationFolderId) {
+            return;
+        }
+
+        const lower = String(url || '').toLowerCase();
+        let endpoint = '';
+        let payload = {};
+        const intentFromMetadata = (sourceService, sourceUrl, extras = {}) => ({
+            sourceService,
+            sourceUrl,
+            title: metadata?.title || undefined,
+            artist: metadata?.artist || undefined,
+            album: metadata?.album || undefined,
+            albumArtist: metadata?.albumArtist || undefined,
+            isrc: metadata?.isrc || undefined,
+            cover: metadata?.cover || undefined,
+            durationMs: Number(metadata?.durationMs || 0) || undefined,
+            position: Number(metadata?.position || 0) || undefined,
+            ...extras
+        });
+
+        if (lower.startsWith('isrc:')) {
+            endpoint = '/api/download/intent';
+            payload = {
+                destinationFolderId: destinationFolderId,
+                resolveImmediately: true,
+                intents: [
+                    intentFromMetadata('qobuz', undefined, { isrc: url.replace(/^isrc:/i, '') })
+                ]
+            };
+        } else if (lower.includes('music.apple.com') || lower.includes('itunes.apple.com')) {
+            const hasAtmos = metadata?.hasAtmos === true || metadata?.hasAtmos === 'true';
+            endpoint = isAppleMusicVideoUrl(lower) || metadata?.isVideo === true
+                ? '/api/apple/videos/download'
+                : '/api/apple/download';
+            payload = {
+                destinationFolderId: destinationFolderId,
+                tracks: [{
+                    appleUrl: url,
+                    metadata: metadata ? { ...metadata, hasAtmos: Boolean(hasAtmos) } : undefined
+                }],
+                    quality: hasAtmos ? 'atmos' : null
+            };
+        } else if (lower.includes('tidal.com')) {
+            endpoint = '/api/download/intent';
+            payload = {
+                destinationFolderId: destinationFolderId,
+                resolveImmediately: true,
+                intents: [
+                    intentFromMetadata('tidal', url)
+                ]
+            };
+        } else if (lower.includes('music.amazon') || lower.includes('amazon.com/music') || lower.includes('amazon.co')) {
+            endpoint = '/api/download/intent';
+            payload = {
+                destinationFolderId: destinationFolderId,
+                resolveImmediately: true,
+                intents: [
+                    intentFromMetadata('amazon', url)
+                ]
+            };
+        } else if (lower.includes('qobuz.com')) {
+            endpoint = '/api/download/intent';
+            payload = {
+                destinationFolderId: destinationFolderId,
+                resolveImmediately: true,
+                intents: [
+                    intentFromMetadata('qobuz', url)
+                ]
+            };
+        } else if (lower.includes('spotify.com') || lower.startsWith('spotify:')) {
+            endpoint = '/api/download/intent';
+            payload = {
+                destinationFolderId: destinationFolderId,
+                resolveImmediately: true,
+                intents: [{
+                    ...intentFromMetadata('spotify', url),
+                    spotifyId: (url.match(/(?:spotify:track:|open\.spotify\.com\/track\/)([A-Za-z0-9]+)/i) || [])[1] || '',
+                    deezerId: metadata?.deezerId || undefined
+                }]
+            };
+        } else {
+            DeezSpoTag.ui.alert('Download engine removed for this source.', { title: 'Download Queue' });
+            return;
+        }
+
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (response.ok) {
+            const result = await response.json();
+            const queued = result?.queued?.length || 0;
+            const deferred = result?.deferredCount || 0;
+            const message = queued > 0
+                ? `Queued ${queued} item(s).${deferred > 0 ? ` (${deferred} deferred)` : ''}`
+                : deferred > 0
+                    ? `Queued ${deferred} item(s) for background intent resolution.`
+                    : (result?.message || 'Nothing queued.');
+            DeezSpoTag.ui.alert(message, { title: 'Download Queue' });
+        } else {
+            const error = await response.json();
+            DeezSpoTag.ui.alert(`Failed to add to queue: ${error.message || 'Unknown error'}`, { title: 'Download Queue' });
+        }
+    } catch (error) {
+        console.error('Download error:', error);
+        DeezSpoTag.ui.alert(`Error: ${error.message}`, { title: 'Download Queue' });
+    }
+}
+
+function isAppleMusicVideoUrl(url) {
+    const lower = String(url || '').toLowerCase();
+    return lower.includes('/music-video/')
+        || lower.includes('/music-videos/')
+        || lower.includes('/video/');
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+</script>
+}

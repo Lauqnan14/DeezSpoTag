@@ -1,0 +1,2814 @@
+@{
+    ViewData["Title"] = "Settings - DeezSpoTag";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+@section Styles {
+<link rel="stylesheet" href="~/css/settings.css" />
+<link rel="stylesheet" href="~/css/library.css" />
+<style>
+.settings-page {
+    padding: 20px;
+    padding-bottom: 120px;
+    color: var(--text-primary);
+}
+
+.settings-width {
+    max-width: none;
+    width: 100%;
+    margin: 0 0 32px 0;
+}
+
+.settings-section {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    margin-bottom: 24px;
+    overflow: hidden;
+}
+
+.settings-page .settings-width > .settings-section:last-child {
+    border-bottom: 1px solid var(--border-secondary);
+    margin-bottom: 24px;
+    padding-bottom: 30px;
+}
+
+.settings-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 18px 20px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+}
+
+.settings-header::after {
+    content: 'expand_more';
+    font-family: 'Material Icons';
+    font-size: 1.25rem;
+    margin-left: auto;
+    transition: transform 0.2s ease;
+    color: var(--text-muted);
+}
+
+.settings-section:has(> .settings-content.active) > .settings-header::after {
+    transform: rotate(180deg);
+}
+
+.settings-header:hover {
+    background: var(--bg-quaternary);
+}
+
+.settings-header .material-icons {
+    font-size: 1.5rem;
+}
+
+.settings-page.material-icons-pending .material-icons,
+.settings-page.material-icons-pending .settings-header::after {
+    visibility: hidden;
+}
+
+.settings-content {
+    padding: 20px;
+    display: none;
+}
+
+.settings-content.active {
+    display: block;
+}
+
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.form-group input,
+.form-group select,
+.form-group textarea {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px var(--primary-color);
+}
+
+.form-group input[type="checkbox"] {
+    width: auto;
+    margin-right: 8px;
+    transform: scale(1.2);
+}
+
+.form-group input[type="range"] {
+    padding: 0;
+    height: 6px;
+}
+
+.checkbox-group {
+    display: flex;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.checkbox-group label {
+    margin-bottom: 0;
+    cursor: pointer;
+    user-select: none;
+}
+
+.form-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+
+.form-row-3 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 20px;
+    align-items: start;
+}
+
+.form-row-half {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+
+.genre-alias-list {
+    display: grid;
+    gap: 10px;
+}
+
+.genre-alias-header,
+.genre-alias-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 10px;
+    align-items: center;
+}
+
+.genre-alias-header {
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.genre-alias-row input {
+    width: 100%;
+}
+
+.genre-alias-remove {
+    min-width: 40px;
+    height: 38px;
+    border-radius: 8px;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.genre-alias-remove:hover {
+    background: var(--bg-quaternary);
+}
+
+.genre-alias-empty {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin: 0;
+}
+
+.other-pad-column {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.other-pad-column .checkbox-group {
+    margin-bottom: 0;
+}
+
+.template-variables {
+    background: var(--bg-secondary);
+    border-radius: 6px;
+    padding: 15px;
+    margin-top: 10px;
+}
+
+.template-variables h4 {
+    margin: 0 0 10px 0;
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.template-variables summary {
+    cursor: pointer;
+    color: var(--text-primary);
+    font-weight: 600;
+    list-style-position: outside;
+}
+
+.template-variables-content {
+    margin-top: 14px;
+}
+
+.template-variables-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.template-variable {
+    display: inline-block;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background-color 0.2s ease, box-shadow 0.2s ease;
+    user-select: none;
+    box-shadow: inset 0 0 0 1px var(--border-secondary);
+}
+
+.template-variable:hover {
+    background: var(--bg-quaternary);
+    box-shadow: inset 0 0 0 1px var(--primary-color);
+}
+
+.btn-group {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.settings-actions {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 1000;
+}
+
+.btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    font-size: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+
+.btn-secondary {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-secondary);
+}
+
+.btn-secondary:hover {
+    background: var(--bg-quaternary);
+}
+
+.warning-text {
+    color: var(--warning-color);
+    font-size: 12px;
+    margin-top: 5px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.settings-tooltip-icon {
+    color: var(--text-muted);
+    font-size: 12px;
+    display: inline-flex;
+    align-items: center;
+    cursor: help;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+
+
+.loading {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-muted);
+}
+
+.range-display {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.range-display input[type="range"] {
+    flex: 1;
+}
+
+.range-display span {
+    min-width: 50px;
+    text-align: right;
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.input-group-text {
+    color: var(--text-secondary);
+    font-size: 12px;
+    margin-bottom: 5px;
+}
+
+.secondary-text {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-bottom: 10px;
+    line-height: 1.4;
+}
+
+.settings-container {
+    display: flex;
+    gap: 20px;
+}
+
+.settings-container__half {
+    flex: 1;
+}
+
+.settings-container__third {
+    flex: 1;
+}
+
+.settings-container__third--only-checkbox {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.settings-page {
+    padding-bottom: 100px;
+}
+
+.global-settings-wrapper {
+    padding-bottom: 30px;
+}
+
+.switch-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 12px;
+}
+
+.switch-label {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.switch {
+    position: relative;
+    display: inline-block;
+    width: 48px;
+    height: 26px;
+}
+
+.switch input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    cursor: pointer;
+    z-index: 1;
+}
+
+.slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-secondary);
+    transition: 0.2s ease;
+    border-radius: 999px;
+}
+
+.slider::before {
+    position: absolute;
+    content: "";
+    height: 20px;
+    width: 20px;
+    left: 3px;
+    top: 2px;
+    background: var(--text-primary);
+    transition: 0.2s ease;
+    border-radius: 50%;
+}
+
+.switch input:checked + .slider {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+}
+
+.switch input:checked + .slider::before {
+    transform: translateX(22px);
+}
+
+.settings-section--toggle-style .switch-row {
+    padding: 12px 14px;
+    border-radius: 16px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 30%, var(--border-secondary));
+    background: var(--bg-secondary);
+    margin-bottom: 12px;
+}
+
+.settings-section--toggle-style .switch-label {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.settings-section--toggle-style .switch {
+    width: 58px;
+    height: 30px;
+}
+
+.settings-section--toggle-style .slider {
+    background: var(--bg-primary);
+    border: 1px solid color-mix(in srgb, var(--primary-color) 30%, var(--border-secondary));
+    transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.settings-section--toggle-style .slider::before {
+    height: 24px;
+    width: 24px;
+    left: 3px;
+    top: 2px;
+    background: var(--text-primary);
+    transition: transform 0.2s ease, background 0.2s ease;
+}
+
+.settings-section--toggle-style .switch input:checked + .slider {
+    background: color-mix(in srgb, var(--primary-color) 20%, var(--bg-secondary));
+    border-color: var(--primary-color);
+}
+
+.settings-section--toggle-style .switch input:checked + .slider::before {
+    transform: translateX(26px);
+    background: var(--primary-color);
+}
+
+.read-only-field {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    border: 1px dashed var(--border-secondary);
+}
+
+.settings-link {
+    color: var(--primary-color);
+    text-decoration: none;
+    border-bottom: 1px dashed transparent;
+}
+
+.settings-link:hover {
+    border-bottom-color: var(--primary-color);
+}
+
+.dropdown-select {
+    position: relative;
+    display: inline-flex;
+    width: 100%;
+}
+
+.dropdown-trigger {
+    width: 100%;
+    text-align: left;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-secondary);
+    padding: 10px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.dropdown-trigger::after {
+    content: "▾";
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.dropdown-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
+    padding: 6px;
+    display: none;
+    z-index: 20;
+}
+
+.dropdown-menu.open {
+    display: block;
+}
+
+.dropdown-option {
+    width: 100%;
+    background: transparent;
+    border: 0;
+    color: var(--text-primary);
+    text-align: left;
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.dropdown-option:hover,
+.dropdown-option[aria-selected="true"] {
+    background: var(--bg-tertiary);
+}
+
+.lyrics-order-hint,
+.artwork-order-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin: 4px 6px 8px;
+}
+
+.lyrics-order-list,
+.artwork-order-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.lyrics-order-item,
+.artwork-order-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-tertiary);
+    cursor: grab;
+}
+
+.lyrics-order-item.dragging,
+.artwork-order-item.dragging {
+    opacity: 0.65;
+}
+
+.drag-handle {
+    color: var(--text-muted);
+    font-size: 16px;
+}
+
+@@media (max-width: 768px) {
+    .form-row,
+    .form-row-3,
+    .form-row-half,
+    .settings-container {
+        grid-template-columns: 1fr;
+        flex-direction: column;
+    }
+    
+    .settings-page {
+        padding: 10px 10px 100px 10px;
+    }
+    
+    .btn-group {
+        flex-direction: column;
+    }
+}
+</style>
+}
+
+<div class="settings-page material-icons-pending">
+    <h1 style="margin-bottom: 30px; color: var(--text-primary);">Settings</h1>
+    <p class="secondary-text" style="margin-top: -16px; margin-bottom: 20px;">
+        This page controls global download/runtime behavior. AutoTag profile tag choices are configured separately on the AutoTag page.
+    </p>
+
+    <div class="settings-width">
+        <div class="settings-section" id="download-settings">
+            <div class="settings-header">
+                <span class="material-icons">get_app</span>
+                Download Settings
+            </div>
+            <div class="settings-content">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="downloadSource">Source</label>
+                        <div class="dropdown-select" data-dropdown="downloadSource">
+                            <button type="button" class="dropdown-trigger" id="downloadSourceTrigger">Deezer</button>
+                            <div class="dropdown-menu" id="downloadSourceMenu">
+                                <button type="button" class="dropdown-option" data-value="auto">Auto</button>
+                                <button type="button" class="dropdown-option" data-value="amazon">Amazon Music</button>
+                                <button type="button" class="dropdown-option" data-value="apple">Apple Music</button>
+                                <button type="button" class="dropdown-option" data-value="deezer">Deezer</button>
+                                <button type="button" class="dropdown-option" data-value="qobuz">Qobuz</button>
+                                <button type="button" class="dropdown-option" data-value="tidal">Tidal</button>
+                            </div>
+                            <input type="hidden" id="downloadSource" value="deezer">
+                        </div>
+                    </div>
+                    <div class="form-group" id="multiQualityGroup">
+                        <div class="form-label">Multi-quality downloads</div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="multiQualityEnabled">
+                            <label for="multiQualityEnabled">Enable dual-profile downloads (Atmos + Stereo)</label>
+                        </div>
+                        <div class="warning-text">Queues both Atmos and Stereo and uses separate destination folders to avoid overwrites; best paired with automation (watchlists/playlist monitor).</div>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <div class="engine-quality-stack">
+                            <div class="form-group" id="multisource-tidalQualityGroup" style="display: none;">
+                                <label for="multisource-tidalQuality">Tidal Quality</label>
+                                <div class="dropdown-select" data-dropdown="multisource-tidalQuality">
+                                    <button type="button" class="dropdown-trigger" id="multisource-tidalQualityTrigger">Hi-Res Lossless (24-bit/48kHz+)</button>
+                                    <div class="dropdown-menu" id="multisource-tidalQualityMenu">
+                                        <button type="button" class="dropdown-option" data-value="HI_RES_LOSSLESS">Hi-Res Lossless (24-bit/48kHz+)</button>
+                                        <button type="button" class="dropdown-option" data-value="LOSSLESS">Lossless (16-bit/CD)</button>
+                                    </div>
+                                    <input type="hidden" id="multisource-tidalQuality" value="HI_RES_LOSSLESS">
+                                </div>
+                            </div>
+                            <div class="form-group" id="multisource-qobuzQualityGroup" style="display: none;">
+                                <label for="multisource-qobuzQuality">Qobuz Quality</label>
+                                <div class="dropdown-select" data-dropdown="multisource-qobuzQuality">
+                                    <button type="button" class="dropdown-trigger" id="multisource-qobuzQualityTrigger">Hi-Res (24-bit/96kHz+)</button>
+                                    <div class="dropdown-menu" id="multisource-qobuzQualityMenu">
+                                        <button type="button" class="dropdown-option" data-value="27">Hi-Res (24-bit/96kHz+)</button>
+                                        <button type="button" class="dropdown-option" data-value="7">FLAC 24-bit</button>
+                                        <button type="button" class="dropdown-option" data-value="6">FLAC 16-bit (CD)</button>
+                                    </div>
+                                    <input type="hidden" id="multisource-qobuzQuality" value="27">
+                                </div>
+                            </div>
+                            <div class="form-group" id="apple-qualityGroup" style="display: none;">
+                                <label for="applePreferredAudioProfile">Apple Music Quality</label>
+                                <div class="dropdown-select" data-dropdown="applePreferredAudioProfile">
+                                    <button type="button" class="dropdown-trigger" id="applePreferredAudioProfileTrigger">ATMOS</button>
+                                    <div class="dropdown-menu" id="applePreferredAudioProfileMenu">
+                                        <button type="button" class="dropdown-option" data-value="atmos">ATMOS</button>
+                                        <button type="button" class="dropdown-option" data-value="alac">ALAC</button>
+                                        <button type="button" class="dropdown-option" data-value="aac">AAC</button>
+                                    </div>
+                                    <input type="hidden" id="applePreferredAudioProfile" value="atmos">
+                                </div>
+                                <div class="warning-text">ATMOS = spatial (wrapper), ALAC = lossless stereo (wrapper), AAC = compressed stereo (no wrapper).</div>
+                                <div class="warning-text">Advanced Apple controls (Manifest mode, AAC type, ALAC max, Atmos max) are in the Apple Music section below.</div>
+                            </div>
+                            <div class="form-group" id="deezer-maxBitrateGroup" style="display: none;">
+                                <label for="maxBitrate">Deezer Quality</label>
+                                <div class="dropdown-select" data-dropdown="maxBitrate">
+                                    <button type="button" class="dropdown-trigger" id="maxBitrateTrigger">FLAC (Hi-Fi)</button>
+                                    <div class="dropdown-menu" id="maxBitrateMenu">
+                                        <button type="button" class="dropdown-option" data-value="9">FLAC (Hi-Fi)</button>
+                                        <button type="button" class="dropdown-option" data-value="3">MP3 320kbps</button>
+                                        <button type="button" class="dropdown-option" data-value="1">MP3 128kbps (Free)</button>
+                                    </div>
+                                    <input type="hidden" id="maxBitrate" value="9">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group" id="multiQualityConfigGroup" style="display: none;">
+                        <label for="multiQualitySecondaryDestinationFolderId">Atmos destination folder id</label>
+                        <select id="multiQualitySecondaryDestinationFolderId">
+                            <option value="">(Select destination)</option>
+                        </select>
+                        <div class="warning-text">Atmos downloads require a dedicated folder (Apple only).</div>
+                        <div class="warning-text" id="multiQualitySecondaryFolderWarning" style="display:none;">
+                            Select an Atmos destination to enable the secondary download.
+                        </div>
+                        <div class="warning-text" style="margin-top: 12px;">Stereo uses the selected source and its configured quality automatically.</div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="queueOrder">Queue Order</label>
+                    <select id="queueOrder">
+                        <option value="fifo">First in, first out (FIFO)</option>
+                        <option value="recent">Recent first</option>
+                    </select>
+                </div>
+                <div class="form-row-3">
+                    <div class="form-group">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="fallbackBitrate">
+                            <label for="fallbackBitrate">Fallback Quality</label>
+                        </div>
+                        <div class="warning-text">Allows lower quality if the requested quality is unavailable for the same engine.</div>
+                    </div>
+                    <div class="form-group">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="fallbackSearch">
+                            <label for="fallbackSearch">Fallback Search</label>
+                        </div>
+                        <div class="warning-text">Uses title/artist search when an exact match fails. Can result in a different version.</div>
+                    </div>
+                    <div class="form-group">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="strictSpotifyDeezerMode">
+                            <label for="strictSpotifyDeezerMode">Strict Spotify->Deezer Mode</label>
+                        </div>
+                        <div class="warning-text">Enforces ISRC-only Spotify->Deezer matching for mapping and downloads. No Song.link or metadata fallback.</div>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="preferAlbumLayoutForPlaylists">
+                        <label for="preferAlbumLayoutForPlaylists">Prefer album/artist layout for playlist downloads</label>
+                    </div>
+                    <div class="form-group">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="autoMaxBitrate">
+                            <label for="autoMaxBitrate">Auto-select max bitrate on login</label>
+                        </div>
+                        <div class="warning-text">Deezer only: on successful Deezer login, Max Bitrate is automatically set to your account's highest supported quality.</div>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="logErrors">
+                        <label for="logErrors">Log Errors</label>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <div class="settings-section" id="spotify-settings">
+            <div class="settings-header">
+                <span class="material-icons">music_note</span>
+                Spotify
+            </div>
+            <div class="settings-content">
+                <div class="form-row">
+                    <div class="form-group">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="spotifyHomeFeedCacheEnabled">
+                            <label for="spotifyHomeFeedCacheEnabled">Cache Spotify home feed</label>
+                        </div>
+                        <div class="warning-text">Keeps the trending/Spotify feed cached to speed up home load.</div>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="spotifyHomeFeedAutoRefreshEnabled">
+                            <label for="spotifyHomeFeedAutoRefreshEnabled">Auto-refresh home feed</label>
+                        </div>
+                        <div class="warning-text">Refreshes the Spotify home feed in the background.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="spotifyHomeFeedAutoRefreshHours">Auto-refresh interval (hours)</label>
+                        <input type="number" id="spotifyHomeFeedAutoRefreshHours" min="2" max="24" value="2">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="spotifyBrowseCacheMinutes">Spotify browse cache (minutes)</label>
+                        <input type="number" id="spotifyBrowseCacheMinutes" min="1" max="1440" value="30">
+                        <div class="warning-text">Caches Spotify browse categories/playlists to reduce rate limits.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="spotifyArtistMetadataFetchBatchSize">Artist metadata batch size</label>
+                        <input type="number" id="spotifyArtistMetadataFetchBatchSize" min="1" max="500" value="25">
+                        <div class="warning-text">Controls how many artists are processed per queue batch before a short cooldown.</div>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="spotifyResolveConcurrency">Spotify resolve concurrency</label>
+                        <input type="number" id="spotifyResolveConcurrency" min="1" max="50" value="10">
+                    </div>
+                    <div class="form-group">
+                        <label for="spotifyMatchConcurrency">Spotify match concurrency</label>
+                        <input type="number" id="spotifyMatchConcurrency" min="1" max="50" value="10">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="spotifyIsrcHydrationConcurrency">Spotify ISRC hydration concurrency</label>
+                    <input type="number" id="spotifyIsrcHydrationConcurrency" min="1" max="50" value="8">
+                </div>
+                <div class="warning-text">Higher values can speed up matching but increase CPU/network load and may hit rate limits; lower values reduce load but slow matching.</div>
+
+                <div class="form-group">
+                    <label for="spotifyPlaylistTrackSource">Spotify playlist track source</label>
+                    <select id="spotifyPlaylistTrackSource">
+                        <option value="pathfinder">Pathfinder</option>
+                        <option value="librespot">Librespot</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="settings-section" id="apple-settings">
+            <div class="settings-header">
+                <span class="material-icons">apple</span>
+                Apple Music
+            </div>
+            <div class="settings-content">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="appleGetM3u8Mode">Manifest mode</label>
+                        <select id="appleGetM3u8Mode">
+                            <option value="hires">Hi-Res</option>
+                            <option value="standard">Standard</option>
+                        </select>
+                        <div class="warning-text">Use Hi-Res to request highest-tier manifests; use Standard if your wrapper/device cannot serve Hi-Res.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="appleAacType">AAC type</label>
+                        <select id="appleAacType">
+                            <option value="aac-lc">AAC-LC</option>
+                            <option value="aac">AAC</option>
+                            <option value="aac-binaural">AAC-Binaural</option>
+                            <option value="aac-downmix">AAC-Downmix</option>
+                        </select>
+                        <div class="warning-text">
+                            AAC-LC: Standard, high-quality stereo. Best for most users.<br>
+                            AAC: Alias of AAC-LC (same selection behavior).<br>
+                            AAC-Binaural: Special stereo mix for Spatial Audio on headphones.<br>
+                            AAC-Downmix: Stereo version derived from a Dolby Atmos mix.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="appleAlacMax">ALAC max sample rate</label>
+                        <select id="appleAlacMax">
+                            <option value="192000">192000</option>
+                            <option value="96000">96000</option>
+                            <option value="48000">48000</option>
+                            <option value="44100">44100</option>
+                        </select>
+                        <div class="warning-text">Upper limit for ALAC output (in Hz). Lower if your devices/paths cannot handle 192k.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="appleAtmosMax">Atmos max bitrate</label>
+                        <select id="appleAtmosMax">
+                            <option value="2768">2768</option>
+                            <option value="2448">2448</option>
+                        </select>
+                        <div class="warning-text">Upper limit for Atmos manifest bitrate (kbps). Reduce if bandwidth/storage is constrained.</div>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="authorizationToken">Authorization token</label>
+                        <input type="text" id="authorizationToken" placeholder="Optional bearer token">
+                        <div class="warning-text">Optional: only needed for some Apple API requests. Leave blank unless you know you need it.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="appleDownloadNotificationMode">Apple download notifications</label>
+                        <select id="appleDownloadNotificationMode">
+                            <option value="detailed">Detailed (per track)</option>
+                            <option value="merged">Merged summary</option>
+                            <option value="off">Off</option>
+                        </select>
+                        <div class="warning-text">Choose per-track alerts, a merged summary, or disable Apple download toasts entirely.</div>
+                    </div>
+                </div>
+                <div class="checkbox-group">
+                    <input type="checkbox" id="getM3u8FromDevice" checked>
+                    <label for="getM3u8FromDevice">Get M3U8 from device</label>
+                </div>
+                <div class="warning-text">Enable if your wrapper/device must fetch manifests; disable only if direct manifests work for your setup.</div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="appleDecryptM3u8Port">Decrypt M3U8 port</label>
+                        <input type="text" id="appleDecryptM3u8Port" placeholder="127.0.0.1:10020">
+                        <div class="warning-text">Local port used to decrypt HLS streams when wrapper mode is enabled.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="appleGetM3u8Port">Get M3U8 port</label>
+                        <input type="text" id="appleGetM3u8Port" placeholder="127.0.0.1:20020">
+                        <div class="warning-text">Local port used to fetch manifests via wrapper mode.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="settings-section" id="shazam-settings">
+            <div class="settings-header">
+                <span class="material-icons">mic</span>
+                Shazam
+            </div>
+            <div class="settings-content">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="shazamEnabled">
+                    <label for="shazamEnabled">Enable logo-triggered Shazam capture</label>
+                </div>
+                <div class="checkbox-group">
+                    <input type="checkbox" id="shazamUseCenteredOverlay">
+                    <label for="shazamUseCenteredOverlay">Use centered Shazam overlay</label>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="shazamCaptureDurationSeconds">Capture duration (seconds)</label>
+                        <input type="number" id="shazamCaptureDurationSeconds" min="3" max="20" value="7">
+                    </div>
+                    <div class="form-group">
+                        <div class="form-label" aria-hidden="true">&nbsp;</div>
+                        <div class="warning-text">Longer duration can improve matching but increases wait time.</div>
+                    </div>
+                </div>
+                <div class="checkbox-group">
+                    <input type="checkbox" id="shazamAllowHttpFileFallback">
+                    <label for="shazamAllowHttpFileFallback">Allow HTTP fallback via audio file capture/upload when live microphone API is unavailable</label>
+                </div>
+                <div class="checkbox-group">
+                    <input type="checkbox" id="shazamRemoteMemoryOnly">
+                    <label for="shazamRemoteMemoryOnly">When not on local network, keep capture payload in memory only</label>
+                </div>
+            </div>
+        </div>
+        <div class="settings-section settings-section--toggle-style">
+            <div class="settings-header">
+                <span class="material-icons">visibility</span>
+                Watchlist Settings
+            </div>
+            <div class="settings-content">
+                <div class="switch-row">
+                    <label class="switch-label" for="watchEnabled">Enable Watchlist</label>
+                    <span class="switch">
+                        <input type="checkbox" id="watchEnabled">
+                        <span class="slider"></span>
+                    </span>
+                </div>
+                <div class="form-row-3">
+                    <div class="form-group">
+                        <label for="watchPollIntervalSeconds">Watch Interval (seconds)</label>
+                        <input type="number" id="watchPollIntervalSeconds" min="1" max="86400" value="3600">
+                    </div>
+                    <div class="form-group">
+                        <label for="watchMaxItemsPerRun">Max Items Per Run</label>
+                        <input type="number" id="watchMaxItemsPerRun" min="1" max="50" value="50">
+                    </div>
+                    <div class="form-group">
+                        <label for="watchDelayBetweenPlaylistsSeconds">Delay Between Playlists (seconds)</label>
+                        <input type="number" id="watchDelayBetweenPlaylistsSeconds" min="1" max="3600" value="2">
+                    </div>
+                    <div class="form-group">
+                        <label for="watchDelayBetweenArtistsSeconds">Delay Between Artists (seconds)</label>
+                        <input type="number" id="watchDelayBetweenArtistsSeconds" min="1" max="3600" value="5">
+                    </div>
+                </div>
+                <div class="checkbox-group">
+                    <input type="checkbox" id="watchUseSnapshotIdChecking">
+                    <label for="watchUseSnapshotIdChecking">Use Snapshot ID Checking</label>
+                </div>
+                <div class="form-group">
+                        <div class="form-label">Artist Album Groups</div>
+                    <div class="form-row-3">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="watchAlbumGroupAlbum">
+                            <label for="watchAlbumGroupAlbum">Album</label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="watchAlbumGroupSingle">
+                            <label for="watchAlbumGroupSingle">Single</label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="watchAlbumGroupCompilation">
+                            <label for="watchAlbumGroupCompilation">Compilation</label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="watchAlbumGroupAppearsOn">
+                            <label for="watchAlbumGroupAppearsOn">Appears On</label>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+        <div class="settings-section" id="video-settings">
+            <div class="settings-header">
+                <span class="material-icons">movie</span>
+                Videos
+            </div>
+            <div class="settings-content">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="videoDownloadLocation">Video download location</label>
+                        <select id="videoDownloadLocation">
+                            <option value="">(required: select video destination folder)</option>
+                        </select>
+                        <div class="warning-text">Required. Video downloads fail when this is not set.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="videoContainer">Container</label>
+                        <select id="videoContainer">
+                            <option value="mp4">mp4</option>
+                            <option value="m4v">m4v</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="videoAppleAudioType">Apple MV audio type</label>
+                        <select id="videoAppleAudioType">
+                            <option value="atmos">Atmos</option>
+                            <option value="ac3">AC3</option>
+                            <option value="aac">AAC</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="videoAppleMaxResolution">Apple MV max resolution</label>
+                        <select id="videoAppleMaxResolution">
+                            <option value="2160">2160p</option>
+                            <option value="1080">1080p</option>
+                            <option value="720">720p</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="videoAppleCodecPreference">Apple MV codec preference</label>
+                        <select id="videoAppleCodecPreference">
+                            <option value="prefer-hevc">Prefer H.265 (HEVC)</option>
+                            <option value="prefer-avc">Prefer H.264 (AVC)</option>
+                            <option value="auto">Auto</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="mvFileFormat">MV file format</label>
+                        <input type="text" id="mvFileFormat" placeholder="{ArtistName} - {VideoName} [{ReleaseYear}]">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="videoArtistFolderTemplate">Artist folder template</label>
+                        <input type="text" id="videoArtistFolderTemplate" placeholder="%artist%">
+                    </div>
+                    <div class="form-group">
+                        <label for="videoTitleTemplate">Title template</label>
+                        <input type="text" id="videoTitleTemplate" placeholder="%title%">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="settings-section" id="conversion-settings">
+            <div class="settings-header">
+                <span class="material-icons">repeat</span>
+                Conversion
+            </div>
+            <div class="settings-content">
+                <div class="form-row">
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="convertAfterDownload">
+                        <label for="convertAfterDownload">Convert after download</label>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="convertKeepOriginal">
+                        <label for="convertKeepOriginal">Keep original after conversion</label>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="convertSkipIfSourceMatches">
+                        <label for="convertSkipIfSourceMatches">Skip if source matches format</label>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="convertWarnLossyToLossless">
+                        <label for="convertWarnLossyToLossless">Warn on lossy to lossless</label>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="convertSkipLossyToLossless">
+                        <label for="convertSkipLossyToLossless">Skip lossy to lossless</label>
+                    </div>
+                    <div class="form-group">
+                        <label for="convertExtraArgs">FFmpeg extra args</label>
+                        <input type="text" id="convertExtraArgs" placeholder="-af loudnorm">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="settings-section" id="genre-normalization-settings">
+            <div class="settings-header">
+                <span class="material-icons">auto_fix_high</span>
+                Normalize Genre Tags
+            </div>
+            <div class="settings-content">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="normalizeGenreTags">
+                    <label for="normalizeGenreTags">Normalize genre tags with alias list</label>
+                </div>
+                <div class="warning-text">Aliases normalize equivalent names such as Afro-Pop and Afropop before tags are written.</div>
+
+                <div class="form-group" id="genreTagAliasRulesGroup">
+                    <div class="form-label">Genre alias rules</div>
+                    <div class="genre-alias-list">
+                        <div class="genre-alias-header">
+                            <span>Alias</span>
+                            <span>Canonical value</span>
+                            <span></span>
+                        </div>
+                        <div id="genreTagAliasRows"></div>
+                        <p class="genre-alias-empty" id="genreTagAliasEmpty">No rules added yet.</p>
+                        <button type="button" class="btn btn-secondary" id="addGenreTagAliasRule">Add rule</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="settings-section">
+            <div class="settings-header">
+                <span class="material-icons">list</span>
+                Other
+            </div>
+            <div class="settings-content">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="autoCheckForUpdates">
+                    <label for="autoCheckForUpdates">Auto Check For Updates</label>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="deezerLanguage">Deezer content language</label>
+                        <input type="text" id="deezerLanguage" placeholder="en">
+                    </div>
+                    <div class="form-group">
+                        <label for="deezerCountry">Deezer content country</label>
+                        <input type="text" id="deezerCountry" placeholder="US">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="maxRetries">Max Retries</label>
+                        <input type="number" id="maxRetries" min="0" max="10" value="3">
+                    </div>
+                    <div class="form-group">
+                        <label for="retryDelaySeconds">Retry Delay (seconds)</label>
+                        <input type="number" id="retryDelaySeconds" min="1" max="120" value="5">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="retryDelayIncrease">Retry Delay Increase</label>
+                        <input type="number" id="retryDelayIncrease" min="0" max="120" value="5">
+                    </div>
+                    <div class="form-group">
+                        <label for="redownloadCooldownMinutes">Redownload cooldown (minutes)</label>
+                        <input type="number" id="redownloadCooldownMinutes" min="0" max="10080" value="0">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="settings-section settings-section--toggle-style" style="margin-bottom: 0;">
+                        <div class="switch-row">
+                            <label class="switch-label" for="rememberTabsPreference">Remember last open tab</label>
+                            <span class="switch">
+                                <input type="checkbox" id="rememberTabsPreference">
+                                <span class="slider"></span>
+                            </span>
+                        </div>
+                        <div class="warning-text">When enabled, tabbed pages reopen the last tab you used.</div>
+                    </div>
+
+                    <div class="other-pad-column">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="padTracks">
+                            <label for="padTracks">Pad Tracks</label>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label for="paddingSize">Padding Size</label>
+                            <input type="number" id="paddingSize" min="0" max="10" value="0">
+                        </div>
+                    </div>
+                </div>
+                
+            </div>
+        </div>
+        <div class="settings-section" id="download-path-settings">
+            <div class="settings-header">
+                <span class="material-icons">folder</span>
+                Download Path
+            </div>
+            <div class="settings-content">
+                <div class="form-group">
+                    <label for="downloadLocation">Download Location</label>
+                    <div class="path-picker-input">
+                        <input type="text" id="downloadLocation" placeholder="Select download folder">
+                        <button type="button" id="browseDownloadLocation" class="path-picker-btn" title="Browse server folders">
+                            <i class="fas fa-folder-open"></i>
+                            <span class="visually-hidden">Browse server folders</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="btn-group settings-actions">
+        <button type="button" class="action-btn action-btn-sm" onclick="resetSettings()">
+            <span class="material-icons">restart_alt</span>
+            <span>Reset to Defaults</span>
+        </button>
+        <button type="button" class="action-btn action-btn-sm" onclick="saveSettings()">
+            <span class="material-icons">save</span>
+            <span>Save Settings</span>
+        </button>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+let currentSettings = {};
+let defaultSettings = {};
+let settingsReady = false;
+let settingsSaveInFlight = false;
+let settingsSaveQueued = false;
+let settingsSaveQueuedToast = false;
+const APPLE_NOTIFICATION_MODE_KEY = 'apple-download-notification-mode';
+const engineQualityOptions = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
+    DeezSpoTag.Services.Download.QualityCatalog.GetEngineQualityOptions()
+        .ToDictionary(
+            kvp => kvp.Key,
+            kvp => kvp.Value.Select(option => new { value = option.Value, label = option.Label }).ToList(),
+            StringComparer.OrdinalIgnoreCase)));
+
+function revealMaterialIconsWhenReady() {
+    const settingsPage = document.querySelector('.settings-page.material-icons-pending');
+    if (!settingsPage) {
+        return;
+    }
+
+    const reveal = () => settingsPage.classList.remove('material-icons-pending');
+    if (!document.fonts || typeof document.fonts.load !== 'function') {
+        reveal();
+        return;
+    }
+
+    if (document.fonts.check('1em "Material Icons"')) {
+        reveal();
+        return;
+    }
+
+    document.fonts.load('1em "Material Icons"')
+        .then(() => {
+            if (document.fonts.check('1em "Material Icons"')) {
+                reveal();
+            }
+        })
+        .catch(() => {
+            // Keep hidden rather than showing icon-name fallback text.
+        });
+}
+
+revealMaterialIconsWhenReady();
+
+document.addEventListener('DOMContentLoaded', function() {
+    initSettings();
+    setupEventListeners();
+    setupAccordionToggle();
+    setupTemplateVariableHelpers();
+    initTabPreferenceToggle();
+    initDownloadSourceDropdowns();
+    initLibraryFolderDestinationDropdowns();
+    initSecondarySourceControls();
+    setupArtworkFallbackOrder();
+    initializeSettingsTooltips();
+});
+
+function createSettingsTooltipIcon(message) {
+    if (!message) {
+        return null;
+    }
+
+    const tooltip = document.createElement('span');
+    tooltip.className = 'settings-tooltip-icon';
+    tooltip.title = message;
+    tooltip.setAttribute('aria-label', message);
+    tooltip.innerHTML = '<i class="fas fa-question-circle"></i>';
+    return tooltip;
+}
+
+function appendTooltipToElement(target, message) {
+    if (!target || !message) {
+        return false;
+    }
+
+    if (target.querySelector('.settings-tooltip-icon')) {
+        return true;
+    }
+
+    const tooltip = createSettingsTooltipIcon(message);
+    if (!tooltip) {
+        return false;
+    }
+
+    target.appendChild(tooltip);
+    return true;
+}
+
+function upsertSettingsTooltip(target, message, tooltipId) {
+    if (!target) {
+        return null;
+    }
+
+    let tooltip = tooltipId
+        ? document.getElementById(tooltipId)
+        : target.querySelector('.settings-tooltip-icon');
+
+    if (!tooltip) {
+        tooltip = createSettingsTooltipIcon(message || '');
+        if (!tooltip) {
+            return null;
+        }
+
+        if (tooltipId) {
+            tooltip.id = tooltipId;
+        }
+
+        target.appendChild(tooltip);
+    }
+
+    const resolvedMessage = (message || '').trim();
+    tooltip.title = resolvedMessage;
+    tooltip.setAttribute('aria-label', resolvedMessage);
+    tooltip.style.display = resolvedMessage ? '' : 'none';
+    return tooltip;
+}
+
+function resolveTooltipTarget(warning) {
+    if (!warning) {
+        return null;
+    }
+
+    const explicitTargetId = warning.getAttribute('data-tooltip-target');
+    if (explicitTargetId) {
+        const explicitTarget = document.getElementById(explicitTargetId);
+        if (explicitTarget) {
+            const label = document.querySelector(`label[for="${explicitTargetId}"]`);
+            return label || explicitTarget.closest('.form-group')?.querySelector('label, .form-label') || explicitTarget;
+        }
+    }
+
+    const previousGroup = warning.previousElementSibling;
+    if (previousGroup?.classList.contains('form-group')) {
+        const previousGroupLabel = previousGroup.querySelector('label, .form-label');
+        if (previousGroupLabel) {
+            return previousGroupLabel;
+        }
+    }
+
+    const formGroup = warning.closest('.form-group');
+    if (formGroup) {
+        const label = formGroup.querySelector('label, .form-label');
+        if (label) {
+            return label;
+        }
+    }
+
+    const checkboxGroup = warning.previousElementSibling?.classList.contains('checkbox-group')
+        ? warning.previousElementSibling
+        : warning.closest('.settings-content')?.querySelector('.checkbox-group:last-of-type');
+    if (checkboxGroup) {
+        const checkboxLabel = checkboxGroup.querySelector('label');
+        if (checkboxLabel) {
+            return checkboxLabel;
+        }
+    }
+
+    const switchLabel = warning.previousElementSibling?.querySelector('.switch-label')
+        || warning.closest('.settings-section')?.querySelector('.switch-label');
+    if (switchLabel) {
+        return switchLabel;
+    }
+
+    return null;
+}
+
+function initializeSettingsTooltips() {
+    const targetMessages = new Map();
+
+    document.querySelectorAll('.settings-section .warning-text').forEach((warning) => {
+        if (warning.id === 'multiQualitySecondaryFolderWarning') {
+            return;
+        }
+
+        const message = (warning.innerText || warning.textContent || '').trim();
+        if (!message) {
+            return;
+        }
+
+        const target = resolveTooltipTarget(warning);
+        if (!target) {
+            return;
+        }
+
+        const messages = targetMessages.get(target) || [];
+        messages.push(message);
+        targetMessages.set(target, messages);
+        warning.remove();
+    });
+
+    targetMessages.forEach((messages, target) => {
+        const mergedMessage = messages.join('\n');
+        const tooltip = upsertSettingsTooltip(target, mergedMessage, '');
+        if (tooltip) {
+            tooltip.dataset.baseMessage = mergedMessage;
+        }
+    });
+}
+
+function initSecondarySourceControls() {
+    const secondarySelect = document.getElementById('multiQualitySecondaryDestinationFolderId');
+    if (!secondarySelect) {
+        return;
+    }
+
+    secondarySelect.addEventListener('change', updateSecondaryFolderRequirement);
+    updateSecondaryFolderRequirement();
+}
+
+function updateSecondaryFolderRequirement() {
+    const secondarySelect = document.getElementById('multiQualitySecondaryDestinationFolderId');
+    const enabledCheckbox = document.getElementById('multiQualityEnabled');
+    const configGroup = document.getElementById('multiQualityConfigGroup');
+    const targetLabel = document.querySelector('label[for="multiQualitySecondaryDestinationFolderId"]');
+    if (!secondarySelect) {
+        return;
+    }
+
+    if (configGroup && enabledCheckbox) {
+        configGroup.style.display = enabledCheckbox.checked ? 'block' : 'none';
+    }
+
+    const dynamicWarningMessage = 'Select an Atmos destination to enable the secondary download.';
+    const hasDestination = !!(secondarySelect.value || '').trim();
+    const shouldShowWarning = Boolean(enabledCheckbox?.checked) && !hasDestination;
+    const existingTooltip = targetLabel?.querySelector('.settings-tooltip-icon');
+    const baseMessage = (existingTooltip?.dataset.baseMessage || '').trim();
+    const resolvedMessage = shouldShowWarning
+        ? [baseMessage, dynamicWarningMessage].filter(Boolean).join('\n')
+        : baseMessage;
+    const tooltip = upsertSettingsTooltip(targetLabel, resolvedMessage, '');
+    if (tooltip) {
+        tooltip.dataset.baseMessage = baseMessage;
+    }
+}
+
+async function initLibraryFolderDestinationDropdowns() {
+    const primarySelect = document.getElementById('multiQualityPrimaryDestinationFolderId');
+    const secondarySelect = document.getElementById('multiQualitySecondaryDestinationFolderId');
+    const videoSelect = document.getElementById('videoDownloadLocation');
+    if (!primarySelect && !secondarySelect && !videoSelect) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/library/folders');
+        if (!response.ok) {
+            return;
+        }
+
+        const folders = await response.json();
+        if (!Array.isArray(folders)) {
+            return;
+        }
+
+        const sorted = folders
+            .filter(folder => folder && folder.id != null && folder.displayName)
+            .slice()
+            .sort((a, b) => String(a.displayName).localeCompare(String(b.displayName), undefined, { sensitivity: 'base' }));
+
+        const buildOptionsHtml = () => {
+            return [
+                '<option value="">(Use request destination)</option>',
+                ...sorted.map(folder =>
+                    `<option value="${String(folder.id)}">${escapeHtml(String(folder.displayName))}</option>`)
+            ].join('');
+        };
+
+        const currentPrimary = primarySelect ? (primarySelect.value || '').trim() : '';
+        const currentSecondary = secondarySelect ? (secondarySelect.value || '').trim() : '';
+        const currentVideo = videoSelect ? (videoSelect.value || '').trim() : '';
+        const hasFolderIdOption = (value) => {
+            const normalized = String(value ?? '').trim();
+            if (!normalized) {
+                return false;
+            }
+
+            return sorted.some(folder => String(folder.id).trim() === normalized);
+        };
+
+        if (primarySelect) {
+            primarySelect.innerHTML = buildOptionsHtml();
+        }
+        if (secondarySelect) {
+            secondarySelect.innerHTML = buildOptionsHtml();
+        }
+        if (videoSelect) {
+            const videoOptions = [
+                '<option value="">(required: select video destination folder)</option>',
+                ...sorted
+                    .filter(folder => folder.enabled !== false && folder.rootPath)
+                    .map(folder => `<option value="${escapeHtml(String(folder.rootPath))}">${escapeHtml(String(folder.displayName))}</option>`)
+            ];
+
+            const hasCurrent = currentVideo
+                && sorted.some(folder =>
+                    folder.enabled !== false
+                    && String(folder.rootPath || '').trim().toLowerCase() === currentVideo.toLowerCase());
+            if (currentVideo && !hasCurrent) {
+                videoOptions.push(`<option value="${escapeHtml(currentVideo)}">Current (unmapped): ${escapeHtml(currentVideo)}</option>`);
+            }
+
+            videoSelect.innerHTML = videoOptions.join('');
+        }
+
+        if (primarySelect && currentPrimary) {
+            primarySelect.value = currentPrimary;
+        }
+        if (secondarySelect) {
+            if (hasFolderIdOption(currentSecondary)) {
+                secondarySelect.value = currentSecondary;
+            }
+            updateSecondaryFolderRequirement();
+        }
+        if (videoSelect && currentVideo) {
+            videoSelect.value = currentVideo;
+        }
+    } catch {
+        // Non-fatal: keep the default "(Use request destination)" option.
+    }
+}
+
+function escapeHtml(text) {
+    return String(text)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
+function setupEventListeners() {
+    const createPlaylistFolder = document.getElementById('createPlaylistFolder');
+    if (createPlaylistFolder) {
+        createPlaylistFolder.addEventListener('change', function() {
+            document.getElementById('playlistNameGroup').style.display = this.checked ? 'block' : 'none';
+        });
+    }
+
+    const createArtistFolder = document.getElementById('createArtistFolder');
+    if (createArtistFolder) {
+        createArtistFolder.addEventListener('change', function() {
+            document.getElementById('artistNameGroup').style.display = this.checked ? 'block' : 'none';
+        });
+    }
+
+    const createAlbumFolder = document.getElementById('createAlbumFolder');
+    if (createAlbumFolder) {
+        createAlbumFolder.addEventListener('change', function() {
+            document.getElementById('albumNameGroup').style.display = this.checked ? 'block' : 'none';
+        });
+    }
+
+    const saveArtwork = document.getElementById('saveArtwork');
+    if (saveArtwork) {
+        saveArtwork.addEventListener('change', function() {
+            document.getElementById('coverImageTemplateGroup').style.display = this.checked ? 'block' : 'none';
+        });
+    }
+
+    const saveArtworkArtist = document.getElementById('saveArtworkArtist');
+    if (saveArtworkArtist) {
+        saveArtworkArtist.addEventListener('change', function() {
+            document.getElementById('artistImageTemplateGroup').style.display = this.checked ? 'block' : 'none';
+        });
+    }
+
+    const realTimeToggle = document.getElementById('realTime');
+    const realTimeMultiplier = document.getElementById('realTimeMultiplier');
+    if (realTimeToggle && realTimeMultiplier) {
+        realTimeToggle.addEventListener('change', function() {
+            realTimeMultiplier.disabled = !this.checked;
+        });
+    }
+
+    const convertTo = document.getElementById('convertTo');
+    const convertBitrate = document.getElementById('convertBitrate');
+    if (convertTo && convertBitrate) {
+        convertTo.addEventListener('change', function() {
+            const value = (this.value || '').toLowerCase();
+            const losslessFormats = new Set(['', 'flac', 'wav', 'alac']);
+            convertBitrate.disabled = losslessFormats.has(value);
+        });
+    }
+
+    const rememberTabs = document.getElementById('rememberTabsPreference');
+    if (rememberTabs) {
+        rememberTabs.addEventListener('change', function() {
+            localStorage.setItem('tabs-preference-enabled', this.checked ? 'true' : 'false');
+            if (window.UserPrefs) window.UserPrefs.set('tabsPreferenceEnabled', this.checked);
+        });
+    }
+
+    const normalizeGenreTags = document.getElementById('normalizeGenreTags');
+    if (normalizeGenreTags) {
+        normalizeGenreTags.addEventListener('change', updateGenreTagAliasRulesState);
+    }
+
+    const addGenreTagAliasRule = document.getElementById('addGenreTagAliasRule');
+    if (addGenreTagAliasRule) {
+        addGenreTagAliasRule.addEventListener('click', () => {
+            const rowsContainer = document.getElementById('genreTagAliasRows');
+            if (!rowsContainer) {
+                return;
+            }
+
+            const row = createGenreTagAliasRuleRow();
+            rowsContainer.appendChild(row);
+            toggleGenreTagAliasEmptyState();
+            const aliasInput = row.querySelector('.genre-alias-alias');
+            if (aliasInput) {
+                aliasInput.focus();
+            }
+        });
+    }
+
+    const embedMaxQuality = document.getElementById('embedMaxQualityCover');
+    if (embedMaxQuality) {
+        embedMaxQuality.addEventListener('change', function() {
+            updateEmbedMaxQualityCoverState(this.checked);
+        });
+    }
+
+    const multiQualityEnabled = document.getElementById('multiQualityEnabled');
+    if (multiQualityEnabled) {
+        multiQualityEnabled.addEventListener('change', function() {
+            const config = document.getElementById('multiQualityConfigGroup');
+            if (config) {
+                config.style.display = this.checked ? 'block' : 'none';
+            }
+            updateSecondaryFolderRequirement();
+        });
+    }
+
+    const browseDownloadLocation = document.getElementById('browseDownloadLocation');
+    const downloadLocation = document.getElementById('downloadLocation');
+    if (browseDownloadLocation && downloadLocation && window.DeezSpoTag?.ui?.browseServerFolder) {
+        browseDownloadLocation.addEventListener('click', async () => {
+            const selected = await window.DeezSpoTag.ui.browseServerFolder({
+                title: 'Download Location',
+                startPath: downloadLocation.value || '',
+                apiPath: '/api/library/folders/browse',
+                selectText: 'Use This Folder'
+            });
+            if (selected) {
+                downloadLocation.value = selected;
+            }
+        });
+    }
+}
+
+function setupArtworkFallbackOrder() {
+    const dropdown = document.getElementById('artworkFallbackOrderDropdown');
+    const trigger = document.getElementById('artworkFallbackOrderTrigger');
+    const menu = document.getElementById('artworkFallbackOrderMenu');
+    const list = document.getElementById('artworkFallbackOrderList');
+    const input = document.getElementById('artworkFallbackOrder');
+
+    if (!dropdown || !trigger || !menu || !list || !input) {
+        return;
+    }
+
+    trigger.addEventListener('click', (event) => {
+        event.stopPropagation();
+        menu.classList.toggle('open');
+    });
+
+    document.addEventListener('click', () => menu.classList.remove('open'));
+
+    const labelMap = {
+        apple: 'iTunes',
+        deezer: 'Deezer',
+        spotify: 'Spotify'
+    };
+
+    const updateValue = () => {
+        const order = Array.from(list.querySelectorAll('.artwork-order-item'))
+            .map(item => item.dataset.value || '')
+            .filter(Boolean);
+        input.value = order.join(',');
+        const labels = order.map(value => labelMap[value] || value);
+        trigger.textContent = labels.join(' \u2192 ');
+    };
+
+    let dragged = null;
+
+    list.addEventListener('dragstart', (event) => {
+        const target = event.target.closest('.artwork-order-item');
+        if (!target) {
+            return;
+        }
+        dragged = target;
+        event.dataTransfer?.setData('text/plain', target.dataset.value || '');
+        event.dataTransfer?.setDragImage(target, 10, 10);
+        target.classList.add('dragging');
+    });
+
+    list.addEventListener('dragend', () => {
+        if (dragged) {
+            dragged.classList.remove('dragging');
+            dragged = null;
+        }
+        updateValue();
+    });
+
+    list.addEventListener('dragover', (event) => {
+        event.preventDefault();
+        const target = event.target.closest('.artwork-order-item');
+        if (!dragged || !target || dragged === target) {
+            return;
+        }
+
+        const rect = target.getBoundingClientRect();
+        const before = event.clientY < rect.top + rect.height / 2;
+        list.insertBefore(dragged, before ? target : target.nextSibling);
+    });
+
+    const syncFromInput = () => {
+        const order = (input.value || '')
+            .split(',')
+            .map(value => value.trim())
+            .filter(Boolean);
+        if (order.length === 0) {
+            updateValue();
+            return;
+        }
+
+        const items = Array.from(list.querySelectorAll('.artwork-order-item'));
+        const byValue = new Map(items.map(item => [item.dataset.value, item]));
+        list.innerHTML = '';
+        order.forEach(value => {
+            const item = byValue.get(value);
+            if (item) {
+                list.appendChild(item);
+            }
+        });
+        items.forEach(item => {
+            if (!list.contains(item)) {
+                list.appendChild(item);
+            }
+        });
+        updateValue();
+    };
+
+    syncFromInput();
+}
+
+
+function updateEmbedMaxQualityCoverState(enabled) {
+    const embeddedSize = document.getElementById('embeddedArtworkSize');
+    if (embeddedSize) {
+        embeddedSize.disabled = enabled;
+    }
+}
+
+function initDownloadSourceDropdowns() {
+    const dropdowns = document.querySelectorAll('.dropdown-select');
+    dropdowns.forEach(dropdown => {
+        const input = dropdown.querySelector('input[type="hidden"]');
+        const trigger = dropdown.querySelector('.dropdown-trigger');
+        const menu = dropdown.querySelector('.dropdown-menu');
+        const options = dropdown.querySelectorAll('.dropdown-option');
+        if (!input || !trigger || !menu) {
+            return;
+        }
+
+        const closeMenu = () => menu.classList.remove('open');
+        const openMenu = () => menu.classList.add('open');
+        const toggleMenu = (event) => {
+            event.stopPropagation();
+            menu.classList.toggle('open');
+        };
+
+        trigger.addEventListener('click', toggleMenu);
+        options.forEach(option => {
+            option.addEventListener('click', (event) => {
+                event.stopPropagation();
+                const value = option.getAttribute('data-value') || '';
+                if (!value) {
+                    return;
+                }
+                input.value = value;
+                trigger.textContent = option.textContent || value;
+                options.forEach(btn => btn.setAttribute('aria-selected', 'false'));
+                option.setAttribute('aria-selected', 'true');
+                closeMenu();
+                if (input.id === 'downloadSource') {
+                    updateQualityDropdownVisibility(value, true);
+                }
+            });
+        });
+
+        document.addEventListener('click', closeMenu);
+    });
+
+    const downloadSourceValue = document.getElementById('downloadSource')?.value || 'deezer';
+    updateQualityDropdownVisibility(downloadSourceValue, false);
+}
+
+function updateQualityDropdownVisibility(source, autoOpen) {
+    const tidalGroup = document.getElementById('multisource-tidalQualityGroup');
+    const qobuzGroup = document.getElementById('multisource-qobuzQualityGroup');
+    const appleGroup = document.getElementById('apple-qualityGroup');
+    const deezerGroup = document.getElementById('deezer-maxBitrateGroup');
+    const fallbackQuality = document.getElementById('fallbackBitrate');
+    const fallbackQualityLabel = document.querySelector('label[for="fallbackBitrate"]');
+    if (tidalGroup) {
+        tidalGroup.style.display = source === 'tidal' ? 'block' : 'none';
+    }
+    if (qobuzGroup) {
+        qobuzGroup.style.display = source === 'qobuz' ? 'block' : 'none';
+    }
+    if (appleGroup) {
+        appleGroup.style.display = source === 'apple' ? 'block' : 'none';
+    }
+    if (deezerGroup) {
+        deezerGroup.style.display = source === 'deezer' ? 'block' : 'none';
+    }
+    if (fallbackQuality) {
+        const isAuto = source === 'auto';
+        fallbackQuality.disabled = isAuto;
+        if (isAuto) {
+            fallbackQuality.checked = true;
+            fallbackQuality.setAttribute('title', 'Fallback Quality is always enabled in Auto mode');
+            if (fallbackQualityLabel) {
+                fallbackQualityLabel.setAttribute('title', 'Fallback Quality is always enabled in Auto mode');
+            }
+        } else {
+            fallbackQuality.removeAttribute('title');
+            if (fallbackQualityLabel) {
+                fallbackQualityLabel.removeAttribute('title');
+            }
+        }
+    }
+
+    if (!autoOpen) {
+        return;
+    }
+
+    if (source === 'tidal') {
+        document.getElementById('multisource-tidalQualityMenu')?.classList.add('open');
+    } else if (source === 'qobuz') {
+        document.getElementById('multisource-qobuzQualityMenu')?.classList.add('open');
+    } else if (source === 'apple') {
+        document.getElementById('applePreferredAudioProfileMenu')?.classList.add('open');
+    }
+}
+
+function initTabPreferenceToggle() {
+    const rememberTabs = document.getElementById('rememberTabsPreference');
+    if (!rememberTabs) {
+        return;
+    }
+    const stored = localStorage.getItem('tabs-preference-enabled');
+    rememberTabs.checked = stored === null || stored === '' ? true : stored === 'true';
+}
+
+function setupAccordionToggle() {
+    document.querySelectorAll('.settings-header').forEach(header => {
+        header.addEventListener('click', function() {
+            const content = this.nextElementSibling;
+            if (!content || !content.classList.contains('settings-content')) {
+                return;
+            }
+            const isActive = content.classList.contains('active');
+
+            // Scope to the enclosing settings-width so the two columns are independent.
+            const settingsWidth = this.closest('.settings-width') || document;
+            settingsWidth.querySelectorAll('.settings-content').forEach(c => c.classList.remove('active'));
+
+            if (!isActive) {
+                content.classList.add('active');
+            }
+        });
+    });
+
+    const firstContent = document.querySelector('.settings-width .settings-section > .settings-content');
+    if (firstContent) {
+        firstContent.classList.add('active');
+    }
+}
+
+function setupTemplateVariableHelpers() {
+    const variableSets = {
+        track: [
+            "%title%", "%artist%", "%artists%", "%allartists%", "%mainartists%",
+            "%featartists%", "%album%", "%albumartist%", "%tracknumber%",
+            "%tracktotal%", "%discnumber%", "%disctotal%", "%genre%", "%year%",
+            "%date%", "%bpm%", "%label%", "%isrc%", "%upc%", "%explicit%",
+            "%track_id%", "%album_id%", "%artist_id%"
+        ],
+        album: [
+            "%title%", "%artist%", "%artists%", "%allartists%", "%mainartists%",
+            "%featartists%", "%album%", "%albumartist%", "%tracknumber%",
+            "%tracktotal%", "%discnumber%", "%disctotal%", "%genre%", "%year%",
+            "%date%", "%bpm%", "%label%", "%isrc%", "%upc%", "%explicit%",
+            "%track_id%", "%album_id%", "%artist_id%"
+        ],
+        playlist: [
+            "%title%", "%artist%", "%artists%", "%allartists%", "%mainartists%",
+            "%featartists%", "%album%", "%albumartist%", "%tracknumber%",
+            "%tracktotal%", "%discnumber%", "%disctotal%", "%genre%", "%year%",
+            "%date%", "%bpm%", "%label%", "%isrc%", "%upc%", "%explicit%",
+            "%track_id%", "%album_id%", "%artist_id%", "%playlist_id%", "%position%"
+        ]
+    };
+
+    document.querySelectorAll('[data-template-variables]').forEach(container => {
+        const type = container.getAttribute('data-variables') || 'track';
+        const list = container.querySelector('.template-variables-list');
+        if (!list) {
+            return;
+        }
+        const variables = variableSets[type] || variableSets.track;
+        list.innerHTML = variables
+            .map(variable => `<span class="template-variable" data-variable="${variable}">${variable}</span>`)
+            .join("");
+    });
+
+    function insertTemplateVariable(input, value) {
+        if (!input || !value) {
+            return;
+        }
+        const start = input.selectionStart ?? input.value.length;
+        const end = input.selectionEnd ?? input.value.length;
+        const before = input.value.slice(0, start);
+        const after = input.value.slice(end);
+        input.value = `${before}${value}${after}`;
+        const cursor = start + value.length;
+        input.setSelectionRange(cursor, cursor);
+        input.focus();
+    }
+
+    document.querySelectorAll('.template-variable').forEach(item => {
+        item.addEventListener('click', () => {
+            const value = item.getAttribute('data-variable') || '';
+            if (!value) {
+                return;
+            }
+            const container = item.closest('[data-template-variables]');
+            const inputId = container?.getAttribute('data-input');
+            if (!inputId) {
+                return;
+            }
+            const input = document.getElementById(inputId);
+            insertTemplateVariable(input, value);
+            showToast(`Added ${value}`, 'success');
+        });
+    });
+}
+
+function getFieldValue(id) {
+    const el = document.getElementById(id);
+    return el ? el.value : '';
+}
+
+function getCheckboxValue(id) {
+    const el = document.getElementById(id);
+    return el ? !!el.checked : false;
+}
+
+function createGenreTagAliasRuleRow(alias = '', canonical = '') {
+    const row = document.createElement('div');
+    row.className = 'genre-alias-row';
+
+    const aliasInput = document.createElement('input');
+    aliasInput.type = 'text';
+    aliasInput.className = 'genre-alias-alias';
+    aliasInput.placeholder = 'Afro-Pop';
+    aliasInput.value = alias;
+
+    const canonicalInput = document.createElement('input');
+    canonicalInput.type = 'text';
+    canonicalInput.className = 'genre-alias-canonical';
+    canonicalInput.placeholder = 'Afropop';
+    canonicalInput.value = canonical;
+
+    const removeButton = document.createElement('button');
+    removeButton.type = 'button';
+    removeButton.className = 'genre-alias-remove';
+    removeButton.textContent = 'x';
+    removeButton.title = 'Remove rule';
+    removeButton.addEventListener('click', () => {
+        row.remove();
+        toggleGenreTagAliasEmptyState();
+    });
+
+    row.appendChild(aliasInput);
+    row.appendChild(canonicalInput);
+    row.appendChild(removeButton);
+    return row;
+}
+
+function toggleGenreTagAliasEmptyState() {
+    const rowsContainer = document.getElementById('genreTagAliasRows');
+    const empty = document.getElementById('genreTagAliasEmpty');
+    if (!rowsContainer || !empty) {
+        return;
+    }
+
+    empty.style.display = rowsContainer.children.length === 0 ? 'block' : 'none';
+}
+
+function renderGenreTagAliasRules(rules) {
+    const rowsContainer = document.getElementById('genreTagAliasRows');
+    if (!rowsContainer) {
+        return;
+    }
+
+    rowsContainer.innerHTML = '';
+    const source = Array.isArray(rules) ? rules : [];
+    source.forEach(rule => {
+        const alias = String(rule?.alias || '').trim();
+        const canonical = String(rule?.canonical || '').trim();
+        if (!alias || !canonical) {
+            return;
+        }
+
+        rowsContainer.appendChild(createGenreTagAliasRuleRow(alias, canonical));
+    });
+
+    toggleGenreTagAliasEmptyState();
+}
+
+function collectGenreTagAliasRules() {
+    const rowsContainer = document.getElementById('genreTagAliasRows');
+    if (!rowsContainer) {
+        return [];
+    }
+
+    const rules = [];
+    const seen = new Set();
+    rowsContainer.querySelectorAll('.genre-alias-row').forEach(row => {
+        const alias = String(row.querySelector('.genre-alias-alias')?.value || '').trim();
+        const canonical = String(row.querySelector('.genre-alias-canonical')?.value || '').trim();
+        if (!alias || !canonical) {
+            return;
+        }
+
+        const key = alias.toLowerCase();
+        if (seen.has(key)) {
+            return;
+        }
+
+        seen.add(key);
+        rules.push({ alias, canonical });
+    });
+
+    return rules;
+}
+
+function updateGenreTagAliasRulesState() {
+    const enabled = document.getElementById('normalizeGenreTags')?.checked === true;
+    const group = document.getElementById('genreTagAliasRulesGroup');
+    if (!group) {
+        return;
+    }
+
+    group.style.opacity = enabled ? '1' : '0.65';
+    group.querySelectorAll('input, button').forEach(control => {
+        control.disabled = !enabled;
+    });
+}
+
+function normalizeAppleNotificationMode(mode) {
+    const normalized = String(mode || '').trim().toLowerCase();
+    if (normalized === 'off' || normalized === 'merged' || normalized === 'detailed') {
+        return normalized;
+    }
+    return 'detailed';
+}
+
+function loadAppleNotificationPreference() {
+    const select = document.getElementById('appleDownloadNotificationMode');
+    if (!select) {
+        return;
+    }
+
+    const fromLocal = localStorage.getItem(APPLE_NOTIFICATION_MODE_KEY);
+    const mode = normalizeAppleNotificationMode(fromLocal || window.__userPrefsData?.appleDownloadNotificationMode);
+    select.value = mode;
+}
+
+function persistAppleNotificationPreference() {
+    const select = document.getElementById('appleDownloadNotificationMode');
+    if (!select) {
+        return;
+    }
+
+    const mode = normalizeAppleNotificationMode(select.value);
+    localStorage.setItem(APPLE_NOTIFICATION_MODE_KEY, mode);
+    if (globalThis.UserPrefs) {
+        globalThis.UserPrefs.set('appleDownloadNotificationMode', mode);
+    }
+}
+
+async function initSettings() {
+    try {
+        const settingsData = await getSettingsData();
+        
+        if (settingsData) {
+            defaultSettings = settingsData.defaultSettings;
+            const mergedSettings = mergeWithDefaults(settingsData.settings, defaultSettings);
+            
+            loadSettings(mergedSettings);
+            loadAppleNotificationPreference();
+            settingsReady = true;
+        } else {
+            throw new Error('No settings data received');
+        }
+    } catch (error) {
+        console.error('Error loading settings:', error);
+        showToast('Failed to load settings: ' + error.message, 'error');
+    } finally {
+        initializeSettingsTooltips();
+    }
+}
+
+function mergeWithDefaults(settings, defaults) {
+    if (!settings || !defaults) {
+        return defaults || {};
+    }
+    
+    const merged = JSON.parse(JSON.stringify(defaults));
+    
+    Object.keys(settings).forEach(key => {
+        if (key === 'tags') {
+            if (settings.tags && defaults.tags) {
+                merged.tags = { ...defaults.tags, ...settings.tags };
+            }
+            return;
+        }
+        if (settings[key] !== undefined && settings[key] !== null) {
+            merged[key] = settings[key];
+        }
+    });
+    
+    return merged;
+}
+
+async function getSettingsData() {
+    try {
+        const response = await fetch('/api/settings');
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        
+        return {
+            settings: data.settings,
+            defaultSettings: data.defaultSettings,
+        };
+    } catch (error) {
+        console.error('Failed to fetch settings:', error);
+        throw error;
+    }
+}
+
+function loadSettings(settings) {
+    currentSettings = JSON.parse(JSON.stringify(settings));
+    
+    setFieldValue('downloadLocation', settings.downloadLocation);
+    
+    setFieldValue('tracknameTemplate', settings.tracknameTemplate);
+    setFieldValue('albumTracknameTemplate', settings.albumTracknameTemplate);
+    setFieldValue('playlistTracknameTemplate', settings.playlistTracknameTemplate);
+    
+    setCheckboxValue('createPlaylistFolder', settings.createPlaylistFolder);
+    setFieldValue('playlistNameTemplate', settings.playlistNameTemplate);
+    setCheckboxValue('createArtistFolder', settings.createArtistFolder);
+    setFieldValue('artistNameTemplate', settings.artistNameTemplate);
+    setCheckboxValue('createAlbumFolder', settings.createAlbumFolder);
+    setFieldValue('albumNameTemplate', settings.albumNameTemplate);
+    setCheckboxValue('createCDFolder', settings.createCDFolder);
+    setCheckboxValue('createStructurePlaylist', settings.createStructurePlaylist);
+    setCheckboxValue('createSingleFolder', settings.createSingleFolder);
+    
+    setCheckboxValue('padTracks', settings.padTracks);
+    setFieldValue('paddingSize', settings.paddingSize);
+    setFieldValue('illegalCharacterReplacer', settings.illegalCharacterReplacer);
+    
+    setFieldValue('queueOrder', settings.queueOrder || 'fifo');
+    setFieldValue('downloadSource', settings.service || 'deezer');
+    setCheckboxValue('preferAlbumLayoutForPlaylists', settings.preferAlbumLayoutForPlaylists);
+    setMaxBitrateValue(settings.maxBitrate);
+    setCheckboxValue('fallbackBitrate', settings.fallbackBitrate);
+    setCheckboxValue('fallbackSearch', settings.fallbackSearch);
+    setCheckboxValue('strictSpotifyDeezerMode', settings.strictSpotifyDeezerMode);
+    setCheckboxValue('autoMaxBitrate', settings.autoMaxBitrate);
+    setCheckboxValue('logErrors', settings.logErrors);
+    setFieldValue('maxConcurrentDownloads', settings.maxConcurrentDownloads);
+    setCheckboxValue('realTime', settings.realTime);
+    setFieldValue('realTimeMultiplier', settings.realTimeMultiplier);
+    setCheckboxValue('recursiveQuality', settings.recursiveQuality);
+    setCheckboxValue('separateTracksByUser', settings.separateTracksByUser);
+    setFieldValue('convertTo', settings.convertFormat || settings.convertTo);
+    setFieldValue('convertBitrate', settings.bitrate);
+    setFieldValue('maxRetries', settings.maxRetries);
+    setFieldValue('retryDelaySeconds', settings.retryDelaySeconds);
+    setFieldValue('retryDelayIncrease', settings.retryDelayIncrease);
+    setFieldValue('redownloadCooldownMinutes', settings.redownloadCooldownMinutes ?? 0);
+    
+    setFieldValue('embeddedArtworkSize', settings.embeddedArtworkSize);
+    setCheckboxValue('embedMaxQualityCover', settings.embedMaxQualityCover);
+    updateEmbedMaxQualityCoverState(!!settings.embedMaxQualityCover);
+    setFieldValue('localArtworkSize', settings.localArtworkSize);
+    setFieldValue('appleArtworkSizeText', settings.appleArtworkSizeText);
+    setFieldValue('localArtworkFormat', settings.localArtworkFormat);
+    setCheckboxValue('saveArtwork', settings.saveArtwork);
+    setFieldValue('coverImageTemplate', settings.coverImageTemplate);
+    setCheckboxValue('saveArtworkArtist', settings.saveArtworkArtist);
+    setFieldValue('artistImageTemplate', settings.artistImageTemplate);
+    setFieldValue('jpegImageQuality', settings.jpegImageQuality);
+    
+
+    setCheckboxValue('rememberTabsPreference', settings.rememberTabsPreference);
+    localStorage.setItem('tabs-preference-enabled', settings.rememberTabsPreference ? 'true' : 'false');
+    if (window.UserPrefs) window.UserPrefs.set('tabsPreferenceEnabled', !!settings.rememberTabsPreference);
+    setFieldValue('librespotConcurrency', settings.librespotConcurrency);
+    setFieldValue('spotifyResolveConcurrency', settings.spotifyResolveConcurrency);
+    setFieldValue('spotifyMatchConcurrency', settings.spotifyMatchConcurrency);
+    setFieldValue('spotifyIsrcHydrationConcurrency', settings.spotifyIsrcHydrationConcurrency);
+    const spotifyPlaylistTrackSource = (settings.spotifyPlaylistTrackSource || 'pathfinder').toLowerCase() === 'spotiflac'
+        ? 'pathfinder'
+        : (settings.spotifyPlaylistTrackSource || 'pathfinder');
+    setFieldValue('spotifyPlaylistTrackSource', spotifyPlaylistTrackSource);
+    setCheckboxValue('spotifyHomeFeedCacheEnabled', settings.spotifyHomeFeedCacheEnabled ?? true);
+    setCheckboxValue('spotifyHomeFeedAutoRefreshEnabled', settings.spotifyHomeFeedAutoRefreshEnabled ?? true);
+    setFieldValue('spotifyHomeFeedAutoRefreshHours', settings.spotifyHomeFeedAutoRefreshHours ?? 2);
+    setFieldValue('spotifyBrowseCacheMinutes', settings.spotifyBrowseCacheMinutes ?? 30);
+    setFieldValue('spotifyArtistMetadataFetchBatchSize', settings.spotifyArtistMetadataFetchBatchSize ?? 25);
+    setFieldValue('multisource-tidalQuality', settings.tidalQuality);
+    setFieldValue('multisource-qobuzQuality', settings.qobuzQuality);
+
+    const apple = settings.appleMusic || {};
+    setFieldValue('applePreferredAudioProfile', apple.preferredAudioProfile || 'atmos');
+    setFieldValue('appleGetM3u8Mode', apple.getM3u8Mode || 'hires');
+    setFieldValue('appleAacType', apple.aacType || 'aac-lc');
+    setFieldValue('appleAlacMax', apple.alacMax ?? 192000);
+    setFieldValue('appleAtmosMax', apple.atmosMax ?? 2768);
+    setFieldValue('authorizationToken', apple.authorizationToken || settings.authorizationToken || '');
+    setFieldValue('appleDecryptM3u8Port', apple.decryptM3u8Port || '127.0.0.1:10020');
+    setFieldValue('appleGetM3u8Port', apple.getM3u8Port || '127.0.0.1:20020');
+    setCheckboxValue('artworkFallbackEnabled', settings.artworkFallbackEnabled !== false);
+    setFieldValue('artworkFallbackOrder', settings.artworkFallbackOrder || 'apple,deezer,spotify');
+    setCheckboxValue('artistArtworkFallbackEnabled', settings.artistArtworkFallbackEnabled !== false);
+    setFieldValue('artistArtworkFallbackOrder', settings.artistArtworkFallbackOrder || settings.artworkFallbackOrder || 'apple,deezer,spotify');
+    setCheckboxValue('saveAnimatedArtwork', settings.saveAnimatedArtwork);
+    setCheckboxValue('dlAlbumcoverForPlaylist', settings.dlAlbumcoverForPlaylist !== false);
+    setCheckboxValue('getM3u8FromDevice', apple.getM3u8FromDevice !== false);
+    setCheckboxValue('convertAfterDownload', settings.convertAfterDownload !== false);
+    setCheckboxValue('convertKeepOriginal', settings.convertKeepOriginal !== false);
+    setCheckboxValue('convertSkipIfSourceMatches', settings.convertSkipIfSourceMatches !== false);
+    setCheckboxValue('convertWarnLossyToLossless', settings.convertWarnLossyToLossless);
+    setCheckboxValue('convertSkipLossyToLossless', settings.convertSkipLossyToLossless);
+    setFieldValue('convertExtraArgs', settings.convertExtraArgs || '');
+    setFieldValue('mvFileFormat', settings.mvFileFormat || '{ArtistName} - {VideoName} [{ReleaseYear}]');
+
+    const mq = settings.multiQuality || {};
+    setCheckboxValue('multiQualityEnabled', mq.enabled);
+    setFieldValue('multiQualityPrimaryDestinationFolderId', mq.primaryDestinationFolderId ?? '');
+    setFieldValue('multiQualitySecondaryDestinationFolderId', mq.secondaryDestinationFolderId ?? '');
+    updateSecondaryFolderRequirement();
+
+    const video = settings.video || {};
+    setFieldValue('videoDownloadLocation', video.videoDownloadLocation || '');
+    setFieldValue('videoContainer', video.container || 'mp4');
+    setFieldValue('videoAppleAudioType', video.appleMusicVideoAudioType || 'atmos');
+    setFieldValue('videoAppleMaxResolution', video.appleMusicVideoMaxResolution ?? 2160);
+    setFieldValue('videoAppleCodecPreference', video.appleMusicVideoCodecPreference || 'prefer-hevc');
+    setFieldValue('videoArtistFolderTemplate', video.artistFolderTemplate || '%artist%');
+    setFieldValue('videoTitleTemplate', video.titleTemplate || '%title%');
+    initLibraryFolderDestinationDropdowns();
+
+    setCheckboxValue('watchEnabled', settings.watchEnabled);
+    setFieldValue('watchPollIntervalSeconds', settings.watchPollIntervalSeconds);
+    setFieldValue('watchMaxItemsPerRun', settings.watchMaxItemsPerRun);
+    setFieldValue('watchDelayBetweenPlaylistsSeconds', settings.watchDelayBetweenPlaylistsSeconds);
+    setFieldValue('watchDelayBetweenArtistsSeconds', settings.watchDelayBetweenArtistsSeconds);
+    setCheckboxValue('watchUseSnapshotIdChecking', settings.watchUseSnapshotIdChecking);
+
+    const albumGroups = Array.isArray(settings.watchedArtistAlbumGroup)
+        ? settings.watchedArtistAlbumGroup.map(group => String(group).toLowerCase())
+        : [];
+    setCheckboxValue('watchAlbumGroupAlbum', albumGroups.includes('album'));
+    setCheckboxValue('watchAlbumGroupSingle', albumGroups.includes('single'));
+    setCheckboxValue('watchAlbumGroupCompilation', albumGroups.includes('compilation'));
+    setCheckboxValue('watchAlbumGroupAppearsOn', albumGroups.includes('appears_on'));
+    
+    setCheckboxValue('autoCheckForUpdates', settings.autoCheckForUpdates);
+    setFieldValue('deezerLanguage', settings.deezerLanguage || 'en');
+    setFieldValue('deezerCountry', settings.deezerCountry || 'US');
+    setCheckboxValue('normalizeGenreTags', settings.normalizeGenreTags === true);
+    renderGenreTagAliasRules(settings.genreTagAliasRules || []);
+    updateGenreTagAliasRulesState();
+    setCheckboxValue('shazamEnabled', settings.shazamEnabled !== false);
+    setCheckboxValue('shazamUseCenteredOverlay', settings.shazamUseCenteredOverlay !== false);
+    setFieldValue('shazamCaptureDurationSeconds', settings.shazamCaptureDurationSeconds ?? 7);
+    setCheckboxValue('shazamAllowHttpFileFallback', settings.shazamAllowHttpFileFallback !== false);
+    setCheckboxValue('shazamRemoteMemoryOnly', settings.shazamRemoteMemoryOnly !== false);
+    
+    if (settings.tags) {
+        setCheckboxValue('tagTitle', settings.tags.title);
+        setCheckboxValue('tagArtist', settings.tags.artist);
+        setCheckboxValue('tagArtists', settings.tags.artists);
+        setCheckboxValue('tagAlbum', settings.tags.album);
+        setCheckboxValue('tagCover', settings.tags.cover);
+        setCheckboxValue('tagTrackNumber', settings.tags.trackNumber);
+        setCheckboxValue('tagTrackTotal', settings.tags.trackTotal);
+        setCheckboxValue('tagDiscNumber', settings.tags.discNumber);
+        setCheckboxValue('tagDiscTotal', settings.tags.discTotal);
+        setCheckboxValue('tagAlbumArtist', settings.tags.albumArtist);
+        setCheckboxValue('tagGenre', settings.tags.genre);
+        setCheckboxValue('tagYear', settings.tags.year);
+        setCheckboxValue('tagDate', settings.tags.date);
+        setCheckboxValue('tagExplicit', settings.tags.explicit);
+        setCheckboxValue('tagISRC', settings.tags.isrc);
+        setCheckboxValue('tagLength', settings.tags.length);
+        setCheckboxValue('tagBarcode', settings.tags.barcode);
+        setCheckboxValue('tagBPM', settings.tags.bpm);
+        setCheckboxValue('tagReplayGain', settings.tags.replayGain);
+        setCheckboxValue('tagLabel', settings.tags.label);
+        setCheckboxValue('tagLyrics', settings.tags.lyrics);
+        setCheckboxValue('tagSyncedLyrics', settings.tags.tagSyncedLyrics ?? settings.tags.syncedLyrics);
+        setCheckboxValue('tagCopyright', settings.tags.copyright);
+        setCheckboxValue('tagComposer', settings.tags.composer);
+        setCheckboxValue('tagInvolvedPeople', settings.tags.involvedPeople);
+        setCheckboxValue('tagSource', settings.tags.source);
+        setCheckboxValue('coverDescriptionUTF8', settings.tags.coverDescriptionUTF8);
+    }
+
+    
+    triggerDependentFields();
+}
+
+function setFieldValue(fieldId, value) {
+    const field = document.getElementById(fieldId);
+    if (field && value !== undefined && value !== null) {
+        field.value = value;
+        if (field.type === 'hidden') {
+            const dropdown = field.closest('.dropdown-select');
+            if (dropdown) {
+                const trigger = dropdown.querySelector('.dropdown-trigger');
+                const option = dropdown.querySelector(`.dropdown-option[data-value="${value}"]`);
+                if (trigger && option) {
+                    trigger.textContent = option.textContent || String(value);
+                    dropdown.querySelectorAll('.dropdown-option').forEach(btn => btn.setAttribute('aria-selected', 'false'));
+                    option.setAttribute('aria-selected', 'true');
+                }
+                if (fieldId === 'downloadSource') {
+                    updateQualityDropdownVisibility(String(value), false);
+                }
+            }
+        }
+    }
+}
+
+function setCheckboxValue(fieldId, value) {
+    const field = document.getElementById(fieldId);
+    if (field) {
+        field.checked = value === true;
+    }
+}
+
+function setMaxBitrateValue(bitrateValue) {
+    let mappedValue;
+    switch (bitrateValue) {
+        case 9:
+            mappedValue = "9";
+            break;
+        case 3:
+            mappedValue = "3";
+            break;
+        case 1:
+        default:
+            mappedValue = "1";
+            break;
+    }
+
+    setFieldValue('maxBitrate', mappedValue);
+}
+
+function triggerDependentFields() {
+    document.getElementById('createPlaylistFolder')?.dispatchEvent(new Event('change'));
+    document.getElementById('createArtistFolder')?.dispatchEvent(new Event('change'));
+    document.getElementById('createAlbumFolder')?.dispatchEvent(new Event('change'));
+    document.getElementById('saveArtwork')?.dispatchEvent(new Event('change'));
+    document.getElementById('saveArtworkArtist')?.dispatchEvent(new Event('change'));
+    document.getElementById('realTime')?.dispatchEvent(new Event('change'));
+    document.getElementById('convertTo')?.dispatchEvent(new Event('change'));
+    document.getElementById('multiQualityEnabled')?.dispatchEvent(new Event('change'));
+    document.getElementById('normalizeGenreTags')?.dispatchEvent(new Event('change'));
+}
+
+function collectFormData() {
+    const getValue = (id, fallback = '') => document.getElementById(id)?.value ?? fallback;
+    const getChecked = (id, fallback = false) => document.getElementById(id)?.checked ?? fallback;
+    const getNumber = (id, fallback = 0) => {
+        const raw = String(getValue(id, '') ?? '').trim();
+        if (!raw) {
+            return fallback;
+        }
+        const parsed = parseInt(raw, 10);
+        return Number.isFinite(parsed) ? parsed : fallback;
+    };
+    const getOptionalNumber = (id, fallback = null) => {
+        const field = document.getElementById(id);
+        if (!field) {
+            return fallback;
+        }
+        const raw = String(field.value || '').trim();
+        if (!raw) {
+            return null;
+        }
+        const parsed = parseInt(raw, 10);
+        return Number.isFinite(parsed) ? parsed : fallback;
+    };
+
+    const baseSettings = currentSettings || {};
+    const baseApple = baseSettings.appleMusic || {};
+    const multiQualityEnabledValue = getChecked('multiQualityEnabled', baseSettings.multiQuality?.enabled ?? false);
+    const baseVideo = baseSettings.video || {};
+    const baseTags = baseSettings.tags || {};
+    const getAlbumGroups = () => {
+        const albumControl = document.getElementById('watchAlbumGroupAlbum');
+        const singleControl = document.getElementById('watchAlbumGroupSingle');
+        const compilationControl = document.getElementById('watchAlbumGroupCompilation');
+        const appearsOnControl = document.getElementById('watchAlbumGroupAppearsOn');
+        if (!albumControl && !singleControl && !compilationControl && !appearsOnControl) {
+            return Array.isArray(baseSettings.watchedArtistAlbumGroup)
+                ? [...baseSettings.watchedArtistAlbumGroup]
+                : [];
+        }
+
+        const groups = [];
+        if (albumControl?.checked) {
+            groups.push('album');
+        }
+        if (singleControl?.checked) {
+            groups.push('single');
+        }
+        if (compilationControl?.checked) {
+            groups.push('compilation');
+        }
+        if (appearsOnControl?.checked) {
+            groups.push('appears_on');
+        }
+        return groups;
+    };
+
+    const formData = {
+        downloadLocation: getValue('downloadLocation'),
+
+        tracknameTemplate: getValue('tracknameTemplate', baseSettings.tracknameTemplate || '%artist% - %title%'),
+        albumTracknameTemplate: getValue('albumTracknameTemplate', baseSettings.albumTracknameTemplate || '%tracknumber% - %title%'),
+        playlistTracknameTemplate: getValue('playlistTracknameTemplate', baseSettings.playlistTracknameTemplate || '%artist% - %title%'),
+
+        createPlaylistFolder: getChecked('createPlaylistFolder', baseSettings.createPlaylistFolder ?? false),
+        playlistNameTemplate: getValue('playlistNameTemplate', baseSettings.playlistNameTemplate || '%playlist%'),
+        createArtistFolder: getChecked('createArtistFolder', baseSettings.createArtistFolder ?? false),
+        artistNameTemplate: getValue('artistNameTemplate', baseSettings.artistNameTemplate || '%artist%'),
+        createAlbumFolder: getChecked('createAlbumFolder', baseSettings.createAlbumFolder ?? false),
+        albumNameTemplate: getValue('albumNameTemplate', baseSettings.albumNameTemplate || '%album%'),
+        createCDFolder: getChecked('createCDFolder', baseSettings.createCDFolder ?? false),
+        createStructurePlaylist: getChecked('createStructurePlaylist', baseSettings.createStructurePlaylist ?? false),
+        createSingleFolder: getChecked('createSingleFolder', baseSettings.createSingleFolder ?? false),
+
+        padTracks: getChecked('padTracks', baseSettings.padTracks ?? true),
+        padSingleDigit: baseSettings.padSingleDigit ?? true,
+        paddingSize: getNumber('paddingSize', baseSettings.paddingSize ?? 0),
+        illegalCharacterReplacer: getValue('illegalCharacterReplacer', baseSettings.illegalCharacterReplacer ?? ''),
+
+        queueOrder: getValue('queueOrder', 'fifo'),
+        service: getValue('downloadSource', 'deezer'),
+        preferAlbumLayoutForPlaylists: getChecked('preferAlbumLayoutForPlaylists', baseSettings.preferAlbumLayoutForPlaylists ?? true),
+        maxBitrate: getNumber('maxBitrate', baseSettings.maxBitrate ?? 9),
+        feelingLucky: baseSettings.feelingLucky ?? false,
+        fallbackBitrate: getChecked('fallbackBitrate', baseSettings.fallbackBitrate ?? true),
+        fallbackSearch: getChecked('fallbackSearch', baseSettings.fallbackSearch ?? false),
+        strictSpotifyDeezerMode: getChecked('strictSpotifyDeezerMode', baseSettings.strictSpotifyDeezerMode ?? false),
+        autoMaxBitrate: getChecked('autoMaxBitrate', baseSettings.autoMaxBitrate ?? true),
+        fallbackISRC: baseSettings.fallbackISRC ?? false,
+        logErrors: getChecked('logErrors', baseSettings.logErrors ?? true),
+        logSearched: baseSettings.logSearched ?? false,
+        overwriteFile: baseSettings.overwriteFile ?? "n",
+        createM3U8File: baseSettings.createM3U8File ?? false,
+        playlistFilenameTemplate: baseSettings.playlistFilenameTemplate ?? "playlist",
+        syncedLyrics: getChecked('syncedLyrics', baseSettings.syncedLyrics ?? false),
+        saveLyrics: getChecked('saveLyrics', baseSettings.saveLyrics ?? false),
+        maxConcurrentDownloads: getNumber('maxConcurrentDownloads', baseSettings.maxConcurrentDownloads ?? 3),
+        realTime: getChecked('realTime', baseSettings.realTime ?? false),
+        realTimeMultiplier: getNumber('realTimeMultiplier', baseSettings.realTimeMultiplier ?? 1),
+        recursiveQuality: getChecked('recursiveQuality', baseSettings.recursiveQuality ?? false),
+        separateTracksByUser: getChecked('separateTracksByUser', baseSettings.separateTracksByUser ?? false),
+        convertTo: getValue('convertTo') || baseSettings.convertTo || '',
+        convertFormat: getValue('convertTo') || baseSettings.convertFormat || baseSettings.convertTo || '',
+        bitrate: getValue('convertBitrate', baseSettings.bitrate || "AUTO") || baseSettings.bitrate || "AUTO",
+        convertAfterDownload: getChecked('convertAfterDownload', baseSettings.convertAfterDownload ?? true),
+        convertKeepOriginal: getChecked('convertKeepOriginal', baseSettings.convertKeepOriginal ?? true),
+        convertSkipIfSourceMatches: getChecked('convertSkipIfSourceMatches', baseSettings.convertSkipIfSourceMatches ?? true),
+        convertWarnLossyToLossless: getChecked('convertWarnLossyToLossless'),
+        convertSkipLossyToLossless: getChecked('convertSkipLossyToLossless'),
+        convertExtraArgs: getValue('convertExtraArgs'),
+        maxRetries: getNumber('maxRetries', 3),
+        retryDelaySeconds: getNumber('retryDelaySeconds', 5),
+        retryDelayIncrease: getNumber('retryDelayIncrease', 5),
+        redownloadCooldownMinutes: getNumber('redownloadCooldownMinutes', baseSettings.redownloadCooldownMinutes ?? 0),
+
+        embeddedArtworkSize: getNumber('embeddedArtworkSize', baseSettings.embeddedArtworkSize ?? 800),
+        embedMaxQualityCover: getChecked('embedMaxQualityCover', baseSettings.embedMaxQualityCover ?? true),
+        localArtworkSize: getNumber('localArtworkSize', baseSettings.localArtworkSize ?? 1200),
+        appleArtworkSizeText: getValue('appleArtworkSizeText', baseSettings.appleArtworkSizeText ?? '5000x5000'),
+        localArtworkFormat: getValue('localArtworkFormat', baseSettings.localArtworkFormat || "jpg"),
+        saveArtwork: getChecked('saveArtwork', baseSettings.saveArtwork ?? false),
+        coverImageTemplate: getValue('coverImageTemplate', baseSettings.coverImageTemplate || ''),
+        saveArtworkArtist: getChecked('saveArtworkArtist', baseSettings.saveArtworkArtist ?? false),
+        artistImageTemplate: getValue('artistImageTemplate', baseSettings.artistImageTemplate || ''),
+        jpegImageQuality: getNumber('jpegImageQuality', baseSettings.jpegImageQuality ?? 90),
+
+
+        autoCheckForUpdates: getChecked('autoCheckForUpdates', baseSettings.autoCheckForUpdates ?? false),
+        deezerLanguage: getValue('deezerLanguage', baseSettings.deezerLanguage || 'en'),
+        deezerCountry: getValue('deezerCountry', baseSettings.deezerCountry || 'US'),
+        normalizeGenreTags: getChecked('normalizeGenreTags', baseSettings.normalizeGenreTags ?? false),
+        genreTagAliasRules: collectGenreTagAliasRules(),
+        apiToken: baseSettings.apiToken || '',
+        shazamEnabled: getChecked('shazamEnabled', baseSettings.shazamEnabled !== false),
+        shazamUseCenteredOverlay: getChecked('shazamUseCenteredOverlay', baseSettings.shazamUseCenteredOverlay !== false),
+        shazamCaptureDurationSeconds: getNumber('shazamCaptureDurationSeconds', baseSettings.shazamCaptureDurationSeconds ?? 7),
+        shazamAllowHttpFileFallback: getChecked('shazamAllowHttpFileFallback', baseSettings.shazamAllowHttpFileFallback !== false),
+        shazamRemoteMemoryOnly: getChecked('shazamRemoteMemoryOnly', baseSettings.shazamRemoteMemoryOnly !== false),
+        clearQueueOnExit: baseSettings.clearQueueOnExit ?? false,
+        saveDownloadQueue: baseSettings.saveDownloadQueue ?? false,
+        tagsLanguage: baseSettings.tagsLanguage ?? "",
+        rememberTabsPreference: getChecked('rememberTabsPreference', baseSettings.rememberTabsPreference ?? true),
+        librespotConcurrency: getNumber('librespotConcurrency', baseSettings.librespotConcurrency ?? 2),
+        spotifyResolveConcurrency: getNumber('spotifyResolveConcurrency', baseSettings.spotifyResolveConcurrency ?? 10),
+        spotifyMatchConcurrency: getNumber('spotifyMatchConcurrency', baseSettings.spotifyMatchConcurrency ?? 10),
+        spotifyIsrcHydrationConcurrency: getNumber('spotifyIsrcHydrationConcurrency', baseSettings.spotifyIsrcHydrationConcurrency ?? 8),
+        spotifyPlaylistTrackSource: getValue('spotifyPlaylistTrackSource', ((baseSettings.spotifyPlaylistTrackSource || 'pathfinder').toLowerCase() === 'spotiflac' ? 'pathfinder' : (baseSettings.spotifyPlaylistTrackSource || 'pathfinder'))),
+        spotifyHomeFeedCacheEnabled: getChecked('spotifyHomeFeedCacheEnabled', baseSettings.spotifyHomeFeedCacheEnabled ?? true),
+        spotifyHomeFeedAutoRefreshEnabled: getChecked('spotifyHomeFeedAutoRefreshEnabled', baseSettings.spotifyHomeFeedAutoRefreshEnabled ?? true),
+        spotifyHomeFeedAutoRefreshHours: getNumber('spotifyHomeFeedAutoRefreshHours', baseSettings.spotifyHomeFeedAutoRefreshHours ?? 2),
+        spotifyBrowseCacheMinutes: getNumber('spotifyBrowseCacheMinutes', baseSettings.spotifyBrowseCacheMinutes ?? 30),
+        spotifyArtistMetadataFetchBatchSize: getNumber('spotifyArtistMetadataFetchBatchSize', baseSettings.spotifyArtistMetadataFetchBatchSize ?? 25),
+        tidalQuality: getValue('multisource-tidalQuality', baseSettings.tidalQuality || 'HI_RES_LOSSLESS'),
+        qobuzQuality: getValue('multisource-qobuzQuality', baseSettings.qobuzQuality || '27'),
+        strictEngineQuality: false,
+
+        appleMusic: {
+            storefront: getValue('appleStorefront', baseApple.storefront || 'us'),
+            mediaUserToken: getValue('appleMediaUserToken', baseApple.mediaUserToken || ''),
+            preferredAudioProfile: getValue('applePreferredAudioProfile', baseApple.preferredAudioProfile || 'atmos'),
+            getM3u8Mode: getValue('appleGetM3u8Mode', baseApple.getM3u8Mode || 'hires'),
+            aacType: getValue('appleAacType', baseApple.aacType || 'aac-lc'),
+            alacMax: getNumber('appleAlacMax', baseApple.alacMax ?? 192000),
+            atmosMax: getNumber('appleAtmosMax', baseApple.atmosMax ?? 2768),
+            authorizationToken: getValue('authorizationToken', baseApple.authorizationToken || ''),
+            decryptM3u8Port: getValue('appleDecryptM3u8Port', baseApple.decryptM3u8Port || '127.0.0.1:10020'),
+            getM3u8Port: getValue('appleGetM3u8Port', baseApple.getM3u8Port || '127.0.0.1:20020'),
+            getM3u8FromDevice: getChecked('getM3u8FromDevice', baseApple.getM3u8FromDevice ?? true),
+        },
+        authorizationToken: getValue('authorizationToken'),
+        lrcType: getValue('lrcType', baseSettings.lrcType ?? 'lyrics,syllable-lyrics,unsynced-lyrics'),
+        lrcFormat: getValue('lrcFormat', baseSettings.lrcFormat ?? 'both'),
+        lyricsFallbackEnabled: getChecked('lyricsFallbackEnabled', baseSettings.lyricsFallbackEnabled ?? true),
+        lyricsFallbackOrder: getValue('lyricsFallbackOrder', baseSettings.lyricsFallbackOrder ?? 'apple,deezer,spotify,lrclib'),
+        artworkFallbackEnabled: getChecked('artworkFallbackEnabled', baseSettings.artworkFallbackEnabled ?? true),
+        artworkFallbackOrder: getValue('artworkFallbackOrder', baseSettings.artworkFallbackOrder ?? 'apple,deezer,spotify'),
+        artistArtworkFallbackEnabled: getChecked('artistArtworkFallbackEnabled', baseSettings.artistArtworkFallbackEnabled ?? true),
+        artistArtworkFallbackOrder: getValue('artistArtworkFallbackOrder', baseSettings.artistArtworkFallbackOrder ?? baseSettings.artworkFallbackOrder ?? 'apple,deezer,spotify'),
+        saveAnimatedArtwork: getChecked('saveAnimatedArtwork', baseSettings.saveAnimatedArtwork ?? false),
+        dlAlbumcoverForPlaylist: getChecked('dlAlbumcoverForPlaylist', baseSettings.dlAlbumcoverForPlaylist ?? true),
+        getM3u8FromDevice: getChecked('getM3u8FromDevice', baseSettings.getM3u8FromDevice ?? true),
+
+        multiQuality: {
+            enabled: multiQualityEnabledValue,
+            secondaryEnabled: multiQualityEnabledValue,
+            primaryDestinationFolderId: getOptionalNumber('multiQualityPrimaryDestinationFolderId', baseSettings.multiQuality?.primaryDestinationFolderId ?? null),
+            secondaryDestinationFolderId: getOptionalNumber('multiQualitySecondaryDestinationFolderId', baseSettings.multiQuality?.secondaryDestinationFolderId ?? null)
+        },
+
+        video: {
+            videoDownloadLocation: getValue('videoDownloadLocation', baseVideo.videoDownloadLocation || ''),
+            container: getValue('videoContainer', 'mp4'),
+            appleMusicVideoAudioType: getValue('videoAppleAudioType', 'atmos'),
+            appleMusicVideoMaxResolution: getOptionalNumber('videoAppleMaxResolution') ?? baseVideo.appleMusicVideoMaxResolution ?? 2160,
+            appleMusicVideoCodecPreference: getValue('videoAppleCodecPreference', baseVideo.appleMusicVideoCodecPreference || 'prefer-hevc'),
+            artistFolderTemplate: getValue('videoArtistFolderTemplate', baseVideo.artistFolderTemplate || '%artist%'),
+            titleTemplate: getValue('videoTitleTemplate', baseVideo.titleTemplate || '%title%')
+        },
+        mvFileFormat: getValue('mvFileFormat', baseSettings.mvFileFormat || '{ArtistName} - {VideoName} [{ReleaseYear}]'),
+
+        watchEnabled: getChecked('watchEnabled', baseSettings.watchEnabled ?? false),
+        watchPollIntervalSeconds: getNumber('watchPollIntervalSeconds', baseSettings.watchPollIntervalSeconds ?? 3600),
+        watchMaxItemsPerRun: getNumber('watchMaxItemsPerRun', baseSettings.watchMaxItemsPerRun ?? 50),
+        watchDelayBetweenPlaylistsSeconds: getNumber('watchDelayBetweenPlaylistsSeconds', baseSettings.watchDelayBetweenPlaylistsSeconds ?? 2),
+        watchDelayBetweenArtistsSeconds: getNumber('watchDelayBetweenArtistsSeconds', baseSettings.watchDelayBetweenArtistsSeconds ?? 5),
+        watchUseSnapshotIdChecking: getChecked('watchUseSnapshotIdChecking', baseSettings.watchUseSnapshotIdChecking ?? true),
+        watchedArtistAlbumGroup: getAlbumGroups(),
+
+        tags: {
+            title: getChecked('tagTitle', baseTags.title ?? true),
+            artist: getChecked('tagArtist', baseTags.artist ?? true),
+            artists: getChecked('tagArtists', baseTags.artists ?? true),
+            album: getChecked('tagAlbum', baseTags.album ?? true),
+            cover: getChecked('tagCover', baseTags.cover ?? true),
+            trackNumber: getChecked('tagTrackNumber', baseTags.trackNumber ?? true),
+            trackTotal: getChecked('tagTrackTotal', baseTags.trackTotal ?? false),
+            discNumber: getChecked('tagDiscNumber', baseTags.discNumber ?? true),
+            discTotal: getChecked('tagDiscTotal', baseTags.discTotal ?? false),
+            albumArtist: getChecked('tagAlbumArtist', baseTags.albumArtist ?? true),
+            genre: getChecked('tagGenre', baseTags.genre ?? true),
+            year: getChecked('tagYear', baseTags.year ?? true),
+            date: getChecked('tagDate', baseTags.date ?? true),
+            explicit: getChecked('tagExplicit', baseTags.explicit ?? false),
+            isrc: getChecked('tagISRC', baseTags.isrc ?? true),
+            length: getChecked('tagLength', baseTags.length ?? true),
+            barcode: getChecked('tagBarcode', baseTags.barcode ?? true),
+            bpm: getChecked('tagBPM', baseTags.bpm ?? true),
+            replayGain: getChecked('tagReplayGain', baseTags.replayGain ?? false),
+            label: getChecked('tagLabel', baseTags.label ?? true),
+            lyrics: getChecked('tagLyrics', baseTags.lyrics ?? false),
+            tagSyncedLyrics: getChecked('tagSyncedLyrics', baseTags.tagSyncedLyrics ?? baseTags.syncedLyrics ?? false),
+            copyright: getChecked('tagCopyright', baseTags.copyright ?? false),
+            composer: getChecked('tagComposer', baseTags.composer ?? false),
+            involvedPeople: getChecked('tagInvolvedPeople', baseTags.involvedPeople ?? false),
+            source: getChecked('tagSource', baseTags.source ?? false),
+            rating: baseTags.rating ?? false,
+            coverDescriptionUTF8: getChecked('coverDescriptionUTF8', baseTags.coverDescriptionUTF8 ?? false)
+        }
+    };
+
+    return formData;
+}
+
+async function saveSettings(showSuccessToast = true) {
+    if (settingsSaveInFlight) {
+        settingsSaveQueued = true;
+        settingsSaveQueuedToast = settingsSaveQueuedToast || showSuccessToast;
+        return;
+    }
+
+    settingsSaveInFlight = true;
+    try {
+        const settings = collectFormData();
+        
+        const response = await fetch('/api/settings', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(settings),
+            credentials: 'same-origin'
+        });
+
+        const responseText = await response.text();
+        let result = {};
+        if (responseText) {
+            try {
+                result = JSON.parse(responseText);
+            } catch {
+                result = { error: responseText };
+            }
+        }
+        
+        if (response.ok && result?.result !== false) {
+            currentSettings = settings;
+            persistAppleNotificationPreference();
+            if (showSuccessToast) {
+                showToast('Settings saved successfully!', 'success');
+            }
+        } else {
+            if (response.status === 429) {
+                throw new Error('Too many save requests. Please wait a few seconds and try again.');
+            }
+            throw new Error(result?.error || `HTTP ${response.status}: Failed to save settings`);
+        }
+    } catch (error) {
+        console.error('Error saving settings:', error);
+        showToast(error?.message || 'Failed to save settings.', 'error');
+    } finally {
+        settingsSaveInFlight = false;
+        if (settingsSaveQueued) {
+            const queuedToast = settingsSaveQueuedToast;
+            settingsSaveQueued = false;
+            settingsSaveQueuedToast = false;
+            window.setTimeout(() => saveSettings(queuedToast), 0);
+        }
+    }
+}
+
+function showToast(message, type = 'info') {
+    if (window.DeezSpoTag?.showNotification) {
+        window.DeezSpoTag.showNotification(message, type);
+        return;
+    }
+
+    const existingToasts = document.querySelectorAll('.toast-notification');
+    existingToasts.forEach(toast => toast.remove());
+    
+    const toast = document.createElement('div');
+    toast.className = `toast-notification toast-${type}`;
+    toast.textContent = message;
+    
+    toast.style.position = 'fixed';
+    toast.style.top = '20px';
+    toast.style.right = '20px';
+    toast.style.padding = '12px 20px';
+    toast.style.borderRadius = '6px';
+    toast.style.fontWeight = '500';
+    toast.style.zIndex = '10000';
+    toast.style.maxWidth = '300px';
+    toast.style.wordWrap = 'break-word';
+    
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        if (toast.parentNode) {
+            toast.remove();
+        }
+    }, 5000);
+}
+
+async function resetSettings() {
+    const confirmed = await DeezSpoTag.ui.confirm('Are you sure you want to reset all settings to defaults?', {
+        title: 'Reset Settings'
+    });
+    if (!confirmed) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/settings/reset', {
+            method: 'POST'
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok) {
+            loadSettings(result.settings);
+            showToast('Settings reset to defaults!', 'success');
+        } else {
+            throw new Error(result.error || 'Failed to reset settings');
+        }
+    } catch (error) {
+        console.error('Error resetting settings:', error);
+    }
+}</script>
+}

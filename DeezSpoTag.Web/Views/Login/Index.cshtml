@@ -1,0 +1,3065 @@
+@using DeezSpoTag.Web.Models
+@* ARL-only login page - ported from deezspotag *@
+@{
+    ViewData["Title"] = "Login";
+}
+
+<div class="fixed-footer">
+    <h1 class="mb-8 text-5xl">Login</h1>
+
+    <ul class="nav nav-tabs nav-fill mb-4" id="platformLoginTabs" data-no-global-tab-fallback="true" hidden>
+        <li class="nav-item">
+            <button class="nav-link" id="deezer-login-tab" data-login-target="deezer-login" type="button" role="tab" aria-selected="false">
+                <img src="/images/icons/deezer.png" alt="Deezer" class="platform-icon" />Deezer
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" id="spotify-login-tab" data-login-target="spotify-login" type="button" role="tab" aria-selected="false">
+                <img src="/images/icons/spotify.png" alt="Spotify" class="platform-icon" />Spotify
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" id="apple-music-login-tab" data-login-target="apple-music-login" type="button" role="tab" aria-selected="false">
+                <img src="/images/icons/apple-music.png" alt="Apple Music" class="platform-icon" />Apple Music
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" id="discogs-login-tab" data-login-target="discogs-login" type="button" role="tab" aria-selected="false">
+                <img src="/images/icons/discogs.png" alt="Discogs" class="platform-icon" />Discogs
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" id="lastfm-login-tab" data-login-target="lastfm-login" type="button" role="tab" aria-selected="false">
+                <img src="/images/icons/last-fm.png" alt="Last.fm" class="platform-icon" />Last.fm
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" id="bpmsupreme-login-tab" data-login-target="bpmsupreme-login" type="button" role="tab" aria-selected="false">
+                <img src="/images/icons/bpmsupreme.png" alt="BPM Supreme" class="platform-icon" />BPM Supreme
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" id="plex-login-tab" data-login-target="plex-login" type="button" role="tab" aria-selected="false">
+                <img src="/images/icons/plex.png" alt="Plex" class="platform-icon" />Plex
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" id="jellyfin-login-tab" data-login-target="jellyfin-login" type="button" role="tab" aria-selected="false">
+                <img src="/images/icons/jellyfin.png" alt="Jellyfin" class="platform-icon" />Jellyfin
+            </button>
+        </li>
+    </ul>
+
+    <div class="tab-content" id="platformLoginTabsContent" hidden>
+        <div class="tab-pane" id="deezer-login" role="tabpanel" hidden>
+            <div class="settings-group">
+                <h3 class="settings-group__header">
+                    <i class="material-icons">person</i>Deezer Login
+                </h3>
+
+                <div id="logged_in_info" class="platform-logged-in-wrapper" style="display: none;">
+                    <div class="platform-logged-in">
+                        <div class="platform-logged-in-media">
+                            <img id="settings_picture" alt="Profile" class="h-32 w-32 rounded-full" />
+                            <button class="btn btn-danger" id="logoutBtn">Logout</button>
+                        </div>
+                        <div class="platform-user-info">
+                            <p>Logged in as <strong id="settings_username">not logged</strong></p>
+                            <p id="user_license_country"></p>
+                        </div>
+                    </div>
+                    <select id="family_account" style="display: none;">
+                    </select>
+                </div>
+
+                <div id="login_form">
+                    <!-- Credentials Login Section -->
+                    <div class="base-accordion my-5 space-y-5">
+                        <div class="accordion-header">
+                            <span>Credentials Login</span>
+                        </div>
+                        <div class="accordion-content my-5 space-y-5">
+                            <label class="block">
+                                <span class="block mb-2">Email</span>
+                                <input id="login_email" autocomplete="off" placeholder="Email" type="email" class="w-full" />
+                            </label>
+                            <label class="block">
+                                <span class="block mb-2">Password</span>
+                                <input id="login_password" autocomplete="off" placeholder="Password" type="password" class="w-full" />
+                            </label>
+                            <button class="btn btn-primary action-btn" id="loginEmailBtn">Login</button>
+                        </div>
+                    </div>
+
+                    <!-- ARL Login Section -->
+                    <div class="base-accordion my-5 space-y-5">
+                        <div class="accordion-header">
+                            <span>ARL Login</span>
+                        </div>
+                        <div class="accordion-content my-5 space-y-5">
+                            <div class="flex items-center">
+                                <input id="login_input_arl" autocomplete="off" placeholder="ARL" type="password" />
+                                <button class="btn btn-primary action-btn btn-only-icon ml-2" id="copyArlBtn">
+                                    <i class="material-icons">assignment</i>
+                                </button>
+                            </div>
+                            <a href="/InfoArl" class="block">How do i get my own ARL?</a>
+                            <button class="btn btn-primary action-btn" id="loginArlBtn">Login</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-pane" id="spotify-login" role="tabpanel" hidden>
+            <div class="settings-group spotify-login-group">
+                <h3 class="settings-group__header">
+                    <i class="material-icons">library_music</i>Spotify Login
+                </h3>
+                <div id="spotifyLoginFormSection" class="hidden">
+                    <p class="text-muted" id="spotifyStatus">
+                        Ready to connect via Spotify Connect.
+                    </p>
+                    <div class="settings-group mt-6" id="spotifyApiCredentialsSection">
+                        <form id="spotifyApiCredentialsForm" class="space-y-5">
+                            <label class="block mb-4">
+                                <span class="block mb-2">sp_dc (Web Player cookie)</span>
+                                <input type="text" id="spotifySpDc" placeholder="sp_dc cookie value" class="w-full" />
+                            </label>
+                            <label class="block mb-4">
+                                <span class="block mb-2">sp_key</span>
+                                <input type="text" id="spotifySpKey" placeholder="sp_key cookie value" class="w-full" />
+                            </label>
+                            <label class="block mb-4">
+                                <span class="block mb-2">sp_t (device id cookie)</span>
+                                <input type="text" id="spotifySpT" placeholder="sp_t cookie value" class="w-full" />
+                            </label>
+                            <label class="block mb-4">
+                                <span class="block mb-2">User Agent</span>
+                                <input type="text" id="spotifyUserAgent" placeholder="Leave blank to use this browser's user agent" class="w-full" />
+                            </label>
+                            <p class="text-muted" id="spotifyApiCredentialsStatus"></p>
+                        </form>
+                        <button class="btn btn-primary action-btn mt-4" type="button" id="spotifySaveWebPlayerCookiesBtn">Save Web Player Cookies</button>
+                    </div>
+                    <div class="settings-group mt-6" id="spotifyBlobSection">
+                        <h4 class="settings-group__header">Spotify Account Credentials</h4>
+                        <p class="text-muted">
+                            Click Login, then open the Spotify desktop app or the Spotify Web Player and transfer playback to
+                            the “DeezSpoTag” device in the Connect menu.
+                        </p>
+                        <form id="spotifyBlobForm" class="space-y-5">
+                            <label class="block mb-4">
+                                <span class="block mb-2">Account Name</span>
+                                <input type="text" id="spotifyAccountName" placeholder="account name" class="w-full" />
+                            </label>
+                            <label class="block mb-4">
+                                <span class="block mb-2">Region (optional)</span>
+                                <input type="text" id="spotifyAccountRegion" placeholder="US" class="w-full" />
+                            </label>
+                        </form>
+                        <button class="btn btn-primary action-btn mt-4" type="button" id="spotifyGenerateBlobBtn">Login</button>
+                    </div>
+                </div>
+                <partial name="~/Views/Shared/_PlatformLoginStatusCard.cshtml" model='new PlatformLoginStatusCardModel { ContainerId = "spotifyLoggedInInfo", ImageId = "spotifyLoggedInPicture", ImageAlt = "Spotify Profile", ButtonId = "spotifyLogoutBtn", NameId = "spotifyLoggedInName", NameFallback = "Spotify account", DetailId = "spotifyLoggedInPlanLocation", DetailText = "Unknown | UL" }' />
+            </div>
+        </div>
+
+        <div class="tab-pane" id="apple-music-login" role="tabpanel" hidden>
+            <div class="settings-group">
+                <h3 class="settings-group__header">
+                    <i class="material-icons">music_note</i>Apple Music Login
+                </h3>
+                <div class="settings-group mt-6" id="appleMusicTokensSection">
+                    <h4 class="settings-group__header">Apple Music Tokens</h4>
+                    <form id="appleMusicTokensForm" class="space-y-5">
+                        <label class="block mb-4">
+                            <span class="block mb-2">Storefront</span>
+                            <input type="text" id="appleStorefront" placeholder="us" class="w-full" />
+                            <span class="text-muted">2-letter storefront (example: us, gb, de).</span>
+                        </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">Media User Token (cookie: media-user-token)</span>
+                            <input type="password" id="appleMediaUserToken" placeholder="Paste media-user-token from https://music.apple.com cookies" class="w-full" autocomplete="off" />
+                            <span class="text-muted">Required for AAC LC downloads and Apple lyrics; not the same as the wrapper session.</span>
+                        </label>
+                    </form>
+                    <button class="btn btn-primary action-btn" type="button" id="appleMusicTokensSaveBtn">Save Tokens</button>
+                    <p class="text-muted" id="appleMusicTokensStatus"></p>
+                </div>
+                <div id="appleMusicLoginFormSection">
+                    <p class="text-muted">
+                        Enter your Apple Music email and password. We'll handle the wrapper login in the background and prompt for 2FA if needed.
+                    </p>
+                    <p class="text-muted" id="appleMusicWrapperModeHint">
+                        This login uses the external Apple wrapper container. It will be started automatically when you click Login.
+                    </p>
+                    <form id="appleMusicLoginForm" class="space-y-5">
+                        <label class="block mb-4">
+                            <span class="block mb-2">Email</span>
+                            <input type="text" id="appleMusicEmail" placeholder="email@example.com" class="w-full" autocomplete="username" />
+                        </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">Password</span>
+                            <input type="password" id="appleMusicPassword" placeholder="Password" class="w-full" autocomplete="current-password" />
+                        </label>
+                        <div id="appleMusic2faSection" class="hidden">
+                            <label class="block mb-4">
+                                <span class="block mb-2">Verification Code</span>
+                                <input type="text" id="appleMusic2fa" placeholder="123456" class="w-full" autocomplete="one-time-code" />
+                            </label>
+                            <button class="btn btn-primary action-btn" type="button" id="appleMusicSubmit2faBtn">Submit 2FA</button>
+                            <p class="text-muted mt-2" id="appleMusic2faHint"></p>
+                        </div>
+                        <button class="btn btn-primary action-btn" type="button" id="appleMusicLoginBtn">Login</button>
+                        <div class="mt-4 space-y-3">
+                            <button class="btn btn-primary action-btn" type="button" id="appleMusicWrapperHelperBtn">Check Wrapper Helper</button>
+                            <button class="btn btn-primary action-btn" type="button" id="appleMusicWrapperHealthBtn">Check Wrapper Health</button>
+                            <pre class="text-muted" id="appleMusicWrapperHelperOutput" style="white-space: pre-wrap;"></pre>
+                            <pre class="text-muted" id="appleMusicWrapperHealthOutput" style="white-space: pre-wrap;"></pre>
+                        </div>
+                        <p class="text-muted" id="appleMusicStatus"></p>
+                        <p class="text-muted" id="appleMusicLoginState"></p>
+                    </form>
+                </div>
+                <partial name="~/Views/Shared/_PlatformLoginStatusCard.cshtml" model='new PlatformLoginStatusCardModel { ContainerId = "appleMusicLoggedInInfo", ImageId = "appleMusicLoggedInPicture", ImageAlt = "Apple Music", ButtonId = "appleMusicDisconnectBtn", NameId = "appleMusicLoggedInName", NameFallback = "Apple Music account", DetailId = "appleMusicLoggedInStatus" }' />
+            </div>
+        </div>
+
+        <div class="tab-pane" id="discogs-login" role="tabpanel" hidden>
+            <div class="settings-group">
+                <h3 class="settings-group__header">
+                    <i class="material-icons">album</i>Discogs Token
+                </h3>
+                <div id="discogsLoginFormSection">
+                    <form id="discogsLoginForm" class="space-y-5">
+                        <label class="block mb-4">
+                            <span class="block mb-2">Token</span>
+                            <input type="password" id="discogsToken" placeholder="Discogs Token" class="w-full" />
+                        </label>
+                        <button class="btn btn-primary action-btn" type="submit">Login</button>
+                        <p class="text-muted" id="discogsStatus"></p>
+                    </form>
+                </div>
+                <partial name="~/Views/Shared/_PlatformLoginStatusCard.cshtml" model='new PlatformLoginStatusCardModel { ContainerId = "discogsLoggedInInfo", ImageAlt = "Discogs", ImageSrc = "/images/icons/discogs.png", ImageCssClass = "h-20 w-20", ButtonId = "discogsDisconnectBtn", NameId = "discogsLoggedInName", NameFallback = "Discogs account" }' />
+            </div>
+        </div>
+
+        <div class="tab-pane" id="lastfm-login" role="tabpanel" hidden>
+            <div class="settings-group">
+                <h3 class="settings-group__header">
+                    <i class="material-icons">local_fire_department</i>Last.fm API
+                </h3>
+                <div id="lastfmLoginFormSection">
+                    <p class="text-muted">
+                        Provide your Last.fm API key to enable tag enrichment.
+                    </p>
+                    <form id="lastfmLoginForm" class="space-y-5">
+                        <label class="block mb-4">
+                            <span class="block mb-2">API Key</span>
+                            <input type="password" id="lastfmApiKey" placeholder="Last.fm API Key" class="w-full" />
+                        </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">Username (optional)</span>
+                            <input type="text" id="lastfmUsername" placeholder="Last.fm username" class="w-full" />
+                        </label>
+                        <button class="btn btn-primary action-btn" type="submit">Save</button>
+                        <p class="text-muted" id="lastfmStatus"></p>
+                    </form>
+                </div>
+                <partial name="~/Views/Shared/_PlatformLoginStatusCard.cshtml" model='new PlatformLoginStatusCardModel { ContainerId = "lastfmLoggedInInfo", ImageAlt = "Last.fm", ImageSrc = "/images/icons/last-fm.png", ImageCssClass = "h-20 w-20", ButtonId = "lastfmDisconnectBtn", TextPrefix = "Configured for", NameId = "lastfmLoggedInName", NameFallback = "Last.fm" }' />
+            </div>
+        </div>
+
+        <div class="tab-pane" id="bpmsupreme-login" role="tabpanel" hidden>
+            <div class="settings-group">
+                <h3 class="settings-group__header">
+                    <i class="material-icons">graphic_eq</i>BPM Supreme Login
+                </h3>
+                <div id="bpmLoginFormSection">
+                    <form id="bpmLoginForm" class="space-y-5">
+                        <label class="block mb-4">
+                            <span class="block mb-2">Email</span>
+                            <input type="text" id="bpmEmail" placeholder="Email" class="w-full" />
+                        </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">Password</span>
+                            <input type="password" id="bpmPassword" placeholder="Password" class="w-full" />
+                        </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">Library</span>
+                            <select id="bpmLibrary" class="w-full">
+                                <option value="Supreme">Supreme</option>
+                                <option value="Latino">Latino</option>
+                            </select>
+                        </label>
+                        <button class="btn btn-primary action-btn" type="submit">Login</button>
+                        <p class="text-muted" id="bpmStatus"></p>
+                    </form>
+                </div>
+                <partial name="~/Views/Shared/_PlatformLoginStatusCard.cshtml" model='new PlatformLoginStatusCardModel { ContainerId = "bpmLoggedInInfo", ImageId = "bpmLoggedInPicture", ImageAlt = "BPM Supreme Profile", ButtonId = "bpmDisconnectBtn", NameId = "bpmLoggedInName", NameFallback = "BPM Supreme account" }' />
+            </div>
+        </div>
+
+        <div class="tab-pane" id="plex-login" role="tabpanel" hidden>
+            <div class="settings-group">
+                <h3 class="settings-group__header">
+                    <i class="material-icons">storage</i>Plex Login
+                </h3>
+                <div id="plexLoginFormSection">
+                    <form id="plexLoginForm" class="space-y-5">
+                        <label class="block mb-4">
+                            <span class="block mb-2">Server URL</span>
+                            <input type="text" id="plexUrl" placeholder="http://localhost:32400" class="w-full" />
+                        </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">Token</span>
+                            <input type="password" id="plexToken" placeholder="Plex Token" class="w-full" />
+                        </label>
+                        <button class="btn btn-primary action-btn" type="submit">Login</button>
+                        <p class="text-muted" id="plexStatus"></p>
+                    </form>
+                </div>
+                <partial name="~/Views/Shared/_PlatformLoginStatusCard.cshtml" model='new PlatformLoginStatusCardModel { ContainerId = "plexLoggedInInfo", ImageId = "plexLoggedInPicture", ImageAlt = "Plex Profile", ButtonId = "plexDisconnectBtn", NameId = "plexLoggedInName", NameFallback = "Plex account" }' />
+            </div>
+        </div>
+
+        <div class="tab-pane" id="jellyfin-login" role="tabpanel" hidden>
+            <div class="settings-group">
+                <h3 class="settings-group__header">
+                    <i class="material-icons">storage</i>Jellyfin Integration
+                </h3>
+                <div id="jellyfinLoginFormSection">
+                    <form id="jellyfinLoginForm" class="space-y-5">
+                        <label class="block mb-4">
+                            <span class="block mb-2">Server URL</span>
+                            <input type="text" id="jellyfinUrl" placeholder="http://localhost:8096" class="w-full" />
+                        </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">API Key</span>
+                            <input type="password" id="jellyfinApiKey" placeholder="Jellyfin API Key" class="w-full" />
+                        </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">Username (optional)</span>
+                            <input type="text" id="jellyfinUsername" placeholder="Username" class="w-full" />
+                        </label>
+                        <button class="btn btn-primary action-btn" type="submit">Login</button>
+                        <p class="text-muted" id="jellyfinStatus"></p>
+                    </form>
+                </div>
+                <partial name="~/Views/Shared/_PlatformLoginStatusCard.cshtml" model='new PlatformLoginStatusCardModel { ContainerId = "jellyfinLoggedInInfo", ImageId = "jellyfinLoggedInPicture", ImageAlt = "Jellyfin Profile", ButtonId = "jellyfinDisconnectBtn", NameId = "jellyfinLoggedInName", NameFallback = "Jellyfin account" }' />
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+html {
+    scrollbar-gutter: stable;
+}
+
+html,
+body {
+    overflow-y: scroll;
+}
+
+.fixed-footer {
+    padding: 20px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.fixed-footer .nav-tabs .nav-link {
+    color: var(--text-muted);
+}
+
+.fixed-footer .nav-tabs .nav-link:hover {
+    color: var(--text-primary);
+}
+
+.fixed-footer .nav-tabs .nav-link.active {
+    color: var(--primary-color);
+}
+
+.fixed-footer .tab-pane {
+    color: var(--text-primary);
+}
+
+.fixed-footer label,
+.fixed-footer .form-label {
+    color: var(--text-primary);
+}
+
+.settings-group {
+    border-top: 1px solid var(--border-primary);
+    margin-bottom: 2rem;
+}
+
+.settings-group__header {
+    display: inline-flex;
+    align-items: center;
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+    font-size: 1.5rem;
+    color: var(--text-primary);
+}
+
+.settings-group__header i.material-icons {
+    margin-right: 1rem;
+    color: var(--primary-color);
+}
+
+.spotify-login-group {
+    border-top: none;
+    margin-top: 0;
+}
+
+.platform-icon {
+    width: 18px;
+    height: 18px;
+    margin-right: 8px;
+    object-fit: contain;
+}
+
+.platform-logged-in {
+    display: grid;
+    align-items: center;
+    grid-template-columns: 128px 1fr;
+    gap: 24px;
+    min-height: 128px;
+}
+
+.platform-logged-in-media {
+    display: grid;
+    justify-items: center;
+    row-gap: 12px;
+}
+
+.platform-logged-in .platform-user-info {
+    padding-left: 24px;
+}
+
+.platform-logged-in img,
+#logged_in_info img {
+    width: 128px;
+    height: 128px;
+    object-fit: cover;
+}
+
+.platform-user-info {
+    min-height: 72px;
+}
+
+@@media (max-width: 900px) {
+    .fixed-footer {
+        padding: 20px 16px;
+    }
+
+    .settings-group__header {
+        padding-top: 1rem;
+        padding-bottom: 1rem;
+        font-size: 1.3rem;
+    }
+
+    .platform-logged-in {
+        grid-template-columns: 1fr;
+        align-items: flex-start;
+    }
+
+    .platform-logged-in .platform-user-info {
+        padding-left: 0;
+    }
+
+    .platform-logged-in-media {
+        grid-auto-flow: column;
+        justify-content: flex-start;
+        column-gap: 12px;
+    }
+}
+
+@@media (max-width: 640px) {
+    .fixed-footer > h1,
+    .text-5xl {
+        text-align: center;
+    }
+
+    .nav-tabs {
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    .nav-tabs .nav-link {
+        width: 100%;
+        text-align: left;
+    }
+
+    .settings-group .btn,
+    .platform-logged-in .btn {
+        width: 100%;
+    }
+
+    .platform-logged-in-media {
+        grid-auto-flow: row;
+        justify-items: flex-start;
+    }
+}
+
+/* Small phone breakpoints */
+@@media (max-width: 480px) {
+    .fixed-footer {
+        padding: 14px 12px;
+    }
+
+    .text-5xl {
+        font-size: clamp(1.75rem, 8vw, 3rem);
+    }
+
+    .mb-8 {
+        margin-bottom: 1.25rem;
+    }
+
+    .settings-group__header {
+        padding-top: 0.75rem;
+        padding-bottom: 0.75rem;
+        font-size: 1.1rem;
+    }
+
+    .settings-group__header i.material-icons {
+        margin-right: 0.5rem;
+        font-size: 20px;
+    }
+
+    .nav-tabs .nav-link {
+        padding: 10px 12px;
+        font-size: 14px;
+        min-height: 44px;
+    }
+
+    .platform-icon {
+        width: 20px;
+        height: 20px;
+    }
+
+    .platform-logged-in img,
+    #logged_in_info img {
+        width: 80px;
+        height: 80px;
+    }
+
+    .h-32 {
+        height: 5rem;
+    }
+
+    .w-32 {
+        width: 5rem;
+    }
+
+    .accordion-header {
+        padding: 0.875rem;
+    }
+
+    .accordion-content {
+        padding: 0.875rem;
+    }
+
+    input[type="text"],
+    input[type="password"],
+    input[type="email"] {
+        padding: 10px;
+        font-size: 16px;
+        min-height: 44px;
+    }
+
+    .btn,
+    .action-btn {
+        min-height: 44px;
+        padding: 10px 14px;
+    }
+
+    .btn-only-icon {
+        padding: 10px;
+        min-width: 44px;
+        min-height: 44px;
+    }
+}
+
+@@media (max-width: 400px) {
+    .fixed-footer {
+        padding: 12px 10px;
+    }
+
+    .text-5xl {
+        font-size: 1.5rem;
+    }
+
+    .mb-8 {
+        margin-bottom: 1rem;
+    }
+
+    .settings-group__header {
+        font-size: 1rem;
+    }
+
+    .nav-tabs .nav-link {
+        padding: 10px;
+        font-size: 13px;
+    }
+
+    .platform-icon {
+        width: 18px;
+        height: 18px;
+        margin-right: 6px;
+    }
+
+    .platform-logged-in {
+        gap: 14px;
+    }
+
+    .platform-logged-in img,
+    #logged_in_info img {
+        width: 64px;
+        height: 64px;
+    }
+
+    .h-32, .h-20 {
+        height: 4rem;
+    }
+
+    .w-32, .w-20 {
+        width: 4rem;
+    }
+
+    .base-accordion {
+        border-radius: 6px;
+    }
+
+    .accordion-header {
+        padding: 0.75rem;
+        font-size: 14px;
+    }
+
+    .accordion-content {
+        padding: 0.75rem;
+    }
+
+    .my-5 {
+        margin-top: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .space-y-5 > * + * {
+        margin-top: 1rem;
+    }
+}
+
+@@media (max-width: 375px) {
+    .fixed-footer {
+        padding: 10px 8px;
+    }
+
+    .text-5xl {
+        font-size: 1.375rem;
+    }
+
+    .settings-group {
+        margin-bottom: 1.25rem;
+    }
+
+    .settings-group__header {
+        padding-top: 0.625rem;
+        padding-bottom: 0.625rem;
+        font-size: 0.9375rem;
+    }
+
+    .nav-tabs {
+        gap: 4px;
+    }
+
+    .nav-tabs .nav-link {
+        padding: 10px 8px;
+        font-size: 12px;
+    }
+
+    .platform-icon {
+        width: 16px;
+        height: 16px;
+        margin-right: 4px;
+    }
+
+    .platform-logged-in img,
+    #logged_in_info img {
+        width: 56px;
+        height: 56px;
+    }
+
+    .h-32, .h-20 {
+        height: 3.5rem;
+    }
+
+    .w-32, .w-20 {
+        width: 3.5rem;
+    }
+
+    label span {
+        font-size: 13px;
+    }
+
+    .text-muted {
+        font-size: 13px;
+    }
+}
+
+@@media (max-width: 320px) {
+    .fixed-footer {
+        padding: 8px 6px;
+    }
+
+    .text-5xl {
+        font-size: 1.25rem;
+    }
+
+    .mb-8 {
+        margin-bottom: 0.75rem;
+    }
+
+    .mb-4 {
+        margin-bottom: 0.625rem;
+    }
+
+    .settings-group__header {
+        font-size: 0.875rem;
+    }
+
+    .settings-group__header i.material-icons {
+        font-size: 16px;
+        margin-right: 0.375rem;
+    }
+
+    .nav-tabs .nav-link {
+        padding: 8px 6px;
+        font-size: 11px;
+    }
+
+    .platform-icon {
+        width: 14px;
+        height: 14px;
+        margin-right: 3px;
+    }
+
+    .platform-logged-in {
+        gap: 10px;
+    }
+
+    .platform-logged-in img,
+    #logged_in_info img {
+        width: 48px;
+        height: 48px;
+    }
+
+    .h-32, .h-20 {
+        height: 3rem;
+    }
+
+    .w-32, .w-20 {
+        width: 3rem;
+    }
+
+    .base-accordion {
+        border-radius: 4px;
+    }
+
+    .accordion-header {
+        padding: 0.625rem;
+        font-size: 13px;
+    }
+
+    .accordion-content {
+        padding: 0.625rem;
+    }
+
+    input[type="text"],
+    input[type="password"],
+    input[type="email"] {
+        padding: 8px;
+        font-size: 14px;
+    }
+
+    label span {
+        font-size: 12px;
+    }
+
+    .text-muted {
+        font-size: 12px;
+    }
+
+    .my-5 {
+        margin-top: 0.75rem;
+        margin-bottom: 0.75rem;
+    }
+
+    .space-y-5 > * + * {
+        margin-top: 0.75rem;
+    }
+}
+
+#family_account {
+    margin-top: 24px;
+    grid-column: 1 / span 2;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    color: var(--text-primary);
+    padding: 8px;
+    border-radius: 4px;
+}
+
+.base-accordion {
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+}
+
+.accordion-header {
+    padding: 1rem;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-primary);
+    font-weight: 600;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.accordion-content {
+    padding: 1rem;
+}
+
+input[type="text"], input[type="password"], input[type="email"] {
+    width: 100%;
+    padding: 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+select.w-full,
+.fixed-footer input[type="text"],
+.fixed-footer input[type="password"],
+.fixed-footer select {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    color: var(--text-primary);
+}
+
+.fixed-footer select option {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+.fixed-footer input::placeholder {
+    color: var(--text-primary);
+    opacity: 0.7;
+}
+
+input[type="text"]:focus, input[type="password"]:focus, input[type="email"]:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-color) 25%, transparent);
+}
+
+.flex {
+    display: flex;
+}
+
+.hidden {
+    display: none;
+}
+
+.items-center {
+    align-items: center;
+}
+
+.ml-2 {
+    margin-left: 0.5rem;
+}
+
+.my-5 {
+    margin-top: 1.25rem;
+    margin-bottom: 1.25rem;
+}
+
+.space-y-5 > * + * {
+    margin-top: 1.25rem;
+}
+
+.block {
+    display: block;
+    color: var(--primary-color);
+    text-decoration: none;
+}
+
+.block:hover {
+    text-decoration: underline;
+}
+
+.btn-only-icon {
+    padding: 12px;
+    min-width: auto;
+}
+
+.material-icons {
+    font-family: 'Material Icons';
+    font-weight: normal;
+    font-style: normal;
+    font-size: 18px;
+    line-height: 1;
+    letter-spacing: normal;
+    text-transform: none;
+    display: inline-block;
+    white-space: nowrap;
+    word-wrap: normal;
+    direction: ltr;
+}
+
+.h-32 {
+    height: 8rem;
+}
+
+.w-32 {
+    width: 8rem;
+}
+
+.rounded-full {
+    border-radius: 9999px;
+}
+
+.mt-3 {
+    margin-top: 0.75rem;
+}
+
+.text-5xl {
+    font-size: 3rem;
+    line-height: 1;
+}
+
+/* Toast mobile positioning handled via JS inline styles, but we ensure good defaults */
+@@media (max-width: 480px) {
+    .toast-notification {
+        left: 12px !important;
+        right: 12px !important;
+        max-width: none !important;
+    }
+}
+
+.mb-8 {
+    margin-bottom: 2rem;
+}
+
+.mb-4 {
+    margin-bottom: 1rem;
+}
+
+.mb-2 {
+    margin-bottom: 0.5rem;
+}
+
+.w-full {
+    width: 100%;
+}
+
+label {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+label span {
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+</style>
+
+@section Scripts {
+<script>
+console.log('=== LOGIN PAGE SCRIPT LOADED ===');
+
+let appleMusicSettingsCache = null;
+let connectedPlatformsRefreshTimer = null;
+const LOGIN_TAB_STORAGE_KEY = 'deezspotag-login-active-tab';
+let spotifyConfigRequested = false;
+let spotifyConfigLoadSequence = 0;
+let deezerStatusRequested = false;
+let platformAuthStateRequested = false;
+let appleMusicBootstrapRequested = false;
+
+function isTabPreferenceEnabled() {
+    try {
+        const stored = localStorage.getItem('tabs-preference-enabled');
+        if (stored === null || stored === '') {
+            return true;
+        }
+
+        return stored === 'true';
+    } catch (error) {
+        console.warn('Failed to read tab preference setting', error);
+        return true;
+    }
+}
+
+// Toast notification system
+function showToast(message, type = 'info') {
+    if (window.DeezSpoTag?.showNotification) {
+        window.DeezSpoTag.showNotification(message, type);
+        return;
+    }
+
+    console.log('TOAST:', message, type);
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('=== DOM LOADED ===');
+
+    const platformAuthBindings = {
+        discogs: {
+            matches: '/discogs',
+            render: data => renderDiscogsInfo(data || {}),
+            clear: () => clearDiscogsInputs()
+        },
+        lastfm: {
+            matches: '/lastfm',
+            render: (data, payload, isConnected, statusElementId) => {
+                const hasLastFmApiKey = Boolean(data?.hasApiKey ?? isConnected);
+                setStatus(statusElementId, hasLastFmApiKey);
+                renderLastFmInfo(data || { username: payload?.username || '', hasApiKey: hasLastFmApiKey });
+                return hasLastFmApiKey;
+            },
+            clear: () => clearLastFmInputs()
+        },
+        bpm: {
+            matches: '/bpmsupreme',
+            render: data => renderBpmInfo(data || {}),
+            clear: () => clearBpmInputs()
+        },
+        plex: {
+            matches: '/plex',
+            render: data => renderPlexInfo(data || {}),
+            clear: () => clearPlexInputs()
+        },
+        jellyfin: {
+            matches: '/jellyfin',
+            render: data => renderJellyfinInfo(data || {}),
+            clear: () => clearJellyfinInputs()
+        },
+        appleMusic: {
+            matches: '/applemusic',
+            render: data => renderAppleMusicInfo(data || {}),
+            clear: () => clearAppleMusicLoginInputs()
+        }
+    };
+
+    function bindAsyncClick(elementId, handler) {
+        const element = document.getElementById(elementId);
+        if (!element) {
+            return;
+        }
+
+        element.addEventListener('click', async function() {
+            await handler();
+        });
+    }
+
+    function bindPlatformDisconnect(buttonId, url, statusElementId, afterDisconnect) {
+        bindAsyncClick(buttonId, async function() {
+            await disconnectPlatform(url, statusElementId, platformAuthBindings);
+            if (typeof afterDisconnect === 'function') {
+                afterDisconnect();
+            }
+        });
+    }
+
+    // Render tab UI immediately, then hydrate async state in the background.
+    initializeLoginTabs();
+    void initializeLoginPageState();
+    
+    // Set up ARL login button
+    const loginBtn = document.getElementById('loginArlBtn');
+    if (loginBtn) {
+        loginBtn.addEventListener('click', function() {
+            const arl = document.getElementById('login_input_arl').value.trim();
+            
+            if (!arl) {
+                showToast('Please enter your ARL token.', 'warning');
+                return;
+            }
+            
+            loginWithArl(arl);
+        });
+    }
+    
+    // Set up logout button
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', function() {
+            logout();
+        });
+    }
+    
+    // Set up copy button
+    const copyBtn = document.getElementById('copyArlBtn');
+    if (copyBtn) {
+        copyBtn.addEventListener('click', function() {
+            const input = document.getElementById('login_input_arl');
+            const originalType = input.type;
+            
+            input.type = 'text';
+            input.select();
+            input.setSelectionRange(0, 99999);
+            
+            try {
+                document.execCommand('copy');
+                showToast('ARL copied to clipboard!', 'success');
+            } catch (err) {
+                showToast('Failed to copy ARL', 'error');
+            }
+            
+            input.type = originalType;
+        });
+    }
+
+    const loginEmailBtn = document.getElementById('loginEmailBtn');
+    if (loginEmailBtn) {
+        loginEmailBtn.addEventListener('click', function() {
+            const email = document.getElementById('login_email').value.trim();
+            const password = document.getElementById('login_password').value;
+
+            if (!email || !password) {
+                showToast('Please enter your email and password.', 'warning');
+                return;
+            }
+
+            loginWithEmail(email, password);
+        });
+    }
+
+    bindAsyncClick('spotifyGenerateBlobBtn', generateSpotifyBlob);
+    bindAsyncClick('spotifySaveWebPlayerCookiesBtn', saveSpotifyWebPlayerCookies);
+    bindAsyncClick('spotifyLogoutBtn', logoutSpotify);
+    bindAsyncClick('appleMusicLoginBtn', startAppleMusicLogin);
+    bindAsyncClick('appleMusicTokensSaveBtn', saveAppleMusicSettings);
+    bindAsyncClick('appleMusicSubmit2faBtn', submitAppleMusic2fa);
+    bindAsyncClick('appleMusicWrapperHelperBtn', checkAppleMusicWrapperHelperStatus);
+    bindAsyncClick('appleMusicWrapperHealthBtn', checkAppleMusicWrapperHealth);
+    bindPlatformDisconnect('appleMusicDisconnectBtn', '/api/platform-auth/applemusic/disconnect', 'appleMusicStatus', function() {
+        appleMusicLoginInProgress = false;
+        appleMusicLoginRequestPending = false;
+    });
+
+    const discogsForm = document.getElementById('discogsLoginForm');
+    if (discogsForm) {
+        discogsForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const token = document.getElementById('discogsToken').value.trim();
+            await savePlatformAuth('/api/platform-auth/discogs', { token }, 'discogsStatus', Boolean(token));
+        });
+    }
+
+    bindPlatformDisconnect('discogsDisconnectBtn', '/api/platform-auth/discogs/disconnect', 'discogsStatus');
+
+    const lastfmForm = document.getElementById('lastfmLoginForm');
+    if (lastfmForm) {
+        lastfmForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const apiKey = document.getElementById('lastfmApiKey').value.trim();
+            const username = document.getElementById('lastfmUsername').value.trim();
+            await savePlatformAuth('/api/platform-auth/lastfm', { apiKey, username }, 'lastfmStatus', Boolean(apiKey));
+        });
+    }
+
+    bindPlatformDisconnect('lastfmDisconnectBtn', '/api/platform-auth/lastfm/disconnect', 'lastfmStatus');
+
+    const bpmForm = document.getElementById('bpmLoginForm');
+    if (bpmForm) {
+        bpmForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const email = document.getElementById('bpmEmail').value.trim();
+            const password = document.getElementById('bpmPassword').value.trim();
+            const library = document.getElementById('bpmLibrary').value;
+            await savePlatformAuth('/api/platform-auth/bpmsupreme', { email, password, library }, 'bpmStatus', Boolean(email && password));
+        });
+    }
+
+    bindPlatformDisconnect('bpmDisconnectBtn', '/api/platform-auth/bpmsupreme/disconnect', 'bpmStatus');
+
+    const plexForm = document.getElementById('plexLoginForm');
+    if (plexForm) {
+        plexForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const url = document.getElementById('plexUrl').value.trim();
+            const token = document.getElementById('plexToken').value.trim();
+            await loginPlex(url, token);
+        });
+    }
+
+    bindPlatformDisconnect('plexDisconnectBtn', '/api/platform-auth/plex/disconnect', 'plexStatus');
+
+    const jellyfinForm = document.getElementById('jellyfinLoginForm');
+    if (jellyfinForm) {
+        jellyfinForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const url = document.getElementById('jellyfinUrl').value.trim();
+            const apiKey = document.getElementById('jellyfinApiKey').value.trim();
+            const username = document.getElementById('jellyfinUsername').value.trim();
+            await loginJellyfin(url, apiKey, username);
+        });
+    }
+
+    bindPlatformDisconnect('jellyfinDisconnectBtn', '/api/platform-auth/jellyfin/disconnect', 'jellyfinStatus');
+
+});
+
+async function initializeLoginPageState() {
+    const tasks = [ensurePlatformAuthStateLoaded()];
+    const activeTabId = getActiveLoginTabId();
+    if (activeTabId) {
+        tasks.push(bootstrapLoginTab(activeTabId));
+    }
+
+    const results = await Promise.allSettled(tasks);
+    results.forEach((result) => {
+        if (result.status === 'rejected') {
+            console.warn('Initial login state setup failed', result.reason);
+        }
+    });
+    window.setTimeout(() => {
+        queueConnectedPlatformsRefresh();
+    }, 400);
+}
+
+function setLoginTabsVisible(visible) {
+    const tabList = document.getElementById('platformLoginTabs');
+    const tabContent = document.getElementById('platformLoginTabsContent');
+    if (tabList) {
+        tabList.hidden = !visible;
+    }
+    if (tabContent) {
+        tabContent.hidden = !visible;
+    }
+}
+
+function isValidLoginTabId(tabId) {
+    if (!tabId) return false;
+    return Boolean(document.querySelector(`#platformLoginTabsContent .tab-pane#${tabId}`));
+}
+
+function getLoginTabFromLocation() {
+    const queryParams = new URLSearchParams(window.location.search || '');
+    const explicitTab = (queryParams.get('tab') || queryParams.get('loginTab') || '').trim();
+    if (isValidLoginTabId(explicitTab)) {
+        return explicitTab;
+    }
+
+    const platformRaw = (queryParams.get('platform') || '').trim().toLowerCase();
+    if (platformRaw) {
+        const platformMap = {
+            deezer: 'deezer-login',
+            spotify: 'spotify-login',
+            applemusic: 'apple-music-login',
+            discogs: 'discogs-login',
+            lastfm: 'lastfm-login',
+            bpmsupreme: 'bpmsupreme-login',
+            plex: 'plex-login',
+            jellyfin: 'jellyfin-login'
+        };
+        const normalizedPlatform = platformRaw.replace(/[^a-z]/g, '');
+        const mapped = platformMap[normalizedPlatform];
+        if (isValidLoginTabId(mapped)) {
+            return mapped;
+        }
+    }
+
+    const hash = window.location.hash || '';
+    const hashId = hash.startsWith('#') ? hash.slice(1) : '';
+    if (isValidLoginTabId(hashId)) {
+        return hashId;
+    }
+
+    return '';
+}
+
+function getPreferredLoginTabId() {
+    const locationTab = getLoginTabFromLocation();
+    if (locationTab) {
+        return locationTab;
+    }
+
+    if (!isTabPreferenceEnabled()) {
+        return 'deezer-login';
+    }
+
+    try {
+        const stored = sessionStorage.getItem(LOGIN_TAB_STORAGE_KEY) || '';
+        if (isValidLoginTabId(stored)) {
+            return stored;
+        }
+    } catch (error) {
+        console.warn('Failed to read login tab preference', error);
+    }
+
+    return 'deezer-login';
+}
+
+function persistLoginTabId(tabId) {
+    if (!isValidLoginTabId(tabId)) {
+        return;
+    }
+
+    try {
+        if (!isTabPreferenceEnabled()) {
+            sessionStorage.removeItem(LOGIN_TAB_STORAGE_KEY);
+            return;
+        }
+
+        sessionStorage.setItem(LOGIN_TAB_STORAGE_KEY, tabId);
+    } catch (error) {
+        console.warn('Failed to persist login tab preference', error);
+    }
+}
+
+function clearLoginTabNavigationHints() {
+    const url = new URL(window.location.href);
+    let changed = false;
+
+    ['tab', 'loginTab', 'platform'].forEach((key) => {
+        if (url.searchParams.has(key)) {
+            url.searchParams.delete(key);
+            changed = true;
+        }
+    });
+
+    const hash = window.location.hash || '';
+    const hashId = hash.startsWith('#') ? hash.slice(1) : '';
+    if (isValidLoginTabId(hashId)) {
+        url.hash = '';
+        changed = true;
+    }
+
+    if (!changed) {
+        return;
+    }
+
+    const nextSearch = url.searchParams.toString();
+    history.replaceState(
+        null,
+        '',
+        `${url.pathname}${nextSearch ? `?${nextSearch}` : ''}${url.hash || ''}`
+    );
+}
+
+function initializeLoginTabs() {
+    const tabList = document.getElementById('platformLoginTabs');
+    if (!tabList) {
+        return;
+    }
+
+    const triggers = tabList.querySelectorAll('[data-login-target]');
+    triggers.forEach((trigger) => {
+        trigger.addEventListener('click', () => {
+            const tabId = trigger.getAttribute('data-login-target') || '';
+            if (!tabId) {
+                return;
+            }
+            setActiveLoginTab(tabId);
+            persistLoginTabId(tabId);
+            void bootstrapLoginTab(tabId);
+        });
+    });
+
+    const preferredTabId = getPreferredLoginTabId();
+    const preferredTrigger = document.querySelector(`#platformLoginTabs [data-login-target="${preferredTabId}"]`) || triggers[0];
+    if (!preferredTrigger) {
+        setLoginTabsVisible(true);
+        return;
+    }
+
+    const resolvedTabId = preferredTrigger.getAttribute('data-login-target') || preferredTabId;
+    setActiveLoginTab(resolvedTabId);
+    persistLoginTabId(resolvedTabId);
+    void bootstrapLoginTab(resolvedTabId);
+    clearLoginTabNavigationHints();
+    setLoginTabsVisible(true);
+}
+
+function setActiveLoginTab(tabId) {
+    if (!tabId || !isValidLoginTabId(tabId)) {
+        return;
+    }
+
+    const triggers = document.querySelectorAll('#platformLoginTabs [data-login-target]');
+    triggers.forEach((trigger) => {
+        const isActive = trigger.getAttribute('data-login-target') === tabId;
+        trigger.classList.toggle('active', isActive);
+        trigger.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    });
+
+    const panes = document.querySelectorAll('#platformLoginTabsContent .tab-pane');
+    panes.forEach((pane) => {
+        const isActive = pane.id === tabId;
+        pane.classList.toggle('active', isActive);
+        pane.classList.toggle('show', isActive);
+        pane.hidden = !isActive;
+        pane.setAttribute('aria-hidden', isActive ? 'false' : 'true');
+    });
+}
+
+function getActiveLoginTabId() {
+    const activePane = document.querySelector('#platformLoginTabsContent .tab-pane.active');
+    if (activePane?.id && isValidLoginTabId(activePane.id)) {
+        return activePane.id;
+    }
+
+    const preferred = getPreferredLoginTabId();
+    return isValidLoginTabId(preferred) ? preferred : 'deezer-login';
+}
+
+// Check persistent Deezer login state from server and clear stale local cache.
+async function checkPersistentLoginState() {
+    console.log('=== CHECKING PERSISTENT LOGIN STATE ===');
+
+    try {
+        const response = await fetch('/api/login/status', { cache: 'no-store' });
+        if (!response.ok) {
+            throw new Error(`status ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (data && data.status > 0 && data.user) {
+            console.log('Found persistent login state from server for user:', data.user.name);
+            localStorage.setItem('loginUser', JSON.stringify(data.user));
+            showLoggedInInfo(data.user);
+            return;
+        }
+    } catch (error) {
+        console.warn('Server login status unavailable; defaulting to logged out view', error);
+    }
+
+    localStorage.removeItem('arl');
+    localStorage.removeItem('loginUser');
+    document.getElementById('login_input_arl').value = '';
+    showLoginForm();
+}
+
+async function loadPlatformAuthState() {
+    try {
+        const response = await fetch('/api/platform-auth', {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        });
+        if (isAuthRedirectResponse(response)) {
+            showToast('Login required to load platform credentials', 'error');
+            return;
+        }
+        if (!response.ok) {
+            return;
+        }
+
+        const data = await response.json();
+        if (data.discogs) {
+            document.getElementById('discogsToken').value = data.discogs.token || '';
+            setStatus('discogsStatus', data.discogs.token);
+            renderDiscogsInfo(data.discogs);
+            togglePlatformLoginState('discogs', Boolean(data.discogs.token));
+        }
+        if (data.lastFm) {
+            const hasLastFmApiKey = Boolean(data.lastFm.hasApiKey ?? data.lastFm.apiKey);
+            document.getElementById('lastfmApiKey').value = data.lastFm.apiKey || '';
+            document.getElementById('lastfmUsername').value = data.lastFm.username || '';
+            setStatus('lastfmStatus', hasLastFmApiKey);
+            renderLastFmInfo(data.lastFm);
+            togglePlatformLoginState('lastfm', hasLastFmApiKey);
+        }
+        if (data.bpmSupreme) {
+            document.getElementById('bpmEmail').value = data.bpmSupreme.email || '';
+            document.getElementById('bpmPassword').value = data.bpmSupreme.password || '';
+            document.getElementById('bpmLibrary').value = data.bpmSupreme.library || 'Supreme';
+            setStatus('bpmStatus', data.bpmSupreme.email && data.bpmSupreme.password);
+            renderBpmInfo(data.bpmSupreme);
+            togglePlatformLoginState('bpm', Boolean(data.bpmSupreme.email && data.bpmSupreme.password));
+        }
+        if (data.plex) {
+            document.getElementById('plexUrl').value = data.plex.url || '';
+            document.getElementById('plexToken').value = data.plex.token || '';
+            setStatus('plexStatus', data.plex.url && data.plex.token);
+            renderPlexInfo(data.plex);
+            togglePlatformLoginState('plex', Boolean(data.plex.url && data.plex.token));
+        }
+        if (data.jellyfin) {
+            document.getElementById('jellyfinUrl').value = data.jellyfin.url || '';
+            document.getElementById('jellyfinApiKey').value = data.jellyfin.apiKey || '';
+            document.getElementById('jellyfinUsername').value = data.jellyfin.username || '';
+            setStatus('jellyfinStatus', data.jellyfin.url && (data.jellyfin.apiKey || data.jellyfin.username));
+            renderJellyfinInfo(data.jellyfin);
+            togglePlatformLoginState('jellyfin', Boolean(data.jellyfin.url && (data.jellyfin.apiKey || data.jellyfin.username)));
+        }
+        if (data.appleMusic) {
+            document.getElementById('appleMusicEmail').value = data.appleMusic.email || '';
+            renderAppleMusicInfo(data.appleMusic);
+            const appleMusicConnected = Boolean(data.appleMusic.wrapperReady);
+            setStatus('appleMusicStatus', appleMusicConnected);
+            togglePlatformLoginState('appleMusic', appleMusicConnected);
+            if (appleMusicConnected) {
+                setAppleMusicLoggedInStatus('Restoring Apple Music session...');
+            }
+        }
+    } catch (error) {
+        console.warn('Failed to load platform auth state', error);
+    }
+}
+
+async function ensurePlatformAuthStateLoaded() {
+    if (platformAuthStateRequested) {
+        return;
+    }
+    platformAuthStateRequested = true;
+    await loadPlatformAuthState();
+}
+
+async function ensureDeezerStatusLoaded() {
+    if (deezerStatusRequested) {
+        return;
+    }
+    deezerStatusRequested = true;
+    await checkPersistentLoginState();
+}
+
+function ensureSpotifyConfigLoaded() {
+    if (spotifyConfigRequested) {
+        return;
+    }
+    spotifyConfigRequested = true;
+    void loadSpotifyConfig();
+}
+
+async function ensureAppleMusicBootstrapLoaded() {
+    if (appleMusicBootstrapRequested) {
+        return;
+    }
+    appleMusicBootstrapRequested = true;
+
+    const results = await Promise.allSettled([
+        loadAppleMusicSettings(),
+        refreshAppleMusicWrapperStatus()
+    ]);
+    results.forEach((result) => {
+        if (result.status === 'rejected') {
+            console.warn('Apple Music bootstrap task failed', result.reason);
+        }
+    });
+
+    beginAppleMusicPassiveStatusPolling();
+}
+
+async function bootstrapLoginTab(tabId) {
+    if (!tabId) {
+        return;
+    }
+
+    if (tabId === 'deezer-login') {
+        await ensureDeezerStatusLoaded();
+        return;
+    }
+
+    if (tabId === 'spotify-login') {
+        ensureSpotifyConfigLoaded();
+        return;
+    }
+
+    if (tabId === 'apple-music-login') {
+        await ensureAppleMusicBootstrapLoaded();
+    }
+}
+
+function isAuthRedirectResponse(response) {
+    if (!response) {
+        return false;
+    }
+    if (response.status === 401 || response.status === 403) {
+        return true;
+    }
+    const contentType = response.headers?.get('content-type') || '';
+    if (contentType.includes('text/html')) {
+        return true;
+    }
+    if (response.redirected && response.url) {
+        return response.url.includes('/Identity/Account/Login');
+    }
+    return false;
+}
+
+function setAppleMusicTokenFieldValue(fieldId, value) {
+    const field = document.getElementById(fieldId);
+    if (!field) {
+        return;
+    }
+    field.value = value ?? '';
+}
+
+function setAppleMusicTokensStatus(message, type = 'info') {
+    const status = document.getElementById('appleMusicTokensStatus');
+    if (status) {
+        status.textContent = message || '';
+        status.dataset.state = type;
+    }
+}
+
+async function loadAppleMusicSettings() {
+    try {
+        const response = await fetch('/api/settings');
+        if (!response.ok) {
+            throw new Error(`status ${response.status}`);
+        }
+        const data = await response.json();
+        appleMusicSettingsCache = data?.settings || {};
+        const apple = appleMusicSettingsCache.appleMusic || {};
+        setAppleMusicTokenFieldValue('appleStorefront', apple.storefront || 'us');
+        setAppleMusicTokenFieldValue('appleMediaUserToken', apple.mediaUserToken || '');
+    } catch (error) {
+        console.warn('Failed to load Apple Music settings', error);
+        setAppleMusicTokensStatus('Unable to load Apple Music tokens', 'error');
+    }
+}
+
+async function saveAppleMusicSettings() {
+    const saveBtn = document.getElementById('appleMusicTokensSaveBtn');
+    if (saveBtn) {
+        saveBtn.disabled = true;
+    }
+    setAppleMusicTokensStatus('Saving...', 'info');
+    try {
+        if (!appleMusicSettingsCache) {
+            await loadAppleMusicSettings();
+        }
+        if (!appleMusicSettingsCache) {
+            throw new Error('Settings not loaded');
+        }
+
+        const storefront = document.getElementById('appleStorefront')?.value.trim() || 'us';
+        const mediaUserToken = document.getElementById('appleMediaUserToken')?.value.trim() || '';
+        const payload = {
+            appleMusic: {
+                storefront,
+                mediaUserToken
+            }
+        };
+
+        const response = await fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const result = await response.json();
+        if (!response.ok || !result?.result) {
+            throw new Error(result?.error || `status ${response.status}`);
+        }
+
+        appleMusicSettingsCache = {
+            ...(appleMusicSettingsCache || {}),
+            appleMusic: {
+                ...(appleMusicSettingsCache?.appleMusic || {}),
+                storefront,
+                mediaUserToken
+            }
+        };
+        setAppleMusicTokensStatus('Saved', 'success');
+        showToast('Apple Music tokens saved', 'success');
+    } catch (error) {
+        console.error('Failed to save Apple Music settings', error);
+        setAppleMusicTokensStatus('Save failed', 'error');
+        showToast('Failed to save Apple Music tokens', 'error');
+    } finally {
+        if (saveBtn) {
+            saveBtn.disabled = false;
+        }
+    }
+}
+
+function setStatus(elementId, isConnected) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    el.textContent = isConnected ? 'Saved' : 'Not connected';
+}
+
+function clearElementValue(elementId, fallbackValue = '') {
+    const el = document.getElementById(elementId);
+    if (el && 'value' in el) {
+        el.value = fallbackValue;
+    }
+}
+
+function clearElementText(elementId, fallbackText = '') {
+    const el = document.getElementById(elementId);
+    if (el) {
+        el.textContent = fallbackText;
+    }
+}
+
+function resetFormById(formId) {
+    const form = document.getElementById(formId);
+    if (form && typeof form.reset === 'function') {
+        form.reset();
+    }
+}
+
+function clearDeezerLoginInputs() {
+    clearElementValue('login_email');
+    clearElementValue('login_password');
+    clearElementValue('login_input_arl');
+}
+
+function clearSpotifyLoginInputs() {
+    resetFormById('spotifyApiCredentialsForm');
+    resetFormById('spotifyBlobForm');
+    clearElementText('spotifyApiCredentialsStatus');
+    clearElementText('spotifyLoggedInName', 'Spotify account');
+    clearElementText('spotifyLoggedInPlanLocation', 'Unknown | UL');
+    const picture = document.getElementById('spotifyLoggedInPicture');
+    if (picture) {
+        picture.src = getPlatformIcon('spotify');
+    }
+}
+
+function clearAppleMusicLoginInputs() {
+    resetFormById('appleMusicLoginForm');
+    resetFormById('appleMusicTokensForm');
+    clearElementText('appleMusicWrapperHelperOutput');
+    clearElementText('appleMusicWrapperHealthOutput');
+    clearElementText('appleMusicStatus');
+    clearElementText('appleMusicLoginState');
+    setAppleMusicTokensStatus('');
+    setAppleMusicLoggedInStatus('');
+    hideAppleMusic2fa();
+}
+
+function clearDiscogsInputs() {
+    resetFormById('discogsLoginForm');
+}
+
+function clearLastFmInputs() {
+    resetFormById('lastfmLoginForm');
+}
+
+function clearBpmInputs() {
+    resetFormById('bpmLoginForm');
+    clearElementValue('bpmLibrary', 'Supreme');
+}
+
+function clearPlexInputs() {
+    resetFormById('plexLoginForm');
+}
+
+function clearJellyfinInputs() {
+    resetFormById('jellyfinLoginForm');
+}
+
+function maskSecret(value) {
+    if (!value) return 'Not set';
+    const trimmed = value.trim();
+    if (trimmed.length <= 8) {
+        return `${trimmed.slice(0, 2)}•••${trimmed.slice(-2)}`;
+    }
+    return `${trimmed.slice(0, 4)}•••${trimmed.slice(-4)}`;
+}
+
+function togglePlatformLoginState(platform, isConnected) {
+    const formSection = document.getElementById(`${platform}LoginFormSection`);
+    const infoSection = document.getElementById(`${platform}LoggedInInfo`);
+    if (!formSection || !infoSection) {
+        return;
+    }
+    if (isConnected) {
+        formSection.classList.add('hidden');
+        infoSection.classList.remove('hidden');
+    } else {
+        formSection.classList.remove('hidden');
+        infoSection.classList.add('hidden');
+    }
+
+    if (platform === 'appleMusic') {
+        const tokensSection = document.getElementById('appleMusicTokensSection');
+        if (tokensSection) {
+            if (isConnected) {
+                tokensSection.classList.add('hidden');
+            } else {
+                tokensSection.classList.remove('hidden');
+            }
+        }
+    }
+}
+
+function renderDiscogsInfo(auth) {
+    const nameLabel = document.getElementById('discogsLoggedInName');
+    if (nameLabel) {
+        nameLabel.textContent = auth?.username || 'Unknown';
+    }
+}
+
+function renderLastFmInfo(auth) {
+    const nameLabel = document.getElementById('lastfmLoggedInName');
+    if (nameLabel) {
+        nameLabel.textContent = auth?.username || 'Last.fm';
+    }
+}
+
+function renderBpmInfo(auth) {
+    const nameLabel = document.getElementById('bpmLoggedInName');
+    const detailsLabel = document.getElementById('bpmLoggedInPlanLocation');
+    const picture = document.getElementById('bpmLoggedInPicture');
+    if (nameLabel) {
+        nameLabel.textContent = auth?.email || 'BPM Supreme account';
+    }
+    if (detailsLabel) {
+        detailsLabel.textContent = 'Unknown | UL';
+    }
+    if (picture) {
+        picture.src = getPlatformIcon('bpmsupreme');
+    }
+}
+
+function renderPlexInfo(auth) {
+    const nameLabel = document.getElementById('plexLoggedInName');
+    const picture = document.getElementById('plexLoggedInPicture');
+    if (nameLabel) {
+        nameLabel.textContent = auth?.username || auth?.serverName || auth?.url || 'Plex account';
+    }
+    if (picture) {
+        picture.src = auth?.avatarUrl || getPlatformIcon('plex');
+    }
+}
+
+function renderJellyfinInfo(auth) {
+    const nameLabel = document.getElementById('jellyfinLoggedInName');
+    const picture = document.getElementById('jellyfinLoggedInPicture');
+    if (nameLabel) {
+        nameLabel.textContent = auth?.username || auth?.serverName || auth?.url || 'Jellyfin account';
+    }
+    if (picture) {
+        picture.src = auth?.avatarUrl || getPlatformIcon('jellyfin');
+    }
+}
+
+function renderAppleMusicInfo(auth) {
+    const nameLabel = document.getElementById('appleMusicLoggedInName');
+    const picture = document.getElementById('appleMusicLoggedInPicture');
+    if (nameLabel) {
+        nameLabel.textContent = auth?.email || 'Apple Music account';
+    }
+    if (picture) {
+        picture.src = getPlatformIcon('apple-music');
+    }
+}
+
+function showAppleMusic2fa(show = true) {
+    const section = document.getElementById('appleMusic2faSection');
+    if (section) {
+        if (show) {
+            section.classList.remove('hidden');
+        } else {
+            section.classList.add('hidden');
+        }
+    }
+}
+
+function hideAppleMusic2fa() {
+    showAppleMusic2fa(false);
+}
+
+function setAppleMusic2faEnabled(enabled, hint) {
+    const input = document.getElementById('appleMusic2fa');
+    const button = document.getElementById('appleMusicSubmit2faBtn');
+    const hintEl = document.getElementById('appleMusic2faHint');
+
+    const canEnable = enabled && appleMusicWrapperAvailable;
+    if (input) {
+        input.disabled = !canEnable;
+    }
+    if (button) {
+        button.disabled = !canEnable;
+    }
+    if (hintEl) {
+        hintEl.textContent = hint || '';
+    }
+}
+
+function setAppleMusicLoginState(message) {
+    const el = document.getElementById('appleMusicLoginState');
+    if (el) {
+        el.textContent = message || '';
+    }
+}
+
+function setAppleMusicConnectionText(text) {
+    const el = document.getElementById('appleMusicStatus');
+    if (el) {
+        el.textContent = text || '';
+    }
+}
+
+function setAppleMusicCredentialsEnabled(enabled) {
+    const emailEl = document.getElementById('appleMusicEmail');
+    const passwordEl = document.getElementById('appleMusicPassword');
+    if (appleMusicExternalMode) {
+        enabled = true;
+    }
+    if (emailEl) {
+        emailEl.disabled = !enabled;
+    }
+    if (passwordEl) {
+        passwordEl.disabled = !enabled;
+    }
+}
+
+function setAppleMusicLoginEnabled(enabled) {
+    const button = document.getElementById('appleMusicLoginBtn');
+    if (button) {
+        if (appleMusicExternalMode) {
+            button.disabled = !enabled;
+        } else {
+            button.disabled = !(enabled && appleMusicWrapperAvailable);
+        }
+    }
+}
+
+function setAppleMusicLoggedInStatus(message) {
+    const el = document.getElementById('appleMusicLoggedInStatus');
+    if (el) {
+        el.textContent = message || '';
+    }
+}
+
+let appleMusicLoginInProgress = false;
+let appleMusic2faSubmitting = false;
+let appleMusicStatusPoll = null;
+let appleMusicPassiveStatusPoll = null;
+let appleMusicWrapperAvailable = true;
+let appleMusicExternalMode = false;
+let appleMusicLoginRequestPending = false;
+let appleMusicStatusRequestInFlight = false;
+let appleMusicLastSyncSignature = '';
+
+function applyAppleMusicWrapperAvailability(available) {
+    appleMusicWrapperAvailable = available;
+    const ids = [
+        'appleMusicEmail',
+        'appleMusicPassword',
+        'appleMusicLoginBtn',
+        'appleMusic2fa',
+        'appleMusicSubmit2faBtn'
+    ];
+    ids.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) {
+            if (appleMusicExternalMode && (id === 'appleMusicEmail' || id === 'appleMusicPassword' || id === 'appleMusicLoginBtn')) {
+                el.disabled = false;
+            } else {
+                el.disabled = !available;
+            }
+        }
+    });
+    if (!available) {
+        showAppleMusic2fa(false);
+    }
+    setAppleMusicWrapperModeHint();
+}
+
+function setAppleMusicWrapperModeHint() {
+    const hint = document.getElementById('appleMusicWrapperModeHint');
+    if (!hint) {
+        return;
+    }
+    hint.textContent = 'This login uses the external Apple wrapper container. It will be started automatically when you click Login.';
+}
+
+async function startAppleMusicLogin() {
+    if (!appleMusicWrapperAvailable && !appleMusicExternalMode) {
+        showToast('Wrapper is not ready. Start the Apple Music wrapper and try again.', 'warning');
+        return;
+    }
+    if (!appleMusicWrapperAvailable && appleMusicExternalMode) {
+        showToast('Wrapper is not ready yet. Login will start it automatically.', 'info');
+    }
+    const email = document.getElementById('appleMusicEmail').value.trim();
+    const password = document.getElementById('appleMusicPassword').value.trim();
+    if (!email || !password) {
+        showToast('Email and password are required', 'warning');
+        return;
+    }
+
+    appleMusicLoginInProgress = true;
+    appleMusic2faSubmitting = false;
+    appleMusicLoginRequestPending = true;
+    togglePlatformLoginState('appleMusic', false);
+    setAppleMusicLoginState('Logging in...');
+    setAppleMusicCredentialsEnabled(false);
+    setAppleMusicLoginEnabled(false);
+    showAppleMusic2fa(false);
+    setAppleMusic2faEnabled(false, '');
+    document.getElementById('appleMusic2fa').value = '';
+    beginAppleMusicStatusPolling();
+
+    try {
+        const response = await fetch('/api/apple-music/wrapper-ref/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
+        });
+        if (!response.ok) {
+            const message = await response.text();
+            showToast(message || 'Apple Music login failed', 'error');
+            setAppleMusicLoginState(message || 'Login failed');
+            appleMusicLoginInProgress = false;
+            appleMusic2faSubmitting = false;
+            appleMusicLoginRequestPending = false;
+            setAppleMusicCredentialsEnabled(true);
+            setAppleMusicLoginEnabled(true);
+            stopAppleMusicStatusPolling();
+            return;
+        }
+        const data = await response.json();
+        appleMusicLoginRequestPending = false;
+        handleAppleMusicStatus(data);
+    } catch (error) {
+        console.error('Apple Music login error:', error);
+        showToast('Network error while starting Apple Music login', 'error');
+        setAppleMusicLoginState('Network error');
+        setAppleMusicCredentialsEnabled(true);
+        setAppleMusicLoginEnabled(true);
+        appleMusicLoginInProgress = false;
+        appleMusicLoginRequestPending = false;
+    } finally {
+        document.getElementById('appleMusicPassword').value = '';
+    }
+}
+
+async function submitAppleMusic2fa() {
+    const code = document.getElementById('appleMusic2fa').value.trim();
+    if (!code) {
+        showToast('Enter the verification code', 'warning');
+        return;
+    }
+
+    appleMusicLoginInProgress = true;
+    appleMusic2faSubmitting = true;
+    appleMusicLoginRequestPending = false;
+    setAppleMusicLoginState('Verifying code...');
+    setAppleMusic2faEnabled(false, 'Verifying code...');
+    setAppleMusicLoginEnabled(false);
+    setAppleMusicCredentialsEnabled(false);
+    beginAppleMusicStatusPolling();
+
+    try {
+        const response = await fetch('/api/apple-music/wrapper-ref/2fa', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code })
+        });
+        if (!response.ok) {
+            const message = await response.text();
+            showToast(message || 'Verification failed', 'error');
+            setAppleMusicLoginState(message || 'Verification failed');
+            return;
+        }
+        const data = await response.json();
+        handleAppleMusicStatus(data);
+    } catch (error) {
+        console.error('Apple Music 2FA error:', error);
+        showToast('Network error while submitting code', 'error');
+        setAppleMusicLoginState('Network error');
+        setAppleMusic2faEnabled(true, 'Enter the verification code from Apple.');
+        setAppleMusicCredentialsEnabled(true);
+        setAppleMusicLoginEnabled(true);
+    } finally {
+        // Keep polling active, but allow users to retry/resubmit if wrapper remains in waiting state.
+        appleMusic2faSubmitting = false;
+    }
+}
+
+async function refreshAppleMusicWrapperStatus() {
+    if (!appleMusicBootstrapRequested && !appleMusicLoginInProgress && !appleMusic2faSubmitting && !appleMusicLoginRequestPending) {
+        return;
+    }
+    if (appleMusicStatusRequestInFlight) {
+        return;
+    }
+    appleMusicStatusRequestInFlight = true;
+    try {
+        const response = await fetch('/api/apple-music/wrapper-ref/status', {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        });
+        if (!response.ok) {
+            return;
+        }
+        const data = await response.json();
+        handleAppleMusicStatus(data);
+    } catch (error) {
+        console.warn('Apple Music status check failed', error);
+    } finally {
+        appleMusicStatusRequestInFlight = false;
+    }
+}
+
+async function checkAppleMusicWrapperHelperStatus() {
+    const outputEl = document.getElementById('appleMusicWrapperHelperOutput');
+    if (outputEl) {
+        outputEl.textContent = 'Checking wrapper helper...';
+    }
+    try {
+        const response = await fetch('/api/apple-music/wrapper-ref/helper/status');
+        if (!response.ok) {
+            const message = await response.text();
+            if (outputEl) {
+                outputEl.textContent = message || 'Wrapper helper status failed.';
+            }
+            showToast(message || 'Wrapper helper status failed', 'error');
+            return;
+        }
+        const data = await response.json();
+        const lines = [];
+        if (data.helperPath) {
+            lines.push(`Helper: ${data.helperPath}`);
+        }
+        lines.push(`Exit code: ${data.exitCode}`);
+        if (data.output) {
+            lines.push(data.output.trim());
+        }
+        if (data.error) {
+            lines.push(`Error: ${data.error.trim()}`);
+        }
+        if (outputEl) {
+            outputEl.textContent = lines.filter(Boolean).join('\n');
+        }
+        showToast(data.success ? 'Wrapper helper responded.' : 'Wrapper helper returned an error.', data.success ? 'success' : 'error');
+    } catch (error) {
+        console.error('Wrapper helper status error', error);
+        if (outputEl) {
+            outputEl.textContent = 'Wrapper helper status failed.';
+        }
+        showToast('Wrapper helper status failed', 'error');
+    }
+}
+
+async function checkAppleMusicWrapperHealth() {
+    const outputEl = document.getElementById('appleMusicWrapperHealthOutput');
+    if (outputEl) {
+        outputEl.textContent = 'Checking wrapper health...';
+    }
+    try {
+        const response = await fetch('/api/apple-music/wrapper-ref/helper/health');
+        if (!response.ok) {
+            const message = await response.text();
+            if (outputEl) {
+                outputEl.textContent = message || 'Wrapper health check failed.';
+            }
+            showToast(message || 'Wrapper health check failed', 'error');
+            return;
+        }
+        const data = await response.json();
+        const lines = [
+            data.message || 'Wrapper health check completed.',
+            `Accepting login commands: ${Boolean(data.acceptingLoginCommands)}`,
+            `Host: ${data.host || 'n/a'}`,
+            `Ports open: ${Boolean(data.portsOpen)}`,
+            `Account info reachable: ${Boolean(data.accountInfoReachable)}`,
+            `Tokens: dev=${Boolean(data.hasDevToken)} music=${Boolean(data.hasMusicToken)}`
+        ];
+        if (outputEl) {
+            outputEl.textContent = lines.join('\n');
+        }
+        showToast(data.acceptingLoginCommands ? 'Wrapper is accepting login commands.' : 'Wrapper is not accepting login commands.', data.acceptingLoginCommands ? 'success' : 'error');
+    } catch (error) {
+        console.error('Wrapper health check error', error);
+        if (outputEl) {
+            outputEl.textContent = 'Wrapper health check failed.';
+        }
+        showToast('Wrapper health check failed', 'error');
+    }
+}
+
+function beginAppleMusicStatusPolling() {
+    if (appleMusicStatusPoll) {
+        clearInterval(appleMusicStatusPoll);
+    }
+    // Poll every 500ms for faster 2FA detection and login completion
+    appleMusicStatusPoll = setInterval(() => {
+        if (!appleMusicLoginInProgress && !appleMusic2faSubmitting) {
+            clearInterval(appleMusicStatusPoll);
+            appleMusicStatusPoll = null;
+            return;
+        }
+        refreshAppleMusicWrapperStatus();
+    }, 500);
+}
+
+function stopAppleMusicStatusPolling() {
+    if (appleMusicStatusPoll) {
+        clearInterval(appleMusicStatusPoll);
+        appleMusicStatusPoll = null;
+    }
+}
+
+function beginAppleMusicPassiveStatusPolling() {
+    if (appleMusicPassiveStatusPoll) {
+        return;
+    }
+    appleMusicPassiveStatusPoll = setInterval(() => {
+        refreshAppleMusicWrapperStatus();
+    }, 15000);
+}
+
+function refreshConnectedPlatformsSidebar() {
+    try {
+        queueConnectedPlatformsRefresh();
+    } catch (error) {
+        console.warn('Failed to refresh connected platforms sidebar', error);
+    }
+}
+
+function queueConnectedPlatformsRefresh() {
+    if (connectedPlatformsRefreshTimer) {
+        clearTimeout(connectedPlatformsRefreshTimer);
+    }
+
+    connectedPlatformsRefreshTimer = setTimeout(() => {
+        connectedPlatformsRefreshTimer = null;
+        try {
+            if (window.DeezSpoTag && typeof window.DeezSpoTag.loadConnectedPlatforms === 'function') {
+                window.DeezSpoTag.loadConnectedPlatforms();
+            }
+        } catch (error) {
+            console.warn('Failed to refresh connected platforms sidebar', error);
+        }
+    }, 120);
+}
+
+function handleAppleMusicStatus(data) {
+    if (!data) return;
+    const rawStatus = data.status ?? '';
+    const status = typeof rawStatus === 'string' ? rawStatus.toLowerCase() : String(rawStatus);
+    const message = data.message || '';
+    const email = data.email || '';
+    const wrapperReady = Boolean(data.wrapperReady);
+    const diagnostics = data.diagnostics || null;
+    const diagnosticMessage = diagnostics?.message || '';
+    appleMusicExternalMode = Boolean(data.externalMode);
+    const wrapperAvailable = diagnostics ? Boolean(diagnostics.portsOpen) : true;
+    applyAppleMusicWrapperAvailability(wrapperAvailable);
+    const needs2fa = Boolean(data.needsTwoFactor) || status === 'waitingfortwofactor';
+    const hasExplicitSuccess = status === 'success' || wrapperReady;
+    const loginAttemptPending = appleMusicLoginRequestPending && appleMusicLoginInProgress;
+    const loginFlowActive = appleMusicLoginInProgress || appleMusic2faSubmitting || loginAttemptPending;
+    const inProgress = status === 'starting' || (status === 'waitingfortwofactor' && loginFlowActive) || loginAttemptPending || appleMusic2faSubmitting;
+    const twoFactorRequired = needs2fa;
+    const isAuthenticated = Boolean(wrapperReady) && !twoFactorRequired;
+    const isSuccess = (hasExplicitSuccess || wrapperReady) && !twoFactorRequired;
+    const waitingFor2fa = twoFactorRequired && !isAuthenticated && loginFlowActive;
+    const backendWaitingFor2fa = twoFactorRequired && !isAuthenticated;
+    const show2fa = waitingFor2fa;
+    const syncSignature = `${status}|${wrapperReady ? '1' : '0'}|${needs2fa ? '1' : '0'}|${wrapperAvailable ? '1' : '0'}|${email || ''}`;
+    if (syncSignature !== appleMusicLastSyncSignature) {
+        appleMusicLastSyncSignature = syncSignature;
+        queueConnectedPlatformsRefresh();
+    }
+    if (needs2fa || appleMusicLoginInProgress || appleMusic2faSubmitting) {
+        togglePlatformLoginState('appleMusic', false);
+    }
+
+    let effectiveMessage = message;
+    if (!wrapperAvailable) {
+        if (diagnosticMessage) {
+            effectiveMessage = diagnosticMessage;
+        } else if (appleMusicExternalMode && !appleMusicLoginInProgress && !appleMusic2faSubmitting) {
+            effectiveMessage = 'Wrapper will start on login. Enter your credentials to continue.';
+        } else {
+            effectiveMessage = 'Wrapper is not ready. Start the Apple Music wrapper to continue.';
+        }
+    } else if (waitingFor2fa) {
+        const normalizedMessage = message.toLowerCase();
+        const submittedHint = normalizedMessage.includes('verification code submitted')
+            ? 'Verification code submitted. Waiting for wrapper confirmation.'
+            : null;
+        effectiveMessage = submittedHint || 'Waiting for two-factor verification code.';
+    } else if (backendWaitingFor2fa && !loginFlowActive) {
+        effectiveMessage = 'A previous Apple Music 2FA challenge is pending. Click Login to start a fresh session.';
+    } else if (loginAttemptPending) {
+        effectiveMessage = 'Submitting login request...';
+    } else if (isSuccess) {
+        effectiveMessage = 'Login successful.';
+    } else if (status === 'failed') {
+        effectiveMessage = message || 'Login failed.';
+    } else if (status === 'starting') {
+        effectiveMessage = 'Starting wrapper login...';
+    } else if (status === 'running') {
+        effectiveMessage = message || 'Wrapper is running. Enter your credentials to login.';
+    } else if (!isSuccess && diagnosticMessage) {
+        effectiveMessage = diagnosticMessage;
+    }
+
+    setAppleMusicLoginState(effectiveMessage);
+    if (loginAttemptPending) {
+        setAppleMusicConnectionText('In progress');
+    } else if (isAuthenticated) {
+        setAppleMusicConnectionText('Connected');
+    } else if (waitingFor2fa || appleMusicLoginInProgress) {
+        setAppleMusicConnectionText('In progress');
+    } else if (!wrapperAvailable && !appleMusicExternalMode) {
+        setAppleMusicConnectionText('Wrapper not ready');
+    } else {
+        setAppleMusicConnectionText('Not connected');
+    }
+
+    if (isSuccess && appleMusicLoginInProgress && !loginAttemptPending) {
+        // Only switch to logged-in state during active login, not on page load status check
+        appleMusicLoginInProgress = false;
+        appleMusic2faSubmitting = false;
+        appleMusicLoginRequestPending = false;
+        stopAppleMusicStatusPolling();
+        setAppleMusicCredentialsEnabled(true);
+        setAppleMusicLoginEnabled(true);
+        showAppleMusic2fa(false);
+        setAppleMusic2faEnabled(false, 'Login successful. 2FA not required for this session.');
+        setAppleMusicLoggedInStatus('Login successful.');
+        setStatus('appleMusicStatus', true);
+        renderAppleMusicInfo({ email: email, wrapperReady: true });
+        togglePlatformLoginState('appleMusic', true);
+        document.getElementById('appleMusic2fa').value = '';
+        showToast('Apple Music verified', 'success');
+        refreshConnectedPlatformsSidebar();
+    } else if (isAuthenticated && !appleMusicLoginInProgress && !appleMusic2faSubmitting && !loginAttemptPending) {
+        appleMusicLoginInProgress = false;
+        appleMusic2faSubmitting = false;
+        appleMusicLoginRequestPending = false;
+        stopAppleMusicStatusPolling();
+        setAppleMusicCredentialsEnabled(true);
+        setAppleMusicLoginEnabled(true);
+        showAppleMusic2fa(false);
+        setAppleMusic2faEnabled(false, '');
+        setAppleMusicLoggedInStatus('Login successful.');
+        setStatus('appleMusicStatus', true);
+        renderAppleMusicInfo({ email: email, wrapperReady: true });
+        togglePlatformLoginState('appleMusic', true);
+    } else if (show2fa) {
+        appleMusicLoginRequestPending = false;
+        showAppleMusic2fa(true);
+        const normalizedMessage = (message || '').toLowerCase();
+        const submittedHint = normalizedMessage.includes('verification code submitted')
+            ? 'Verification code submitted. Waiting for wrapper confirmation.'
+            : null;
+        const hint = submittedHint || 'Enter the verification code from Apple.';
+        setAppleMusicCredentialsEnabled(false);
+        setAppleMusicLoginEnabled(false);
+        setAppleMusic2faEnabled(!appleMusic2faSubmitting, hint);
+        setAppleMusicLoggedInStatus('');
+    } else if (status === 'failed') {
+        setStatus('appleMusicStatus', false);
+        togglePlatformLoginState('appleMusic', false);
+        setAppleMusicLoggedInStatus(message || 'Login failed.');
+        if (message && appleMusicLoginInProgress) {
+            showToast(message, 'error');
+        }
+        appleMusicLoginInProgress = false;
+        appleMusic2faSubmitting = false;
+        appleMusicLoginRequestPending = false;
+        setAppleMusicCredentialsEnabled(true);
+        setAppleMusicLoginEnabled(true);
+        stopAppleMusicStatusPolling();
+        refreshConnectedPlatformsSidebar();
+    } else if (status === 'stopped') {
+        setStatus('appleMusicStatus', false);
+        togglePlatformLoginState('appleMusic', false);
+        setAppleMusicLoginState(message || 'Timed out. Please click Login again.');
+        appleMusicLoginInProgress = false;
+        appleMusic2faSubmitting = false;
+        appleMusicLoginRequestPending = false;
+        setAppleMusicCredentialsEnabled(true);
+        setAppleMusicLoginEnabled(true);
+        stopAppleMusicStatusPolling();
+        refreshConnectedPlatformsSidebar();
+    } else if (status === 'missing') {
+        // Wrapper not running - show message but keep login form visible
+        setAppleMusicCredentialsEnabled(!appleMusicExternalMode ? false : true);
+        setAppleMusicLoginEnabled(!appleMusicExternalMode ? false : true);
+        if (!appleMusicLoginInProgress && !appleMusic2faSubmitting) {
+            hideAppleMusic2fa();
+            appleMusicLoginRequestPending = false;
+        }
+    } else {
+        // In progress or running - update state but don't switch UI unless actively logging in
+        appleMusicLoginInProgress = inProgress && appleMusicLoginInProgress;
+        appleMusic2faSubmitting = false;
+        setAppleMusicCredentialsEnabled(!appleMusicLoginInProgress);
+        setAppleMusicLoginEnabled(!appleMusicLoginInProgress);
+        if (!appleMusicLoginInProgress) {
+            hideAppleMusic2fa();
+            setStatus('appleMusicStatus', false);
+            togglePlatformLoginState('appleMusic', false);
+            setAppleMusicLoggedInStatus('');
+        }
+        setAppleMusic2faEnabled(true, '');
+        if (!inProgress && !appleMusicLoginInProgress) {
+            appleMusicLoginRequestPending = false;
+            stopAppleMusicStatusPolling();
+        }
+    }
+}
+
+async function loginPlex(url, token) {
+    if (!url || !token) {
+        showToast('Plex URL and token are required', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/platform-auth/plex/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, token })
+        });
+
+        if (!response.ok) {
+            const message = await response.text();
+            showToast(message || 'Plex login failed', 'error');
+            return;
+        }
+
+        const data = await response.json();
+        const auth = data?.plex || { url, token };
+        setStatus('plexStatus', true);
+        renderPlexInfo(auth);
+        togglePlatformLoginState('plex', true);
+        showToast('Plex connected', 'success');
+    } catch (error) {
+        console.error('Plex login error:', error);
+        showToast('Network error while connecting to Plex', 'error');
+    }
+}
+
+async function loginJellyfin(url, apiKey, username) {
+    if (!url || !apiKey) {
+        showToast('Jellyfin URL and API key are required', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/platform-auth/jellyfin/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, apiKey, username })
+        });
+
+        if (!response.ok) {
+            const message = await response.text();
+            showToast(message || 'Jellyfin login failed', 'error');
+            return;
+        }
+
+        const data = await response.json();
+        const auth = data?.jellyfin || { url, apiKey, username };
+        setStatus('jellyfinStatus', true);
+        renderJellyfinInfo(auth);
+        togglePlatformLoginState('jellyfin', true);
+        showToast('Jellyfin connected', 'success');
+    } catch (error) {
+        console.error('Jellyfin login error:', error);
+        showToast('Network error while connecting to Jellyfin', 'error');
+    }
+}
+
+async function savePlatformAuth(url, payload, statusElementId, isConnected) {
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (isAuthRedirectResponse(response)) {
+            showToast('Login required to save credentials', 'error');
+            return;
+        }
+        if (!response.ok) {
+            showToast('Failed to save credentials', 'error');
+            return;
+        }
+
+        let data = null;
+        try {
+            data = await response.json();
+        } catch {
+            data = null;
+        }
+
+        applyPlatformAuthState(url, data, payload, statusElementId, isConnected);
+        refreshConnectedPlatformsSidebar();
+        showToast('Credentials saved', 'success');
+    } catch (error) {
+        console.error('Save credentials error:', error);
+        showToast('Network error while saving credentials', 'error');
+    }
+}
+
+async function generateSpotifyBlob() {
+    const name = document.getElementById('spotifyAccountName').value.trim();
+    const region = document.getElementById('spotifyAccountRegion').value.trim();
+    if (!name) {
+        showToast('Account name is required', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/spotify-credentials/accounts/${encodeURIComponent(name)}/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ region })
+        });
+
+        if (!response.ok) {
+            const message = await response.text();
+            showToast(message || 'Failed to generate Spotify credentials', 'error');
+            return;
+        }
+
+        showToast('Spotify credentials generated', 'success');
+        await loadSpotifyConfig();
+    } catch (error) {
+        console.error('Spotify credentials generation error:', error);
+        showToast('Network error generating Spotify credentials', 'error');
+    }
+}
+
+async function loadSpotifyConfig() {
+    const loadSequence = ++spotifyConfigLoadSequence;
+    try {
+        const apiCredentialsTask = loadSpotifyApiCredentials();
+        const accountsResponse = await fetch('/api/spotify-credentials/accounts', {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        });
+
+        if (!accountsResponse.ok) {
+            await apiCredentialsTask;
+            if (loadSequence !== spotifyConfigLoadSequence) {
+                return;
+            }
+            setStatus('spotifyStatus', false);
+            localStorage.removeItem('spotifyAccount');
+            toggleSpotifyLoginState(false);
+            return;
+        }
+
+        const data = await accountsResponse.json();
+        const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+        const activeAccountName = typeof data.activeAccount === 'string' ? data.activeAccount : '';
+        const active = accounts.find(account => account.name && account.name.toLowerCase() === activeAccountName.toLowerCase());
+        const accountHasBlob = Boolean(active?.blobPath || active?.librespotBlobPath || active?.webPlayerBlobPath);
+        const provisionalConnected = Boolean(active && accountHasBlob);
+        applySpotifyConnectionUiState(data, active, activeAccountName, provisionalConnected);
+        queueConnectedPlatformsRefresh();
+
+        void refreshSpotifyConnectionStatus(data, active, activeAccountName, accountHasBlob, loadSequence);
+        await apiCredentialsTask;
+        if (loadSequence !== spotifyConfigLoadSequence) {
+            return;
+        }
+        queueConnectedPlatformsRefresh();
+    } catch (error) {
+        if (loadSequence !== spotifyConfigLoadSequence) {
+            return;
+        }
+        console.warn('Failed to load Spotify config', error);
+        setStatus('spotifyStatus', false);
+        localStorage.removeItem('spotifyAccount');
+        toggleSpotifyLoginState(false);
+    }
+}
+
+function applySpotifyConnectionUiState(data, active, activeAccountName, isConnected) {
+    const showLoggedIn = Boolean(isConnected);
+    setStatus('spotifyStatus', showLoggedIn);
+    if (showLoggedIn) {
+        const accountName = active?.name || activeAccountName || 'Spotify';
+        const region = active?.region || 'UL';
+        const plan = data?.activeAccountPlan ? capitalizeSpotifyPlan(data.activeAccountPlan) : 'Unknown';
+        document.getElementById('spotifyLoggedInName').textContent = accountName;
+        document.getElementById('spotifyLoggedInPlanLocation').textContent = `${plan} | ${region || 'UL'}`;
+        const picture = document.getElementById('spotifyLoggedInPicture');
+        if (picture) {
+            picture.src = getPlatformIcon('spotify');
+        }
+        localStorage.setItem('spotifyAccount', accountName);
+    } else {
+        localStorage.removeItem('spotifyAccount');
+    }
+    toggleSpotifyLoginState(showLoggedIn);
+}
+
+async function refreshSpotifyConnectionStatus(data, active, activeAccountName, accountHasBlob, loadSequence) {
+    try {
+        const response = await fetchWithTimeout('/api/spotify-credentials/status', {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        }, 4500);
+
+        if (!response || !response.ok) {
+            return;
+        }
+
+        const connectionStatus = await response.json();
+        if (loadSequence !== spotifyConfigLoadSequence) {
+            return;
+        }
+
+        const isConnected = Boolean(
+            connectionStatus &&
+            connectionStatus.ok === true &&
+            active &&
+            accountHasBlob
+        );
+        applySpotifyConnectionUiState(data, active, activeAccountName, isConnected);
+        queueConnectedPlatformsRefresh();
+    } catch (error) {
+        console.warn('Spotify status probe timed out or failed; keeping provisional UI state', error);
+    }
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+        window.clearTimeout(timeoutId);
+    }
+}
+
+async function loadSpotifyApiCredentials() {
+    const statusEl = document.getElementById('spotifyApiCredentialsStatus');
+    try {
+        const response = await fetch('/api/spotify-credentials/web-player/status');
+        if (!response.ok) {
+            if (statusEl) {
+                statusEl.textContent = 'Web player cookies unavailable.';
+            }
+            return null;
+        }
+        const data = await response.json();
+        if (!statusEl) {
+            return data;
+        }
+        const bits = [];
+        const hasSpDc = data?.hasSpDc ?? data?.HasSpDc;
+        const hasSpKey = data?.hasSpKey ?? data?.HasSpKey;
+        const hasUserAgent = data?.hasUserAgent ?? data?.HasUserAgent;
+        if (hasSpDc) bits.push('sp_dc saved');
+        if (hasSpKey) bits.push('sp_key saved');
+        if (hasUserAgent) bits.push('user agent saved');
+        statusEl.textContent = bits.length ? bits.join(' • ') : 'Web player cookies not saved yet.';
+        return data;
+    } catch (error) {
+        console.warn('Failed to load Spotify web player status', error);
+        if (statusEl) {
+            statusEl.textContent = 'Web player status unavailable.';
+        }
+        return null;
+    }
+}
+
+async function saveSpotifyWebPlayerCookies() {
+    const spDc = document.getElementById('spotifySpDc')?.value?.trim();
+    const spKey = document.getElementById('spotifySpKey')?.value?.trim();
+    const spT = document.getElementById('spotifySpT')?.value?.trim();
+    const userAgentInput = document.getElementById('spotifyUserAgent')?.value?.trim();
+    if (!spDc) {
+        showToast('sp_dc is required', 'error');
+        return;
+    }
+    if (!spT) {
+        showToast('sp_t is required', 'error');
+        return;
+    }
+    const userAgent = userAgentInput || navigator.userAgent;
+    const cookies = [
+        { name: 'sp_dc', value: spDc },
+        { name: 'sp_key', value: spKey || '' },
+        { name: 'sp_t', value: spT }
+    ];
+
+    try {
+        const response = await fetch('/api/spotify-credentials/web-player', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ spDc, spKey, userAgent, cookies })
+        });
+        if (!response.ok) {
+            const message = await response.text();
+            showToast(message || 'Failed to save Spotify web player cookies', 'error');
+            return;
+        }
+        showToast('Spotify web player cookies saved', 'success');
+        const spDcInput = document.getElementById('spotifySpDc');
+        const spKeyInput = document.getElementById('spotifySpKey');
+        const spTInput = document.getElementById('spotifySpT');
+        if (spDcInput) {
+            spDcInput.value = '';
+        }
+        if (spKeyInput) {
+            spKeyInput.value = '';
+        }
+        if (spTInput) {
+            spTInput.value = '';
+        }
+    } catch (error) {
+        console.error('Spotify web player cookie save error:', error);
+        showToast('Network error while saving Spotify web player cookies', 'error');
+    }
+}
+
+function toggleSpotifyLoginState(isConnected) {
+    const loginSection = document.getElementById('spotifyLoginFormSection');
+    const loggedInSection = document.getElementById('spotifyLoggedInInfo');
+    if (!loginSection || !loggedInSection) {
+        return;
+    }
+    if (isConnected) {
+        loginSection.classList.add('hidden');
+        loggedInSection.classList.remove('hidden');
+    } else {
+        loginSection.classList.remove('hidden');
+        loggedInSection.classList.add('hidden');
+    }
+}
+
+function getPlatformIcon(platform) {
+    switch (platform) {
+        case 'spotify':
+            return '/images/icons/spotify.png';
+        case 'discogs':
+            return '/images/icons/discogs.png';
+        case 'lastfm':
+            return '/images/icons/last-fm.png';
+        case 'bpmsupreme':
+            return '/images/icons/bpmsupreme.png';
+        case 'plex':
+            return '/images/icons/plex.png';
+        case 'jellyfin':
+            return '/images/icons/jellyfin.png';
+        case 'deezer':
+            return '/images/icons/deezer.png';
+        case 'apple-music':
+            return '/images/icons/apple-music.png';
+        case 'shazam':
+            return '/images/icons/shazam.png';
+        default:
+            return '/images/icons/deezer.png';
+    }
+}
+
+function capitalizeSpotifyPlan(plan) {
+    if (!plan) return 'Unknown';
+    const normalized = plan.trim().toLowerCase();
+    if (!normalized) return 'Unknown';
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+async function logoutSpotify() {
+    try {
+        const logoutResponse = await fetch('/api/spotify-credentials/logout', { method: 'POST' });
+        if (!logoutResponse.ok) {
+            const message = await logoutResponse.text();
+            showToast(message || 'Failed to logout', 'error');
+            return;
+        }
+        spotifyConfigLoadSequence++;
+        clearSpotifyLoginInputs();
+        applySpotifyConnectionUiState(null, null, '', false);
+        localStorage.removeItem('connected-platforms-cache');
+        if (window.DeezSpoTag && typeof window.DeezSpoTag.loadConnectedPlatforms === 'function') {
+            window.DeezSpoTag.loadConnectedPlatforms();
+        }
+        showToast('Disconnected', 'success');
+    } catch (error) {
+        console.error('Spotify logout error:', error);
+        showToast('Network error during logout', 'error');
+    }
+}
+
+async function disconnectPlatform(url, statusElementId, bindings) {
+    try {
+        const response = await fetch(url, { method: 'POST' });
+        if (!response.ok) {
+            const message = await response.text();
+            showToast(message || 'Failed to disconnect', 'error');
+            return;
+        }
+        applyPlatformDisconnectState(url, statusElementId, bindings);
+        refreshConnectedPlatformsSidebar();
+        showToast('Disconnected', 'success');
+    } catch (error) {
+        console.error('Disconnect error:', error);
+        showToast('Network error while disconnecting', 'error');
+    }
+}
+
+function resolvePlatformAuthBinding(url, bindings) {
+    return Object.entries(bindings || {}).find(([, binding]) => url.includes(binding.matches)) || null;
+}
+
+function applyPlatformAuthState(url, data, payload, statusElementId, isConnected) {
+    const bindings = {
+        discogs: {
+            matches: '/discogs',
+            render: info => renderDiscogsInfo(info || {})
+        },
+        lastfm: {
+            matches: '/lastfm',
+            render: (info, rawPayload, connected, elementId) => {
+                const hasLastFmApiKey = Boolean(info?.hasApiKey ?? connected);
+                setStatus(elementId, hasLastFmApiKey);
+                renderLastFmInfo(info || { username: rawPayload?.username || '', hasApiKey: hasLastFmApiKey });
+                return hasLastFmApiKey;
+            }
+        },
+        bpm: {
+            matches: '/bpmsupreme',
+            render: info => renderBpmInfo(info || {})
+        },
+        plex: {
+            matches: '/plex',
+            render: info => renderPlexInfo(info || {})
+        },
+        jellyfin: {
+            matches: '/jellyfin',
+            render: info => renderJellyfinInfo(info || {})
+        },
+        appleMusic: {
+            matches: '/applemusic',
+            render: info => renderAppleMusicInfo(info || {})
+        }
+    };
+
+    setStatus(statusElementId, isConnected);
+    const entry = resolvePlatformAuthBinding(url, bindings);
+    if (!entry) {
+        return;
+    }
+
+    const [platform, binding] = entry;
+    const payloadForRender =
+        platform === 'discogs' ? data?.discogs || payload :
+        platform === 'lastfm' ? data?.lastFm :
+        platform === 'bpm' ? data?.bpmSupreme || payload :
+        platform === 'plex' ? data?.plex || payload :
+        platform === 'jellyfin' ? data?.jellyfin || payload :
+        data?.appleMusic || payload;
+    const effectiveConnected = binding.render(payloadForRender, payload, isConnected, statusElementId) ?? isConnected;
+    togglePlatformLoginState(platform, effectiveConnected);
+}
+
+function applyPlatformDisconnectState(url, statusElementId, bindings) {
+    setStatus(statusElementId, false);
+    const entry = resolvePlatformAuthBinding(url, bindings);
+    if (!entry) {
+        return;
+    }
+
+    const [platform, binding] = entry;
+    binding.clear?.();
+    binding.render?.({});
+    togglePlatformLoginState(platform, false);
+}
+
+// ARL login function
+async function loginWithArl(arl) {
+    console.log('=== STARTING ARL LOGIN ===');
+    await submitLoginRequest('/api/login/loginArl', { arl, child: 0 }, {
+        credentialValue: arl,
+        successMessage: 'Login successful!',
+        failureMessage: 'Login failed. Please check your ARL token.'
+    });
+}
+
+// Email login function
+async function loginWithEmail(email, password) {
+    console.log('=== STARTING EMAIL LOGIN ===');
+    await submitLoginRequest('/api/login/loginEmail', { email, password }, {
+        successMessage: 'Login successful!',
+        failureMessage: 'Login failed. Please check your credentials.'
+    });
+}
+
+function clearStoredLoginState() {
+    localStorage.removeItem('arl');
+    localStorage.removeItem('loginUser');
+    showLoginForm();
+}
+
+function finalizeLoginSuccess(data, successMessage, credentialValue = null) {
+    showToast(successMessage, 'success');
+    if (credentialValue) {
+        localStorage.setItem('arl', credentialValue);
+    }
+
+    localStorage.setItem('loginUser', JSON.stringify(data.user));
+    showLoggedInInfo(data.user);
+}
+
+function handleLoginResponse(data, options = {}) {
+    const {
+        successMessage = 'Login successful!',
+        failureMessage = 'Login failed.',
+        credentialValue = null
+    } = options;
+
+    switch (data.status) {
+        case 1:
+        case 3:
+            console.log('Login successful!');
+            finalizeLoginSuccess(data, successMessage, credentialValue);
+            return;
+        case 2:
+            console.log('Already logged in');
+            finalizeLoginSuccess(data, 'Already logged in', credentialValue);
+            return;
+        case 0:
+            console.log('Login failed');
+            showToast(failureMessage, 'error');
+            clearStoredLoginState();
+            return;
+        case -1:
+            console.log('Deezer not available');
+            showToast('Deezer is not available. Try again later.', 'error');
+            clearStoredLoginState();
+            return;
+        default:
+            console.log('Unknown status:', data.status);
+            showToast(`Unknown login status: ${data.status}`, 'error');
+            clearStoredLoginState();
+            return;
+    }
+}
+
+async function submitLoginRequest(url, payload, options = {}) {
+    showToast('Logging in...', 'info');
+
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            showToast(`Server error: ${response.status}`, 'error');
+            return;
+        }
+
+        const data = await response.json();
+        handleLoginResponse(data, options);
+    } catch (error) {
+        console.error('Login error:', error);
+        showToast('Network error. Please check your connection.', 'error');
+    }
+}
+
+// Show logged in user info
+function showLoggedInInfo(user) {
+    console.log('=== SHOWING USER INFO ===', user);
+    
+    document.getElementById('login_form').style.display = 'none';
+    document.getElementById('logged_in_info').style.display = 'grid';
+    document.getElementById('logged_in_info').style.visibility = 'visible';
+    
+    // Update user info
+    document.getElementById('settings_username').textContent = user.name || 'User';
+    
+    // Set profile picture
+    if (user.picture) {
+        document.getElementById('settings_picture').src = 
+            `https://e-cdns-images.dzcdn.net/images/user/${user.picture}/125x125-000000-80-0-0.jpg`;
+    } else {
+        document.getElementById('settings_picture').src = getPlatformIcon('deezer');
+    }
+    
+    // Update license and country
+    let license = 'Free';
+    if (user.can_stream_lossless) license = 'Hi-Fi';
+    else if (user.can_stream_hq) license = 'Premium';
+    
+    document.getElementById('user_license_country').textContent = 
+        `${license} | ${user.country || 'UL'}`;
+
+    console.log('User info updated successfully');
+
+    if (window.DeezSpoTag && typeof window.DeezSpoTag.loadConnectedPlatforms === 'function') {
+        queueConnectedPlatformsRefresh();
+    }
+}
+
+// Show login form
+function showLoginForm() {
+    document.getElementById('logged_in_info').style.display = 'none';
+    document.getElementById('login_form').style.display = 'block';
+    document.getElementById('login_form').style.visibility = 'visible';
+
+    if (window.DeezSpoTag && typeof window.DeezSpoTag.loadConnectedPlatforms === 'function') {
+        queueConnectedPlatformsRefresh();
+    }
+}
+
+// Logout function
+async function logout() {
+    console.log('=== STARTING LOGOUT ===');
+    showToast('Logging out...', 'info');
+    
+    try {
+        const response = await fetch('/api/login/logout', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (!response.ok) {
+            showToast('Logout failed', 'error');
+            return;
+        }
+        
+        const data = await response.json();
+        
+        if (data.logged_out) {
+            console.log('Logout successful');
+            showToast('Logged out successfully!', 'success');
+            localStorage.removeItem('arl');
+            localStorage.removeItem('loginUser');
+            showLoginForm();
+            clearDeezerLoginInputs();
+            
+        } else {
+            showToast('Logout failed', 'error');
+        }
+        
+    } catch (error) {
+        console.error('Error during logout:', error);
+        showToast('Network error during logout', 'error');
+    }
+}
+
+console.log('=== SCRIPT SETUP COMPLETE ===');
+</script>
+}

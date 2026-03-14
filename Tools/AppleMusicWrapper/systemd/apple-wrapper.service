@@ -1,0 +1,21 @@
+[Unit]
+Description=Apple Music Wrapper (local)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/apple-wrapper
+EnvironmentFile=-/etc/default/apple-wrapper
+EnvironmentFile=-/run/apple-wrapper-login.env
+ExecStart=/bin/bash -lc 'set -euo pipefail; IFS=" " read -r -a wrapper_args <<< "${WRAPPER_ARGS:-}"; exec /opt/apple-wrapper/wrapper "${wrapper_args[@]}"'
+ExecStartPost=/bin/rm -f /run/apple-wrapper-login.env
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65536
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

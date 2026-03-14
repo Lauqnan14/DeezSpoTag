@@ -1,0 +1,32 @@
+@{
+    ViewData["Title"] = "Track Analysis";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<link rel="stylesheet" href="~/css/library.css" asp-append-version="true" />
+
+<div class="library-page library-track-analysis-page" data-track-id="@ViewData["TrackId"]">
+    <div class="library-breadcrumbs">
+        <a href="/Library">Library</a>
+        <span>/</span>
+        <span>Track Analysis</span>
+    </div>
+
+    <section class="track-analysis-header">
+        <h1 id="trackAnalysisTitle">Track Analysis</h1>
+        <p id="trackAnalysisSubtitle">Loading track details...</p>
+    </section>
+
+    <section class="track-analysis-card" id="trackAnalysisCard">
+        <div class="track-analysis-stats-row" id="trackAnalysisPrimary"></div>
+        <div class="track-analysis-stats-row track-analysis-stats-row--secondary" id="trackAnalysisSecondary"></div>
+        <div class="track-analysis-path" id="trackAnalysisPath"></div>
+    </section>
+
+    <section class="track-analysis-plot-card">
+        <div class="track-analysis-plot-status" id="trackAnalysisPlotStatus">Rendering spectrogram...</div>
+        <img id="trackAnalysisSpectrogram" alt="Track spectrogram" loading="eager" />
+    </section>
+</div>
+
+<script src="~/js/library.js" asp-append-version="true"></script>

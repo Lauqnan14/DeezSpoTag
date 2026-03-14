@@ -1,0 +1,17 @@
+include README.md
+include requirements.txt
+include LICENSE
+include NOTICE
+
+# Include all .proto files in the proto directory and its subdirectories
+graft proto
+
+# Include all Python files in the librespot directory and its subdirectories
+graft librespot
+
+# Include all Python files in the librespot_player directory
+graft librespot_player
+
+# Exclude __pycache__ directories and .pyc files
+prune */__pycache__
+global-exclude *.py[co] 

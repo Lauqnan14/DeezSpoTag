@@ -1,0 +1,51 @@
+services:
+  deezspotag:
+    container_name: deezspotag
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        DEEZSPOTAG_BUILD_VERSION: ${DEEZSPOTAG_BUILD_VERSION:-local}
+    image: ${DEEZSPOTAG_IMAGE:-ghcr.io/lauqnan14/deezspotag:latest}
+    ports:
+      - "8668:8668"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DEEZSPOTAG_CONFIG_DIR: /data
+      DEEZSPOTAG_DATA_DIR: /data
+      DEEZSPOTAG_SPOTIFY_USE_CONFIG_CREDS: "1"
+      DEEZSPOTAG_APPLE_WRAPPER_MODE: external
+      DEEZSPOTAG_BOOTSTRAP_USER: ${DEEZSPOTAG_BOOTSTRAP_USER:-admin}
+      DEEZSPOTAG_BOOTSTRAP_PASS: ${DEEZSPOTAG_BOOTSTRAP_PASS:-Change-Me-Strong-Pass1}
+    volumes:
+      - deezspotag_data:/data
+      - ${DOWNLOADS_PATH:-/volume1/downloads}:/downloads
+      - ${LIBRARY_PATH:-/volume1/music}:/library:ro
+    restart: unless-stopped
+
+  apple-wrapper:
+    container_name: apple-wrapper
+    build:
+      context: .
+      dockerfile: Tools/AppleMusicWrapper/Dockerfile
+    image: ${APPLE_WRAPPER_IMAGE:-ghcr.io/lauqnan14/apple-wrapper:latest}
+    # Ports bound to localhost only — the deezspotag container reaches the wrapper
+    # via Docker internal DNS (apple-wrapper:10020) without these being published.
+    # In production, remove the ports block entirely.
+    ports:
+      - "127.0.0.1:10020:10020"
+      - "127.0.0.1:20020:20020"
+      - "127.0.0.1:30020:30020"
+    env_file:
+      - ${APPLE_WRAPPER_ENV_FILE:-Tools/AppleMusicWrapper/docker/apple-wrapper.env}
+    volumes:
+      - apple_wrapper_data:/opt/apple-wrapper/data
+      - apple_wrapper_session:/opt/apple-wrapper/rootfs/data/data/com.apple.android.music
+    restart: unless-stopped
+
+volumes:
+  deezspotag_data:
+  apple_wrapper_data:
+  apple_wrapper_session:

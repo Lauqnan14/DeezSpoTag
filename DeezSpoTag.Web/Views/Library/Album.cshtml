@@ -1,0 +1,75 @@
+@{
+    ViewData["Title"] = "Library Album";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<link rel="stylesheet" href="~/css/library.css" asp-append-version="true" />
+
+<div class="library-page album-page" data-album-id="@ViewData["AlbumId"]">
+    <div class="library-breadcrumbs">
+        <a href="/Library">Library</a>
+        <span>/</span>
+        <a href="#" id="albumArtistLink">Artist</a>
+        <span>/</span>
+        <span id="albumBreadcrumbTitle">Album</span>
+    </div>
+
+    <header class="album-hero">
+        <div class="album-hero__artwork" id="albumArtwork">
+            <div class="album-hero__placeholder">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="currentColor" opacity="0.3">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z"/>
+                </svg>
+            </div>
+        </div>
+        <div class="album-hero__info">
+            <div class="album-hero__type">Album</div>
+            <h1 class="album-hero__title" id="albumTitle">Album</h1>
+            <div class="album-hero__meta">
+                <a href="#" id="albumArtistName" class="album-hero__artist">Artist</a>
+                <span class="album-hero__detail" id="albumTrackCount"></span>
+                <span class="album-hero__detail" id="albumDuration"></span>
+            </div>
+            <div class="album-hero__folders" id="albumFolders"></div>
+            <div class="album-hero__actions">
+                <div class="download-destination">
+                    <select id="downloadDestinationAlbum" class="form-select download-destination-select"></select>
+                </div>
+                <button id="downloadAlbum" class="btn btn-primary action-btn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    Download Missing
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <section class="album-tracks-section">
+        <div class="album-tracks__head">
+            <div class="album-tracks__header-row">
+                <span class="track-col-num">#</span>
+                <span class="track-col-title">Title</span>
+                <span class="track-col-audio">Audio</span>
+                <span class="track-col-quality">Quality</span>
+                <span class="track-col-lyrics">Lyrics</span>
+                <span class="track-col-duration">Duration</span>
+                <span class="track-col-sample-rate">Sample rate</span>
+                <span class="track-col-bit-depth">Bit depth</span>
+                <span class="track-col-channels">Channels</span>
+                <span class="track-col-nyquist">Nyquist</span>
+                <span class="track-col-dynamic-range">Dynamic range</span>
+                <span class="track-col-peak">Peak</span>
+                <span class="track-col-rms">RMS</span>
+                <span class="track-col-samples">Samples</span>
+                <span class="track-col-actions"></span>
+            </div>
+        </div>
+        <div id="albumTracks" class="track-list"></div>
+    </section>
+</div>
+
+<script src="~/js/library.js" asp-append-version="true"></script>

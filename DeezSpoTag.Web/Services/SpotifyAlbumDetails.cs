@@ -1,0 +1,25 @@
+namespace DeezSpoTag.Web.Services;
+
+public sealed record SpotifyAlbumDetails(
+    string Id,
+    string Name,
+    string? Artists,
+    string? ImageUrl,
+    string SourceUrl,
+    string? ReleaseDate,
+    int TotalTracks,
+    string? AlbumType,
+    string? Label,
+    IReadOnlyList<SpotifyTrackSummary> Tracks,
+    IReadOnlyList<string>? Genres = null,
+    string? ReleaseDatePrecision = null,
+    IReadOnlyList<string>? AvailableMarkets = null,
+    IReadOnlyList<SpotifyCopyrightInfo>? Copyrights = null,
+    string? CopyrightText = null,
+    int? Popularity = null,
+    string? Review = null,
+    IReadOnlyList<string>? RelatedAlbumIds = null,
+    string? OriginalTitle = null,
+    string? VersionTitle = null,
+    IReadOnlyList<SpotifySalePeriod>? SalePeriods = null,
+    IReadOnlyList<SpotifyAvailabilityInfo>? Availability = null);

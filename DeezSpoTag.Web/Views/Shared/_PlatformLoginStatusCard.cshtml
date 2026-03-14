@@ -1,0 +1,35 @@
+@model DeezSpoTag.Web.Models.PlatformLoginStatusCardModel
+@{
+    var altText = (Model.ImageAlt ?? string.Empty)
+        .Replace("image", string.Empty, StringComparison.OrdinalIgnoreCase)
+        .Trim();
+    if (string.IsNullOrWhiteSpace(altText))
+    {
+        altText = "Profile";
+    }
+}
+
+<div class="@Model.WrapperCssClass" id="@Model.ContainerId">
+    <div class="platform-logged-in-wrapper">
+        <div class="platform-logged-in">
+            <div class="platform-logged-in-media">
+                @if (!string.IsNullOrWhiteSpace(Model.ImageSrc))
+                {
+                    <img src="@Model.ImageSrc" alt="@altText" class="@Model.ImageCssClass" />
+                }
+                else
+                {
+                    <img id="@Model.ImageId" alt="@altText" class="@Model.ImageCssClass" />
+                }
+                <button class="btn btn-danger" type="button" id="@Model.ButtonId">@Model.ButtonLabel</button>
+            </div>
+            <div class="platform-user-info">
+                <p>@Model.TextPrefix <strong id="@Model.NameId">@Model.NameFallback</strong></p>
+                @if (!string.IsNullOrWhiteSpace(Model.DetailId) || !string.IsNullOrWhiteSpace(Model.DetailText))
+                {
+                    <p class="text-muted" id="@Model.DetailId">@Model.DetailText</p>
+                }
+            </div>
+        </div>
+    </div>
+</div>

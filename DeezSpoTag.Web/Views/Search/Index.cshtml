@@ -1,0 +1,1961 @@
+@{
+    ViewData["Title"] = $"Search Results - {ViewData["SearchTerm"]}";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+@section Styles {
+<link rel="stylesheet" href="~/css/loading-state-shared.css" asp-append-version="true" />
+<style>
+.search-header {
+    margin-bottom: 30px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border-secondary);
+}
+
+.search-title {
+    font-size: 28px;
+    font-weight: 700;
+    margin-bottom: 10px;
+    color: var(--text-primary);
+}
+
+.search-meta {
+    color: var(--text-muted);
+    font-size: 14px;
+}
+
+.search-options {
+    margin-top: 10px;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.search-filters {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+}
+
+.qobuz-store-label {
+    margin-left: auto;
+    align-self: center;
+    color: var(--text-muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.qobuz-store-select {
+    width: auto;
+    min-width: 110px;
+    max-width: 150px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    color: var(--text-primary);
+}
+
+.filter-btn {
+    text-decoration: none;
+}
+
+.filter-btn.action-btn {
+    border-radius: 6px;
+}
+
+.filter-btn.active {
+    background: color-mix(in srgb, var(--primary-color) 85%, #000 15%) !important;
+    color: var(--bg-primary, #0b1220) !important;
+    border-color: color-mix(in srgb, var(--primary-color) 85%, #000 15%) !important;
+}
+
+.results-section {
+    margin-bottom: 40px;
+}
+
+.results-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(var(--art-card-size), var(--art-card-size)));
+    justify-content: flex-start;
+    gap: 16px;
+}
+
+.result-card {
+    width: 100%;
+    background: transparent;
+    border: none;
+    border-radius: 14px;
+    padding: 12px;
+    display: grid;
+    gap: 8px;
+    transition: border-color 0.2s ease, transform 0.2s ease;
+    cursor: pointer;
+}
+
+.result-card:hover {
+    border-color: transparent;
+    transform: translateY(-2px);
+}
+
+.result-card.selected {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-color) 30%, transparent 70%);
+}
+
+.result-image {
+    width: 100%;
+    background: transparent;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    color: var(--text-muted);
+    overflow: hidden;
+    position: relative;
+    aspect-ratio: 1 / 1;
+}
+
+.result-card.video .result-image {
+    aspect-ratio: 16 / 9;
+}
+
+.result-image img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.result-image-fallback {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    font-size: 24px;
+    color: var(--text-muted);
+}
+
+.result-image img + .result-image-fallback {
+    display: none;
+}
+
+.result-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.result-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--primary-color) 18%, transparent 82%);
+    color: var(--text-primary);
+    border: 1px solid color-mix(in srgb, var(--primary-color) 45%, transparent 55%);
+    margin-top: 6px;
+}
+
+.result-artist {
+    font-size: 12px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.result-meta {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.qobuz-quality {
+    margin-top: 6px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    font-size: 11px;
+    letter-spacing: 0.01em;
+    line-height: 1;
+}
+
+.qobuz-quality.is-hires {
+    color: #facc15;
+    border-color: rgba(250, 204, 21, 0.55);
+    background: rgba(113, 63, 18, 0.35);
+}
+
+.qobuz-quality.is-cd {
+    color: #cbd5e1;
+    border-color: rgba(148, 163, 184, 0.5);
+    background: rgba(30, 41, 59, 0.4);
+}
+
+.qobuz-quality-tier {
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.qobuz-quality-details {
+    opacity: 0.95;
+}
+
+.card-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.card-actions .action-btn {
+    flex: 1;
+    text-align: center;
+}
+
+.results-grid.artist-video-style {
+    grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr));
+    gap: 18px;
+}
+
+.results-grid.artist-video-style .result-card.video.apple-card {
+    padding: 0;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    display: grid;
+    gap: 4px;
+    overflow: hidden;
+}
+
+.results-grid.artist-video-style .result-card.video.apple-card:hover {
+    border-color: transparent;
+    transform: none;
+}
+
+.results-grid.artist-video-style .result-card.video.apple-card.selected {
+    box-shadow: none;
+}
+
+.results-grid.artist-video-style .result-card.video.apple-card .apple-thumb {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border-radius: 12px;
+    margin-bottom: 0;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+    background: var(--bg-quaternary);
+    position: relative;
+    overflow: hidden;
+}
+
+.results-grid.artist-video-style .result-card.video.apple-card.selected .apple-thumb {
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3), 0 0 0 2px color-mix(in srgb, var(--primary-color) 55%, transparent 45%);
+}
+
+.results-grid.artist-video-style .result-card.video.apple-card .apple-title {
+    margin-bottom: 0;
+    font-weight: 800;
+    font-size: 13px;
+    color: var(--text-primary);
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.results-grid.artist-video-style .result-card.video.apple-card .apple-sub {
+    margin-top: 0;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.2;
+    padding-bottom: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.results-grid.artist-video-style .artist-video-capabilities {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 2px;
+}
+
+.results-grid.artist-video-style .artist-video-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    color: #d7e3fb;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.results-grid.artist-video-style .artist-video-badge.atmos-verified {
+    color: #b4ffd4;
+    border-color: rgba(102, 255, 163, 0.6);
+    background: rgba(32, 111, 64, 0.4);
+}
+
+.results-grid.artist-video-style .artist-video-badge.stereo-only {
+    color: #ffe2b4;
+    border-color: rgba(255, 187, 93, 0.56);
+    background: rgba(106, 70, 24, 0.4);
+}
+
+.results-grid.artist-video-style .video-overlay-btn {
+    position: absolute;
+    bottom: 10px;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 1px solid var(--border-secondary);
+    background: rgba(30, 30, 30, 0.85);
+    color: var(--primary-color);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    z-index: 2;
+}
+
+.results-grid.artist-video-style .video-overlay-btn--play {
+    left: 10px;
+}
+
+.results-grid.artist-video-style .video-overlay-btn--download {
+    right: 10px;
+}
+
+.results-grid.artist-video-style .result-card.video.apple-card .apple-thumb:hover .video-overlay-btn {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.results-grid.artist-video-style .video-overlay-btn:hover {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+    color: var(--bg-primary);
+}
+
+.results-grid.artist-video-style .video-overlay-btn:active {
+    transform: translateY(0) scale(0.92);
+}
+
+.selection-bar {
+    position: relative;
+    background: color-mix(in srgb, var(--bg-primary) 92%, #000 8%);
+    border: 1px solid var(--border-secondary);
+    padding: 12px;
+    margin: 0 0 16px 0;
+    border-radius: 8px;
+    display: none;
+}
+
+.selection-bar.active {
+    display: block;
+}
+
+.selection-bar-inner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.selection-bar-count {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.empty-results {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-muted);
+}
+
+@@media (max-width: 900px) {
+    .search-header {
+        margin-bottom: 24px;
+    }
+
+    .search-title {
+        font-size: 24px;
+    }
+
+    .search-filters {
+        gap: 8px;
+    }
+}
+
+@@media (max-width: 768px) {
+    .results-grid {
+        grid-template-columns: repeat(auto-fill, minmax(min(140px, 45vw), 1fr));
+        justify-content: stretch;
+        gap: 10px;
+    }
+
+    .results-grid.artist-video-style {
+        grid-template-columns: repeat(auto-fill, minmax(min(180px, 47vw), 1fr));
+        gap: 12px;
+    }
+    
+    .search-filters {
+        justify-content: center;
+    }
+
+    .qobuz-store-label {
+        margin-left: 0;
+    }
+
+    .search-title {
+        font-size: 22px;
+        text-align: center;
+    }
+
+    .search-meta,
+    .search-options {
+        text-align: center;
+        width: 100%;
+    }
+}
+
+@@media (max-width: 520px) {
+    .results-grid {
+        grid-template-columns: repeat(auto-fill, minmax(min(120px, 42vw), 1fr));
+    }
+}
+
+@@media (max-width: 640px) {
+    .search-header {
+        padding-bottom: 12px;
+    }
+
+    .search-filters {
+        width: 100%;
+    }
+
+    .qobuz-store-select {
+        min-width: 100%;
+        max-width: 100%;
+    }
+
+    .filter-btn.action-btn {
+        width: 100%;
+        text-align: center;
+    }
+}
+
+.source-btn.disabled {
+    pointer-events: none;
+    opacity: 0.5;
+}
+
+</style>
+}
+
+<div class="search-header">
+    <h1 class="search-title">Search Results</h1>
+<div class="search-meta">
+    <span id="search-query">Searching for "@ViewData["SearchTerm"]"</span>
+    <span id="search-count"></span>
+</div>
+</div>
+
+<ul class="nav nav-tabs nav-fill mb-3" id="searchSourceTabs" aria-label="Search Platforms">
+    <li class="nav-item">
+        <button class="nav-link source-btn active" type="button" role="tab" aria-selected="true" data-source="deezer" id="tab-deezer" data-bs-toggle="tab" data-bs-target="#search-source-deezer">Deezer</button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link source-btn" type="button" role="tab" aria-selected="false" data-source="spotify" id="tab-spotify" data-bs-toggle="tab" data-bs-target="#search-source-spotify">Spotify</button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link source-btn" type="button" role="tab" aria-selected="false" data-source="apple" id="tab-apple" data-bs-toggle="tab" data-bs-target="#search-source-apple">Apple Music</button>
+    </li>
+</ul>
+
+<div class="tab-content" id="searchSourceTabContent">
+    <div class="tab-pane fade show active" id="search-source-deezer" role="tabpanel" aria-labelledby="tab-deezer">
+        <div class="search-filters">
+            <a href="#" class="filter-btn action-btn action-btn-sm active" data-type="track" data-source="deezer">Tracks</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="album" data-source="deezer">Albums</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="artist" data-source="deezer">Artists</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="playlist" data-source="deezer">Playlists</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="station" data-source="deezer">Stations</a>
+        </div>
+
+        <div class="results-section">
+            <div id="search-results-deezer">
+                <div class="loading-section">
+                    <div class="loading-spinner"></div>
+                    <p>Searching...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="tab-pane fade" id="search-source-spotify" role="tabpanel" aria-labelledby="tab-spotify">
+        <div class="search-filters">
+            <a href="#" class="filter-btn action-btn action-btn-sm active" data-type="track" data-source="spotify">Tracks</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="album" data-source="spotify">Albums</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="artist" data-source="spotify">Artists</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="playlist" data-source="spotify">Playlists</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="station" data-source="spotify">Stations</a>
+        </div>
+
+        <div class="results-section">
+            <div id="search-results-spotify">
+                <div class="loading-section">
+                    <div class="loading-spinner"></div>
+                    <p>Searching...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="tab-pane fade" id="search-source-apple" role="tabpanel" aria-labelledby="tab-apple">
+        <div class="search-filters">
+            <a href="#" class="filter-btn action-btn action-btn-sm active" data-type="track" data-source="apple">Tracks</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="album" data-source="apple">Albums</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="artist" data-source="apple">Artists</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="playlist" data-source="apple">Playlists</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="station" data-source="apple">Stations</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="atmos" data-source="apple">Atmos</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="video" data-source="apple">Videos</a>
+        </div>
+
+        <div class="results-section">
+            <div id="video-selection-bar" class="selection-bar">
+                <div class="selection-bar-inner">
+                    <span class="selection-bar-count" id="selection-count">0 selected</span>
+                    <button type="button" class="action-btn action-btn-sm" onclick="downloadSelectedVideos()">Download selected</button>
+                    <button type="button" class="action-btn action-btn-sm" id="view-selected-toggle" onclick="toggleViewSelected()">View selected only</button>
+                    <button type="button" class="action-btn action-btn-sm secondary" onclick="clearVideoSelection()">Clear</button>
+                </div>
+            </div>
+
+            <div id="search-results-apple">
+                <div class="loading-section">
+                    <div class="loading-spinner"></div>
+                    <p>Searching...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+@section Scripts {
+<script>
+let currentSearchTerm = '@ViewData["SearchTerm"]';
+let currentSearchType = '@ViewData["SearchType"]';
+let currentSearchSource = 'deezer';
+let activeSearchRequestId = 0;
+let appleVideoOffset = 0;
+let appleHasMoreVideos = false;
+let appleLoadingMore = false;
+const selectedVideoKeys = new Set();
+let showSelectedOnly = false;
+const searchPreviewCache = new Map();
+const libraryExistenceCache = new Map();
+const searchSources = ['deezer', 'spotify', 'apple'];
+const cachedSearchTerms = {};
+
+const validSearchTypes = new Set(['track', 'album', 'artist', 'playlist', 'station', 'atmos', 'video']);
+if (!validSearchTypes.has((currentSearchType || '').toLowerCase())) {
+    currentSearchType = 'track';
+}
+
+function isValidURL(value) {
+    try {
+        const parsed = new URL(value);
+        return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch (_) {
+        return false;
+    }
+}
+
+function extractAppleIdFromUrl(url) {
+    if (!url) return '';
+    try {
+        const parsed = new URL(url);
+        const parts = parsed.pathname.split('/').filter(Boolean);
+        for (let i = parts.length - 1; i >= 0; i--) {
+            const seg = parts[i];
+            if (/^\d+$/.test(seg)) return seg;
+        }
+        const iParam = parsed.searchParams.get('i');
+        if (iParam && /^\d+$/.test(iParam)) return iParam;
+    } catch {
+    }
+    return '';
+}
+
+function parseAppleLink(url) {
+    const idVal = extractAppleIdFromUrl(url);
+    if (!idVal) return null;
+    try {
+        const parsed = new URL(url);
+        const parts = parsed.pathname.split('/').filter(Boolean).map(p => p.toLowerCase());
+        let type = 'track';
+        if (parts.includes('playlist')) {
+            type = 'playlist';
+        } else if (parts.includes('album')) {
+            type = parsed.searchParams.get('i') ? 'track' : 'album';
+        } else if (parts.includes('artist')) {
+            type = 'artist';
+        } else if (parts.includes('music-video')) {
+            type = 'track';
+        }
+        return { id: idVal, type, url };
+    } catch {
+        return null;
+    }
+}
+
+async function parseDeezerLink(input) {
+    const response = await fetch(`/api/deezer/parse-link?url=${encodeURIComponent(input)}`);
+    if (!response.ok) {
+        throw new Error('Link parsing failed.');
+    }
+    const data = await response.json();
+    if (data?.error) {
+        throw new Error(data.error);
+    }
+    return data;
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    // Set active filter
+    updateActiveFilter(currentSearchType);
+    setupInfiniteScroll();
+    const urlParams = new URLSearchParams(window.location.search);
+    const sourceParam = (urlParams.get('source') || '').toLowerCase();
+    if (['deezer', 'spotify', 'apple'].includes(sourceParam)) {
+        currentSearchSource = sourceParam;
+    }
+    currentSearchType = normalizeTypeForSource(currentSearchSource, currentSearchType);
+    updateActiveSource(currentSearchSource);
+    
+    // Perform initial search
+    if (currentSearchTerm) {
+        if (isValidURL(currentSearchTerm)) {
+            const parsedUrl = new URL(currentSearchTerm);
+            if (parsedUrl.hostname.includes('spotify.com')) {
+                fetch(`/api/spotify/metadata?url=${encodeURIComponent(currentSearchTerm)}`)
+                    .then((resp) => resp.ok ? resp.json() : null)
+                    .then((data) => {
+                        const metadata = data?.metadata;
+                        if (metadata?.id) {
+                            if (metadata.type === 'artist') {
+                                fetch(`/api/spotify/resolve-deezer?url=${encodeURIComponent(currentSearchTerm)}`)
+                                    .then((resolveResp) => resolveResp.ok ? resolveResp.json() : null)
+                                    .then((resolved) => {
+                                        if (resolved?.available && resolved?.deezerId) {
+                                            window.location.href = `/Artist?id=${encodeURIComponent(resolved.deezerId)}&source=deezer`;
+                                            return;
+                                        }
+                                        if (metadata.name) {
+                                            window.location.href = `/Search?term=${encodeURIComponent(metadata.name)}&type=artist&source=deezer`;
+                                            return;
+                                        }
+                                        performSearch(currentSearchTerm, currentSearchType);
+                                    })
+                                    .catch((error) => {
+                                        console.error('Spotify artist resolve failed:', error);
+                                        if (metadata.name) {
+                                            window.location.href = `/Search?term=${encodeURIComponent(metadata.name)}&type=artist&source=deezer`;
+                                            return;
+                                        }
+                                        performSearch(currentSearchTerm, currentSearchType);
+                                    });
+                            } else {
+                                window.location.href = `/Tracklist?id=${encodeURIComponent(metadata.id)}&type=${encodeURIComponent(metadata.type || 'track')}&source=spotify`;
+                            }
+                            return;
+                        }
+                        performSearch(currentSearchTerm, currentSearchType);
+                    })
+                    .catch((error) => {
+                        console.error('Spotify link parse failed:', error);
+                        performSearch(currentSearchTerm, currentSearchType);
+                    });
+                return;
+            }
+            if (parsedUrl.hostname.includes('music.apple.com') || parsedUrl.hostname.includes('itunes.apple.com')) {
+                const appleLink = parseAppleLink(currentSearchTerm);
+                if (appleLink) {
+                    if (appleLink.type === 'artist') {
+                        window.location.href = `/Artist?id=${encodeURIComponent(appleLink.id)}&source=apple`;
+                    } else {
+                        window.location.href = `/Tracklist?id=${encodeURIComponent(appleLink.id)}&type=${encodeURIComponent(appleLink.type)}&source=apple&appleUrl=${encodeURIComponent(appleLink.url)}`;
+                    }
+                    return;
+                }
+            }
+            parseDeezerLink(currentSearchTerm)
+                .then((parsed) => {
+                    if (parsed.type === 'artist') {
+                        window.location.href = `/Artist?id=${encodeURIComponent(parsed.id)}&source=deezer`;
+                    } else {
+                        window.location.href = `/Tracklist?id=${encodeURIComponent(parsed.id)}&type=${encodeURIComponent(parsed.type)}&source=deezer`;
+                    }
+                })
+                .catch((error) => {
+                    console.error('Link parse failed:', error);
+                    performSearch(currentSearchTerm, currentSearchType);
+                });
+        } else {
+            performSearch(currentSearchTerm, currentSearchType);
+        }
+    }
+    
+    // Filter click handlers
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            if (this.classList.contains('disabled')) {
+                return;
+            }
+            const type = this.dataset.type;
+            currentSearchType = type;
+            updateActiveFilter(type);
+            performSearch(currentSearchTerm, type);
+            
+            // Update URL
+            const url = new URL(window.location);
+            url.searchParams.set('type', type);
+            window.history.pushState({}, '', url);
+        });
+    });
+
+    document.querySelectorAll('.source-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            if (this.classList.contains('disabled')) {
+                return;
+            }
+            currentSearchSource = this.dataset.source;
+            updateActiveSource(currentSearchSource);
+            if (cachedSearchTerms[currentSearchSource] !== currentSearchTerm || !cachedResults?.[currentSearchSource]) {
+                performSearch(currentSearchTerm, currentSearchType);
+            }
+            const url = new URL(window.location);
+            url.searchParams.set('source', currentSearchSource);
+            window.history.pushState({}, '', url);
+        });
+    });
+
+    const offlineToggle = document.getElementById('offline-search');
+    if (offlineToggle) {
+        offlineToggle.addEventListener('change', () => {
+            performSearch(currentSearchTerm, currentSearchType);
+        });
+    }
+
+});
+
+function updateActiveFilter(type) {
+    const scope = document.getElementById(`search-source-${currentSearchSource}`) || document;
+    scope.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.classList.remove('active');
+        btn.setAttribute('aria-selected', 'false');
+    });
+    scope.querySelectorAll(`[data-type="${type}"]`).forEach(target => {
+        target.classList.add('active');
+        target.setAttribute('aria-selected', 'true');
+    });
+    enforceAppleOnlySource(type);
+    if (cachedResults) {
+        const items = getResultsForType(type, currentSearchSource);
+        document.getElementById('search-count').textContent =
+            items.length > 0 ? ` - ${items.length} results` : ' - No results';
+        displayResults(items, type);
+        if (type !== 'video') {
+            selectedVideoKeys.clear();
+        }
+    }
+}
+
+let cachedResults = null;
+
+function createEmptySourceResults(source) {
+    if (source === 'apple') {
+        return {
+            tracks: [],
+            albums: [],
+            artists: [],
+            playlists: [],
+            stations: [],
+            videos: [],
+            hasMoreVideos: false,
+            error: ''
+        };
+    }
+
+    return {
+        tracks: [],
+        albums: [],
+        artists: [],
+        playlists: [],
+        stations: [],
+        error: ''
+    };
+}
+
+function ensureCachedResults() {
+    if (!cachedResults) {
+        cachedResults = {};
+    }
+
+    for (const source of searchSources) {
+        if (!cachedResults[source]) {
+            cachedResults[source] = createEmptySourceResults(source);
+        }
+    }
+
+    return cachedResults;
+}
+
+async function fetchSourceResults(source, term, type) {
+    const normalizedSource = (source || '').toLowerCase();
+    const normalizedType = (type || '').toLowerCase();
+
+    if (normalizedSource === 'apple') {
+        const appleTypes = normalizedType === 'video'
+            ? 'music-videos'
+            : (normalizedType === 'atmos' ? 'songs,albums' : '');
+        const appleUrl = appleTypes
+            ? `/api/apple/search?term=${encodeURIComponent(term)}&types=${encodeURIComponent(appleTypes)}`
+            : `/api/apple/search?term=${encodeURIComponent(term)}`;
+        const appleResponse = await fetch(appleUrl);
+        const appleData = await appleResponse.json().catch(() => null);
+        if (!appleResponse.ok || appleData?.available === false) {
+            return {
+                ...createEmptySourceResults('apple'),
+                error: appleData?.error || `Apple search unavailable (HTTP ${appleResponse.status})`
+            };
+        }
+        return {
+            ...createEmptySourceResults('apple'),
+            ...appleData
+        };
+    }
+
+    if (normalizedSource === 'spotify') {
+        const spotifyResponse = await fetch(`/api/spotify/search?query=${encodeURIComponent(term)}&limit=25`);
+        if (!spotifyResponse.ok) {
+            throw new Error(`Spotify search failed: HTTP ${spotifyResponse.status}`);
+        }
+        const spotifyData = await spotifyResponse.json();
+        if (spotifyData?.available === false) {
+            return {
+                ...createEmptySourceResults('spotify'),
+                error: 'Spotify search unavailable.'
+            };
+        }
+        return {
+            ...createEmptySourceResults('spotify'),
+            ...spotifyData
+        };
+    }
+
+    const deezerResponse = await fetch(`/api/search?term=${encodeURIComponent(term)}&offline=false`);
+    if (!deezerResponse.ok) {
+        throw new Error(`Deezer search failed: HTTP ${deezerResponse.status}`);
+    }
+    const deezerData = await deezerResponse.json();
+    return {
+        ...createEmptySourceResults(normalizedSource),
+        ...deezerData
+    };
+}
+
+function enforceAppleOnlySource(type) {
+    document.querySelectorAll('.source-btn').forEach(btn => {
+        const isStaticDisabled = btn.dataset.staticDisabled === 'true';
+        if (isStaticDisabled) {
+            btn.classList.add('disabled');
+            btn.setAttribute('aria-disabled', 'true');
+            btn.setAttribute('disabled', '');
+            return;
+        }
+        btn.classList.remove('disabled');
+        btn.removeAttribute('aria-disabled');
+        btn.removeAttribute('disabled');
+    });
+}
+
+async function performSearch(term, type) {
+    if (!term) return;
+    const source = currentSearchSource;
+    const requestId = ++activeSearchRequestId;
+    const normalizedType = normalizeTypeForSource(source, type);
+
+    try {
+        // Show loading
+        const container = getResultsContainer();
+        if (container) {
+            container.innerHTML = `
+            <div class="loading-section">
+                <div class="loading-spinner"></div>
+                <p>Searching...</p>
+            </div>
+        `;
+        }
+
+        const sourceData = await fetchSourceResults(source, term, normalizedType);
+        if (requestId !== activeSearchRequestId) {
+            return;
+        }
+
+        if (sourceData?.error) {
+            if (typeof showToast === 'function') {
+                showToast(sourceData.error, 'warning');
+            } else {
+                console.warn(sourceData.error);
+            }
+        }
+
+        ensureCachedResults();
+        cachedResults[source] = sourceData;
+        cachedSearchTerms[source] = term;
+        const mappedItems = getResultsForType(normalizedType, source);
+        
+        // Update search count
+        document.getElementById('search-count').textContent =
+            mappedItems.length > 0 ? ` - ${mappedItems.length} results` : ' - No results';
+        
+        // Display results
+        displayResults(mappedItems, normalizedType);
+        if (normalizedType !== 'video') {
+            resetInfiniteScrollState(normalizedType);
+        } else if (source === 'apple') {
+            appleVideoOffset = (cachedResults.apple?.videos?.length) || 0;
+            appleHasMoreVideos = Boolean(cachedResults.apple?.hasMoreVideos);
+            appleLoadingMore = false;
+        }
+
+        void refreshLibraryExistence([source]);
+        
+    } catch (error) {
+        if (requestId !== activeSearchRequestId) {
+            return;
+        }
+        console.error('Search error:', error);
+        const container = getResultsContainer();
+        if (!container) {
+            return;
+        }
+        container.innerHTML = `
+            <div class="error-section">
+                <h3>Search Failed</h3>
+                <p>${error.message}</p>
+            </div>
+        `;
+    }
+}
+
+function getResultsForType(type, source) {
+    if (!cachedResults) return [];
+
+    const from = (data) => {
+        switch (type) {
+            case 'track': return data.tracks || [];
+            case 'album': return data.albums || [];
+            case 'artist': return data.artists || [];
+            case 'playlist': return data.playlists || [];
+            case 'station': return data.stations || [];
+            case 'video': return data.videos || [];
+            default: return [];
+        }
+    };
+
+    const isAtmosOnly = (item) => Boolean(item && item.hasAtmos);
+    if (type === 'atmos') {
+        if (source !== 'apple') return [];
+        const appleTracks = (cachedResults.apple?.tracks || []).filter(isAtmosOnly).map(t => ({ ...t, __kind: 'track' }));
+        const appleAlbums = (cachedResults.apple?.albums || []).filter(isAtmosOnly).map(a => ({ ...a, __kind: 'album' }));
+        return [...appleTracks, ...appleAlbums];
+    }
+
+    if (type === 'video') {
+        if (source !== 'apple') return [];
+        return cachedResults.apple?.videos || [];
+    }
+
+    if (source === 'deezer') return from(cachedResults.deezer || {});
+    if (source === 'apple') return from(cachedResults.apple || {}).filter(item => !item?.hasAtmos);
+    if (source === 'spotify') return from(cachedResults.spotify || {});
+
+    return [];
+}
+
+function dedupeResults(items, type) {
+    const seen = new Set();
+    const results = [];
+
+    for (const item of items) {
+        const key = buildDedupeKey(item, type);
+        if (!key || !seen.has(key)) {
+            if (key) seen.add(key);
+            results.push(item);
+        }
+    }
+
+    return results;
+}
+
+function buildDedupeKey(item, type) {
+    if (!item || !type) return '';
+    const norm = (value) => (value || '').toString().trim().toLowerCase();
+
+    switch (type) {
+        case 'track': {
+            const title = norm(item.name);
+            const artist = norm(item.artist);
+            const album = norm(item.album);
+            return title ? `track:${title}|${artist}|${album}` : '';
+        }
+        case 'album': {
+            const title = norm(item.name);
+            const artist = norm(item.artist);
+            return title ? `album:${title}|${artist}` : '';
+        }
+        case 'artist': {
+            const name = norm(item.name);
+            return name ? `artist:${name}` : '';
+        }
+        case 'playlist': {
+            const title = norm(item.name);
+            const owner = norm(item.owner);
+            return title ? `playlist:${title}|${owner}` : '';
+        }
+        case 'station': {
+            const title = norm(item.name);
+            return title ? `station:${title}` : '';
+        }
+        default:
+            return '';
+    }
+}
+
+function resetInfiniteScrollState(type) {
+    if (type !== 'video') {
+        appleVideoOffset = 0;
+        appleHasMoreVideos = false;
+        appleLoadingMore = false;
+    }
+}
+
+function getResultsContainer() {
+    return document.getElementById(`search-results-${currentSearchSource}`);
+}
+
+function setActiveSourceTab(source) {
+    const target = document.querySelector(`.source-btn[data-source="${source}"]`);
+    if (!target) return;
+
+    if (window.bootstrap?.Tab) {
+        const instance = bootstrap.Tab.getOrCreateInstance(target);
+        instance.show();
+        return;
+    }
+
+    document.querySelectorAll('.source-btn').forEach(btn => {
+        btn.classList.remove('active');
+        btn.setAttribute('aria-selected', 'false');
+    });
+    target.classList.add('active');
+    target.setAttribute('aria-selected', 'true');
+    document.querySelectorAll('.tab-pane').forEach(pane => {
+        pane.classList.remove('show', 'active');
+    });
+    const pane = document.getElementById(`search-source-${source}`);
+    if (pane) {
+        pane.classList.add('show', 'active');
+    }
+}
+
+function setupInfiniteScroll() {
+    let _scrollRafPending = false;
+    window.addEventListener('scroll', () => {
+        if (_scrollRafPending) return;
+        _scrollRafPending = true;
+        requestAnimationFrame(() => {
+            _scrollRafPending = false;
+            if (currentSearchType !== 'video') return;
+            if (appleLoadingMore || !appleHasMoreVideos) return;
+            if (currentSearchSource === 'deezer') return; // videos currently from Apple only
+
+            const nearBottom = (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - 500);
+            if (!nearBottom) return;
+
+            loadMoreAppleVideos();
+        });
+    });
+}
+
+async function loadMoreAppleVideos() {
+    if (appleLoadingMore || !currentSearchTerm) return;
+    appleLoadingMore = true;
+
+    try {
+        const url = `/api/apple/search?term=${encodeURIComponent(currentSearchTerm)}&limit=30&offset=${appleVideoOffset}&types=music-videos`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Load more failed');
+
+        const data = await response.json();
+        const newVideos = data?.videos || [];
+        const hasMore = Boolean(data?.hasMoreVideos);
+
+        // Merge into cache
+        ensureCachedResults();
+        cachedResults.apple = cachedResults.apple || {};
+        cachedResults.apple.videos = [...(cachedResults.apple.videos || []), ...newVideos];
+        cachedResults.apple.hasMoreVideos = hasMore;
+
+        appleVideoOffset = cachedResults.apple.videos.length;
+        appleHasMoreVideos = hasMore;
+
+        // Re-render only if we're still on videos
+        if (currentSearchType === 'video') {
+            const mappedItems = getResultsForType('video', currentSearchSource);
+            document.getElementById('search-count').textContent =
+                mappedItems.length > 0 ? ` - ${mappedItems.length} results` : ' - No results';
+            displayResults(mappedItems, 'video');
+        }
+    } catch (err) {
+        console.warn('Load more videos failed:', err);
+    } finally {
+        appleLoadingMore = false;
+    }
+}
+
+function updateActiveSource(source) {
+    setActiveSourceTab(source);
+    currentSearchType = normalizeTypeForSource(source, currentSearchType);
+    updateActiveFilter(currentSearchType);
+    if (cachedResults) {
+        const items = getResultsForType(currentSearchType, currentSearchSource);
+        document.getElementById('search-count').textContent =
+            items.length > 0 ? ` - ${items.length} results` : ' - No results';
+        displayResults(items, currentSearchType);
+    }
+}
+
+function displayResults(results, type) {
+    const container = getResultsContainer();
+    if (!container) return;
+    let list = results || [];
+    if (type === 'video' && showSelectedOnly && selectedVideoKeys.size > 0) {
+        list = list.filter(item => {
+            const key = getVideoKey(item);
+            return key && selectedVideoKeys.has(key);
+        });
+    }
+
+    if (!list || list.length === 0) {
+        if (type === 'atmos') {
+            const anyTracks = getResultsForType('track', currentSearchSource);
+            const hint = anyTracks.length > 0
+                ? 'No Atmos results found. Try the Tracks tab to see Apple results.'
+                : 'No Atmos results found for this search.';
+            container.innerHTML = `
+                <div class="empty-results">
+                    <h3>No Atmos Results Yet</h3>
+                    <p>${hint}</p>
+                </div>
+            `;
+            return;
+        }
+        container.innerHTML = `
+            <div class="empty-results">
+                <h3>No Results Found</h3>
+                <p>Try searching with different keywords or check your spelling.</p>
+            </div>
+        `;
+        updateVideoSelectionBar();
+        return;
+    }
+    
+    const gridClass = type === 'video' ? 'results-grid artist-video-style' : 'results-grid';
+    container.innerHTML = `
+        <div class="${gridClass}">
+            ${list.map(item => renderResultCard(item, type)).join('')}
+        </div>
+    `;
+    updateVideoSelectionBar();
+}
+
+function renderResultCard(item, type) {
+    let imageUrl = '';
+    let title = '';
+    let artist = '';
+    let meta = '';
+    let clickAction = '';
+    let previewUrl = '';
+    let appleUrl = '';
+    let videoKey = '';
+    let qobuzQualityHtml = '';
+    let effectiveType = type;
+    
+    switch (type) {
+        case 'track':
+        case 'atmos':
+            effectiveType = item.__kind || (type === 'atmos' ? 'track' : type);
+            if (effectiveType === 'album') {
+                imageUrl = item.image || '';
+                title = item.name || '';
+                artist = item.artist || '';
+                meta = item.release_date || '';
+                clickAction = buildUnifiedClick(item, 'album');
+            } else {
+                imageUrl = item.image || '';
+                title = item.name || '';
+                artist = item.artist || '';
+                meta = item.album || '';
+                clickAction = buildUnifiedClick(item, 'track');
+            }
+            if (currentSearchSource === 'qobuz') {
+                qobuzQualityHtml = renderQobuzQuality(item);
+            }
+            break;
+            
+        case 'album':
+            imageUrl = item.image || '';
+            title = item.name || '';
+            artist = item.artist || '';
+            meta = item.release_date || '';
+            clickAction = buildUnifiedClick(item, 'album');
+            if (currentSearchSource === 'qobuz') {
+                qobuzQualityHtml = renderQobuzQuality(item);
+            }
+            break;
+            
+        case 'artist':
+            imageUrl = item.image || '';
+            title = item.name || '';
+            artist = '';
+            if (item.followers) {
+                meta = `${item.followers} followers`;
+            } else if (item.albumsCount) {
+                meta = `${item.albumsCount} releases`;
+            } else {
+                meta = '';
+            }
+            if (currentSearchSource === 'qobuz' && item.qobuzId) {
+                clickAction = `loadQobuzArtistDiscography('${escapeJsString(item.qobuzId)}', '${escapeJsString(item.name || '')}')`;
+            } else {
+                clickAction = buildUnifiedClick(item, 'artist');
+            }
+            break;
+            
+        case 'playlist':
+            imageUrl = item.image || '';
+            title = item.name || '';
+            artist = item.owner || '';
+            const playlistTracks = item.nb_tracks ?? item.trackCount ?? item.track_count;
+            const playlistFans = item.fans ?? item.followers;
+            const playlistFlags = [];
+            if (typeof item.public === 'boolean') {
+                playlistFlags.push(item.public ? 'Public' : 'Private');
+            }
+            if (item.collaborative === true) {
+                playlistFlags.push('Collaborative');
+            }
+            meta = [
+                typeof playlistTracks === 'number' ? `${playlistTracks} tracks` : '',
+                typeof playlistFans === 'number' ? `${playlistFans} followers` : '',
+                playlistFlags.join(' • ')
+            ].filter(Boolean).join(' • ');
+            clickAction = buildUnifiedClick(item, 'playlist');
+            break;
+
+        case 'station':
+            imageUrl = item.image || '';
+            title = item.name || '';
+            artist = '';
+            meta = 'Apple Music Station';
+            clickAction = buildUnifiedClick(item, 'station');
+            break;
+
+        case 'video':
+            imageUrl = item.image || '';
+            title = item.name || '';
+            artist = item.artist || '';
+            videoKey = getVideoKey(item);
+            clickAction = videoKey ? `toggleVideoSelection('${escapeJsString(videoKey)}')` : '';
+            previewUrl = item.previewUrl || '';
+            appleUrl = item.appleUrl || '';
+            break;
+    }
+    
+    const defaultIcon = effectiveType === 'artist'
+        ? '👤'
+        : effectiveType === 'album'
+            ? '💿'
+            : effectiveType === 'video'
+                ? '🎬'
+                : '🎵';
+    
+    const imgHtml = imageUrl
+        ? `<img src="${escapeHtml(imageUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove();" />`
+        : '';
+
+    const selectedClass = (type === 'video' && videoKey && isVideoSelected(videoKey)) ? ' selected' : '';
+    const extraClass = type === 'video' ? ' video' : '';
+
+    const libKeyRaw = (type === 'track' || type === 'atmos') ? buildLibraryCheckKey(item) : '';
+    const libKeyAttr = libKeyRaw ? ` data-lib-key="${escapeHtml(libKeyRaw).replace(/"/g, '&quot;')}"` : '';
+
+    const isVideoCard = type === 'video';
+    const showLibraryBadge = isVideoCard && item?.inLibrary && (effectiveType === 'track' || type === 'track' || type === 'atmos');
+    const libraryBadge = showLibraryBadge
+        ? `<div class="result-badge">In Library</div>`
+        : '';
+
+    if (isVideoCard) {
+        const dateRaw = item.releaseDate || item.release_date || item.releaseDateUtc || '';
+        const releaseYear = dateRaw ? new Date(dateRaw).getFullYear() : '';
+        const yearText = Number.isFinite(releaseYear) ? String(releaseYear) : '';
+        const subText = yearText && artist ? `${artist} · ${yearText}` : (artist || yearText);
+        const hasManifestAtmos = item?.hasAtmosDownloadable === true;
+        const hasCatalogAtmos = item?.hasAtmosDownloadable == null && item?.hasAtmos === true;
+        const hasStereoOnly = item?.hasAtmosDownloadable === false;
+        const hasAtmosCapability = hasManifestAtmos || hasCatalogAtmos;
+        const capabilityBadge = hasManifestAtmos || hasCatalogAtmos
+            ? `<div class="artist-video-capabilities"><span class="artist-video-badge atmos-verified">Atmos</span></div>`
+            : hasStereoOnly
+                ? `<div class="artist-video-capabilities"><span class="artist-video-badge stereo-only">Stereo</span></div>`
+                : '';
+        const cardClickAttr = clickAction ? ` onclick="${clickAction}"` : '';
+        const previewButton = previewUrl
+            ? `<button class="video-overlay-btn video-overlay-btn--play" type="button" aria-label="Play preview" onclick="event.stopPropagation(); playVideoPreview('${escapeJsString(previewUrl)}')">
+                   <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+               </button>`
+            : '';
+        const downloadButton = appleUrl
+            ? `<button class="video-overlay-btn video-overlay-btn--download" type="button" aria-label="Download" onclick="event.stopPropagation(); downloadAppleVideo('${escapeJsString(appleUrl)}', ${hasAtmosCapability ? 'true' : 'false'})">
+                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+               </button>`
+            : '';
+        return `
+            <div class="result-card video apple-card${selectedClass}"${cardClickAttr}>
+                <div class="apple-thumb">
+                    ${imgHtml}
+                    ${previewButton}
+                    ${downloadButton}
+                </div>
+                <div class="apple-title">${escapeHtml(title)}</div>
+                ${subText ? `<div class="apple-sub">${escapeHtml(subText)}</div>` : ''}
+                ${capabilityBadge}
+            </div>
+        `;
+    }
+
+    return `
+        <div class="result-card${extraClass}${selectedClass}"${libKeyAttr} onclick="${clickAction}">
+            <div class="result-image ${imageUrl ? '' : 'no-img'}">
+                ${imgHtml}
+                <span class="result-image-fallback">${defaultIcon}</span>
+            </div>
+            <div class="result-title">${escapeHtml(title)}</div>
+            ${artist ? `<div class="result-artist">${escapeHtml(artist)}</div>` : ''}
+            ${isVideoCard && meta ? `<div class="result-meta">${meta}</div>` : ''}
+            ${isVideoCard ? qobuzQualityHtml : ''}
+            ${libraryBadge}
+        </div>
+    `;
+}
+
+function toBoolish(value) {
+    if (value === true || value === false) return value;
+    if (typeof value === 'number') return value !== 0;
+    if (typeof value === 'string') {
+        const v = value.trim().toLowerCase();
+        return v === 'true' || v === '1' || v === 'yes';
+    }
+    return false;
+}
+
+function renderQobuzQuality(item) {
+    if (!item) {
+        return '';
+    }
+
+    const hasHiRes = toBoolish(item.hasHiRes ?? item.hires ?? item.hires_streamable);
+    const bitDepthValue = Number(item.bitDepth ?? item.maximum_bit_depth ?? 0);
+    const sampleRateValue = Number(item.sampleRate ?? item.maximum_sampling_rate ?? 0);
+    const hasNumericQuality = (Number.isFinite(bitDepthValue) && bitDepthValue > 0)
+        || (Number.isFinite(sampleRateValue) && sampleRateValue > 0);
+    if (!hasHiRes && !hasNumericQuality) {
+        return '';
+    }
+
+    const bitDepth = Number.isFinite(bitDepthValue) && bitDepthValue > 0
+        ? `${Math.round(bitDepthValue)}-bit`
+        : '';
+    const sampleRate = Number.isFinite(sampleRateValue) && sampleRateValue > 0
+        ? `${sampleRateValue % 1 === 0 ? sampleRateValue.toFixed(0) : sampleRateValue.toFixed(1)} kHz`
+        : '';
+    const details = [bitDepth, sampleRate].filter(Boolean).join(' / ');
+    const tier = hasHiRes ? 'Hi-Res' : 'CD';
+    const title = details ? `${tier} • ${details}` : tier;
+
+    return `
+        <div class="qobuz-quality ${hasHiRes ? 'is-hires' : 'is-cd'}" title="${escapeHtml(title)}">
+            <span class="qobuz-quality-tier">${tier}</span>
+            ${details ? `<span class="qobuz-quality-details">${escapeHtml(details)}</span>` : ''}
+        </div>
+    `;
+}
+
+async function loadQobuzArtistDiscography(artistId, artistName) {
+    const normalizedId = String(artistId || '').trim();
+    if (!normalizedId) {
+        return;
+    }
+
+    const qobuzStore = document.getElementById('qobuz-store')?.value || 'us-en';
+    const endpoint = `/api/qobuz/artist/${encodeURIComponent(normalizedId)}/discography?store=${encodeURIComponent(qobuzStore)}`;
+
+    try {
+        const response = await fetch(endpoint);
+        if (!response.ok) {
+            throw new Error(`Qobuz discography failed: HTTP ${response.status}`);
+        }
+
+        const payload = await response.json();
+        const albums = payload?.albums_without_last_release?.items || [];
+        const mappedAlbums = albums.map(album => {
+            const albumId = String(album?.id || '').trim();
+            const releaseDate = album?.release_date_original || album?.release_date_stream || album?.release_date_download || '';
+            const image = album?.image?.large || album?.image?.extralarge || album?.image?.medium || album?.image?.small || '';
+            const artist = Array.isArray(album?.artists) && album.artists.length > 0
+                ? (album.artists[0]?.name || '')
+                : '';
+            const qobuzUrl = album?.url || (albumId ? `https://play.qobuz.com/album/${encodeURIComponent(albumId)}` : '');
+
+            return {
+                source: 'qobuz',
+                type: 'album',
+                qobuzType: 'album',
+                qobuzId: albumId,
+                qobuzUrl,
+                qobuzStore,
+                name: [album?.title || '', album?.version || ''].filter(Boolean).join(' ').trim(),
+                artist,
+                image,
+                release_date: releaseDate,
+                trackCount: Number(album?.tracks_count || 0) || 0,
+                hasHiRes: toBoolish(album?.hires ?? album?.hires_streamable),
+                bitDepth: Number(album?.maximum_bit_depth || 0) || 0,
+                sampleRate: Number(album?.maximum_sampling_rate || 0) || 0
+            };
+        });
+
+        ensureCachedResults();
+        const qobuzCached = cachedResults.qobuz || createEmptySourceResults('qobuz');
+        qobuzCached.albums = mappedAlbums;
+        qobuzCached.error = '';
+        cachedResults.qobuz = qobuzCached;
+
+        currentSearchType = 'album';
+        updateActiveFilter('album');
+
+        document.getElementById('search-count').textContent =
+            mappedAlbums.length > 0 ? ` - ${mappedAlbums.length} releases` : ' - No releases';
+        displayResults(mappedAlbums, 'album');
+
+        const queryLabel = document.getElementById('search-query');
+        if (queryLabel && artistName) {
+            queryLabel.textContent = `Qobuz discography for "${artistName}"`;
+        }
+    } catch (error) {
+        console.error('Qobuz discography error:', error);
+        const container = getResultsContainer();
+        if (container) {
+            container.innerHTML = `
+                <div class="error-section">
+                    <h3>Discography Failed</h3>
+                    <p>${error?.message || 'Failed to load Qobuz discography.'}</p>
+                </div>
+            `;
+        }
+    }
+}
+
+function buildUnifiedClick(item, type) {
+    const deezerId = item.deezerId || '';
+    if (deezerId) {
+        if (type === 'artist') {
+            return `openUnifiedArtist('${deezerId}', 'deezer')`;
+        }
+        return `openUnifiedTracklist('${deezerId}', '${type}', 'deezer')`;
+    }
+    const spotifyId = item.spotifyId || '';
+    if (spotifyId) {
+        if (type === 'artist') {
+            return `openUnifiedArtist('${spotifyId}', 'spotify')`;
+        }
+        return `openUnifiedTracklist('${spotifyId}', '${type}', 'spotify')`;
+    }
+    const appleId = item.appleId || '';
+    const appleUrl = item.appleUrl || '';
+    if (appleId) {
+        return `openUnifiedTracklist('${escapeJsString(appleId)}', '${type}', 'apple')`;
+    }
+    if (appleUrl) {
+        return `openUnifiedTracklist('${escapeJsString(appleUrl)}', '${type}', 'apple')`;
+    }
+    const qobuzUrl = item.qobuzUrl || buildQobuzUrlForItem(item.qobuzId || '', item.qobuzType || type || '');
+    if (qobuzUrl) {
+        return '';
+    }
+    return '';
+}
+
+function getVideoKey(item) {
+    return (item.appleId && String(item.appleId)) || (item.appleUrl || '');
+}
+
+function isVideoSelected(key) {
+    return selectedVideoKeys.has(key);
+}
+
+function toggleVideoSelection(key) {
+    if (!key) return;
+    if (selectedVideoKeys.has(key)) {
+        selectedVideoKeys.delete(key);
+    } else {
+        selectedVideoKeys.add(key);
+    }
+    if (currentSearchType === 'video') {
+        const mappedItems = getResultsForType('video', currentSearchSource);
+        document.getElementById('search-count').textContent =
+            mappedItems.length > 0 ? ` - ${mappedItems.length} results` : ' - No results';
+        displayResults(mappedItems, 'video');
+    }
+    updateVideoSelectionBar();
+}
+
+function openUnifiedArtist(id, source) {
+    if (!id) {
+        return;
+    }
+    window.location.href = `/Artist?id=${encodeURIComponent(id)}&source=${encodeURIComponent(source)}`;
+}
+
+function openUnifiedTracklist(id, type, source) {
+    if (!id) {
+        return;
+    }
+    window.location.href = `/Tracklist?id=${encodeURIComponent(id)}&type=${encodeURIComponent(type)}&source=${encodeURIComponent(source)}`;
+}
+
+async function playSearchPreview(deezerId, spotifyId, appleUrl, appleId) {
+    const audio = document.getElementById('search-preview');
+    if (!audio) {
+        return;
+    }
+
+    let resolvedId = deezerId || '';
+    if (!resolvedId) {
+        const cacheKey = `${deezerId}|${spotifyId}|${appleUrl}|${appleId}`;
+        if (searchPreviewCache.has(cacheKey)) {
+            resolvedId = searchPreviewCache.get(cacheKey) || '';
+        } else {
+            try {
+                if (spotifyId) {
+                    const url = `https://open.spotify.com/track/${spotifyId}`;
+                    const resp = await fetch(`/api/spotify/resolve-deezer?url=${encodeURIComponent(url)}`);
+                    const data = resp.ok ? await resp.json() : null;
+                    resolvedId = data?.deezerId || '';
+                } else if (appleUrl || appleId) {
+                    const url = appleUrl || `https://music.apple.com/us/track/${appleId}`;
+                    const resp = await fetch(`/api/resolve/deezer?url=${encodeURIComponent(url)}`);
+                    const data = resp.ok ? await resp.json() : null;
+                    resolvedId = data?.deezerId || '';
+                }
+            } catch (error) {
+                console.warn('Preview resolve failed:', error);
+            }
+            searchPreviewCache.set(cacheKey, resolvedId || '');
+        }
+    }
+
+    if (!resolvedId) {
+        if (window.DeezSpoTag?.ui?.showToast) {
+            window.DeezSpoTag.ui.showToast('No Deezer match for preview.', { type: 'warning' });
+        }
+        return;
+    }
+
+    const previewUrl = (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function')
+        ? await window.DeezerPlaybackContext.resolveStreamUrl(resolvedId)
+        : `/api/deezer/stream/${resolvedId}`;
+    audio.pause();
+    audio.src = previewUrl;
+    audio.load();
+    audio.play().catch(() => {});
+}
+
+function getAppleStorefront() {
+    return document.getElementById('appleStorefront')?.value || 'us';
+}
+
+async function queueSearchItem(spotifyId, appleId, appleUrl, title, artist, album, durationMs, isrc, cover, hasAtmos) {
+    const downloader = window.DeezSpoTagDownload;
+    if (!downloader) {
+        if (window.DeezSpoTag?.ui?.showToast) {
+            window.DeezSpoTag.ui.showToast('Download system not ready.', { type: 'error' });
+        }
+        return;
+    }
+
+    let url = '';
+    if (spotifyId) {
+        url = `https://open.spotify.com/track/${spotifyId}`;
+    } else if (appleUrl) {
+        url = appleUrl;
+    } else if (appleId) {
+        url = `https://music.apple.com/${getAppleStorefront()}/track/${appleId}`;
+    }
+
+    if (!url) {
+        if (window.DeezSpoTag?.ui?.showToast) {
+            window.DeezSpoTag.ui.showToast('No source URL available for download.', { type: 'warning' });
+        }
+        return;
+    }
+
+    const metadata = {
+        title: title || '',
+        artist: artist || '',
+        album: album || '',
+        durationMs: Number(durationMs || 0) || 0,
+        isrc: isrc || '',
+        cover: cover || '',
+        hasAtmos: Boolean(hasAtmos)
+    };
+
+    try {
+        await downloader.addToQueue(url, 0, null, { metadata });
+    } catch (err) {
+        if (window.DeezSpoTag?.ui?.showToast) {
+            window.DeezSpoTag.ui.showToast(err?.message || 'Failed to queue download', { type: 'error' });
+        }
+    }
+}
+
+function showAppleResult(url) {
+    if (!url) return;
+    // Open directly (no modal)
+    window.open(url, '_blank', 'noopener');
+}
+
+function buildQobuzUrlForItem(id, type) {
+    const qobuzId = String(id || '').trim();
+    if (!qobuzId) {
+        return '';
+    }
+
+    const normalizedType = String(type || 'track').trim().toLowerCase();
+    if (normalizedType === 'artist') {
+        return `https://play.qobuz.com/artist/${encodeURIComponent(qobuzId)}`;
+    }
+    if (normalizedType === 'album') {
+        return `https://play.qobuz.com/album/${encodeURIComponent(qobuzId)}`;
+    }
+    return `https://play.qobuz.com/track/${encodeURIComponent(qobuzId)}`;
+}
+
+function openExternalResult(url) {
+    if (!url) {
+        return;
+    }
+    window.open(url, '_blank', 'noopener');
+}
+
+const _htmlEscapeNode = document.createElement('div');
+function escapeHtml(text) {
+    if (!text) return '';
+    _htmlEscapeNode.textContent = text;
+    return _htmlEscapeNode.innerHTML;
+}
+
+function escapeJsString(value) {
+    if (!value) return '';
+    return String(value)
+        .replaceAll('\\', '\\\\')
+        .replaceAll("'", "\\'")
+        .replaceAll('\n', '')
+        .replaceAll('\r', '');
+}
+
+function normalizeTypeForSource(source, type) {
+    if (source !== 'apple' && (type === 'atmos' || type === 'video')) {
+        return 'track';
+    }
+    return type;
+}
+
+function normalizeLibraryResults(data) {
+    if (!data) return;
+    const mark = (list) => {
+        if (!Array.isArray(list)) return;
+        list.forEach(item => {
+            if (item) {
+                item.inLibrary = true;
+            }
+        });
+    };
+    mark(data.tracks);
+    mark(data.albums);
+    mark(data.artists);
+}
+
+function buildLibraryCheckKey(item) {
+    if (!item) return '';
+    const isrc = (item.isrc || '').trim();
+    if (isrc) return `isrc:${isrc.toLowerCase()}`;
+    const title = (item.name || '').trim().toLowerCase();
+    const artist = (item.artist || '').trim().toLowerCase();
+    const duration = Number(item.durationMs || item.duration || 0) || 0;
+    if (!title || !artist) return '';
+    return `track:${title}|artist:${artist}|dur:${duration || 0}`;
+}
+
+async function refreshLibraryExistence(sourcesToCheck) {
+    if (!cachedResults) return;
+    const sources = Array.isArray(sourcesToCheck) && sourcesToCheck.length > 0
+        ? sourcesToCheck
+        : ['deezer', 'spotify', 'apple'];
+    const tasks = sources.map(source => updateLibraryStatusForTracks(cachedResults[source]?.tracks || []));
+    await Promise.all(tasks);
+    if (currentSearchType === 'track' || currentSearchType === 'atmos') {
+        const container = getResultsContainer();
+        if (container) {
+            const items = getResultsForType(currentSearchType, currentSearchSource);
+            const itemByKey = new Map(
+                items.map(item => [buildLibraryCheckKey(item), item]).filter(([k]) => k)
+            );
+            container.querySelectorAll('[data-lib-key]').forEach(card => {
+                const key = card.dataset.libKey;
+                const item = itemByKey.get(key);
+                if (!item) return;
+                const badge = card.querySelector('.result-badge');
+                if (item.inLibrary && !badge) {
+                    const newBadge = document.createElement('div');
+                    newBadge.className = 'result-badge';
+                    newBadge.textContent = 'In Library';
+                    const acts = card.querySelector('.card-actions');
+                    if (acts) card.insertBefore(newBadge, acts);
+                    else card.appendChild(newBadge);
+                } else if (!item.inLibrary && badge) {
+                    badge.remove();
+                }
+            });
+        }
+    }
+}
+
+async function updateLibraryStatusForTracks(items) {
+    if (!items || items.length === 0) return;
+    const requests = [];
+    for (const item of items) {
+        const key = buildLibraryCheckKey(item);
+        if (!key) continue;
+        if (libraryExistenceCache.has(key)) {
+            item.inLibrary = libraryExistenceCache.get(key) === true;
+            continue;
+        }
+        const req = {
+            id: key,
+            isrc: item.isrc || '',
+            trackTitle: item.name || '',
+            artistName: item.artist || '',
+            durationMs: Number(item.durationMs || item.duration || 0) || null
+        };
+        requests.push(req);
+    }
+
+    if (requests.length === 0) return;
+
+    try {
+        const resp = await fetch('/api/library/exists', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requests)
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (!Array.isArray(data)) return;
+        for (const row of data) {
+            const key = row?.id;
+            if (!key) continue;
+            const exists = row?.exists === true;
+            libraryExistenceCache.set(key, exists);
+        }
+        for (const item of items) {
+            const key = buildLibraryCheckKey(item);
+            if (!key) continue;
+            if (libraryExistenceCache.has(key)) {
+                item.inLibrary = libraryExistenceCache.get(key) === true;
+            }
+        }
+    } catch (err) {
+        console.warn('Library existence check failed:', err);
+    }
+}
+
+// Video preview player (simple HTML5 audio/video)
+function playVideoPreview(url) {
+    if (!url) return;
+    const video = document.createElement('video');
+    video.src = url;
+    video.controls = true;
+    video.autoplay = true;
+    video.style.width = '100%';
+    video.style.maxHeight = '70vh';
+
+    if (window.DeezSpoTag?.ui?.showModal) {
+        window.DeezSpoTag.ui.showModal({
+            title: 'Preview',
+            message: '',
+            allowHtml: true,
+            contentElement: video,
+            buttons: [{ label: 'Close', value: true, primary: true }]
+        });
+    } else {
+        const w = window.open('', '_blank', 'noopener,width=640,height=360');
+        if (w) {
+            w.document.write('<title>Preview</title>');
+            w.document.body.appendChild(video);
+        }
+    }
+}
+
+async function downloadAppleVideo(appleUrl, hasAtmos = false) {
+    if (!appleUrl) return;
+    const videoMetadata = {
+        isVideo: true,
+        collectionType: 'music-video',
+        contentType: 'video',
+        hasAtmos: hasAtmos === true
+    };
+    try {
+        if (window.DeezSpoTagDownload?.addToQueue) {
+            await window.DeezSpoTagDownload.addToQueue(appleUrl, 0, null, { metadata: videoMetadata });
+            return;
+        }
+        const resp = await fetch('/api/apple/videos/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                appleUrl,
+                metadata: videoMetadata
+            })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data?.success) {
+            throw new Error(data?.error || 'Download failed');
+        }
+        if (window.DeezSpoTag?.ui?.showToast) {
+            window.DeezSpoTag.ui.showToast('Video download started');
+        }
+    } catch (err) {
+        console.error('Video download failed', err);
+        if (window.DeezSpoTag?.ui?.showToast) {
+            window.DeezSpoTag.ui.showToast(err.message || 'Download failed', { type: 'error' });
+        }
+    }
+}
+
+function updateVideoSelectionBar() {
+    const bar = document.getElementById('video-selection-bar');
+    const countEl = document.getElementById('selection-count');
+    const viewToggle = document.getElementById('view-selected-toggle');
+    const count = selectedVideoKeys.size;
+    if (!bar || !countEl) return;
+
+    countEl.textContent = `${count} selected`;
+    if (count > 0 && currentSearchType === 'video' && currentSearchSource === 'apple') {
+        bar.classList.add('active');
+    } else {
+        bar.classList.remove('active');
+        showSelectedOnly = false;
+        if (viewToggle) {
+            viewToggle.textContent = 'View selected only';
+        }
+    }
+
+    if (viewToggle) {
+        viewToggle.textContent = showSelectedOnly ? 'Show all videos' : 'View selected only';
+    }
+}
+
+function clearVideoSelection() {
+    selectedVideoKeys.clear();
+    if (currentSearchType === 'video') {
+        const mappedItems = getResultsForType('video', currentSearchSource);
+        displayResults(mappedItems, 'video');
+    }
+    updateVideoSelectionBar();
+}
+
+async function downloadSelectedVideos() {
+    if (selectedVideoKeys.size === 0) return;
+    const items = getResultsForType('video', currentSearchSource);
+    const byKey = new Map();
+    for (const item of items) {
+        const key = getVideoKey(item);
+        if (key) {
+            byKey.set(key, item);
+        }
+    }
+
+    let started = 0;
+    for (const key of selectedVideoKeys) {
+        const item = byKey.get(key);
+        const appleUrl = item?.appleUrl;
+        if (!appleUrl) continue;
+        started++;
+        downloadAppleVideo(appleUrl);
+    }
+
+    if (started > 0 && window.DeezSpoTag?.ui?.showToast) {
+        window.DeezSpoTag.ui.showToast(`Started ${started} video download(s)`);
+    }
+}
+
+function toggleViewSelected() {
+    if (selectedVideoKeys.size === 0) return;
+    showSelectedOnly = !showSelectedOnly;
+    if (currentSearchType === 'video') {
+        const mappedItems = getResultsForType('video', currentSearchSource);
+        displayResults(mappedItems, 'video');
+    }
+    updateVideoSelectionBar();
+}
+</script>
+}
+<audio id="search-preview" preload="none"></audio>
