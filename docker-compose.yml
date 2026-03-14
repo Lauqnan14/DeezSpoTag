@@ -30,7 +30,7 @@ services:
     build:
       context: .
       dockerfile: Tools/AppleMusicWrapper/Dockerfile
-    image: ${APPLE_WRAPPER_IMAGE:-ghcr.io/lauqnan14/apple-wrapper:latest}
+    image: ${APPLE_WRAPPER_IMAGE:-ghcr.io/lauqnan14/deezspotag-apple-wrapper:latest}
     # Ports bound to localhost only — the deezspotag container reaches the wrapper
     # via Docker internal DNS (apple-wrapper:10020) without these being published.
     # In production, remove the ports block entirely.

@@ -26,7 +26,7 @@ jobs:
           - image_name: deezspotag
             dockerfile: Dockerfile
             platforms: linux/amd64
-          - image_name: apple-wrapper
+          - image_name: deezspotag-apple-wrapper
             dockerfile: Tools/AppleMusicWrapper/Dockerfile
             platforms: linux/amd64,linux/arm64
 

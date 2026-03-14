@@ -34,7 +34,10 @@ Data/**
 Data/**/*.db
 Data/**/login.json
 Data/**/autotag/*.json
+# Keep runtime data under the web Data folder out of git, but allow C# source files.
 DeezSpoTag.Web/Data/**
+!DeezSpoTag.Web/Data/
+!DeezSpoTag.Web/Data/**/*.cs
 DeezSpoTag.Workers/Data/**
 DeezSpoTag.Workers/bin/**/Data/**
 DeezSpoTag.Web/bin/**/Data/**
