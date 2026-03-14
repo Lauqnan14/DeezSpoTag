@@ -6,7 +6,7 @@ services:
       dockerfile: Dockerfile
       args:
         DEEZSPOTAG_BUILD_VERSION: ${DEEZSPOTAG_BUILD_VERSION:-local}
-    image: ${DEEZSPOTAG_IMAGE:-ghcr.io/lauqnan14/deezspotag:latest}
+    image: ${DEEZSPOTAG_IMAGE:-ghcr.io/lauqnan14/deezspotag-web:latest}
     ports:
       - "8668:8668"
     env_file:
