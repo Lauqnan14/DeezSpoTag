@@ -134,12 +134,46 @@
         if (!value) {
             return "--";
         }
-        return new Date(value).toLocaleDateString(undefined, {
+        const parsedDateToken = parseDateToken(value);
+        const parsed = parsedDateToken ?? new Date(value);
+        if (Number.isNaN(parsed.getTime())) {
+            return "--";
+        }
+        return parsed.toLocaleDateString(undefined, {
             weekday: "long",
             year: "numeric",
             month: "long",
             day: "numeric"
         });
+    }
+
+    function parseDateToken(value) {
+        if (typeof value !== "string") {
+            return null;
+        }
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+        if (!match) {
+            return null;
+        }
+
+        const year = Number(match[1]);
+        const month = Number(match[2]);
+        const day = Number(match[3]);
+        const parsed = new Date(year, month - 1, day);
+        if (parsed.getFullYear() !== year || parsed.getMonth() !== month - 1 || parsed.getDate() !== day) {
+            return null;
+        }
+        return parsed;
+    }
+
+    function toDateToken(date) {
+        if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+            return "";
+        }
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        return `${year}-${month}-${day}`;
     }
 
     async function fetchJson(url) {
@@ -531,10 +565,10 @@
             fragments.push('<div class="autotag-calendar-day is-empty" aria-hidden="true"></div>');
         }
 
-        const todayToken = new Date().toISOString().slice(0, 10);
+        const todayToken = toDateToken(new Date());
         for (let dayNumber = 1; dayNumber <= lastDay.getDate(); dayNumber += 1) {
             const current = new Date(state.calendarMonth.getFullYear(), state.calendarMonth.getMonth(), dayNumber);
-            const token = current.toISOString().slice(0, 10);
+            const token = toDateToken(current);
             const info = counts.get(token);
             const classes = ["autotag-calendar-day"];
             if (token === todayToken) {
@@ -584,7 +618,7 @@
                 return;
             }
 
-            const todayToken = new Date().toISOString().slice(0, 10);
+            const todayToken = toDateToken(new Date());
             const defaultDate = availableDates.includes(todayToken) ? todayToken : availableDates[0] || `${year}-${String(month).padStart(2, "0")}-01`;
             await loadRunsForDate(defaultDate);
         } catch (error) {
