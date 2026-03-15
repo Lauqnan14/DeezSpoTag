@@ -5,6 +5,7 @@ using DeezSpoTag.Services.Download.Utils;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Collections.Generic;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Security.Cryptography;
@@ -18,6 +19,7 @@ public class DeezSpoTagSettingsService : ISettingsService
 {
     private const string DeezSpoTagFolderName = "deezspotag";
     private const string ConfigFileName = "config.json";
+    private const string ContainerDownloadsPath = "/downloads";
     private const string SyllableLyricsType = "syllable-lyrics";
     private const string UnsyncedLyricsType = "unsynced-lyrics";
     private static readonly string[] CanonicalLyricsProviders = { "apple", "deezer", "spotify", "lrclib" };
@@ -59,9 +61,7 @@ public class DeezSpoTagSettingsService : ISettingsService
         var configFolder = ResolveConfigFolder(configRoot);
         if (File.Exists(configFolder))
         {
-            var fallbackFolder = configFolder + "_config";
-            _logger.LogWarning("Settings path {ConfigFolder} is a file; using {FallbackFolder} instead.", configFolder, fallbackFolder);
-            configFolder = fallbackFolder;
+            throw new InvalidOperationException($"Settings directory path '{configFolder}' is a file.");
         }
 
         _configFolder = configFolder;
@@ -822,6 +822,11 @@ public class DeezSpoTagSettingsService : ISettingsService
 
     private static string NormalizeDownloadLocation(string downloadLocation, string defaultDownloadLocation)
     {
+        if (IsRunningInContainer())
+        {
+            return NormalizeContainerDownloadLocation(downloadLocation);
+        }
+
         if (string.IsNullOrWhiteSpace(downloadLocation))
         {
             return defaultDownloadLocation;
@@ -852,6 +857,227 @@ public class DeezSpoTagSettingsService : ISettingsService
         catch (Exception ex) when (ex is not OperationCanceledException) {
             return normalized;
         }
+    }
+
+    private static string NormalizeContainerDownloadLocation(string requestedPath)
+    {
+        var normalizedPath = string.IsNullOrWhiteSpace(requestedPath)
+            ? ContainerDownloadsPath
+            : requestedPath.Trim();
+
+        // One-way migration for legacy container path accidentally coupled to app data.
+        if (string.Equals(normalizedPath, "/data/downloads", StringComparison.OrdinalIgnoreCase))
+        {
+            normalizedPath = ContainerDownloadsPath;
+        }
+
+        var fullPath = NormalizeContainerPath(normalizedPath);
+        if (IsPathUnderRoot(fullPath, "/data") || IsPathUnderRoot(fullPath, "/app/Data"))
+        {
+            throw new InvalidOperationException(
+                $"Container download path '{fullPath}' is invalid. Downloads cannot live under app data paths (/data or /app/Data). " +
+                "Use /downloads or another dedicated mounted path.");
+        }
+
+        return ResolveContainerDownloadLocation(fullPath);
+    }
+
+    private static string ResolveContainerDownloadLocation(string path)
+    {
+        var normalizedPath = NormalizeContainerPath(path);
+        if (!IsPathBackedByMountedVolume(normalizedPath))
+        {
+            throw new InvalidOperationException(
+                $"Container download path '{normalizedPath}' is not on a mounted volume. " +
+                "Mount it in Docker and then select that mounted path in Settings.");
+        }
+
+        try
+        {
+            Directory.CreateDirectory(normalizedPath);
+            if (IsDirectoryWritable(normalizedPath))
+            {
+                return normalizedPath;
+            }
+        }
+        catch
+        {
+        }
+
+        throw new InvalidOperationException(
+            $"Container download path '{normalizedPath}' is not writable. Mount a writable downloads volume and set Settings > Download location to that mounted path.");
+    }
+
+    private static bool IsRunningInContainer()
+    {
+        var env = Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER");
+        if (string.Equals(env, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return File.Exists("/.dockerenv");
+    }
+
+    private static bool IsDirectoryWritable(string path)
+    {
+        try
+        {
+            var probePath = Path.Combine(path, $".write-test-{Guid.NewGuid():N}");
+            using (File.Create(probePath))
+            {
+            }
+
+            File.Delete(probePath);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string NormalizeContainerPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return ContainerDownloadsPath;
+        }
+
+        try
+        {
+            return Path.GetFullPath(path.Trim());
+        }
+        catch
+        {
+            return path.Trim();
+        }
+    }
+
+    private static bool IsPathBackedByMountedVolume(string path)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return true;
+        }
+
+        var fullPath = NormalizeContainerPath(path);
+        var hasNonRootMount = false;
+        foreach (var mountPoint in EnumerateLinuxMountPoints())
+        {
+            if (string.Equals(mountPoint, "/", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            hasNonRootMount = true;
+            if (IsPathUnderRoot(fullPath, mountPoint))
+            {
+                return true;
+            }
+        }
+
+        // If we cannot discover mount points, defer to writable check.
+        return !hasNonRootMount;
+    }
+
+    private static IEnumerable<string> EnumerateLinuxMountPoints()
+    {
+        const string mountInfoPath = "/proc/self/mountinfo";
+        if (!File.Exists(mountInfoPath))
+        {
+            yield break;
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var line in File.ReadLines(mountInfoPath))
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            var separatorIndex = line.IndexOf(" - ", StringComparison.Ordinal);
+            var head = separatorIndex >= 0 ? line[..separatorIndex] : line;
+            var parts = head.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 5)
+            {
+                continue;
+            }
+
+            var mountPoint = UnescapeMountInfoPath(parts[4]);
+            if (string.IsNullOrWhiteSpace(mountPoint))
+            {
+                continue;
+            }
+
+            string normalized;
+            try
+            {
+                normalized = Path.GetFullPath(mountPoint);
+            }
+            catch
+            {
+                normalized = mountPoint;
+            }
+
+            if (seen.Add(normalized))
+            {
+                yield return normalized;
+            }
+        }
+    }
+
+    private static bool IsPathUnderRoot(string path, string root)
+    {
+        var normalizedPath = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var normalizedRoot = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.IsNullOrWhiteSpace(normalizedPath) || string.IsNullOrWhiteSpace(normalizedRoot))
+        {
+            return false;
+        }
+
+        if (string.Equals(normalizedPath, normalizedRoot, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var rootedPrefix = normalizedRoot + Path.DirectorySeparatorChar;
+        return normalizedPath.StartsWith(rootedPrefix, StringComparison.Ordinal);
+    }
+
+    private static string UnescapeMountInfoPath(string value)
+    {
+        if (string.IsNullOrEmpty(value) || value.IndexOf('\\') < 0)
+        {
+            return value;
+        }
+
+        var builder = new StringBuilder(value.Length);
+        for (var index = 0; index < value.Length; index++)
+        {
+            if (value[index] == '\\'
+                && index + 3 < value.Length
+                && IsOctalDigit(value[index + 1])
+                && IsOctalDigit(value[index + 2])
+                && IsOctalDigit(value[index + 3]))
+            {
+                var octal = value.Substring(index + 1, 3);
+                var decoded = Convert.ToInt32(octal, 8);
+                builder.Append((char)decoded);
+                index += 3;
+                continue;
+            }
+
+            builder.Append(value[index]);
+        }
+
+        return builder.ToString();
+    }
+
+    private static bool IsOctalDigit(char value)
+    {
+        return value is >= '0' and <= '7';
     }
 
     private static string RewriteLegacyHomeUserPath(string path)

@@ -43,6 +43,8 @@ FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION} AS runtime
 WORKDIR /app
 ARG DEEZSPOTAG_BUILD_VERSION=dev
 ARG ESSENTIA_TF_WHEEL_URL=https://files.pythonhosted.org/packages/f0/5f/7283634ee1d5d195d75986adc98a2309fab2df121a4618f3826eb2073d29/essentia_tensorflow-2.1b6.dev1389-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+LABEL org.opencontainers.image.source="https://github.com/Lauqnan14/DeezSpoTag" \
+      org.opencontainers.image.title="deezspotag"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends openssl ca-certificates python3 python3-venv python3-pip curl aria2 ffmpeg unzip \

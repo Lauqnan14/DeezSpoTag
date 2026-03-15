@@ -645,7 +645,9 @@ globalThis.DeezSpoTag = {
             const disabledButton = e.target.closest('button[disabled]');
             if (disabledButton) {
                 e.preventDefault();
-                this.showNotification('This feature is not yet implemented.', 'info');
+                if (disabledButton.dataset.notImplemented === 'true') {
+                    this.showNotification('This feature is not yet implemented.', 'info');
+                }
                 return;
             }
 
@@ -655,16 +657,6 @@ globalThis.DeezSpoTag = {
                     element.classList.toggle('show');
                 });
             }
-        });
-
-        document.addEventListener('submit', (e) => {
-            const searchForm = e.target.closest('#searchForm');
-            if (!searchForm) {
-                return;
-            }
-
-            e.preventDefault();
-            this.showNotification('Search functionality would be implemented here.', 'info');
         });
     },
 

@@ -1,6 +1,15 @@
 .env
 DeezSpoTag.Web/Data/*
 !DeezSpoTag.Web/Data/*.cs
+Data
+DeezSpoTag Diagnostic
+reports
+test-results
+coverage-report
+*.binlog
+*.log
+build_*.txt
+tmp_build.log
 bin
 obj
 **/bin

@@ -42,6 +42,14 @@ RUN set -eux; \
       if [ -n "$bundle_wrapper" ]; then cp -f "$bundle_wrapper" /opt/apple-wrapper/wrapper; fi; \
       rm -rf "$tmpdir"; \
     fi
+
+# Align Docker runtime with local setup scripts: ensure mount points exist so
+# wrapper startup is consistent in container mode. Device nodes are provided by
+# the runtime rootfs and host mounts; avoid creating char devices in image layers.
+RUN set -eux; \
+    dev_dir="/opt/apple-wrapper/rootfs/dev"; \
+    mkdir -p "$dev_dir" "/opt/apple-wrapper/rootfs/dev/pts" "/opt/apple-wrapper/rootfs/proc" "/opt/apple-wrapper/rootfs/sys"
+
 RUN chmod 4755 /opt/apple-wrapper/wrapper && \
     if [ -f /opt/apple-wrapper/rootfs/system/bin/main ]; then chmod 755 /opt/apple-wrapper/rootfs/system/bin/main; fi && \
     if [ -f /opt/apple-wrapper/rootfs/system/bin/linker64 ]; then chmod 755 /opt/apple-wrapper/rootfs/system/bin/linker64; fi && \

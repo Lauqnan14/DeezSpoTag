@@ -20,6 +20,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.DataProtection;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -51,6 +52,7 @@ public static async Task Main(string[] args)
 {
     var builder = WebApplication.CreateBuilder(args);
     var libraryDataDir = ConfigureDataDirectories();
+    ConfigureDataProtection(builder.Services, libraryDataDir);
     ConfigureTlsRuntime(builder.Configuration);
     var identityConnectionString = ConfigureDatabaseConnections(builder, libraryDataDir);
     ConfigureBindUrls(builder);
@@ -96,6 +98,17 @@ static string ConfigureDataDirectories()
     Environment.SetEnvironmentVariable("DEEZSPOTAG_DATA_DIR", dataDir);
     Directory.CreateDirectory(dataDir);
     return dataDir;
+}
+
+static void ConfigureDataProtection(IServiceCollection services, string dataDir)
+{
+    var keyDirectory = Path.GetFullPath(Path.Combine(dataDir, "security", "data-protection-keys"));
+    Directory.CreateDirectory(keyDirectory);
+
+    services
+        .AddDataProtection()
+        .SetApplicationName("DeezSpoTag")
+        .PersistKeysToFileSystem(new DirectoryInfo(keyDirectory));
 }
 
 static void ConfigureTlsRuntime(IConfiguration configuration)
