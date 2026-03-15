@@ -13,6 +13,7 @@ import copy
 import io
 import json
 import logging
+import os
 import random
 import socket
 import threading
@@ -58,7 +59,7 @@ class ZeroconfServer(Closeable):
         "statusString": "OK",
     }
     __eol = b"\r\n"
-    __max_port = 65536
+    __max_port = 65535
     __min_port = 1024
     __runner: HttpRunner
     __service_info: zeroconf.ServiceInfo
@@ -76,9 +77,8 @@ class ZeroconfServer(Closeable):
                          name="zeroconf-http-server",
                          daemon=True).start()
                          
-        self.__zeroconf = zeroconf.Zeroconf()
-        
         advertised_ip_str = self._get_local_ip()
+        self.__zeroconf = self._create_zeroconf()
         
         server_hostname = socket.gethostname()
         if not server_hostname or server_hostname == "localhost":
@@ -119,6 +119,24 @@ class ZeroconfServer(Closeable):
             self.__service_info.server,
             self.__service_info.addresses,
         )
+
+    def _create_zeroconf(self) -> zeroconf.Zeroconf:
+        configured_interface = os.environ.get(
+            "DEEZSPOTAG_SPOTIFY_ZEROCONF_INTERFACE", ""
+        ).strip()
+        if configured_interface:
+            self.logger.info(
+                "Starting Zeroconf on interface %s", configured_interface
+            )
+            try:
+                return zeroconf.Zeroconf(interfaces=[configured_interface])
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to initialize Zeroconf on interface {configured_interface}: {exc}"
+                ) from exc
+
+        self.logger.info("Starting Zeroconf on default interfaces")
+        return zeroconf.Zeroconf(interfaces=zeroconf.InterfaceChoice.Default)
 
     def _get_local_ip(self) -> str:
         """Tries to determine a non-loopback local IP address for network advertisement."""
