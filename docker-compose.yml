@@ -4,7 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ${DEEZSPOTAG_IMAGE:-deezspotag-web:local}
+    image: ${DEEZSPOTAG_IMAGE:-deezspotag:local}
     pull_policy: never
     network_mode: host
     user: "${PUID:-1000}:${PGID:-1000}"
@@ -31,12 +31,12 @@ services:
           create_host_path: true
       # Local defaults stay inside the repo and are auto-created for first run.
       - type: bind
-        source: ${DOWNLOADS_PATH:-./Data/downloads}
+        source: ${DOWNLOADS_PATH:-./Downloads}
         target: /downloads
         bind:
           create_host_path: true
       - type: bind
-        source: ${LIBRARY_PATH:-./Data/library}
+        source: ${LIBRARY_PATH:-./Library}
         target: /library
         read_only: true
         bind:
