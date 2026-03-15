@@ -816,6 +816,46 @@ globalThis.DeezSpoTag = {
             const listId = ensureTabListIdentity(tabList) || 'tabs';
             return `tabs:last:${globalThis.location.pathname}:${listId}`;
         };
+        const persistTabPreference = (trigger, tabList) => {
+            if (!trigger || !tabList || !tabPreferenceEnabled()) {
+                return;
+            }
+
+            const targetSelector = trigger.dataset.bsTarget;
+            if (!targetSelector) {
+                return;
+            }
+
+            const storageKey = getTabKey(tabList);
+            localStorage.setItem(storageKey, targetSelector);
+            if (globalThis.UserPrefs?.setTabSelection) {
+                globalThis.UserPrefs.setTabSelection(storageKey, targetSelector);
+            }
+        };
+        const syncUrlTabParam = (trigger) => {
+            if (!trigger) {
+                return;
+            }
+
+            const targetSelector = trigger.dataset.bsTarget;
+            if (!targetSelector || !targetSelector.startsWith('#')) {
+                return;
+            }
+
+            const tabId = targetSelector.slice(1);
+            if (!tabId) {
+                return;
+            }
+
+            const url = new URL(globalThis.location.href);
+            if (url.searchParams.get('tab') === tabId) {
+                return;
+            }
+
+            url.searchParams.set('tab', tabId);
+            const next = `${url.pathname}${url.search}${url.hash}`;
+            globalThis.history.replaceState(globalThis.history.state, '', next);
+        };
         const getTargetPane = (trigger) => {
             const targetSelector = trigger.dataset.bsTarget;
             if (!targetSelector) {
@@ -829,7 +869,11 @@ globalThis.DeezSpoTag = {
                 return;
             }
 
+            const tabList = trigger.closest('.nav');
+            const previousTrigger = tabList?.querySelector('[data-bs-toggle="tab"].active') || null;
             const container = targetPane.closest('.tab-content');
+            const previousPane = container?.querySelector('.tab-pane.show.active') || null;
+
             if (container) {
                 container.querySelectorAll('.tab-pane').forEach((pane) => {
                     pane.classList.remove('show', 'active');
@@ -837,12 +881,38 @@ globalThis.DeezSpoTag = {
                 targetPane.classList.add('show', 'active');
             }
 
-            const tabList = trigger.closest('.nav');
             if (tabList) {
                 tabList.querySelectorAll('[data-bs-toggle="tab"]').forEach((tab) => {
                     tab.classList.remove('active');
                 });
                 trigger.classList.add('active');
+            }
+
+            if (previousTrigger && previousTrigger !== trigger) {
+                const hideEvent = new Event('hide.bs.tab', { bubbles: true, cancelable: true });
+                Object.defineProperty(hideEvent, 'relatedTarget', { value: trigger, enumerable: true });
+                previousTrigger.dispatchEvent(hideEvent);
+            }
+
+            if (!previousTrigger || previousTrigger !== trigger) {
+                const showEvent = new Event('show.bs.tab', { bubbles: true, cancelable: true });
+                Object.defineProperty(showEvent, 'relatedTarget', { value: previousTrigger, enumerable: true });
+                trigger.dispatchEvent(showEvent);
+
+                if (previousTrigger) {
+                    const hiddenEvent = new Event('hidden.bs.tab', { bubbles: true, cancelable: false });
+                    Object.defineProperty(hiddenEvent, 'relatedTarget', { value: trigger, enumerable: true });
+                    previousTrigger.dispatchEvent(hiddenEvent);
+                }
+
+                const shownEvent = new Event('shown.bs.tab', { bubbles: true, cancelable: false });
+                Object.defineProperty(shownEvent, 'relatedTarget', { value: previousTrigger, enumerable: true });
+                trigger.dispatchEvent(shownEvent);
+            } else if (previousPane && previousPane !== targetPane) {
+                // Ensure a no-op re-activation still notifies listeners if pane state was stale.
+                const shownEvent = new Event('shown.bs.tab', { bubbles: true, cancelable: false });
+                Object.defineProperty(shownEvent, 'relatedTarget', { value: previousTrigger, enumerable: true });
+                trigger.dispatchEvent(shownEvent);
             }
         };
 
@@ -859,17 +929,21 @@ globalThis.DeezSpoTag = {
 
             event.preventDefault();
             activateTab(trigger);
+        });
 
-            if (tabList && tabPreferenceEnabled()) {
-                    const targetSelector = trigger.dataset.bsTarget;
-                if (targetSelector) {
-                    const storageKey = getTabKey(tabList);
-                    localStorage.setItem(storageKey, targetSelector);
-                    if (globalThis.UserPrefs?.setTabSelection) {
-                        globalThis.UserPrefs.setTabSelection(storageKey, targetSelector);
-                    }
-                }
+        document.addEventListener('shown.bs.tab', (event) => {
+            const trigger = event.target?.closest?.('[data-bs-toggle="tab"]');
+            if (!trigger) {
+                return;
             }
+
+            const tabList = getTabList(trigger);
+            if (tabList?.dataset?.noGlobalTabFallback === 'true') {
+                return;
+            }
+
+            persistTabPreference(trigger, tabList);
+            syncUrlTabParam(trigger);
         });
 
         const urlTab = new URLSearchParams(globalThis.location.search).get('tab');

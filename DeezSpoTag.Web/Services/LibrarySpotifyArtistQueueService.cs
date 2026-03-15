@@ -214,6 +214,12 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
 
     private async Task<bool> ShouldSkipAsync(long artistId, CancellationToken cancellationToken)
     {
+        var artist = await _repository.GetArtistAsync(artistId, cancellationToken);
+        if (artist == null)
+        {
+            return true;
+        }
+
         var spotifyId = await _repository.GetArtistSourceIdAsync(artistId, "spotify", cancellationToken);
         if (string.IsNullOrWhiteSpace(spotifyId))
         {

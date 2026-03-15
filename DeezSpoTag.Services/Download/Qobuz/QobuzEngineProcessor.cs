@@ -87,7 +87,13 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
 
         try
         {
-            payload = await ExecuteDownloadPipelineAsync(next, settings, itemToken);
+            payload = await DeserializeAndStartAsync(next, settings, itemToken);
+            if (payload == null)
+            {
+                return;
+            }
+
+            await ExecuteDownloadPipelineAsync(next, payload, settings, itemToken);
         }
         catch (OperationCanceledException) when (itemToken.IsCancellationRequested)
         {
@@ -103,17 +109,12 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         }
     }
 
-    private async Task<QobuzQueueItem?> ExecuteDownloadPipelineAsync(
+    private async Task ExecuteDownloadPipelineAsync(
         DownloadQueueItem next,
+        QobuzQueueItem payload,
         DeezSpoTagSettings settings,
         CancellationToken itemToken)
     {
-        var payload = await DeserializeAndStartAsync(next, settings, itemToken);
-        if (payload == null)
-        {
-            return null;
-        }
-
         var context = BuildTrackContext(payload, settings);
         var request = BuildRequest(payload, settings, context);
         var progressReporter = CreateProgressReporter(next.QueueUuid, itemToken);
@@ -136,7 +137,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         outputPath = await TryApplyPostDownloadSettingsAsync(next.QueueUuid, context, payload, outputPath, settings, itemToken);
 
         await CompleteDownloadAsync(next.QueueUuid, payload, outputPath, itemToken);
-        return payload;
     }
 
     private async Task<QobuzQueueItem?> DeserializeAndStartAsync(

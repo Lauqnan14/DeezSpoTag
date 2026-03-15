@@ -1340,6 +1340,7 @@ const radioType = '@Html.Raw(ViewData["RadioType"] ?? "")';
 const radioValue = '@Html.Raw(ViewData["RadioValue"] ?? "")';
 const recommendationType = '@Html.Raw(ViewData["RecommendationType"] ?? "")';
 const recommendationValue = '@Html.Raw(ViewData["RecommendationValue"] ?? "")';
+const activitiesDownloadsTabHref = '/Activities?tab=downloads-content';
 const downloadActions = document.getElementById('download-actions');
 const stereoDestinationSelect = document.getElementById('downloadDestinationTracklist');
 const stereoDestinationLabel = document.getElementById('downloadDestinationStereoLabel');
@@ -6008,7 +6009,7 @@ async function downloadTracks(trackElements) {
                     `${errorCount > 0 ? ` (${errorCount} failed)` : ''}`;
                 const hasWarningSignals = deferredCount > 0 || boomplayUnmatchedCount > 0 || errorCount > 0;
                 showTracklistToast(message, hasWarningSignals ? 'warning' : 'success', {
-                    action: { label: 'View', href: '/Activities' }
+                    action: { label: 'View', href: activitiesDownloadsTabHref }
                 });
             } else if (deferredCount > 0) {
                 const message = `Queued ${deferredCount} track(s) for background intent resolution.` +
@@ -6016,7 +6017,7 @@ async function downloadTracks(trackElements) {
                     `${boomplayUnmatchedCount > 0 ? ` (${boomplayUnmatchedCount} skipped: no Deezer match)` : ''}` +
                     `${errorCount > 0 ? ` (${errorCount} failed)` : ''}`;
                 showTracklistToast(message, boomplayUnmatchedCount > 0 || errorCount > 0 ? 'warning' : 'info', {
-                    action: { label: 'View', href: '/Activities' }
+                    action: { label: 'View', href: activitiesDownloadsTabHref }
                 });
             } else if (alreadyQueuedCount > 0 && errorCount === 0) {
                 showTracklistToast(`All ${alreadyQueuedCount} track(s) were already queued.`, 'info');
@@ -6339,12 +6340,12 @@ async function downloadTracks(trackElements) {
                 `${deferredCount > 0 ? ` (${deferredCount} deferred)` : ''}` +
                 `${errorCount > 0 ? ` (${errorCount} failed)` : ''}`;
             showTracklistToast(message, errorCount > 0 || deferredCount > 0 ? 'warning' : 'success', {
-                action: { label: 'View', href: '/Activities' }
+                action: { label: 'View', href: activitiesDownloadsTabHref }
             });
         } else if (deferredCount > 0) {
             const message = `Queued ${deferredCount} track(s) for background intent resolution.`;
             showTracklistToast(message, 'info', {
-                action: { label: 'View', href: '/Activities' }
+                action: { label: 'View', href: activitiesDownloadsTabHref }
             });
         } else {
             const message = lastMessage || 'Failed to add tracks to download queue. Please try again.';

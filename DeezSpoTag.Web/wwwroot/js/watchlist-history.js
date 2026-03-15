@@ -75,5 +75,14 @@
         }
     }
 
+    globalThis.DeezSpoTagWatchlistHistory = {
+        refresh: () => loadHistory()
+    };
+
+    const historyTab = document.getElementById("activities-history-tab");
+    historyTab?.addEventListener("shown.bs.tab", () => {
+        void loadHistory();
+    });
+
     document.addEventListener(DOM_CONTENT_LOADED, loadHistory);
 })();

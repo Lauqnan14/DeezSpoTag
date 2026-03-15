@@ -2182,6 +2182,7 @@ async function runLocalScan(refreshImages = false, reset = false) {
 
 async function waitForScanCompletion(startedAtMs) {
     const deadline = startedAtMs + (15 * 60 * 1000);
+    let lastRefreshAt = 0;
     const refreshViews = async () => {
         try {
             await loadLibraryScanStatus();
@@ -2196,6 +2197,12 @@ async function waitForScanCompletion(startedAtMs) {
     };
 
     while (Date.now() < deadline) {
+        const now = Date.now();
+        if ((now - lastRefreshAt) >= 3000) {
+            await refreshViews();
+            lastRefreshAt = now;
+        }
+
         try {
             const logs = await fetchJson('/api/library/scan/logs?limit=200');
             const recent = Array.isArray(logs)

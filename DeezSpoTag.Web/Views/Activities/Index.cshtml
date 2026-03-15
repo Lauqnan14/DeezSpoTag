@@ -5688,7 +5688,7 @@ function stopLibraryLogsAutoRefresh() {
     libraryLogsRefreshTimer = null;
 }
 
-	async function loadLibraryLogs() {
+async function loadLibraryLogs() {
 	    const logger = window.DeezSpoTag?.DownloadLogger;
 	    if (!logger) {
 	        return;
@@ -5747,6 +5747,52 @@ function stopLibraryLogsAutoRefresh() {
 	    }
 	    }
 
+let activitiesTabRefreshBound = false;
+function bindActivitiesTabSwitchRefresh() {
+    if (activitiesTabRefreshBound) {
+        return;
+    }
+    activitiesTabRefreshBound = true;
+
+    const downloadsTab = document.getElementById('activities-downloads-tab');
+    const autotagTab = document.getElementById('activities-autotag-tab');
+    const historyTab = document.getElementById('activities-history-tab');
+    const logsTab = document.getElementById('activities-logs-tab');
+
+    const refreshByTarget = (targetSelector) => {
+        switch (targetSelector) {
+            case '#downloads-content':
+                void loadQueueFromServer({ force: true });
+                startQueuePolling();
+                scheduleRenderTasks();
+                break;
+            case '#autotag-status-content':
+                void globalThis.DeezSpoTagAutoTagStatus?.refresh?.();
+                break;
+            case '#history-content':
+                void globalThis.DeezSpoTagAutoTagStatus?.refresh?.({ loadCalendar: true });
+                void globalThis.DeezSpoTagWatchlistHistory?.refresh?.();
+                break;
+            case '#logs-content':
+                void loadLibraryLogs();
+                break;
+            default:
+                break;
+        }
+    };
+
+    downloadsTab?.addEventListener('shown.bs.tab', () => refreshByTarget('#downloads-content'));
+    autotagTab?.addEventListener('shown.bs.tab', () => refreshByTarget('#autotag-status-content'));
+    historyTab?.addEventListener('shown.bs.tab', () => refreshByTarget('#history-content'));
+    logsTab?.addEventListener('shown.bs.tab', () => refreshByTarget('#logs-content'));
+
+    const activeTabTrigger = document.querySelector('[data-bs-toggle="tab"].active');
+    const activeTarget = activeTabTrigger?.dataset?.bsTarget;
+    if (activeTarget) {
+        refreshByTarget(activeTarget);
+    }
+}
+
 </script>
 <script src="~/js/autotag-status.js" asp-append-version="true"></script>
 <script src="~/js/watchlist-history.js" asp-append-version="true"></script>
@@ -5754,6 +5800,7 @@ function stopLibraryLogsAutoRefresh() {
 <script>
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
+        bindActivitiesTabSwitchRefresh();
         initDownloadLogs();
         initLibraryLogs();
         initMediaOperationsHelp();
@@ -5765,6 +5812,7 @@ if (document.readyState === 'loading') {
         startLibraryScanStatusPolling();
     });
 } else {
+    bindActivitiesTabSwitchRefresh();
     initDownloadLogs();
     initLibraryLogs();
     initMediaOperationsHelp();

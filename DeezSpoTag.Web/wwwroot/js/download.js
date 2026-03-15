@@ -2185,7 +2185,7 @@ DeezSpoTag.Download = {
 
     showQueueToast(message, type = 'success') {
         this.showNotification(message, type, {
-            action: { label: 'View', href: '/Activities' }
+            action: { label: 'View', href: '/Activities?tab=downloads-content' }
         });
     },
 

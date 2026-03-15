@@ -91,6 +91,23 @@
             .replaceAll("'", "&#39;");
     }
 
+    function normalizeLogLines(logs) {
+        if (Array.isArray(logs)) {
+            return logs.map((line) => {
+                if (line === null || line === undefined) {
+                    return "";
+                }
+                return String(line);
+            });
+        }
+
+        if (typeof logs === "string") {
+            return [logs];
+        }
+
+        return [];
+    }
+
     function toFileName(value) {
         if (!value) {
             return "--";
@@ -185,8 +202,9 @@
     }
 
     function updateLiveMetadata(job) {
+        const logLines = normalizeLogLines(job?.logs);
         setText("autotag-runtime", formatDuration(job?.startedAt, job?.finishedAt));
-        setText("autotag-log-count", String(job?.logs?.length ?? 0));
+        setText("autotag-log-count", String(logLines.length));
         setText("autotag-exit-code", job?.exitCode ?? "--");
         setText("autotag-platform", job?.currentPlatform || "--");
         setText("autotag-last-track", toFileName(job?.lastStatus?.status?.path));
@@ -199,7 +217,7 @@
 
         const lastLogEl = el("autotag-last-log");
         if (lastLogEl) {
-            const lastLine = job?.logs?.length ? job.logs[job.logs.length - 1] : "No recent log lines.";
+            const lastLine = logLines.length ? logLines[logLines.length - 1] : "No recent log lines.";
             lastLogEl.textContent = stripAnsi(lastLine);
         }
 
@@ -283,8 +301,9 @@
         if (!hasStatusUI()) {
             return;
         }
-        const text = logs && logs.length // NOSONAR
-            ? logs.map(stripAnsi).join("\n")
+        const logLines = normalizeLogLines(logs);
+        const text = logLines.length
+            ? logLines.map(stripAnsi).join("\n")
             : "No AutoTag logs yet.";
         setText("autotag-log", text);
     }
@@ -644,21 +663,21 @@
     }
 
     async function pollJob() { // NOSONAR
-        let jobId = localStorage.getItem(JOB_KEY);
         try {
-            const latestJob = await fetchJson("/api/autotag/jobs/latest");
-            if (latestJob?.id) {
-                if (jobId !== latestJob.id) {
-                    jobId = latestJob.id;
-                    localStorage.setItem(JOB_KEY, jobId);
-                }
+            let jobId = localStorage.getItem(JOB_KEY);
+            try {
+                const latestJob = await fetchJson("/api/autotag/jobs/latest");
+                if (latestJob?.id) {
+                    if (jobId !== latestJob.id) {
+                        jobId = latestJob.id;
+                        localStorage.setItem(JOB_KEY, jobId);
+                    }
 
-                state.liveJobId = latestJob.id;
-                const mirrorArchivedRun = state.selectedRunId && state.selectedRunId !== latestJob.id;
-                if (!mirrorArchivedRun) {
+                    const latestLogs = normalizeLogLines(latestJob.logs);
+                    state.liveJobId = latestJob.id;
                     updateStatus(latestJob.id, latestJob.status);
-                    updateLogs(latestJob.logs || []);
-                    updateLiveMetadata(latestJob);
+                    updateLogs(latestLogs);
+                    updateLiveMetadata({ ...latestJob, logs: latestLogs });
                     updateProgressBar(latestJob);
                     if (state.selectedRunId && state.selectedRunId === latestJob.id) {
                         state.historyStatus = Array.isArray(latestJob.statusHistory)
@@ -668,41 +687,39 @@
                         renderRunSummary(liveSummary, {
                             summary: liveSummary,
                             statusHistory: latestJob.statusHistory || [],
-                            logs: latestJob.logs || []
+                            logs: latestLogs
                         });
                         updateFilterCountsFromHistory();
                         renderFilteredHistory();
                     }
-                }
 
-                if (latestJob.status === STATUS_RUNNING) {
-                    await refreshHistoryIfSelectedLiveRun();
+                    if (latestJob.status === STATUS_RUNNING) {
+                        await refreshHistoryIfSelectedLiveRun();
+                    }
+                    schedulePoll();
+                    return;
                 }
+            } catch {
+                // ignore and fall back to cached job
+            }
+
+            if (!jobId) {
+                state.liveJobId = null;
+                updateStatus("Idle", "waiting");
+                updateLogs([]);
+                updateLiveMetadata(null);
+                updateProgressBar(null);
                 schedulePoll();
                 return;
             }
-        } catch {
-            // ignore and fall back to cached job
-        }
 
-        if (!jobId) {
-            state.liveJobId = null;
-            updateStatus("Idle", "waiting");
-            updateLogs([]);
-            updateLiveMetadata(null);
-            updateProgressBar(null);
-            schedulePoll();
-            return;
-        }
-
-        try {
-            const job = await fetchJson(`/api/autotag/jobs/${encodeURIComponent(jobId)}`);
-            state.liveJobId = job?.id || jobId;
-            const mirrorArchivedRun = state.selectedRunId && state.selectedRunId !== state.liveJobId;
-            if (!mirrorArchivedRun) {
+            try {
+                const job = await fetchJson(`/api/autotag/jobs/${encodeURIComponent(jobId)}`);
+                const jobLogs = normalizeLogLines(job.logs);
+                state.liveJobId = job?.id || jobId;
                 updateStatus(job.id, job.status);
-                updateLogs(job.logs || []);
-                updateLiveMetadata(job);
+                updateLogs(jobLogs);
+                updateLiveMetadata({ ...job, logs: jobLogs });
                 updateProgressBar(job);
                 if (state.selectedRunId && state.selectedRunId === job.id) {
                     state.historyStatus = Array.isArray(job.statusHistory)
@@ -712,22 +729,25 @@
                     renderRunSummary(liveSummary, {
                         summary: liveSummary,
                         statusHistory: job.statusHistory || [],
-                        logs: job.logs || []
+                        logs: jobLogs
                     });
                     updateFilterCountsFromHistory();
                     renderFilteredHistory();
                 }
+
+                if (job.status === STATUS_RUNNING) {
+                    await refreshHistoryIfSelectedLiveRun();
+                }
+            } catch (error) { // NOSONAR
+                updateStatus(jobId, STATUS_ERROR);
+                updateProgressBar({ status: STATUS_FAILED });
             }
 
-            if (job.status === STATUS_RUNNING) {
-                await refreshHistoryIfSelectedLiveRun();
-            }
-        } catch (error) { // NOSONAR
-            updateStatus(jobId, STATUS_ERROR);
-            updateProgressBar({ status: STATUS_FAILED });
+            schedulePoll();
+        } catch (error) {
+            console.warn("AutoTag polling loop failed; retrying.", error);
+            schedulePoll();
         }
-
-        schedulePoll();
     }
 
     function schedulePoll() {
@@ -735,6 +755,36 @@
             clearTimeout(pollTimer);
         }
         pollTimer = setTimeout(pollJob, pollIntervalMs);
+    }
+
+    async function refreshNow(options = {}) {
+        if (!hasStatusUI()) {
+            return;
+        }
+
+        if (pollTimer) {
+            clearTimeout(pollTimer);
+            pollTimer = null;
+        }
+
+        if (options.loadCalendar === true) {
+            await loadCalendar();
+        }
+
+        await pollJob();
+    }
+
+    function bindTabRefresh() {
+        const autotagTab = el("activities-autotag-tab");
+        const historyTab = el("activities-history-tab");
+
+        autotagTab?.addEventListener("shown.bs.tab", () => {
+            void refreshNow();
+        });
+
+        historyTab?.addEventListener("shown.bs.tab", () => {
+            void refreshNow({ loadCalendar: true });
+        });
     }
 
     function bindFilterButtons() {
@@ -1227,11 +1277,16 @@
             return;
         }
 
+        globalThis.DeezSpoTagAutoTagStatus = {
+            refresh: (options) => refreshNow(options)
+        };
+
+        bindTabRefresh();
         bindFilterButtons();
         bindQuickActions();
         bindDiffActions();
         bindHistoryNavigation();
-        await loadCalendar();
-        pollJob();
+        void pollJob();
+        void loadCalendar();
     });
 })();

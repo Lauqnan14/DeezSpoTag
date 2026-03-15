@@ -2679,11 +2679,18 @@ async function refreshSpotifyConnectionStatus(data, active, activeAccountName, a
             return;
         }
 
+        const webPlayerOk = connectionStatus?.webPlayerOk === true;
+        const librespotOk = connectionStatus?.librespotOk === true;
+        const backendOk = connectionStatus?.ok === true;
+        const hasUsableSpotifySession = webPlayerOk || librespotOk || backendOk;
+        const hasBlobFromStatus = Boolean(connectionStatus?.webPlayerBlobPath || connectionStatus?.librespotBlobPath);
+        const hasAnyBlob = accountHasBlob || hasBlobFromStatus;
+        const hasKnownAccount = Boolean(active || (typeof connectionStatus?.activeAccount === 'string' && connectionStatus.activeAccount.trim()));
         const isConnected = Boolean(
             connectionStatus &&
-            connectionStatus.ok === true &&
-            active &&
-            accountHasBlob
+            hasUsableSpotifySession &&
+            hasKnownAccount &&
+            hasAnyBlob
         );
         applySpotifyConnectionUiState(data, active, activeAccountName, isConnected);
         queueConnectedPlatformsRefresh();

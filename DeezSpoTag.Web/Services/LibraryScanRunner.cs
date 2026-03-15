@@ -45,6 +45,12 @@ public sealed class LibraryScanRunner
         int AlbumsDetected,
         int TracksDetected);
 
+    private sealed record IncrementalScanResult(
+        int ArtistCount,
+        int AlbumCount,
+        int TrackCount,
+        Dictionary<string, List<string>> ArtistGenres);
+
     public ScanStatus GetStatus() => _status;
 
     public bool TryCancel()
@@ -110,17 +116,16 @@ public sealed class LibraryScanRunner
                 }
 
                 AddInfoLog($"Library scan started ({enabledFolders.Count} folders).");
-                var snapshot = ScanSnapshot(enabledFolders, activeCts.Token);
-                PersistSnapshot(snapshot);
+                var scanResult = await ScanAndIngestIncrementally(enabledFolders, activeCts.Token);
+                PersistScanInfo(scanResult.ArtistCount, scanResult.AlbumCount, scanResult.TrackCount);
                 await SyncRepositoryArtifactsAsync(
                     enabledFolders,
-                    snapshot,
-                    reset,
+                    scanResult.ArtistGenres,
                     skipSpotifyFetch,
                     refreshImages,
                     cacheSpotifyImages,
                     activeCts.Token);
-                AddInfoLog($"Library scan completed ({snapshot.Artists.Count} artists, {snapshot.Albums.Count} albums, {snapshot.Tracks.Count} tracks).");
+                AddInfoLog($"Library scan completed ({scanResult.ArtistCount} artists, {scanResult.AlbumCount} albums, {scanResult.TrackCount} tracks).");
             }
         }
         catch (OperationCanceledException)
@@ -206,40 +211,156 @@ public sealed class LibraryScanRunner
         return new List<FolderDto> { selected };
     }
 
-    private LibraryConfigStore.LocalLibrarySnapshot ScanSnapshot(List<FolderDto> enabledFolders, CancellationToken cancellationToken)
+    private async Task<IncrementalScanResult> ScanAndIngestIncrementally(
+        List<FolderDto> enabledFolders,
+        CancellationToken cancellationToken)
     {
+        var aggregatedGenres = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        var processedOffset = 0;
+        var totalOffset = 0;
+        var errorOffset = 0;
+
+        for (var i = 0; i < enabledFolders.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var folder = enabledFolders[i];
+            AddInfoLog($"Scanning folder {i + 1}/{enabledFolders.Count}: {folder.DisplayName}.");
+
+            var folderSnapshot = ScanSingleFolderSnapshot(
+                folder,
+                processedOffset,
+                totalOffset,
+                errorOffset,
+                out var folderProcessed,
+                out var folderTotal,
+                out var folderErrors,
+                cancellationToken);
+
+            processedOffset += folderProcessed;
+            totalOffset += folderTotal;
+            errorOffset += folderErrors;
+
+            MergeGenres(aggregatedGenres, folderSnapshot.ArtistGenres);
+
+            if (_repository.IsConfigured)
+            {
+                await IngestSnapshotAsync(enabledFolders, folderSnapshot, reset: false, cancellationToken);
+                var liveStats = await _repository.GetLibraryStatsAsync(cancellationToken);
+                _status = _status with
+                {
+                    ArtistsDetected = liveStats.TotalArtists,
+                    AlbumsDetected = liveStats.TotalAlbums,
+                    TracksDetected = liveStats.TotalTracks,
+                    CurrentFile = null
+                };
+                AddInfoLog($"Folder indexed ({i + 1}/{enabledFolders.Count}): {folder.DisplayName}.");
+            }
+        }
+
+        var finalCounts = await ResolveFinalCountsAsync(cancellationToken);
+        _status = _status with
+        {
+            ArtistsDetected = finalCounts.Artists,
+            AlbumsDetected = finalCounts.Albums,
+            TracksDetected = finalCounts.Tracks,
+            CurrentFile = null
+        };
+
+        AddInfoLog($"Library scan snapshot complete (artists={finalCounts.Artists}, albums={finalCounts.Albums}, tracks={finalCounts.Tracks}).");
+        return new IncrementalScanResult(
+            finalCounts.Artists,
+            finalCounts.Albums,
+            finalCounts.Tracks,
+            aggregatedGenres.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList(),
+                StringComparer.OrdinalIgnoreCase));
+    }
+
+    private LibraryConfigStore.LocalLibrarySnapshot ScanSingleFolderSnapshot(
+        FolderDto folder,
+        int processedOffset,
+        int totalOffset,
+        int errorOffset,
+        out int folderProcessed,
+        out int folderTotal,
+        out int folderErrors,
+        CancellationToken cancellationToken)
+    {
+        var latestProcessed = 0;
+        var latestTotal = 0;
+        var latestErrors = 0;
         var progress = new Progress<LocalLibraryScanner.ScanProgress>(progressUpdate =>
         {
-            _status = _status with
+            latestProcessed = progressUpdate.ProcessedFiles;
+            latestTotal = progressUpdate.TotalFiles;
+            latestErrors = progressUpdate.ErrorCount;
+
+            var currentStatus = _status;
+            _status = currentStatus with
             {
-                ProcessedFiles = progressUpdate.ProcessedFiles,
-                TotalFiles = progressUpdate.TotalFiles,
-                ErrorCount = progressUpdate.ErrorCount,
+                ProcessedFiles = processedOffset + progressUpdate.ProcessedFiles,
+                TotalFiles = totalOffset + progressUpdate.TotalFiles,
+                ErrorCount = errorOffset + progressUpdate.ErrorCount,
                 CurrentFile = progressUpdate.CurrentFile,
-                ArtistsDetected = progressUpdate.ArtistsDetected,
-                AlbumsDetected = progressUpdate.AlbumsDetected,
-                TracksDetected = progressUpdate.TracksDetected
+                ArtistsDetected = Math.Max(currentStatus.ArtistsDetected, progressUpdate.ArtistsDetected),
+                AlbumsDetected = Math.Max(currentStatus.AlbumsDetected, progressUpdate.AlbumsDetected),
+                TracksDetected = Math.Max(currentStatus.TracksDetected, progressUpdate.TracksDetected)
             };
         });
-        var snapshot = _scanner.Scan(enabledFolders, progress, cancellationToken);
-        AddInfoLog($"Library scan snapshot complete (artists={snapshot.Artists.Count}, albums={snapshot.Albums.Count}, tracks={snapshot.Tracks.Count}).");
+
+        var snapshot = _scanner.Scan([folder], progress, cancellationToken);
+        folderProcessed = latestProcessed;
+        folderTotal = latestTotal;
+        folderErrors = latestErrors;
         return snapshot;
     }
 
-    private void PersistSnapshot(LibraryConfigStore.LocalLibrarySnapshot snapshot)
+    private static void MergeGenres(
+        Dictionary<string, HashSet<string>> target,
+        IReadOnlyDictionary<string, List<string>> source)
     {
-        _configStore.SaveLocalLibrary(snapshot);
+        foreach (var pair in source)
+        {
+            if (!target.TryGetValue(pair.Key, out var genreSet))
+            {
+                genreSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                target[pair.Key] = genreSet;
+            }
+
+            foreach (var genre in pair.Value)
+            {
+                if (!string.IsNullOrWhiteSpace(genre))
+                {
+                    genreSet.Add(genre.Trim());
+                }
+            }
+        }
+    }
+
+    private async Task<(int Artists, int Albums, int Tracks)> ResolveFinalCountsAsync(CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return (_status.ArtistsDetected, _status.AlbumsDetected, _status.TracksDetected);
+        }
+
+        var stats = await _repository.GetLibraryStatsAsync(cancellationToken);
+        return (stats.TotalArtists, stats.TotalAlbums, stats.TotalTracks);
+    }
+
+    private void PersistScanInfo(int artistCount, int albumCount, int trackCount)
+    {
         _configStore.SaveLastScanInfo(new LibraryConfigStore.LastScanInfo(
             DateTimeOffset.UtcNow,
-            snapshot.Artists.Count,
-            snapshot.Albums.Count,
-            snapshot.Tracks.Count));
+            artistCount,
+            albumCount,
+            trackCount));
     }
 
     private async Task SyncRepositoryArtifactsAsync(
         List<FolderDto> enabledFolders,
-        LibraryConfigStore.LocalLibrarySnapshot snapshot,
-        bool reset,
+        Dictionary<string, List<string>> artistGenres,
         bool skipSpotifyFetch,
         bool refreshImages,
         bool cacheSpotifyImages,
@@ -250,8 +371,7 @@ public sealed class LibraryScanRunner
             return;
         }
 
-        await IngestSnapshotAsync(enabledFolders, snapshot, reset, cancellationToken);
-        await StoreLocalGenresAsync(snapshot, cancellationToken);
+        await StoreLocalGenresAsync(artistGenres, cancellationToken);
         if (!skipSpotifyFetch)
         {
             await EnqueueSpotifyArtistMetadataAsync(cancellationToken);
@@ -287,19 +407,21 @@ public sealed class LibraryScanRunner
         AddInfoLog($"SQLite ingest completed ({ingestPayload.Artists.Count} artists, {ingestPayload.Albums.Count} albums, {ingestPayload.Tracks.Count} tracks).");
     }
 
-    private async Task StoreLocalGenresAsync(LibraryConfigStore.LocalLibrarySnapshot snapshot, CancellationToken cancellationToken)
+    private async Task StoreLocalGenresAsync(
+        IReadOnlyDictionary<string, List<string>> artistGenres,
+        CancellationToken cancellationToken)
     {
-        if (snapshot.ArtistGenres.Count == 0)
+        if (artistGenres.Count == 0)
         {
             return;
         }
 
-        foreach (var (artistName, genres) in snapshot.ArtistGenres)
+        foreach (var (artistName, genres) in artistGenres)
         {
             await _artistCacheRepository.UpsertGenresAsync("local", artistName, genres, cancellationToken);
         }
 
-        AddInfoLog($"Local genres stored ({snapshot.ArtistGenres.Count} artists).");
+        AddInfoLog($"Local genres stored ({artistGenres.Count} artists).");
     }
 
     private async Task EnqueueSpotifyArtistMetadataAsync(CancellationToken cancellationToken)

@@ -5059,12 +5059,17 @@ LIMIT 1;";
 
     public async Task UpsertArtistSourceIdAsync(long artistId, string source, string sourceId, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(sourceId))
+        if (artistId <= 0 || string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(sourceId))
         {
             return;
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string artistExistsSql = @"
+SELECT 1
+FROM artist
+WHERE id = @artistId
+LIMIT 1;";
         const string deleteSql = @"
 DELETE FROM artist_source
 WHERE artist_id = @artistId
@@ -5081,6 +5086,16 @@ INSERT INTO artist_source (artist_id, source, source_id)
 VALUES (@artistId, @source, @sourceId)
 ON CONFLICT(artist_id, source) DO UPDATE SET
     source_id = excluded.source_id;";
+
+        await using (var artistExistsCommand = new SqliteCommand(artistExistsSql, connection))
+        {
+            artistExistsCommand.Parameters.AddWithValue("artistId", artistId);
+            var existsResult = await artistExistsCommand.ExecuteScalarAsync(cancellationToken);
+            if (existsResult is null || existsResult == DBNull.Value)
+            {
+                return;
+            }
+        }
 
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         await using (var deleteCommand = new SqliteCommand(deleteSql, connection, (SqliteTransaction)transaction))
@@ -5104,10 +5119,32 @@ ON CONFLICT(artist_id, source) DO UPDATE SET
             upsertCommand.Parameters.AddWithValue("artistId", artistId);
             upsertCommand.Parameters.AddWithValue(SourceField, source);
             upsertCommand.Parameters.AddWithValue(SourceIdField, sourceId);
-            await upsertCommand.ExecuteNonQueryAsync(cancellationToken);
+            try
+            {
+                await upsertCommand.ExecuteNonQueryAsync(cancellationToken);
+            }
+            catch (SqliteException ex) when (IsForeignKeyViolation(ex))
+            {
+                try
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                }
+                catch
+                {
+                    // best effort only
+                }
+
+                return;
+            }
         }
 
         await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static bool IsForeignKeyViolation(SqliteException ex)
+    {
+        return ex.SqliteErrorCode == 19
+            && ex.Message.Contains("FOREIGN KEY constraint failed", StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task RemoveArtistSourceAsync(long artistId, string source, CancellationToken cancellationToken = default)
