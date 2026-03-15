@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Core.Models.Settings;
@@ -25,8 +26,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
         DateTimeOffset PipelineStartedAt,
         string AutomationConfigJson,
         AutoTagStages Stages,
-        bool ResumeEnhancementAfterDownload);
-    private sealed record PipelineEnhancementResult(bool ShouldExitPipeline, bool PausedForDownload);
+        string DownloadRootPath);
     private sealed record EnhancementTargetPlan(List<EnhancementTarget> Targets, List<EnhancementTarget> DueTargets);
     private sealed record EnhancementTargetRunResult(bool Attempted, bool PausedForDownload);
     private sealed record EnhancementExecutionResult(List<EnhancementTarget> AttemptedTargets, bool PausedForDownload, bool AbortedForDownload);
@@ -72,7 +72,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
     private bool _taggingInProgress;
     private volatile bool _enhancementStageRunning;
     private volatile bool _enhancementPauseRequested;
-    private volatile bool _enhancementResumePending;
     private string? _activeEnhancementJobId;
 
     public DownloadOrchestrationService(
@@ -150,7 +149,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
     public void MarkDownloadQueued()
     {
-        _pipelineRequested = true;
+        _queueIdleSince = null;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -256,24 +255,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
         }
 
         await RunPipelineEnrichmentAsync(context, cancellationToken);
-        var enhancementResult = await RunPipelineEnhancementAsync(context, cancellationToken);
-        if (enhancementResult.ShouldExitPipeline)
-        {
-            if (enhancementResult.PausedForDownload)
-            {
-                _enhancementResumePending = true;
-                _pipelineRequested = true;
-                _queueIdleSince = null;
-                _lastPipelineCompletedAt = context.PipelineStartedAt;
-            }
-            return;
-        }
-
-        if (context.Stages.HasEnhancement)
-        {
-            _enhancementResumePending = false;
-        }
-
         if (!await EnsurePipelineStillIdleAsync(cancellationToken))
         {
             return;
@@ -295,10 +276,9 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return null;
         }
 
-        var settings = _settingsService.LoadSettings();
-        if (string.IsNullOrWhiteSpace(settings.DownloadLocation))
+        if (!TryResolveDownloadEnrichmentRoot(out var downloadRootPath, out var error))
         {
-            _logger.LogWarning("Orchestration skipped: download location is not configured.");
+            _logger.LogWarning("Orchestration skipped: {Reason}", error);
             _lastPipelineCompletedAt = pipelineStartedAt;
             return null;
         }
@@ -315,32 +295,35 @@ public sealed class DownloadOrchestrationService : BackgroundService
             pipelineStartedAt,
             configJson,
             GetAutoTagStages(configJson),
-            _enhancementResumePending);
+            downloadRootPath);
     }
 
     private async Task RunPipelineEnrichmentAsync(PipelineRunContext context, CancellationToken cancellationToken)
     {
-        if (context.Stages.HasEnrichment && !context.ResumeEnhancementAfterDownload)
+        if (context.Stages.HasEnrichment)
         {
-            await RunPostDownloadEnrichmentAsync(context.AutomationConfigJson, cancellationToken);
+            await RunPostDownloadEnrichmentAsync(
+                context.AutomationConfigJson,
+                context.DownloadRootPath,
+                cancellationToken);
             return;
         }
 
-        var message = context.Stages.HasEnrichment
-            ? "Automation: enrichment skipped while resuming paused enhancement run."
-            : "Automation: post-download enrichment skipped (no enrichment tags configured).";
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            message));
+            "Automation: post-download enrichment skipped (no enrichment tags configured)."));
     }
 
-    private async Task RunPostDownloadEnrichmentAsync(string automationConfigJson, CancellationToken cancellationToken)
+    private async Task RunPostDownloadEnrichmentAsync(
+        string automationConfigJson,
+        string downloadRootPath,
+        CancellationToken cancellationToken)
     {
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            "Automation: post-download enrichment starting."));
+            $"Automation: post-download enrichment starting for {downloadRootPath}."));
 
         AutoTagJob? enrichmentJob = null;
         try
@@ -349,9 +332,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
             var enrichmentConfig = ClearEnhancementTags(automationConfigJson);
             var profileContext = await BuildAutomationProfileContextAsync();
             var enrichmentProfile = profileContext.DefaultProfile;
-            var settings = _settingsService.LoadSettings();
             enrichmentJob = await _autoTagService.StartJob(
-                settings.DownloadLocation,
+                downloadRootPath,
                 enrichmentConfig,
                 "automation",
                 enrichmentProfile?.Technical,
@@ -370,65 +352,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
             $"Automation: enrichment finished (status={enrichmentJob?.Status ?? "skipped"})."));
     }
 
-    private async Task<PipelineEnhancementResult> RunPipelineEnhancementAsync(PipelineRunContext context, CancellationToken cancellationToken)
-    {
-        var hasAnyStages = context.Stages.HasEnrichment || context.Stages.HasEnhancement;
-        if (!context.Stages.HasEnhancement)
-        {
-            await LogNoEnhancementConfiguredAsync(hasAnyStages);
-            return new PipelineEnhancementResult(false, false);
-        }
-
-        if (!context.ResumeEnhancementAfterDownload)
-        {
-            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "info",
-                "Automation: enhancement deferred to scheduled runs (not chained with post-download enrichment)."));
-            return new PipelineEnhancementResult(false, false);
-        }
-
-        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-            DateTimeOffset.UtcNow,
-            "info",
-            "Automation: enhancement resume pending; running library scan and Plex scan before enhancement."));
-
-        var preEnhancementScanReady = await RunLibraryAndPlexSyncAsync("before enhancement resume", cancellationToken);
-        if (!preEnhancementScanReady)
-        {
-            _pipelineRequested = true;
-            _queueIdleSince = null;
-            _lastPipelineCompletedAt = context.PipelineStartedAt;
-            return new PipelineEnhancementResult(true, false);
-        }
-
-        var pausedForDownload = await RunEnhancementStageAsync(
-            context.AutomationConfigJson,
-            forceRunEvenIfNotDue: true,
-            sourceLabel: "resume",
-            cancellationToken: cancellationToken);
-        return new PipelineEnhancementResult(pausedForDownload, pausedForDownload);
-    }
-
-    private Task LogNoEnhancementConfiguredAsync(bool hasAnyStages)
-    {
-        if (hasAnyStages)
-        {
-            _enhancementResumePending = false;
-            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "info",
-                "Automation: enhancement skipped (no gap-fill tags configured)."));
-            return Task.CompletedTask;
-        }
-
-        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-            DateTimeOffset.UtcNow,
-            "info",
-            "Automation: post-download enrichment skipped (no enrichment/enhancement tags configured)."));
-        return Task.CompletedTask;
-    }
-
     private async Task<bool> EnsurePipelineStillIdleAsync(CancellationToken cancellationToken)
     {
         if (!await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
@@ -439,6 +362,56 @@ public sealed class DownloadOrchestrationService : BackgroundService
         _logger.LogInformation("Automation halted: downloads started during AutoTag.");
         _pipelineRequested = true;
         return false;
+    }
+
+    private bool TryResolveDownloadEnrichmentRoot(out string downloadRootPath, out string error)
+    {
+        downloadRootPath = string.Empty;
+        error = string.Empty;
+
+        string configuredPath;
+        try
+        {
+            configuredPath = _settingsService.LoadSettings().DownloadLocation?.Trim() ?? string.Empty;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            error = $"download location could not be loaded ({ex.Message}).";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(configuredPath))
+        {
+            error = "download location is not configured.";
+            return false;
+        }
+
+        var ioPath = DownloadPathResolver.ResolveIoPath(configuredPath);
+        if (string.IsNullOrWhiteSpace(ioPath))
+        {
+            error = $"download location '{configuredPath}' resolved to an empty path.";
+            return false;
+        }
+
+        string normalizedPath;
+        try
+        {
+            normalizedPath = Path.GetFullPath(ioPath);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            error = $"download location '{configuredPath}' is invalid ({ex.Message}).";
+            return false;
+        }
+
+        if (!Directory.Exists(normalizedPath))
+        {
+            error = $"download location '{normalizedPath}' is not accessible.";
+            return false;
+        }
+
+        downloadRootPath = normalizedPath;
+        return true;
     }
 
     private async Task RunPostAutoTagStagesAsync(CancellationToken cancellationToken)
@@ -488,11 +461,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
     private async Task RunScheduledEnhancementIfDueAsync(CancellationToken cancellationToken)
     {
-        if (_enhancementResumePending)
-        {
-            return;
-        }
-
         if (await HasPendingPostDownloadEnrichmentAsync(cancellationToken))
         {
             _pipelineRequested = true;
@@ -516,19 +484,12 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return;
         }
 
-        var paused = await RunEnhancementStageAsync(
+        _ = await RunEnhancementStageAsync(
             configJson,
             forceRunEvenIfNotDue: false,
             sourceLabel: "schedule",
             quietWhenNoDue: true,
             cancellationToken: cancellationToken);
-
-        if (paused)
-        {
-            _enhancementResumePending = true;
-            _pipelineRequested = true;
-            _queueIdleSince = null;
-        }
     }
 
     private async Task<bool> RunEnhancementStageAsync(
@@ -741,7 +702,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
             && string.Equals(enhancementJob.Status, "canceled", StringComparison.OrdinalIgnoreCase)
             && _enhancementPauseRequested)
         {
-            _enhancementResumePending = true;
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
@@ -752,38 +712,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
         var attempted = enhancementJob != null
             && !string.Equals(enhancementJob.Status, "canceled", StringComparison.OrdinalIgnoreCase);
         return new EnhancementTargetRunResult(attempted, false);
-    }
-
-    private async Task<bool> RunLibraryAndPlexSyncAsync(string phaseLabel, CancellationToken cancellationToken)
-    {
-        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-            DateTimeOffset.UtcNow,
-            "info",
-            $"Automation: library scan starting {phaseLabel}."));
-
-        await _scanRunner.RunAsync(
-            refreshImages: false,
-            reset: false,
-            folderId: null,
-            skipSpotifyFetch: false,
-            cacheSpotifyImages: false,
-            cancellationToken: cancellationToken);
-
-        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
-        {
-            _logger.LogInformation("Automation halted: downloads started during library scan ({PhaseLabel}).", phaseLabel);
-            return false;
-        }
-
-        await TriggerPlexScanAsync(cancellationToken);
-
-        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
-        {
-            _logger.LogInformation("Automation halted: downloads started during Plex scan ({PhaseLabel}).", phaseLabel);
-            return false;
-        }
-
-        return true;
     }
 
     private void MarkEnhancementStageStarted(AutoTagJob? job)
@@ -830,16 +758,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
             }
 
             _enhancementPauseRequested = true;
-            var orchestrationManagedEnhancement = _enhancementStageRunning
-                && !string.IsNullOrWhiteSpace(_activeEnhancementJobId)
-                && string.Equals(_activeEnhancementJobId, jobId, StringComparison.OrdinalIgnoreCase);
-
-            if (orchestrationManagedEnhancement)
-            {
-                _enhancementResumePending = true;
-                _pipelineRequested = true;
-                _queueIdleSince = null;
-            }
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",

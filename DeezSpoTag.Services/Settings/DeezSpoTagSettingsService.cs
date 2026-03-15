@@ -20,6 +20,8 @@ public class DeezSpoTagSettingsService : ISettingsService
     private const string DeezSpoTagFolderName = "deezspotag";
     private const string ConfigFileName = "config.json";
     private const string ContainerDownloadsPath = "/downloads";
+    private const string LegacyContainerDownloadsPath = "/data/downloads";
+    private const string LegacyAppDataDownloadsPath = "/app/Data/downloads";
     private const string SyllableLyricsType = "syllable-lyrics";
     private const string UnsyncedLyricsType = "unsynced-lyrics";
     private static readonly string[] CanonicalLyricsProviders = { "apple", "deezer", "spotify", "lrclib" };
@@ -248,6 +250,7 @@ public class DeezSpoTagSettingsService : ISettingsService
         }
 
         var defaultSettings = GetStaticDefaultSettings();
+        CheckAndFixSettings(defaultSettings, out _);
         SaveSettingsLocked(defaultSettings);
         return defaultSettings;
     }
@@ -314,6 +317,7 @@ public class DeezSpoTagSettingsService : ISettingsService
     {
         lock (_settingsSync)
         {
+            CheckAndFixSettings(settings, out _);
             SaveSettingsLocked(settings);
         }
     }
@@ -822,11 +826,6 @@ public class DeezSpoTagSettingsService : ISettingsService
 
     private static string NormalizeDownloadLocation(string downloadLocation, string defaultDownloadLocation)
     {
-        if (IsRunningInContainer())
-        {
-            return NormalizeContainerDownloadLocation(downloadLocation);
-        }
-
         if (string.IsNullOrWhiteSpace(downloadLocation))
         {
             return defaultDownloadLocation;
@@ -836,6 +835,18 @@ public class DeezSpoTagSettingsService : ISettingsService
         if (string.IsNullOrWhiteSpace(normalized))
         {
             return defaultDownloadLocation;
+        }
+
+        if (IsLegacyContainerDownloadLocation(normalized))
+        {
+            normalized = IsRunningInContainer()
+                ? ContainerDownloadsPath
+                : defaultDownloadLocation;
+        }
+
+        if (IsRunningInContainer())
+        {
+            return NormalizeContainerDownloadLocation(normalized);
         }
 
         if (DownloadPathResolver.IsSmbPath(normalized))
@@ -866,7 +877,7 @@ public class DeezSpoTagSettingsService : ISettingsService
             : requestedPath.Trim();
 
         // One-way migration for legacy container path accidentally coupled to app data.
-        if (string.Equals(normalizedPath, "/data/downloads", StringComparison.OrdinalIgnoreCase))
+        if (IsLegacyContainerDownloadLocation(normalizedPath))
         {
             normalizedPath = ContainerDownloadsPath;
         }
@@ -952,6 +963,16 @@ public class DeezSpoTagSettingsService : ISettingsService
         {
             return path.Trim();
         }
+    }
+
+    private static bool IsLegacyContainerDownloadLocation(string path)
+    {
+        var normalized = path
+            .Trim()
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        return string.Equals(normalized, LegacyContainerDownloadsPath, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, LegacyAppDataDownloadsPath, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsPathBackedByMountedVolume(string path)
@@ -1109,6 +1130,7 @@ public class DeezSpoTagSettingsService : ISettingsService
     public DeezSpoTagSettings ResetToDefaults()
     {
         var defaultSettings = GetStaticDefaultSettings();
+        CheckAndFixSettings(defaultSettings, out _);
         SaveSettings(defaultSettings);
         return defaultSettings;
     }

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -88,6 +89,19 @@ public class AutoTagJobsController : ControllerBase
             return BadRequest("Config must be an object.");
         }
 
+        if (HasRequestedEnrichmentTags(configNode))
+        {
+            if (!TryResolveConfiguredDownloadRoot(out var downloadRoot, out var error))
+            {
+                return BadRequest(error);
+            }
+
+            if (!AutoTagFolderScopeHelper.IsPathInAllowedRoots(normalizedPath, new[] { downloadRoot }))
+            {
+                return BadRequest("Enrichment runs are restricted to the configured Download/Staging folder.");
+            }
+        }
+
         configNode.Remove("playlistPath");
         configNode.Remove("isPlaylist");
 
@@ -118,6 +132,84 @@ public class AutoTagJobsController : ControllerBase
             selectedProfile?.Id,
             selectedProfile?.Name);
         return Ok(new { jobId = job.Id, status = job.Status });
+    }
+
+    private bool TryResolveConfiguredDownloadRoot(out string downloadRoot, out string error)
+    {
+        downloadRoot = string.Empty;
+        error = string.Empty;
+
+        string configuredPath;
+        try
+        {
+            configuredPath = _settingsService.LoadSettings().DownloadLocation?.Trim() ?? string.Empty;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            error = $"Download/Staging folder could not be loaded ({ex.Message}).";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(configuredPath))
+        {
+            error = "Set Settings > Download/Staging folder before running enrichment.";
+            return false;
+        }
+
+        var ioPath = DownloadPathResolver.ResolveIoPath(configuredPath);
+        if (string.IsNullOrWhiteSpace(ioPath))
+        {
+            error = $"Configured Download/Staging folder '{configuredPath}' resolved to an empty path.";
+            return false;
+        }
+
+        string normalizedPath;
+        try
+        {
+            normalizedPath = Path.GetFullPath(ioPath);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            error = $"Configured Download/Staging folder '{configuredPath}' is invalid ({ex.Message}).";
+            return false;
+        }
+
+        if (!Directory.Exists(normalizedPath))
+        {
+            error = $"Configured Download/Staging folder '{normalizedPath}' is not accessible.";
+            return false;
+        }
+
+        downloadRoot = normalizedPath;
+        return true;
+    }
+
+    private static bool HasRequestedEnrichmentTags(JsonObject configNode)
+    {
+        if (configNode["tags"] is not JsonArray tags)
+        {
+            return false;
+        }
+
+        foreach (var tagNode in tags)
+        {
+            string? value;
+            try
+            {
+                value = tagNode?.GetValue<string>();
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     [HttpGet("jobs/{id}")]
