@@ -170,7 +170,7 @@ See `CONTRIBUTING.md`.
 - Data roots:
   - App state and config in container: `/data` (mapped to host Workers data directory)
   - Downloads: `/downloads`
-  - Library scan mount: `/library` (read-only by default)
+  - Library scan mount: `/library`
 
 ---
 

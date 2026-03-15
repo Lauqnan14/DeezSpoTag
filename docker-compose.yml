@@ -38,7 +38,6 @@ services:
       - type: bind
         source: ${LIBRARY_PATH:-./Library}
         target: /library
-        read_only: true
         bind:
           create_host_path: true
     restart: unless-stopped
