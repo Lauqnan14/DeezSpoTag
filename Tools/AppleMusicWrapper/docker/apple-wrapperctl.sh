@@ -19,7 +19,18 @@ cmd="${1:-}"
 shift || true
 
 compose() {
-  docker compose -f "$COMPOSE_FILE" "$@"
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    docker compose -f "$COMPOSE_FILE" "$@"
+    return
+  fi
+
+  if command -v docker-compose >/dev/null 2>&1; then
+    docker-compose -f "$COMPOSE_FILE" "$@"
+    return
+  fi
+
+  echo "Docker Compose CLI is unavailable. Install docker compose plugin or docker-compose." >&2
+  exit 127
 }
 
 escape_env_value() {

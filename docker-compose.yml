@@ -5,6 +5,8 @@ services:
     pull_policy: always
     network_mode: host
     user: "${PUID:-1000}:${PGID:-1000}"
+    group_add:
+      - "${DOCKER_SOCKET_GID:-0}"
     env_file:
       - path: .env
         required: false
@@ -37,6 +39,10 @@ services:
         target: /library
         bind:
           create_host_path: true
+      # Required for apple-wrapperctl helper commands (login/2FA/sanitize) from inside container.
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
     restart: unless-stopped
 
   apple-wrapper:
@@ -44,7 +50,10 @@ services:
     image: ${APPLE_WRAPPER_IMAGE:-ghcr.io/lauqnan14/deezspotag-apple-wrapper:latest}
     pull_policy: always
     network_mode: host
+    privileged: true
     init: true
+    pid: host
+    ipc: host
     security_opt:
       - seccomp:unconfined
       - apparmor:unconfined

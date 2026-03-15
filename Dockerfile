@@ -13,6 +13,8 @@ RUN dotnet publish DeezSpoTag.Web/DeezSpoTag.Web.csproj -c Release -o /app/publi
     && mkdir -p /app/publish/Tools \
     && cp -a Tools/AppleMusicWrapper /app/publish/Tools/AppleMusicWrapper
 
+FROM docker:27-cli AS docker-cli
+
 FROM golang:1.23-bookworm AS apple-wrapper-build
 WORKDIR /work
 
@@ -70,6 +72,9 @@ RUN apt-get update \
     && useradd --uid 1001 --gid 1001 --create-home --home-dir /home/appuser --shell /usr/sbin/nologin appuser
 
 COPY docker/openssl-legacy.cnf /etc/ssl/openssl-legacy.cnf
+
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 
 COPY --from=media-tools /usr/local/bin/mp4decrypt /usr/local/bin/mp4decrypt
 
