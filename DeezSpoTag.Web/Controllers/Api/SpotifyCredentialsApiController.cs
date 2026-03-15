@@ -263,7 +263,21 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         var state = await _userAuthStore.LoadAsync(userId);
 
         var blobDir = _userAuthStore.GetUserBlobDir(userId);
-        var result = await _blobService.GenerateBlobAsync(name, request?.Headless ?? false, blobDir, cancellationToken);
+        SpotifyBlobResult result;
+        try
+        {
+            result = await _blobService.GenerateBlobAsync(name, request?.Headless ?? false, blobDir, cancellationToken);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Spotify credentials generation failed for account {AccountName}.", name);
+            return BadRequest(ex.Message);
+        }
+        catch (FileNotFoundException ex)
+        {
+            _logger.LogWarning(ex, "Spotify credentials generation dependencies are missing for account {AccountName}.", name);
+            return StatusCode(StatusCodes.Status500InternalServerError, ex.Message);
+        }
         var librespotBlobPath = result.BlobPath;
         string? webPlayerBlobPath = null;
 

@@ -1,11 +1,8 @@
 services:
   deezspotag:
     container_name: deezspotag
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: ${DEEZSPOTAG_IMAGE:-deezspotag:local}
-    pull_policy: never
+    image: ${DEEZSPOTAG_IMAGE:-ghcr.io/lauqnan14/deezspotag:latest}
+    pull_policy: always
     network_mode: host
     user: "${PUID:-1000}:${PGID:-1000}"
     env_file:
@@ -44,11 +41,8 @@ services:
 
   apple-wrapper:
     container_name: apple-wrapper
-    build:
-      context: .
-      dockerfile: Tools/AppleMusicWrapper/Dockerfile
-    image: ${APPLE_WRAPPER_IMAGE:-apple-wrapper:local}
-    pull_policy: never
+    image: ${APPLE_WRAPPER_IMAGE:-ghcr.io/lauqnan14/deezspotag-apple-wrapper:latest}
+    pull_policy: always
     network_mode: host
     init: true
     security_opt:

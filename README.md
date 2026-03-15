@@ -71,7 +71,7 @@ curl -L -o .env https://raw.githubusercontent.com/Lauqnan14/DeezSpoTag/main/src/
 Then configure `.env` and start:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 Open:
@@ -113,7 +113,7 @@ Use this flow when you want to run the web app locally via `dotnet run` but keep
 
 ```bash
 docker compose stop deezspotag
-docker compose up -d --build apple-wrapper
+docker compose up -d apple-wrapper
 ```
 
 Then start the app locally with Workers data paths:
