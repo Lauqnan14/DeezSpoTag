@@ -1771,13 +1771,13 @@ public sealed class SpotifyMetadataService
         try
         {
             var resolvedAccounts = await ResolveActiveSpotifyAccountsAsync();
-            var userBlobPath = resolvedAccounts.UserAccount?.WebPlayerBlobPath ?? resolvedAccounts.UserAccount?.BlobPath;
+            var userBlobPath = resolvedAccounts.UserAccount?.WebPlayerBlobPath;
             if (await IsValidWebPlayerBlobAsync(userBlobPath, cancellationToken))
             {
                 return userBlobPath;
             }
 
-            var platformBlobPath = NormalizeOptionalPath(resolvedAccounts.PlatformAccount?.BlobPath);
+            var platformBlobPath = NormalizeOptionalPath(resolvedAccounts.PlatformAccount?.WebPlayerBlobPath);
             return await IsValidWebPlayerBlobAsync(platformBlobPath, cancellationToken)
                 ? platformBlobPath
                 : null;

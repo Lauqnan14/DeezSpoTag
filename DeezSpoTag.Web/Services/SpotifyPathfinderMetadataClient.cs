@@ -1341,70 +1341,31 @@ public sealed class SpotifyPathfinderMetadataClient
 						return userBlob;
 					}
 				}
+
 				PlatformAuthState state = await _platformAuthService.LoadAsync();
 				var spotifyState = state.Spotify;
 				string? active = spotifyState?.ActiveAccount;
 				if (string.IsNullOrWhiteSpace(active))
 				{
-					string? fallback = TryResolveLatestWebPlayerBlobPath();
-					if (!string.IsNullOrWhiteSpace(fallback))
-					{
-						_logger.LogInformation("Spotify Pathfinder using latest web-player blob fallback: {BlobPath}", fallback);
-					return fallback;
-					}
 					return null;
 				}
-				SpotifyAccount? account = spotifyState?.Accounts.FirstOrDefault((SpotifyAccount a) => a.Name.Equals(active, StringComparison.OrdinalIgnoreCase));
-				if (string.IsNullOrWhiteSpace(account?.BlobPath))
-				{
-					string? fallback2 = TryResolveLatestWebPlayerBlobPath();
-					if (!string.IsNullOrWhiteSpace(fallback2))
-					{
-						_logger.LogInformation("Spotify Pathfinder using latest web-player blob fallback: {BlobPath}", fallback2);
-					return fallback2;
-				}
-				return null;
-			}
-				if (await _blobService.IsWebPlayerBlobAsync(account.BlobPath, cancellationToken))
-				{
-					return account.BlobPath;
-				}
-				string? latest = TryResolveLatestWebPlayerBlobPath();
-				if (!string.IsNullOrWhiteSpace(latest))
-				{
-					_logger.LogInformation("Spotify Pathfinder using latest web-player blob fallback: {BlobPath}", latest);
-				return latest;
-			}
-			return null;
-		}
-		catch (Exception ex) when (!(ex is OperationCanceledException))
-		{
-			_logger.LogDebug(ex, "Failed to resolve Spotify blob path for Pathfinder.");
-			return null;
-		}
-	}
 
-	private string? TryResolveLatestWebPlayerBlobPath()
-	{
-		try
-		{
-			string path = AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
-			string path2 = Path.Join(path, "spotify", "users");
-			if (!Directory.Exists(path2))
+				SpotifyAccount? account = spotifyState?.Accounts.FirstOrDefault(a => a.Name.Equals(active, StringComparison.OrdinalIgnoreCase));
+				if (string.IsNullOrWhiteSpace(account?.WebPlayerBlobPath))
+				{
+					return null;
+				}
+
+				return await _blobService.IsWebPlayerBlobAsync(account.WebPlayerBlobPath, cancellationToken)
+					? account.WebPlayerBlobPath
+					: null;
+			}
+			catch (Exception ex) when (!(ex is OperationCanceledException))
 			{
+				_logger.LogDebug(ex, "Failed to resolve Spotify blob path for Pathfinder.");
 				return null;
 			}
-			return (from fileName in Directory.EnumerateFiles(path2, "*.web.json", SearchOption.AllDirectories)
-				select new FileInfo(fileName) into info
-				orderby info.LastWriteTimeUtc descending
-				select info).FirstOrDefault()?.FullName;
 		}
-		catch (Exception ex) when (!(ex is OperationCanceledException))
-		{
-			_logger.LogDebug(ex, "Failed to resolve latest Spotify web-player blob.");
-			return null;
-		}
-	}
 
 	private async Task<WebPlayerSessionInfo?> FetchWebPlayerSessionInfoFromBlobAsync(HttpClient cookieClient, SpotifyBlobPayload payload, CancellationToken cancellationToken)
 	{

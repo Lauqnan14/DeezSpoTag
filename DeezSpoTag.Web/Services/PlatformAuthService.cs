@@ -29,6 +29,8 @@ public class SpotifyAccount
     public string Name { get; set; } = string.Empty;
     public string? Region { get; set; }
     public string? BlobPath { get; set; }
+    public string? LibrespotBlobPath { get; set; }
+    public string? WebPlayerBlobPath { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
 }
@@ -110,7 +112,7 @@ public class PlatformAuthService
     private readonly record struct AuthStatusSnapshot(
         bool SpotifyConfigured,
         string? SpotifyAccount,
-        string? SpotifyBlob,
+        string? SpotifyWebPlayerBlob,
         bool DiscogsConfigured,
         bool LastFmConfigured,
         bool BpmSupremeConfigured,
@@ -450,7 +452,7 @@ public class PlatformAuthService
             "Auth status: SpotifyApi={SpotifyApi} SpotifyAccount={SpotifyAccount} SpotifyBlob={SpotifyBlob} Discogs={Discogs} LastFm={LastFm} BpmSupreme={BpmSupreme} Plex={Plex} Jellyfin={Jellyfin} AppleMusic={AppleMusic}",
             snapshot.SpotifyConfigured ? "configured" : MissingStatus,
             string.IsNullOrWhiteSpace(snapshot.SpotifyAccount) ? MissingStatus : PresentStatus,
-            string.IsNullOrWhiteSpace(snapshot.SpotifyBlob) ? MissingStatus : PresentStatus,
+            string.IsNullOrWhiteSpace(snapshot.SpotifyWebPlayerBlob) ? MissingStatus : PresentStatus,
             snapshot.DiscogsConfigured ? PresentStatus : MissingStatus,
             snapshot.LastFmConfigured ? PresentStatus : MissingStatus,
             snapshot.BpmSupremeConfigured ? PresentStatus : MissingStatus,
@@ -462,14 +464,14 @@ public class PlatformAuthService
     private static AuthStatusSnapshot BuildAuthStatusSnapshot(PlatformAuthState state)
     {
         var spotifyAccount = state.Spotify?.ActiveAccount;
-        var spotifyBlob = state.Spotify?.Accounts
+        var spotifyWebPlayerBlob = state.Spotify?.Accounts
             .FirstOrDefault(a => a.Name.Equals(spotifyAccount ?? string.Empty, StringComparison.OrdinalIgnoreCase))
-            ?.BlobPath;
+            ?.WebPlayerBlobPath;
 
         return new AuthStatusSnapshot(
             IsSpotifyConfigured(state.Spotify),
             spotifyAccount,
-            spotifyBlob,
+            spotifyWebPlayerBlob,
             !string.IsNullOrWhiteSpace(state.Discogs?.Token),
             !string.IsNullOrWhiteSpace(state.LastFm?.ApiKey),
             IsBpmSupremeConfigured(state.BpmSupreme),
@@ -483,7 +485,7 @@ public class PlatformAuthService
         return
             $"SpotifyApi:{(snapshot.SpotifyConfigured ? "configured" : MissingStatus)}|" +
             $"SpotifyAccount:{(string.IsNullOrWhiteSpace(snapshot.SpotifyAccount) ? MissingStatus : snapshot.SpotifyAccount)}|" +
-            $"SpotifyBlob:{(string.IsNullOrWhiteSpace(snapshot.SpotifyBlob) ? MissingStatus : PresentStatus)}|" +
+            $"SpotifyBlob:{(string.IsNullOrWhiteSpace(snapshot.SpotifyWebPlayerBlob) ? MissingStatus : PresentStatus)}|" +
             $"Discogs:{(snapshot.DiscogsConfigured ? PresentStatus : MissingStatus)}|" +
             $"LastFm:{(snapshot.LastFmConfigured ? PresentStatus : MissingStatus)}|" +
             $"BpmSupreme:{(snapshot.BpmSupremeConfigured ? PresentStatus : MissingStatus)}|" +
@@ -533,9 +535,10 @@ public class PlatformAuthService
         foreach (var account in accounts)
         {
             updated |= TryNormalizeSpotifyAccountBlobPath(account, blobRoot);
+            updated |= TryClassifySpotifyAccountBlobPaths(account);
         }
 
-        return updated || TryAttachNewestSpotifyWebBlob(state);
+        return updated;
     }
 
     private bool TryNormalizeSpotifyAccountBlobPath(SpotifyAccount account, string blobRoot)
@@ -565,6 +568,45 @@ public class PlatformAuthService
 
         account.BlobPath = candidatePath;
         return true;
+    }
+
+    private static bool TryClassifySpotifyAccountBlobPaths(SpotifyAccount account)
+    {
+        var updated = false;
+        if (string.IsNullOrWhiteSpace(account.BlobPath))
+        {
+            return false;
+        }
+
+        if (LooksLikeWebPlayerBlobPath(account.BlobPath))
+        {
+            if (!string.Equals(account.WebPlayerBlobPath, account.BlobPath, StringComparison.Ordinal))
+            {
+                account.WebPlayerBlobPath = account.BlobPath;
+                updated = true;
+            }
+        }
+        else
+        {
+            if (!string.Equals(account.LibrespotBlobPath, account.BlobPath, StringComparison.Ordinal))
+            {
+                account.LibrespotBlobPath = account.BlobPath;
+                updated = true;
+            }
+        }
+
+        return updated;
+    }
+
+    private static bool LooksLikeWebPlayerBlobPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        var fileName = Path.GetFileName(path);
+        return fileName.EndsWith(".web.json", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsLegacyWebBlobPath(string path)
@@ -601,53 +643,4 @@ public class PlatformAuthService
         return true;
     }
 
-    private bool TryAttachNewestSpotifyWebBlob(PlatformAuthState state)
-    {
-        try
-        {
-            var userRoot = Path.Join(_dataRoot, "spotify", "users");
-            if (!Directory.Exists(userRoot))
-            {
-                return false;
-            }
-
-            var newestWebBlob = Directory.EnumerateFiles(userRoot, "*.web.json", SearchOption.AllDirectories)
-                .Select(path => new FileInfo(path))
-                .OrderByDescending(info => info.LastWriteTimeUtc)
-                .FirstOrDefault();
-            if (newestWebBlob == null || state.Spotify == null)
-            {
-                return false;
-            }
-
-            var accountName = Path.GetFileNameWithoutExtension(newestWebBlob.Name);
-            if (accountName.EndsWith(".web", StringComparison.OrdinalIgnoreCase))
-            {
-                accountName = accountName[..^4];
-            }
-
-            var account = state.Spotify.Accounts.FirstOrDefault(a =>
-                a.Name.Equals(accountName, StringComparison.OrdinalIgnoreCase));
-            if (account == null)
-            {
-                account = new SpotifyAccount
-                {
-                    Name = accountName,
-                    CreatedAt = DateTimeOffset.UtcNow,
-                    UpdatedAt = DateTimeOffset.UtcNow
-                };
-                state.Spotify.Accounts.Add(account);
-            }
-
-            account.BlobPath = newestWebBlob.FullName;
-            account.UpdatedAt = DateTimeOffset.UtcNow;
-            state.Spotify.ActiveAccount = accountName;
-            return true;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to normalize Spotify blob paths from user blobs.");
-            return false;
-        }
-    }
 }

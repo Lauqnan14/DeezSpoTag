@@ -269,7 +269,7 @@ public sealed class SpotifyUserAuthStore
 
     private static int GetAccountHealthScore(SpotifyUserAccount account)
     {
-        var hasWebBlob = PathExists(account.WebPlayerBlobPath) || PathExists(account.BlobPath);
+        var hasWebBlob = PathExists(account.WebPlayerBlobPath);
         var hasLibrespotBlob = PathExists(account.LibrespotBlobPath) || PathExists(account.BlobPath);
         if (hasWebBlob && hasLibrespotBlob)
         {
@@ -412,13 +412,7 @@ public sealed class SpotifyUserAuthStore
         {
             return account!.WebPlayerBlobPath!;
         }
-
-        if (string.IsNullOrWhiteSpace(account?.BlobPath))
-        {
-            return null;
-        }
-
-        return account.BlobPath;
+        return null;
     }
 }
 

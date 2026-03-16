@@ -442,7 +442,7 @@ public sealed class SpotifySearchService
             {
                 var account = userState.Accounts.FirstOrDefault(a =>
                     a.Name.Equals(userState.ActiveAccount, StringComparison.OrdinalIgnoreCase));
-                var blobPath = account?.WebPlayerBlobPath ?? account?.BlobPath;
+                var blobPath = account?.WebPlayerBlobPath;
                 if (!string.IsNullOrWhiteSpace(blobPath)
                     && _blobService.BlobExists(blobPath)
                     && await _blobService.IsWebPlayerBlobAsync(blobPath, cancellationToken))
@@ -457,20 +457,12 @@ public sealed class SpotifySearchService
             {
                 var account = state.Spotify!.Accounts.FirstOrDefault(a =>
                     a.Name.Equals(active, StringComparison.OrdinalIgnoreCase));
-                var blobPath = account?.BlobPath;
+                var blobPath = account?.WebPlayerBlobPath;
                 if (!string.IsNullOrWhiteSpace(blobPath)
                     && _blobService.BlobExists(blobPath)
                     && await _blobService.IsWebPlayerBlobAsync(blobPath, cancellationToken))
                 {
                     return blobPath;
-                }
-
-                var resolved = _blobService.GetBlobPath(active);
-                if (!string.IsNullOrWhiteSpace(resolved)
-                    && _blobService.BlobExists(resolved)
-                    && await _blobService.IsWebPlayerBlobAsync(resolved, cancellationToken))
-                {
-                    return resolved;
                 }
             }
         }

@@ -229,7 +229,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
 
         await _userAuthStore.SaveAsync(userId, state);
         _logger.LogInformation("Saved Spotify blob for account {AccountName}", name);
-        await UpdatePlatformSpotifyAccountAsync(name, blobPath, state.ActiveAccount);
+        await UpdatePlatformSpotifyAccountAsync(name, blobPath, blobPath, state.ActiveAccount);
 
         return Ok(new { saved = true, blobPath });
     }
@@ -334,7 +334,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
 
         await _userAuthStore.SaveAsync(userId, state);
-        await UpdatePlatformSpotifyAccountAsync(name, librespotBlobPath, state.ActiveAccount);
+        await UpdatePlatformSpotifyAccountAsync(name, librespotBlobPath, webPlayerBlobPath, state.ActiveAccount);
 
         return Ok(new { generated = true, librespotBlobPath, webPlayerBlobPath });
     }
@@ -391,6 +391,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
                 Name = accountName,
                 Region = region?.Trim(),
                 BlobPath = blobPath,
+                WebPlayerBlobPath = blobPath,
                 CreatedAt = now,
                 UpdatedAt = now,
                 LastValidatedAt = now,
@@ -405,6 +406,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
 
         existing.BlobPath = blobPath;
+        existing.WebPlayerBlobPath = blobPath;
         existing.UpdatedAt = now;
         existing.LastValidatedAt = now;
         if (!string.IsNullOrWhiteSpace(lastKnownGoodBlobPath))
@@ -571,13 +573,14 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
                 {
                     Name = accountName,
                     BlobPath = blobPath,
+                    WebPlayerBlobPath = blobPath,
                     CreatedAt = now,
                     UpdatedAt = now
                 });
             }
             else
             {
-                platformAccount.BlobPath = blobPath;
+                platformAccount.WebPlayerBlobPath = blobPath;
                 platformAccount.UpdatedAt = now;
             }
 
@@ -761,9 +764,13 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         public string? Product { get; set; }
     }
 
-    private async Task UpdatePlatformSpotifyAccountAsync(string accountName, string blobPath, string? activeAccount)
+    private async Task UpdatePlatformSpotifyAccountAsync(
+        string accountName,
+        string librespotBlobPath,
+        string? webPlayerBlobPath,
+        string? activeAccount)
     {
-        if (string.IsNullOrWhiteSpace(accountName) || string.IsNullOrWhiteSpace(blobPath))
+        if (string.IsNullOrWhiteSpace(accountName) || string.IsNullOrWhiteSpace(librespotBlobPath))
         {
             return;
         }
@@ -774,7 +781,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         {
             platformState.Spotify ??= new SpotifyConfig();
             removedBlobPaths = RemoveNonTargetPlatformAccounts(platformState.Spotify, accountName);
-            UpsertPlatformAccount(platformState.Spotify, accountName, blobPath, now);
+            UpsertPlatformAccount(platformState.Spotify, accountName, librespotBlobPath, webPlayerBlobPath, now);
             if (!string.IsNullOrWhiteSpace(activeAccount))
             {
                 platformState.Spotify.ActiveAccount = activeAccount;
@@ -782,7 +789,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             return 0;
         });
 
-        DeleteObsoletePlatformBlobFiles(removedBlobPaths, blobPath);
+        DeleteObsoletePlatformBlobFiles(removedBlobPaths, librespotBlobPath);
     }
 
     private static List<string> RemoveNonTargetPlatformAccounts(SpotifyConfig spotify, string accountName)
@@ -807,7 +814,12 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         return removedBlobPaths;
     }
 
-    private static void UpsertPlatformAccount(SpotifyConfig spotify, string accountName, string blobPath, DateTimeOffset now)
+    private static void UpsertPlatformAccount(
+        SpotifyConfig spotify,
+        string accountName,
+        string librespotBlobPath,
+        string? webPlayerBlobPath,
+        DateTimeOffset now)
     {
         var platformAccount = spotify.Accounts.FirstOrDefault(account =>
             account.Name.Equals(accountName, StringComparison.OrdinalIgnoreCase));
@@ -816,14 +828,18 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             spotify.Accounts.Add(new SpotifyAccount
             {
                 Name = accountName,
-                BlobPath = blobPath,
+                BlobPath = librespotBlobPath,
+                LibrespotBlobPath = librespotBlobPath,
+                WebPlayerBlobPath = webPlayerBlobPath,
                 CreatedAt = now,
                 UpdatedAt = now
             });
             return;
         }
 
-        platformAccount.BlobPath = blobPath;
+        platformAccount.BlobPath = librespotBlobPath;
+        platformAccount.LibrespotBlobPath = librespotBlobPath;
+        platformAccount.WebPlayerBlobPath = webPlayerBlobPath ?? platformAccount.WebPlayerBlobPath;
         platformAccount.UpdatedAt = now;
     }
 
@@ -1188,6 +1204,8 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
                 Name = platformAccount.Name,
                 Region = platformAccount.Region,
                 BlobPath = platformAccount.BlobPath,
+                LibrespotBlobPath = platformAccount.LibrespotBlobPath,
+                WebPlayerBlobPath = platformAccount.WebPlayerBlobPath,
                 CreatedAt = createdAt,
                 UpdatedAt = updatedAt
             });
@@ -1222,20 +1240,39 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
                 Name = platformActive.Name,
                 Region = platformActive.Region,
                 BlobPath = platformActive.BlobPath,
+                LibrespotBlobPath = platformActive.LibrespotBlobPath,
+                WebPlayerBlobPath = platformActive.WebPlayerBlobPath,
                 CreatedAt = createdAt,
                 UpdatedAt = updatedAt
             });
             return true;
         }
 
-        if (!string.IsNullOrWhiteSpace(existing.BlobPath) || string.IsNullOrWhiteSpace(platformActive.BlobPath))
+        var updated = false;
+        if (string.IsNullOrWhiteSpace(existing.BlobPath) && !string.IsNullOrWhiteSpace(platformActive.BlobPath))
         {
-            return false;
+            existing.BlobPath = platformActive.BlobPath;
+            updated = true;
         }
 
-        existing.BlobPath = platformActive.BlobPath;
-        existing.UpdatedAt = DateTimeOffset.UtcNow;
-        return true;
+        if (string.IsNullOrWhiteSpace(existing.LibrespotBlobPath) && !string.IsNullOrWhiteSpace(platformActive.LibrespotBlobPath))
+        {
+            existing.LibrespotBlobPath = platformActive.LibrespotBlobPath;
+            updated = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(existing.WebPlayerBlobPath) && !string.IsNullOrWhiteSpace(platformActive.WebPlayerBlobPath))
+        {
+            existing.WebPlayerBlobPath = platformActive.WebPlayerBlobPath;
+            updated = true;
+        }
+
+        if (updated)
+        {
+            existing.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        return updated;
     }
 
     private static bool ImportPlatformActiveAccount(SpotifyUserAuthState state, SpotifyConfig spotify)

@@ -162,7 +162,7 @@ public sealed class SpotifyFavoritesService
 
             var platformBlobPath = state.Spotify?.Accounts
                 .FirstOrDefault(a => a.Name.Equals(active, StringComparison.OrdinalIgnoreCase))
-                ?.BlobPath;
+                ?.WebPlayerBlobPath;
             if (string.IsNullOrWhiteSpace(platformBlobPath) || !_blobService.BlobExists(platformBlobPath))
             {
                 return null;

@@ -1663,8 +1663,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             var isAuthenticated = HttpContext?.User?.Identity?.IsAuthenticated ?? false;
             var userId = _userContext.UserId;
             var userAuth = await ResolveHomeFeedUserAuthAsync(userId, cancellationToken);
-            var platformAuth = await ResolveHomeFeedPlatformAuthAsync();
-            var resolvedAuth = await ResolveHomeFeedBlobPathAsync(userAuth.BlobPath, platformAuth.BlobPath, cancellationToken);
+            var platformAuth = await ResolveHomeFeedPlatformAuthAsync(cancellationToken);
+            var resolvedAuth = ResolveHomeFeedBlobPathAsync(userAuth.BlobPath, platformAuth.BlobPath);
 
             SpotifyBlobService.SpotifyWebPlayerTokenInfo? tokenInfo = null;
             if (!string.IsNullOrWhiteSpace(resolvedAuth.BlobPath))
@@ -1706,30 +1706,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
 
     private sealed record HomeFeedAccountAuthState(string? ActiveAccount, string? BlobPath);
 
-    private static string? TryResolveLatestWebPlayerBlobPath()
-    {
-        try
-        {
-            var configDir = AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
-
-            var usersRoot = Path.Join(configDir, SpotifySource, "users");
-            if (!Directory.Exists(usersRoot))
-            {
-                return null;
-            }
-
-            var candidate = Directory.EnumerateFiles(usersRoot, "*.web.json", SearchOption.AllDirectories)
-                .Select(path => new FileInfo(path))
-                .OrderByDescending(info => info.LastWriteTimeUtc)
-                .FirstOrDefault();
-
-            return candidate?.FullName;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
-            return null;
-        }
-    }
-
     private async Task<HomeFeedAccountAuthState> ResolveHomeFeedUserAuthAsync(string? userId, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(userId))
@@ -1743,20 +1719,20 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         return new HomeFeedAccountAuthState(userState.ActiveAccount, validBlob);
     }
 
-    private async Task<HomeFeedAccountAuthState> ResolveHomeFeedPlatformAuthAsync()
+    private async Task<HomeFeedAccountAuthState> ResolveHomeFeedPlatformAuthAsync(CancellationToken cancellationToken)
     {
         var platformState = await _platformAuthService.LoadAsync();
         var activeAccount = platformState.Spotify?.ActiveAccount;
         var blobPath = platformState.Spotify?.Accounts
             .FirstOrDefault(a => a.Name.Equals(activeAccount ?? string.Empty, StringComparison.OrdinalIgnoreCase))
-            ?.BlobPath;
-        return new HomeFeedAccountAuthState(activeAccount, blobPath);
+            ?.WebPlayerBlobPath;
+        var validBlob = await ValidateHomeFeedBlobPathAsync(blobPath, cancellationToken);
+        return new HomeFeedAccountAuthState(activeAccount, validBlob);
     }
 
-    private async Task<HomeFeedResolvedAuth> ResolveHomeFeedBlobPathAsync(
+    private static HomeFeedResolvedAuth ResolveHomeFeedBlobPathAsync(
         string? userBlobPath,
-        string? platformBlobPath,
-        CancellationToken cancellationToken)
+        string? platformBlobPath)
     {
         if (!string.IsNullOrWhiteSpace(userBlobPath))
         {
@@ -1768,8 +1744,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             return new HomeFeedResolvedAuth(platformBlobPath, "platform");
         }
 
-        var fallback = await ValidateHomeFeedBlobPathAsync(TryResolveLatestWebPlayerBlobPath(), cancellationToken);
-        return new HomeFeedResolvedAuth(fallback, string.IsNullOrWhiteSpace(fallback) ? "none" : "fallback");
+        return new HomeFeedResolvedAuth(null, "none");
     }
 
     private async Task<string?> ValidateHomeFeedBlobPathAsync(string? blobPath, CancellationToken cancellationToken)
