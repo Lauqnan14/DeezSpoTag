@@ -37,6 +37,7 @@ public sealed class LocalLibraryScanner
         public required Dictionary<string, HashSet<string>> ArtistGenres { get; init; }
         public required bool UsePrimaryArtistFolders { get; init; }
         public required IProgress<ScanProgress>? Progress { get; init; }
+        public required Action<LibraryConfigStore.LocalLibrarySnapshot>? SnapshotPublished { get; init; }
         public int ProcessedFiles { get; set; }
         public int TotalFiles { get; set; }
         public int ErrorCount { get; set; }
@@ -144,15 +145,16 @@ public sealed class LocalLibraryScanner
 
     public LibraryConfigStore.LocalLibrarySnapshot Scan(IEnumerable<DeezSpoTag.Services.Library.FolderDto> folders)
     {
-        return Scan(folders, progress: null, cancellationToken: CancellationToken.None);
+        return Scan(folders, progress: null, snapshotPublished: null, cancellationToken: CancellationToken.None);
     }
 
     public LibraryConfigStore.LocalLibrarySnapshot Scan(
         IEnumerable<DeezSpoTag.Services.Library.FolderDto> folders,
         IProgress<ScanProgress>? progress,
+        Action<LibraryConfigStore.LocalLibrarySnapshot>? snapshotPublished,
         CancellationToken cancellationToken)
     {
-        var context = CreateScanContext(progress);
+        var context = CreateScanContext(progress, snapshotPublished);
         var (excludedFolders, scannableFolders) = SplitScannableFolders(folders);
         LogExcludedFolders(excludedFolders);
         InitializeProgressState(context, scannableFolders, cancellationToken);
@@ -168,10 +170,13 @@ public sealed class LocalLibraryScanner
             kvp => kvp.Key,
             kvp => kvp.Value.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList(),
             StringComparer.OrdinalIgnoreCase);
+        PublishSnapshot(context);
         return context.Snapshot;
     }
 
-    private ScanContext CreateScanContext(IProgress<ScanProgress>? progress)
+    private ScanContext CreateScanContext(
+        IProgress<ScanProgress>? progress,
+        Action<LibraryConfigStore.LocalLibrarySnapshot>? snapshotPublished)
     {
         return new ScanContext
         {
@@ -180,7 +185,8 @@ public sealed class LocalLibraryScanner
             AlbumIndex = new Dictionary<string, LibraryConfigStore.LibraryAlbum>(StringComparer.OrdinalIgnoreCase),
             ArtistGenres = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase),
             UsePrimaryArtistFolders = ResolveUsePrimaryArtistFolders(),
-            Progress = progress
+            Progress = progress,
+            SnapshotPublished = snapshotPublished
         };
     }
 
@@ -353,6 +359,8 @@ public sealed class LocalLibraryScanner
             cancellationToken.ThrowIfCancellationRequested();
             ScanTrackFile(file, artistName, album, context);
         }
+
+        PublishSnapshot(context);
     }
 
     private static IEnumerable<string> EnumerateAudioFiles(string albumDir)
@@ -869,6 +877,27 @@ public sealed class LocalLibraryScanner
             context.Snapshot.Artists.Count,
             context.Snapshot.Albums.Count,
             context.Snapshot.Tracks.Count));
+    }
+
+    private static void PublishSnapshot(ScanContext context)
+    {
+        context.SnapshotPublished?.Invoke(CloneSnapshot(context.Snapshot));
+    }
+
+    private static LibraryConfigStore.LocalLibrarySnapshot CloneSnapshot(LibraryConfigStore.LocalLibrarySnapshot snapshot)
+    {
+        return new LibraryConfigStore.LocalLibrarySnapshot
+        {
+            Artists = snapshot.Artists.ToList(),
+            Albums = snapshot.Albums
+                .Select(album => album with { LocalFolders = album.LocalFolders.ToList() })
+                .ToList(),
+            Tracks = snapshot.Tracks.ToList(),
+            ArtistGenres = snapshot.ArtistGenres.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value.ToList(),
+                StringComparer.OrdinalIgnoreCase)
+        };
     }
 
     private void LogFolderSummary(string folderDisplayName, FolderScanBaseline baseline, ScanContext context)

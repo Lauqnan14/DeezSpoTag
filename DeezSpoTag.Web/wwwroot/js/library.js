@@ -27,6 +27,9 @@ const libraryState = {
     artistSearchQuery: '',
     artistSortKey: 'name-asc',
     artistSearchTimer: null,
+    scanArtistsRefreshInFlight: false,
+    lastActiveScanRefreshKey: '',
+    wasScanRunning: false,
     albumTracksById: new Map(),
     currentSpotifyArtist: null,
     currentLocalArtistName: '',
@@ -1852,7 +1855,7 @@ function buildAppleAtmosList(payload, normalizedTerm) {
 async function loadLibraryScanStatus() {
     const elements = getLibraryScanStatusElements();
     if (!elements.lastScanEl && !elements.artistEl && !elements.albumEl && !elements.trackEl) {
-        return;
+        return null;
     }
     try {
         const [status, stats] = await Promise.all([
@@ -1860,9 +1863,59 @@ async function loadLibraryScanStatus() {
             fetchJsonOptional('/api/library/stats')
         ]);
         applyLibraryScanStatusSuccess(elements, status, stats);
+        await refreshArtistsDuringActiveScan(status);
+        return status;
     } catch (error) {
         applyLibraryScanStatusFailure(elements);
+        libraryState.wasScanRunning = false;
         console.warn('Library scan status failed.', error);
+        return null;
+    }
+}
+
+async function refreshArtistsDuringActiveScan(status) {
+    const hasArtistsGrid = !!document.getElementById('artistsGrid');
+    const running = !!status?.running;
+
+    if (!hasArtistsGrid) {
+        libraryState.wasScanRunning = running;
+        return;
+    }
+
+    if (!running) {
+        const shouldRefreshAfterCompletion = libraryState.wasScanRunning;
+        libraryState.wasScanRunning = false;
+        libraryState.lastActiveScanRefreshKey = '';
+        if (shouldRefreshAfterCompletion && !libraryState.scanArtistsRefreshInFlight) {
+            libraryState.scanArtistsRefreshInFlight = true;
+            try {
+                await loadArtists();
+            } finally {
+                libraryState.scanArtistsRefreshInFlight = false;
+            }
+        }
+        return;
+    }
+
+    libraryState.wasScanRunning = true;
+    const progress = status?.progress || {};
+    const refreshKey = [
+        progress?.processedFiles ?? 0,
+        progress?.artistsDetected ?? 0,
+        progress?.albumsDetected ?? 0,
+        progress?.tracksDetected ?? 0
+    ].join(':');
+
+    if (libraryState.scanArtistsRefreshInFlight || libraryState.lastActiveScanRefreshKey === refreshKey) {
+        return;
+    }
+
+    libraryState.scanArtistsRefreshInFlight = true;
+    try {
+        await loadArtists();
+        libraryState.lastActiveScanRefreshKey = refreshKey;
+    } finally {
+        libraryState.scanArtistsRefreshInFlight = false;
     }
 }
 
@@ -10454,7 +10507,18 @@ function startLibraryRefreshIntervals(shouldLoadAnalysis, shouldLoadScanStatus) 
         }, 15000);
     }
     if (shouldLoadScanStatus) {
-        setInterval(loadLibraryScanStatus, 30000);
+        let scanStatusPolling = false;
+        setInterval(async () => {
+            if (scanStatusPolling) {
+                return;
+            }
+            scanStatusPolling = true;
+            try {
+                await loadLibraryScanStatus();
+            } finally {
+                scanStatusPolling = false;
+            }
+        }, 5000);
     }
 }
 

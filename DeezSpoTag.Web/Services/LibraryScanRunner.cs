@@ -15,6 +15,7 @@ public sealed class LibraryScanRunner
     private readonly IServiceProvider _serviceProvider;
     private readonly ArtistPageCacheRepository _artistCacheRepository;
     private readonly object _scanLock = new();
+    private readonly object _previewIngestLock = new();
     private CancellationTokenSource? _activeScanCts;
     private ScanStatus _status = new(false, null, 0, 0, 0, null, 0, 0, 0);
 
@@ -244,7 +245,12 @@ public sealed class LibraryScanRunner
 
             if (_repository.IsConfigured)
             {
-                await IngestSnapshotAsync(enabledFolders, folderSnapshot, reset: false, cancellationToken);
+                await IngestSnapshotAsync(
+                    enabledFolders,
+                    folderSnapshot,
+                    reset: false,
+                    logCompletion: true,
+                    cancellationToken: cancellationToken);
                 var liveStats = await _repository.GetLibraryStatsAsync(cancellationToken);
                 _status = _status with
                 {
@@ -309,7 +315,11 @@ public sealed class LibraryScanRunner
             };
         });
 
-        var snapshot = _scanner.Scan([folder], progress, cancellationToken);
+        var snapshot = _scanner.Scan(
+            [folder],
+            progress,
+            partialSnapshot => TryIngestLiveFolderSnapshot(folder, partialSnapshot, cancellationToken),
+            cancellationToken);
         folderProcessed = latestProcessed;
         folderTotal = latestTotal;
         folderErrors = latestErrors;
@@ -394,6 +404,7 @@ public sealed class LibraryScanRunner
         List<FolderDto> enabledFolders,
         LibraryConfigStore.LocalLibrarySnapshot snapshot,
         bool reset,
+        bool logCompletion,
         CancellationToken cancellationToken)
     {
         var ingestPayload = LocalLibrarySnapshotMapper.BuildIngestPayload(snapshot);
@@ -404,7 +415,45 @@ public sealed class LibraryScanRunner
             ingestPayload.Tracks,
             reset,
             cancellationToken);
-        AddInfoLog($"SQLite ingest completed ({ingestPayload.Artists.Count} artists, {ingestPayload.Albums.Count} albums, {ingestPayload.Tracks.Count} tracks).");
+        if (logCompletion)
+        {
+            AddInfoLog($"SQLite ingest completed ({ingestPayload.Artists.Count} artists, {ingestPayload.Albums.Count} albums, {ingestPayload.Tracks.Count} tracks).");
+        }
+    }
+
+    private void TryIngestLiveFolderSnapshot(
+        FolderDto folder,
+        LibraryConfigStore.LocalLibrarySnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured || snapshot.Tracks.Count == 0)
+        {
+            return;
+        }
+
+        lock (_previewIngestLock)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                IngestSnapshotAsync(
+                    [folder],
+                    snapshot,
+                    reset: false,
+                    logCompletion: false,
+                    cancellationToken: cancellationToken)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                AddWarnLog($"Live scan ingest failed for {folder.DisplayName}: {ex.Message}");
+            }
+        }
     }
 
     private async Task StoreLocalGenresAsync(
