@@ -366,52 +366,12 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
     private bool TryResolveDownloadEnrichmentRoot(out string downloadRootPath, out string error)
     {
-        downloadRootPath = string.Empty;
-        error = string.Empty;
-
-        string configuredPath;
-        try
-        {
-            configuredPath = _settingsService.LoadSettings().DownloadLocation?.Trim() ?? string.Empty;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            error = $"download location could not be loaded ({ex.Message}).";
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(configuredPath))
-        {
-            error = "download location is not configured.";
-            return false;
-        }
-
-        var ioPath = DownloadPathResolver.ResolveIoPath(configuredPath);
-        if (string.IsNullOrWhiteSpace(ioPath))
-        {
-            error = $"download location '{configuredPath}' resolved to an empty path.";
-            return false;
-        }
-
-        string normalizedPath;
-        try
-        {
-            normalizedPath = Path.GetFullPath(ioPath);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            error = $"download location '{configuredPath}' is invalid ({ex.Message}).";
-            return false;
-        }
-
-        if (!Directory.Exists(normalizedPath))
-        {
-            error = $"download location '{normalizedPath}' is not accessible.";
-            return false;
-        }
-
-        downloadRootPath = normalizedPath;
-        return true;
+        return ConfiguredDownloadRootResolver.TryResolve(
+            _settingsService,
+            "download location",
+            "download location is not configured.",
+            out downloadRootPath,
+            out error);
     }
 
     private async Task RunPostAutoTagStagesAsync(CancellationToken cancellationToken)

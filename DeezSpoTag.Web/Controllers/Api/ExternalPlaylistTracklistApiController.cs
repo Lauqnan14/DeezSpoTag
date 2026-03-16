@@ -1,7 +1,8 @@
-using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using DeezSpoTag.Services.Download.Shared.Utils;
+using DeezSpoTag.Web.Services;
 using DeezSpoTag.Web.Services.LinkMapping;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -13,24 +14,24 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Authorize]
 public sealed class ExternalPlaylistTracklistApiController : ControllerBase
 {
-    private static readonly TimeSpan YtDlpTimeout = TimeSpan.FromSeconds(45);
+    private const string SoundCloudSource = "soundcloud";
+    private const string TidalSource = "tidal";
+    private const string QobuzSource = "qobuz";
+    private const string BandcampSource = "bandcamp";
+    private const string PandoraSource = "pandora";
     private static readonly HashSet<string> SupportedSources = new(StringComparer.OrdinalIgnoreCase)
     {
-        "soundcloud",
-        "tidal",
-        "qobuz",
-        "bandcamp",
-        "pandora"
+        SoundCloudSource,
+        TidalSource,
+        QobuzSource,
+        BandcampSource,
+        PandoraSource
     };
 
-    private readonly ExternalLinkClassifier _classifier;
     private readonly ILogger<ExternalPlaylistTracklistApiController> _logger;
 
-    public ExternalPlaylistTracklistApiController(
-        ExternalLinkClassifier classifier,
-        ILogger<ExternalPlaylistTracklistApiController> logger)
+    public ExternalPlaylistTracklistApiController(ILogger<ExternalPlaylistTracklistApiController> logger)
     {
-        _classifier = classifier;
         _logger = logger;
     }
 
@@ -122,56 +123,7 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
 
     private async Task<string?> FetchYtDlpPlaylistJsonAsync(string playlistUrl, CancellationToken cancellationToken)
     {
-        using var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "yt-dlp",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            }
-        };
-
-        process.StartInfo.ArgumentList.Add("--flat-playlist");
-        process.StartInfo.ArgumentList.Add("--dump-single-json");
-        process.StartInfo.ArgumentList.Add("--no-warnings");
-        process.StartInfo.ArgumentList.Add("--no-call-home");
-        process.StartInfo.ArgumentList.Add(playlistUrl);
-
-        process.Start();
-        var stdoutTask = process.StandardOutput.ReadToEndAsync();
-        var stderrTask = process.StandardError.ReadToEndAsync();
-
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(YtDlpTimeout);
-
-        try
-        {
-            await process.WaitForExitAsync(timeoutCts.Token);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            TryKillProcess(process);
-            _logger.LogWarning("yt-dlp timed out while fetching external playlist {PlaylistUrl}.", playlistUrl);
-            return null;
-        }
-
-        var stdout = await stdoutTask;
-        var stderr = await stderrTask;
-
-        if (process.ExitCode != 0)
-        {
-            _logger.LogWarning(
-                "yt-dlp failed for {PlaylistUrl}. exitCode={ExitCode} stderr={StdErr}",
-                playlistUrl,
-                process.ExitCode,
-                TrimStdErr(stderr));
-            return null;
-        }
-
-        return string.IsNullOrWhiteSpace(stdout) ? null : stdout;
+        return await YtDlpPlaylistJsonFetcher.FetchAsync(playlistUrl, "external", _logger, cancellationToken);
     }
 
     private static bool TryBuildTracklistPayload(string source, string sourceUrl, string rawJson, out object tracklist)
@@ -179,75 +131,12 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
         tracklist = new { };
         using var doc = JsonDocument.Parse(rawJson);
         var root = doc.RootElement;
-
-        var playlistId = GetString(root, "id");
-        if (string.IsNullOrWhiteSpace(playlistId))
+        if (!TryBuildPlaylistMetadata(source, sourceUrl, root, out var metadata))
         {
-            playlistId = BuildStableId(sourceUrl);
+            return false;
         }
 
-        var playlistTitle = GetString(root, "title");
-        if (string.IsNullOrWhiteSpace(playlistTitle))
-        {
-            playlistTitle = $"{FormatSourceLabel(source)} Playlist";
-        }
-
-        var creatorName = FirstNonEmpty(
-            GetString(root, "uploader"),
-            GetString(root, "artist"),
-            GetString(root, "channel"),
-            GetString(root, "creator"),
-            FormatSourceLabel(source));
-        var description = GetString(root, "description");
-        var coverUrl = ExtractCoverUrl(root);
-
-        var tracks = new List<object>();
-        if (root.TryGetProperty("entries", out var entriesElement)
-            && entriesElement.ValueKind == JsonValueKind.Array)
-        {
-            var position = 0;
-            foreach (var entry in entriesElement.EnumerateArray())
-            {
-                var entryUrl = ResolveEntryUrl(source, entry);
-                if (string.IsNullOrWhiteSpace(entryUrl))
-                {
-                    continue;
-                }
-
-                position++;
-                var entryId = GetString(entry, "id");
-                if (string.IsNullOrWhiteSpace(entryId))
-                {
-                    entryId = BuildStableId(entryUrl);
-                }
-
-                var title = GetString(entry, "title");
-                if (string.IsNullOrWhiteSpace(title))
-                {
-                    title = $"Track {position}";
-                }
-
-                var artistName = FirstNonEmpty(
-                    GetString(entry, "artist"),
-                    GetString(entry, "uploader"),
-                    GetString(entry, "channel"),
-                    GetString(entry, "creator"),
-                    creatorName);
-
-                tracks.Add(new
-                {
-                    id = entryId,
-                    title,
-                    duration = GetInt(entry, "duration"),
-                    track_position = position,
-                    link = entryUrl,
-                    sourceUrl = entryUrl,
-                    artist = new { id = string.Empty, name = artistName },
-                    album = new { id = playlistId, title = playlistTitle, cover_medium = coverUrl }
-                });
-            }
-        }
-
+        var tracks = BuildTrackEntries(source, root, metadata);
         if (tracks.Count == 0)
         {
             return false;
@@ -255,18 +144,109 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
 
         tracklist = new
         {
-            id = playlistId,
-            title = playlistTitle,
-            description,
-            cover_big = coverUrl,
-            cover_xl = coverUrl,
-            picture_big = coverUrl,
-            picture_xl = coverUrl,
-            creator = new { name = creatorName },
+            id = metadata.PlaylistId,
+            title = metadata.PlaylistTitle,
+            description = metadata.Description,
+            cover_big = metadata.CoverUrl,
+            cover_xl = metadata.CoverUrl,
+            picture_big = metadata.CoverUrl,
+            picture_xl = metadata.CoverUrl,
+            creator = new { name = metadata.CreatorName },
             nb_tracks = tracks.Count,
             tracks
         };
         return true;
+    }
+
+    private static bool TryBuildPlaylistMetadata(
+        string source,
+        string sourceUrl,
+        JsonElement root,
+        out PlaylistMetadata metadata)
+    {
+        metadata = new PlaylistMetadata(
+            GetString(root, "id"),
+            GetString(root, "title"),
+            GetPrimaryMetadataValue(
+                GetString(root, "uploader"),
+                GetString(root, "artist"),
+                GetString(root, "channel"),
+                GetString(root, "creator"),
+                FormatSourceLabel(source)),
+            GetString(root, "description"),
+            ExtractCoverUrl(root));
+
+        if (string.IsNullOrWhiteSpace(metadata.PlaylistId))
+        {
+            metadata = metadata with { PlaylistId = BuildStableId(sourceUrl) };
+        }
+
+        if (string.IsNullOrWhiteSpace(metadata.PlaylistTitle))
+        {
+            metadata = metadata with { PlaylistTitle = $"{FormatSourceLabel(source)} Playlist" };
+        }
+
+        return !string.IsNullOrWhiteSpace(metadata.PlaylistId)
+               && !string.IsNullOrWhiteSpace(metadata.PlaylistTitle);
+    }
+
+    private static List<object> BuildTrackEntries(string source, JsonElement root, PlaylistMetadata metadata)
+    {
+        var tracks = new List<object>();
+        if (!root.TryGetProperty("entries", out var entriesElement)
+            || entriesElement.ValueKind != JsonValueKind.Array)
+        {
+            return tracks;
+        }
+
+        var position = 0;
+        foreach (var entry in entriesElement.EnumerateArray())
+        {
+            var entryUrl = ResolveEntryUrl(source, entry);
+            if (string.IsNullOrWhiteSpace(entryUrl))
+            {
+                continue;
+            }
+
+            position++;
+            tracks.Add(BuildTrackEntry(entry, entryUrl, position, metadata));
+        }
+
+        return tracks;
+    }
+
+    private static object BuildTrackEntry(JsonElement entry, string entryUrl, int position, PlaylistMetadata metadata)
+    {
+        var entryId = GetString(entry, "id");
+        if (string.IsNullOrWhiteSpace(entryId))
+        {
+            entryId = BuildStableId(entryUrl);
+        }
+
+        var title = GetString(entry, "title");
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            title = $"Track {position}";
+        }
+
+        var artistName = GetPrimaryMetadataValue(
+            GetString(entry, "artist"),
+            GetString(entry, "uploader"),
+            GetString(entry, "channel"),
+            GetString(entry, "creator"),
+            metadata.CreatorName);
+
+        return new
+        {
+            id = entryId,
+            title,
+            duration = GetInt(entry, "duration"),
+            track_position = position,
+            link = entryUrl,
+            sourceUrl = entryUrl,
+            artist = new { id = string.Empty, name = artistName },
+            album = new { id = metadata.PlaylistId, title = metadata.PlaylistTitle, cover_medium = metadata.CoverUrl }
+        };
     }
 
     private static string ResolveEntryUrl(string source, JsonElement entry)
@@ -315,7 +295,7 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
             return string.Empty;
         }
 
-        var bytes = SHA1.HashData(Encoding.UTF8.GetBytes(value));
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
         var hex = Convert.ToHexString(bytes).ToLowerInvariant();
         return $"ext-{hex[..12]}";
     }
@@ -383,59 +363,30 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
             || uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void TryKillProcess(Process process)
-    {
-        if (process.HasExited)
-        {
-            return;
-        }
-
-        try
-        {
-            process.Kill(entireProcessTree: true);
-        }
-        catch
-        {
-            // Best-effort cleanup.
-        }
-    }
-
-    private static string TrimStdErr(string stderr)
-    {
-        if (string.IsNullOrWhiteSpace(stderr))
-        {
-            return string.Empty;
-        }
-
-        const int maxLength = 400;
-        var trimmed = stderr.Trim();
-        return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength];
-    }
-
     private static string NormalizeSource(string? source)
     {
         var normalized = (source ?? string.Empty).Trim().ToLowerInvariant();
         return normalized switch
         {
-            "soundcloud" => "soundcloud",
-            "tidal" => "tidal",
-            "qobuz" => "qobuz",
-            "bandcamp" => "bandcamp",
-            "pandora" => "pandora",
+            SoundCloudSource => SoundCloudSource,
+            TidalSource => TidalSource,
+            QobuzSource => QobuzSource,
+            BandcampSource => BandcampSource,
+            PandoraSource => PandoraSource,
             _ => string.Empty
         };
     }
 
-    private string ClassifySource(string normalizedUrl)
+    private static string ClassifySource(string normalizedUrl)
     {
-        var classified = _classifier.Classify(normalizedUrl);
+        var classified = ExternalLinkClassifier.Classify(normalizedUrl);
         return classified switch
         {
-            ExternalLinkSource.SoundCloud => "soundcloud",
-            ExternalLinkSource.Tidal => "tidal",
-            ExternalLinkSource.Qobuz => "qobuz",
-            ExternalLinkSource.Bandcamp => "bandcamp",
-            ExternalLinkSource.Pandora => "pandora",
+            ExternalLinkSource.SoundCloud => SoundCloudSource,
+            ExternalLinkSource.Tidal => TidalSource,
+            ExternalLinkSource.Qobuz => QobuzSource,
+            ExternalLinkSource.Bandcamp => BandcampSource,
+            ExternalLinkSource.Pandora => PandoraSource,
             _ => string.Empty
         };
     }
@@ -445,38 +396,37 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
         var path = (uri.AbsolutePath ?? string.Empty).ToLowerInvariant();
         return source.ToLowerInvariant() switch
         {
-            "soundcloud" => path.Contains("/sets/", StringComparison.Ordinal),
-            "tidal" => path.Contains("/playlist/", StringComparison.Ordinal) || path.Contains("/mix/", StringComparison.Ordinal),
-            "qobuz" => path.Contains("/playlist/", StringComparison.Ordinal),
-            "bandcamp" => path.Contains("/album/", StringComparison.Ordinal),
-            "pandora" => path.Contains("/playlist/", StringComparison.Ordinal),
+            SoundCloudSource => path.Contains("/sets/", StringComparison.Ordinal),
+            TidalSource => path.Contains("/playlist/", StringComparison.Ordinal) || path.Contains("/mix/", StringComparison.Ordinal),
+            QobuzSource => path.Contains("/playlist/", StringComparison.Ordinal),
+            BandcampSource => path.Contains("/album/", StringComparison.Ordinal),
+            PandoraSource => path.Contains("/playlist/", StringComparison.Ordinal),
             _ => false
         };
     }
 
-    private static string FirstNonEmpty(params string[] values)
+    private static string GetPrimaryMetadataValue(params string[] values)
     {
-        foreach (var value in values)
-        {
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
-        }
-
-        return string.Empty;
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
     }
 
     private static string FormatSourceLabel(string source)
     {
         return source.ToLowerInvariant() switch
         {
-            "soundcloud" => "SoundCloud",
-            "tidal" => "Tidal",
-            "qobuz" => "Qobuz",
-            "bandcamp" => "Bandcamp",
-            "pandora" => "Pandora",
+            SoundCloudSource => "SoundCloud",
+            TidalSource => "Tidal",
+            QobuzSource => "Qobuz",
+            BandcampSource => "Bandcamp",
+            PandoraSource => "Pandora",
             _ => "External"
         };
     }
+
+    private sealed record PlaylistMetadata(
+        string PlaylistId,
+        string PlaylistTitle,
+        string CreatorName,
+        string Description,
+        string CoverUrl);
 }

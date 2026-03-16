@@ -236,6 +236,7 @@ WITH folder_tracks AS (
     LEFT JOIN track t ON t.id = tl.track_id
     LEFT JOIN album a ON a.id = t.album_id
     LEFT JOIN artist ar ON ar.id = a.artist_id
+    WHERE f.enabled = TRUE
 )
 SELECT COUNT(DISTINCT CASE WHEN media_mode = 'music' THEN artist_id END) AS artist_count,
        COUNT(DISTINCT CASE WHEN media_mode = 'music' THEN album_id END) AS album_count,
@@ -294,7 +295,7 @@ WITH library_rows AS (
            t.lyrics_status AS lyrics_status,
            COALESCE(af.quality_rank, 0) AS local_quality_rank
     FROM library l
-    LEFT JOIN folder f ON f.library_id = l.id
+    LEFT JOIN folder f ON f.library_id = l.id AND f.enabled = TRUE
     LEFT JOIN audio_file af ON af.folder_id = f.id
     LEFT JOIN track_local tl ON tl.audio_file_id = af.id
     LEFT JOIN track t ON t.id = tl.track_id
@@ -373,6 +374,8 @@ WITH ranked_track_files AS (
            ) AS rn
     FROM track_local tl
     JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE f.enabled = TRUE
 )
 SELECT value, COUNT(*)
 FROM ranked_track_files
@@ -394,6 +397,8 @@ WITH ranked_track_files AS (
            ) AS rn
     FROM track_local tl
     JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE f.enabled = TRUE
 )
 SELECT value, COUNT(*)
 FROM ranked_track_files
@@ -415,6 +420,8 @@ WITH ranked_track_files AS (
            ) AS rn
     FROM track_local tl
     JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE f.enabled = TRUE
 )
 SELECT value, COUNT(*)
 FROM ranked_track_files
@@ -442,6 +449,8 @@ WITH ranked_track_files AS (
            ) AS rn
     FROM track_local tl
     JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE f.enabled = TRUE
 )
 SELECT value, COUNT(*)
 FROM ranked_track_files
@@ -454,6 +463,14 @@ LIMIT 20;", cancellationToken);
 SELECT COALESCE(NULLIF(TRIM(lyrics_type), ''), 'none') AS value,
        COUNT(*) AS count
 FROM track
+WHERE EXISTS (
+    SELECT 1
+    FROM track_local tl
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE tl.track_id = track.id
+      AND f.enabled = TRUE
+)
 GROUP BY value
 ORDER BY count DESC, value ASC;", cancellationToken);
 
@@ -479,7 +496,16 @@ SELECT
     COUNT(CASE WHEN LOWER(COALESCE(t.lyrics_status, '')) = 'synced' THEN 1 END) AS tracks_with_synced_lyrics,
     COUNT(CASE WHEN LOWER(COALESCE(t.lyrics_status, '')) = 'unsynced' THEN 1 END) AS tracks_with_unsynced_lyrics,
     COUNT(CASE WHEN LOWER(COALESCE(t.lyrics_status, '')) = 'both' THEN 1 END) AS tracks_with_both_lyrics,
-    (SELECT COUNT(*) FROM album WHERE has_animated_artwork = 1) AS albums_with_animated_artwork,
+    (SELECT COUNT(*)
+     FROM album
+     WHERE has_animated_artwork = 1
+       AND EXISTS (
+           SELECT 1
+           FROM album_local aloc
+           JOIN folder f_album ON f_album.id = aloc.folder_id
+           WHERE aloc.album_id = album.id
+             AND f_album.enabled = TRUE
+       )) AS albums_with_animated_artwork,
     COALESCE(SUM(sf.has_deezer_id), 0) AS deezer_track_ids,
     COALESCE(SUM(sf.has_spotify_id), 0) AS spotify_track_ids,
     COALESCE(SUM(sf.has_apple_id), 0) AS apple_track_ids,
@@ -487,7 +513,15 @@ SELECT
     COALESCE(SUM(sf.has_spotify_url), 0) AS spotify_urls,
     COALESCE(SUM(sf.has_apple_url), 0) AS apple_urls
 FROM track t
-LEFT JOIN source_flags sf ON sf.track_id = t.id;";
+LEFT JOIN source_flags sf ON sf.track_id = t.id
+WHERE EXISTS (
+    SELECT 1
+    FROM track_local tl
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE tl.track_id = t.id
+      AND f.enabled = TRUE
+);";
 
         var detail = await ReadLibraryStatsDetailAsync(
             connection,
@@ -717,6 +751,37 @@ WHERE id = 1;";
         return new LibraryClearResultDto(artistsRemoved, albumsRemoved, tracksRemoved);
     }
 
+    public async Task<LibraryClearResultDto> ClearFolderLocalContentAsync(long folderId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        var counts = await CountFolderLocalContentAsync(connection, transaction, folderId, cancellationToken);
+
+        const string sql = @"
+DELETE FROM album_local
+WHERE folder_id = @folderId;
+
+DELETE FROM track_local
+WHERE audio_file_id IN (
+    SELECT id
+    FROM audio_file
+    WHERE folder_id = @folderId
+);
+
+DELETE FROM audio_file
+WHERE folder_id = @folderId;";
+
+        await using (var command = new SqliteCommand(sql, connection, transaction))
+        {
+            command.Parameters.AddWithValue("folderId", folderId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await CleanupOrphansAsync(connection, transaction, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return counts;
+    }
+
     private static async Task<int> CountRowsAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -729,11 +794,11 @@ WHERE id = 1;";
         return result is null || result == DBNull.Value ? 0 : Convert.ToInt32(result);
     }
 
-    public async Task<int> CleanupMissingFilesAsync(CancellationToken cancellationToken = default)
+    public async Task<int> CleanupMissingFilesAsync(long? folderId = null, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
-        var missingIds = await FindMissingAudioFileIdsAsync(connection, transaction, cancellationToken);
+        var missingIds = await FindMissingAudioFileIdsAsync(connection, transaction, folderId, cancellationToken);
 
         if (missingIds.Count == 0)
         {
@@ -752,10 +817,15 @@ WHERE id = 1;";
     private static async Task<List<long>> FindMissingAudioFileIdsAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
+        long? folderId,
         CancellationToken cancellationToken)
     {
-        const string selectSql = "SELECT id, path FROM audio_file;";
+        const string selectSql = @"
+SELECT id, path
+FROM audio_file
+WHERE @folderId IS NULL OR folder_id = @folderId;";
         await using var selectCommand = new SqliteCommand(selectSql, connection, transaction);
+        selectCommand.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
         await using var reader = await selectCommand.ExecuteReaderAsync(cancellationToken);
         var missingIds = new List<long>();
 
@@ -768,6 +838,35 @@ WHERE id = 1;";
         }
 
         return missingIds;
+    }
+
+    private static async Task<LibraryClearResultDto> CountFolderLocalContentAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long folderId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT COUNT(DISTINCT al.artist_id) AS artists_removed,
+       COUNT(DISTINCT t.album_id) AS albums_removed,
+       COUNT(DISTINCT tl.track_id) AS tracks_removed
+FROM audio_file af
+LEFT JOIN track_local tl ON tl.audio_file_id = af.id
+LEFT JOIN track t ON t.id = tl.track_id
+LEFT JOIN album al ON al.id = t.album_id
+WHERE af.folder_id = @folderId;";
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("folderId", folderId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return new LibraryClearResultDto(0, 0, 0);
+        }
+
+        return new LibraryClearResultDto(
+            await reader.IsDBNullAsync(0, cancellationToken) ? 0 : Convert.ToInt32(reader.GetInt64(0)),
+            await reader.IsDBNullAsync(1, cancellationToken) ? 0 : Convert.ToInt32(reader.GetInt64(1)),
+            await reader.IsDBNullAsync(2, cancellationToken) ? 0 : Convert.ToInt32(reader.GetInt64(2)));
     }
 
     private static async Task<bool> AudioFileExistsAsync(SqliteDataReader reader, CancellationToken cancellationToken)
@@ -3769,6 +3868,16 @@ WHERE id = @id;";
         return rows > 0;
     }
 
+    public async Task DisableFolderAsync(long id, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+        await NullFolderReferencesAsync(connection, transaction, id, cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
     public async Task<IReadOnlyList<FolderAliasDto>> GetFolderAliasesAsync(long folderId, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -3809,35 +3918,39 @@ RETURNING id;";
         return rows > 0;
     }
 
-    public async Task<IReadOnlyList<ArtistDto>> GetArtistsAsync(string? availability, CancellationToken cancellationToken = default)
-    {
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        var filters = availability?.ToLowerInvariant() ?? "all";
-        var availabilityCondition = filters switch
-        {
-            "local" => "WHERE available_locally = TRUE",
-            "remote" => "WHERE available_locally = FALSE",
-            _ => string.Empty
-        };
+    public Task<IReadOnlyList<ArtistDto>> GetArtistsAsync(string? availability, CancellationToken cancellationToken = default)
+        => GetArtistsAsync(availability, null, cancellationToken);
 
-        var sql = $@"
-SELECT id, name, preferred_image_path, preferred_background_path, available_locally FROM (
-    SELECT a.id,
-           a.name,
-           a.preferred_image_path,
-           a.preferred_background_path,
-           EXISTS (
-               SELECT 1
-               FROM album al
-               JOIN album_local aloc ON aloc.album_id = al.id
-               WHERE al.artist_id = a.id
-           ) AS available_locally
-    FROM artist a
-) artists
-{availabilityCondition}
-ORDER BY name;";
+    public async Task<IReadOnlyList<ArtistDto>> GetArtistsAsync(
+        string? availability,
+        long? folderId,
+        CancellationToken cancellationToken = default)
+    {
+        var filters = availability?.ToLowerInvariant() ?? "all";
+        if (filters == "remote")
+        {
+            return [];
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT DISTINCT
+       a.id,
+       a.name,
+       a.preferred_image_path,
+       a.preferred_background_path
+FROM artist a
+JOIN album al ON al.artist_id = a.id
+JOIN track t ON t.album_id = al.id
+JOIN track_local tl ON tl.track_id = t.id
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+WHERE f.enabled = TRUE
+  AND (@folderId IS NULL OR af.folder_id = @folderId)
+ORDER BY a.name;";
 
         await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var artists = new List<ArtistDto>();
         while (await reader.ReadAsync(cancellationToken))
@@ -3845,7 +3958,7 @@ ORDER BY name;";
             artists.Add(new ArtistDto(
                 reader.GetInt64(0),
                 reader.GetString(1),
-                reader.GetBoolean(4),
+                true,
                 await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
                 await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3)));
         }
@@ -3914,6 +4027,8 @@ WITH album_audio_flags AS (
     FROM track t
     JOIN track_local tl ON tl.track_id = t.id
     JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE f.enabled = TRUE
 ),
 album_variant_counts AS (
     SELECT
@@ -3929,11 +4044,17 @@ SELECT al.id,
        al.preferred_cover_path,
        COALESCE(
            (
-               SELECT GROUP_CONCAT(f.display_name, '|')
-               FROM album_local aloc
-               JOIN folder f ON f.id = aloc.folder_id
-               WHERE aloc.album_id = al.id
-               ORDER BY f.display_name
+               SELECT GROUP_CONCAT(folder_name, '|')
+               FROM (
+                   SELECT DISTINCT f.display_name AS folder_name
+                   FROM track t_local
+                   JOIN track_local tl_local ON tl_local.track_id = t_local.id
+                   JOIN audio_file af_local ON af_local.id = tl_local.audio_file_id
+                   JOIN folder f ON f.id = af_local.folder_id
+                   WHERE t_local.album_id = al.id
+                     AND f.enabled = TRUE
+                   ORDER BY folder_name
+               )
            ),
            ''
        ) AS local_folders,
@@ -3942,7 +4063,10 @@ SELECT al.id,
                SELECT COUNT(DISTINCT tl_count.track_id)
                FROM track_local tl_count
                JOIN track t_count ON t_count.id = tl_count.track_id
+               JOIN audio_file af_count ON af_count.id = tl_count.audio_file_id
+               JOIN folder f_count ON f_count.id = af_count.folder_id
                WHERE t_count.album_id = al.id
+                 AND f_count.enabled = TRUE
            ),
            0
        ) AS local_track_count,
@@ -3959,6 +4083,15 @@ SELECT al.id,
 FROM album al
 LEFT JOIN album_variant_counts avc ON avc.album_id = al.id
 WHERE al.artist_id = @artistId
+  AND EXISTS (
+      SELECT 1
+      FROM track t_visible
+      JOIN track_local tl_visible ON tl_visible.track_id = t_visible.id
+      JOIN audio_file af_visible ON af_visible.id = tl_visible.audio_file_id
+      JOIN folder f_visible ON f_visible.id = af_visible.folder_id
+      WHERE t_visible.album_id = al.id
+        AND f_visible.enabled = TRUE
+  )
 GROUP BY al.id, al.artist_id, al.title, al.preferred_cover_path
 ORDER BY al.title;";
         await using var command = new SqliteCommand(sql, connection);
@@ -3990,7 +4123,23 @@ ORDER BY al.title;";
     public async Task<ArtistDetailDto?> GetArtistAsync(long artistId, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = "SELECT id, name, preferred_image_path, preferred_background_path FROM artist WHERE id = @artistId;";
+        const string sql = @"
+SELECT a.id,
+       a.name,
+       a.preferred_image_path,
+       a.preferred_background_path
+FROM artist a
+WHERE a.id = @artistId
+  AND EXISTS (
+      SELECT 1
+      FROM album al
+      JOIN track t ON t.album_id = al.id
+      JOIN track_local tl ON tl.track_id = t.id
+      JOIN audio_file af ON af.id = tl.audio_file_id
+      JOIN folder f ON f.id = af.folder_id
+      WHERE al.artist_id = a.id
+        AND f.enabled = TRUE
+  );";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("artistId", artistId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -4010,9 +4159,19 @@ ORDER BY al.title;";
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT id, name, preferred_image_path, preferred_background_path
-FROM artist
-WHERE preferred_image_path IS NULL OR TRIM(preferred_image_path) = ''
+SELECT a.id, a.name, a.preferred_image_path, a.preferred_background_path
+FROM artist a
+WHERE (a.preferred_image_path IS NULL OR TRIM(a.preferred_image_path) = '')
+  AND EXISTS (
+      SELECT 1
+      FROM album al
+      JOIN track t ON t.album_id = al.id
+      JOIN track_local tl ON tl.track_id = t.id
+      JOIN audio_file af ON af.id = tl.audio_file_id
+      JOIN folder f ON f.id = af.folder_id
+      WHERE al.artist_id = a.id
+        AND f.enabled = TRUE
+  )
 ORDER BY name;";
         await using var command = new SqliteCommand(sql, connection);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -5175,16 +5334,31 @@ SELECT al.id,
        al.preferred_cover_path,
        COALESCE(
            (
-               SELECT GROUP_CONCAT(f.display_name, '|')
-               FROM album_local aloc
-               JOIN folder f ON f.id = aloc.folder_id
-               WHERE aloc.album_id = al.id
-               ORDER BY f.display_name
+               SELECT GROUP_CONCAT(folder_name, '|')
+               FROM (
+                   SELECT DISTINCT f.display_name AS folder_name
+                   FROM track t_local
+                   JOIN track_local tl_local ON tl_local.track_id = t_local.id
+                   JOIN audio_file af_local ON af_local.id = tl_local.audio_file_id
+                   JOIN folder f ON f.id = af_local.folder_id
+                   WHERE t_local.album_id = al.id
+                     AND f.enabled = TRUE
+                   ORDER BY folder_name
+               )
            ),
            ''
        ) AS local_folders
 FROM album al
-WHERE al.id = @albumId;";
+WHERE al.id = @albumId
+  AND EXISTS (
+      SELECT 1
+      FROM track t_visible
+      JOIN track_local tl_visible ON tl_visible.track_id = t_visible.id
+      JOIN audio_file af_visible ON af_visible.id = tl_visible.audio_file_id
+      JOIN folder f_visible ON f_visible.id = af_visible.folder_id
+      WHERE t_visible.album_id = al.id
+        AND f_visible.enabled = TRUE
+  );";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("albumId", albumId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -5219,10 +5393,21 @@ SELECT t.id,
        EXISTS (
            SELECT 1
            FROM track_local tl
+           JOIN audio_file af ON af.id = tl.audio_file_id
+           JOIN folder f ON f.id = af.folder_id
            WHERE tl.track_id = t.id
+             AND f.enabled = TRUE
        ) AS available_locally
 FROM track t
 WHERE t.album_id = @albumId
+  AND EXISTS (
+      SELECT 1
+      FROM track_local tl_visible
+      JOIN audio_file af_visible ON af_visible.id = tl_visible.audio_file_id
+      JOIN folder f_visible ON f_visible.id = af_visible.folder_id
+      WHERE tl_visible.track_id = t.id
+        AND f_visible.enabled = TRUE
+  )
 ORDER BY t.disc NULLS FIRST, t.track_no NULLS FIRST, t.title;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("albumId", albumId);
@@ -5300,12 +5485,12 @@ SELECT t.id AS track_id,
        af.relative_path,
        f.root_path
 FROM track t
-LEFT JOIN track_local tl ON tl.track_id = t.id
-LEFT JOIN audio_file af ON af.id = tl.audio_file_id
-LEFT JOIN folder f ON f.id = af.folder_id
+JOIN track_local tl ON tl.track_id = t.id
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
 WHERE t.album_id = @albumId
+  AND f.enabled = TRUE
 ORDER BY t.id,
-         f.enabled DESC,
          af.quality_rank DESC NULLS LAST,
          af.size DESC,
          af.id DESC;";
@@ -5371,12 +5556,12 @@ SELECT t.id AS track_id,
        af.relative_path,
        f.root_path
 FROM track t
-LEFT JOIN track_local tl ON tl.track_id = t.id
-LEFT JOIN audio_file af ON af.id = tl.audio_file_id
-LEFT JOIN folder f ON f.id = af.folder_id
+JOIN track_local tl ON tl.track_id = t.id
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
 WHERE t.album_id = @albumId
+  AND f.enabled = TRUE
 ORDER BY t.id,
-         f.enabled DESC,
          af.quality_rank DESC NULLS LAST,
          af.size DESC,
          af.id DESC;";
@@ -6936,6 +7121,132 @@ WHERE NOT EXISTS (
         }
     }
 
+    private static async Task NullFolderReferencesAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long folderId,
+        CancellationToken cancellationToken)
+    {
+        const string clearScanJobSql = @"
+UPDATE scan_job
+SET folder_id = NULL
+WHERE folder_id = @folderId;";
+        await using (var command = new SqliteCommand(clearScanJobSql, connection, transaction))
+        {
+            command.Parameters.AddWithValue("folderId", folderId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string clearPlaylistWatchPreferencesSql = @"
+UPDATE playlist_watch_preferences
+SET destination_folder_id = NULL,
+    updated_at = CURRENT_TIMESTAMP
+WHERE destination_folder_id = @folderId;";
+        await using (var command = new SqliteCommand(clearPlaylistWatchPreferencesSql, connection, transaction))
+        {
+            command.Parameters.AddWithValue("folderId", folderId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string clearQualityScanAutomationSql = @"
+UPDATE quality_scan_automation_settings
+SET folder_id = NULL,
+    updated_at = CURRENT_TIMESTAMP
+WHERE folder_id = @folderId;";
+        await using (var command = new SqliteCommand(clearQualityScanAutomationSql, connection, transaction))
+        {
+            command.Parameters.AddWithValue("folderId", folderId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string clearQualityScanRunSql = @"
+UPDATE quality_scan_run
+SET folder_id = NULL,
+    updated_at = CURRENT_TIMESTAMP
+WHERE folder_id = @folderId;";
+        await using (var command = new SqliteCommand(clearQualityScanRunSql, connection, transaction))
+        {
+            command.Parameters.AddWithValue("folderId", folderId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string clearQualityScanActionSql = @"
+UPDATE quality_scan_action_log
+SET destination_folder_id = NULL
+WHERE destination_folder_id = @folderId;";
+        await using (var command = new SqliteCommand(clearQualityScanActionSql, connection, transaction))
+        {
+            command.Parameters.AddWithValue("folderId", folderId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string selectPlaylistRoutingSql = @"
+SELECT source,
+       source_id,
+       routing_rules_json
+FROM playlist_watch_preferences
+WHERE routing_rules_json IS NOT NULL
+  AND TRIM(routing_rules_json) <> '';";
+        var playlistRoutingUpdates = new List<(string Source, string SourceId, string? RoutingRulesJson)>();
+        await using (var command = new SqliteCommand(selectPlaylistRoutingSql, connection, transaction))
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var source = reader.GetString(0);
+                var sourceId = reader.GetString(1);
+                var routingRulesJson = await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2);
+                if (string.IsNullOrWhiteSpace(routingRulesJson))
+                {
+                    continue;
+                }
+
+                List<PlaylistTrackRoutingRule>? rules;
+                try
+                {
+                    rules = JsonSerializer.Deserialize<List<PlaylistTrackRoutingRule>>(routingRulesJson);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (rules is null || rules.Count == 0)
+                {
+                    continue;
+                }
+
+                var filteredRules = rules
+                    .Where(rule => rule.DestinationFolderId != folderId)
+                    .ToList();
+                if (filteredRules.Count == rules.Count)
+                {
+                    continue;
+                }
+
+                playlistRoutingUpdates.Add((
+                    source,
+                    sourceId,
+                    filteredRules.Count > 0 ? JsonSerializer.Serialize(filteredRules) : null));
+            }
+        }
+
+        const string updatePlaylistRoutingSql = @"
+UPDATE playlist_watch_preferences
+SET routing_rules_json = @routingRulesJson,
+    updated_at = CURRENT_TIMESTAMP
+WHERE source = @source
+  AND source_id = @sourceId;";
+        foreach (var update in playlistRoutingUpdates)
+        {
+            await using var command = new SqliteCommand(updatePlaylistRoutingSql, connection, transaction);
+            command.Parameters.AddWithValue("routingRulesJson", (object?)update.RoutingRulesJson ?? DBNull.Value);
+            command.Parameters.AddWithValue("source", update.Source);
+            command.Parameters.AddWithValue("sourceId", update.SourceId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
     private static string BuildAlbumKey(string artistName, string albumTitle)
         => $"{artistName}|{albumTitle}";
 
@@ -7373,20 +7684,14 @@ WHERE id IN (SELECT track_id FROM best_duration)
         SourceUpsertInput input,
         CancellationToken cancellationToken)
     {
-        const string sql = @"
-INSERT INTO track_source (track_id, source, source_id, url, data)
-        VALUES (@trackId, @source, @sourceId, @url, @data)
-ON CONFLICT(track_id, source) DO UPDATE SET
-    source_id = excluded.source_id,
-    url = COALESCE(NULLIF(excluded.url, ''), track_source.url),
-    data = COALESCE(NULLIF(excluded.data, ''), track_source.data);";
-        await using var command = new SqliteCommand(sql, connection, transaction);
-        command.Parameters.AddWithValue(TrackIdField, input.EntityId);
-        command.Parameters.AddWithValue(SourceField, input.Source);
-        command.Parameters.AddWithValue(SourceIdField, input.SourceId);
-        command.Parameters.AddWithValue("url", (object?)input.Url ?? DBNull.Value);
-        command.Parameters.AddWithValue("data", (object?)input.Data ?? DBNull.Value);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await UpsertEntitySourceRecordAsync(
+            connection,
+            transaction,
+            input,
+            table: "track_source",
+            entityIdColumn: "track_id",
+            entityIdParameter: TrackIdField,
+            cancellationToken);
     }
 
     private static async Task EnsureArtistSourceAsync(
@@ -7425,22 +7730,14 @@ ON CONFLICT(track_id, source) DO UPDATE SET
         string entityIdColumn,
         string entityIdParameter,
         CancellationToken cancellationToken)
-    {
-        var sql = $@"
-INSERT INTO {table} ({entityIdColumn}, source, source_id, url, data)
-        VALUES (@{entityIdParameter}, @source, @sourceId, @url, @data)
-ON CONFLICT({entityIdColumn}, source) DO UPDATE SET
-    source_id = excluded.source_id,
-    url = COALESCE(NULLIF(excluded.url, ''), {table}.url),
-    data = COALESCE(NULLIF(excluded.data, ''), {table}.data);";
-        await using var command = new SqliteCommand(sql, connection, transaction);
-        command.Parameters.AddWithValue(entityIdParameter, input.EntityId);
-        command.Parameters.AddWithValue(SourceField, input.Source);
-        command.Parameters.AddWithValue(SourceIdField, input.SourceId);
-        command.Parameters.AddWithValue("url", (object?)input.Url ?? DBNull.Value);
-        command.Parameters.AddWithValue("data", (object?)input.Data ?? DBNull.Value);
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
+        => await UpsertEntitySourceRecordAsync(
+            connection,
+            transaction,
+            input,
+            table,
+            entityIdColumn,
+            entityIdParameter,
+            cancellationToken);
 
     public async Task UpsertTrackSourceLinkAsync(
         long trackId,
@@ -7451,20 +7748,14 @@ ON CONFLICT({entityIdColumn}, source) DO UPDATE SET
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
-INSERT INTO track_source (track_id, source, source_id, url, data)
-VALUES (@trackId, @source, @sourceId, @url, @data)
-ON CONFLICT(track_id, source) DO UPDATE SET
-    source_id = excluded.source_id,
-    url = COALESCE(NULLIF(excluded.url, ''), track_source.url),
-    data = COALESCE(NULLIF(excluded.data, ''), track_source.data);";
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(TrackIdField, trackId);
-        command.Parameters.AddWithValue(SourceField, source.Trim().ToLowerInvariant());
-        command.Parameters.AddWithValue(SourceIdField, sourceId.Trim());
-        command.Parameters.AddWithValue("url", (object?)url ?? DBNull.Value);
-        command.Parameters.AddWithValue("data", (object?)data ?? DBNull.Value);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await UpsertEntitySourceRecordAsync(
+            connection,
+            transaction: null,
+            new SourceUpsertInput(trackId, source, sourceId, url, data),
+            table: "track_source",
+            entityIdColumn: "track_id",
+            entityIdParameter: TrackIdField,
+            cancellationToken);
     }
 
     public async Task UpsertAlbumSourceLinkAsync(
@@ -7476,20 +7767,14 @@ ON CONFLICT(track_id, source) DO UPDATE SET
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
-INSERT INTO album_source (album_id, source, source_id, url, data)
-VALUES (@albumId, @source, @sourceId, @url, @data)
-ON CONFLICT(album_id, source) DO UPDATE SET
-    source_id = excluded.source_id,
-    url = COALESCE(NULLIF(excluded.url, ''), album_source.url),
-    data = COALESCE(NULLIF(excluded.data, ''), album_source.data);";
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("albumId", albumId);
-        command.Parameters.AddWithValue(SourceField, source.Trim().ToLowerInvariant());
-        command.Parameters.AddWithValue(SourceIdField, sourceId.Trim());
-        command.Parameters.AddWithValue("url", (object?)url ?? DBNull.Value);
-        command.Parameters.AddWithValue("data", (object?)data ?? DBNull.Value);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await UpsertEntitySourceRecordAsync(
+            connection,
+            transaction: null,
+            new SourceUpsertInput(albumId, source, sourceId, url, data),
+            table: "album_source",
+            entityIdColumn: "album_id",
+            entityIdParameter: "albumId",
+            cancellationToken);
     }
 
     public async Task UpsertArtistSourceLinkAsync(
@@ -7501,20 +7786,93 @@ ON CONFLICT(album_id, source) DO UPDATE SET
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
-INSERT INTO artist_source (artist_id, source, source_id, url, data)
-VALUES (@artistId, @source, @sourceId, @url, @data)
-ON CONFLICT(artist_id, source) DO UPDATE SET
-    source_id = excluded.source_id,
-    url = COALESCE(NULLIF(excluded.url, ''), artist_source.url),
-    data = COALESCE(NULLIF(excluded.data, ''), artist_source.data);";
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("artistId", artistId);
-        command.Parameters.AddWithValue(SourceField, source.Trim().ToLowerInvariant());
-        command.Parameters.AddWithValue(SourceIdField, sourceId.Trim());
-        command.Parameters.AddWithValue("url", (object?)url ?? DBNull.Value);
-        command.Parameters.AddWithValue("data", (object?)data ?? DBNull.Value);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await UpsertEntitySourceRecordAsync(
+            connection,
+            transaction: null,
+            new SourceUpsertInput(artistId, source, sourceId, url, data),
+            table: "artist_source",
+            entityIdColumn: "artist_id",
+            entityIdParameter: "artistId",
+            cancellationToken);
+    }
+
+    private static async Task UpsertEntitySourceRecordAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        SourceUpsertInput input,
+        string table,
+        string entityIdColumn,
+        string entityIdParameter,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSource = input.Source.Trim().ToLowerInvariant();
+        var normalizedSourceId = input.SourceId.Trim();
+
+        var deleteCurrentSql = $@"
+DELETE FROM {table}
+WHERE {entityIdColumn} = @{entityIdParameter}
+  AND source = @source
+  AND source_id <> @sourceId;";
+        await using (var deleteCurrent = new SqliteCommand(deleteCurrentSql, connection, transaction))
+        {
+            deleteCurrent.Parameters.AddWithValue(entityIdParameter, input.EntityId);
+            deleteCurrent.Parameters.AddWithValue(SourceField, normalizedSource);
+            deleteCurrent.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            await deleteCurrent.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var updateBySourceIdSql = $@"
+UPDATE {table}
+SET {entityIdColumn} = @{entityIdParameter},
+    url = COALESCE(NULLIF(@url, ''), {table}.url),
+    data = COALESCE(NULLIF(@data, ''), {table}.data)
+WHERE source = @source
+  AND source_id = @sourceId;";
+        await using (var updateBySourceId = new SqliteCommand(updateBySourceIdSql, connection, transaction))
+        {
+            updateBySourceId.Parameters.AddWithValue(entityIdParameter, input.EntityId);
+            updateBySourceId.Parameters.AddWithValue(SourceField, normalizedSource);
+            updateBySourceId.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            updateBySourceId.Parameters.AddWithValue("url", (object?)input.Url ?? DBNull.Value);
+            updateBySourceId.Parameters.AddWithValue("data", (object?)input.Data ?? DBNull.Value);
+            var updated = await updateBySourceId.ExecuteNonQueryAsync(cancellationToken);
+            if (updated > 0)
+            {
+                return;
+            }
+        }
+
+        var updateByEntitySql = $@"
+UPDATE {table}
+SET source_id = @sourceId,
+    url = COALESCE(NULLIF(@url, ''), {table}.url),
+    data = COALESCE(NULLIF(@data, ''), {table}.data)
+WHERE {entityIdColumn} = @{entityIdParameter}
+  AND source = @source;";
+        await using (var updateByEntity = new SqliteCommand(updateByEntitySql, connection, transaction))
+        {
+            updateByEntity.Parameters.AddWithValue(entityIdParameter, input.EntityId);
+            updateByEntity.Parameters.AddWithValue(SourceField, normalizedSource);
+            updateByEntity.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            updateByEntity.Parameters.AddWithValue("url", (object?)input.Url ?? DBNull.Value);
+            updateByEntity.Parameters.AddWithValue("data", (object?)input.Data ?? DBNull.Value);
+            var updated = await updateByEntity.ExecuteNonQueryAsync(cancellationToken);
+            if (updated > 0)
+            {
+                return;
+            }
+        }
+
+        var insertSql = $@"
+INSERT INTO {table} ({entityIdColumn}, source, source_id, url, data)
+VALUES (@{entityIdParameter}, @source, @sourceId, @url, @data);";
+        await using var insert = new SqliteCommand(insertSql, connection, transaction);
+        insert.Parameters.AddWithValue(entityIdParameter, input.EntityId);
+        insert.Parameters.AddWithValue(SourceField, normalizedSource);
+        insert.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        insert.Parameters.AddWithValue("url", (object?)input.Url ?? DBNull.Value);
+        insert.Parameters.AddWithValue("data", (object?)input.Data ?? DBNull.Value);
+        await insert.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static string? BuildTrackUrl(string source, string? sourceId)

@@ -25,23 +25,24 @@ public class LibraryMaintenanceApiController : ControllerBase
     }
 
     [HttpPost("cleanup-missing")]
-    public async Task<IActionResult> CleanupMissing(CancellationToken cancellationToken)
+    public async Task<IActionResult> CleanupMissing([FromQuery] long? folderId = null, CancellationToken cancellationToken = default)
     {
         if (!_repository.IsConfigured)
         {
             return Ok(new { ok = false, reason = "library_db_not_configured", removed = 0 });
         }
 
-        var removed = await _repository.CleanupMissingFilesAsync(cancellationToken);
+        var removed = await _repository.CleanupMissingFilesAsync(folderId, cancellationToken);
+        var scopeLabel = await ResolveFolderScopeLabelAsync(folderId, cancellationToken);
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            $"Library cleanup removed {removed} missing files."));
+            $"{scopeLabel} cleanup removed {removed} missing files."));
         return Ok(new { ok = true, removed });
     }
 
     [HttpPost("clear")]
-    public async Task<IActionResult> ClearLibrary(CancellationToken cancellationToken)
+    public async Task<IActionResult> ClearLibrary([FromQuery] long? folderId = null, CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("Library clear request received.");
         if (!_repository.IsConfigured)
@@ -57,16 +58,20 @@ public class LibraryMaintenanceApiController : ControllerBase
             });
         }
 
-        var result = await _repository.ClearLibraryDataAsync(cancellationToken);
+        var result = folderId.HasValue
+            ? await _repository.ClearFolderLocalContentAsync(folderId.Value, cancellationToken)
+            : await _repository.ClearLibraryDataAsync(cancellationToken);
+        var scopeLabel = await ResolveFolderScopeLabelAsync(folderId, cancellationToken);
         _logger.LogInformation(
-            "Library clear completed. artists={ArtistsRemoved}, albums={AlbumsRemoved}, tracks={TracksRemoved}",
+            "{ScopeLabel} clear completed. artists={ArtistsRemoved}, albums={AlbumsRemoved}, tracks={TracksRemoved}",
+            scopeLabel,
             result.ArtistsRemoved,
             result.AlbumsRemoved,
             result.TracksRemoved);
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            $"Library cleared (metadata only): artists={result.ArtistsRemoved}, albums={result.AlbumsRemoved}, tracks={result.TracksRemoved}."));
+            $"{scopeLabel} cleared (metadata only): artists={result.ArtistsRemoved}, albums={result.AlbumsRemoved}, tracks={result.TracksRemoved}."));
 
         return Ok(new
         {
@@ -75,5 +80,17 @@ public class LibraryMaintenanceApiController : ControllerBase
             albumsRemoved = result.AlbumsRemoved,
             tracksRemoved = result.TracksRemoved
         });
+    }
+
+    private async Task<string> ResolveFolderScopeLabelAsync(long? folderId, CancellationToken cancellationToken)
+    {
+        if (!folderId.HasValue)
+        {
+            return "Library";
+        }
+
+        var folders = await _repository.GetFoldersAsync(cancellationToken);
+        var folder = folders.FirstOrDefault(item => item.Id == folderId.Value);
+        return folder is null ? $"Folder {folderId.Value}" : $"Folder {folder.DisplayName}";
     }
 }

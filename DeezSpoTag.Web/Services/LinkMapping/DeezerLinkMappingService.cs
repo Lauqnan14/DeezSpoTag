@@ -10,24 +10,24 @@ public sealed class DeezerLinkMappingService
 {
     private const int DeezerSearchLimit = 4;
     private const double MinMetadataSearchScore = 0.30d;
+    private const string TrackSearchType = "track";
+    private const string AlbumSearchType = "album";
+    private const string ArtistSearchType = "artist";
+    private const string PlaylistSearchType = "playlist";
+    private const string SongSourceType = "song";
+    private const string ChannelSourceType = "channel";
 
     private readonly SongLinkResolver _songLinkResolver;
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly ExternalLinkClassifier _classifier;
-    private readonly DeezerLinkParser _deezerLinkParser;
     private readonly ILogger<DeezerLinkMappingService> _logger;
 
     public DeezerLinkMappingService(
         SongLinkResolver songLinkResolver,
         IHttpClientFactory httpClientFactory,
-        ExternalLinkClassifier classifier,
-        DeezerLinkParser deezerLinkParser,
         ILogger<DeezerLinkMappingService> logger)
     {
         _songLinkResolver = songLinkResolver;
         _httpClientFactory = httpClientFactory;
-        _classifier = classifier;
-        _deezerLinkParser = deezerLinkParser;
         _logger = logger;
     }
 
@@ -43,7 +43,7 @@ public sealed class DeezerLinkMappingService
             return DeezerLinkMappingResult.Unavailable(ExternalLinkSource.Unknown, "Invalid URL.");
         }
 
-        var source = _classifier.Classify(normalizedUrl);
+        var source = ExternalLinkClassifier.Classify(normalizedUrl);
         if (source != ExternalLinkSource.Deezer && IsPlaylistUrl(normalizedUrl))
         {
             return DeezerLinkMappingResult.Unavailable(
@@ -51,7 +51,7 @@ public sealed class DeezerLinkMappingService
                 "Playlist links are resolved per-track and must be opened using their source playlist flow.");
         }
 
-        if (_deezerLinkParser.TryParse(normalizedUrl, out var directDeezer))
+        if (DeezerLinkParser.TryParse(normalizedUrl, out var directDeezer))
         {
             return DeezerLinkMappingResult.Success(source, directDeezer);
         }
@@ -66,7 +66,7 @@ public sealed class DeezerLinkMappingService
             _logger.LogDebug(ex, "Song.link mapping failed for url {Url}", normalizedUrl);
         }
 
-        if (_deezerLinkParser.TryParse(mapped?.DeezerUrl, out var mappedDeezer))
+        if (DeezerLinkParser.TryParse(mapped?.DeezerUrl, out var mappedDeezer))
         {
             return DeezerLinkMappingResult.Success(source, mappedDeezer);
         }
@@ -98,7 +98,7 @@ public sealed class DeezerLinkMappingService
             return null;
         }
 
-        if (_deezerLinkParser.TryParse(candidate.Url, out var descriptor))
+        if (DeezerLinkParser.TryParse(candidate.Url, out var descriptor))
         {
             _logger.LogInformation(
                 "Deezer metadata mapping matched {Source} to {DeezerUrl} using query \"{Query}\".",
@@ -111,7 +111,7 @@ public sealed class DeezerLinkMappingService
         return null;
     }
 
-    private bool TryBuildMetadataSearchRequest(
+    private static bool TryBuildMetadataSearchRequest(
         string normalizedUrl,
         SongLinkResult mapped,
         out string searchType,
@@ -135,7 +135,7 @@ public sealed class DeezerLinkMappingService
         var sourceArtist = NormalizeWhitespace(mapped.SourceArtist);
         query = searchType switch
         {
-            "track" or "album" or "artist" when !string.IsNullOrWhiteSpace(sourceArtist)
+            TrackSearchType or AlbumSearchType or ArtistSearchType when !string.IsNullOrWhiteSpace(sourceArtist)
                 => $"{sourceTitle} {sourceArtist}",
             _ => sourceTitle
         };
@@ -151,35 +151,35 @@ public sealed class DeezerLinkMappingService
             if (path.Contains("/playlist", StringComparison.Ordinal)
                 || uri.Query.Contains("list=", StringComparison.OrdinalIgnoreCase))
             {
-                return "playlist";
+                return PlaylistSearchType;
             }
 
             if (path.Contains("/album", StringComparison.Ordinal))
             {
-                return "album";
+                return AlbumSearchType;
             }
 
             if (path.Contains("/artist", StringComparison.Ordinal)
                 || path.Contains("/channel", StringComparison.Ordinal))
             {
-                return "artist";
+                return ArtistSearchType;
             }
 
             if (path.Contains("/track", StringComparison.Ordinal)
                 || path.Contains("/song", StringComparison.Ordinal)
                 || uri.Query.Contains("v=", StringComparison.OrdinalIgnoreCase))
             {
-                return "track";
+                return TrackSearchType;
             }
         }
 
         var normalizedType = NormalizeWhitespace(sourceType).ToLowerInvariant();
         return normalizedType switch
         {
-            "song" or "track" => "track",
-            "album" => "album",
-            "playlist" => "playlist",
-            "artist" or "channel" => "artist",
+            SongSourceType or TrackSearchType => TrackSearchType,
+            AlbumSearchType => AlbumSearchType,
+            PlaylistSearchType => PlaylistSearchType,
+            ArtistSearchType or ChannelSourceType => ArtistSearchType,
             _ => string.Empty
         };
     }

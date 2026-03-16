@@ -2,7 +2,7 @@ using System.Text.RegularExpressions;
 
 namespace DeezSpoTag.Web.Services.LinkMapping;
 
-public sealed class ExternalLinkClassifier
+public static class ExternalLinkClassifier
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
 
@@ -46,7 +46,7 @@ public sealed class ExternalLinkClassifier
         @"^https?:\/\/(?:www\.|m\.)?boomplay\.com\/.+",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    public ExternalLinkSource Classify(string? url)
+    public static ExternalLinkSource Classify(string? url)
     {
         if (string.IsNullOrWhiteSpace(url))
         {

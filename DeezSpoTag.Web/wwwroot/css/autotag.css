@@ -1031,7 +1031,7 @@ body.autotag-col-resizing * {
 
 .folder-row .table-row {
     display: grid;
-    grid-template-columns: minmax(140px, 0.95fr) minmax(220px, 1.6fr) minmax(300px, 1.5fr) minmax(190px, 1fr) minmax(160px, 0.95fr) minmax(90px, 0.6fr) minmax(200px, 0.95fr);
+    grid-template-columns: minmax(140px, 0.95fr) minmax(220px, 1.55fr) minmax(300px, 1.45fr) minmax(190px, 0.95fr) minmax(160px, 0.9fr) minmax(110px, 0.7fr) minmax(110px, 0.7fr) minmax(200px, 0.95fr);
     gap: 10px;
     align-items: center;
     padding: 12px 14px;
@@ -1060,6 +1060,37 @@ body.autotag-col-resizing * {
     align-items: center;
     gap: 6px;
     flex-wrap: wrap;
+}
+
+.folder-row.is-disabled .table-row {
+    opacity: 0.74;
+}
+
+.folder-library-disabled-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, #f97316 45%, transparent);
+    background: color-mix(in srgb, #f97316 12%, transparent);
+    color: #fbbf24;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.folder-library-toggle-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.folder-library-toggle-text {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-weight: 600;
 }
 
 .folder-role-options {

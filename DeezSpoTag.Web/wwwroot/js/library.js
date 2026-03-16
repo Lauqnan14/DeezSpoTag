@@ -24,9 +24,11 @@ const libraryState = {
     allArtists: [],
     filteredArtists: [],
     artistFolders: new Map(),
+    artistFolderScopeId: null,
     artistSearchQuery: '',
     artistSortKey: 'name-asc',
     artistSearchTimer: null,
+    artistLoadRequestId: 0,
     scanArtistsRefreshInFlight: false,
     lastActiveScanRefreshKey: '',
     wasScanRunning: false,
@@ -79,6 +81,7 @@ const libraryState = {
 const libraryTrackSummaryCache = new Map();
 let spotifyTopTrackMatchRequestId = 0;
 let spotifyTopTrackPreviewWarmupTimer = 0;
+const LIBRARY_VIEW_SESSION_KEY = 'libraryViewFolderId';
 
 const analysisState = {
     running: false,
@@ -693,12 +696,18 @@ function buildLibraryImageUrl(path, size) {
 }
 
 async function fetchJson(url, options) {
-    const response = await fetch(url, options);
+    const response = await fetch(url, {
+        cache: options?.cache ?? 'no-store',
+        ...options
+    });
     return parseJsonResponse(response, url);
 }
 
-async function fetchJsonOptional(url) {
-    const response = await fetch(url);
+async function fetchJsonOptional(url, options) {
+    const response = await fetch(url, {
+        cache: options?.cache ?? 'no-store',
+        ...options
+    });
     if (response.status === 404) {
         return null;
     }
@@ -2175,7 +2184,10 @@ async function startFolderEnhancement(folder, profileReference) {
 }
 
 async function loadFolders() {
-    const folders = await fetchJson('/api/library/folders');
+    const includeDisabled = !!document.getElementById('foldersContainer');
+    const folders = await fetchJson(includeDisabled
+        ? '/api/library/folders?includeDisabled=true'
+        : '/api/library/folders');
     libraryState.folders = Array.isArray(folders)
         ? folders.map(normalizeFolderConversionState)
         : [];
@@ -2188,6 +2200,9 @@ async function loadFolders() {
     await loadViewAliases();
     updateLibraryViewOptions();
     populateAlbumDestinationOptions();
+    if (document.getElementById('artistsGrid') && Array.isArray(libraryState.allArtists) && libraryState.allArtists.length > 0) {
+        await applyLibraryViewFilter();
+    }
 }
 
 globalThis.refreshAutoTagFolderDefaults = async function refreshAutoTagFolderDefaults() {
@@ -2200,33 +2215,95 @@ globalThis.refreshAutoTagFolderDefaults = async function refreshAutoTagFolderDef
 
 async function loadArtists() {
     updateLibraryResultsMeta(-1, -1);
-    const artists = await fetchJson('/api/library/artists?availability=local');
+    const requestId = ++libraryState.artistLoadRequestId;
+    const params = new URLSearchParams();
+    const selectedFolderId = getSelectedLibraryViewFolderId();
+    params.set('availability', 'local');
+    if (selectedFolderId !== null) {
+        params.set('folderId', String(selectedFolderId));
+    }
+    const artists = await fetchJson(`/api/library/artists?${params.toString()}`);
+    if (requestId !== libraryState.artistLoadRequestId) {
+        return;
+    }
     libraryState.allArtists = Array.isArray(artists) ? artists : [];
     libraryState.artistFolders.clear();
-    await applyLibraryViewFilter();
+    libraryState.artistFolderScopeId = selectedFolderId;
+    await applyLibraryViewFilter(requestId);
+}
+
+function getStoredLibraryViewSelection() {
+    try {
+        return sessionStorage.getItem(LIBRARY_VIEW_SESSION_KEY) || '';
+    } catch {
+        return '';
+    }
+}
+
+function setStoredLibraryViewSelection(value) {
+    try {
+        if (!value || value === 'main') {
+            sessionStorage.removeItem(LIBRARY_VIEW_SESSION_KEY);
+            return;
+        }
+
+        sessionStorage.setItem(LIBRARY_VIEW_SESSION_KEY, value);
+    } catch {
+        // Ignore session storage failures.
+    }
+}
+
+function getSelectedLibraryViewFolderId() {
+    const viewSelect = document.getElementById('libraryViewSelect');
+    const selected = (viewSelect?.value || getStoredLibraryViewSelection() || 'main').trim();
+    if (!selected || selected === 'main') {
+        return null;
+    }
+
+    const folderId = Number.parseInt(selected, 10);
+    return Number.isFinite(folderId) ? folderId : null;
+}
+
+function getSelectedLibraryViewFolder() {
+    const selectedFolderId = getSelectedLibraryViewFolderId();
+    if (selectedFolderId === null) {
+        return null;
+    }
+
+    return (libraryState.folders || []).find(folder => Number(folder?.id) === selectedFolderId) || null;
 }
 
 async function runLocalScan(refreshImages = false, reset = false) {
     try {
         const params = new URLSearchParams();
+        const selectedFolderId = getSelectedLibraryViewFolderId();
         if (refreshImages) {
             params.set('refreshImages', 'true');
         }
         if (reset) {
             params.set('reset', 'true');
         }
+        if (selectedFolderId !== null) {
+            params.set('folderId', String(selectedFolderId));
+        }
         const suffix = params.toString();
         const url = suffix ? `/api/library/scan?${suffix}` : '/api/library/scan';
         const scanStartedAt = Date.now();
-        showToast('Library scan started.');
+        showToast(selectedFolderId !== null ? 'Folder scan started.' : 'Library scan started.');
         await fetchJson(url, { method: 'POST', keepalive: true });
         waitForScanCompletion(scanStartedAt);
         if (reset && refreshImages) {
-            showToast('Library data reset and images refreshed.');
+            showToast(selectedFolderId !== null
+                ? 'Folder data reset and images refreshed.'
+                : 'Library data reset and images refreshed.');
         } else if (reset) {
-            showToast('Library data reset and refreshed.');
+            showToast(selectedFolderId !== null
+                ? 'Folder data reset and refreshed.'
+                : 'Library data reset and refreshed.');
         } else {
-            showToast(refreshImages ? 'Images refreshed.' : 'Library refreshed.');
+            showToast(refreshImages
+                ? (selectedFolderId !== null ? 'Folder images refreshed.' : 'Images refreshed.')
+                : (selectedFolderId !== null ? 'Folder refreshed.' : 'Library refreshed.'));
         }
     } catch (error) {
         showToast(`Refresh failed: ${error.message}`, true);
@@ -6153,6 +6230,10 @@ function resetFolderModalFields() {
     if (nameInput) {
         nameInput.value = '';
     }
+    const enabledField = document.getElementById('folderEnabled');
+    if (enabledField) {
+        enabledField.checked = true;
+    }
     const atmosCheckbox = document.getElementById('folderAtmosDestination');
     if (atmosCheckbox) {
         atmosCheckbox.checked = false;
@@ -6242,6 +6323,10 @@ function populateFolderModalCoreFields(folder) {
     const nameInput = document.getElementById('folderName');
     if (nameInput) {
         nameInput.value = String(folder.displayName || '');
+    }
+    const enabledField = document.getElementById('folderEnabled');
+    if (enabledField) {
+        enabledField.checked = isFolderEnabledFlag(folder.enabled);
     }
 }
 
@@ -6375,8 +6460,8 @@ function readFolderModalInput() {
         : null;
     const rootPath = document.getElementById('folderPath').value.trim();
     const convertEnabled = document.getElementById('folderConvertEnabled')?.checked === true;
-    let enabled = true;
-    if (isEdit && existingFolder) {
+    let enabled = document.getElementById('folderEnabled')?.checked !== false;
+    if (!document.getElementById('folderEnabled') && isEdit && existingFolder) {
         enabled = isFolderEnabledFlag(existingFolder.enabled);
     }
     return {
@@ -6870,14 +6955,14 @@ async function applyFolderModeSelection(folder, newValue, disableConversionIfEna
     await applyFolderModeQuality(folder, newValue, disableConversionIfEnabled, hasAutoTagProfileSelection, qualityLabel);
 }
 
-function bindFolderAutoTagToggle(wrapper, folder, canEnableAutoTag) {
+function bindFolderAutoTagToggle(wrapper, folder, canToggleAutoTag) {
     const enabledToggle = wrapper.querySelector('[data-folder-enabled]');
     if (!enabledToggle) {
         return;
     }
     enabledToggle.addEventListener('change', async () => {
         const enabled = enabledToggle.checked;
-        if (enabled && !canEnableAutoTag) {
+        if (enabled && !canToggleAutoTag) {
             enabledToggle.checked = false;
             showToast('Assign an AutoTag profile before enabling AutoTag for music folders.', true);
             return;
@@ -6895,7 +6980,30 @@ function bindFolderAutoTagToggle(wrapper, folder, canEnableAutoTag) {
             enabledToggle.checked = !enabled;
             showToast(`Failed to update folder: ${error?.message || error}`, true);
         } finally {
-            enabledToggle.disabled = !canEnableAutoTag;
+            enabledToggle.disabled = !canToggleAutoTag;
+        }
+    });
+}
+
+function bindFolderLibraryToggle(wrapper, folder) {
+    const libraryToggle = wrapper.querySelector('[data-folder-library-enabled]');
+    if (!libraryToggle) {
+        return;
+    }
+
+    libraryToggle.addEventListener('change', async () => {
+        const enabled = libraryToggle.checked;
+        libraryToggle.disabled = true;
+        try {
+            await setFolderEnabled(folder.id, enabled);
+            folder.enabled = enabled;
+            showToast(`Folder ${enabled ? 'enabled for Library' : 'hidden from Library'}.`);
+            renderFolders();
+        } catch (error) {
+            libraryToggle.checked = !enabled;
+            showToast(`Failed to update folder: ${error?.message || error}`, true);
+        } finally {
+            libraryToggle.disabled = false;
         }
     });
 }
@@ -7009,6 +7117,8 @@ function buildFolderProfileColumnMarkup(profileOptionsSource, profileOptions, sh
 
 function computeFolderRowViewModel(folder, context) {
     const enabledId = `folder-enabled-${folder.id}`;
+    const libraryEnabledId = `folder-library-enabled-${folder.id}`;
+    const currentLibraryEnabled = isFolderEnabledFlag(folder.enabled);
     const currentQuality = String(folder.desiredQuality ?? '27');
     const folderIdKey = String(folder.id);
     const currentProfile = resolveFolderProfileReference(folder);
@@ -7025,8 +7135,11 @@ function computeFolderRowViewModel(folder, context) {
     const showProfileSelector = requiresProfileForAutoTag;
     const hasAssignedProfile = currentProfile.trim().length > 0;
     const canEnableAutoTag = !requiresProfileForAutoTag || hasAssignedProfile;
-    const currentAutoTagEnabled = canEnableAutoTag && folder.autoTagEnabled !== false;
-    const autoTagToggleTitle = canEnableAutoTag
+    const canToggleAutoTag = currentLibraryEnabled && canEnableAutoTag;
+    const currentAutoTagEnabled = folder.autoTagEnabled !== false;
+    const autoTagToggleTitle = !currentLibraryEnabled
+        ? 'Enable the library folder first.'
+        : canEnableAutoTag
         ? 'Enable/disable AutoTag for this folder'
         : 'Assign an AutoTag profile first (music folders only).';
     const convertEnabled = folder.convertEnabled === true;
@@ -7067,10 +7180,13 @@ function computeFolderRowViewModel(folder, context) {
     );
     return {
         enabledId,
+        libraryEnabledId,
+        currentLibraryEnabled,
         folderIdKey,
         currentProfile,
         currentSchedule,
         canEnableAutoTag,
+        canToggleAutoTag,
         currentAutoTagEnabled,
         autoTagToggleTitle,
         selectedQualityValue,
@@ -7088,7 +7204,10 @@ function computeFolderRowViewModel(folder, context) {
 function buildFolderRowMarkup(folder, viewModel, conversionModeValue) {
     return `
             <div class="table-row">
-                <span class="folder-label">${folder.displayName}</span>
+                <span class="folder-label">
+                    ${folder.displayName}
+                    ${viewModel.currentLibraryEnabled ? '' : '<span class="folder-library-disabled-badge">Hidden</span>'}
+                </span>
                 <span>${folder.rootPath}</span>
                 <span class="folder-quality-cell">
                     <div class="folder-quality-dropdown" data-folder-quality-dropdown>
@@ -7132,18 +7251,25 @@ function buildFolderRowMarkup(folder, viewModel, conversionModeValue) {
                     ${viewModel.profileColumnMarkup}
                 </span>
                 <span>
-                    <select class="folder-duration-select" data-folder-duration ${viewModel.currentAutoTagEnabled ? '' : 'disabled'}>
+                    <select class="folder-duration-select" data-folder-duration ${viewModel.currentLibraryEnabled && viewModel.currentAutoTagEnabled ? '' : 'disabled'}>
                         ${viewModel.scheduleOptions}
                     </select>
                 </span>
                 <span>
+                    <label class="switch folder-library-toggle-label" title="Include or exclude this folder from Library indexing and Library views.">
+                        <input id="${viewModel.libraryEnabledId}" type="checkbox" ${viewModel.currentLibraryEnabled ? 'checked' : ''} data-folder-library-enabled />
+                        <span class="slider"></span>
+                        <span class="folder-library-toggle-text">${viewModel.currentLibraryEnabled ? 'On' : 'Off'}</span>
+                    </label>
+                </span>
+                <span>
                     <label class="switch" title="${escapeHtml(viewModel.autoTagToggleTitle)}">
-                        <input id="${viewModel.enabledId}" type="checkbox" ${viewModel.currentAutoTagEnabled ? 'checked' : ''} ${viewModel.canEnableAutoTag ? '' : 'disabled'} data-folder-enabled />
+                        <input id="${viewModel.enabledId}" type="checkbox" ${viewModel.currentAutoTagEnabled ? 'checked' : ''} ${viewModel.canToggleAutoTag ? '' : 'disabled'} data-folder-enabled />
                         <span class="slider"></span>
                     </label>
                 </span>
                 <span class="actions">
-                    <button class="action-btn action-btn-sm folder-action" data-enhance title="Run enhancement now" ${viewModel.currentAutoTagEnabled ? '' : 'disabled'}>
+                    <button class="action-btn action-btn-sm folder-action" data-enhance title="Run enhancement now" ${viewModel.currentLibraryEnabled && viewModel.currentAutoTagEnabled ? '' : 'disabled'}>
                         <i class="fas fa-magic" aria-hidden="true"></i>
                         <span class="visually-hidden">Enhance</span>
                     </button>
@@ -7315,20 +7441,23 @@ function renderFolders() {
     foldersForDisplay.forEach(folder => {
         const wrapper = document.createElement('div');
         wrapper.className = 'folder-row';
+        if (!isFolderEnabledFlag(folder.enabled)) {
+            wrapper.classList.add('is-disabled');
+        }
         const viewModel = computeFolderRowViewModel(folder, folderRowContext);
         let currentProfile = viewModel.currentProfile;
         const currentSchedule = viewModel.currentSchedule;
         const folderIdKey = viewModel.folderIdKey;
-        const canEnableAutoTag = viewModel.canEnableAutoTag;
         const selectedQualityValue = viewModel.selectedQualityValue;
         wrapper.innerHTML = buildFolderRowMarkup(folder, viewModel, conversionModeValue);
 
+        bindFolderLibraryToggle(wrapper, folder);
         const aliasContainer = wrapper.querySelector('.alias-container');
         const enhanceButton = wrapper.querySelector('[data-enhance]');
         wrapper.querySelector('[data-edit]').addEventListener('click', () => updateFolder(folder.id));
         wrapper.querySelector('[data-delete]').addEventListener('click', () => deleteFolder(folder.id));
         wrapper.querySelector('[data-aliases]').addEventListener('click', () => toggleAliases(folder.id, aliasContainer));
-        bindFolderAutoTagToggle(wrapper, folder, canEnableAutoTag);
+        bindFolderAutoTagToggle(wrapper, folder, viewModel.canToggleAutoTag);
 
         const qualityDropdown = wrapper.querySelector('[data-folder-quality-dropdown]');
         const qualityPanelEl = wrapper.querySelector('[data-folder-quality-panel]');
@@ -7770,7 +7899,7 @@ async function setFolderEnabled(id, enabled) {
             convertBitrate: folder.convertBitrate ?? null
         })
     });
-    await loadFolders();
+    await Promise.all([loadFolders(), loadArtists(), loadLibraryScanStatus()]);
 }
 
 async function setFolderDesiredQuality(id, desiredQuality) {
@@ -7862,7 +7991,7 @@ function updateLibraryViewOptions() {
     if (!viewSelect) {
         return;
     }
-    const currentValue = viewSelect.value || 'main';
+    const requestedValue = (viewSelect.value || getStoredLibraryViewSelection() || 'main').trim();
     viewSelect.innerHTML = '';
     const mainOption = document.createElement('option');
     mainOption.value = 'main';
@@ -7872,11 +8001,14 @@ function updateLibraryViewOptions() {
         .filter(folder => isFolderEnabledFlag(folder.enabled))
         .forEach(folder => {
             const option = document.createElement('option');
-            option.value = folder.displayName;
+            option.value = String(folder.id);
             option.textContent = getFolderLabel(folder);
             viewSelect.appendChild(option);
         });
-    viewSelect.value = currentValue;
+    const selectedExists = requestedValue === 'main'
+        || (libraryState.folders || []).some(folder => isFolderEnabledFlag(folder.enabled) && String(folder.id) === requestedValue);
+    viewSelect.value = selectedExists ? requestedValue : 'main';
+    setStoredLibraryViewSelection(viewSelect.value || 'main');
 }
 
 function ensureLibraryViewDefaultOption() {
@@ -7937,9 +8069,13 @@ async function getArtistFolders(artistId) {
         const folderSet = new Set();
         (albums || []).forEach(album => {
             (album.localFolders || []).forEach(folderName => {
-                if (folderName) {
-                    folderSet.add(folderName);
+                const normalizedName = String(folderName || '').trim().toLocaleLowerCase();
+                if (!normalizedName) {
+                    return;
                 }
+                (libraryState.folders || [])
+                    .filter(folder => String(folder.displayName || '').trim().toLocaleLowerCase() === normalizedName)
+                    .forEach(folder => folderSet.add(String(folder.id)));
             });
         });
         libraryState.artistFolders.set(artistId, folderSet);
@@ -7980,14 +8116,19 @@ function compareArtistsBySort(a, b, sortKey) {
     return first.localeCompare(second);
 }
 
-async function applyLibraryViewFilter() {
+async function applyLibraryViewFilter(requestId = null) {
     const viewSelect = document.getElementById('libraryViewSelect');
     const allArtists = Array.isArray(libraryState.allArtists) ? libraryState.allArtists : [];
     const normalizedQuery = (libraryState.artistSearchQuery || '').trim().toLocaleLowerCase();
     const sortKey = libraryState.artistSortKey || 'name-asc';
     let filteredByView = allArtists;
 
+    const isStaleRequest = () => requestId !== null && requestId !== libraryState.artistLoadRequestId;
+
     if (!viewSelect) {
+        if (isStaleRequest()) {
+            return;
+        }
         const filtered = allArtists
             .filter(artist => !normalizedQuery || (artist.name || '').toLocaleLowerCase().includes(normalizedQuery))
             .sort((a, b) => compareArtistsBySort(a, b, sortKey));
@@ -7998,16 +8139,24 @@ async function applyLibraryViewFilter() {
     }
 
     const selected = (viewSelect.value || '').trim();
-    if (selected && selected !== 'main') {
+    const selectedFolderId = getSelectedLibraryViewFolderId();
+    const selectedMatchesLoadedScope = String(libraryState.artistFolderScopeId ?? '') === String(selectedFolderId ?? '');
+    if (selected && selected !== 'main' && !selectedMatchesLoadedScope) {
         const folderLookups = await Promise.all(allArtists.map(async artist => {
             const folders = await getArtistFolders(artist.id);
             return { artist, folders };
         }));
+        if (isStaleRequest()) {
+            return;
+        }
         filteredByView = folderLookups
             .filter(entry => entry.folders?.has(selected))
             .map(entry => entry.artist);
     }
 
+    if (isStaleRequest()) {
+        return;
+    }
     const filtered = filteredByView
         .filter(artist => !normalizedQuery || (artist.name || '').toLocaleLowerCase().includes(normalizedQuery))
         .sort((a, b) => compareArtistsBySort(a, b, sortKey));
@@ -10190,17 +10339,33 @@ async function downloadAppleVideo(appleUrl, options = null) {
 }
 
 async function cleanupMissingLibraryFiles() {
-    if (!await DeezSpoTag.ui.confirm('Remove entries for files that no longer exist on disk?', { title: 'Cleanup Missing Files' })) {
+    const selectedFolder = getSelectedLibraryViewFolder();
+    const selectedFolderId = selectedFolder ? Number(selectedFolder.id) : null;
+    const scopeLabel = selectedFolder?.displayName || 'Library';
+    const confirmMessage = selectedFolder
+        ? `Remove missing-file entries only for ${scopeLabel}?`
+        : 'Remove entries for files that no longer exist on disk?';
+    if (!await DeezSpoTag.ui.confirm(confirmMessage, { title: selectedFolder ? `Cleanup ${scopeLabel}` : 'Cleanup Missing Files' })) {
         return;
     }
     try {
-        const result = await fetchJson('/api/library/maintenance/cleanup-missing', { method: 'POST' });
+        const params = new URLSearchParams();
+        if (selectedFolderId !== null) {
+            params.set('folderId', String(selectedFolderId));
+        }
+        const suffix = params.toString();
+        const url = suffix
+            ? `/api/library/maintenance/cleanup-missing?${suffix}`
+            : '/api/library/maintenance/cleanup-missing';
+        const result = await fetchJson(url, { method: 'POST' });
         if (result?.ok === false) {
             showToast('Library DB not configured.', true);
             return;
         }
         const removed = result?.removed ?? 0;
-        showToast(`Removed ${removed.toLocaleString()} missing files.`);
+        showToast(selectedFolder
+            ? `Removed ${removed.toLocaleString()} missing files from ${scopeLabel}.`
+            : `Removed ${removed.toLocaleString()} missing files.`);
         await Promise.all([loadLibraryScanStatus(), loadArtists()]);
     } catch (error) {
         showToast(`Cleanup failed: ${error.message}`, true);
@@ -10208,30 +10373,53 @@ async function cleanupMissingLibraryFiles() {
 }
 
 async function clearLibraryData() {
+    const selectedFolder = getSelectedLibraryViewFolder();
+    const selectedFolderId = selectedFolder ? Number(selectedFolder.id) : null;
+    const scopeLabel = selectedFolder?.displayName || 'Library';
     try {
         let confirmed = false;
         try {
             if (globalThis.DeezSpoTag?.ui?.confirm) {
                 confirmed = await DeezSpoTag.ui.confirm(
-                    'Clear all library metadata? Your music files will not be deleted.',
-                    { title: 'Clear Library', okText: 'Clear Library', cancelText: 'Cancel' }
+                    selectedFolder
+                        ? `Clear indexed metadata only for ${scopeLabel}? Your music files will not be deleted.`
+                        : 'Clear all library metadata? Your music files will not be deleted.',
+                    {
+                        title: selectedFolder ? `Clear ${scopeLabel}` : 'Clear Library',
+                        okText: selectedFolder ? `Clear ${scopeLabel}` : 'Clear Library',
+                        cancelText: 'Cancel'
+                    }
                 );
             } else {
-                confirmed = globalThis.confirm('Clear all library metadata? Your music files will not be deleted.');
+                confirmed = globalThis.confirm(
+                    selectedFolder
+                        ? `Clear indexed metadata only for ${scopeLabel}? Your music files will not be deleted.`
+                        : 'Clear all library metadata? Your music files will not be deleted.');
             }
         } catch (dialogError) {
             console.error('Clear library confirm dialog failed:', dialogError);
-            confirmed = globalThis.confirm('Clear all library metadata? Your music files will not be deleted.');
+            confirmed = globalThis.confirm(
+                selectedFolder
+                    ? `Clear indexed metadata only for ${scopeLabel}? Your music files will not be deleted.`
+                    : 'Clear all library metadata? Your music files will not be deleted.');
         }
         if (!confirmed) {
             return;
         }
-        showToast('Clearing library metadata...');
+        showToast(selectedFolder ? `Clearing ${scopeLabel} metadata...` : 'Clearing library metadata...');
         const clearButton = document.getElementById('clearLibrary');
         if (clearButton instanceof HTMLButtonElement) {
             clearButton.disabled = true;
         }
-        const result = await fetchJson('/api/library/maintenance/clear', { method: 'POST' });
+        const params = new URLSearchParams();
+        if (selectedFolderId !== null) {
+            params.set('folderId', String(selectedFolderId));
+        }
+        const suffix = params.toString();
+        const url = suffix
+            ? `/api/library/maintenance/clear?${suffix}`
+            : '/api/library/maintenance/clear';
+        const result = await fetchJson(url, { method: 'POST' });
         if (result?.ok === false) {
             showToast('Library DB not configured.', true);
             return;
@@ -10240,12 +10428,16 @@ async function clearLibraryData() {
         const albumsRemoved = Number(result?.albumsRemoved || 0);
         const tracksRemoved = Number(result?.tracksRemoved || 0);
         showToast(
-            `Library cleared: ${artistsRemoved.toLocaleString()} artists, ${albumsRemoved.toLocaleString()} albums, ${tracksRemoved.toLocaleString()} tracks removed.`
+            selectedFolder
+                ? `${scopeLabel} cleared: ${artistsRemoved.toLocaleString()} artists, ${albumsRemoved.toLocaleString()} albums, ${tracksRemoved.toLocaleString()} tracks removed.`
+                : `Library cleared: ${artistsRemoved.toLocaleString()} artists, ${albumsRemoved.toLocaleString()} albums, ${tracksRemoved.toLocaleString()} tracks removed.`
         );
         if (globalThis.DeezSpoTag?.ui?.alert) {
             await DeezSpoTag.ui.alert(
-                `Removed ${artistsRemoved.toLocaleString()} artists, ${albumsRemoved.toLocaleString()} albums, and ${tracksRemoved.toLocaleString()} tracks.`,
-                { title: 'Library Cleared' }
+                selectedFolder
+                    ? `Removed ${artistsRemoved.toLocaleString()} artists, ${albumsRemoved.toLocaleString()} albums, and ${tracksRemoved.toLocaleString()} tracks from ${scopeLabel}.`
+                    : `Removed ${artistsRemoved.toLocaleString()} artists, ${albumsRemoved.toLocaleString()} albums, and ${tracksRemoved.toLocaleString()} tracks.`,
+                { title: selectedFolder ? `${scopeLabel} Cleared` : 'Library Cleared' }
             );
         }
         await Promise.all([loadLibraryScanStatus(), loadArtists()]);
@@ -10443,7 +10635,8 @@ async function initializeArtistAlbumsPage(shouldLoadArtistAlbums) {
 function bindLibraryFilterEvents(viewSelect, searchInput, sortSelect) {
     if (viewSelect) {
         viewSelect.addEventListener('change', async () => {
-            await applyLibraryViewFilter();
+            setStoredLibraryViewSelection(viewSelect.value || 'main');
+            await loadArtists();
         });
     }
     if (searchInput) {

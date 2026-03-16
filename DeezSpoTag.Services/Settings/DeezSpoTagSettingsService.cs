@@ -913,6 +913,8 @@ public class DeezSpoTagSettingsService : ISettingsService
         }
         catch
         {
+            // Create/write probes can fail on read-only or permission-restricted mounts.
+            // Surface the normalized "not writable" error below instead of leaking OS-specific exceptions.
         }
 
         throw new InvalidOperationException(
@@ -935,15 +937,14 @@ public class DeezSpoTagSettingsService : ISettingsService
         try
         {
             var probePath = Path.Combine(path, $".write-test-{Guid.NewGuid():N}");
-            using (File.Create(probePath))
-            {
-            }
+            using var probeStream = File.Create(probePath);
 
             File.Delete(probePath);
             return true;
         }
         catch
         {
+            // Writable checks are best-effort; callers interpret false as "path cannot be used".
             return false;
         }
     }
@@ -1075,25 +1076,38 @@ public class DeezSpoTagSettingsService : ISettingsService
         }
 
         var builder = new StringBuilder(value.Length);
-        for (var index = 0; index < value.Length; index++)
+        var index = 0;
+        while (index < value.Length)
         {
-            if (value[index] == '\\'
-                && index + 3 < value.Length
-                && IsOctalDigit(value[index + 1])
-                && IsOctalDigit(value[index + 2])
-                && IsOctalDigit(value[index + 3]))
+            if (TryDecodeMountInfoEscape(value, index, out var decodedChar))
             {
-                var octal = value.Substring(index + 1, 3);
-                var decoded = Convert.ToInt32(octal, 8);
-                builder.Append((char)decoded);
-                index += 3;
+                builder.Append(decodedChar);
+                index += 4;
                 continue;
             }
 
             builder.Append(value[index]);
+            index++;
         }
 
         return builder.ToString();
+    }
+
+    private static bool TryDecodeMountInfoEscape(string value, int index, out char decodedChar)
+    {
+        decodedChar = default;
+        if (value[index] != '\\'
+            || index + 3 >= value.Length
+            || !IsOctalDigit(value[index + 1])
+            || !IsOctalDigit(value[index + 2])
+            || !IsOctalDigit(value[index + 3]))
+        {
+            return false;
+        }
+
+        var octal = value.Substring(index + 1, 3);
+        decodedChar = (char)Convert.ToInt32(octal, 8);
+        return true;
     }
 
     private static bool IsOctalDigit(char value)

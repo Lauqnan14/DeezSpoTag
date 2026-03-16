@@ -64,6 +64,7 @@ public class LibraryFoldersApiController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> GetAll(
         [FromQuery] bool downloadOnly = false,
+        [FromQuery] bool includeDisabled = false,
         [FromQuery] string? contentType = null,
         CancellationToken cancellationToken = default)
     {
@@ -75,6 +76,13 @@ public class LibraryFoldersApiController : ControllerBase
         var folders = await _repository.GetFoldersAsync(cancellationToken);
         folders = await NormalizeFolderProfileReferencesAsync(folders, cancellationToken);
         folders = await EnforceAutoTagProfileRequirementsAsync(folders, cancellationToken);
+        if (!includeDisabled)
+        {
+            folders = folders
+                .Where(folder => folder.Enabled)
+                .ToList();
+        }
+
         if (downloadOnly)
         {
             folders = folders
@@ -253,6 +261,23 @@ public class LibraryFoldersApiController : ControllerBase
         }
 
         folder = await EnforceAutoTagProfileRequirementAsync(folder, cancellationToken) ?? folder;
+
+        var wasEnabled = existingFolder.Enabled;
+        var isEnabled = folder.Enabled;
+        var rootPathChanged = !string.Equals(
+            NormalizePathForFolderComparison(existingFolder.RootPath),
+            NormalizePathForFolderComparison(folder.RootPath),
+            StringComparison.OrdinalIgnoreCase);
+
+        if (wasEnabled && !isEnabled)
+        {
+            await _repository.DisableFolderAsync(id, cancellationToken);
+        }
+
+        if ((!wasEnabled && isEnabled) || rootPathChanged)
+        {
+            _ = Task.Run(() => ScanAfterFolderChangeAsync(CancellationToken.None), CancellationToken.None);
+        }
 
         _configStore.AddLog(new DeezSpoTag.Web.Services.LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
@@ -798,6 +823,25 @@ public class LibraryFoldersApiController : ControllerBase
         catch
         {
             return null;
+        }
+    }
+
+    private static string NormalizePathForFolderComparison(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            return Path.GetFullPath(path.Trim())
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch
+        {
+            return path.Trim()
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         }
     }
 

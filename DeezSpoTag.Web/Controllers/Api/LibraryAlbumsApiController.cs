@@ -28,7 +28,7 @@ public class LibraryAlbumsApiController : ControllerBase
     [HttpGet("{id:long}")]
     public async Task<IActionResult> GetAlbum(long id, CancellationToken cancellationToken)
     {
-        if (!_repository.IsConfigured || _configStore.HasLocalLibraryData())
+        if (!_repository.IsConfigured)
         {
             var localAlbum = _configStore.GetLocalAlbum(id);
             if (localAlbum is null)
@@ -67,7 +67,7 @@ public class LibraryAlbumsApiController : ControllerBase
                 .ToDictionary(static pair => pair.Key, static pair => pair.Value);
         }
 
-        if (!_repository.IsConfigured || _configStore.HasLocalLibraryData())
+        if (!_repository.IsConfigured)
         {
             var localTracks = _configStore.GetLocalTracks(id);
             return Ok(BuildLocalTrackRows(localTracks, audioInfoByTrack, audioVariantsByTrack));

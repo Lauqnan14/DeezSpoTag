@@ -60,6 +60,7 @@ namespace DeezSpoTag.Web.Controllers
         private const string TitleUpperField = "TITLE";
         private const string PictureUpperField = "PICTURE";
         private const string NbTracksField = "nb_tracks";
+        private const string TracksField = "tracks";
         private const string SingleType = "single";
         private const string RecordTypeField = "record_type";
         private const string ArtPictureUpperField = "ART_PICTURE";
@@ -948,7 +949,7 @@ namespace DeezSpoTag.Web.Controllers
                         var albumTracksObj = JsonSerializer.Deserialize<Dictionary<string, object>>(albumTracksContent);
                         if (albumObj != null && albumTracksObj != null && albumTracksObj.TryGetValue("data", out var albumTracksData))
                         {
-                            albumObj["tracks"] = albumTracksData;
+                            albumObj[TracksField] = albumTracksData;
                             albumObj["selected_track_id"] = id;
                             return Ok(albumObj);
                         }
@@ -960,9 +961,9 @@ namespace DeezSpoTag.Web.Controllers
             if (trackData != null)
             {
                 var trackItem = new Dictionary<string, object>(trackData, StringComparer.OrdinalIgnoreCase);
-                trackItem.Remove("tracks");
+                trackItem.Remove(TracksField);
                 trackItem.Remove(NbTracksField);
-                trackData["tracks"] = new[] { trackItem };
+                trackData[TracksField] = new[] { trackItem };
                 trackData[NbTracksField] = 1;
                 return Ok(trackData);
             }
@@ -1001,7 +1002,7 @@ namespace DeezSpoTag.Web.Controllers
             var tracksObj = JsonSerializer.Deserialize<Dictionary<string, object>>(tracksContent);
             if (mainObj != null && tracksObj != null && tracksObj.TryGetValue("data", out var tracksData))
             {
-                mainObj["tracks"] = tracksData;
+                mainObj[TracksField] = tracksData;
             }
 
             return Ok(mainObj);

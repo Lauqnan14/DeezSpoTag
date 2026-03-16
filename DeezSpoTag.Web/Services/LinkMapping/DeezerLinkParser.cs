@@ -2,7 +2,7 @@ using System.Text.RegularExpressions;
 
 namespace DeezSpoTag.Web.Services.LinkMapping;
 
-public sealed class DeezerLinkParser
+public static class DeezerLinkParser
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex NumericIdRegex = new(
@@ -25,7 +25,7 @@ public sealed class DeezerLinkParser
         "show"
     };
 
-    public bool TryParse(string? deezerUrl, out DeezerLinkDescriptor descriptor)
+    public static bool TryParse(string? deezerUrl, out DeezerLinkDescriptor descriptor)
     {
         descriptor = default!;
 

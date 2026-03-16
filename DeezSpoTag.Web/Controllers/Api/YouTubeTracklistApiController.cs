@@ -1,6 +1,7 @@
-using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using DeezSpoTag.Services.Download.Shared.Utils;
+using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -16,8 +17,6 @@ public sealed class YouTubeTracklistApiController : ControllerBase
         @"^[A-Za-z0-9_-]{10,}$",
         RegexOptions.Compiled,
         PlaylistIdRegexTimeout);
-    private static readonly TimeSpan YtDlpTimeout = TimeSpan.FromSeconds(45);
-
     private readonly ILogger<YouTubeTracklistApiController> _logger;
 
     public YouTubeTracklistApiController(ILogger<YouTubeTracklistApiController> logger)
@@ -76,56 +75,7 @@ public sealed class YouTubeTracklistApiController : ControllerBase
 
     private async Task<string?> FetchYtDlpPlaylistJsonAsync(string playlistUrl, CancellationToken cancellationToken)
     {
-        using var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "yt-dlp",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            }
-        };
-
-        process.StartInfo.ArgumentList.Add("--flat-playlist");
-        process.StartInfo.ArgumentList.Add("--dump-single-json");
-        process.StartInfo.ArgumentList.Add("--no-warnings");
-        process.StartInfo.ArgumentList.Add("--no-call-home");
-        process.StartInfo.ArgumentList.Add(playlistUrl);
-
-        process.Start();
-        var stdoutTask = process.StandardOutput.ReadToEndAsync();
-        var stderrTask = process.StandardError.ReadToEndAsync();
-
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(YtDlpTimeout);
-
-        try
-        {
-            await process.WaitForExitAsync(timeoutCts.Token);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            TryKillProcess(process);
-            _logger.LogWarning("yt-dlp timed out while fetching YouTube playlist {PlaylistUrl}.", playlistUrl);
-            return null;
-        }
-
-        var stdout = await stdoutTask;
-        var stderr = await stderrTask;
-
-        if (process.ExitCode != 0)
-        {
-            _logger.LogWarning(
-                "yt-dlp failed for {PlaylistUrl}. exitCode={ExitCode} stderr={StdErr}",
-                playlistUrl,
-                process.ExitCode,
-                TrimStdErr(stderr));
-            return null;
-        }
-
-        return string.IsNullOrWhiteSpace(stdout) ? null : stdout;
+        return await YtDlpPlaylistJsonFetcher.FetchAsync(playlistUrl, "YouTube", _logger, cancellationToken);
     }
 
     private static bool TryBuildTracklistPayload(string playlistId, string rawJson, out object tracklist)
@@ -134,7 +84,31 @@ public sealed class YouTubeTracklistApiController : ControllerBase
 
         using var doc = JsonDocument.Parse(rawJson);
         var root = doc.RootElement;
+        var metadata = BuildPlaylistMetadata(playlistId, root);
+        var tracks = BuildTrackEntries(root, metadata);
+        if (tracks.Count == 0)
+        {
+            return false;
+        }
 
+        tracklist = new
+        {
+            id = metadata.PlaylistId,
+            title = metadata.PlaylistTitle,
+            description = metadata.Description,
+            cover_big = metadata.CoverUrl,
+            cover_xl = metadata.CoverUrl,
+            picture_big = metadata.CoverUrl,
+            picture_xl = metadata.CoverUrl,
+            creator = new { name = metadata.CreatorName },
+            nb_tracks = tracks.Count,
+            tracks
+        };
+        return true;
+    }
+
+    private static PlaylistMetadata BuildPlaylistMetadata(string playlistId, JsonElement root)
+    {
         var playlistTitle = GetString(root, "title");
         if (string.IsNullOrWhiteSpace(playlistTitle))
         {
@@ -147,72 +121,73 @@ public sealed class YouTubeTracklistApiController : ControllerBase
             creatorName = "YouTube";
         }
 
-        var description = GetString(root, "description");
-        var coverUrl = ExtractCoverUrl(root);
+        return new PlaylistMetadata(
+            playlistId,
+            playlistTitle,
+            creatorName,
+            GetString(root, "description"),
+            ExtractCoverUrl(root));
+    }
 
+    private static List<object> BuildTrackEntries(JsonElement root, PlaylistMetadata metadata)
+    {
         var tracks = new List<object>();
-        if (root.TryGetProperty("entries", out var entriesElement)
-            && entriesElement.ValueKind == JsonValueKind.Array)
+        if (!root.TryGetProperty("entries", out var entriesElement)
+            || entriesElement.ValueKind != JsonValueKind.Array)
         {
-            var trackPosition = 0;
-            foreach (var entry in entriesElement.EnumerateArray())
+            return tracks;
+        }
+
+        var trackPosition = 0;
+        foreach (var entry in entriesElement.EnumerateArray())
+        {
+            var sourceUrl = ResolveTrackUrl(entry);
+            if (string.IsNullOrWhiteSpace(sourceUrl))
             {
-                var videoId = GetString(entry, "id");
-                var sourceUrl = BuildTrackUrl(
-                    videoId,
-                    GetString(entry, "url"),
-                    GetString(entry, "webpage_url"));
-                if (string.IsNullOrWhiteSpace(sourceUrl))
-                {
-                    continue;
-                }
-
-                var title = GetString(entry, "title");
-                if (string.IsNullOrWhiteSpace(title))
-                {
-                    title = $"Track {trackPosition + 1}";
-                }
-
-                var artistName = GetString(entry, "uploader");
-                if (string.IsNullOrWhiteSpace(artistName))
-                {
-                    artistName = creatorName;
-                }
-
-                trackPosition++;
-                tracks.Add(new
-                {
-                    id = videoId,
-                    title,
-                    duration = GetInt(entry, "duration"),
-                    track_position = trackPosition,
-                    link = sourceUrl,
-                    sourceUrl,
-                    artist = new { id = string.Empty, name = artistName },
-                    album = new { id = playlistId, title = playlistTitle, cover_medium = coverUrl }
-                });
+                continue;
             }
+
+            trackPosition++;
+            tracks.Add(BuildTrackEntry(entry, sourceUrl, trackPosition, metadata));
         }
 
-        if (tracks.Count == 0)
+        return tracks;
+    }
+
+    private static string ResolveTrackUrl(JsonElement entry)
+    {
+        return BuildTrackUrl(
+            GetString(entry, "id"),
+            GetString(entry, "url"),
+            GetString(entry, "webpage_url"));
+    }
+
+    private static object BuildTrackEntry(JsonElement entry, string sourceUrl, int trackPosition, PlaylistMetadata metadata)
+    {
+        var videoId = GetString(entry, "id");
+        var title = GetString(entry, "title");
+        if (string.IsNullOrWhiteSpace(title))
         {
-            return false;
+            title = $"Track {trackPosition}";
         }
 
-        tracklist = new
+        var artistName = GetString(entry, "uploader");
+        if (string.IsNullOrWhiteSpace(artistName))
         {
-            id = playlistId,
-            title = playlistTitle,
-            description,
-            cover_big = coverUrl,
-            cover_xl = coverUrl,
-            picture_big = coverUrl,
-            picture_xl = coverUrl,
-            creator = new { name = creatorName },
-            nb_tracks = tracks.Count,
-            tracks
+            artistName = metadata.CreatorName;
+        }
+
+        return new
+        {
+            id = videoId,
+            title,
+            duration = GetInt(entry, "duration"),
+            track_position = trackPosition,
+            link = sourceUrl,
+            sourceUrl,
+            artist = new { id = string.Empty, name = artistName },
+            album = new { id = metadata.PlaylistId, title = metadata.PlaylistTitle, cover_medium = metadata.CoverUrl }
         };
-        return true;
     }
 
     private static string ResolvePlaylistId(string? rawId)
@@ -322,29 +297,10 @@ public sealed class YouTubeTracklistApiController : ControllerBase
             : string.Empty;
     }
 
-    private static void TryKillProcess(Process process)
-    {
-        try
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
-        }
-        catch
-        {
-            // ignored
-        }
-    }
-
-    private static string TrimStdErr(string? stderr)
-    {
-        var value = (stderr ?? string.Empty).Trim();
-        if (value.Length <= 400)
-        {
-            return value;
-        }
-
-        return value[..400];
-    }
+    private sealed record PlaylistMetadata(
+        string PlaylistId,
+        string PlaylistTitle,
+        string CreatorName,
+        string Description,
+        string CoverUrl);
 }

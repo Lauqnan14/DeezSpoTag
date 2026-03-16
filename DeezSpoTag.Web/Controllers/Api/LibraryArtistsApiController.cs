@@ -39,9 +39,12 @@ public class LibraryArtistsApiController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> GetAll([FromQuery] string? availability, CancellationToken cancellationToken)
+    public async Task<IActionResult> GetAll(
+        [FromQuery] string? availability,
+        [FromQuery] long? folderId,
+        CancellationToken cancellationToken)
     {
-        if (!_repository.IsConfigured || _configStore.HasLocalLibraryData())
+        if (!_repository.IsConfigured)
         {
             var localArtists = _configStore.GetLocalArtists().Select(localArtist => new
             {
@@ -54,14 +57,14 @@ public class LibraryArtistsApiController : ControllerBase
             return Ok(localArtists);
         }
 
-        var dbArtists = await _repository.GetArtistsAsync(availability, cancellationToken);
+        var dbArtists = await _repository.GetArtistsAsync(availability, folderId, cancellationToken);
         return Ok(dbArtists);
     }
 
     [HttpGet("{id:long}/albums")]
     public async Task<IActionResult> GetAlbums(long id, CancellationToken cancellationToken)
     {
-        if (!_repository.IsConfigured || _configStore.HasLocalLibraryData())
+        if (!_repository.IsConfigured)
         {
             var localAlbums = _configStore.GetLocalAlbums(id);
             return Ok(localAlbums);
@@ -119,7 +122,7 @@ public class LibraryArtistsApiController : ControllerBase
     [HttpGet("{id:long}")]
     public async Task<IActionResult> GetArtist(long id, CancellationToken cancellationToken)
     {
-        if (!_repository.IsConfigured || _configStore.HasLocalLibraryData())
+        if (!_repository.IsConfigured)
         {
             var localArtist = _configStore.GetLocalArtists().FirstOrDefault(item => item.Id == id);
             if (localArtist is null)
@@ -140,7 +143,7 @@ public class LibraryArtistsApiController : ControllerBase
 
     private async Task<LocalArtistAlbumsContext?> ResolveLocalArtistAlbumsContextAsync(long id, CancellationToken cancellationToken)
     {
-        if (_repository.IsConfigured && !_configStore.HasLocalLibraryData())
+        if (_repository.IsConfigured)
         {
             var artist = await _repository.GetArtistAsync(id, cancellationToken);
             if (artist is null)
@@ -733,7 +736,7 @@ public class LibraryArtistsApiController : ControllerBase
 
     private async Task<string?> ResolveArtistNameAsync(long id, CancellationToken cancellationToken)
     {
-        if (_repository.IsConfigured && !_configStore.HasLocalLibraryData())
+        if (_repository.IsConfigured)
         {
             var artist = await _repository.GetArtistAsync(id, cancellationToken);
             return artist?.Name;

@@ -14,6 +14,7 @@ public sealed class LibraryScanRunner
     private readonly IHostEnvironment _environment;
     private readonly IServiceProvider _serviceProvider;
     private readonly ArtistPageCacheRepository _artistCacheRepository;
+    private readonly ILogger<LibraryScanRunner> _logger;
     private readonly object _scanLock = new();
     private readonly object _previewIngestLock = new();
     private CancellationTokenSource? _activeScanCts;
@@ -25,7 +26,8 @@ public sealed class LibraryScanRunner
         LocalLibraryScanner scanner,
         IHostEnvironment environment,
         IServiceProvider serviceProvider,
-        ArtistPageCacheRepository artistCacheRepository)
+        ArtistPageCacheRepository artistCacheRepository,
+        ILogger<LibraryScanRunner> logger)
     {
         _repository = repository;
         _configStore = configStore;
@@ -33,6 +35,7 @@ public sealed class LibraryScanRunner
         _environment = environment;
         _serviceProvider = serviceProvider;
         _artistCacheRepository = artistCacheRepository;
+        _logger = logger;
     }
 
     public sealed record ScanStatus(
@@ -51,6 +54,8 @@ public sealed class LibraryScanRunner
         int AlbumCount,
         int TrackCount,
         Dictionary<string, List<string>> ArtistGenres);
+
+    private readonly record struct ScanProgressOffset(int ProcessedFiles, int TotalFiles, int ErrorCount);
 
     public ScanStatus GetStatus() => _status;
 
@@ -103,12 +108,13 @@ public sealed class LibraryScanRunner
             var activeCts = cts!;
             using (activeCts)
             {
-                await ResetLibraryIfRequestedAsync(reset, activeCts.Token);
                 var enabledFolders = await LoadEnabledFoldersAsync(folderId, activeCts.Token);
                 if (enabledFolders is null)
                 {
                     return;
                 }
+
+                await ResetLibraryIfRequestedAsync(reset, folderId, enabledFolders, activeCts.Token);
 
                 if (refreshImages)
                 {
@@ -131,6 +137,7 @@ public sealed class LibraryScanRunner
         }
         catch (OperationCanceledException)
         {
+            _logger.LogWarning("Library scan cancelled.");
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "warn",
@@ -138,6 +145,7 @@ public sealed class LibraryScanRunner
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            _logger.LogError(ex, "Library scan failed.");
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "error",
@@ -177,10 +185,27 @@ public sealed class LibraryScanRunner
         }
     }
 
-    private async Task ResetLibraryIfRequestedAsync(bool reset, CancellationToken cancellationToken)
+    private async Task ResetLibraryIfRequestedAsync(
+        bool reset,
+        long? folderId,
+        IReadOnlyList<FolderDto> enabledFolders,
+        CancellationToken cancellationToken)
     {
         if (!reset || !_repository.IsConfigured)
         {
+            return;
+        }
+
+        if (folderId.HasValue)
+        {
+            var selectedFolder = enabledFolders.FirstOrDefault(folder => folder.Id == folderId.Value);
+            if (selectedFolder is null)
+            {
+                return;
+            }
+
+            await _repository.ClearFolderLocalContentAsync(folderId.Value, cancellationToken);
+            AddInfoLog($"Library data reset before scan for folder {selectedFolder.DisplayName}.");
             return;
         }
 
@@ -217,9 +242,7 @@ public sealed class LibraryScanRunner
         CancellationToken cancellationToken)
     {
         var aggregatedGenres = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-        var processedOffset = 0;
-        var totalOffset = 0;
-        var errorOffset = 0;
+        var progressOffset = new ScanProgressOffset(0, 0, 0);
 
         for (var i = 0; i < enabledFolders.Count; i++)
         {
@@ -229,17 +252,16 @@ public sealed class LibraryScanRunner
 
             var folderSnapshot = ScanSingleFolderSnapshot(
                 folder,
-                processedOffset,
-                totalOffset,
-                errorOffset,
+                progressOffset,
                 out var folderProcessed,
                 out var folderTotal,
                 out var folderErrors,
                 cancellationToken);
 
-            processedOffset += folderProcessed;
-            totalOffset += folderTotal;
-            errorOffset += folderErrors;
+            progressOffset = new ScanProgressOffset(
+                progressOffset.ProcessedFiles + folderProcessed,
+                progressOffset.TotalFiles + folderTotal,
+                progressOffset.ErrorCount + folderErrors);
 
             MergeGenres(aggregatedGenres, folderSnapshot.ArtistGenres);
 
@@ -285,9 +307,7 @@ public sealed class LibraryScanRunner
 
     private LibraryConfigStore.LocalLibrarySnapshot ScanSingleFolderSnapshot(
         FolderDto folder,
-        int processedOffset,
-        int totalOffset,
-        int errorOffset,
+        ScanProgressOffset progressOffset,
         out int folderProcessed,
         out int folderTotal,
         out int folderErrors,
@@ -305,9 +325,9 @@ public sealed class LibraryScanRunner
             var currentStatus = _status;
             _status = currentStatus with
             {
-                ProcessedFiles = processedOffset + progressUpdate.ProcessedFiles,
-                TotalFiles = totalOffset + progressUpdate.TotalFiles,
-                ErrorCount = errorOffset + progressUpdate.ErrorCount,
+                ProcessedFiles = progressOffset.ProcessedFiles + progressUpdate.ProcessedFiles,
+                TotalFiles = progressOffset.TotalFiles + progressUpdate.TotalFiles,
+                ErrorCount = progressOffset.ErrorCount + progressUpdate.ErrorCount,
                 CurrentFile = progressUpdate.CurrentFile,
                 ArtistsDetected = Math.Max(currentStatus.ArtistsDetected, progressUpdate.ArtistsDetected),
                 AlbumsDetected = Math.Max(currentStatus.AlbumsDetected, progressUpdate.AlbumsDetected),
@@ -338,12 +358,9 @@ public sealed class LibraryScanRunner
                 target[pair.Key] = genreSet;
             }
 
-            foreach (var genre in pair.Value)
+            foreach (var genre in pair.Value.Where(static value => !string.IsNullOrWhiteSpace(value)))
             {
-                if (!string.IsNullOrWhiteSpace(genre))
-                {
-                    genreSet.Add(genre.Trim());
-                }
+                genreSet.Add(genre.Trim());
             }
         }
     }
@@ -451,6 +468,7 @@ public sealed class LibraryScanRunner
             }
             catch (Exception ex)
             {
+                _logger.LogWarning(ex, "Live scan ingest failed for {FolderDisplayName}.", folder.DisplayName);
                 AddWarnLog($"Live scan ingest failed for {folder.DisplayName}: {ex.Message}");
             }
         }

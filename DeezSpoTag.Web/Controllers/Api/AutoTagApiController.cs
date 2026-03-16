@@ -1,7 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -41,28 +40,88 @@ public class AutoTagJobsController : ControllerBase
     [HttpPost("start")]
     public async Task<IActionResult> Start([FromBody] AutoTagStartRequest request, CancellationToken cancellationToken)
     {
+        if (!TryNormalizeStartRequest(request, out var normalizedPath, out var configNode, out var validationError))
+        {
+            return validationError;
+        }
+
+        var scopeError = await ValidateStartScopeAsync(normalizedPath, cancellationToken);
+        if (scopeError != null)
+        {
+            return scopeError;
+        }
+
+        if (!TryValidateEnrichmentScope(normalizedPath, configNode, out var enrichmentError))
+        {
+            return enrichmentError;
+        }
+
+        configNode.Remove("playlistPath");
+        configNode.Remove("isPlaylist");
+        configNode["path"] = normalizedPath;
+
+        var selectedProfileResult = await ResolveSelectedProfileAsync(request.ProfileId);
+        if (selectedProfileResult.Error != null)
+        {
+            return selectedProfileResult.Error;
+        }
+
+        var job = await _autoTagService.StartJob(
+            normalizedPath,
+            SerializeConfig(configNode),
+            "manual",
+            selectedProfileResult.Profile?.Technical,
+            selectedProfileResult.Profile?.Id,
+            selectedProfileResult.Profile?.Name);
+        return Ok(new { jobId = job.Id, status = job.Status });
+    }
+
+    private static bool TryNormalizeStartRequest(
+        AutoTagStartRequest request,
+        out string normalizedPath,
+        out JsonObject configNode,
+        out IActionResult validationError)
+    {
+        normalizedPath = string.Empty;
+        configNode = new JsonObject();
+        validationError = new BadRequestObjectResult("Invalid request.");
+
         if (string.IsNullOrWhiteSpace(request.Path))
         {
-            return BadRequest("Path is required.");
+            validationError = new BadRequestObjectResult("Path is required.");
+            return false;
         }
 
         if (!request.Config.HasValue
             || request.Config.Value.ValueKind == JsonValueKind.Undefined
             || request.Config.Value.ValueKind == JsonValueKind.Null)
         {
-            return BadRequest("Config is required.");
+            validationError = new BadRequestObjectResult("Config is required.");
+            return false;
         }
 
-        string normalizedPath;
         try
         {
             normalizedPath = Path.GetFullPath(request.Path);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return BadRequest("Path is invalid.");
+            validationError = new BadRequestObjectResult("Path is invalid.");
+            return false;
         }
 
+        if (request.Config.Value.ValueKind != JsonValueKind.Object)
+        {
+            validationError = new BadRequestObjectResult("Config must be an object.");
+            return false;
+        }
+
+        configNode = JsonNode.Parse(request.Config.Value.GetRawText()) as JsonObject ?? new JsonObject();
+        return true;
+    }
+
+    private async Task<IActionResult?> ValidateStartScopeAsync(string normalizedPath, CancellationToken cancellationToken)
+    {
         var allowedRoots = await AutoTagFolderScopeHelper.ResolveAllowedAutoTagStartRootsAsync(
             _libraryRepository,
             _libraryConfigStore,
@@ -83,105 +142,64 @@ public class AutoTagJobsController : ControllerBase
             return StatusCode(409, "Downloads are active. AutoTag cannot start until the queue is idle.");
         }
 
-        var configNode = JsonNode.Parse(request.Config.Value.GetRawText()) as JsonObject;
-        if (configNode == null)
+        return null;
+    }
+
+    private bool TryValidateEnrichmentScope(string normalizedPath, JsonObject configNode, out IActionResult validationError)
+    {
+        validationError = new EmptyResult();
+        if (!HasRequestedEnrichmentTags(configNode))
         {
-            return BadRequest("Config must be an object.");
+            return true;
         }
 
-        if (HasRequestedEnrichmentTags(configNode))
+        if (!TryResolveConfiguredDownloadRoot(out var downloadRoot, out var error))
         {
-            if (!TryResolveConfiguredDownloadRoot(out var downloadRoot, out var error))
-            {
-                return BadRequest(error);
-            }
-
-            if (!AutoTagFolderScopeHelper.IsPathInAllowedRoots(normalizedPath, new[] { downloadRoot }))
-            {
-                return BadRequest("Enrichment runs are restricted to the configured Download/Staging folder.");
-            }
+            validationError = BadRequest(error);
+            return false;
         }
 
-        configNode.Remove("playlistPath");
-        configNode.Remove("isPlaylist");
+        if (AutoTagFolderScopeHelper.IsPathInAllowedRoots(normalizedPath, new[] { downloadRoot }))
+        {
+            return true;
+        }
 
-        configNode["path"] = normalizedPath;
+        validationError = BadRequest("Enrichment runs are restricted to the configured Download/Staging folder.");
+        return false;
+    }
 
-        var configJson = configNode.ToJsonString(new JsonSerializerOptions
+    private async Task<(IActionResult? Error, DeezSpoTag.Core.Models.Settings.TaggingProfile? Profile)> ResolveSelectedProfileAsync(
+        string? profileId)
+    {
+        if (string.IsNullOrWhiteSpace(profileId))
+        {
+            return (null, null);
+        }
+
+        var profiles = await _profileService.LoadAsync();
+        var selectedProfile = TaggingProfileService.FindByIdOrName(profiles, profileId);
+        return selectedProfile == null
+            ? (BadRequest("Profile was not found."), null)
+            : (null, selectedProfile);
+    }
+
+    private static string SerializeConfig(JsonObject configNode)
+    {
+        return configNode.ToJsonString(new JsonSerializerOptions
         {
             WriteIndented = true,
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         });
-
-        DeezSpoTag.Core.Models.Settings.TaggingProfile? selectedProfile = null;
-        if (!string.IsNullOrWhiteSpace(request.ProfileId))
-        {
-            var profiles = await _profileService.LoadAsync();
-            selectedProfile = TaggingProfileService.FindByIdOrName(profiles, request.ProfileId);
-            if (selectedProfile == null)
-            {
-                return BadRequest("Profile was not found.");
-            }
-        }
-
-        var job = await _autoTagService.StartJob(
-            normalizedPath,
-            configJson,
-            "manual",
-            selectedProfile?.Technical,
-            selectedProfile?.Id,
-            selectedProfile?.Name);
-        return Ok(new { jobId = job.Id, status = job.Status });
     }
 
     private bool TryResolveConfiguredDownloadRoot(out string downloadRoot, out string error)
     {
-        downloadRoot = string.Empty;
-        error = string.Empty;
-
-        string configuredPath;
-        try
-        {
-            configuredPath = _settingsService.LoadSettings().DownloadLocation?.Trim() ?? string.Empty;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            error = $"Download/Staging folder could not be loaded ({ex.Message}).";
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(configuredPath))
-        {
-            error = "Set Settings > Download/Staging folder before running enrichment.";
-            return false;
-        }
-
-        var ioPath = DownloadPathResolver.ResolveIoPath(configuredPath);
-        if (string.IsNullOrWhiteSpace(ioPath))
-        {
-            error = $"Configured Download/Staging folder '{configuredPath}' resolved to an empty path.";
-            return false;
-        }
-
-        string normalizedPath;
-        try
-        {
-            normalizedPath = Path.GetFullPath(ioPath);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            error = $"Configured Download/Staging folder '{configuredPath}' is invalid ({ex.Message}).";
-            return false;
-        }
-
-        if (!Directory.Exists(normalizedPath))
-        {
-            error = $"Configured Download/Staging folder '{normalizedPath}' is not accessible.";
-            return false;
-        }
-
-        downloadRoot = normalizedPath;
-        return true;
+        return ConfiguredDownloadRootResolver.TryResolve(
+            _settingsService,
+            "Download/Staging folder",
+            "Set Settings > Download/Staging folder before running enrichment.",
+            out downloadRoot,
+            out error);
     }
 
     private static bool HasRequestedEnrichmentTags(JsonObject configNode)
