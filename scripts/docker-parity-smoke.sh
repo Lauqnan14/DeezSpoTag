@@ -4,13 +4,18 @@ set -euo pipefail
 IMAGE="${1:-deezspotag-web:local}"
 PORT="${PARITY_TEST_PORT:-18668}"
 HOST_DATA_DIR="${PARITY_TEST_DATA_DIR:-}"
+HOST_DOWNLOADS_DIR="${PARITY_TEST_DOWNLOADS_DIR:-}"
 CONTAINER_NAME="deezspotag-parity-smoke-$$"
 AUTO_DATA_DIR="0"
+AUTO_DOWNLOADS_DIR="0"
 
 cleanup() {
   docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
   if [ "${AUTO_DATA_DIR}" = "1" ] && [ -n "${HOST_DATA_DIR}" ] && [ -d "${HOST_DATA_DIR}" ]; then
     rm -rf "${HOST_DATA_DIR}" >/dev/null 2>&1 || true
+  fi
+  if [ "${AUTO_DOWNLOADS_DIR}" = "1" ] && [ -n "${HOST_DOWNLOADS_DIR}" ] && [ -d "${HOST_DOWNLOADS_DIR}" ]; then
+    rm -rf "${HOST_DOWNLOADS_DIR}" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -20,8 +25,15 @@ if [ -z "${HOST_DATA_DIR}" ]; then
   AUTO_DATA_DIR="1"
 fi
 
+if [ -z "${HOST_DOWNLOADS_DIR}" ]; then
+  HOST_DOWNLOADS_DIR="$(mktemp -d -t deezspotag-parity-downloads-XXXXXX)"
+  AUTO_DOWNLOADS_DIR="1"
+fi
+
 mkdir -p "${HOST_DATA_DIR}"
+mkdir -p "${HOST_DOWNLOADS_DIR}"
 chmod 0777 "${HOST_DATA_DIR}"
+chmod 0777 "${HOST_DOWNLOADS_DIR}"
 
 echo "[1/3] Checking runtime dependencies in ${IMAGE}..."
 docker run --rm --entrypoint /bin/sh "${IMAGE}" -c '
@@ -50,6 +62,7 @@ docker run -d \
   -e DEEZSPOTAG_APPLE_WRAPPER_MODE=external \
   -e DEEZSPOTAG_APPLE_WRAPPER_HOST=127.0.0.1 \
   -v "${HOST_DATA_DIR}:/data" \
+  -v "${HOST_DOWNLOADS_DIR}:/downloads" \
   "${IMAGE}" >/dev/null
 
 echo "[3/3] Probing HTTP readiness on 127.0.0.1:${PORT}..."

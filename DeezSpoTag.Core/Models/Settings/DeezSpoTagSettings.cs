@@ -12,6 +12,8 @@ namespace DeezSpoTag.Core.Models.Settings;
 /// </summary>
 public class DeezSpoTagSettings
 {
+    private const string ContainerDownloadsPath = "/downloads";
+
     // EXACT PORT: Core settings from deezspotag DEFAULT_SETTINGS
     public string DownloadLocation { get; set; } = GetDefaultDownloadLocation();
     public string ExecuteCommand { get; set; } = "";
@@ -223,6 +225,11 @@ public class DeezSpoTagSettings
 
     private static string GetDefaultDownloadLocation()
     {
+        if (IsRunningInContainer())
+        {
+            return ContainerDownloadsPath;
+        }
+
         var musicFolder = Environment.GetFolderPath(Environment.SpecialFolder.MyMusic);
         if (!string.IsNullOrWhiteSpace(musicFolder))
         {
@@ -233,6 +240,12 @@ public class DeezSpoTagSettings
         return string.IsNullOrWhiteSpace(userProfile)
             ? Path.Join(Environment.CurrentDirectory, "Music")
             : Path.Join(userProfile, "Music");
+    }
+
+    private static bool IsRunningInContainer()
+    {
+        var runningInContainer = Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER");
+        return string.Equals(runningInContainer, "true", StringComparison.OrdinalIgnoreCase);
     }
 }
 
