@@ -49,8 +49,6 @@ DeezSpoTag Diagnostic/
 Tools/AppleMusicWrapper/runtime/app/rootfs/
 Tools/AppleMusicWrapper/runv2/apple-wrapper-runv2
 Tools/AppleMusicWrapper/runtime/app/.backup-ref-swap/
-DeezSpoTag.Web/wwwroot/images/recommendations/
-DeezSpoTag.Web/wwwroot/images/meloday/
 DeezSpoTag.Web/Tools/models/
 DeezSpoTag.Web/spotify/auth/
 DeezSpoTag.Web/spotify/blobs/
