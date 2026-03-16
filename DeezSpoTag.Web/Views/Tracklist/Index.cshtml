@@ -3656,6 +3656,12 @@ async function resolveExternalTracklistMatches(tracks, source, options = {}) {
     if (!Array.isArray(tracks) || tracks.length === 0) {
         return;
     }
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    const isAppleAudioTracklist = normalizedSource === 'apple'
+        && tracks.some(track => track?.isVideo !== true);
+    if (isAppleAudioTracklist) {
+        return;
+    }
     const incremental = options?.incremental === true;
     const finalize = options?.finalize !== false;
 
@@ -3701,15 +3707,15 @@ async function resolveExternalTracklistMatches(tracks, source, options = {}) {
         return;
     }
 
-    const showProgress = source === 'boomplay'
-        || source === 'apple'
-        || source === 'tidal'
-        || source === 'amazon'
-        || source === 'youtube'
-        || source === 'soundcloud'
-        || source === 'qobuz'
-        || source === 'bandcamp'
-        || source === 'pandora';
+    const showProgress = normalizedSource === 'boomplay'
+        || normalizedSource === 'apple'
+        || normalizedSource === 'tidal'
+        || normalizedSource === 'amazon'
+        || normalizedSource === 'youtube'
+        || normalizedSource === 'soundcloud'
+        || normalizedSource === 'qobuz'
+        || normalizedSource === 'bandcamp'
+        || normalizedSource === 'pandora';
     if (showProgress) {
         if (incremental && externalMatchState && externalMatchState.source === source) {
             externalMatchState.pending = (externalMatchState.pending || 0) + queue.length;
@@ -4972,9 +4978,9 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
         const availabilityTitleAttr = track.title ? ` data-availability-title="${escapeHtml(track.title)}"` : '';
         const availabilityArtistAttr = artistName ? ` data-availability-artist="${escapeHtml(artistName)}"` : '';
         const availabilityDurationAttr = track.duration ? ` data-availability-duration="${Math.round(track.duration * 1000)}"` : '';
-        const deezerCandidate = playbackSource === 'boomplay'
-            ? String(track.deezerId || track.deezer_id || '').trim()
-            : String(track.deezerId || track.deezer_id || track.id || '').trim();
+        const deezerCandidate = playbackSource === 'deezer'
+            ? String(track.deezerId || track.deezer_id || track.id || '').trim()
+            : String(track.deezerId || track.deezer_id || '').trim();
         const deezerId = deezerCandidate && /^\d+$/.test(deezerCandidate) ? deezerCandidate : '';
         const availabilityDeezerAttr = deezerId ? ` data-availability-deezer-id="${escapeHtml(deezerId)}"` : '';
         const playbackContext = extractDeezerPlaybackContextFromTrack(track);

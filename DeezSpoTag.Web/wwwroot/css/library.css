@@ -1802,6 +1802,12 @@
     transform: translateY(0);
 }
 
+.apple-card .apple-thumb:hover .video-overlay-btn.apple-audio-preview-btn,
+.apple-card .apple-thumb:focus-within .video-overlay-btn.apple-audio-preview-btn {
+    opacity: 1;
+    transform: translateY(0);
+}
+
 .video-overlay-btn:hover {
     background: var(--primary-color);
     border-color: var(--primary-color);

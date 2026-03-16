@@ -1609,6 +1609,27 @@ async function startPreviewPlayback(audio, button, message) {
     }
 }
 
+async function playDirectPreviewInApp(previewUrl, button) {
+    const normalizedPreviewUrl = String(previewUrl || '').trim();
+    if (!normalizedPreviewUrl) {
+        showToast('Preview unavailable.', true);
+        return;
+    }
+
+    const audio = libraryState.previewAudio ?? new Audio();
+    if (libraryState.previewTrackId === normalizedPreviewUrl && !audio.paused) {
+        audio.pause();
+        clearActivePreviewButton();
+        return;
+    }
+
+    configurePreviewAudio(audio, normalizedPreviewUrl, button, normalizedPreviewUrl, () => {
+        clearActivePreviewButton();
+        libraryState.previewTrackId = null;
+    });
+    await startPreviewPlayback(audio, button, 'Unable to start playback.');
+}
+
 function getNextSpotifyTopTrackButton() {
     const list = document.getElementById('spotifyTopTracksList');
     if (!list || !libraryState.previewButton) {
@@ -1631,19 +1652,7 @@ async function resolvePlayableSpotifyTrack(url, button) {
 async function playSpotifyTrackInApp(url, button) {
     const previewUrl = String(button?.dataset?.previewUrl || '').trim();
     if (previewUrl) {
-        const audio = libraryState.previewAudio ?? new Audio();
-
-        if (libraryState.previewTrackId === previewUrl && !audio.paused) {
-            audio.pause();
-            clearActivePreviewButton();
-            return;
-        }
-
-        configurePreviewAudio(audio, previewUrl, button, previewUrl, () => {
-            clearActivePreviewButton();
-            libraryState.previewTrackId = null;
-        });
-        await startPreviewPlayback(audio, button, 'Unable to start playback.');
+        await playDirectPreviewInApp(previewUrl, button);
         return;
     }
 
@@ -9772,6 +9781,12 @@ function bindAppleAtmosDelegation() {
     if (!container || container.dataset.delegated) return;
     container.dataset.delegated = 'true';
     container.addEventListener('click', (e) => {
+        const previewButton = e.target.closest('[data-apple-preview-url]');
+        if (previewButton) {
+            e.stopPropagation();
+            void playDirectPreviewInApp(previewButton.dataset.applePreviewUrl, previewButton);
+            return;
+        }
         const card = e.target.closest('.apple-card');
         if (!card) return;
         const localAlbumId = (card.dataset.localAlbumId || '').trim();
@@ -9884,13 +9899,19 @@ function renderAppleCard(item, isAlbum, localAlbumIndex = null, localTrackVarian
     const idVal = item.appleId || extractAppleIdFromUrl(item.appleUrl || '');
     const inLibrary = isAppleAtmosItemInLibrary(item, isAlbum, localAlbumIndex, localTrackVariantIndex);
     const localAlbumId = getLocalAlbumIdForAppleAtmosItem(item, isAlbum, localAlbumIndex, localTrackVariantIndex);
+    const previewUrl = !isAlbum ? String(item.previewUrl || item.preview || '').trim() : '';
     const libraryBadge = inLibrary
         ? '<div class="library-badge"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg></div>'
+        : '';
+    const previewButton = previewUrl
+        ? `<button class="video-overlay-btn video-overlay-btn--play apple-audio-preview-btn" data-apple-preview-url="${escapeHtml(previewUrl)}" type="button" aria-label="Play preview">
+               <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+           </button>`
         : '';
     const localAlbumAttr = localAlbumId ? ` data-local-album-id="${escapeHtml(localAlbumId)}"` : '';
     return `
         <div class="apple-card${inLibrary ? ' in-library' : ''}" data-kind="${kind}" data-url="${escapeHtml(item.appleUrl || '')}" data-id="${escapeHtml(idVal)}"${localAlbumAttr}>
-            <div class="apple-thumb">${image ? `<img src="${escapeHtml(image)}" alt="${escapeHtml(title)}" loading="lazy" decoding="async" />` : ''}${libraryBadge}</div>
+            <div class="apple-thumb">${image ? `<img src="${escapeHtml(image)}" alt="${escapeHtml(title)}" loading="lazy" decoding="async" />` : ''}${previewButton}${libraryBadge}</div>
             <div class="apple-title">${escapeHtml(title)}</div>
             <div class="apple-sub">${escapeHtml(sub)}</div>
         </div>

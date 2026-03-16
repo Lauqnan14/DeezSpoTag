@@ -124,7 +124,8 @@ public sealed class LibraryRealtimeScanService : BackgroundService
                 var folderId = entry.Key;
                 var state = entry.Value;
                 if (_watchers.TryGetValue(folderId, out var existing) &&
-                    string.Equals(existing.NormalizedRootPath, state.NormalizedRootPath, StringComparison.OrdinalIgnoreCase))
+                    string.Equals(existing.NormalizedRootPath, state.NormalizedRootPath, StringComparison.OrdinalIgnoreCase) &&
+                    existing.AutoTagEnabled == state.Folder.AutoTagEnabled)
                 {
                     continue;
                 }
@@ -218,7 +219,11 @@ public sealed class LibraryRealtimeScanService : BackgroundService
             watcher.EnableRaisingEvents = true;
 
             _logger.LogInformation("Watching library folder for realtime scans: {Path}", normalizedRootPath);
-            return new WatchedFolder(normalizedRootPath, watcher);
+            return new WatchedFolder(
+                normalizedRootPath,
+                watcher,
+                folder.AutoTagEnabled,
+                BuildBaselineAudioFiles(normalizedRootPath));
         }
         catch
         {
@@ -234,8 +239,17 @@ public sealed class LibraryRealtimeScanService : BackgroundService
             return;
         }
 
+        WatchedFolder? watchedFolder;
+        lock (_stateLock)
+        {
+            _watchers.TryGetValue(folderId, out watchedFolder);
+        }
+
         RequeueFolder(folderId, SettleDelay);
-        if (_taggingJobQueue != null)
+        if (_taggingJobQueue != null
+            && watchedFolder is not null
+            && watchedFolder.AutoTagEnabled
+            && watchedFolder.ShouldQueueRetag(fullPath))
         {
             _ = QueueRetagAsync(fullPath);
         }
@@ -331,8 +345,122 @@ public sealed class LibraryRealtimeScanService : BackgroundService
             || string.Equals(desiredQuality, "podcast", StringComparison.OrdinalIgnoreCase);
     }
 
-    private sealed record WatchedFolder(string NormalizedRootPath, FileSystemWatcher Watcher) : IDisposable
+    private static Dictionary<string, FileBaselineState> BuildBaselineAudioFiles(string normalizedRootPath)
     {
+        var baselineFiles = new Dictionary<string, FileBaselineState>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            foreach (var filePath in Directory.EnumerateFiles(normalizedRootPath, "*.*", SearchOption.AllDirectories))
+            {
+                if (!IsAudioFilePath(filePath))
+                {
+                    continue;
+                }
+
+                var normalizedPath = NormalizePath(filePath);
+                if (normalizedPath is null)
+                {
+                    continue;
+                }
+
+                if (TryReadFileBaselineState(normalizedPath, out var baselineState))
+                {
+                    baselineFiles[normalizedPath] = baselineState;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            // A partial baseline is still enough to suppress most attach-time noise.
+        }
+
+        return baselineFiles;
+    }
+
+    private static bool TryReadFileBaselineState(string normalizedPath, out FileBaselineState baselineState)
+    {
+        baselineState = default;
+
+        try
+        {
+            var fileInfo = new FileInfo(normalizedPath);
+            if (!fileInfo.Exists)
+            {
+                return false;
+            }
+
+            baselineState = new FileBaselineState(fileInfo.LastWriteTimeUtc, fileInfo.Length);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private readonly record struct FileBaselineState(DateTime LastWriteUtc, long Length);
+
+    private sealed class WatchedFolder : IDisposable
+    {
+        private readonly object _baselineLock = new();
+        private readonly Dictionary<string, FileBaselineState> _baselineFiles;
+
+        public WatchedFolder(
+            string normalizedRootPath,
+            FileSystemWatcher watcher,
+            bool autoTagEnabled,
+            Dictionary<string, FileBaselineState> baselineFiles)
+        {
+            NormalizedRootPath = normalizedRootPath;
+            Watcher = watcher;
+            AutoTagEnabled = autoTagEnabled;
+            _baselineFiles = baselineFiles;
+        }
+
+        public string NormalizedRootPath { get; }
+        public FileSystemWatcher Watcher { get; }
+        public bool AutoTagEnabled { get; }
+
+        public bool ShouldQueueRetag(string fullPath)
+        {
+            var normalizedPath = NormalizePath(fullPath);
+            if (normalizedPath is null)
+            {
+                return false;
+            }
+
+            lock (_baselineLock)
+            {
+                if (!_baselineFiles.TryGetValue(normalizedPath, out var baselineState))
+                {
+                    return true;
+                }
+
+                if (!TryReadFileBaselineState(normalizedPath, out var currentState))
+                {
+                    _baselineFiles.Remove(normalizedPath);
+                    return false;
+                }
+
+                if (currentState == baselineState)
+                {
+                    return false;
+                }
+
+                _baselineFiles.Remove(normalizedPath);
+                return true;
+            }
+        }
+
         public void Dispose()
         {
             Watcher.EnableRaisingEvents = false;

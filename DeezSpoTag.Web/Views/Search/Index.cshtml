@@ -141,6 +141,42 @@
     display: none;
 }
 
+.result-card--apple-audio .audio-preview-btn {
+    position: absolute;
+    left: 10px;
+    bottom: 10px;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 1px solid var(--border-secondary);
+    background: rgba(30, 30, 30, 0.85);
+    color: var(--primary-color);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    z-index: 2;
+}
+
+.result-card--apple-audio .result-image:hover .audio-preview-btn,
+.result-card--apple-audio .result-image:focus-within .audio-preview-btn {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.result-card--apple-audio .audio-preview-btn:hover {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+    color: var(--bg-primary);
+}
+
+.result-card--apple-audio .audio-preview-btn:active {
+    transform: translateY(0) scale(0.92);
+}
+
 .result-title {
     font-size: 14px;
     font-weight: 600;
@@ -1233,6 +1269,10 @@ function renderResultCard(item, type) {
                 artist = item.artist || '';
                 meta = item.album || '';
                 clickAction = buildUnifiedClick(item, 'track');
+                if (currentSearchSource === 'apple') {
+                    previewUrl = item.previewUrl || '';
+                    appleUrl = item.appleUrl || '';
+                }
             }
             if (currentSearchSource === 'qobuz') {
                 qobuzQualityHtml = renderQobuzQuality(item);
@@ -1322,6 +1362,12 @@ function renderResultCard(item, type) {
 
     const selectedClass = (type === 'video' && videoKey && isVideoSelected(videoKey)) ? ' selected' : '';
     const extraClass = type === 'video' ? ' video' : '';
+    const isAppleAudioTrackCard = currentSearchSource === 'apple' && effectiveType === 'track' && type !== 'video';
+    const audioPreviewButton = isAppleAudioTrackCard && previewUrl
+        ? `<button class="audio-preview-btn" type="button" aria-label="Play preview" onclick="event.stopPropagation(); playSearchPreview('', '', '${escapeJsString(appleUrl)}', '${escapeJsString(item.appleId || '')}', '${escapeJsString(previewUrl)}', 'apple')">
+               <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+           </button>`
+        : '';
 
     const libKeyRaw = (type === 'track' || type === 'atmos') ? buildLibraryCheckKey(item) : '';
     const libKeyAttr = libKeyRaw ? ` data-lib-key="${escapeHtml(libKeyRaw).replace(/"/g, '&quot;')}"` : '';
@@ -1372,10 +1418,11 @@ function renderResultCard(item, type) {
     }
 
     return `
-        <div class="result-card${extraClass}${selectedClass}"${libKeyAttr} onclick="${clickAction}">
+        <div class="result-card${extraClass}${selectedClass}${isAppleAudioTrackCard ? ' result-card--apple-audio' : ''}"${libKeyAttr} onclick="${clickAction}">
             <div class="result-image ${imageUrl ? '' : 'no-img'}">
                 ${imgHtml}
                 <span class="result-image-fallback">${defaultIcon}</span>
+                ${audioPreviewButton}
             </div>
             <div class="result-title">${escapeHtml(title)}</div>
             ${artist ? `<div class="result-artist">${escapeHtml(artist)}</div>` : ''}
@@ -1571,9 +1618,26 @@ function openUnifiedTracklist(id, type, source) {
     window.location.href = `/Tracklist?id=${encodeURIComponent(id)}&type=${encodeURIComponent(type)}&source=${encodeURIComponent(source)}`;
 }
 
-async function playSearchPreview(deezerId, spotifyId, appleUrl, appleId) {
+async function playSearchPreview(deezerId, spotifyId, appleUrl, appleId, nativePreviewUrl = '', source = '') {
     const audio = document.getElementById('search-preview');
     if (!audio) {
+        return;
+    }
+
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    const normalizedPreviewUrl = String(nativePreviewUrl || '').trim();
+    if (normalizedSource === 'apple') {
+        if (!normalizedPreviewUrl) {
+            if (window.DeezSpoTag?.ui?.showToast) {
+                window.DeezSpoTag.ui.showToast('No Apple preview available.', { type: 'warning' });
+            }
+            return;
+        }
+
+        audio.pause();
+        audio.src = normalizedPreviewUrl;
+        audio.load();
+        audio.play().catch(() => {});
         return;
     }
 
