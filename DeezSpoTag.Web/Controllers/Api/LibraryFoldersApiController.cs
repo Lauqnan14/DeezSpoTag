@@ -45,6 +45,7 @@ public class LibraryFoldersApiController : ControllerBase
     private readonly TaggingProfileService _profileService;
     private readonly DeezSpoTag.Web.Services.LibraryConfigStore _configStore;
     private readonly DeezSpoTag.Web.Services.LocalLibraryScanner _scanner;
+    private readonly DeezSpoTag.Web.Services.LibraryRealtimeScanService _realtimeScanService;
     private readonly ILogger<LibraryFoldersApiController> _logger;
 
     public LibraryFoldersApiController(
@@ -52,12 +53,14 @@ public class LibraryFoldersApiController : ControllerBase
         TaggingProfileService profileService,
         DeezSpoTag.Web.Services.LibraryConfigStore configStore,
         DeezSpoTag.Web.Services.LocalLibraryScanner scanner,
+        DeezSpoTag.Web.Services.LibraryRealtimeScanService realtimeScanService,
         ILogger<LibraryFoldersApiController> logger)
     {
         _repository = repository;
         _profileService = profileService;
         _configStore = configStore;
         _scanner = scanner;
+        _realtimeScanService = realtimeScanService;
         _logger = logger;
     }
 
@@ -199,7 +202,10 @@ public class LibraryFoldersApiController : ControllerBase
             DateTimeOffset.UtcNow,
             "info",
             $"Folder added (db): {folder.DisplayName} -> {folder.RootPath}"));
-        _ = Task.Run(() => ScanAfterFolderChangeAsync(CancellationToken.None), CancellationToken.None);
+        if (folder.Enabled)
+        {
+            _ = Task.Run(() => ScanAfterFolderChangeAsync(folder.Id, CancellationToken.None), CancellationToken.None);
+        }
         return Ok(folder);
     }
 
@@ -274,9 +280,9 @@ public class LibraryFoldersApiController : ControllerBase
             await _repository.DisableFolderAsync(id, cancellationToken);
         }
 
-        if ((!wasEnabled && isEnabled) || rootPathChanged)
+        if (isEnabled && ((!wasEnabled && isEnabled) || rootPathChanged))
         {
-            _ = Task.Run(() => ScanAfterFolderChangeAsync(CancellationToken.None), CancellationToken.None);
+            _ = Task.Run(() => ScanAfterFolderChangeAsync(folder.Id, CancellationToken.None), CancellationToken.None);
         }
 
         _configStore.AddLog(new DeezSpoTag.Web.Services.LibraryConfigStore.LibraryLogEntry(
@@ -708,8 +714,10 @@ public class LibraryFoldersApiController : ControllerBase
         return FolderContentMusic;
     }
 
-    private async Task ScanAfterFolderChangeAsync(CancellationToken cancellationToken)
+    private async Task ScanAfterFolderChangeAsync(long folderId, CancellationToken cancellationToken)
     {
+        var bootstrapStarted = false;
+
         try
         {
             if (!_repository.IsConfigured)
@@ -718,24 +726,32 @@ public class LibraryFoldersApiController : ControllerBase
                 return;
             }
 
-            var folders = await _repository.GetFoldersAsync(cancellationToken);
+            var folder = await ResolveExistingFolderAsync(folderId, cancellationToken);
+            if (folder is null)
+            {
+                _logger.LogWarning("Skipped auto-scan after folder change because folder id={FolderId} no longer exists.", folderId);
+                return;
+            }
+
+            if (!folder.Enabled)
+            {
+                _logger.LogInformation("Skipped auto-scan after folder change because folder id={FolderId} is disabled.", folderId);
+                return;
+            }
+
+            _realtimeScanService.BeginFolderBootstrap(folderId);
+            bootstrapStarted = true;
 
             _configStore.AddLog(new DeezSpoTag.Web.Services.LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
-                $"Auto-scan started after folder change ({folders.Count} folders)."));
+                $"Auto-scan started after folder change for {folder.DisplayName}."));
 
-            var snapshot = _scanner.Scan(folders);
-            _configStore.SaveLocalLibrary(snapshot);
-            _configStore.SaveLastScanInfo(new DeezSpoTag.Web.Services.LibraryConfigStore.LastScanInfo(
-                DateTimeOffset.UtcNow,
-                snapshot.Artists.Count,
-                snapshot.Albums.Count,
-                snapshot.Tracks.Count));
+            var snapshot = _scanner.Scan([folder]);
 
             var ingestPayload = LocalLibrarySnapshotMapper.BuildIngestPayload(snapshot);
             await _repository.IngestLocalScanAsync(
-                folders,
+                [folder],
                 ingestPayload.Artists,
                 ingestPayload.Albums,
                 ingestPayload.Tracks,
@@ -749,7 +765,7 @@ public class LibraryFoldersApiController : ControllerBase
             _configStore.AddLog(new DeezSpoTag.Web.Services.LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
-                $"Auto-scan completed ({snapshot.Artists.Count} artists, {snapshot.Albums.Count} albums, {snapshot.Tracks.Count} tracks)."));
+                $"Auto-scan completed for {folder.DisplayName} ({snapshot.Artists.Count} artists, {snapshot.Albums.Count} albums, {snapshot.Tracks.Count} tracks)."));
 
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -759,6 +775,13 @@ public class LibraryFoldersApiController : ControllerBase
                 "error",
                 $"Auto-scan failed: {ex.Message}"));
             _logger.LogWarning(ex, "Auto-scan failed after folder change.");
+        }
+        finally
+        {
+            if (bootstrapStarted)
+            {
+                _realtimeScanService.CompleteFolderBootstrap(folderId);
+            }
         }
     }
 

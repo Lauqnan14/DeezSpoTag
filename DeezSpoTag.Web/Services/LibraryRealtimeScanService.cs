@@ -29,6 +29,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
     private readonly object _stateLock = new();
     private readonly Dictionary<long, WatchedFolder> _watchers = new();
     private readonly Dictionary<long, DateTimeOffset> _pendingScans = new();
+    private readonly HashSet<long> _bootstrappingFolders = new();
 
     private DateTimeOffset _nextRefreshUtc = DateTimeOffset.MinValue;
     private bool _refreshRequested = true;
@@ -72,6 +73,30 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         {
             DisposeAllWatchers();
             _logger.LogInformation("Library realtime scan watcher stopped.");
+        }
+    }
+
+    public void BeginFolderBootstrap(long folderId)
+    {
+        lock (_stateLock)
+        {
+            _bootstrappingFolders.Add(folderId);
+            if (_watchers.TryGetValue(folderId, out var watchedFolder))
+            {
+                watchedFolder.BeginBootstrap();
+            }
+        }
+    }
+
+    public void CompleteFolderBootstrap(long folderId)
+    {
+        lock (_stateLock)
+        {
+            _bootstrappingFolders.Remove(folderId);
+            if (_watchers.TryGetValue(folderId, out var watchedFolder))
+            {
+                watchedFolder.CompleteBootstrap();
+            }
         }
     }
 
@@ -131,7 +156,10 @@ public sealed class LibraryRealtimeScanService : BackgroundService
                 }
 
                 existing?.Dispose();
-                _watchers[folderId] = CreateWatcher(state.Folder, state.NormalizedRootPath);
+                _watchers[folderId] = CreateWatcher(
+                    state.Folder,
+                    state.NormalizedRootPath,
+                    _bootstrappingFolders.Contains(folderId));
             }
         }
     }
@@ -196,9 +224,10 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         }
     }
 
-    private WatchedFolder CreateWatcher(FolderDto folder, string normalizedRootPath)
+    private WatchedFolder CreateWatcher(FolderDto folder, string normalizedRootPath, bool isBootstrapping)
     {
         var folderId = folder.Id;
+        var baselineFiles = BuildBaselineAudioFiles(normalizedRootPath);
         var watcher = new FileSystemWatcher(normalizedRootPath)
         {
             IncludeSubdirectories = true,
@@ -216,14 +245,16 @@ public sealed class LibraryRealtimeScanService : BackgroundService
             watcher.Changed += (_, args) => OnFileEvent(folderId, args.FullPath);
             watcher.Renamed += (_, args) => OnFileEvent(folderId, args.FullPath);
             watcher.Error += (_, args) => OnWatcherError(folderId, args.GetException());
-            watcher.EnableRaisingEvents = true;
 
             _logger.LogInformation("Watching library folder for realtime scans: {Path}", normalizedRootPath);
-            return new WatchedFolder(
+            var watchedFolder = new WatchedFolder(
                 normalizedRootPath,
                 watcher,
                 folder.AutoTagEnabled,
-                BuildBaselineAudioFiles(normalizedRootPath));
+                baselineFiles,
+                isBootstrapping);
+            watcher.EnableRaisingEvents = true;
+            return watchedFolder;
         }
         catch
         {
@@ -412,23 +443,44 @@ public sealed class LibraryRealtimeScanService : BackgroundService
     private sealed class WatchedFolder : IDisposable
     {
         private readonly object _baselineLock = new();
-        private readonly Dictionary<string, FileBaselineState> _baselineFiles;
+        private Dictionary<string, FileBaselineState> _baselineFiles;
+        private bool _isBootstrapping;
 
         public WatchedFolder(
             string normalizedRootPath,
             FileSystemWatcher watcher,
             bool autoTagEnabled,
-            Dictionary<string, FileBaselineState> baselineFiles)
+            Dictionary<string, FileBaselineState> baselineFiles,
+            bool isBootstrapping)
         {
             NormalizedRootPath = normalizedRootPath;
             Watcher = watcher;
             AutoTagEnabled = autoTagEnabled;
             _baselineFiles = baselineFiles;
+            _isBootstrapping = isBootstrapping;
         }
 
         public string NormalizedRootPath { get; }
         public FileSystemWatcher Watcher { get; }
         public bool AutoTagEnabled { get; }
+
+        public void BeginBootstrap()
+        {
+            lock (_baselineLock)
+            {
+                _baselineFiles = BuildBaselineAudioFiles(NormalizedRootPath);
+                _isBootstrapping = true;
+            }
+        }
+
+        public void CompleteBootstrap()
+        {
+            lock (_baselineLock)
+            {
+                _baselineFiles = BuildBaselineAudioFiles(NormalizedRootPath);
+                _isBootstrapping = false;
+            }
+        }
 
         public bool ShouldQueueRetag(string fullPath)
         {
@@ -440,6 +492,20 @@ public sealed class LibraryRealtimeScanService : BackgroundService
 
             lock (_baselineLock)
             {
+                if (_isBootstrapping)
+                {
+                    if (TryReadFileBaselineState(normalizedPath, out var bootstrapState))
+                    {
+                        _baselineFiles[normalizedPath] = bootstrapState;
+                    }
+                    else
+                    {
+                        _baselineFiles.Remove(normalizedPath);
+                    }
+
+                    return false;
+                }
+
                 if (!_baselineFiles.TryGetValue(normalizedPath, out var baselineState))
                 {
                     return true;
