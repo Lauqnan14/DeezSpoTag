@@ -22,6 +22,7 @@ Environment fallbacks:
   SONAR_PROJECT_KEY
   SONAR_HOST_URL
   SONAR_TOKEN
+  SONAR_PYTHON_VERSION
   BUILD_CONFIG
   SONAR_EXCLUSIONS
   SONAR_CPD_EXCLUSIONS
@@ -45,6 +46,7 @@ host_url="${SONAR_HOST_URL:-http://localhost:9000}"
 token="${SONAR_TOKEN:-}"
 solution_path="${ROOT_DIR}/src.sln"
 build_config="${BUILD_CONFIG:-Debug}"
+sonar_python_version="${SONAR_PYTHON_VERSION:-}"
 sonar_exclusions="${SONAR_EXCLUSIONS:-}"
 sonar_cpd_exclusions="${SONAR_CPD_EXCLUSIONS:-}"
 sonar_scan_all="${SONAR_SCAN_ALL:-false}"
@@ -88,6 +90,7 @@ declare -a extra_begin_args=()
 declare -a extra_build_args=()
 declare -a default_sonar_exclusions=(
   "**/.sonarqube/**"
+  "**/.gocache/**"
   "**/.venv/**"
   "**/venv/**"
   "**/site-packages/**"
@@ -100,35 +103,34 @@ declare -a default_sonar_exclusions=(
   "**/TestResults/**"
   "**/test-results/**"
   "**/coverage-report/**"
-  "Data/**"
-  "**/Data/**"
-  "reports/**"
-  "Tools/venv/**"
-  "**/Tools/venv/**"
-  "DeezSpoTag.Web/Tools/**"
-  "Tools/**"
+  "**/reports/**"
+  "**/Tools/**"
   "**/*Tests*/**"
-  "DeezSpoTag.Tests/**"
-  "DeezSpoTag.CoverPortTests/**"
-  "meloday-main/**"
-  "scripts/spotify/**"
-  "DeezSpoTag.Web/smb_/**"
-  "DeezSpoTag.Web/Music Video Downloads/**"
-  "DeezSpoTag.Web/bin/**"
-  "DeezSpoTag.Web/Tools/venv/**"
-  "DeezSpoTag.Web/Tools/spotify_librespot/**"
-  "DeezSpoTag.Web/Tools/__pycache__/**"
-  "DeezSpoTag.Web/Data/analysis/**"
-  "DeezSpoTag.Web/Data/meloday/**"
-  "DeezSpoTag.Web/Data/spotify/**"
-  "DeezSpoTag.Web/Data/library-artist-images/**"
-  "DeezSpoTag.Web/Data/playlist-covers/**"
-  "DeezSpoTag.Web/Data/logs/**"
-  "DeezSpoTag.Web/Data/library-thumbs/**"
-  "DeezSpoTag.Web/Data/apple-music/**"
-  "DeezSpoTag.Web/Data/autotag/**"
-  "DeezSpoTag.Web/Data/apple-music-test/**"
-  "DeezSpoTag.Web/Data/deezspotag/**"
+  "**/DeezSpoTag.Tests/**"
+  "**/DeezSpoTag.CoverPortTests/**"
+  "**/meloday-main/**"
+  "**/scripts/spotify/**"
+  "**/smb_/**"
+  "**/Music Video Downloads/**"
+  "**/Data/analysis/**"
+  "**/Data/apple-music/**"
+  "**/Data/apple-music-test/**"
+  "**/Data/apple-wrapper/**"
+  "**/Data/autotag/**"
+  "**/Data/deezspotag/**"
+  "**/Data/downloads/**"
+  "**/Data/library/**"
+  "**/Data/library-artist-images/**"
+  "**/Data/library-thumbs/**"
+  "**/Data/logs/**"
+  "**/Data/meloday/**"
+  "**/Data/playlist-covers/**"
+  "**/Data/playlist-visuals/**"
+  "**/Data/runtime/**"
+  "**/Data/security/**"
+  "**/Data/spotify/**"
+  "**/Data/*.db"
+  "**/Data/*.json"
 )
 declare -a lightweight_sonar_exclusions=(
   "**/*.js"
@@ -207,6 +209,10 @@ fi
 
 if [[ -z "$sonar_cpd_exclusions" ]]; then
   sonar_cpd_exclusions="$sonar_exclusions"
+fi
+
+if [[ -z "$sonar_python_version" ]] && command -v python3 >/dev/null 2>&1; then
+  sonar_python_version="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 fi
 
 if [[ -z "$token" ]]; then
@@ -320,6 +326,7 @@ echo "Project key : $project_key"
 echo "Host URL    : $host_url"
 echo "Solution    : $solution_path"
 echo "Build config: $build_config"
+echo "Python version: ${sonar_python_version:-unset}"
 echo "Scan all    : $sonar_scan_all"
 echo "Lightweight : $sonar_lightweight"
 echo "Include tests: $sonar_include_tests"
@@ -343,6 +350,10 @@ declare -a begin_args=(
   /d:sonar.cpd.exclusions="$sonar_cpd_exclusions"
   /d:sonar.coverage.exclusions="$sonar_coverage_exclusions"
 )
+
+if [[ -n "$sonar_python_version" ]]; then
+  begin_args+=(/d:sonar.python.version="$sonar_python_version")
+fi
 
 if [[ "$sonar_include_coverage" == "true" ]]; then
   begin_args+=(/d:sonar.cs.opencover.reportsPaths="$coverage_opencover_reports_path")

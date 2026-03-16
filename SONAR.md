@@ -17,6 +17,7 @@ Optional environment:
 ```bash
 export SONAR_HOST_URL="http://localhost:9000"
 export SONAR_PROJECT_KEY="DeezSpoTag"
+export SONAR_PYTHON_VERSION="3.12"
 export BUILD_CONFIG="Debug"
 export SONAR_SCAN_ALL="false"
 export SONAR_LIGHTWEIGHT="false"

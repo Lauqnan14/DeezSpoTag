@@ -135,9 +135,9 @@ public sealed class LibraryScanRunner
                 AddInfoLog($"Library scan completed ({scanResult.ArtistCount} artists, {scanResult.AlbumCount} albums, {scanResult.TrackCount} tracks).");
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
-            _logger.LogWarning("Library scan cancelled.");
+            _logger.LogWarning(ex, "Library scan cancelled.");
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "warn",
