@@ -5,9 +5,34 @@ IMAGE_NAME="${IMAGE_NAME:-deezspotag-web:local}"
 BENTO4_URL_DEFAULT="https://www.bok.net/Bento4/binaries/Bento4-SDK-1-6-0-641.x86_64-unknown-linux.zip"
 BENTO4_URL="${BENTO4_URL:-$BENTO4_URL_DEFAULT}"
 
+get_image_id() {
+    docker image inspect "$1" --format '{{.Id}}' 2>/dev/null || true
+}
+
+remove_replaced_image() {
+    local previous_image_id="$1"
+    local current_image_id="$2"
+
+    if [ -z "$previous_image_id" ] || [ "$previous_image_id" = "$current_image_id" ]; then
+        return
+    fi
+
+    docker image rm -f "$previous_image_id" >/dev/null 2>&1 || true
+}
+
+build_local_image() {
+    local previous_image_id
+    local current_image_id
+
+    previous_image_id="$(get_image_id "$IMAGE_NAME")"
+    docker build -t "$IMAGE_NAME" --build-arg "BENTO4_URL=$BENTO4_URL" .
+    current_image_id="$(get_image_id "$IMAGE_NAME")"
+    remove_replaced_image "$previous_image_id" "$current_image_id"
+}
+
 case "${1:-up}" in
   build)
-    docker build -t "$IMAGE_NAME" --build-arg "BENTO4_URL=$BENTO4_URL" .
+    build_local_image
     ;;
   up)
     docker compose up -d --build deezspotag
@@ -28,7 +53,7 @@ case "${1:-up}" in
     docker compose logs -f deezspotag-hostnet
     ;;
   parity)
-    docker compose build deezspotag
+    build_local_image
     ./scripts/docker-parity-smoke.sh "$IMAGE_NAME"
     ;;
   down)

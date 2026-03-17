@@ -1078,15 +1078,33 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             return (false, "missing_web_player_blob");
         }
 
-        var tokenInfo = await _blobService.GetWebPlayerTokenInfoAsync(webPlayerBlobPath, cancellationToken);
-        if (tokenInfo == null || !string.IsNullOrWhiteSpace(tokenInfo.Error) || string.IsNullOrWhiteSpace(tokenInfo.AccessToken))
+        try
         {
-            return (false, tokenInfo?.Error ?? "web_player_token_failed");
-        }
+            var tokenInfo = await _blobService.GetWebPlayerTokenInfoAsync(webPlayerBlobPath, cancellationToken);
+            if (tokenInfo == null || !string.IsNullOrWhiteSpace(tokenInfo.Error) || string.IsNullOrWhiteSpace(tokenInfo.AccessToken))
+            {
+                return (false, tokenInfo?.Error ?? "web_player_token_failed");
+            }
 
-        return tokenInfo.IsAnonymous == true
-            ? (false, "web_player_anonymous")
-            : (true, null);
+            return tokenInfo.IsAnonymous == true
+                ? (false, "web_player_anonymous")
+                : (true, null);
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Spotify web player status check timed out.");
+            return (false, "web_player_timeout");
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "Spotify web player status check failed.");
+            return (false, "web_player_request_failed");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Spotify web player status check failed unexpectedly.");
+            return (false, "web_player_status_failed");
+        }
     }
 
     private async Task<(bool Ok, string? Error)> ValidateLibrespotConnectionAsync(string? librespotBlobPath, CancellationToken cancellationToken)
@@ -1096,13 +1114,31 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             return (false, "missing_librespot_blob");
         }
 
-        var librespotToken = await _blobService.GetWebApiAccessTokenAsync(
-            librespotBlobPath,
-            allowRetries: false,
-            cancellationToken: cancellationToken);
-        return !string.IsNullOrWhiteSpace(librespotToken.AccessToken)
-            ? (true, null)
-            : (false, librespotToken.Error ?? "librespot_token_failed");
+        try
+        {
+            var librespotToken = await _blobService.GetWebApiAccessTokenAsync(
+                librespotBlobPath,
+                allowRetries: false,
+                cancellationToken: cancellationToken);
+            return !string.IsNullOrWhiteSpace(librespotToken.AccessToken)
+                ? (true, null)
+                : (false, librespotToken.Error ?? "librespot_token_failed");
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Spotify librespot status check timed out.");
+            return (false, "librespot_timeout");
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "Spotify librespot status check failed.");
+            return (false, "librespot_request_failed");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Spotify librespot status check failed unexpectedly.");
+            return (false, "librespot_status_failed");
+        }
     }
 
     private async Task<SpotifyUserAuthState> LoadUserStateWithFallbackAsync(string userId)

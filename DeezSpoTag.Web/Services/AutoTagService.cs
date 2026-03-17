@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Linq;
 using Microsoft.AspNetCore.Hosting;
+using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Queue;
@@ -155,6 +156,7 @@ public class AutoTagService
     private readonly DownloadQueueRepository _queueRepository;
     private readonly QuickTagService _quickTagService;
     private readonly PlatformAuthService _platformAuthService;
+    private readonly PlexApiClient _plexApiClient;
     private readonly SpotifyBlobService _spotifyBlobService;
     private readonly DeezSpoTag.Services.Settings.DeezSpoTagSettingsService _settingsService;
     private readonly string _jobsDir;
@@ -290,6 +292,7 @@ public class AutoTagService
         public required DownloadQueueRepository QueueRepository { get; init; }
         public required QuickTagService QuickTagService { get; init; }
         public required PlatformAuthService PlatformAuthService { get; init; }
+        public required PlexApiClient PlexApiClient { get; init; }
         public required SpotifyBlobService SpotifyBlobService { get; init; }
         public required DeezSpoTag.Services.Settings.DeezSpoTagSettingsService SettingsService { get; init; }
     }
@@ -311,6 +314,7 @@ public class AutoTagService
         _queueRepository = collaborators.QueueRepository;
         _quickTagService = collaborators.QuickTagService;
         _platformAuthService = collaborators.PlatformAuthService;
+        _plexApiClient = collaborators.PlexApiClient;
         _spotifyBlobService = collaborators.SpotifyBlobService;
         _settingsService = collaborators.SettingsService;
         var appDataRoot = AppDataPaths.GetDataRoot(env);
@@ -1032,9 +1036,13 @@ public class AutoTagService
             {
                 var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
                 AppendLog(job, "tagging completed, auto-move starting");
-                await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
+                var autoMoveCompleted = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
                 AppendLog(job, "auto-move completed, organizer starting");
                 await OrganizeJobAsync(job, path, configPath);
+                if (autoMoveCompleted)
+                {
+                    await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
+                }
             }
 
             NotifyCompleted(job);
@@ -1050,9 +1058,13 @@ public class AutoTagService
             AppendActivityLog(job.Id, $"autotag failed: {job.Error ?? "unknown error"}");
             var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
             AppendLog(job, "tagging failed, auto-move starting");
-            await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
+            var autoMoveCompleted = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
             AppendLog(job, "auto-move completed, organizer starting");
             await OrganizeJobAsync(job, path, configPath);
+            if (autoMoveCompleted)
+            {
+                await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
+            }
             NotifyCompleted(job);
         }
         finally
@@ -1783,7 +1795,7 @@ public class AutoTagService
         }
     }
 
-    private async Task MoveAfterAutoTagAsync(
+    private async Task<bool> MoveAfterAutoTagAsync(
         AutoTagJob job,
         string rootPath,
         string configPath,
@@ -1794,7 +1806,7 @@ public class AutoTagService
         {
             _logger.LogInformation("AutoTag job {JobId}: auto-move skipped (disabled).", job.Id);
             AppendLog(job, "auto-move skipped: disabled");
-            return;
+            return false;
         }
 
         try
@@ -1810,11 +1822,55 @@ public class AutoTagService
                 CancellationToken.None);
             _logger.LogInformation("AutoTag job JobId: auto-move finished for RootPath");
             AppendLog(job, "auto-move finished");
+            return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "AutoTag job {JobId}: auto-move failed.", job.Id);
             AppendLog(job, $"auto-move failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    private async Task TriggerPlexScanAfterMoveAsync(AutoTagJob job, CancellationToken cancellationToken)
+    {
+        try
+        {
+            AppendLog(job, "plex scan starting after auto-move");
+            var authState = await _platformAuthService.LoadAsync();
+            var plex = authState.Plex;
+            if (string.IsNullOrWhiteSpace(plex?.Url) || string.IsNullOrWhiteSpace(plex.Token))
+            {
+                AppendLog(job, "plex scan skipped: plex not configured");
+                return;
+            }
+
+            var sections = await _plexApiClient.GetLibrarySectionsAsync(plex.Url, plex.Token, cancellationToken);
+            var musicSections = sections
+                .Where(section => string.Equals(section.Type, "artist", StringComparison.OrdinalIgnoreCase))
+                .Where(section => !section.Title.Contains("audiobook", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (musicSections.Count == 0)
+            {
+                AppendLog(job, "plex scan skipped: no music libraries found");
+                return;
+            }
+
+            var refreshed = 0;
+            foreach (var section in musicSections)
+            {
+                if (await _plexApiClient.RefreshLibraryAsync(plex.Url, plex.Token, section.Key, cancellationToken))
+                {
+                    refreshed++;
+                }
+            }
+
+            AppendLog(job, $"plex scan requested: {musicSections.Count} libraries (refreshed={refreshed})");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "AutoTag job {JobId}: Plex scan after auto-move failed.", job.Id);
+            AppendLog(job, $"plex scan failed: {ex.Message}");
         }
     }
 

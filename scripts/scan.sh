@@ -311,7 +311,7 @@ check_system_resources() {
 }
 
 restore_legacy_platform_auth_placeholder() {
-  local workers_data_dir="${DEEZSPOTAG_DATA_DIR:-${ROOT_DIR}/DeezSpoTag.Workers/bin/Debug/net8.0/Data}"
+  local workers_data_dir="${DEEZSPOTAG_DATA_DIR:-${ROOT_DIR}/DeezSpoTag.Workers/Data}"
   local legacy_auth_dir="${workers_data_dir}/deezspotag/autotag"
   local legacy_auth_file="${legacy_auth_dir}/platform-auth.json"
 

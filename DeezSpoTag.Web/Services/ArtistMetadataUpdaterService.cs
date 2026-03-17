@@ -1,4 +1,5 @@
 using System.Text.Json;
+using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Utils;
@@ -15,6 +16,12 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
 {
     private static readonly TimeSpan SchedulerInterval = TimeSpan.FromMinutes(30);
     private const string SpotifyPlatform = "spotify";
+    private const string DeezerPlatform = "deezer";
+    private const string ApplePlatform = "apple";
+    private const string MetadataSourceAuto = "auto";
+    private const string MetadataSourceSpotify = SpotifyPlatform;
+    private const string MetadataSourceDeezer = DeezerPlatform;
+    private const string MetadataSourceApple = ApplePlatform;
     private const string PlexTarget = "plex";
     private const string JellyfinTarget = "jellyfin";
     private const string BothTargets = "both";
@@ -25,6 +32,7 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
     private readonly PlexApiClient _plexClient;
     private readonly JellyfinApiClient _jellyfinClient;
     private readonly DeezerClient _deezerClient;
+    private readonly AppleMusicCatalogService _appleMusicCatalogService;
     private readonly LibraryConfigStore _configStore;
     private readonly IWebHostEnvironment _environment;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -51,6 +59,7 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         _plexClient = serviceProvider.GetRequiredService<PlexApiClient>();
         _jellyfinClient = serviceProvider.GetRequiredService<JellyfinApiClient>();
         _deezerClient = serviceProvider.GetRequiredService<DeezerClient>();
+        _appleMusicCatalogService = serviceProvider.GetRequiredService<AppleMusicCatalogService>();
         _configStore = serviceProvider.GetRequiredService<LibraryConfigStore>();
         _environment = environment;
         _httpClientFactory = serviceProvider.GetRequiredService<IHttpClientFactory>();
@@ -105,6 +114,10 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         tracked.IncludeBackground = request.IncludeBackground;
         tracked.IncludeBio = request.IncludeBio;
         tracked.IntervalDays = normalizedInterval;
+        if (!string.IsNullOrWhiteSpace(request.Source))
+        {
+            tracked.Source = NormalizeMetadataSource(request.Source);
+        }
         tracked.UpdatedAtUtc = DateTimeOffset.UtcNow;
         await SaveStateAsync(state, cancellationToken);
     }
@@ -413,6 +426,11 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         MetadataUpdaterRunRequest request,
         int effectiveIntervalDays)
     {
+        if (!string.IsNullOrWhiteSpace(request.Source))
+        {
+            tracked.Source = NormalizeMetadataSource(request.Source);
+        }
+
         if (!string.IsNullOrWhiteSpace(request.Target))
         {
             tracked.Target = NormalizeTarget(request.Target);
@@ -451,27 +469,26 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         }
 
         tracked.ArtistName = artist.Name;
-        var page = await _spotifyArtistService.GetArtistPageAsync(
+        var source = NormalizeMetadataSource(tracked.Source);
+        var resolved = await ResolveArtistMetadataAsync(
             artist.Id,
             artist.Name,
-            forceRefresh: true,
-            forceRematch: false,
+            source,
             cancellationToken);
-        if (page?.Artist is null)
+        if (resolved is null)
         {
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "warn",
-                $"Metadata updater failed for {artist.Name}: Spotify metadata unavailable."));
+                $"Metadata updater failed for {artist.Name}: {source} metadata unavailable."));
             return false;
         }
 
-        var spotifyId = await _libraryRepository.GetArtistSourceIdAsync(artist.Id, SpotifyPlatform, cancellationToken);
-        var prepared = await PrepareVisualsAsync(tracked, page, spotifyId, cancellationToken);
+        var prepared = await PrepareVisualsAsync(tracked, resolved.Candidates, cancellationToken);
         await UpdateManagedArtistVisualsAsync(artist.Id, prepared, cancellationToken);
 
         var biography = tracked.IncludeBio
-            ? SanitizeBiography(page.Artist.Biography)
+            ? SanitizeBiography(resolved.Biography)
             : null;
         var pushed = await PushArtistMetadataAsync(
             new PushMetadataRequest(
@@ -550,6 +567,8 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
     {
         var artists = await _libraryRepository.GetArtistsAsync("all", cancellationToken);
         var target = NormalizeTarget(request.Target);
+        var hasSourceOverride = !string.IsNullOrWhiteSpace(request.Source);
+        var source = NormalizeMetadataSource(request.Source);
         var intervalDays = NormalizeIntervalDays(request.IntervalDays ?? 30);
         var byId = state.Artists.ToDictionary(item => item.ArtistId);
         foreach (var artist in artists)
@@ -570,32 +589,85 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
             }
 
             tracked.ArtistName = artist.Name.Trim();
+            if (hasSourceOverride || string.IsNullOrWhiteSpace(tracked.Source))
+            {
+                tracked.Source = source;
+            }
             tracked.Target = target;
             tracked.IntervalDays = intervalDays;
             tracked.UpdatedAtUtc = DateTimeOffset.UtcNow;
         }
     }
 
-    private async Task<PreparedVisuals> PrepareVisualsAsync(
-        MetadataUpdaterTrackedArtist tracked,
-        SpotifyArtistPageResult page,
-        string? spotifyId,
+    private async Task<ResolvedArtistMetadata?> ResolveArtistMetadataAsync(
+        long artistId,
+        string artistName,
+        string source,
         CancellationToken cancellationToken)
     {
-        var managedRoot = Path.Join(
-            AppDataPaths.GetDataRoot(_environment),
-            "library-artist-images",
-            SpotifyPlatform,
-            "artists",
-            tracked.ArtistId.ToString());
+        var normalizedSource = NormalizeMetadataSource(source);
+        var candidates = new List<ArtworkCandidate>();
+        string? biography = null;
+
+        if (normalizedSource is MetadataSourceAuto or MetadataSourceSpotify)
+        {
+            var page = await _spotifyArtistService.GetArtistPageAsync(
+                artistId,
+                artistName,
+                forceRefresh: true,
+                forceRematch: false,
+                cancellationToken);
+            if (page?.Artist is not null)
+            {
+                biography = page.Artist.Biography;
+                await AddSpotifyArtworkCandidatesAsync(artistId, page, candidates, cancellationToken);
+            }
+            else if (normalizedSource == MetadataSourceSpotify)
+            {
+                return null;
+            }
+        }
+
+        if (normalizedSource is MetadataSourceAuto or MetadataSourceDeezer)
+        {
+            var deezerCandidate = await TryResolveDeezerArtworkCandidateAsync(artistName, cancellationToken);
+            if (deezerCandidate is not null)
+            {
+                candidates.Add(deezerCandidate);
+            }
+            else if (normalizedSource == MetadataSourceDeezer && candidates.Count == 0)
+            {
+                return null;
+            }
+        }
+
+        if (normalizedSource is MetadataSourceAuto or MetadataSourceApple)
+        {
+            var appleCandidate = await TryResolveAppleArtworkCandidateAsync(artistName, cancellationToken);
+            if (appleCandidate is not null)
+            {
+                candidates.Add(appleCandidate);
+            }
+            else if (normalizedSource == MetadataSourceApple && candidates.Count == 0)
+            {
+                return null;
+            }
+        }
+
+        return new ResolvedArtistMetadata(biography, candidates);
+    }
+
+    private async Task AddSpotifyArtworkCandidatesAsync(
+        long artistId,
+        SpotifyArtistPageResult page,
+        List<ArtworkCandidate> candidates,
+        CancellationToken cancellationToken)
+    {
         var cacheRoot = Path.Join(
             AppDataPaths.GetDataRoot(_environment),
             "library-artist-images",
             SpotifyPlatform);
-
-        Directory.CreateDirectory(managedRoot);
-
-        var candidates = new List<ArtworkCandidate>();
+        var spotifyId = await _libraryRepository.GetArtistSourceIdAsync(artistId, SpotifyPlatform, cancellationToken);
         if (!string.IsNullOrWhiteSpace(spotifyId) && Directory.Exists(cacheRoot))
         {
             try
@@ -611,7 +683,7 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Failed to enumerate Spotify cache files for artist {ArtistId}", tracked.ArtistId);
+                _logger.LogDebug(ex, "Failed to enumerate Spotify cache files for artist {ArtistId}", artistId);
             }
         }
 
@@ -621,29 +693,79 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
                 image.Url!,
                 $"spotify:{index}:{image.Url}",
                 SpotifyPlatform)));
+    }
 
+    private async Task<ArtworkCandidate?> TryResolveDeezerArtworkCandidateAsync(
+        string artistName,
+        CancellationToken cancellationToken)
+    {
         var deezerImage = await ArtworkFallbackHelper.TryResolveDeezerArtistImageAsync(
             _deezerClient,
             deezerTrackId: null,
             size: 1200,
             _logger,
             cancellationToken,
-            page.Artist.Name);
-        if (!string.IsNullOrWhiteSpace(deezerImage))
+            artistName);
+        if (string.IsNullOrWhiteSpace(deezerImage))
         {
-            candidates.Add(ArtworkCandidate.FromRemote(deezerImage!, $"deezer:{deezerImage}", "deezer"));
+            return null;
         }
 
-        var itunesImage = await AppleQueueHelpers.ResolveItunesArtistImageAsync(
-            _httpClientFactory,
-            page.Artist.Name,
-            1200,
-            _logger,
-            cancellationToken);
-        if (!string.IsNullOrWhiteSpace(itunesImage))
+        return ArtworkCandidate.FromRemote(deezerImage!, $"deezer:{deezerImage}", MetadataSourceDeezer);
+    }
+
+    private async Task<ArtworkCandidate?> TryResolveAppleArtworkCandidateAsync(
+        string artistName,
+        CancellationToken cancellationToken)
+    {
+        string? appleImage = null;
+        try
         {
-            candidates.Add(ArtworkCandidate.FromRemote(itunesImage!, $"itunes:{itunesImage}", "itunes"));
+            appleImage = await AppleQueueHelpers.ResolveAppleArtistImageAsync(
+                _appleMusicCatalogService,
+                artistName,
+                "us",
+                1200,
+                cancellationToken);
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Apple Music artist artwork lookup failed for {ArtistName}", artistName);
+        }
+
+        if (string.IsNullOrWhiteSpace(appleImage))
+        {
+            appleImage = await AppleQueueHelpers.ResolveItunesArtistImageAsync(
+                _httpClientFactory,
+                artistName,
+                1200,
+                _logger,
+                cancellationToken);
+        }
+
+        if (string.IsNullOrWhiteSpace(appleImage))
+        {
+            return null;
+        }
+
+        return ArtworkCandidate.FromRemote(appleImage!, $"apple:{appleImage}", MetadataSourceApple);
+    }
+
+    private async Task<PreparedVisuals> PrepareVisualsAsync(
+        MetadataUpdaterTrackedArtist tracked,
+        IReadOnlyList<ArtworkCandidate> sourceCandidates,
+        CancellationToken cancellationToken)
+    {
+        var managedRoot = Path.Join(
+            AppDataPaths.GetDataRoot(_environment),
+            "library-artist-images",
+            SpotifyPlatform,
+            "artists",
+            tracked.ArtistId.ToString());
+
+        Directory.CreateDirectory(managedRoot);
+
+        var candidates = sourceCandidates.ToList();
 
         var avatarSlot = ResolveSlotCandidate(managedRoot, "avatar");
         if (!string.IsNullOrWhiteSpace(avatarSlot))
@@ -1226,6 +1348,18 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         };
     }
 
+    private static string NormalizeMetadataSource(string? value)
+    {
+        var normalized = (value ?? MetadataSourceAuto).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            MetadataSourceSpotify => MetadataSourceSpotify,
+            MetadataSourceDeezer => MetadataSourceDeezer,
+            MetadataSourceApple => MetadataSourceApple,
+            _ => MetadataSourceAuto
+        };
+    }
+
     private static string? SanitizeBiography(string? value)
     {
         var text = (value ?? string.Empty).Trim();
@@ -1243,6 +1377,7 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         MetadataUpdaterState State,
         List<MetadataUpdaterTrackedArtist> Candidates,
         DateTimeOffset NowUtc);
+    private sealed record ResolvedArtistMetadata(string? Biography, IReadOnlyList<ArtworkCandidate> Candidates);
     private enum ArtistProcessingOutcome
     {
         Succeeded,
@@ -1312,6 +1447,7 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
 public sealed class MetadataUpdaterRunRequest
 {
     public long? ArtistId { get; set; }
+    public string? Source { get; set; }
     public string? Target { get; set; }
     public int? IntervalDays { get; set; }
     public bool? IncludeAvatar { get; set; }
@@ -1325,6 +1461,7 @@ public sealed class ManualPushRegistrationRequest
 {
     public long ArtistId { get; set; }
     public string ArtistName { get; set; } = string.Empty;
+    public string? Source { get; set; }
     public string? Target { get; set; }
     public bool IncludeAvatar { get; set; }
     public bool IncludeBackground { get; set; }
@@ -1342,6 +1479,7 @@ public sealed class MetadataUpdaterTrackedArtist
 {
     public long ArtistId { get; set; }
     public string ArtistName { get; set; } = string.Empty;
+    public string Source { get; set; } = "auto";
     public string Target { get; set; } = "plex";
     public bool IncludeAvatar { get; set; } = true;
     public bool IncludeBackground { get; set; } = true;

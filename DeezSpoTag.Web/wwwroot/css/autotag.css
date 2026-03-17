@@ -1014,7 +1014,7 @@ body.autotag-col-resizing * {
 
 .folder-table-header {
     display: grid;
-    grid-template-columns: minmax(140px, 0.95fr) minmax(220px, 1.6fr) minmax(300px, 1.5fr) minmax(190px, 1fr) minmax(160px, 0.95fr) minmax(90px, 0.6fr) minmax(200px, 0.95fr);
+    grid-template-columns: minmax(140px, 0.95fr) minmax(220px, 1.6fr) minmax(300px, 1.5fr) minmax(190px, 1fr) minmax(160px, 0.95fr) minmax(150px, 0.85fr) minmax(200px, 0.95fr);
     gap: 10px;
     align-items: center;
     padding: 12px 14px;
@@ -1031,7 +1031,7 @@ body.autotag-col-resizing * {
 
 .folder-row .table-row {
     display: grid;
-    grid-template-columns: minmax(140px, 0.95fr) minmax(220px, 1.55fr) minmax(300px, 1.45fr) minmax(190px, 0.95fr) minmax(160px, 0.9fr) minmax(110px, 0.7fr) minmax(110px, 0.7fr) minmax(200px, 0.95fr);
+    grid-template-columns: minmax(140px, 0.95fr) minmax(220px, 1.55fr) minmax(300px, 1.45fr) minmax(190px, 0.95fr) minmax(160px, 0.9fr) minmax(150px, 0.85fr) minmax(200px, 0.95fr);
     gap: 10px;
     align-items: center;
     padding: 12px 14px;

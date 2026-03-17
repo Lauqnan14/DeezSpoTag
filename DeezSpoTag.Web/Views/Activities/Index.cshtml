@@ -1483,9 +1483,10 @@
 .media-operations-tab .tool-card-footer {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: 12px;
     margin-top: 6px;
+    flex-wrap: wrap;
 }
 
 .media-operations-tab .ops-primary .tool-card-footer {
@@ -1572,11 +1573,20 @@
 }
 
 .media-operations-tab .ops-primary .tool-card-footer {
-    justify-content: space-between;
+    justify-content: flex-end;
 }
 
 .media-operations-tab .ops-primary .tool-card-footer .toggle-row {
     margin-top: 0;
+    margin-right: auto;
+}
+
+.media-operations-tab .tool-card-action-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
 }
 
 .media-operations-tab .toggle-label {
@@ -1943,6 +1953,10 @@
     gap: 12px;
 }
 
+.media-operations-tab .analysis-summary-grid.analysis-summary-grid-vibe {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
 .media-operations-tab .analysis-summary-grid.analysis-summary-grid-main {
     grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -2135,6 +2149,10 @@
         gap: 10px;
     }
 
+    .media-operations-tab .analysis-summary-grid.analysis-summary-grid-vibe {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+
     .media-operations-tab .analysis-recent-list {
         gap: 8px;
     }
@@ -2306,10 +2324,14 @@
                             </ul>
                             <div class="section-divider"></div>
                             <div class="tool-card-body">
-                                <div class="analysis-summary-grid meloday-summary-grid">
+                                <div class="analysis-summary-grid analysis-summary-grid-vibe meloday-summary-grid">
                                     <div class="analysis-summary-card">
                                         <span class="analysis-summary-label">Progress</span>
                                         <span class="analysis-summary-value" id="analysisStatus">Loading analysis status...</span>
+                                    </div>
+                                    <div class="analysis-summary-card">
+                                        <span class="analysis-summary-label">Pending</span>
+                                        <span class="analysis-summary-value" id="analysisPending">0</span>
                                     </div>
                                     <div class="analysis-summary-card">
                                         <span class="analysis-summary-label">Last run</span>
@@ -2467,8 +2489,10 @@
                                             <span class="toggle-slider" aria-hidden="true"></span>
                                         </span>
                                     </div>
-                                    <button id="runAnalysis" class="action-btn action-btn-sm" type="button">Run Analysis</button>
-                                    <button id="resetAnalysis" class="action-btn action-btn-sm action-btn-danger" type="button" title="Clear all analysis data and start fresh">Reset Analysis</button>
+                                    <div class="tool-card-action-group">
+                                        <button id="runAnalysis" class="action-btn action-btn-sm" type="button">Run Analysis</button>
+                                        <button id="resetAnalysis" class="action-btn action-btn-sm action-btn-danger" type="button" title="Clear all analysis data and start fresh">Reset Analysis</button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -2583,8 +2607,10 @@
                                             <span class="toggle-slider" aria-hidden="true"></span>
                                         </span>
                                     </div>
-                                    <button id="runMeloday" class="action-btn action-btn-sm" type="button">Run Meloday</button>
-                                    <button id="saveMelodaySettings" class="action-btn action-btn-sm" type="button">Save Settings</button>
+                                    <div class="tool-card-action-group">
+                                        <button id="runMeloday" class="action-btn action-btn-sm" type="button">Run Meloday</button>
+                                        <button id="saveMelodaySettings" class="action-btn action-btn-sm" type="button">Save Settings</button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -2612,7 +2638,7 @@
                                 </div>
                                 <div class="tool-card-footer">
                                     <button id="metadata-update-button" class="action-btn action-btn-sm">Begin Update</button>
-                                    <button id="metadata-refresh-cache-button" class="action-btn action-btn-sm" type="button">Refresh Spotify Cache</button>
+                                    <button id="metadata-refresh-cache-button" class="action-btn action-btn-sm" type="button">Refresh Cache</button>
                                     <button id="metadata-cancel-button" class="action-btn action-btn-sm" type="button" disabled>Cancel Scan</button>
                                 </div>
                             </div>
@@ -2943,7 +2969,7 @@ function initMediaOperationsHelp() {
             title: 'Artist Metadata Updater',
             content: `
                 <h4>What does this tool do?</h4>
-                <p>The Artist Metadata Updater refreshes Spotify artist metadata, rotates available visuals, and pushes avatar/background/bio to Plex, Jellyfin, or both.</p>
+                <p>The Artist Metadata Updater refreshes artist metadata from your selected source, rotates available visuals, and pushes avatar/background/bio to Plex, Jellyfin, or both.</p>
 
                 <h4>Refresh Interval Options</h4>
                 <ul>
@@ -2953,9 +2979,17 @@ function initMediaOperationsHelp() {
                     <li><strong>Force All:</strong> Updates all artists regardless of when they were last updated</li>
                 </ul>
 
+                <h4>Metadata source options</h4>
+                <ul>
+                    <li><strong>Auto:</strong> Uses Spotify, Deezer, and Apple Music candidates</li>
+                    <li><strong>Spotify:</strong> Uses Spotify metadata and visuals only</li>
+                    <li><strong>Deezer:</strong> Uses Deezer visuals only</li>
+                    <li><strong>Apple Music:</strong> Uses Apple Music visuals only</li>
+                </ul>
+
                 <h4>Cache-only actions</h4>
                 <ul>
-                    <li><strong>Refresh Spotify Cache:</strong> Updates only the local Spotify cache (no server updates)</li>
+                    <li><strong>Refresh Cache:</strong> Updates only the local Spotify cache (no server updates)</li>
                 </ul>
 
                 <h4>What gets updated?</h4>
@@ -3197,6 +3231,7 @@ function initMetadataUpdater() {
     const updateButton = document.getElementById('metadata-update-button');
     const refreshCacheButton = document.getElementById('metadata-refresh-cache-button');
     const cancelButton = document.getElementById('metadata-cancel-button');
+    const sourceSelect = document.getElementById('metadata-source-platform');
     const intervalSelect = document.getElementById('metadata-refresh-interval');
     const targetSelect = document.getElementById('metadata-target-server');
     const phaseLabel = document.getElementById('metadata-phase-label');
@@ -3208,11 +3243,14 @@ function initMetadataUpdater() {
     }
 
     const targetKey = 'deezspotag-metadata-updater-target';
+    const sourceKey = 'deezspotag-metadata-updater-source';
 
     const runMetadataUpdater = async () => {
+        const source = sourceSelect?.value || 'auto';
         const intervalDays = Number(intervalSelect?.value || 30);
         const target = targetSelect?.value || 'plex';
         const payload = {
+            source,
             intervalDays,
             target,
             includeAllArtists: true,
@@ -3250,9 +3288,9 @@ function initMetadataUpdater() {
                 if (!response.ok) {
                     throw new Error(await response.text());
                 }
-                notifyActivity('Spotify cache refresh started.');
+                notifyActivity('Metadata cache refresh started.');
             } catch (error) {
-                notifyActivity(`Spotify cache refresh failed: ${error?.message || error}`, 'error');
+                notifyActivity(`Metadata cache refresh failed: ${error?.message || error}`, 'error');
             }
         });
     }
@@ -3271,6 +3309,17 @@ function initMetadataUpdater() {
         targetSelect.addEventListener('change', () => {
             localStorage.setItem(targetKey, targetSelect.value);
             if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterTarget', targetSelect.value);
+        });
+    }
+
+    if (sourceSelect) {
+        const savedSource = localStorage.getItem(sourceKey) || 'auto';
+        if (savedSource) {
+            sourceSelect.value = savedSource;
+        }
+        sourceSelect.addEventListener('change', () => {
+            localStorage.setItem(sourceKey, sourceSelect.value);
+            if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterSource', sourceSelect.value);
         });
     }
 
@@ -5348,6 +5397,7 @@ async function loadLatestAnalysis() {
 
 async function loadAnalysisStatus() {
     const statusEl = document.getElementById('analysisStatus');
+    const pendingEl = document.getElementById('analysisPending');
     const lastRunEl = document.getElementById('analysisLastRun');
     const statusPill = document.getElementById('analysisStatusPill');
     if (!statusEl) {
@@ -5360,8 +5410,8 @@ async function loadAnalysisStatus() {
         const total = status?.totalTracks ?? 0;
         analysisState.pendingTracks = pending;
         statusEl.textContent = `${analyzed.toLocaleString()}/${total.toLocaleString()} analyzed`;
-        if (pending > 0) {
-            statusEl.textContent += ` • ${pending.toLocaleString()} pending`;
+        if (pendingEl) {
+            pendingEl.textContent = pending.toLocaleString();
         }
         if (analysisState.running) {
             statusEl.textContent += ' • Running';
@@ -5373,6 +5423,9 @@ async function loadAnalysisStatus() {
         }
     } catch (error) {
         statusEl.textContent = `Status unavailable${error?.message ? `: ${error.message}` : ''}`;
+        if (pendingEl) {
+            pendingEl.textContent = 'Unknown';
+        }
         updateAnalysisStatusPill();
         if (lastRunEl) {
             lastRunEl.textContent = 'Unknown';
@@ -5414,7 +5467,11 @@ async function runAnalysis() {
 }
 
 async function resetAnalysis() {
-    if (!confirm('This will delete all vibe analysis data and mood buckets. Are you sure?')) {
+    const confirmed = await confirmAction(
+        'This will delete all vibe analysis data and mood buckets. Are you sure?',
+        'Reset Analysis'
+    );
+    if (!confirmed) {
         return;
     }
     const button = document.getElementById('resetAnalysis');

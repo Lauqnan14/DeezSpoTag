@@ -729,6 +729,7 @@ static void RegisterAutoTagServices(IServiceCollection services)
             QueueRepository = sp.GetRequiredService<DeezSpoTag.Services.Download.Queue.DownloadQueueRepository>(),
             QuickTagService = sp.GetRequiredService<DeezSpoTag.Web.Services.QuickTagService>(),
             PlatformAuthService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformAuthService>(),
+            PlexApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Plex.PlexApiClient>(),
             SpotifyBlobService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyBlobService>(),
             SettingsService = sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>()
         });

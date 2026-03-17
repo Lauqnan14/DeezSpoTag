@@ -18,13 +18,13 @@ services:
     volumes:
       # Auto-create app state folder if missing.
       - type: bind
-        source: ${DEEZSPOTAG_DATA_PATH:-./DeezSpoTag.Workers/bin/Debug/net8.0/Data}
+        source: ${DEEZSPOTAG_DATA_PATH:-./DeezSpoTag.Workers/Data}
         target: /data
         bind:
           create_host_path: true
       # Compatibility path for images that still write under /app/Data.
       - type: bind
-        source: ${DEEZSPOTAG_APPDATA_PATH:-./DeezSpoTag.Workers/bin/Debug/net8.0/Data}
+        source: ${DEEZSPOTAG_APPDATA_PATH:-./DeezSpoTag.Workers/Data}
         target: /app/Data
         bind:
           create_host_path: true

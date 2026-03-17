@@ -119,8 +119,8 @@ docker compose up -d apple-wrapper
 Then start the app locally with Workers data paths:
 
 ```bash
-export DEEZSPOTAG_DATA_DIR=DeezSpoTag.Workers/bin/Debug/net8.0/Data
-export DEEZSPOTAG_CONFIG_DIR=DeezSpoTag.Workers/bin/Debug/net8.0/Data
+export DEEZSPOTAG_DATA_DIR=DeezSpoTag.Workers/Data
+export DEEZSPOTAG_CONFIG_DIR=DeezSpoTag.Workers/Data
 export DEEZSPOTAG_APPLE_WRAPPER_HOST=127.0.0.1
 dotnet run --project DeezSpoTag.Web/DeezSpoTag.Web.csproj -c Debug
 ```

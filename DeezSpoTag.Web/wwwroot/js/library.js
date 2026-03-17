@@ -2447,15 +2447,13 @@ async function loadAlbums(artistId) {
     const avatarEl = document.getElementById('artistAvatar');
     if (avatarEl && resolvedArtist?.preferredImagePath) {
         const avatarPath = appendCacheKey(`/api/library/image?path=${encodeURIComponent(resolvedArtist.preferredImagePath)}&size=320`);
-        avatarEl.innerHTML = `<img src="${avatarPath}" alt="${resolvedArtist.name || 'Artist'}" loading="lazy" decoding="async" />`;
-        avatarEl.dataset.localAvatar = 'true';
+        setArtistAvatarImageElement(avatarEl, avatarPath, resolvedArtist.name || 'Artist', true);
     }
 
     const bgEl = document.querySelector('.artist-page');
     if (bgEl && libraryState.artistVisuals.preferredBackgroundPath) {
         const backgroundUrl = appendCacheKey(buildLibraryImageUrl(libraryState.artistVisuals.preferredBackgroundPath));
-        bgEl.style.setProperty('--hero-url', `url('${backgroundUrl}')`);
-        bgEl.dataset.localBackground = 'true';
+        applyArtistHeroBackgroundImage(backgroundUrl, true);
     }
 
     const available = albums.filter(album => (album.localFolders || []).length > 0);
@@ -2877,154 +2875,6 @@ function initSpotifyCacheControls(artistId) {
     });
 
     loadSpotifyCacheImages(artistId);
-}
-
-function normalizeSpotifyBiographyText(biography) {
-    const biographyRaw = typeof biography === 'string' ? biography.trim() : '';
-    if (!biographyRaw) {
-        return '';
-    }
-
-    const temp = document.createElement('div');
-    temp.innerHTML = biographyRaw;
-    return (temp.textContent || '').replaceAll(/[\s\u00A0]+/g, ' ').trim();
-}
-
-function setSpotifyArtistLinkState(artist) {
-    const spotifyIdEl = document.getElementById('artistSpotifyId');
-    const spotifyActionEl = document.getElementById('artistSpotifyAction');
-    if (spotifyIdEl && artist.id) {
-        spotifyIdEl.href = `https://open.spotify.com/artist/${artist.id}`;
-        spotifyIdEl.style.display = 'inline-flex';
-        spotifyIdEl.dataset.spotifyId = artist.id;
-        if (!spotifyIdEl.dataset.defaultLabel) {
-            spotifyIdEl.dataset.defaultLabel = spotifyIdEl.innerHTML;
-        }
-        if (spotifyIdEl.dataset.defaultLabel) {
-            spotifyIdEl.innerHTML = spotifyIdEl.dataset.defaultLabel;
-        }
-        spotifyIdEl.title = `Spotify ID: ${artist.id}`;
-    }
-    if (spotifyActionEl && artist.id) {
-        spotifyActionEl.href = `https://open.spotify.com/artist/${artist.id}`;
-        spotifyActionEl.style.display = 'flex';
-    }
-}
-
-function setSpotifyArtistGenres(genres) {
-    const genresEl = document.getElementById('artistGenres');
-    if (!genresEl) {
-        return;
-    }
-
-    const genreList = Array.isArray(genres) ? genres : [];
-    genresEl.innerHTML = genreList.length
-        ? genreList.slice(0, 6).map((genre) => `<span class="genre-tag">${genre}</span>`).join('')
-        : '';
-}
-
-function setSpotifyArtistStats(artist) {
-    [
-        ['artistFollowers', typeof artist.followers === 'number' ? formatCompactNumber(artist.followers) : null],
-        ['artistPopularity', typeof artist.popularity === 'number' ? artist.popularity.toString() : null],
-        ['artistMonthlyListeners', typeof artist.monthlyListeners === 'number' ? formatCompactNumber(artist.monthlyListeners) : '—'],
-        ['artistRank', typeof artist.rank === 'number' ? `#${artist.rank.toLocaleString()}` : '—'],
-        ['artistTotalAlbums', typeof artist.totalAlbums === 'number' ? artist.totalAlbums.toString() : '—']
-    ].forEach(([id, value]) => {
-        const element = document.getElementById(id);
-        if (element && value !== null) {
-            element.textContent = value;
-        }
-    });
-
-    const verifiedBadgeEl = document.getElementById('artistVerifiedBadge');
-    if (verifiedBadgeEl) {
-        verifiedBadgeEl.style.display = artist.verified === true ? 'flex' : 'none';
-    }
-}
-
-function setSpotifyArtistBiography(biography) {
-    const bioEl = document.getElementById('artistBiography');
-    if (!bioEl) {
-        return;
-    }
-
-    const biographyText = normalizeSpotifyBiographyText(biography);
-    const hasBiography = biographyText && !/^n\/?a$/i.test(biographyText);
-    bioEl.textContent = hasBiography ? biographyText : 'Biography unavailable from Spotify.';
-    const bioPanel = document.getElementById('spotifyBioPanel');
-    if (bioPanel) {
-        bioPanel.style.display = 'block';
-    }
-}
-
-function applySpotifyArtistProfile(artist) {
-    if (!artist) {
-        return;
-    }
-    libraryState.currentSpotifyArtist = artist;
-    updateTopSongsTracklistLink(artist);
-    setSpotifyArtistLinkState(artist);
-    setSpotifyArtistGenres(artist.genres);
-    setSpotifyArtistStats(artist);
-    setSpotifyArtistBiography(artist.biography);
-
-    const bestImage = selectImage(artist.images, 'large');
-    const avatarImage = selectImage(artist.images, 'medium') || bestImage;
-
-    const avatarEl = document.getElementById('artistAvatar');
-    if (avatarEl && avatarImage && avatarEl.dataset.localAvatar !== 'true') {
-        avatarEl.innerHTML = `<img src="${avatarImage}" alt="${artist.name || 'Artist'}" loading="lazy" decoding="async" />`;
-    }
-
-    libraryState.artistVisuals.headerImageUrl = artist.headerImageUrl || null;
-    const spotifyImages = [];
-    const pushSpotifyVisual = (url, label) => {
-        const value = (url || '').toString().trim();
-        if (!value) {
-            return;
-        }
-        spotifyImages.push({
-            url: value,
-            label,
-            source: 'spotify'
-        });
-    };
-    pushSpotifyVisual(bestImage, artist.name ? `Spotify • ${artist.name}` : 'Spotify');
-    pushSpotifyVisual(artist.headerImageUrl, artist.name ? `Spotify • ${artist.name} header` : 'Spotify header');
-    const galleryRaw = Array.isArray(artist.gallery) ? artist.gallery : [];
-    const gallery = galleryRaw
-        .map((item) => {
-            if (!item) {
-                return '';
-            }
-            if (typeof item === 'string') {
-                return item.trim();
-            }
-            if (typeof item === 'object') {
-                return (item.url || item.Url || item.src || item.Src || '').toString().trim();
-            }
-            return '';
-        })
-        .filter(Boolean);
-    libraryState.artistVisuals.gallery = gallery;
-    gallery.forEach((url, index) => {
-        pushSpotifyVisual(url, artist.name
-            ? `Spotify • ${artist.name} gallery ${index + 1}`
-            : `Spotify gallery ${index + 1}`);
-    });
-    libraryState.artistVisuals.spotifyImages = spotifyImages;
-
-    const bgEl = document.querySelector('.artist-page');
-    const heroImage = artist.headerImageUrl || bestImage;
-    if (bgEl && heroImage && bgEl.dataset.localBackground !== 'true') {
-        bgEl.style.setProperty('--hero-url', `url('${heroImage}')`);
-    }
-
-    const artistIdValue = document.querySelector('.artist-page')?.dataset?.artistId || '';
-    renderArtistVisualPicker(artistIdValue);
-    applyStoredArtistVisuals(artistIdValue);
-    loadExternalArtistVisuals(artist?.name || '', artistIdValue);
 }
 
 function renderSpotifyRelatedArtists(artists) {
@@ -3836,39 +3686,6 @@ function initAppleIdEditor(artistIdValue) {
     });
 }
 
-function initArtistActionsDropdown() {
-    const toggleButton = document.getElementById('artistActionsToggle');
-    const dropdown = document.getElementById('artistActionsDropdown');
-    const cacheRefreshButton = document.getElementById('spotify-cache-refresh-button');
-    const cachePanel = document.getElementById('spotify-cache-panel');
-
-    if (!toggleButton || !dropdown) {
-        return;
-    }
-
-    toggleButton.addEventListener('click', (event) => {
-        event.stopPropagation();
-        const isOpen = dropdown.classList.toggle('is-open');
-        toggleButton.setAttribute('aria-expanded', isOpen);
-        if (isOpen && cachePanel) {
-            cachePanel.classList.add('is-open');
-        }
-    });
-
-    document.addEventListener('click', (event) => {
-        if (!dropdown.contains(event.target) && !toggleButton.contains(event.target)) {
-            dropdown.classList.remove('is-open');
-            toggleButton.setAttribute('aria-expanded', 'false');
-        }
-    });
-
-    if (cacheRefreshButton && cachePanel) {
-        cacheRefreshButton.addEventListener('click', () => {
-            cachePanel.classList.add('is-open');
-        });
-    }
-}
-
 function getArtistVisualStorageKey(artistId) {
     return `artist-visuals:${artistId || 'unknown'}`;
 }
@@ -4121,8 +3938,7 @@ function applyStoredArtistVisuals(artistId) {
         const avatarEl = document.getElementById('artistAvatar');
         if (avatarEl) {
             const src = appendCacheKey(avatarUrl);
-            avatarEl.dataset.localAvatar = 'true';
-            avatarEl.innerHTML = `<img src="${src}" alt="Artist avatar" loading="lazy" decoding="async" />`;
+            setArtistAvatarImageElement(avatarEl, src, 'Artist avatar', true);
         }
     }
 
@@ -4137,8 +3953,7 @@ function applyStoredArtistVisuals(artistId) {
                 if (libraryState.artistVisuals.backgroundApplyId !== applyId) {
                     return;
                 }
-                bgEl.style.setProperty('--hero-url', `url('${url}')`);
-                bgEl.dataset.localBackground = 'true';
+                applyArtistHeroBackgroundImage(url, true);
             };
 
             // Apply immediately so async profile refreshes do not overwrite the new image while it is loading.
@@ -4154,9 +3969,8 @@ function applyStoredArtistVisuals(artistId) {
                 const fallback = libraryState.artistVisuals.headerImageUrl
                     || selectImage(libraryState.currentSpotifyArtist?.images, 'large');
                 if (fallback) {
-                    bgEl.style.setProperty('--hero-url', `url('${fallback}')`);
+                    applyArtistHeroBackgroundImage(fallback, false);
                 }
-                delete bgEl.dataset.localBackground;
                 const hasSavedPath = !!((prefs.backgroundPath || '').toString().trim() || serverBackgroundPath);
                 if (!hasSavedPath && prefs.backgroundUrl) {
                     const nextPrefs = loadArtistVisualPrefs(artistId) || {};
@@ -6964,55 +6778,84 @@ async function applyFolderModeSelection(folder, newValue, disableConversionIfEna
     await applyFolderModeQuality(folder, newValue, disableConversionIfEnabled, hasAutoTagProfileSelection, qualityLabel);
 }
 
-function bindFolderAutoTagToggle(wrapper, folder, canToggleAutoTag) {
+function bindFolderCombinedToggle(wrapper, folder, canEnableAutoTag) {
     const enabledToggle = wrapper.querySelector('[data-folder-enabled]');
     if (!enabledToggle) {
         return;
     }
+
+    const statusText = wrapper.querySelector('[data-folder-enabled-text]');
+    const setStatusText = (enabled) => {
+        if (statusText) {
+            statusText.textContent = enabled ? 'On' : 'Off';
+        }
+    };
+
     enabledToggle.addEventListener('change', async () => {
         const enabled = enabledToggle.checked;
-        if (enabled && !canToggleAutoTag) {
-            enabledToggle.checked = false;
-            showToast('Assign an AutoTag profile before enabling AutoTag for music folders.', true);
+        const previousLibraryEnabled = isFolderEnabledFlag(folder.enabled);
+        const previousAutoTagEnabled = folder.autoTagEnabled !== false;
+        const previousCombinedEnabled = previousLibraryEnabled && previousAutoTagEnabled;
+
+        if (enabled && !canEnableAutoTag) {
+            enabledToggle.checked = previousCombinedEnabled;
+            setStatusText(previousCombinedEnabled);
+            showToast('Assign an AutoTag profile before enabling this music folder.', true);
             return;
         }
+
         enabledToggle.disabled = true;
         try {
-            const updated = await setFolderAutoTagEnabled(folder.id, enabled);
-            const persistedEnabled = typeof updated?.autoTagEnabled === 'boolean'
-                ? updated.autoTagEnabled
-                : enabled;
-            enabledToggle.checked = persistedEnabled;
-            folder.autoTagEnabled = persistedEnabled;
-            showToast(`Folder AutoTag ${persistedEnabled ? 'enabled' : 'disabled'}.`);
+            if (enabled) {
+                if (!previousLibraryEnabled) {
+                    await setFolderEnabled(folder.id, true, {
+                        reload: false,
+                        refreshArtists: false,
+                        refreshScanStatus: false
+                    });
+                }
+
+                try {
+                    const updatedAutoTag = await setFolderAutoTagEnabled(folder.id, true);
+                    folder.autoTagEnabled = typeof updatedAutoTag?.autoTagEnabled === 'boolean'
+                        ? updatedAutoTag.autoTagEnabled
+                        : true;
+                } catch (error) {
+                    if (!previousLibraryEnabled) {
+                        await setFolderEnabled(folder.id, false, {
+                            reload: false,
+                            refreshArtists: false,
+                            refreshScanStatus: false
+                        });
+                    }
+                    throw error;
+                }
+
+                folder.enabled = true;
+                showToast('Folder enabled for Library + AutoTag.');
+            } else {
+                await setFolderAutoTagEnabled(folder.id, false);
+                if (previousLibraryEnabled) {
+                    await setFolderEnabled(folder.id, false, {
+                        reload: false,
+                        refreshArtists: false,
+                        refreshScanStatus: false
+                    });
+                }
+                folder.enabled = false;
+                folder.autoTagEnabled = false;
+                showToast('Folder disabled for Library + AutoTag.');
+            }
+
+            await Promise.all([loadFolders(), loadArtists(), loadLibraryScanStatus()]);
         } catch (error) {
-            enabledToggle.checked = !enabled;
+            folder.enabled = previousLibraryEnabled;
+            folder.autoTagEnabled = previousAutoTagEnabled;
+            enabledToggle.checked = previousCombinedEnabled;
+            setStatusText(previousCombinedEnabled);
             showToast(`Failed to update folder: ${error?.message || error}`, true);
         } finally {
-            enabledToggle.disabled = !canToggleAutoTag;
-        }
-    });
-}
-
-function bindFolderLibraryToggle(wrapper, folder) {
-    const libraryToggle = wrapper.querySelector('[data-folder-library-enabled]');
-    if (!libraryToggle) {
-        return;
-    }
-
-    libraryToggle.addEventListener('change', async () => {
-        const enabled = libraryToggle.checked;
-        libraryToggle.disabled = true;
-        try {
-            await setFolderEnabled(folder.id, enabled);
-            folder.enabled = enabled;
-            showToast(`Folder ${enabled ? 'enabled for Library' : 'hidden from Library'}.`);
-            renderFolders();
-        } catch (error) {
-            libraryToggle.checked = !enabled;
-            showToast(`Failed to update folder: ${error?.message || error}`, true);
-        } finally {
-            libraryToggle.disabled = false;
+            enabledToggle.disabled = false;
         }
     });
 }
@@ -7125,8 +6968,7 @@ function buildFolderProfileColumnMarkup(profileOptionsSource, profileOptions, sh
 }
 
 function computeFolderRowViewModel(folder, context) {
-    const enabledId = `folder-enabled-${folder.id}`;
-    const libraryEnabledId = `folder-library-enabled-${folder.id}`;
+    const combinedEnabledId = `folder-enabled-${folder.id}`;
     const currentLibraryEnabled = isFolderEnabledFlag(folder.enabled);
     const currentQuality = String(folder.desiredQuality ?? '27');
     const folderIdKey = String(folder.id);
@@ -7144,12 +6986,12 @@ function computeFolderRowViewModel(folder, context) {
     const showProfileSelector = requiresProfileForAutoTag;
     const hasAssignedProfile = currentProfile.trim().length > 0;
     const canEnableAutoTag = !requiresProfileForAutoTag || hasAssignedProfile;
-    const canToggleAutoTag = currentLibraryEnabled && canEnableAutoTag;
     const currentAutoTagEnabled = folder.autoTagEnabled !== false;
-    const autoTagToggleTitle = !currentLibraryEnabled
-        ? 'Enable the library folder first.'
+    const currentCombinedEnabled = currentLibraryEnabled && currentAutoTagEnabled;
+    const combinedToggleTitle = currentCombinedEnabled
+        ? 'Disable this folder for Library indexing and AutoTag.'
         : canEnableAutoTag
-        ? 'Enable/disable AutoTag for this folder'
+        ? 'Enable this folder for Library indexing and AutoTag.'
         : 'Assign an AutoTag profile first (music folders only).';
     const convertEnabled = folder.convertEnabled === true;
     const convertFormat = convertEnabled ? normalizeFolderConvertFormatValue(folder.convertFormat) : null;
@@ -7188,16 +7030,15 @@ function computeFolderRowViewModel(folder, context) {
         showProfileSelector
     );
     return {
-        enabledId,
-        libraryEnabledId,
+        combinedEnabledId,
         currentLibraryEnabled,
         folderIdKey,
         currentProfile,
         currentSchedule,
         canEnableAutoTag,
-        canToggleAutoTag,
         currentAutoTagEnabled,
-        autoTagToggleTitle,
+        currentCombinedEnabled,
+        combinedToggleTitle,
         selectedQualityValue,
         formatSummary,
         bitrateSummary,
@@ -7265,16 +7106,10 @@ function buildFolderRowMarkup(folder, viewModel, conversionModeValue) {
                     </select>
                 </span>
                 <span>
-                    <label class="switch folder-library-toggle-label" title="Include or exclude this folder from Library indexing and Library views.">
-                        <input id="${viewModel.libraryEnabledId}" type="checkbox" ${viewModel.currentLibraryEnabled ? 'checked' : ''} data-folder-library-enabled />
+                    <label class="switch folder-library-toggle-label" title="${escapeHtml(viewModel.combinedToggleTitle)}">
+                        <input id="${viewModel.combinedEnabledId}" type="checkbox" ${viewModel.currentCombinedEnabled ? 'checked' : ''} data-folder-enabled />
                         <span class="slider"></span>
-                        <span class="folder-library-toggle-text">${viewModel.currentLibraryEnabled ? 'On' : 'Off'}</span>
-                    </label>
-                </span>
-                <span>
-                    <label class="switch" title="${escapeHtml(viewModel.autoTagToggleTitle)}">
-                        <input id="${viewModel.enabledId}" type="checkbox" ${viewModel.currentAutoTagEnabled ? 'checked' : ''} ${viewModel.canToggleAutoTag ? '' : 'disabled'} data-folder-enabled />
-                        <span class="slider"></span>
+                        <span class="folder-library-toggle-text" data-folder-enabled-text>${viewModel.currentCombinedEnabled ? 'On' : 'Off'}</span>
                     </label>
                 </span>
                 <span class="actions">
@@ -7460,13 +7295,12 @@ function renderFolders() {
         const selectedQualityValue = viewModel.selectedQualityValue;
         wrapper.innerHTML = buildFolderRowMarkup(folder, viewModel, conversionModeValue);
 
-        bindFolderLibraryToggle(wrapper, folder);
+        bindFolderCombinedToggle(wrapper, folder, viewModel.canEnableAutoTag);
         const aliasContainer = wrapper.querySelector('.alias-container');
         const enhanceButton = wrapper.querySelector('[data-enhance]');
         wrapper.querySelector('[data-edit]').addEventListener('click', () => updateFolder(folder.id));
         wrapper.querySelector('[data-delete]').addEventListener('click', () => deleteFolder(folder.id));
         wrapper.querySelector('[data-aliases]').addEventListener('click', () => toggleAliases(folder.id, aliasContainer));
-        bindFolderAutoTagToggle(wrapper, folder, viewModel.canToggleAutoTag);
 
         const qualityDropdown = wrapper.querySelector('[data-folder-quality-dropdown]');
         const qualityPanelEl = wrapper.querySelector('[data-folder-quality-panel]');
@@ -7888,11 +7722,15 @@ async function setFolderAutoTagProfile(id, profileId) {
     return updated;
 }
 
-async function setFolderEnabled(id, enabled) {
+async function setFolderEnabled(id, enabled, options = {}) {
     const folder = libraryState.folders.find(item => item.id === id);
     if (!folder) {
         throw new Error('Folder not found.');
     }
+
+    const shouldReload = options.reload !== false;
+    const shouldRefreshArtists = options.refreshArtists !== false;
+    const shouldRefreshScanStatus = options.refreshScanStatus !== false;
 
     await fetchJson(`/api/library/folders/${id}`, {
         method: 'PATCH',
@@ -7908,7 +7746,19 @@ async function setFolderEnabled(id, enabled) {
             convertBitrate: folder.convertBitrate ?? null
         })
     });
-    await Promise.all([loadFolders(), loadArtists(), loadLibraryScanStatus()]);
+    const refreshTasks = [];
+    if (shouldReload) {
+        refreshTasks.push(loadFolders());
+    }
+    if (shouldRefreshArtists) {
+        refreshTasks.push(loadArtists());
+    }
+    if (shouldRefreshScanStatus) {
+        refreshTasks.push(loadLibraryScanStatus());
+    }
+    if (refreshTasks.length > 0) {
+        await Promise.all(refreshTasks);
+    }
 }
 
 async function setFolderDesiredQuality(id, desiredQuality) {
@@ -10774,7 +10624,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         await initWatchlistToggle();
         await initSpotifyIdEditor();
-        initArtistActionsDropdown();
+        if (targets.shouldLoadArtistAlbums && typeof initArtistActionsDropdown === 'function') {
+            initArtistActionsDropdown();
+        }
         initDiscographyFilters();
 
         bindLibraryFilterEvents(targets.viewSelect, targets.searchInput, targets.sortSelect);

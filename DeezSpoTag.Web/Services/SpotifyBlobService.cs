@@ -671,8 +671,9 @@ public sealed class SpotifyBlobService
         }
 
         var json = JsonSerializer.Serialize(payload, _jsonOptions);
-        await File.WriteAllTextAsync(blobPath, json, cancellationToken);
-        _logger.LogInformation("Saved Spotify web player blob at BlobPath with CookieCount cookies.");
+        await WriteTextAtomicallyAsync(blobPath, json, cancellationToken);
+        _logger.LogInformation("Saved Spotify web player blob at {BlobPath} with {CookieCount} cookies.",
+            blobPath, payload.Cookies.Count);
 
         return new SpotifyBlobResult
         {
@@ -742,7 +743,7 @@ public sealed class SpotifyBlobService
         };
 
         var json = JsonSerializer.Serialize(payload, _jsonOptions);
-        await File.WriteAllTextAsync(blobPath, json, cancellationToken);
+        await WriteTextAtomicallyAsync(blobPath, json, cancellationToken);
         _logger.LogInformation("Saved Spotify web player blob at {BlobPath} with {CookieCount} cookies.",
             blobPath, payload.Cookies.Count);
 
@@ -751,6 +752,37 @@ public sealed class SpotifyBlobService
             BlobPath = blobPath,
             CreatedAt = payload.CreatedAt
         };
+    }
+
+    private async Task WriteTextAtomicallyAsync(string targetPath, string content, CancellationToken cancellationToken)
+    {
+        var directory = Path.GetDirectoryName(targetPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            throw new InvalidOperationException("Unable to resolve target directory for atomic write.");
+        }
+
+        Directory.CreateDirectory(directory);
+        var tempPath = $"{targetPath}.tmp-{Guid.NewGuid():N}";
+        try
+        {
+            await File.WriteAllTextAsync(tempPath, content, cancellationToken);
+            File.Move(tempPath, targetPath, overwrite: true);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Failed to clean up temporary Spotify web-player blob file {Path}", tempPath);
+            }
+        }
     }
 
     public async Task<SpotifyWebPlayerTokenCheck> TestWebPlayerAccessTokenFromCookiesAsync(

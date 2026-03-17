@@ -1,462 +1,853 @@
 #!/usr/bin/env python3
 """
-Vibe Analyzer - Essentia-based audio analysis for mood, genre, and audio features.
+Vibe Analyzer CLI - lidify parity implementation.
 
-Supports models from essentia.upf.edu/models.html:
-- MSD-MusiCNN for embeddings + mood/vibe classification heads
-- Discogs-EffNet for embeddings + approachability/engagement/genre heads
-- DEAM arousal/valence (MusiCNN-based)
+This script ports lidify's Essentia analysis logic (standard + enhanced ML)
+while preserving DeezSpoTag's CLI contract:
+- --probe
+- --file + --models
+- JSON payload with PascalCase fields consumed by .NET.
 """
+
 import argparse
 import json
 import os
 import sys
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, TimeoutError, as_completed
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    # Keep TensorFlow/Essentia noise down in CPU-only Docker environments.
-    # (Not fatal if a GPU isn't present; we just want less log spam.)
-    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
-    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
-
-    import essentia.standard as es
-except Exception as exc:
-    sys.stderr.write(f"essentia import failed: {exc}\n")
-    sys.stdout.write(
-        json.dumps(
-            {
-                "ok": False,
-                "retryable": False,
-                "errorCode": "ESSENTIA_IMPORT_FAILED",
-                "message": str(exc),
-            }
-        )
-    )
-    sys.exit(0)
+    multiprocessing.set_start_method("spawn", force=True)
+except RuntimeError:
+    pass
 
 
+# Essentia imports (graceful fallback)
+ESSENTIA_AVAILABLE = False
+es = None
+try:
+    import essentia  # type: ignore
+    essentia.log.warningActive = False
+    essentia.log.infoActive = False
+    import essentia.standard as es  # type: ignore
+    ESSENTIA_AVAILABLE = True
+except ImportError:
+    pass
+
+# Numpy import (graceful fallback for probe path)
+np = None
+try:
+    import numpy as np  # type: ignore
+except ImportError:
+    np = None
+
+
+# Required/optional algorithms (probe + runtime)
 def _required(name: str):
-    value = getattr(es, name, None)
-    if value is None:
+    algo = getattr(es, name, None) if es is not None else None
+    if algo is None:
         raise RuntimeError(f"essentia missing required algorithm: {name}")
-    return value
+    return algo
 
 
 def _optional(name: str):
-    return getattr(es, name, None)
+    return getattr(es, name, None) if es is not None else None
 
 
-def probe_capabilities():
+def probe_capabilities() -> Tuple[List[str], List[str]]:
     required = [
         "MonoLoader",
         "TensorflowPredictMusiCNN",
         "TensorflowPredict2D",
+        "RhythmExtractor2013",
+        "KeyExtractor",
+        "Loudness",
+        "DynamicComplexity",
+        "Danceability",
+        "Windowing",
+        "Spectrum",
+        "RMS",
+        "Centroid",
+        "FlatnessDB",
+        "ZeroCrossingRate",
     ]
     optional = [
         "TensorflowPredictEffnetDiscogs",
-        "TensorflowPredictVGGish",
-        "RhythmExtractor2013",
-        "KeyExtractor",
-        "Danceability",
-        "Loudness",
-        "DynamicComplexity",
     ]
 
-    missing_required = [name for name in required if getattr(es, name, None) is None]
-    missing_optional = [name for name in optional if getattr(es, name, None) is None]
+    missing_required = [name for name in required if (es is None or getattr(es, name, None) is None)]
+    missing_optional = [name for name in optional if (es is None or getattr(es, name, None) is None)]
+    if np is None:
+        missing_required.append("numpy")
+
     return missing_required, missing_optional
 
 
-MonoLoader = _required("MonoLoader")
-TensorflowPredictMusiCNN = _required("TensorflowPredictMusiCNN")
-TensorflowPredict2D = _required("TensorflowPredict2D")
+if ESSENTIA_AVAILABLE and np is not None:
+    MonoLoader = _required("MonoLoader")
+    TensorflowPredictMusiCNN = _required("TensorflowPredictMusiCNN")
+    TensorflowPredict2D = _required("TensorflowPredict2D")
 
-TensorflowPredictEffnetDiscogs = _optional("TensorflowPredictEffnetDiscogs")
-TensorflowPredictVGGish = _optional("TensorflowPredictVGGish")
-RhythmExtractor2013 = _optional("RhythmExtractor2013")
-KeyExtractor = _optional("KeyExtractor")
-EssentiaDanceability = _optional("Danceability")
-Loudness = _optional("Loudness")
-DynamicComplexity = _optional("DynamicComplexity")
+    RhythmExtractor2013 = _required("RhythmExtractor2013")
+    KeyExtractor = _required("KeyExtractor")
+    Loudness = _required("Loudness")
+    DynamicComplexity = _required("DynamicComplexity")
+    EssentiaDanceability = _required("Danceability")
+
+    Windowing = _required("Windowing")
+    Spectrum = _required("Spectrum")
+    RMS = _required("RMS")
+    Centroid = _required("Centroid")
+    FlatnessDB = _required("FlatnessDB")
+    ZeroCrossingRate = _required("ZeroCrossingRate")
+
+    TensorflowPredictEffnetDiscogs = _optional("TensorflowPredictEffnetDiscogs")
+else:
+    MonoLoader = None
+    TensorflowPredictMusiCNN = None
+    TensorflowPredict2D = None
+    RhythmExtractor2013 = None
+    KeyExtractor = None
+    Loudness = None
+    DynamicComplexity = None
+    EssentiaDanceability = None
+    Windowing = None
+    Spectrum = None
+    RMS = None
+    Centroid = None
+    FlatnessDB = None
+    ZeroCrossingRate = None
+    TensorflowPredictEffnetDiscogs = None
 
 
-def load_audio(path):
-    loader = MonoLoader(filename=path, sampleRate=16000)
-    return loader()
+class AudioAnalyzer:
+    """Lidify audio analysis core (ported)."""
 
+    def __init__(self, models_dir: str):
+        self.models_dir = models_dir
+        self.enhanced_mode = False
+        self.musicnn_model = None
+        self.prediction_models: Dict[str, Any] = {}
+        self.effnet_extractor = None
+        self.genre_predictor = None
+        self.genre_labels: List[str] = []
 
-def load_genre_labels(models_dir):
-    """Load Discogs genre labels from metadata JSON if available."""
-    import json as _json
-    meta_path = os.path.join(models_dir, "genre_discogs400-discogs-effnet-1.json")
-    if os.path.exists(meta_path):
+        self.rhythm_extractor = None
+        self.key_extractor = None
+        self.loudness = None
+        self.dynamic_complexity = None
+        self.danceability_extractor = None
+        self.spectral_centroid = None
+        self.spectral_flatness = None
+        self.zcr = None
+        self.rms = None
+        self.spectrum = None
+        self.windowing = None
+
+        if ESSENTIA_AVAILABLE and np is not None:
+            self._init_essentia()
+            self._load_ml_models()
+
+    def _init_essentia(self):
+        self.rhythm_extractor = RhythmExtractor2013(method="multifeature")
+        self.key_extractor = KeyExtractor()
+        self.loudness = Loudness()
+        self.dynamic_complexity = DynamicComplexity()
+        self.danceability_extractor = EssentiaDanceability()
+        self.spectral_centroid = Centroid(range=22050)
+        self.spectral_flatness = FlatnessDB()
+        self.zcr = ZeroCrossingRate()
+        self.rms = RMS()
+        self.spectrum = Spectrum()
+        self.windowing = Windowing(type="hann")
+
+    def _model_path(self, file_name: str) -> str:
+        return os.path.join(self.models_dir, file_name)
+
+    def _load_genre_labels(self) -> List[str]:
+        meta_path = self._model_path("genre_discogs400-discogs-effnet-1.json")
+        if not os.path.exists(meta_path):
+            return []
+
         try:
-            with open(meta_path) as f:
-                meta = _json.load(f)
-            return meta.get("classes") or []
+            with open(meta_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            labels = payload.get("classes") if isinstance(payload, dict) else None
+            if not isinstance(labels, list):
+                return []
+            return [str(label) for label in labels if isinstance(label, str) and label.strip()]
         except Exception:
-            pass
-    return []
+            return []
 
+    def _extract_essentia_genres(self, audio_16k) -> List[str]:
+        if self.effnet_extractor is None or self.genre_predictor is None or np is None:
+            return []
 
-def load_models(models_dir):
-    """Load all available Essentia models from the models directory."""
-    def resolve_model_path(*candidates):
-        for candidate in candidates:
-            candidate_path = os.path.join(models_dir, candidate)
-            if os.path.exists(candidate_path):
-                return candidate_path
-        return None
-
-    # Base MusiCNN embedding model (optional for standard fallback mode)
-    base_model = resolve_model_path("msd-musicnn-1.pb")
-    musicnn = None
-    if base_model is not None:
-        musicnn = TensorflowPredictMusiCNN(graphFilename=base_model, output="model/dense/BiasAdd")
-    else:
-        sys.stderr.write("Warning: Missing base MusiCNN model; standard mode will be used.\n")
-
-    # Discogs-EffNet embedding extractor (optional, needed for approachability/engagement/genre)
-    effnet_model = os.path.join(models_dir, "discogs-effnet-bs64-1.pb")
-    effnet_extractor = None
-    if TensorflowPredictEffnetDiscogs is not None and os.path.exists(effnet_model):
-        effnet_extractor = TensorflowPredictEffnetDiscogs(
-            graphFilename=effnet_model, output="PartitionedCall:1"
-        )
-
-    # Genre model (optional, uses EffNet embeddings)
-    genre_model = os.path.join(models_dir, "genre_discogs400-discogs-effnet-1.pb")
-    genre_predictor = None
-    if effnet_extractor is not None and os.path.exists(genre_model):
-        genre_predictor = TensorflowPredict2D(
-            graphFilename=genre_model,
-            input="serving_default_model_Placeholder",
-            output="PartitionedCall"
-        )
-
-    # Mood classification heads (MusiCNN-based)
-    mood_heads = {
-        "happy": "mood_happy-msd-musicnn-1.pb",
-        "sad": "mood_sad-msd-musicnn-1.pb",
-        "relaxed": "mood_relaxed-msd-musicnn-1.pb",
-        "aggressive": "mood_aggressive-msd-musicnn-1.pb",
-        "party": "mood_party-msd-musicnn-1.pb",
-        "acoustic": "mood_acoustic-msd-musicnn-1.pb",
-        "electronic": "mood_electronic-msd-musicnn-1.pb",
-    }
-
-    # Vibe analysis heads (MusiCNN-based)
-    vibe_heads = {
-        "voice_instrumental": "voice_instrumental-msd-musicnn-1.pb",
-        "danceability": "danceability-msd-musicnn-1.pb",
-        "tonal_atonal": "tonal_atonal-msd-musicnn-1.pb",
-    }
-
-    # DEAM arousal/valence model (combined output, MusiCNN-based)
-    deam_model_path = resolve_model_path("deam-msd-musicnn-2.pb", "deam-msd-musicnn-1.pb")
-    deam_predictor = None
-    if deam_model_path is not None:
-        deam_predictor = TensorflowPredict2D(graphFilename=deam_model_path, output="model/Identity")
-
-    # Approachability/Engagement (EffNet-based, optional)
-    effnet_vibe_heads = {}
-    if effnet_extractor is not None:
-        for key, filename in {
-            "approachability": "approachability_regression-discogs-effnet-1.pb",
-            "engagement": "engagement_regression-discogs-effnet-1.pb",
-        }.items():
-            model_path = os.path.join(models_dir, filename)
-            if os.path.exists(model_path):
-                effnet_vibe_heads[key] = TensorflowPredict2D(
-                    graphFilename=model_path, output="model/Identity"
-                )
-
-    # Load mood predictors
-    mood_predictors = {}
-    for key, filename in mood_heads.items():
-        model_path = resolve_model_path(
-            filename,
-            filename.replace("-msd-musicnn-1.pb", "-discogs-effnet-1.pb"),
-        )
-        if musicnn is not None and model_path is not None:
-            try:
-                mood_predictors[key] = TensorflowPredict2D(graphFilename=model_path, output="model/Softmax")
-            except Exception as e:
-                sys.stderr.write(f"Warning: Failed to load mood model for {key}: {e}\n")
-        else:
-            sys.stderr.write(f"Warning: Missing mood model {filename}\n")
-
-    # Load vibe predictors (optional, MusiCNN-based)
-    vibe_predictors = {}
-    for key, filename in vibe_heads.items():
-        model_path = resolve_model_path(
-            filename,
-            filename.replace("-msd-musicnn-1.pb", "-discogs-effnet-1.pb"),
-        )
-        if musicnn is not None and model_path is not None:
-            try:
-                vibe_predictors[key] = TensorflowPredict2D(graphFilename=model_path, output="model/Softmax")
-            except Exception as e:
-                sys.stderr.write(f"Warning: Failed to load vibe model for {key}: {e}\n")
-
-    core_moods = {"happy", "sad", "relaxed", "aggressive"}
-    enhanced_ready = core_moods.issubset(set(mood_predictors.keys()))
-    genre_labels = load_genre_labels(models_dir)
-    return musicnn, mood_predictors, vibe_predictors, genre_predictor, effnet_extractor, effnet_vibe_heads, deam_predictor, genre_labels, enhanced_ready
-
-
-def _avg_frames(arr):
-    """Average a (frames, classes) or (classes,) array to a 1-D numpy array."""
-    import numpy as np
-    arr = np.array(arr)
-    if arr.ndim == 2:
-        return arr.mean(axis=0)
-    return arr
-
-
-def predict_scores(audio, musicnn, mood_predictors, vibe_predictors, genre_predictor,
-                   effnet_extractor, effnet_vibe_heads, deam_predictor, genre_labels=None):
-    """Run predictions using all loaded models."""
-    import numpy as np
-
-    embeddings = None
-    if musicnn is not None and (len(mood_predictors) > 0 or len(vibe_predictors) > 0 or deam_predictor is not None):
         try:
-            embeddings = musicnn(audio)
-        except Exception as e:
-            sys.stderr.write(f"Warning: Failed to compute MusiCNN embeddings: {e}\n")
+            effnet_embeddings = self.effnet_extractor(audio_16k)
+            scores = np.array(self.genre_predictor(effnet_embeddings))
+            average_scores = scores.mean(axis=0) if scores.ndim == 2 else scores.reshape(-1)
+            if average_scores.size == 0:
+                return []
 
-    # Mood scores (MusiCNN-based binary classifiers: index 1 = positive class)
-    mood_scores = {}
-    if embeddings is not None:
-        for key, predictor in mood_predictors.items():
-            try:
-                avg = _avg_frames(predictor(embeddings))
-                score = float(avg[1]) if len(avg) > 1 else float(avg[0])
-                mood_scores[key] = max(0.0, min(1.0, score))
-            except Exception as e:
-                sys.stderr.write(f"Warning: Failed to predict {key}: {e}\n")
-                mood_scores[key] = None
+            top_indices = np.argsort(average_scores)[::-1][:8]
+            genres: List[str] = []
+            for index in top_indices:
+                if float(average_scores[index]) < 0.15:
+                    continue
+                if self.genre_labels and index < len(self.genre_labels):
+                    genres.append(self.genre_labels[index])
+                else:
+                    genres.append(f"genre_{index}")
 
-    # Vibe scores (MusiCNN-based)
-    vibe_scores = {}
-    if embeddings is not None:
-        for key, predictor in vibe_predictors.items():
-            try:
-                avg = _avg_frames(predictor(embeddings))
-                # Binary classifiers (voice_instrumental, tonal_atonal, danceability): index 1 = positive
-                score = float(avg[1]) if len(avg) > 1 else float(avg[0])
-                vibe_scores[key] = max(0.0, min(1.0, score))
-            except Exception as e:
-                sys.stderr.write(f"Warning: Failed to predict {key}: {e}\n")
-                vibe_scores[key] = None
+            return genres
+        except Exception:
+            return []
 
-    # DEAM arousal/valence (combined 2-value output per frame)
-    if deam_predictor is not None and embeddings is not None:
+    def _load_ml_models(self):
+        if TensorflowPredictMusiCNN is None or TensorflowPredict2D is None:
+            self.enhanced_mode = False
+            return
+
         try:
-            avg = _avg_frames(deam_predictor(embeddings))
-            if len(avg) >= 2:
-                vibe_scores["valence"] = max(0.0, min(1.0, float(avg[0])))
-                vibe_scores["arousal"] = max(0.0, min(1.0, float(avg[1])))
-            elif len(avg) == 1:
-                vibe_scores["valence"] = max(0.0, min(1.0, float(avg[0])))
-        except Exception as e:
-            sys.stderr.write(f"Warning: Failed to predict DEAM arousal/valence: {e}\n")
+            base_model = self._model_path("msd-musicnn-1.pb")
+            if not os.path.exists(base_model):
+                self.enhanced_mode = False
+                return
 
-    # EffNet-based predictions (approachability, engagement) — regression, single value
-    if effnet_extractor is not None and len(effnet_vibe_heads) > 0:
-        try:
-            effnet_embeddings = effnet_extractor(audio)
-            for key, predictor in effnet_vibe_heads.items():
+            self.musicnn_model = TensorflowPredictMusiCNN(
+                graphFilename=base_model,
+                output="model/dense/BiasAdd",
+            )
+
+            heads_to_load = {
+                "mood_happy": "mood_happy-msd-musicnn-1.pb",
+                "mood_sad": "mood_sad-msd-musicnn-1.pb",
+                "mood_relaxed": "mood_relaxed-msd-musicnn-1.pb",
+                "mood_aggressive": "mood_aggressive-msd-musicnn-1.pb",
+                "mood_party": "mood_party-msd-musicnn-1.pb",
+                "mood_acoustic": "mood_acoustic-msd-musicnn-1.pb",
+                "mood_electronic": "mood_electronic-msd-musicnn-1.pb",
+                "danceability": "danceability-msd-musicnn-1.pb",
+                "voice_instrumental": "voice_instrumental-msd-musicnn-1.pb",
+            }
+
+            for model_name, file_name in heads_to_load.items():
+                model_path = self._model_path(file_name)
+                if not os.path.exists(model_path):
+                    continue
                 try:
-                    avg = _avg_frames(predictor(effnet_embeddings))
-                    score = float(avg[0])
-                    vibe_scores[key] = max(0.0, min(1.0, score))
-                except Exception as e:
-                    sys.stderr.write(f"Warning: Failed to predict {key}: {e}\n")
-        except Exception as e:
-            sys.stderr.write(f"Warning: Failed to compute EffNet embeddings: {e}\n")
+                    self.prediction_models[model_name] = TensorflowPredict2D(
+                        graphFilename=model_path,
+                        output="model/Softmax",
+                    )
+                except Exception:
+                    pass
 
-    # Genre classification (EffNet-based)
-    genres = []
-    if genre_predictor is not None and effnet_extractor is not None:
+            required = ["mood_happy", "mood_sad", "mood_relaxed", "mood_aggressive"]
+            self.enhanced_mode = all(key in self.prediction_models for key in required)
+
+            if TensorflowPredictEffnetDiscogs is not None:
+                effnet_model_path = self._model_path("discogs-effnet-bs64-1.pb")
+                genre_model_path = self._model_path("genre_discogs400-discogs-effnet-1.pb")
+                if os.path.exists(effnet_model_path):
+                    try:
+                        self.effnet_extractor = TensorflowPredictEffnetDiscogs(
+                            graphFilename=effnet_model_path,
+                            output="PartitionedCall:1",
+                        )
+                    except Exception:
+                        self.effnet_extractor = None
+
+                if self.effnet_extractor is not None and os.path.exists(genre_model_path):
+                    try:
+                        self.genre_predictor = TensorflowPredict2D(
+                            graphFilename=genre_model_path,
+                            input="serving_default_model_Placeholder",
+                            output="PartitionedCall",
+                        )
+                    except Exception:
+                        self.genre_predictor = None
+
+                if self.genre_predictor is not None:
+                    self.genre_labels = self._load_genre_labels()
+        except Exception:
+            self.enhanced_mode = False
+
+    def load_audio(self, file_path: str, sample_rate: int) -> Optional[Any]:
+        if MonoLoader is None:
+            return None
         try:
-            effnet_embeddings = effnet_extractor(audio)
-            avg_scores = _avg_frames(genre_predictor(effnet_embeddings))
-            top_indices = np.argsort(avg_scores)[::-1][:8]
-            for i in top_indices:
-                if avg_scores[i] >= 0.15:
-                    if genre_labels and i < len(genre_labels):
-                        genres.append(genre_labels[i])
+            loader = MonoLoader(filename=file_path, sampleRate=sample_rate)
+            return loader()
+        except Exception:
+            return None
+
+    def analyze(self, file_path: str) -> Dict[str, Any]:
+        result: Dict[str, Any] = {
+            "bpm": None,
+            "beatsCount": None,
+            "key": None,
+            "keyScale": None,
+            "keyStrength": None,
+            "energy": None,
+            "loudness": None,
+            "dynamicRange": None,
+            "danceability": None,
+            "valence": None,
+            "arousal": None,
+            "instrumentalness": None,
+            "acousticness": None,
+            "speechiness": None,
+            "moodTags": [],
+            "essentiaGenres": [],
+            "moodHappy": None,
+            "moodSad": None,
+            "moodRelaxed": None,
+            "moodAggressive": None,
+            "moodParty": None,
+            "moodAcoustic": None,
+            "moodElectronic": None,
+            "danceabilityMl": None,
+            "analysisMode": "standard",
+        }
+
+        if not ESSENTIA_AVAILABLE or np is None:
+            result["_error"] = "Essentia library not installed"
+            return result
+
+        audio_44k = self.load_audio(file_path, 44100)
+        audio_16k = self.load_audio(file_path, 16000)
+        if audio_44k is None or audio_16k is None:
+            result["_error"] = "Unable to decode audio"
+            return result
+
+        try:
+            bpm, beats, _, _, _ = self.rhythm_extractor(audio_44k)
+            result["bpm"] = round(float(bpm), 1)
+            result["beatsCount"] = int(len(beats)) if beats is not None else None
+
+            key, scale, strength = self.key_extractor(audio_44k)
+            result["key"] = key
+            result["keyScale"] = scale
+            result["keyStrength"] = round(float(strength), 3)
+
+            rms_values: List[float] = []
+            zcr_values: List[float] = []
+            spectral_centroid_values: List[float] = []
+            spectral_flatness_values: List[float] = []
+
+            frame_size = 2048
+            hop_size = 1024
+            for i in range(0, len(audio_44k) - frame_size, hop_size):
+                frame = audio_44k[i:i + frame_size]
+                windowed = self.windowing(frame)
+                spectrum = self.spectrum(windowed)
+
+                rms_values.append(float(self.rms(frame)))
+                zcr_values.append(float(self.zcr(frame)))
+                spectral_centroid_values.append(float(self.spectral_centroid(spectrum)))
+                spectral_flatness_values.append(float(self.spectral_flatness(spectrum)))
+
+            if rms_values:
+                avg_rms = float(np.mean(rms_values))
+                result["energy"] = round(min(1.0, avg_rms * 3), 3)
+            else:
+                result["energy"] = 0.5
+
+            result["loudness"] = round(float(self.loudness(audio_44k)), 2)
+            dynamic_range, _ = self.dynamic_complexity(audio_44k)
+            result["dynamicRange"] = round(float(dynamic_range), 2)
+
+            result["_spectral_centroid"] = float(np.mean(spectral_centroid_values)) if spectral_centroid_values else 0.5
+            result["_spectral_flatness"] = float(np.mean(spectral_flatness_values)) if spectral_flatness_values else -20.0
+            result["_zcr"] = float(np.mean(zcr_values)) if zcr_values else 0.1
+
+            danceability, _ = self.danceability_extractor(audio_44k)
+            result["danceability"] = round(max(0.0, min(1.0, float(danceability))), 3)
+
+            if self.enhanced_mode:
+                try:
+                    ml_features = self._extract_ml_features(audio_16k)
+                    result.update(ml_features)
+                    result["analysisMode"] = "enhanced"
+                except Exception:
+                    self._apply_standard_estimates(result, scale, bpm)
+            else:
+                self._apply_standard_estimates(result, scale, bpm)
+
+            result["essentiaGenres"] = self._extract_essentia_genres(audio_16k)
+            result["moodTags"] = self._generate_mood_tags(result)
+        except Exception as exc:
+            result["_error"] = str(exc)
+
+        for field in ["_spectral_centroid", "_spectral_flatness", "_zcr"]:
+            result.pop(field, None)
+
+        return result
+
+    def _safe_predict(self, model, embeddings, model_name: str) -> Tuple[float, float]:
+        try:
+            preds = np.array(model(embeddings))
+            if preds.ndim == 2 and preds.shape[1] > 1:
+                positive_probs = preds[:, 1]
+            else:
+                positive_probs = preds.reshape(-1)
+            raw_value = float(np.mean(positive_probs))
+            variance = float(np.var(positive_probs))
+            return (round(max(0.0, min(1.0, raw_value)), 3), round(variance, 4))
+        except Exception:
+            return (0.5, 0.0)
+
+    def _extract_ml_features(self, audio_16k) -> Dict[str, Any]:
+        if self.musicnn_model is None:
+            raise RuntimeError("MusiCNN model not loaded")
+
+        result: Dict[str, Any] = {}
+        embeddings = self.musicnn_model(audio_16k)
+
+        raw_moods: Dict[str, Tuple[float, float]] = {}
+
+        mood_map = {
+            "mood_happy": "moodHappy",
+            "mood_sad": "moodSad",
+            "mood_relaxed": "moodRelaxed",
+            "mood_aggressive": "moodAggressive",
+            "mood_party": "moodParty",
+            "mood_acoustic": "moodAcoustic",
+            "mood_electronic": "moodElectronic",
+        }
+
+        for model_key, output_key in mood_map.items():
+            predictor = self.prediction_models.get(model_key)
+            if predictor is None:
+                continue
+            raw_moods[output_key] = self._safe_predict(predictor, embeddings, model_key)
+
+        core_moods = ["moodHappy", "moodSad", "moodRelaxed", "moodAggressive"]
+        core_values = [raw_moods[m][0] for m in core_moods if m in raw_moods]
+        if len(core_values) >= 4:
+            min_mood = min(core_values)
+            max_mood = max(core_values)
+            if min_mood > 0.7 and (max_mood - min_mood) < 0.3:
+                for mood_key in core_moods:
+                    if mood_key not in raw_moods:
+                        continue
+                    old_val, var = raw_moods[mood_key]
+                    if max_mood > min_mood:
+                        normalized = 0.2 + (old_val - min_mood) / (max_mood - min_mood) * 0.6
                     else:
-                        genres.append(f"genre_{i}")
-        except Exception as e:
-            sys.stderr.write(f"Warning: Failed to predict genres: {e}\n")
+                        normalized = 0.5
+                    raw_moods[mood_key] = (round(normalized, 3), var)
 
-    return mood_scores, vibe_scores, genres
+        for mood_key, (value, _) in raw_moods.items():
+            result[mood_key] = value
+
+        happy = result.get("moodHappy", 0.5)
+        sad = result.get("moodSad", 0.5)
+        party = result.get("moodParty", 0.5)
+        result["valence"] = round(max(0.0, min(1.0, happy * 0.5 + party * 0.3 + (1 - sad) * 0.2)), 3)
+
+        aggressive = result.get("moodAggressive", 0.5)
+        relaxed = result.get("moodRelaxed", 0.5)
+        acoustic = result.get("moodAcoustic", 0.5)
+        electronic = result.get("moodElectronic", 0.5)
+        result["arousal"] = round(
+            max(0.0, min(1.0, aggressive * 0.35 + party * 0.25 + electronic * 0.2 + (1 - relaxed) * 0.1 + (1 - acoustic) * 0.1)),
+            3,
+        )
+
+        voice_model = self.prediction_models.get("voice_instrumental")
+        if voice_model is not None:
+            voice_val, _ = self._safe_predict(voice_model, embeddings, "voice_instrumental")
+            result["instrumentalness"] = voice_val
+
+        if "moodAcoustic" in result:
+            result["acousticness"] = result["moodAcoustic"]
+
+        dance_model = self.prediction_models.get("danceability")
+        if dance_model is not None:
+            dance_val, _ = self._safe_predict(dance_model, embeddings, "danceability")
+            result["danceabilityMl"] = dance_val
+
+        return result
+
+    def _apply_standard_estimates(self, result: Dict[str, Any], scale: str, bpm: float):
+        result["analysisMode"] = "standard"
+
+        energy = result.get("energy", 0.5) or 0.5
+        dynamic_range = result.get("dynamicRange", 8) or 8
+        danceability = result.get("danceability", 0.5) or 0.5
+        spectral_centroid = result.get("_spectral_centroid", 0.5) or 0.5
+        spectral_flatness = result.get("_spectral_flatness", -20) or -20
+        zcr = result.get("_zcr", 0.1) or 0.1
+
+        key_valence = 0.65 if scale == "major" else 0.35
+
+        bpm_valence = 0.5
+        if bpm:
+            if bpm >= 120:
+                bpm_valence = min(0.8, 0.5 + (bpm - 120) / 200)
+            elif bpm <= 80:
+                bpm_valence = max(0.2, 0.5 - (80 - bpm) / 100)
+
+        brightness_valence = min(1.0, spectral_centroid * 1.5)
+        result["valence"] = round(
+            key_valence * 0.4 + bpm_valence * 0.25 + brightness_valence * 0.2 + energy * 0.15,
+            3,
+        )
+
+        bpm_arousal = 0.5
+        if bpm:
+            bpm_arousal = min(0.9, max(0.1, (bpm - 60) / 140))
+
+        energy_arousal = energy
+        compression_arousal = max(0, min(1.0, 1 - (dynamic_range / 20)))
+        brightness_arousal = min(1.0, spectral_centroid * 1.2)
+
+        result["arousal"] = round(
+            bpm_arousal * 0.35 + energy_arousal * 0.35 + brightness_arousal * 0.15 + compression_arousal * 0.15,
+            3,
+        )
+
+        flatness_normalized = min(1.0, max(0, (spectral_flatness + 40) / 40))
+        if zcr < 0.05:
+            zcr_instrumental = 0.7
+        elif zcr > 0.15:
+            zcr_instrumental = 0.4
+        else:
+            zcr_instrumental = 0.5
+
+        result["instrumentalness"] = round(flatness_normalized * 0.6 + zcr_instrumental * 0.4, 3)
+        result["acousticness"] = round(min(1.0, dynamic_range / 12), 3)
+
+        if 0.08 < zcr < 0.2 and 0.1 < spectral_centroid < 0.4:
+            result["speechiness"] = round(min(0.5, zcr * 3), 3)
+        else:
+            result["speechiness"] = 0.1
+
+        result["danceabilityMl"] = danceability
+
+    def _generate_mood_tags(self, features: Dict[str, Any]) -> List[str]:
+        tags: List[str] = []
+
+        bpm = features.get("bpm", 0) or 0
+        valence = features.get("valence", 0.5) or 0.5
+        arousal = features.get("arousal", 0.5) or 0.5
+        danceability = features.get("danceability", 0.5) or 0.5
+        key_scale = features.get("keyScale", "")
+
+        mood_happy = features.get("moodHappy")
+        mood_sad = features.get("moodSad")
+        mood_relaxed = features.get("moodRelaxed")
+        mood_aggressive = features.get("moodAggressive")
+
+        if mood_happy is not None and mood_happy >= 0.6:
+            tags.extend(["happy", "uplifting"])
+        if mood_sad is not None and mood_sad >= 0.6:
+            tags.extend(["sad", "melancholic"])
+        if mood_relaxed is not None and mood_relaxed >= 0.6:
+            tags.extend(["relaxed", "chill"])
+        if mood_aggressive is not None and mood_aggressive >= 0.6:
+            tags.extend(["aggressive", "intense"])
+
+        if arousal >= 0.7:
+            tags.extend(["energetic", "upbeat"])
+        elif arousal <= 0.3:
+            tags.extend(["calm", "peaceful"])
+
+        if "happy" not in tags and "sad" not in tags:
+            if valence >= 0.7:
+                tags.extend(["happy", "uplifting"])
+            elif valence <= 0.3:
+                tags.extend(["sad", "melancholic"])
+
+        if danceability >= 0.7:
+            tags.extend(["dance", "groovy"])
+
+        if bpm >= 140:
+            tags.append("fast")
+        elif bpm <= 80:
+            tags.append("slow")
+
+        if key_scale == "minor" and "happy" not in tags:
+            tags.append("moody")
+
+        if arousal >= 0.7 and bpm >= 120:
+            tags.append("workout")
+        if arousal <= 0.4 and valence <= 0.4:
+            tags.append("atmospheric")
+        if arousal <= 0.3 and bpm <= 90:
+            tags.append("chill")
+        if mood_aggressive is not None and mood_aggressive >= 0.5 and bpm >= 120:
+            tags.append("intense")
+
+        return list(set(tags))[:12]
 
 
-def extract_features(audio, sample_rate):
-    """Extract audio features using Essentia algorithms."""
-
-    features = {
-        "bpm": None,
-        "beatsCount": None,
-        "key": None,
-        "keyScale": None,
-        "keyStrength": None,
-        "danceabilityEssentia": None,
-        "loudness": None,
-        "dynamicComplexity": None,
+def build_payload(result: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "retryable": False,
+        "AnalysisMode": result.get("analysisMode", "standard"),
+        "Bpm": result.get("bpm"),
+        "BeatsCount": result.get("beatsCount"),
+        "Key": result.get("key"),
+        "KeyScale": result.get("keyScale"),
+        "KeyStrength": result.get("keyStrength"),
+        "Danceability": result.get("danceability"),
+        "Acousticness": result.get("acousticness"),
+        "Instrumentalness": result.get("instrumentalness"),
+        "Speechiness": result.get("speechiness"),
+        "Genres": result.get("essentiaGenres", []),
+        "Happy": result.get("moodHappy"),
+        "Sad": result.get("moodSad"),
+        "Relaxed": result.get("moodRelaxed"),
+        "Aggressive": result.get("moodAggressive"),
+        "Party": result.get("moodParty"),
+        "Acoustic": result.get("moodAcoustic"),
+        "Electronic": result.get("moodElectronic"),
+        "Approachability": None,
+        "Engagement": None,
+        "VoiceInstrumental": result.get("instrumentalness"),
+        "TonalAtonal": None,
+        "ValenceMl": result.get("valence"),
+        "ArousalMl": result.get("arousal"),
+        "DanceabilityMl": result.get("danceabilityMl"),
+        "Loudness": result.get("loudness"),
+        "DynamicComplexity": result.get("dynamicRange"),
     }
 
-    # BPM and beats
-    if RhythmExtractor2013 is not None:
-        try:
-            rhythm = RhythmExtractor2013(method="multifeature")
-            bpm, beats, _, _, _ = rhythm(audio)
-            features["bpm"] = float(bpm) if bpm > 0 else None
-            features["beatsCount"] = int(len(beats)) if beats is not None else None
-        except Exception as e:
-            sys.stderr.write(f"Warning: Rhythm extraction failed: {e}\n")
 
-    # Key detection
-    if KeyExtractor is not None:
-        try:
-            key_extractor = KeyExtractor()
-            key, key_scale, key_strength = key_extractor(audio)
-            features["key"] = key if key else None
-            features["keyScale"] = key_scale if key_scale else None
-            features["keyStrength"] = float(key_strength) if key_strength else None
-        except Exception as e:
-            sys.stderr.write(f"Warning: Key extraction failed: {e}\n")
+_process_analyzer: Optional[AudioAnalyzer] = None
 
-    # Danceability (Essentia algorithm, not ML model)
-    if EssentiaDanceability is not None:
-        try:
-            danceability_algo = EssentiaDanceability()
-            danceability, _ = danceability_algo(audio)
-            features["danceabilityEssentia"] = float(danceability)
-        except Exception as e:
-            sys.stderr.write(f"Warning: Danceability extraction failed: {e}\n")
 
-    # Loudness
-    if Loudness is not None:
-        try:
-            loudness_algo = Loudness()
-            loudness = loudness_algo(audio)
-            features["loudness"] = float(loudness)
-        except Exception as e:
-            sys.stderr.write(f"Warning: Loudness extraction failed: {e}\n")
+def _init_worker_process(models_dir: str):
+    global _process_analyzer
+    _process_analyzer = AudioAnalyzer(models_dir)
 
-    # Dynamic complexity
-    if DynamicComplexity is not None:
-        try:
-            dc_algo = DynamicComplexity()
-            dc, _ = dc_algo(audio)
-            features["dynamicComplexity"] = float(dc)
-        except Exception as e:
-            sys.stderr.write(f"Warning: Dynamic complexity extraction failed: {e}\n")
 
-    return features
+def _analyze_track_in_process(entry: Dict[str, Any]) -> Dict[str, Any]:
+    track_id_raw = entry.get("trackId")
+    file_path_raw = entry.get("filePath")
+    track_id = int(track_id_raw) if track_id_raw is not None else None
+    file_path = str(file_path_raw) if file_path_raw is not None else None
+
+    if track_id is None:
+        return {
+            "trackId": None,
+            "filePath": file_path,
+            "ok": False,
+            "errorCode": "VIBE_ANALYZER_INVALID_INPUT",
+            "message": "Missing trackId for batch item.",
+        }
+
+    if not file_path:
+        return {
+            "trackId": track_id,
+            "filePath": file_path,
+            "ok": False,
+            "errorCode": "VIBE_ANALYZER_INVALID_INPUT",
+            "message": "Missing filePath for batch item.",
+        }
+
+    if not os.path.exists(file_path):
+        return {
+            "trackId": track_id,
+            "filePath": file_path,
+            "ok": False,
+            "errorCode": "VIBE_ANALYZER_FILE_MISSING",
+            "message": "Audio file not found.",
+        }
+
+    if _process_analyzer is None:
+        return {
+            "trackId": track_id,
+            "filePath": file_path,
+            "ok": False,
+            "errorCode": "VIBE_ANALYZER_NOT_INITIALIZED",
+            "message": "Analyzer worker failed to initialize.",
+        }
+
+    try:
+        result = _process_analyzer.analyze(file_path)
+        if "_error" in result:
+            return {
+                "trackId": track_id,
+                "filePath": file_path,
+                "ok": False,
+                "errorCode": "VIBE_ANALYZER_FAILED",
+                "message": str(result.get("_error")),
+            }
+
+        return {
+            "trackId": track_id,
+            "filePath": file_path,
+            "ok": True,
+            "payload": build_payload(result),
+        }
+    except Exception as exc:
+        return {
+            "trackId": track_id,
+            "filePath": file_path,
+            "ok": False,
+            "errorCode": "VIBE_ANALYZER_FAILED",
+            "message": str(exc),
+        }
+
+
+def _default_worker_count() -> int:
+    cpu_count = os.cpu_count() or 4
+    return max(2, min(8, cpu_count // 2))
+
+
+def run_batch_analysis(
+    batch_items: List[Dict[str, Any]],
+    models_dir: str,
+    workers: int,
+    per_track_timeout_seconds: int,
+    batch_timeout_seconds: int,
+) -> Dict[str, Any]:
+    normalized_workers = max(1, int(workers))
+    normalized_track_timeout = max(1, int(per_track_timeout_seconds))
+    normalized_batch_timeout = max(normalized_track_timeout, int(batch_timeout_seconds))
+    results: List[Dict[str, Any]] = []
+
+    with ProcessPoolExecutor(
+        max_workers=normalized_workers,
+        initializer=_init_worker_process,
+        initargs=(models_dir,),
+    ) as executor:
+        futures = {executor.submit(_analyze_track_in_process, item): item for item in batch_items}
+        completed_futures = set()
+        try:
+            for future in as_completed(futures, timeout=normalized_batch_timeout):
+                completed_futures.add(future)
+                source = futures[future]
+                track_id = source.get("trackId")
+                file_path = source.get("filePath")
+                try:
+                    results.append(future.result(timeout=normalized_track_timeout))
+                except Exception as exc:
+                    results.append(
+                        {
+                            "trackId": track_id,
+                            "filePath": file_path,
+                            "ok": False,
+                            "errorCode": "VIBE_ANALYZER_TIMEOUT",
+                            "message": f"Timeout or error: {exc}",
+                        }
+                    )
+        except TimeoutError:
+            pass
+
+        for future, source in futures.items():
+            if future in completed_futures:
+                continue
+
+            track_id = source.get("trackId")
+            file_path = source.get("filePath")
+            future.cancel()
+            results.append(
+                {
+                    "trackId": track_id,
+                    "filePath": file_path,
+                    "ok": False,
+                    "errorCode": "VIBE_ANALYZER_TIMEOUT",
+                    "message": f"Batch timeout after {normalized_batch_timeout} seconds.",
+                }
+            )
+
+    return {
+        "ok": True,
+        "retryable": False,
+        "results": results,
+    }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Vibe Analyzer - Essentia-based audio analysis")
-    parser.add_argument("--probe", action="store_true", help="Probe for available capabilities")
-    parser.add_argument("--file", help="Audio file to analyze")
-    parser.add_argument("--models", help="Path to models directory")
+    parser = argparse.ArgumentParser(description="Vibe Analyzer - lidify parity")
+    parser.add_argument("--probe", action="store_true", help="Probe available Essentia capabilities")
+    parser.add_argument("--file", help="Audio file path")
+    parser.add_argument("--batch-json", help="Path to batch JSON file with trackId/filePath items")
+    parser.add_argument("--models", help="Models directory path")
+    parser.add_argument("--workers", type=int, default=_default_worker_count(), help="Batch worker count")
+    parser.add_argument("--per-track-timeout-seconds", type=int, default=60, help="Per-track timeout in batch mode")
+    parser.add_argument("--batch-timeout-seconds", type=int, default=300, help="Overall batch timeout")
     args = parser.parse_args()
 
+    if args.probe:
+        missing_required, missing_optional = probe_capabilities()
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "ok": len(missing_required) == 0,
+                    "retryable": False,
+                    "errorCode": "ESSENTIA_MISSING_REQUIRED" if len(missing_required) > 0 else None,
+                    "message": None if len(missing_required) == 0 else "Missing required Essentia algorithms.",
+                    "missingRequired": missing_required,
+                    "missingOptional": missing_optional,
+                }
+            )
+        )
+        return
+
     try:
-        if args.probe:
-            missing_required, missing_optional = probe_capabilities()
+        if not args.models:
+            raise ValueError("--models is required unless --probe is set.")
+
+        if not os.path.isdir(args.models):
+            raise FileNotFoundError(f"Models directory not found: {args.models}")
+
+        if args.batch_json:
+            if not os.path.exists(args.batch_json):
+                raise FileNotFoundError(f"Batch request file not found: {args.batch_json}")
+
+            with open(args.batch_json, "r", encoding="utf-8") as handle:
+                raw_batch = json.load(handle)
+
+            if not isinstance(raw_batch, list):
+                raise ValueError("Batch request payload must be a JSON array.")
+
+            batch_items: List[Dict[str, Any]] = []
+            for item in raw_batch:
+                if isinstance(item, dict):
+                    batch_items.append(item)
+                else:
+                    batch_items.append({})
+
+            batch_payload = run_batch_analysis(
+                batch_items,
+                args.models,
+                args.workers,
+                args.per_track_timeout_seconds,
+                args.batch_timeout_seconds,
+            )
+            sys.stdout.write(json.dumps(batch_payload))
+            return
+
+        if not args.file:
+            raise ValueError("--file is required for single-track analysis.")
+
+        analyzer = AudioAnalyzer(args.models)
+        result = analyzer.analyze(args.file)
+
+        if "_error" in result:
             sys.stdout.write(
                 json.dumps(
                     {
-                        "ok": len(missing_required) == 0,
+                        "ok": False,
                         "retryable": False,
-                        "errorCode": "ESSENTIA_MISSING_REQUIRED" if len(missing_required) > 0 else None,
-                        "message": None if len(missing_required) == 0 else "Missing required Essentia algorithms.",
-                        "missingRequired": missing_required,
-                        "missingOptional": missing_optional,
+                        "errorCode": "VIBE_ANALYZER_FAILED",
+                        "message": result.get("_error"),
                     }
                 )
             )
             return
 
-        if not args.file or not args.models:
-            raise ValueError("--file and --models are required unless --probe is set.")
-
-        # Load audio
-        audio = load_audio(args.file)
-
-        # Load models
-        musicnn, mood_predictors, vibe_predictors, genre_predictor, \
-            effnet_extractor, effnet_vibe_heads, deam_predictor, genre_labels, enhanced_ready = load_models(args.models)
-
-        # Run predictions
-        mood_scores, vibe_scores, genres = predict_scores(
-            audio, musicnn, mood_predictors, vibe_predictors, genre_predictor,
-            effnet_extractor, effnet_vibe_heads, deam_predictor, genre_labels
-        )
-
-        core_mood_keys = ("happy", "sad", "relaxed", "aggressive")
-        core_moods_available = all(mood_scores.get(key) is not None for key in core_mood_keys)
-        analysis_mode = "enhanced" if enhanced_ready and core_moods_available else "standard"
-
-        # Extract audio features
-        features = extract_features(audio, 16000)
-
-        # Build output payload
-        payload = {
-            "ok": True,
-            "retryable": False,
-
-            # Mood scores
-            "Happy": mood_scores.get("happy"),
-            "Sad": mood_scores.get("sad"),
-            "Relaxed": mood_scores.get("relaxed"),
-            "Aggressive": mood_scores.get("aggressive"),
-            "Party": mood_scores.get("party"),
-            "Acoustic": mood_scores.get("acoustic"),
-            "Electronic": mood_scores.get("electronic"),
-
-            # Vibe scores
-            "Approachability": vibe_scores.get("approachability"),
-            "Engagement": vibe_scores.get("engagement"),
-            "VoiceInstrumental": vibe_scores.get("voice_instrumental"),  # 0=instrumental, 1=voice
-            "DanceabilityMl": vibe_scores.get("danceability"),
-            "ArousalMl": vibe_scores.get("arousal"),
-            "ValenceMl": vibe_scores.get("valence"),
-            "TonalAtonal": vibe_scores.get("tonal_atonal"),  # 0=tonal, 1=atonal
-
-            # Audio features
-            "Bpm": features.get("bpm"),
-            "BeatsCount": features.get("beatsCount"),
-            "Key": features.get("key"),
-            "KeyScale": features.get("keyScale"),
-            "KeyStrength": features.get("keyStrength"),
-            "Danceability": features.get("danceabilityEssentia"),
-            "Loudness": features.get("loudness"),
-            "DynamicComplexity": features.get("dynamicComplexity"),
-
-            # Genres
-            "Genres": genres,
-
-            # Analysis metadata
-            "AnalysisMode": analysis_mode,
-            "ModelsLoaded": {
-                "moods": list(mood_predictors.keys()),
-                "vibes": list(vibe_predictors.keys()),
-                "effnet_vibes": list(effnet_vibe_heads.keys()) if effnet_vibe_heads else [],
-                "deam": deam_predictor is not None,
-                "genre": genre_predictor is not None,
-                "effnet": effnet_extractor is not None,
-            },
-        }
-
+        payload = build_payload(result)
         sys.stdout.write(json.dumps(payload))
-
     except FileNotFoundError as exc:
         sys.stderr.write(f"vibe analyzer missing file: {exc}\n")
         sys.stdout.write(
@@ -469,7 +860,6 @@ def main():
                 }
             )
         )
-        sys.exit(0)
     except Exception as exc:
         sys.stderr.write(f"vibe analyzer failed: {exc}\n")
         sys.stdout.write(
@@ -482,7 +872,6 @@ def main():
                 }
             )
         )
-        sys.exit(0)
 
 
 if __name__ == "__main__":

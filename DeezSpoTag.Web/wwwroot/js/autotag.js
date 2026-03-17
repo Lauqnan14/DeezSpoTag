@@ -253,6 +253,7 @@
         platforms: [],
         libraryFolders: [],
         profiles: [],
+        profilesLoaded: false,
         activeProfileId: null,
         authReady: false,
         jobId: null,
@@ -2373,14 +2374,22 @@
         }
     }
 
+    function normalizeStoredProfileId(value) {
+        const normalized = typeof value === "string" ? value.trim() : "";
+        return normalized.length > 0 ? normalized : null;
+    }
+
     function loadStoredActiveProfileId() {
         try {
-            const stored = localStorage.getItem(AUTOTAG_ACTIVE_PROFILE_KEY);
-            const value = typeof stored === "string" ? stored.trim() : "";
-            return value.length > 0 ? value : null;
+            const stored = normalizeStoredProfileId(localStorage.getItem(AUTOTAG_ACTIVE_PROFILE_KEY));
+            if (stored) {
+                return stored;
+            }
+
+            return normalizeStoredProfileId(globalThis.__userPrefsData?.autoTagActiveProfileId);
         } catch (error) {
             console.warn("Failed to load active AutoTag profile selection", error);
-            return null;
+            return normalizeStoredProfileId(globalThis.__userPrefsData?.autoTagActiveProfileId);
         }
     }
 
@@ -2388,9 +2397,11 @@
         try {
             if (profileId) {
                 localStorage.setItem(AUTOTAG_ACTIVE_PROFILE_KEY, profileId);
-                if (globalThis.UserPrefs) globalThis.UserPrefs.set('autoTagActiveProfileId', profileId);
             } else {
                 localStorage.removeItem(AUTOTAG_ACTIVE_PROFILE_KEY);
+            }
+            if (globalThis.UserPrefs) {
+                globalThis.UserPrefs.set('autoTagActiveProfileId', profileId || null);
             }
         } catch (error) {
             console.warn("Failed to persist active AutoTag profile selection", error);
@@ -2449,6 +2460,23 @@
         return !!(state.activeProfileId && getActiveProfile());
     }
 
+    function ensureLoadedActiveProfile() {
+        if (hasLoadedActiveProfile()) {
+            return true;
+        }
+
+        const selectedProfile = getSelectedProfile();
+        if (selectedProfile && applyLoadedProfile(selectedProfile)) {
+            return true;
+        }
+
+        if (Array.isArray(state.profiles) && state.profiles.length > 0) {
+            return restoreActiveProfileSelection();
+        }
+
+        return false;
+    }
+
     function activateProfilesTab() {
         const profilesTab = el("autotag-profiles-tab");
         if (!profilesTab) {
@@ -2475,14 +2503,16 @@
         }
 
         const isProfilesTab = tab.id === "autotag-profiles-tab";
-        if (isProfilesTab || hasLoadedActiveProfile()) {
+        if (isProfilesTab || ensureLoadedActiveProfile()) {
             return false;
         }
 
         event.preventDefault();
         event.stopPropagation();
         activateProfilesTab();
-        showToast("Create and load a profile to unlock the other tabs.", "warning");
+        if (state.profilesLoaded && (!Array.isArray(state.profiles) || state.profiles.length === 0)) {
+            showToast("Create and load a profile to unlock the other tabs.", "warning");
+        }
         return true;
     }
 
@@ -2502,7 +2532,7 @@
     }
 
     function applyProfileSelectionGuards() {
-        const hasActiveProfile = hasLoadedActiveProfile();
+        const hasActiveProfile = ensureLoadedActiveProfile();
         document.querySelectorAll("#autotagTabs .nav-link").forEach((tab) => {
             const isProfilesTab = tab.id === "autotag-profiles-tab";
             const disabled = !hasActiveProfile && !isProfilesTab;
@@ -2622,22 +2652,22 @@
 
     function restoreActiveProfileSelection() {
         const storedProfileId = state.activeProfileId;
-        if (!storedProfileId) {
-            setActiveProfileId(null);
-            return false;
+        const profile = storedProfileId ? getProfileById(storedProfileId) : null;
+        if (profile) {
+            return applyLoadedProfile(profile);
         }
 
-        const profile = getProfileById(storedProfileId);
-        if (!profile) {
-            setActiveProfileId(null);
-            const select = el("autotag-profile-select");
-            if (select) {
-                select.value = "";
-            }
-            return false;
+        const fallbackProfile = getProfileSelectionFallback();
+        if (fallbackProfile) {
+            return applyLoadedProfile(fallbackProfile);
         }
 
-        return applyLoadedProfile(profile);
+        const select = el("autotag-profile-select");
+        if (select) {
+            select.value = "";
+        }
+        setActiveProfileId(null);
+        return false;
     }
 
     async function savePreferences() {
@@ -4909,6 +4939,7 @@
     }
 
     async function loadProfiles() {
+        state.profilesLoaded = false;
         try {
             const response = await fetch("/api/tagging/profiles");
             if (!response.ok) {
@@ -4918,16 +4949,11 @@
         } catch (error) {
             console.warn("Failed to load AutoTag profiles", error);
             state.profiles = [];
+        } finally {
+            state.profilesLoaded = true;
         }
         renderProfileSelect();
-        const restored = restoreActiveProfileSelection();
-        if (!restored) {
-            setActiveProfileId(null);
-            const select = el("autotag-profile-select");
-            if (select) {
-                select.value = "";
-            }
-        }
+        restoreActiveProfileSelection();
     }
 
     async function initAutoTagDefaultsPanel() {
@@ -5003,29 +5029,68 @@
         };
     }
 
+    function resolveProfileSaveTarget(name, selectedProfile, activeProfile) {
+        const normalizedName = typeof name === "string" ? name.trim() : "";
+        const selectedName = String(selectedProfile?.name || "").trim();
+        const activeName = String(activeProfile?.name || "").trim();
+        const selectedMatchesName = selectedProfile && selectedName.localeCompare(normalizedName, undefined, { sensitivity: "accent" }) === 0;
+        const activeMatchesName = activeProfile && activeName.localeCompare(normalizedName, undefined, { sensitivity: "accent" }) === 0;
+
+        if (selectedMatchesName) {
+            return {
+                existing: selectedProfile,
+                profileId: selectedProfile.id || state.activeProfileId || null,
+                isDefault: Boolean(selectedProfile?.isDefault)
+            };
+        }
+
+        if (activeMatchesName) {
+            return {
+                existing: activeProfile,
+                profileId: activeProfile.id || state.activeProfileId || null,
+                isDefault: Boolean(activeProfile?.isDefault)
+            };
+        }
+
+        const sameNameProfile = getProfileByName(normalizedName);
+        if (sameNameProfile) {
+            return {
+                existing: sameNameProfile,
+                profileId: sameNameProfile.id || null,
+                isDefault: Boolean(sameNameProfile?.isDefault)
+            };
+        }
+
+        return {
+            existing: null,
+            profileId: null,
+            isDefault: false
+        };
+    }
+
     async function upsertProfileFromUi(options = {}) {
         const { silent = false, requireActiveProfile = false } = options;
         const nameInput = el("autotag-profile-name");
         const currentActive = getActiveProfile();
         const selected = getSelectedProfile();
-        const existing = selected || currentActive;
-        const name = nameInput?.value.trim() || existing?.name?.trim() || "";
+        const name = nameInput?.value.trim() || selected?.name?.trim() || currentActive?.name?.trim() || "";
         if (requireActiveProfile && !state.activeProfileId) {
             throw new Error("Select and load a profile first.");
         }
         if (!name) {
             throw new Error("Profile name is required.");
         }
-        const profileId = existing?.id || state.activeProfileId || null;
+
+        const saveTarget = resolveProfileSaveTarget(name, selected, currentActive);
 
         const response = await fetch("/api/tagging/profiles", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(buildProfileUpsertPayload({
-                existing,
-                profileId,
+                existing: saveTarget.existing,
+                profileId: saveTarget.profileId,
                 name,
-                isDefault: Boolean(existing?.isDefault)
+                isDefault: saveTarget.isDefault
             }))
         });
         if (!response.ok) {
@@ -5085,6 +5150,16 @@
             return null;
         }
         return getProfileById(id);
+    }
+
+    function getProfileSelectionFallback() {
+        if (!Array.isArray(state.profiles) || state.profiles.length === 0) {
+            return null;
+        }
+
+        return state.profiles.find((profile) => profile?.isDefault || profile?.IsDefault)
+            || state.profiles[0]
+            || null;
     }
 
     function getProfileByName(profileName) {
@@ -5179,7 +5254,10 @@
         const { profileId = null, silent = false } = options;
         const profile = profileId ? getProfileById(profileId) : getSelectedProfile();
         if (!profile) {
-            setActiveProfileId(null);
+            const select = el("autotag-profile-select");
+            if (select && state.activeProfileId) {
+                select.value = state.activeProfileId;
+            }
             if (!silent) {
                 showToast("Select a profile to load.", "error");
             }
@@ -5198,6 +5276,7 @@
             showToast("Select a profile to delete.", "error");
             return;
         }
+        const deletedActiveProfile = String(state.activeProfileId || "").toLowerCase() === String(profile.id || "").toLowerCase();
         const response = await fetch(`/api/tagging/profiles/${encodeURIComponent(profile.id)}`, {
             method: "DELETE"
         });
@@ -5205,14 +5284,16 @@
             showToast("Failed to delete profile.", "error");
             return;
         }
+        if (deletedActiveProfile) {
+            setActiveProfileId(null);
+        }
         await loadProfiles();
         await initAutoTagDefaultsPanel();
-        if (String(state.activeProfileId || "").toLowerCase() === String(profile.id || "").toLowerCase()) {
-            setActiveProfileId(null);
+        if (deletedActiveProfile) {
             activateProfilesTab();
         }
         const nameInput = el("autotag-profile-name");
-        if (nameInput) {
+        if (nameInput && deletedActiveProfile) {
             nameInput.value = "";
         }
         showToast(`Profile "${profile.name}" deleted.`, "success");
@@ -5329,16 +5410,17 @@
     el("autotag-profile-select")?.addEventListener("change", () => {
         const selectedProfile = getSelectedProfile();
         const nameInput = el("autotag-profile-name");
+        const select = el("autotag-profile-select");
         if (!selectedProfile) {
-            setActiveProfileId(null);
-            if (nameInput) {
-                nameInput.value = "";
+            if (select && state.activeProfileId) {
+                select.value = state.activeProfileId;
             }
             return;
         }
         if (nameInput && !nameInput.matches(":focus")) {
             nameInput.value = selectedProfile.name || "";
         }
+        loadProfile({ profileId: selectedProfile.id, silent: true });
     });
     el("autotag-profile-save")?.addEventListener("click", saveProfile);
     el("autotag-profile-load")?.addEventListener("click", loadProfile);

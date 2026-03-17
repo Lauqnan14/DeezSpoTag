@@ -10,7 +10,7 @@ public sealed class LrclibPlatform : AutoTagPlatformBase
         {
             Id = "lrclib",
             Name = "LRCLIB",
-            Description = "Official LRCLIB API for synced and unsynced lyrics.",
+            Description = "Community lyrics source for synced and plain lyrics.",
             Version = "1.0.0",
             MaxThreads = 2,
             RequiresAuth = false,

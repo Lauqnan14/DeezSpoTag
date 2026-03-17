@@ -7,20 +7,113 @@ public static class AppDataPathResolver
 
     public static string GetDefaultWorkersDataDir()
     {
-        var candidates = new[]
+        var stableCandidates = new[]
+        {
+            Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), "DeezSpoTag.Workers", "Data")),
+            Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "..", "..", "..", "..", "DeezSpoTag.Workers", "Data"))
+        };
+        var legacyCandidates = new[]
         {
             Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), "DeezSpoTag.Workers", "bin", "Debug", "net8.0", "Data")),
-            Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "..", "..", "..", "..", "DeezSpoTag.Workers", "bin", "Debug", "net8.0", "Data")),
-            Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "Data"))
+            Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "..", "..", "..", "..", "DeezSpoTag.Workers", "bin", "Debug", "net8.0", "Data"))
         };
+        var fallbackCandidate = Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "Data"));
 
-        var existingCandidate = Array.Find(candidates, Directory.Exists);
-        if (!string.IsNullOrWhiteSpace(existingCandidate))
+        var existingStableCandidate = Array.Find(stableCandidates, Directory.Exists);
+        var existingLegacyCandidate = Array.Find(legacyCandidates, Directory.Exists);
+
+        if (!string.IsNullOrWhiteSpace(existingStableCandidate)
+            && !HasSpotifyAuthState(existingStableCandidate)
+            && !string.IsNullOrWhiteSpace(existingLegacyCandidate)
+            && HasSpotifyAuthState(existingLegacyCandidate))
         {
-            return existingCandidate;
+            return existingLegacyCandidate;
         }
 
-        return candidates[^1];
+        if (!string.IsNullOrWhiteSpace(existingStableCandidate))
+        {
+            return existingStableCandidate;
+        }
+
+        foreach (var legacyCandidate in legacyCandidates.Where(Directory.Exists))
+        {
+            var migrateTarget = stableCandidates[0];
+            TryMigrateLegacyWorkersData(legacyCandidate, migrateTarget);
+            if (Directory.Exists(migrateTarget))
+            {
+                return migrateTarget;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(existingLegacyCandidate))
+        {
+            return existingLegacyCandidate;
+        }
+
+        return stableCandidates[0];
+    }
+
+    private static bool HasSpotifyAuthState(string dataRoot)
+    {
+        var platformSpotifyPath = Path.Join(dataRoot, "autotag", "spotify.json");
+        if (File.Exists(platformSpotifyPath))
+        {
+            return true;
+        }
+
+        var usersRoot = Path.Join(dataRoot, "spotify", "users");
+        if (!Directory.Exists(usersRoot))
+        {
+            return false;
+        }
+
+        return Directory.EnumerateFiles(usersRoot, "spotify-auth.json", SearchOption.AllDirectories).Any();
+    }
+
+    private static void TryMigrateLegacyWorkersData(string sourcePath, string targetPath)
+    {
+        try
+        {
+            if (Directory.Exists(targetPath))
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(targetPath) ?? targetPath);
+            CopyDirectoryRecursive(sourcePath, targetPath);
+        }
+        catch
+        {
+            // Best effort migration; fallback selection continues if migration fails.
+        }
+    }
+
+    private static void CopyDirectoryRecursive(string sourcePath, string targetPath)
+    {
+        Directory.CreateDirectory(targetPath);
+
+        foreach (var filePath in Directory.GetFiles(sourcePath))
+        {
+            var fileName = Path.GetFileName(filePath);
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                continue;
+            }
+
+            var destinationPath = Path.Combine(targetPath, fileName);
+            File.Copy(filePath, destinationPath, overwrite: true);
+        }
+
+        foreach (var directoryPath in Directory.GetDirectories(sourcePath))
+        {
+            var directoryName = Path.GetFileName(directoryPath);
+            if (string.IsNullOrWhiteSpace(directoryName))
+            {
+                continue;
+            }
+
+            CopyDirectoryRecursive(directoryPath, Path.Combine(targetPath, directoryName));
+        }
     }
 
     public static string ResolveDataRootOrDefault(string defaultDataRoot)

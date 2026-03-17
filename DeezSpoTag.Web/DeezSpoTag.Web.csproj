@@ -34,6 +34,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Guard against accidental nested project folder artifacts (DeezSpoTag.Web/DeezSpoTag.Web/*). -->
+    <None Remove="DeezSpoTag.Web\**" />
+    <Content Remove="DeezSpoTag.Web\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Include="..\docker_openssl_legacy.cnf" Link="openssl_legacy.cnf">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

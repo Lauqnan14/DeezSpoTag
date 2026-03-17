@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Collections.Concurrent;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -9,6 +10,7 @@ public sealed class SpotifyUserAuthStore
     private readonly ILogger<SpotifyUserAuthStore> _logger;
     private readonly string _dataRoot;
     private readonly bool _isSingleUserMode;
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _userFileGates = new(StringComparer.OrdinalIgnoreCase);
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -33,9 +35,11 @@ public sealed class SpotifyUserAuthStore
 
     public async Task<SpotifyUserAuthState> LoadAsync(string userId)
     {
-        var path = GetUserAuthFilePath(userId);
+        var gate = GetUserFileGate(userId);
+        await gate.WaitAsync();
         try
         {
+            var path = GetUserAuthFilePath(userId);
             if (!File.Exists(path))
             {
                 return new SpotifyUserAuthState();
@@ -47,7 +51,7 @@ public sealed class SpotifyUserAuthStore
             changed |= EnsureActiveAccount(state);
             if (changed)
             {
-                await SaveAsync(userId, state);
+                await SaveNoLockAsync(userId, state);
             }
 
             return state;
@@ -56,6 +60,10 @@ public sealed class SpotifyUserAuthStore
         {
             _logger.LogWarning(ex, "Failed to load Spotify user auth state for {UserId}", userId);
             return new SpotifyUserAuthState();
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 
@@ -161,16 +169,54 @@ public sealed class SpotifyUserAuthStore
 
     public async Task SaveAsync(string userId, SpotifyUserAuthState state)
     {
-        var path = GetUserAuthFilePath(userId);
+        var gate = GetUserFileGate(userId);
+        await gate.WaitAsync();
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(path) ?? GetUserRoot(userId));
-            var json = JsonSerializer.Serialize(state, _jsonOptions);
-            await File.WriteAllTextAsync(path, json);
+            await SaveNoLockAsync(userId, state);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             throw new InvalidOperationException($"Failed to save Spotify user auth state for {userId}", ex);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private SemaphoreSlim GetUserFileGate(string userId)
+    {
+        var normalizedUserId = string.IsNullOrWhiteSpace(userId) ? "default" : userId.Trim();
+        return _userFileGates.GetOrAdd(normalizedUserId, static _ => new SemaphoreSlim(1, 1));
+    }
+
+    private async Task SaveNoLockAsync(string userId, SpotifyUserAuthState state)
+    {
+        var path = GetUserAuthFilePath(userId);
+        var directory = Path.GetDirectoryName(path) ?? GetUserRoot(userId);
+        Directory.CreateDirectory(directory);
+
+        var json = JsonSerializer.Serialize(state, _jsonOptions);
+        var tempPath = $"{path}.tmp-{Guid.NewGuid():N}";
+        try
+        {
+            await File.WriteAllTextAsync(tempPath, json);
+            File.Move(tempPath, path, overwrite: true);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Failed to clean up temporary Spotify auth state file {Path}", tempPath);
+            }
         }
     }
 
