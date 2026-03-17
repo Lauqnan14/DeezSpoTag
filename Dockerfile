@@ -67,9 +67,7 @@ RUN apt-get update \
     && if [ -z "$mp4box_path" ]; then mp4box_path="$(command -v mp4box || true)"; fi \
     && if [ -z "$mp4box_path" ]; then echo "MP4Box not found after GPAC install." >&2; exit 1; fi \
     && install -m 0755 "$mp4box_path" /usr/local/bin/mp4box \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid 1001 appuser \
-    && useradd --uid 1001 --gid 1001 --create-home --home-dir /home/appuser --shell /usr/sbin/nologin appuser
+    && rm -rf /var/lib/apt/lists/*
 
 COPY docker/openssl-legacy.cnf /etc/ssl/openssl-legacy.cnf
 
@@ -104,7 +102,10 @@ RUN set -eux; \
 
 ENV OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf \
     OPENSSL_MODULES=/usr/lib/x86_64-linux-gnu/ossl-modules \
-    HOME=/home/appuser \
+    HOME=/data/home \
+    XDG_CACHE_HOME=/data/.cache \
+    PIP_CACHE_DIR=/data/.cache/pip \
+    PIP_NO_CACHE_DIR=1 \
     DEEZSPOTAG_CONFIG_DIR=/data \
     DEEZSPOTAG_DATA_DIR=/data \
     DEEZSPOTAG_BUILD_VERSION=${DEEZSPOTAG_BUILD_VERSION} \
@@ -119,7 +120,8 @@ ENV OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf \
     SHAZAM_PYTHON=/opt/venv/bin/python3 \
     PATH=/opt/venv/bin:$PATH
 
-RUN mkdir -p /data
+RUN mkdir -p /data /data/home /data/.cache/pip \
+    && chmod -R 0777 /data
 
 COPY --from=build /app/publish .
 COPY --from=build /src/DeezSpoTag.Services/Library/Schema /app/Schema
@@ -155,10 +157,6 @@ RUN set -eux; \
     fetch_if_missing "engagement_regression-discogs-effnet-1.pb" "https://essentia.upf.edu/models/classification-heads/engagement/engagement_regression-discogs-effnet-1.pb"; \
     fetch_if_missing "genre_discogs400-discogs-effnet-1.pb" "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.pb"; \
     fetch_if_missing "genre_discogs400-discogs-effnet-1.json" "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.json"
-
-RUN chown -R appuser:appuser /app /data
-
-USER appuser
 
 EXPOSE 8668
 
