@@ -18,6 +18,7 @@ concurrency:
 
 jobs:
   publish:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -33,6 +34,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Compute commit tags
+        id: commit
+        run: |
+          echo "full_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -60,6 +67,8 @@ jobs:
           images: ${{ steps.vars.outputs.image }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ steps.commit.outputs.short_sha }}
+            type=raw,value=${{ steps.commit.outputs.full_sha }}
             type=ref,event=branch
             type=ref,event=tag
             type=sha,prefix=sha-
@@ -70,6 +79,7 @@ jobs:
             org.opencontainers.image.description=DeezSpoTag container image
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.vendor=${{ github.repository_owner }}
 
       - name: Build and push
@@ -83,6 +93,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            DEEZSPOTAG_BUILD_VERSION=${{ steps.meta.outputs.version }}
+            DEEZSPOTAG_BUILD_VERSION=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.image_name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image_name }}
