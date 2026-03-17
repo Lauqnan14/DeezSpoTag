@@ -655,60 +655,88 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             return BadRequest("sp_dc is required.");
         }
 
-        var state = await _userAuthStore.LoadAsync(userId);
-        state.WebPlayerSpDc = spDc;
-        state.WebPlayerSpKey = spKey;
-        state.WebPlayerUserAgent = userAgent;
-
-        var profile = await FetchSpotifyProfileAsync(
-            state.WebPlayerSpDc,
-            state.WebPlayerSpKey,
-            state.WebPlayerUserAgent,
-            HttpContext.RequestAborted);
-        var effectiveAccountName = ResolveEffectiveAccountName(profile?.Id, state.ActiveAccount);
-
-        var account = GetOrCreateAccount(state, effectiveAccountName);
-
-        state.ActiveAccount = effectiveAccountName;
-        var targetBlobPath = ResolveWebPlayerBlobPath(userId, account, effectiveAccountName);
-
-        _logger.LogInformation("Saving Spotify web player cookies for account {Account}. Target blob: {BlobPath}",
-            effectiveAccountName, targetBlobPath);
-        var lastKnownGood = BackupExistingBlob(targetBlobPath, effectiveAccountName);
-        var blobResult = await PersistWebPlayerBlobAsync(
-            targetBlobPath,
-            providedCookies,
-            spDc,
-            state.WebPlayerSpKey,
-            state.WebPlayerUserAgent,
-            HttpContext.RequestAborted);
-        UpdateWebPlayerAccount(account, blobResult.BlobPath, lastKnownGood, DateTimeOffset.UtcNow);
-
-        if (!await _pathfinderMetadataClient.ValidateBlobAsync(blobResult.BlobPath, HttpContext.RequestAborted))
+        try
         {
-            var activeAccount = state.ActiveAccount;
-            if (!string.IsNullOrWhiteSpace(activeAccount))
+            var state = await _userAuthStore.LoadAsync(userId);
+            state.WebPlayerSpDc = spDc;
+            state.WebPlayerSpKey = spKey;
+            state.WebPlayerUserAgent = userAgent;
+
+            var profile = await FetchSpotifyProfileAsync(
+                state.WebPlayerSpDc,
+                state.WebPlayerSpKey,
+                state.WebPlayerUserAgent,
+                HttpContext.RequestAborted);
+            var effectiveAccountName = ResolveEffectiveAccountName(profile?.Id, state.ActiveAccount);
+
+            var account = GetOrCreateAccount(state, effectiveAccountName);
+
+            state.ActiveAccount = effectiveAccountName;
+            var targetBlobPath = ResolveWebPlayerBlobPath(userId, account, effectiveAccountName);
+
+            _logger.LogInformation("Saving Spotify web player cookies for account {Account}. Target blob: {BlobPath}",
+                effectiveAccountName, targetBlobPath);
+            var lastKnownGood = BackupExistingBlob(targetBlobPath, effectiveAccountName);
+            var blobResult = await PersistWebPlayerBlobAsync(
+                targetBlobPath,
+                providedCookies,
+                spDc,
+                state.WebPlayerSpKey,
+                state.WebPlayerUserAgent,
+                HttpContext.RequestAborted);
+            UpdateWebPlayerAccount(account, blobResult.BlobPath, lastKnownGood, DateTimeOffset.UtcNow);
+
+            if (!await _pathfinderMetadataClient.ValidateBlobAsync(blobResult.BlobPath, HttpContext.RequestAborted))
             {
-                var activeAccountEntry = state.Accounts.FirstOrDefault(a =>
-                    a.Name.Equals(activeAccount, StringComparison.OrdinalIgnoreCase));
-                if (!string.IsNullOrWhiteSpace(activeAccountEntry?.LastKnownGoodBlobPath)
-                    && System.IO.File.Exists(activeAccountEntry.LastKnownGoodBlobPath))
+                var activeAccount = state.ActiveAccount;
+                if (!string.IsNullOrWhiteSpace(activeAccount))
                 {
-                    System.IO.File.Copy(activeAccountEntry.LastKnownGoodBlobPath, blobResult.BlobPath, overwrite: true);
+                    var activeAccountEntry = state.Accounts.FirstOrDefault(a =>
+                        a.Name.Equals(activeAccount, StringComparison.OrdinalIgnoreCase));
+                    if (!string.IsNullOrWhiteSpace(activeAccountEntry?.LastKnownGoodBlobPath)
+                        && System.IO.File.Exists(activeAccountEntry.LastKnownGoodBlobPath))
+                    {
+                        System.IO.File.Copy(activeAccountEntry.LastKnownGoodBlobPath, blobResult.BlobPath, overwrite: true);
+                    }
                 }
+                return BadRequest("Web player cookies failed validation.");
             }
-            return BadRequest("Web player cookies failed validation.");
+
+            await _userAuthStore.SaveAsync(userId, state);
+
+            var webPlayerBlobPath = account.WebPlayerBlobPath ?? blobResult.BlobPath;
+            if (!string.IsNullOrWhiteSpace(webPlayerBlobPath))
+            {
+                await PersistWebPlayerPlatformStateAsync(effectiveAccountName, webPlayerBlobPath, state);
+            }
+
+            return Ok(new { saved = true, webPlayerBlobPath = blobResult.BlobPath });
         }
-
-        await _userAuthStore.SaveAsync(userId, state);
-
-        var webPlayerBlobPath = account.WebPlayerBlobPath ?? blobResult.BlobPath;
-        if (!string.IsNullOrWhiteSpace(webPlayerBlobPath))
+        catch (TaskCanceledException ex) when (!HttpContext.RequestAborted.IsCancellationRequested)
         {
-            await PersistWebPlayerPlatformStateAsync(effectiveAccountName, webPlayerBlobPath, state);
+            _logger.LogWarning(ex, "Saving Spotify web-player cookies timed out.");
+            return StatusCode(StatusCodes.Status504GatewayTimeout, "Saving Spotify web-player cookies timed out.");
         }
-
-        return Ok(new { saved = true, webPlayerBlobPath = blobResult.BlobPath });
+        catch (UnauthorizedAccessException ex)
+        {
+            _logger.LogWarning(ex, "Saving Spotify web-player cookies could not access data path.");
+            return StatusCode(StatusCodes.Status500InternalServerError, "Spotify data directory is not writable.");
+        }
+        catch (IOException ex)
+        {
+            _logger.LogWarning(ex, "Saving Spotify web-player cookies failed due to an I/O error.");
+            return StatusCode(StatusCodes.Status500InternalServerError, "Saving Spotify web-player cookies failed due to an I/O error.");
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "Saving Spotify web-player cookies failed due to a network request error.");
+            return StatusCode(StatusCodes.Status502BadGateway, "Saving Spotify web-player cookies failed due to a network request error.");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Saving Spotify web-player cookies failed unexpectedly.");
+            return StatusCode(StatusCodes.Status500InternalServerError, "Saving Spotify web-player cookies failed unexpectedly.");
+        }
     }
 
     [HttpPost("web-player/clear")]

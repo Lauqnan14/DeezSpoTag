@@ -1355,14 +1355,22 @@ public sealed class SpotifyPathfinderMetadataClient
 			SpotifyUserAuthState userState = await _userAuthStore.LoadAsync(userId);
 			List<string?> candidates = new List<string?>();
 			candidates.Add(SpotifyUserAuthStore.ResolveActiveWebPlayerBlobPath(userState));
+			candidates.Add(SpotifyUserAuthStore.ResolveActiveBlobPath(userState));
 			candidates.AddRange(userState.Accounts
 				.OrderByDescending(account =>
 				{
 					DateTimeOffset updated = account.UpdatedAt == default(DateTimeOffset) ? account.CreatedAt : account.UpdatedAt;
 					return updated == default(DateTimeOffset) ? DateTimeOffset.MinValue : updated;
 				})
-				.Select(account => account.WebPlayerBlobPath));
-			return await TryResolveFirstValidWebPlayerBlobPathAsync(candidates, cancellationToken);
+				.SelectMany(account => new[] { account.WebPlayerBlobPath, account.BlobPath }));
+
+			string? resolvedPath = await TryResolveFirstValidWebPlayerBlobPathAsync(candidates, cancellationToken);
+			if (!string.IsNullOrWhiteSpace(resolvedPath))
+			{
+				return resolvedPath;
+			}
+
+			return await TryMaterializeUserWebPlayerBlobAsync(userId, userState, cancellationToken);
 		}
 		catch (Exception ex) when (ex is not OperationCanceledException)
 		{
@@ -1388,6 +1396,7 @@ public sealed class SpotifyPathfinderMetadataClient
 				SpotifyAccount? activeAccount = spotifyState.Accounts.FirstOrDefault(account =>
 					account.Name.Equals(spotifyState.ActiveAccount, StringComparison.OrdinalIgnoreCase));
 				candidates.Add(activeAccount?.WebPlayerBlobPath);
+				candidates.Add(activeAccount?.BlobPath);
 			}
 
 			candidates.AddRange(spotifyState.Accounts
@@ -1396,14 +1405,169 @@ public sealed class SpotifyPathfinderMetadataClient
 					DateTimeOffset updated = account.UpdatedAt == default(DateTimeOffset) ? account.CreatedAt : account.UpdatedAt;
 					return updated == default(DateTimeOffset) ? DateTimeOffset.MinValue : updated;
 				})
-				.Select(account => account.WebPlayerBlobPath));
-			return await TryResolveFirstValidWebPlayerBlobPathAsync(candidates, cancellationToken);
+				.SelectMany(account => new[] { account.WebPlayerBlobPath, account.BlobPath }));
+
+			string? resolvedPath = await TryResolveFirstValidWebPlayerBlobPathAsync(candidates, cancellationToken);
+			if (!string.IsNullOrWhiteSpace(resolvedPath))
+			{
+				return resolvedPath;
+			}
+
+			return await TryMaterializePlatformWebPlayerBlobAsync(spotifyState, cancellationToken);
 		}
 		catch (Exception ex) when (ex is not OperationCanceledException)
 		{
 			_logger.LogDebug(ex, "Failed to resolve Spotify platform blob path for Pathfinder.");
 			return null;
 		}
+	}
+
+	private async Task<string?> TryMaterializeUserWebPlayerBlobAsync(string userId, SpotifyUserAuthState userState, CancellationToken cancellationToken)
+	{
+		if (string.IsNullOrWhiteSpace(userState.WebPlayerSpDc))
+		{
+			return null;
+		}
+
+		try
+		{
+			SpotifyUserAccount? activeAccount = SpotifyUserAuthStore.ResolveActiveAccount(userState);
+			string accountName = string.IsNullOrWhiteSpace(activeAccount?.Name) ? "web-player" : activeAccount!.Name.Trim();
+			string blobDir = _userAuthStore.GetUserBlobDir(userId);
+			Directory.CreateDirectory(blobDir);
+			string blobPath = Path.Join(blobDir, $"{SanitizeBlobName(accountName)}.web.json");
+			await _blobService.SaveWebPlayerBlobAsync(
+				blobPath,
+				userState.WebPlayerSpDc!,
+				userState.WebPlayerSpKey,
+				userState.WebPlayerUserAgent,
+				cancellationToken);
+
+			DateTimeOffset now = DateTimeOffset.UtcNow;
+			bool changed = false;
+			if (activeAccount is null)
+			{
+				activeAccount = new SpotifyUserAccount
+				{
+					Name = accountName,
+					WebPlayerBlobPath = blobPath,
+					CreatedAt = now,
+					UpdatedAt = now
+				};
+				userState.Accounts.Add(activeAccount);
+				changed = true;
+			}
+			else if (!string.Equals(activeAccount.WebPlayerBlobPath, blobPath, StringComparison.Ordinal))
+			{
+				activeAccount.WebPlayerBlobPath = blobPath;
+				activeAccount.UpdatedAt = now;
+				changed = true;
+			}
+
+			if (!string.Equals(userState.ActiveAccount, activeAccount.Name, StringComparison.OrdinalIgnoreCase))
+			{
+				userState.ActiveAccount = activeAccount.Name;
+				changed = true;
+			}
+
+			if (changed)
+			{
+				await _userAuthStore.SaveAsync(userId, userState);
+			}
+
+			if (await IsUsableWebPlayerBlobPathAsync(blobPath, cancellationToken))
+			{
+				_logger.LogInformation("Recovered Spotify web-player blob for user {UserId} at {BlobPath}.", userId, blobPath);
+				return blobPath;
+			}
+		}
+		catch (Exception ex) when (ex is not OperationCanceledException)
+		{
+			_logger.LogWarning(ex, "Failed to recover Spotify web-player blob for user {UserId}.", userId);
+		}
+
+		return null;
+	}
+
+	private async Task<string?> TryMaterializePlatformWebPlayerBlobAsync(SpotifyConfig spotifyState, CancellationToken cancellationToken)
+	{
+		if (string.IsNullOrWhiteSpace(spotifyState.WebPlayerSpDc))
+		{
+			return null;
+		}
+
+		try
+		{
+			string accountName = string.IsNullOrWhiteSpace(spotifyState.ActiveAccount) ? "platform" : spotifyState.ActiveAccount.Trim();
+			string root = AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
+			string blobDir = Path.Join(root, "spotify", "blobs");
+			Directory.CreateDirectory(blobDir);
+			string blobPath = Path.Join(blobDir, $"{SanitizeBlobName(accountName)}.web.json");
+			await _blobService.SaveWebPlayerBlobAsync(
+				blobPath,
+				spotifyState.WebPlayerSpDc!,
+				spotifyState.WebPlayerSpKey,
+				spotifyState.WebPlayerUserAgent,
+				cancellationToken);
+
+			DateTimeOffset now = DateTimeOffset.UtcNow;
+			await _platformAuthService.UpdateAsync(platformState =>
+			{
+				platformState.Spotify ??= new SpotifyConfig();
+				SpotifyAccount? account = platformState.Spotify.Accounts.FirstOrDefault(existing =>
+					existing.Name.Equals(accountName, StringComparison.OrdinalIgnoreCase));
+				if (account is null)
+				{
+					account = new SpotifyAccount
+					{
+						Name = accountName,
+						BlobPath = blobPath,
+						WebPlayerBlobPath = blobPath,
+						CreatedAt = now,
+						UpdatedAt = now
+					};
+					platformState.Spotify.Accounts.Add(account);
+				}
+				else
+				{
+					account.WebPlayerBlobPath = blobPath;
+					account.UpdatedAt = now;
+				}
+
+				platformState.Spotify.ActiveAccount = accountName;
+				platformState.Spotify.WebPlayerSpDc = spotifyState.WebPlayerSpDc;
+				platformState.Spotify.WebPlayerSpKey = spotifyState.WebPlayerSpKey;
+				platformState.Spotify.WebPlayerUserAgent = spotifyState.WebPlayerUserAgent;
+				return 0;
+			});
+
+			if (await IsUsableWebPlayerBlobPathAsync(blobPath, cancellationToken))
+			{
+				_logger.LogInformation("Recovered platform Spotify web-player blob at {BlobPath}.", blobPath);
+				return blobPath;
+			}
+		}
+		catch (Exception ex) when (ex is not OperationCanceledException)
+		{
+			_logger.LogWarning(ex, "Failed to recover platform Spotify web-player blob.");
+		}
+
+		return null;
+	}
+
+	private static string SanitizeBlobName(string value)
+	{
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			return "web-player";
+		}
+
+		char[] invalidChars = Path.GetInvalidFileNameChars();
+		char[] normalized = value.Trim()
+			.Select(character => invalidChars.Contains(character) ? '-' : character)
+			.ToArray();
+		string sanitized = new string(normalized).Trim();
+		return string.IsNullOrWhiteSpace(sanitized) ? "web-player" : sanitized;
 	}
 
 	private async Task<string?> TryResolveFirstValidWebPlayerBlobPathAsync(IEnumerable<string?> candidatePaths, CancellationToken cancellationToken)
