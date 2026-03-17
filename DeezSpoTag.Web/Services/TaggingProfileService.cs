@@ -61,7 +61,17 @@ public sealed class TaggingProfileService
             await SaveAsync(profiles);
         }
 
-        await CleanupLegacyPrimaryStoreCandidatesAsync();
+        if (ShouldCleanupLegacyPrimaryStores())
+        {
+            await CleanupLegacyPrimaryStoreCandidatesAsync();
+        }
+        else
+        {
+            _logger.LogDebug(
+                "Skipping legacy tagging profile cleanup because custom data root is active. DataRoot={DataRoot}",
+                _dataRoot);
+        }
+
         return profiles;
     }
 
@@ -473,6 +483,24 @@ public sealed class TaggingProfileService
         }
 
         return Task.CompletedTask;
+    }
+
+    private bool ShouldCleanupLegacyPrimaryStores()
+    {
+        // Only run destructive legacy cleanup when using one of the built-in data roots.
+        // With custom roots (for example Docker /data), legacy candidate paths may be bind-mount
+        // aliases to the same physical file and deleting them can remove the active profile store.
+        var dataRootFullPath = Path.GetFullPath(_dataRoot);
+        var defaultRoots = new[]
+        {
+            Path.Join(_contentRoot, "Data"),
+            Path.Join(AppContext.BaseDirectory, "Data"),
+            Path.Join(Directory.GetCurrentDirectory(), "Data"),
+            Path.Join(Directory.GetCurrentDirectory(), "DeezSpoTag.Web", "Data")
+        };
+
+        return defaultRoots.Any(candidate =>
+            string.Equals(Path.GetFullPath(candidate), dataRootFullPath, StringComparison.OrdinalIgnoreCase));
     }
 
     private IEnumerable<string> GetLegacyProfileCandidates()
