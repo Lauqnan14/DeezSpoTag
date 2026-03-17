@@ -259,25 +259,51 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             return BadRequest("Account name must be 1-64 chars: letters, numbers, dot, underscore, hyphen.");
         }
 
-        await _blobService.EnsureSpotifyAuthEnvironmentAsync(cancellationToken);
-        var state = await _userAuthStore.LoadAsync(userId);
-
+        SpotifyUserAuthState state;
         var blobDir = _userAuthStore.GetUserBlobDir(userId);
         SpotifyBlobResult result;
         try
         {
+            await _blobService.EnsureSpotifyAuthEnvironmentAsync(cancellationToken);
+            state = await _userAuthStore.LoadAsync(userId);
             result = await _blobService.GenerateBlobAsync(name, request?.Headless ?? false, blobDir, cancellationToken);
         }
-        catch (InvalidOperationException ex)
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogWarning(ex, "Spotify credentials generation failed for account {AccountName}.", name);
-            return BadRequest(ex.Message);
+            _logger.LogWarning(ex, "Spotify credentials generation timed out for account {AccountName}.", name);
+            return StatusCode(StatusCodes.Status504GatewayTimeout, "Spotify credentials generation timed out.");
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            _logger.LogWarning(ex, "Spotify credentials generation could not access data path for account {AccountName}.", name);
+            return StatusCode(StatusCodes.Status500InternalServerError, "Spotify data directory is not writable.");
         }
         catch (FileNotFoundException ex)
         {
             _logger.LogWarning(ex, "Spotify credentials generation dependencies are missing for account {AccountName}.", name);
             return StatusCode(StatusCodes.Status500InternalServerError, ex.Message);
         }
+        catch (IOException ex)
+        {
+            _logger.LogWarning(ex, "Spotify credentials generation failed due to I/O error for account {AccountName}.", name);
+            return StatusCode(StatusCodes.Status500InternalServerError, "Spotify credentials generation failed due to an I/O error.");
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Spotify credentials generation failed for account {AccountName}.", name);
+            return BadRequest(ex.Message);
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "Spotify credentials generation request failed for account {AccountName}.", name);
+            return StatusCode(StatusCodes.Status502BadGateway, "Spotify credentials generation request failed.");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Spotify credentials generation failed unexpectedly for account {AccountName}.", name);
+            return StatusCode(StatusCodes.Status500InternalServerError, "Spotify credentials generation failed unexpectedly.");
+        }
+
         var librespotBlobPath = result.BlobPath;
         string? webPlayerBlobPath = null;
 
@@ -884,7 +910,27 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             return null;
         }
 
-        var token = await _blobService.GetWebPlayerAccessTokenFromCookiesAsync(spDc, spKey, userAgent, cancellationToken);
+        string? token;
+        try
+        {
+            token = await _blobService.GetWebPlayerAccessTokenFromCookiesAsync(spDc, spKey, userAgent, cancellationToken);
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Spotify profile lookup timed out while validating web-player cookies.");
+            return null;
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "Spotify profile lookup failed while validating web-player cookies.");
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Spotify profile lookup failed unexpectedly while validating web-player cookies.");
+            return null;
+        }
+
         if (string.IsNullOrWhiteSpace(token))
         {
             return null;
