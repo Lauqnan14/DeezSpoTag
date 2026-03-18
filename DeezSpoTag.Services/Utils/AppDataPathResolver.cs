@@ -4,20 +4,20 @@ public static class AppDataPathResolver
 {
     public const string ConfigDirEnvVar = "DEEZSPOTAG_CONFIG_DIR";
     public const string DataDirEnvVar = "DEEZSPOTAG_DATA_DIR";
+    private const string WorkersProjectDirectoryName = "DeezSpoTag.Workers";
 
     public static string GetDefaultWorkersDataDir()
     {
         var stableCandidates = new[]
         {
-            Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), "DeezSpoTag.Workers", "Data")),
-            Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "..", "..", "..", "..", "DeezSpoTag.Workers", "Data"))
+            Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), WorkersProjectDirectoryName, "Data")),
+            Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "..", "..", "..", "..", WorkersProjectDirectoryName, "Data"))
         };
         var legacyCandidates = new[]
         {
-            Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), "DeezSpoTag.Workers", "bin", "Debug", "net8.0", "Data")),
-            Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "..", "..", "..", "..", "DeezSpoTag.Workers", "bin", "Debug", "net8.0", "Data"))
+            Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), WorkersProjectDirectoryName, "bin", "Debug", "net8.0", "Data")),
+            Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "..", "..", "..", "..", WorkersProjectDirectoryName, "bin", "Debug", "net8.0", "Data"))
         };
-        var fallbackCandidate = Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "Data"));
 
         var existingStableCandidate = Array.Find(stableCandidates, Directory.Exists);
         var existingLegacyCandidate = Array.Find(legacyCandidates, Directory.Exists);

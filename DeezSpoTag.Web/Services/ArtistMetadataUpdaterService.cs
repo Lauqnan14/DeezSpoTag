@@ -607,54 +607,97 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
     {
         var normalizedSource = NormalizeMetadataSource(source);
         var candidates = new List<ArtworkCandidate>();
-        string? biography = null;
-
-        if (normalizedSource is MetadataSourceAuto or MetadataSourceSpotify)
+        var spotify = await TryCollectSpotifyMetadataAsync(
+            normalizedSource,
+            artistId,
+            artistName,
+            candidates,
+            cancellationToken);
+        if (!spotify.Succeeded)
         {
-            var page = await _spotifyArtistService.GetArtistPageAsync(
-                artistId,
-                artistName,
-                forceRefresh: true,
-                forceRematch: false,
-                cancellationToken);
-            if (page?.Artist is not null)
-            {
-                biography = page.Artist.Biography;
-                await AddSpotifyArtworkCandidatesAsync(artistId, page, candidates, cancellationToken);
-            }
-            else if (normalizedSource == MetadataSourceSpotify)
-            {
-                return null;
-            }
+            return null;
         }
 
-        if (normalizedSource is MetadataSourceAuto or MetadataSourceDeezer)
+        if (!await TryCollectDeezerMetadataAsync(normalizedSource, artistName, candidates, cancellationToken))
         {
-            var deezerCandidate = await TryResolveDeezerArtworkCandidateAsync(artistName, cancellationToken);
-            if (deezerCandidate is not null)
-            {
-                candidates.Add(deezerCandidate);
-            }
-            else if (normalizedSource == MetadataSourceDeezer && candidates.Count == 0)
-            {
-                return null;
-            }
+            return null;
         }
 
-        if (normalizedSource is MetadataSourceAuto or MetadataSourceApple)
+        if (!await TryCollectAppleMetadataAsync(normalizedSource, artistName, candidates, cancellationToken))
         {
-            var appleCandidate = await TryResolveAppleArtworkCandidateAsync(artistName, cancellationToken);
-            if (appleCandidate is not null)
-            {
-                candidates.Add(appleCandidate);
-            }
-            else if (normalizedSource == MetadataSourceApple && candidates.Count == 0)
-            {
-                return null;
-            }
+            return null;
         }
 
-        return new ResolvedArtistMetadata(biography, candidates);
+        return new ResolvedArtistMetadata(spotify.Biography, candidates);
+    }
+
+    private async Task<(bool Succeeded, string? Biography)> TryCollectSpotifyMetadataAsync(
+        string normalizedSource,
+        long artistId,
+        string artistName,
+        List<ArtworkCandidate> candidates,
+        CancellationToken cancellationToken)
+    {
+        if (normalizedSource is not (MetadataSourceAuto or MetadataSourceSpotify))
+        {
+            return (true, null);
+        }
+
+        var page = await _spotifyArtistService.GetArtistPageAsync(
+            artistId,
+            artistName,
+            forceRefresh: true,
+            forceRematch: false,
+            cancellationToken);
+        if (page?.Artist is null)
+        {
+            return (normalizedSource != MetadataSourceSpotify, null);
+        }
+
+        await AddSpotifyArtworkCandidatesAsync(artistId, page, candidates, cancellationToken);
+        return (true, page.Artist.Biography);
+    }
+
+    private async Task<bool> TryCollectDeezerMetadataAsync(
+        string normalizedSource,
+        string artistName,
+        List<ArtworkCandidate> candidates,
+        CancellationToken cancellationToken)
+    {
+        if (normalizedSource is not (MetadataSourceAuto or MetadataSourceDeezer))
+        {
+            return true;
+        }
+
+        var deezerCandidate = await TryResolveDeezerArtworkCandidateAsync(artistName, cancellationToken);
+        if (deezerCandidate is null)
+        {
+            return normalizedSource != MetadataSourceDeezer || candidates.Count > 0;
+        }
+
+        candidates.Add(deezerCandidate);
+        return true;
+    }
+
+    private async Task<bool> TryCollectAppleMetadataAsync(
+        string normalizedSource,
+        string artistName,
+        List<ArtworkCandidate> candidates,
+        CancellationToken cancellationToken)
+    {
+        if (normalizedSource is not (MetadataSourceAuto or MetadataSourceApple))
+        {
+            return true;
+        }
+
+        var appleCandidate = await TryResolveAppleArtworkCandidateAsync(artistName, cancellationToken);
+        if (appleCandidate is null)
+        {
+            return normalizedSource != MetadataSourceApple || candidates.Count > 0;
+        }
+
+        candidates.Add(appleCandidate);
+        return true;
     }
 
     private async Task AddSpotifyArtworkCandidatesAsync(

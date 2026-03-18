@@ -1457,112 +1457,128 @@ public sealed class SpotifyBlobService
             var (totp, version) = SpotifyWebPlayerTotp.Generate();
             if (string.IsNullOrWhiteSpace(totp))
             {
-                return new WebPlayerTokenResponse
-                {
-                    IsSuccess = false,
-                    ErrorSnippet = "TOTP generation failed."
-                };
+                return CreateFailedTokenResponse("TOTP generation failed.");
             }
 
-            var query = $"reason=init&productType=web-player&totp={totp}&totpVer={version}&totpServer={totp}";
-            var tokenUri = BuildSpotifyUri(SpotifyOpenTokenPath, query);
-            using var request = new HttpRequestMessage(HttpMethod.Get, tokenUri);
+            using var request = CreateWebPlayerTokenRequest(totp, version);
             request.Headers.Accept.ParseAdd("application/json");
             request.Headers.Referrer = SpotifyOpenReferrerUri;
-            var tokenResponse = await client.SendAsync(request, cancellationToken);
+            using var tokenResponse = await client.SendAsync(request, cancellationToken);
 
             if (!tokenResponse.IsSuccessStatusCode)
             {
-                var errorBody = await tokenResponse.Content.ReadAsStringAsync(cancellationToken);
-                var trimmed = errorBody.Length > 200 ? errorBody[..200] : errorBody;
-                return new WebPlayerTokenResponse
-                {
-                    IsSuccess = false,
-                    StatusCode = (int)tokenResponse.StatusCode,
-                    ErrorSnippet = trimmed
-                };
+                return await CreateErrorTokenResponseAsync(tokenResponse, cancellationToken);
             }
 
-            var tokenJson = await tokenResponse.Content.ReadAsStringAsync(cancellationToken);
-            using var tokenDoc = JsonDocument.Parse(tokenJson);
-            if (!tokenDoc.RootElement.TryGetProperty("accessToken", out var accessTokenElement))
-            {
-                return new WebPlayerTokenResponse
-                {
-                    IsSuccess = false,
-                    StatusCode = (int)tokenResponse.StatusCode
-                };
-            }
-
-            var accessToken = accessTokenElement.GetString();
-            var clientId = tokenDoc.RootElement.TryGetProperty("clientId", out var clientIdElement)
-                ? clientIdElement.GetString()
-                : null;
-            bool? isAnonymous = null;
-            if (tokenDoc.RootElement.TryGetProperty("isAnonymous", out var isAnonymousElement))
-            {
-                if (isAnonymousElement.ValueKind == JsonValueKind.True)
-                {
-                    isAnonymous = true;
-                }
-                else if (isAnonymousElement.ValueKind == JsonValueKind.False)
-                {
-                    isAnonymous = false;
-                }
-            }
-            var country = tokenDoc.RootElement.TryGetProperty("country", out var countryElement)
-                ? countryElement.GetString()
-                : null;
-            long? expiresAt = null;
-            if (tokenDoc.RootElement.TryGetProperty("accessTokenExpirationTimestampMs", out var expiresElement) &&
-                expiresElement.TryGetInt64(out var expiresValue))
-            {
-                expiresAt = expiresValue;
-            }
-
-            return new WebPlayerTokenResponse
-            {
-                IsSuccess = true,
-                StatusCode = (int)tokenResponse.StatusCode,
-                AccessToken = string.IsNullOrWhiteSpace(accessToken) ? null : accessToken,
-                ExpiresAtUnixMs = expiresAt,
-                IsAnonymous = isAnonymous,
-                Country = country,
-                ClientId = string.IsNullOrWhiteSpace(clientId) ? null : clientId
-            };
+            return await ParseSuccessTokenResponseAsync(tokenResponse, cancellationToken);
         }
         catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return new WebPlayerTokenResponse
-            {
-                IsSuccess = false,
-                ErrorSnippet = "web_player_timeout"
-            };
+            return CreateFailedTokenResponse("web_player_timeout");
         }
         catch (HttpRequestException)
         {
-            return new WebPlayerTokenResponse
-            {
-                IsSuccess = false,
-                ErrorSnippet = "web_player_request_failed"
-            };
+            return CreateFailedTokenResponse("web_player_request_failed");
         }
         catch (JsonException)
         {
-            return new WebPlayerTokenResponse
-            {
-                IsSuccess = false,
-                ErrorSnippet = "web_player_invalid_response"
-            };
+            return CreateFailedTokenResponse("web_player_invalid_response");
         }
-        catch (Exception) when (cancellationToken.IsCancellationRequested == false)
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return CreateFailedTokenResponse("web_player_token_failed");
+        }
+    }
+
+    private static HttpRequestMessage CreateWebPlayerTokenRequest(string totp, int version)
+    {
+        var query = $"reason=init&productType=web-player&totp={totp}&totpVer={version}&totpServer={totp}";
+        var tokenUri = BuildSpotifyUri(SpotifyOpenTokenPath, query);
+        return new HttpRequestMessage(HttpMethod.Get, tokenUri);
+    }
+
+    private static async Task<WebPlayerTokenResponse> CreateErrorTokenResponseAsync(
+        HttpResponseMessage tokenResponse,
+        CancellationToken cancellationToken)
+    {
+        var errorBody = await tokenResponse.Content.ReadAsStringAsync(cancellationToken);
+        var trimmed = errorBody.Length > 200 ? errorBody[..200] : errorBody;
+        return new WebPlayerTokenResponse
+        {
+            IsSuccess = false,
+            StatusCode = (int)tokenResponse.StatusCode,
+            ErrorSnippet = trimmed
+        };
+    }
+
+    private static async Task<WebPlayerTokenResponse> ParseSuccessTokenResponseAsync(
+        HttpResponseMessage tokenResponse,
+        CancellationToken cancellationToken)
+    {
+        var tokenJson = await tokenResponse.Content.ReadAsStringAsync(cancellationToken);
+        using var tokenDoc = JsonDocument.Parse(tokenJson);
+        if (!tokenDoc.RootElement.TryGetProperty("accessToken", out var accessTokenElement))
         {
             return new WebPlayerTokenResponse
             {
                 IsSuccess = false,
-                ErrorSnippet = "web_player_token_failed"
+                StatusCode = (int)tokenResponse.StatusCode
             };
         }
+
+        var accessToken = accessTokenElement.GetString();
+        var clientId = tokenDoc.RootElement.TryGetProperty("clientId", out var clientIdElement)
+            ? clientIdElement.GetString()
+            : null;
+        var country = tokenDoc.RootElement.TryGetProperty("country", out var countryElement)
+            ? countryElement.GetString()
+            : null;
+
+        return new WebPlayerTokenResponse
+        {
+            IsSuccess = true,
+            StatusCode = (int)tokenResponse.StatusCode,
+            AccessToken = string.IsNullOrWhiteSpace(accessToken) ? null : accessToken,
+            ExpiresAtUnixMs = TryReadExpiresAt(tokenDoc.RootElement),
+            IsAnonymous = TryReadIsAnonymous(tokenDoc.RootElement),
+            Country = country,
+            ClientId = string.IsNullOrWhiteSpace(clientId) ? null : clientId
+        };
+    }
+
+    private static bool? TryReadIsAnonymous(JsonElement root)
+    {
+        if (!root.TryGetProperty("isAnonymous", out var isAnonymousElement))
+        {
+            return null;
+        }
+
+        return isAnonymousElement.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => null
+        };
+    }
+
+    private static long? TryReadExpiresAt(JsonElement root)
+    {
+        if (root.TryGetProperty("accessTokenExpirationTimestampMs", out var expiresElement)
+            && expiresElement.TryGetInt64(out var expiresValue))
+        {
+            return expiresValue;
+        }
+
+        return null;
+    }
+
+    private static WebPlayerTokenResponse CreateFailedTokenResponse(string errorSnippet)
+    {
+        return new WebPlayerTokenResponse
+        {
+            IsSuccess = false,
+            ErrorSnippet = errorSnippet
+        };
     }
 
     private static async Task WarmWebPlayerSessionAsync(HttpClient client, CancellationToken cancellationToken)

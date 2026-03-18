@@ -4516,6 +4516,11 @@ public sealed class DownloadIntentService
 
     private static void ApplyIntentMetadata(DeezerQueueItem payload, DownloadIntent intent)
     {
+        if (!string.Equals(payload.ContentType, DownloadContentTypes.Podcast, StringComparison.OrdinalIgnoreCase))
+        {
+            ApplyIntentMetadataToStereoPayload(payload, intent);
+        }
+
         payload.DeezerAlbumId = ResolveIntentString(intent.DeezerAlbumId, payload.DeezerAlbumId);
         payload.DeezerArtistId = ResolveIntentString(intent.DeezerArtistId, payload.DeezerArtistId);
         if (string.Equals(payload.ContentType, DownloadContentTypes.Podcast, StringComparison.OrdinalIgnoreCase)

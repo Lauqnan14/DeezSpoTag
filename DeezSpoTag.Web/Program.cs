@@ -731,7 +731,12 @@ static void RegisterAutoTagServices(IServiceCollection services)
             PlatformAuthService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformAuthService>(),
             PlexApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Plex.PlexApiClient>(),
             SpotifyBlobService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyBlobService>(),
-            SettingsService = sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>()
+            SettingsService = sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(),
+            LibraryRepository = sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
+            QualityScannerService = sp.GetRequiredService<DeezSpoTag.Web.Services.QualityScannerService>(),
+            DuplicateCleanerService = sp.GetRequiredService<DeezSpoTag.Web.Services.DuplicateCleanerService>(),
+            LyricsRefreshQueueService = sp.GetRequiredService<DeezSpoTag.Web.Services.LyricsRefreshQueueService>(),
+            CoverMaintenanceService = sp.GetRequiredService<DeezSpoTag.Web.Services.CoverPort.CoverLibraryMaintenanceService>()
         });
     services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.LocalAutoTagRunnerCollaborators>(sp =>
         new DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.LocalAutoTagRunnerCollaborators

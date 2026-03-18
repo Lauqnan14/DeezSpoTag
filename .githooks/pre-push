@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+zero40="0000000000000000000000000000000000000000"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main)
+      ;;
+    refs/heads/*)
+      # Allow deleting non-main branches, block creating/updating them.
+      if [ "$local_sha" = "$zero40" ]; then
+        continue
+      fi
+      echo "Push blocked: only refs/heads/main can be pushed from this repo." >&2
+      echo "Attempted remote ref: $remote_ref" >&2
+      exit 1
+      ;;
+    *)
+      # Allow tags and non-branch refs.
+      ;;
+  esac
+done

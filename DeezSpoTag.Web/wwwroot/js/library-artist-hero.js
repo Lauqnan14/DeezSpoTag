@@ -9,6 +9,106 @@ function normalizeSpotifyBiographyText(biography) {
     return (temp.textContent || '').replaceAll(/[\s\u00A0]+/g, ' ').trim();
 }
 
+const ARTIST_BIO_CLAMP_CLASS = 'bio-text--clamped';
+let artistBiographyToggleInitialized = false;
+let artistBiographyResizeAnimationFrame = 0;
+
+function isUnavailableBiographyText(text) {
+    return /^biography unavailable/i.test(text) || /^n\/?a$/i.test(text);
+}
+
+function biographyRequiresClamp(bioEl) {
+    const wasExpanded = bioEl.dataset.expanded === 'true';
+    const hadClampClass = bioEl.classList.contains(ARTIST_BIO_CLAMP_CLASS);
+
+    bioEl.classList.add(ARTIST_BIO_CLAMP_CLASS);
+    bioEl.dataset.expanded = 'false';
+    const requiresClamp = (bioEl.scrollHeight - bioEl.clientHeight) > 1;
+
+    if (wasExpanded) {
+        bioEl.classList.remove(ARTIST_BIO_CLAMP_CLASS);
+        bioEl.dataset.expanded = 'true';
+    } else if (!hadClampClass) {
+        bioEl.classList.remove(ARTIST_BIO_CLAMP_CLASS);
+    }
+
+    return requiresClamp;
+}
+
+function updateArtistBiographyToggle(forceCollapse = true) {
+    const bioEl = document.getElementById('artistBiography');
+    const toggleEl = document.getElementById('artistBiographyToggle');
+    if (!bioEl || !toggleEl) {
+        return;
+    }
+
+    const biographyText = (bioEl.textContent || '').trim();
+    if (!biographyText || isUnavailableBiographyText(biographyText)) {
+        bioEl.dataset.expanded = 'false';
+        bioEl.classList.remove(ARTIST_BIO_CLAMP_CLASS);
+        toggleEl.hidden = true;
+        toggleEl.setAttribute('aria-expanded', 'false');
+        toggleEl.textContent = 'See more';
+        return;
+    }
+
+    const canExpand = biographyRequiresClamp(bioEl);
+    if (!canExpand) {
+        bioEl.dataset.expanded = 'false';
+        bioEl.classList.remove(ARTIST_BIO_CLAMP_CLASS);
+        toggleEl.hidden = true;
+        toggleEl.setAttribute('aria-expanded', 'false');
+        toggleEl.textContent = 'See more';
+        return;
+    }
+
+    const shouldExpand = !forceCollapse && bioEl.dataset.expanded === 'true';
+    if (shouldExpand) {
+        bioEl.classList.remove(ARTIST_BIO_CLAMP_CLASS);
+        bioEl.dataset.expanded = 'true';
+        toggleEl.setAttribute('aria-expanded', 'true');
+        toggleEl.textContent = 'See less';
+    } else {
+        bioEl.classList.add(ARTIST_BIO_CLAMP_CLASS);
+        bioEl.dataset.expanded = 'false';
+        toggleEl.setAttribute('aria-expanded', 'false');
+        toggleEl.textContent = 'See more';
+    }
+
+    toggleEl.hidden = false;
+}
+
+function initializeArtistBiographyToggle() {
+    if (artistBiographyToggleInitialized) {
+        return;
+    }
+
+    const bioEl = document.getElementById('artistBiography');
+    const toggleEl = document.getElementById('artistBiographyToggle');
+    if (!bioEl || !toggleEl) {
+        return;
+    }
+
+    toggleEl.addEventListener('click', () => {
+        const expanded = bioEl.dataset.expanded === 'true';
+        bioEl.dataset.expanded = expanded ? 'false' : 'true';
+        updateArtistBiographyToggle(false);
+    });
+
+    window.addEventListener('resize', () => {
+        if (artistBiographyResizeAnimationFrame) {
+            cancelAnimationFrame(artistBiographyResizeAnimationFrame);
+        }
+
+        artistBiographyResizeAnimationFrame = requestAnimationFrame(() => {
+            updateArtistBiographyToggle(false);
+            artistBiographyResizeAnimationFrame = 0;
+        });
+    });
+
+    artistBiographyToggleInitialized = true;
+}
+
 function sanitizeMediaUrl(url) {
     const value = (url || '').toString().trim();
     if (!value) {
@@ -153,7 +253,15 @@ function setSpotifyArtistBiography(biography) {
     if (bioPanel) {
         bioPanel.style.display = 'block';
     }
+
+    initializeArtistBiographyToggle();
+    updateArtistBiographyToggle(true);
 }
+
+window.refreshArtistBiographyClamp = function refreshArtistBiographyClamp(forceCollapse = false) {
+    initializeArtistBiographyToggle();
+    updateArtistBiographyToggle(forceCollapse);
+};
 
 function applySpotifyArtistProfile(artist) {
     if (!artist) {

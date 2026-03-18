@@ -164,6 +164,13 @@ public sealed class SpotifyMetadataService
 
         if (parsed.Type == PlaylistType && TryGetPlaylistFromCache(parsed.Id, out var cached))
         {
+            if (cached.TrackList.Count > 0 && cached.TrackList.Any(track => !HasAudioFeatures(track)))
+            {
+                var refreshed = await HydrateTrackMetadataAsync(cached, cancellationToken);
+                CachePlaylist(parsed.Id, refreshed);
+                return refreshed;
+            }
+
             return cached;
         }
 
@@ -199,6 +206,11 @@ public sealed class SpotifyMetadataService
         }
 
         var playlistMetadata = MapSpotiFlacPlaylistMetadata(playlistId, spotiFlacPayload, includeTracks: true);
+        if (playlistMetadata.TrackList.Count > 0)
+        {
+            playlistMetadata = await HydrateTrackMetadataAsync(playlistMetadata, cancellationToken);
+        }
+
         CachePlaylist(playlistId, playlistMetadata);
         return playlistMetadata;
     }

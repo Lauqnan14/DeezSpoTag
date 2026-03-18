@@ -1369,18 +1369,14 @@ public sealed class LibraryRecommendationService
 
     private static bool HasDerivativeVersionMismatch(ShazamTrackCard sourceCard, ApiTrack candidate)
     {
-        var sourceTerms = ExtractDerivativeTerms(string.Join(' ', new[]
-        {
+        var sourceTerms = ExtractDerivativeTerms(string.Join(' ',
             sourceCard.Title,
             sourceCard.Artist,
-            sourceCard.Album ?? string.Empty
-        }));
-        var candidateTerms = ExtractDerivativeTerms(string.Join(' ', new[]
-        {
+            sourceCard.Album ?? string.Empty));
+        var candidateTerms = ExtractDerivativeTerms(string.Join(' ',
             BuildCandidateTitle(candidate),
             candidate.Artist?.Name ?? string.Empty,
-            candidate.Album?.Title ?? string.Empty
-        }));
+            candidate.Album?.Title ?? string.Empty));
 
         if (candidateTerms.Count == 0)
         {

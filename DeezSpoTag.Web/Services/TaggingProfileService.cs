@@ -269,7 +269,8 @@ public sealed class TaggingProfileService
             string.Equals(entry, "downloadTagSource", StringComparison.OrdinalIgnoreCase));
         if (string.IsNullOrWhiteSpace(key))
         {
-            return false;
+            data["downloadTagSource"] = JsonSerializer.SerializeToElement(DeezerPlatform);
+            return true;
         }
 
         var current = data[key];

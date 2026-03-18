@@ -198,6 +198,33 @@
     line-height: 1.7;
     color: var(--text-secondary);
     margin: 0;
+    white-space: pre-wrap;
+}
+
+.artist-page .hero-modern__bio .bio-text.bio-text--clamped {
+    display: -webkit-box;
+    -webkit-line-clamp: 12;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.artist-page .hero-modern__bio .bio-toggle {
+    margin-top: 12px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+    cursor: pointer;
+    text-decoration: none;
+}
+
+.artist-page .hero-modern__bio .bio-toggle:hover,
+.artist-page .hero-modern__bio .bio-toggle:focus-visible {
+    color: var(--text-primary);
+    text-decoration: underline;
 }
 
 .artist-page .dropdown-section {

@@ -268,40 +268,9 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             state = await _userAuthStore.LoadAsync(userId);
             result = await _blobService.GenerateBlobAsync(name, request?.Headless ?? false, blobDir, cancellationToken);
         }
-        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (TryMapGenerateAccountException(ex, name, cancellationToken, out var mappedResult))
         {
-            _logger.LogWarning(ex, "Spotify credentials generation timed out for account {AccountName}.", name);
-            return StatusCode(StatusCodes.Status504GatewayTimeout, "Spotify credentials generation timed out.");
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            _logger.LogWarning(ex, "Spotify credentials generation could not access data path for account {AccountName}.", name);
-            return StatusCode(StatusCodes.Status500InternalServerError, "Spotify data directory is not writable.");
-        }
-        catch (FileNotFoundException ex)
-        {
-            _logger.LogWarning(ex, "Spotify credentials generation dependencies are missing for account {AccountName}.", name);
-            return StatusCode(StatusCodes.Status500InternalServerError, ex.Message);
-        }
-        catch (IOException ex)
-        {
-            _logger.LogWarning(ex, "Spotify credentials generation failed due to I/O error for account {AccountName}.", name);
-            return StatusCode(StatusCodes.Status500InternalServerError, "Spotify credentials generation failed due to an I/O error.");
-        }
-        catch (InvalidOperationException ex)
-        {
-            _logger.LogWarning(ex, "Spotify credentials generation failed for account {AccountName}.", name);
-            return BadRequest(ex.Message);
-        }
-        catch (HttpRequestException ex)
-        {
-            _logger.LogWarning(ex, "Spotify credentials generation request failed for account {AccountName}.", name);
-            return StatusCode(StatusCodes.Status502BadGateway, "Spotify credentials generation request failed.");
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogError(ex, "Spotify credentials generation failed unexpectedly for account {AccountName}.", name);
-            return StatusCode(StatusCodes.Status500InternalServerError, "Spotify credentials generation failed unexpectedly.");
+            return mappedResult;
         }
 
         var librespotBlobPath = result.BlobPath;
@@ -591,31 +560,46 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         await _platformAuthService.UpdateAsync(platformState =>
         {
             platformState.Spotify ??= new SpotifyConfig();
-            var platformAccount = platformState.Spotify.Accounts.FirstOrDefault(existing =>
-                existing.Name.Equals(accountName, StringComparison.OrdinalIgnoreCase));
-            if (platformAccount == null)
-            {
-                platformState.Spotify.Accounts.Add(new SpotifyAccount
-                {
-                    Name = accountName,
-                    BlobPath = blobPath,
-                    WebPlayerBlobPath = blobPath,
-                    CreatedAt = now,
-                    UpdatedAt = now
-                });
-            }
-            else
-            {
-                platformAccount.WebPlayerBlobPath = blobPath;
-                platformAccount.UpdatedAt = now;
-            }
-
-            platformState.Spotify.ActiveAccount = accountName;
-            platformState.Spotify.WebPlayerSpDc = state.WebPlayerSpDc;
-            platformState.Spotify.WebPlayerSpKey = state.WebPlayerSpKey;
-            platformState.Spotify.WebPlayerUserAgent = state.WebPlayerUserAgent;
+            UpsertPlatformWebPlayerAccount(platformState.Spotify, accountName, blobPath, now);
+            ApplyWebPlayerCookieState(platformState.Spotify, accountName, state);
             return 0;
         });
+    }
+
+    private static void UpsertPlatformWebPlayerAccount(
+        SpotifyConfig spotify,
+        string accountName,
+        string blobPath,
+        DateTimeOffset now)
+    {
+        var platformAccount = spotify.Accounts.FirstOrDefault(existing =>
+            existing.Name.Equals(accountName, StringComparison.OrdinalIgnoreCase));
+        if (platformAccount == null)
+        {
+            spotify.Accounts.Add(new SpotifyAccount
+            {
+                Name = accountName,
+                BlobPath = blobPath,
+                WebPlayerBlobPath = blobPath,
+                CreatedAt = now,
+                UpdatedAt = now
+            });
+            return;
+        }
+
+        platformAccount.WebPlayerBlobPath = blobPath;
+        platformAccount.UpdatedAt = now;
+    }
+
+    private static void ApplyWebPlayerCookieState(
+        SpotifyConfig spotify,
+        string accountName,
+        SpotifyUserAuthState state)
+    {
+        spotify.ActiveAccount = accountName;
+        spotify.WebPlayerSpDc = state.WebPlayerSpDc;
+        spotify.WebPlayerSpKey = state.WebPlayerSpKey;
+        spotify.WebPlayerUserAgent = state.WebPlayerUserAgent;
     }
 
     [HttpPost("web-player")]
@@ -642,11 +626,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         var spKey = normalizedRequest.SpKey;
         var userAgent = normalizedRequest.UserAgent;
         var providedCookies = normalizedRequest.Cookies;
-
-        if (string.IsNullOrWhiteSpace(spDc) && (providedCookies == null || providedCookies.Count == 0))
-        {
-            return BadRequest("sp_dc is required.");
-        }
 
         (spDc, spKey) = ResolveCookieCredentials(spDc, spKey, providedCookies);
 
@@ -712,30 +691,81 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
 
             return Ok(new { saved = true, webPlayerBlobPath = blobResult.BlobPath });
         }
-        catch (TaskCanceledException ex) when (!HttpContext.RequestAborted.IsCancellationRequested)
+        catch (Exception ex) when (TryMapSaveWebPlayerException(ex, out var mappedResult))
         {
-            _logger.LogWarning(ex, "Saving Spotify web-player cookies timed out.");
-            return StatusCode(StatusCodes.Status504GatewayTimeout, "Saving Spotify web-player cookies timed out.");
+            return mappedResult;
         }
-        catch (UnauthorizedAccessException ex)
+    }
+
+    private bool TryMapGenerateAccountException(
+        Exception ex,
+        string accountName,
+        CancellationToken cancellationToken,
+        out IActionResult mappedResult)
+    {
+        switch (ex)
         {
-            _logger.LogWarning(ex, "Saving Spotify web-player cookies could not access data path.");
-            return StatusCode(StatusCodes.Status500InternalServerError, "Spotify data directory is not writable.");
+            case TaskCanceledException timeoutException when !cancellationToken.IsCancellationRequested:
+                _logger.LogWarning(timeoutException, "Spotify credentials generation timed out for account {AccountName}.", accountName);
+                mappedResult = StatusCode(StatusCodes.Status504GatewayTimeout, "Spotify credentials generation timed out.");
+                return true;
+            case UnauthorizedAccessException unauthorizedAccessException:
+                _logger.LogWarning(unauthorizedAccessException, "Spotify credentials generation could not access data path for account {AccountName}.", accountName);
+                mappedResult = StatusCode(StatusCodes.Status500InternalServerError, "Spotify data directory is not writable.");
+                return true;
+            case FileNotFoundException fileNotFoundException:
+                _logger.LogWarning(fileNotFoundException, "Spotify credentials generation dependencies are missing for account {AccountName}.", accountName);
+                mappedResult = StatusCode(StatusCodes.Status500InternalServerError, fileNotFoundException.Message);
+                return true;
+            case IOException ioException:
+                _logger.LogWarning(ioException, "Spotify credentials generation failed due to I/O error for account {AccountName}.", accountName);
+                mappedResult = StatusCode(StatusCodes.Status500InternalServerError, "Spotify credentials generation failed due to an I/O error.");
+                return true;
+            case InvalidOperationException invalidOperationException:
+                _logger.LogWarning(invalidOperationException, "Spotify credentials generation failed for account {AccountName}.", accountName);
+                mappedResult = BadRequest(invalidOperationException.Message);
+                return true;
+            case HttpRequestException httpRequestException:
+                _logger.LogWarning(httpRequestException, "Spotify credentials generation request failed for account {AccountName}.", accountName);
+                mappedResult = StatusCode(StatusCodes.Status502BadGateway, "Spotify credentials generation request failed.");
+                return true;
+            case OperationCanceledException:
+                mappedResult = null!;
+                return false;
+            default:
+                _logger.LogError(ex, "Spotify credentials generation failed unexpectedly for account {AccountName}.", accountName);
+                mappedResult = StatusCode(StatusCodes.Status500InternalServerError, "Spotify credentials generation failed unexpectedly.");
+                return true;
         }
-        catch (IOException ex)
+    }
+
+    private bool TryMapSaveWebPlayerException(Exception ex, out IActionResult mappedResult)
+    {
+        switch (ex)
         {
-            _logger.LogWarning(ex, "Saving Spotify web-player cookies failed due to an I/O error.");
-            return StatusCode(StatusCodes.Status500InternalServerError, "Saving Spotify web-player cookies failed due to an I/O error.");
-        }
-        catch (HttpRequestException ex)
-        {
-            _logger.LogWarning(ex, "Saving Spotify web-player cookies failed due to a network request error.");
-            return StatusCode(StatusCodes.Status502BadGateway, "Saving Spotify web-player cookies failed due to a network request error.");
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogError(ex, "Saving Spotify web-player cookies failed unexpectedly.");
-            return StatusCode(StatusCodes.Status500InternalServerError, "Saving Spotify web-player cookies failed unexpectedly.");
+            case TaskCanceledException timeoutException when !HttpContext.RequestAborted.IsCancellationRequested:
+                _logger.LogWarning(timeoutException, "Saving Spotify web-player cookies timed out.");
+                mappedResult = StatusCode(StatusCodes.Status504GatewayTimeout, "Saving Spotify web-player cookies timed out.");
+                return true;
+            case UnauthorizedAccessException unauthorizedAccessException:
+                _logger.LogWarning(unauthorizedAccessException, "Saving Spotify web-player cookies could not access data path.");
+                mappedResult = StatusCode(StatusCodes.Status500InternalServerError, "Spotify data directory is not writable.");
+                return true;
+            case IOException ioException:
+                _logger.LogWarning(ioException, "Saving Spotify web-player cookies failed due to an I/O error.");
+                mappedResult = StatusCode(StatusCodes.Status500InternalServerError, "Saving Spotify web-player cookies failed due to an I/O error.");
+                return true;
+            case HttpRequestException httpRequestException:
+                _logger.LogWarning(httpRequestException, "Saving Spotify web-player cookies failed due to a network request error.");
+                mappedResult = StatusCode(StatusCodes.Status502BadGateway, "Saving Spotify web-player cookies failed due to a network request error.");
+                return true;
+            case OperationCanceledException:
+                mappedResult = null!;
+                return false;
+            default:
+                _logger.LogError(ex, "Saving Spotify web-player cookies failed unexpectedly.");
+                mappedResult = StatusCode(StatusCodes.Status500InternalServerError, "Saving Spotify web-player cookies failed unexpectedly.");
+                return true;
         }
     }
 

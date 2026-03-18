@@ -41,6 +41,7 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
     private const string TrackType = "track";
     private const string EpisodeCollectionType = "episode";
     private const string DeezerSource = "deezer";
+    private const string SpotifySource = "spotify";
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DownloadCancellationRegistry _cancellationRegistry;
     private readonly DeezSpoTagSettingsService _settingsService;
@@ -310,7 +311,7 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             return false;
         }
 
-        var track = await BuildTrackAsync(payload);
+        var track = await BuildTrackAsync(payload, settings.MetadataSource);
         if (track == null)
         {
             if (await TryFallbackAsync(queueUuid, queueItem.Engine, payload, cancellationToken))
@@ -455,7 +456,7 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
                && payload.SourceUrl.Contains("/episode/", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task<CoreTrack?> BuildTrackAsync(DeezerQueueItem payload)
+    private async Task<CoreTrack?> BuildTrackAsync(DeezerQueueItem payload, string? metadataSource)
     {
         if (string.IsNullOrWhiteSpace(payload.DeezerId))
         {
@@ -474,11 +475,24 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         };
         track.ParseTrack(apiTrack);
         await track.ParseData(_deezerClient, track.Id, apiTrack, apiTrack.Album, null, true);
+        ApplyTrackUrlsFromPayload(track, payload);
+
+        if (ShouldPreferPayloadMetadata(metadataSource))
+        {
+            ApplyPayloadMetadataOverrides(track, payload);
+        }
+
+        return track;
+    }
+
+    private static void ApplyTrackUrlsFromPayload(CoreTrack track, DeezerQueueItem payload)
+    {
         if (!string.IsNullOrWhiteSpace(payload.DeezerId))
         {
             track.Urls["deezer_track_id"] = payload.DeezerId;
             track.Urls[DeezerSource] = $"https://www.deezer.com/track/{payload.DeezerId}";
         }
+
         if (!string.IsNullOrWhiteSpace(payload.AppleId))
         {
             track.Urls["apple_track_id"] = payload.AppleId;
@@ -489,7 +503,240 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         {
             track.Urls["source_url"] = payload.SourceUrl;
         }
-        return track;
+
+        if (!string.IsNullOrWhiteSpace(payload.Url))
+        {
+            track.Urls["source_url_fallback"] = payload.Url;
+        }
+    }
+
+    private static bool ShouldPreferPayloadMetadata(string? metadataSource)
+    {
+        return string.Equals(metadataSource?.Trim(), SpotifySource, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void ApplyPayloadMetadataOverrides(CoreTrack track, DeezerQueueItem payload)
+    {
+        ApplyTrackTitleOverride(track, payload);
+        var primaryArtistName = ResolvePrimaryArtistName(payload, track);
+        ApplyPrimaryArtist(track, primaryArtistName);
+        var albumArtistName = ResolveAlbumArtistName(payload, primaryArtistName);
+        EnsureAlbum(track, payload, albumArtistName);
+        ApplyAlbumArtist(track, albumArtistName);
+        ApplyTrackMetadataOverrides(track, payload);
+        ApplyReleaseDateOverride(track, payload.ReleaseDate);
+        ApplyContributorOverrides(track, payload);
+        ApplyAlbumMetadataOverrides(track.Album, payload);
+        ApplyPayloadSourceUrls(track, payload);
+    }
+
+    private static void ApplyTrackTitleOverride(CoreTrack track, DeezerQueueItem payload)
+    {
+        if (!string.IsNullOrWhiteSpace(payload.Title))
+        {
+            track.Title = payload.Title;
+        }
+    }
+
+    private static void ApplyTrackMetadataOverrides(CoreTrack track, DeezerQueueItem payload)
+    {
+        if (!string.IsNullOrWhiteSpace(payload.Isrc))
+        {
+            track.ISRC = payload.Isrc;
+        }
+
+        if (payload.TrackNumber > 0)
+        {
+            track.TrackNumber = payload.TrackNumber;
+        }
+
+        if (payload.DiscNumber > 0)
+        {
+            track.DiscNumber = payload.DiscNumber;
+        }
+
+        if (payload.Position > 0 && (!track.Position.HasValue || track.Position.Value <= 0))
+        {
+            track.Position = payload.Position;
+        }
+
+        if (payload.Explicit.HasValue)
+        {
+            track.Explicit = payload.Explicit.Value;
+        }
+
+        if (!string.IsNullOrWhiteSpace(payload.Copyright))
+        {
+            track.Copyright = payload.Copyright;
+        }
+    }
+
+    private static void ApplyReleaseDateOverride(CoreTrack track, string? releaseDate)
+    {
+        if (string.IsNullOrWhiteSpace(releaseDate))
+        {
+            return;
+        }
+
+        var parsedDate = CustomDate.FromString(releaseDate);
+        if (string.IsNullOrWhiteSpace(parsedDate.Year))
+        {
+            return;
+        }
+
+        track.Date = parsedDate;
+        if (track.Album != null)
+        {
+            track.Album.Date = parsedDate;
+        }
+    }
+
+    private static void ApplyContributorOverrides(CoreTrack track, DeezerQueueItem payload)
+    {
+        if (!string.IsNullOrWhiteSpace(payload.Composer))
+        {
+            track.Contributors["composer"] = new List<string> { payload.Composer };
+        }
+    }
+
+    private static void ApplyAlbumMetadataOverrides(CoreAlbum? album, DeezerQueueItem payload)
+    {
+        if (album == null)
+        {
+            return;
+        }
+
+        if (payload.TrackTotal > 0)
+        {
+            album.TrackTotal = payload.TrackTotal;
+        }
+
+        if (payload.DiscTotal > 0)
+        {
+            album.DiscTotal = payload.DiscTotal;
+        }
+
+        if (!string.IsNullOrWhiteSpace(payload.Label))
+        {
+            album.Label = payload.Label;
+        }
+
+        if (!string.IsNullOrWhiteSpace(payload.Barcode))
+        {
+            album.Barcode = payload.Barcode;
+        }
+
+        if (payload.Genres.Count > 0)
+        {
+            album.Genre = payload.Genres
+                .Where(static genre => !string.IsNullOrWhiteSpace(genre))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        if (!string.IsNullOrWhiteSpace(payload.Copyright))
+        {
+            album.Copyright = payload.Copyright;
+        }
+
+        if (payload.Explicit.HasValue)
+        {
+            album.Explicit = payload.Explicit.Value;
+        }
+    }
+
+    private static void ApplyPayloadSourceUrls(CoreTrack track, DeezerQueueItem payload)
+    {
+        if (!string.IsNullOrWhiteSpace(payload.SourceUrl))
+        {
+            track.DownloadURL = payload.SourceUrl;
+            track.Urls["source_url"] = payload.SourceUrl;
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(payload.Url))
+        {
+            track.Urls["source_url_fallback"] = payload.Url;
+        }
+    }
+
+    private static string ResolvePrimaryArtistName(DeezerQueueItem payload, CoreTrack track)
+    {
+        if (!string.IsNullOrWhiteSpace(payload.Artist))
+        {
+            return payload.Artist;
+        }
+
+        if (!string.IsNullOrWhiteSpace(track.MainArtist?.Name))
+        {
+            return track.MainArtist.Name;
+        }
+
+        return "Unknown Artist";
+    }
+
+    private static string ResolveAlbumArtistName(DeezerQueueItem payload, string primaryArtistName)
+    {
+        return string.IsNullOrWhiteSpace(payload.AlbumArtist)
+            ? primaryArtistName
+            : payload.AlbumArtist;
+    }
+
+    private static void ApplyPrimaryArtist(CoreTrack track, string primaryArtistName)
+    {
+        track.MainArtist ??= new CoreArtist("0", primaryArtistName);
+        track.MainArtist.Name = primaryArtistName;
+
+        if (!track.Artist.TryGetValue("Main", out var mainArtists))
+        {
+            mainArtists = new List<string>();
+            track.Artist["Main"] = mainArtists;
+        }
+
+        mainArtists.Clear();
+        mainArtists.Add(primaryArtistName);
+
+        track.Artists = new List<string> { primaryArtistName };
+    }
+
+    private static void EnsureAlbum(CoreTrack track, DeezerQueueItem payload, string albumArtistName)
+    {
+        if (track.Album == null)
+        {
+            var albumTitle = string.IsNullOrWhiteSpace(payload.Album) ? "Unknown Album" : payload.Album;
+            track.Album = new CoreAlbum(payload.DeezerAlbumId ?? "0", albumTitle)
+            {
+                MainArtist = new CoreArtist("0", albumArtistName),
+                RootArtist = new CoreArtist("0", albumArtistName)
+            };
+        }
+        else if (!string.IsNullOrWhiteSpace(payload.Album))
+        {
+            track.Album.Title = payload.Album;
+        }
+    }
+
+    private static void ApplyAlbumArtist(CoreTrack track, string albumArtistName)
+    {
+        if (track.Album == null)
+        {
+            return;
+        }
+
+        track.Album.MainArtist ??= new CoreArtist("0", albumArtistName);
+        track.Album.RootArtist ??= new CoreArtist("0", albumArtistName);
+        track.Album.MainArtist.Name = albumArtistName;
+        track.Album.RootArtist.Name = albumArtistName;
+
+        if (!track.Album.Artist.TryGetValue("Main", out var mainArtists))
+        {
+            mainArtists = new List<string>();
+            track.Album.Artist["Main"] = mainArtists;
+        }
+
+        mainArtists.Clear();
+        mainArtists.Add(albumArtistName);
+        track.Album.Artists = new List<string> { albumArtistName };
     }
 
     private async Task<bool> ProcessEpisodeAsync(

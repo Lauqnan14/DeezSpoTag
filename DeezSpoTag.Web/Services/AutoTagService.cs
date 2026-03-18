@@ -9,7 +9,10 @@ using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Utils;
+using DeezSpoTag.Web.Services.CoverPort;
 
 #pragma warning disable CA1822
 #pragma warning disable CA1859
@@ -18,6 +21,8 @@ namespace DeezSpoTag.Web.Services;
 internal static class AutoTagLiterals
 {
     internal const string ManualTrigger = "manual";
+    internal const string AutomationTrigger = "automation";
+    internal const string ScheduleTrigger = "schedule";
     internal const string CanceledStatus = "canceled";
     internal const string FailedStatus = "failed";
     internal const string CompletedStatus = "completed";
@@ -159,6 +164,11 @@ public class AutoTagService
     private readonly PlexApiClient _plexApiClient;
     private readonly SpotifyBlobService _spotifyBlobService;
     private readonly DeezSpoTag.Services.Settings.DeezSpoTagSettingsService _settingsService;
+    private readonly LibraryRepository _libraryRepository;
+    private readonly QualityScannerService _qualityScannerService;
+    private readonly DuplicateCleanerService _duplicateCleanerService;
+    private readonly LyricsRefreshQueueService _lyricsRefreshQueueService;
+    private readonly CoverLibraryMaintenanceService _coverMaintenanceService;
     private readonly string _jobsDir;
     private readonly string _historyDir;
     private readonly string _workersHistoryDir;
@@ -295,6 +305,11 @@ public class AutoTagService
         public required PlexApiClient PlexApiClient { get; init; }
         public required SpotifyBlobService SpotifyBlobService { get; init; }
         public required DeezSpoTag.Services.Settings.DeezSpoTagSettingsService SettingsService { get; init; }
+        public required LibraryRepository LibraryRepository { get; init; }
+        public required QualityScannerService QualityScannerService { get; init; }
+        public required DuplicateCleanerService DuplicateCleanerService { get; init; }
+        public required LyricsRefreshQueueService LyricsRefreshQueueService { get; init; }
+        public required CoverLibraryMaintenanceService CoverMaintenanceService { get; init; }
     }
 
     public event Action<AutoTagJob>? JobCompleted;
@@ -317,6 +332,11 @@ public class AutoTagService
         _plexApiClient = collaborators.PlexApiClient;
         _spotifyBlobService = collaborators.SpotifyBlobService;
         _settingsService = collaborators.SettingsService;
+        _libraryRepository = collaborators.LibraryRepository;
+        _qualityScannerService = collaborators.QualityScannerService;
+        _duplicateCleanerService = collaborators.DuplicateCleanerService;
+        _lyricsRefreshQueueService = collaborators.LyricsRefreshQueueService;
+        _coverMaintenanceService = collaborators.CoverMaintenanceService;
         var appDataRoot = AppDataPaths.GetDataRoot(env);
         var autoTagRoot = Path.Join(appDataRoot, AutoTagFolderName);
         _jobsDir = Path.Join(autoTagRoot, "jobs");
@@ -953,74 +973,20 @@ public class AutoTagService
     private async Task RunJobAsync(AutoTagJob job, string path, string configPath)
     {
         var fileOutcomes = new Dictionary<string, FileTagOutcome>(StringComparer.OrdinalIgnoreCase);
-        var runtimeConfigPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (!string.IsNullOrWhiteSpace(configPath))
-        {
-            runtimeConfigPaths.Add(configPath);
-        }
+        var runtimeConfigPaths = InitializeRuntimeConfigPaths(configPath);
 
         try
         {
             var stages = await BuildStageConfigsAsync(job, configPath);
-            foreach (var stageConfigPath in stages
-                         .Select(static stage => stage.ConfigPath)
-                         .Where(static path => !string.IsNullOrWhiteSpace(path)))
+            var includesEnhancementStage = stages.Any(stage =>
+                string.Equals(stage.Name, AutoTagLiterals.EnhancementStage, StringComparison.OrdinalIgnoreCase));
+            RegisterStageRuntimeConfigPaths(runtimeConfigPaths, stages);
+            if (TryMarkNoStagesConfigured(job, stages))
             {
-                runtimeConfigPaths.Add(stageConfigPath!);
-            }
-
-            if (stages.Count == 0)
-            {
-                job.Status = AutoTagLiterals.FailedStatus;
-                job.Error = "No AutoTag stages configured.";
-                job.ExitCode = 1;
-                job.FinishedAt = DateTimeOffset.UtcNow;
-                SaveJob(job);
-                AppendActivityLog(job.Id, "autotag failed: no stages configured");
-                NotifyCompleted(job);
                 return;
             }
 
-            var success = true;
-            for (var index = 0; index < stages.Count; index++)
-            {
-                var stage = stages[index];
-                AppendLog(job, BuildStageStartedLog(stage, index, stages.Count));
-                _activeJobStages[job.Id] = stage.Name;
-
-                try
-                {
-                    var result = await _autoTagRunner.RunAsync(
-                        job.Id,
-                        path,
-                        stage.ConfigPath,
-                        status => UpdateStatus(job, status, index, stages.Count, fileOutcomes),
-                        line => AppendLog(job, line),
-                        CancellationToken.None);
-
-                    if (string.Equals(result.Error, "stopped", StringComparison.OrdinalIgnoreCase))
-                    {
-                        job.Status = AutoTagLiterals.CanceledStatus;
-                        job.Error = "Stopped by user.";
-                        success = false;
-                        break;
-                    }
-
-                    if (!result.Success)
-                    {
-                        job.Status = AutoTagLiterals.FailedStatus;
-                        job.Error = result.Error;
-                        success = false;
-                        break;
-                    }
-
-                    AppendLog(job, BuildStageFinishedLog(stage, index, stages.Count));
-                }
-                finally
-                {
-                    _activeJobStages.TryRemove(job.Id, out _);
-                }
-            }
+            var success = await ExecuteStagesAsync(job, stages, path, fileOutcomes);
 
             if (job.Status != AutoTagLiterals.CanceledStatus)
             {
@@ -1034,38 +1000,14 @@ public class AutoTagService
 
             if (job.Status != AutoTagLiterals.CanceledStatus)
             {
-                var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
-                AppendLog(job, "tagging completed, auto-move starting");
-                var autoMoveCompleted = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
-                AppendLog(job, "auto-move completed, organizer starting");
-                await OrganizeJobAsync(job, path, configPath);
-                if (autoMoveCompleted)
-                {
-                    await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
-                }
+                await RunSuccessPostProcessingAsync(job, path, configPath, includesEnhancementStage, fileOutcomes);
             }
 
             NotifyCompleted(job);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "AutoTag job {JobId} failed", job.Id);
-            job.Status = AutoTagLiterals.FailedStatus;
-            job.Error = ex.Message;
-            job.FinishedAt = DateTimeOffset.UtcNow;
-            AppendPlatformSummary(job);
-            SaveJob(job);
-            AppendActivityLog(job.Id, $"autotag failed: {job.Error ?? "unknown error"}");
-            var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
-            AppendLog(job, "tagging failed, auto-move starting");
-            var autoMoveCompleted = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
-            AppendLog(job, "auto-move completed, organizer starting");
-            await OrganizeJobAsync(job, path, configPath);
-            if (autoMoveCompleted)
-            {
-                await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
-            }
-            NotifyCompleted(job);
+            await HandleRunJobFailureAsync(job, ex, path, configPath, fileOutcomes);
         }
         finally
         {
@@ -1073,6 +1015,145 @@ public class AutoTagService
             _activeJobStages.TryRemove(job.Id, out _);
             _activeJobIds.TryRemove(job.Id, out _);
         }
+    }
+
+    private static HashSet<string> InitializeRuntimeConfigPaths(string configPath)
+    {
+        var runtimeConfigPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(configPath))
+        {
+            runtimeConfigPaths.Add(configPath);
+        }
+
+        return runtimeConfigPaths;
+    }
+
+    private static void RegisterStageRuntimeConfigPaths(HashSet<string> runtimeConfigPaths, IReadOnlyList<AutoTagStageConfig> stages)
+    {
+        foreach (var stageConfigPath in stages
+                     .Select(static stage => stage.ConfigPath)
+                     .Where(static path => !string.IsNullOrWhiteSpace(path)))
+        {
+            runtimeConfigPaths.Add(stageConfigPath!);
+        }
+    }
+
+    private bool TryMarkNoStagesConfigured(AutoTagJob job, IReadOnlyCollection<AutoTagStageConfig> stages)
+    {
+        if (stages.Count > 0)
+        {
+            return false;
+        }
+
+        job.Status = AutoTagLiterals.FailedStatus;
+        job.Error = "No AutoTag stages configured.";
+        job.ExitCode = 1;
+        job.FinishedAt = DateTimeOffset.UtcNow;
+        SaveJob(job);
+        AppendActivityLog(job.Id, "autotag failed: no stages configured");
+        NotifyCompleted(job);
+        return true;
+    }
+
+    private async Task<bool> ExecuteStagesAsync(
+        AutoTagJob job,
+        IReadOnlyList<AutoTagStageConfig> stages,
+        string path,
+        Dictionary<string, FileTagOutcome> fileOutcomes)
+    {
+        var success = true;
+        for (var index = 0; index < stages.Count; index++)
+        {
+            var stage = stages[index];
+            AppendLog(job, BuildStageStartedLog(stage, index, stages.Count));
+            _activeJobStages[job.Id] = stage.Name;
+
+            try
+            {
+                var result = await _autoTagRunner.RunAsync(
+                    job.Id,
+                    path,
+                    stage.ConfigPath,
+                    status => UpdateStatus(job, status, index, stages.Count, fileOutcomes),
+                    line => AppendLog(job, line),
+                    CancellationToken.None);
+
+                if (string.Equals(result.Error, "stopped", StringComparison.OrdinalIgnoreCase))
+                {
+                    job.Status = AutoTagLiterals.CanceledStatus;
+                    job.Error = "Stopped by user.";
+                    return false;
+                }
+
+                if (!result.Success)
+                {
+                    job.Status = AutoTagLiterals.FailedStatus;
+                    job.Error = result.Error;
+                    success = false;
+                    break;
+                }
+
+                AppendLog(job, BuildStageFinishedLog(stage, index, stages.Count));
+            }
+            finally
+            {
+                _activeJobStages.TryRemove(job.Id, out _);
+            }
+        }
+
+        return success;
+    }
+
+    private async Task RunSuccessPostProcessingAsync(
+        AutoTagJob job,
+        string path,
+        string configPath,
+        bool includesEnhancementStage,
+        Dictionary<string, FileTagOutcome> fileOutcomes)
+    {
+        var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
+        AppendLog(job, "tagging completed, auto-move starting");
+        var autoMoveCompleted = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
+        AppendLog(job, "auto-move completed, organizer starting");
+        await OrganizeJobAsync(job, path, configPath);
+        await RunIntegratedEnhancementWorkflowsAsync(
+            job,
+            path,
+            configPath,
+            includesEnhancementStage,
+            CancellationToken.None);
+        if (autoMoveCompleted)
+        {
+            await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
+        }
+    }
+
+    private async Task HandleRunJobFailureAsync(
+        AutoTagJob job,
+        Exception ex,
+        string path,
+        string configPath,
+        Dictionary<string, FileTagOutcome> fileOutcomes)
+    {
+        _logger.LogError(ex, "AutoTag job {JobId} failed", job.Id);
+        job.Status = AutoTagLiterals.FailedStatus;
+        job.Error = ex.Message;
+        job.FinishedAt = DateTimeOffset.UtcNow;
+        AppendPlatformSummary(job);
+        SaveJob(job);
+        AppendActivityLog(job.Id, $"autotag failed: {job.Error ?? "unknown error"}");
+
+        var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
+        AppendLog(job, "tagging failed, auto-move starting");
+        var autoMoveCompleted = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
+        AppendLog(job, "auto-move completed, organizer starting");
+        await OrganizeJobAsync(job, path, configPath);
+        if (autoMoveCompleted)
+        {
+            await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
+        }
+
+        NotifyCompleted(job);
     }
 
     private async Task<List<AutoTagStageConfig>> BuildStageConfigsAsync(AutoTagJob job, string configPath)
@@ -1108,6 +1189,502 @@ public class AutoTagService
         }
 
         return stages;
+    }
+
+    private async Task RunIntegratedEnhancementWorkflowsAsync(
+        AutoTagJob job,
+        string rootPath,
+        string configPath,
+        bool includesEnhancementStage,
+        CancellationToken cancellationToken)
+    {
+        if (!includesEnhancementStage
+            || !string.Equals(job.Status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase)
+            || !IsEnhancementWorkflowTrigger(job.Trigger))
+        {
+            return;
+        }
+
+        var root = LoadConfigRoot(configPath);
+        if (root == null || root["enhancement"] is not JsonObject enhancementRoot)
+        {
+            return;
+        }
+
+        var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
+        await RunConfiguredFolderUniformityAsync(job, rootPath, enhancementRoot, enabledFolders, cancellationToken);
+        await RunConfiguredCoverMaintenanceAsync(job, rootPath, enhancementRoot, enabledFolders, cancellationToken);
+        await RunConfiguredQualityChecksAsync(job, rootPath, enhancementRoot, enabledFolders, cancellationToken);
+    }
+
+    private static bool IsEnhancementWorkflowTrigger(string? trigger)
+    {
+        if (string.IsNullOrWhiteSpace(trigger))
+        {
+            return true;
+        }
+
+        return string.Equals(trigger, AutoTagLiterals.ManualTrigger, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(trigger, AutoTagLiterals.AutomationTrigger, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(trigger, AutoTagLiterals.ScheduleTrigger, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task RunConfiguredFolderUniformityAsync(
+        AutoTagJob job,
+        string rootPath,
+        JsonObject enhancementRoot,
+        IReadOnlyList<FolderDto> enabledFolders,
+        CancellationToken cancellationToken)
+    {
+        if (enhancementRoot["folderUniformity"] is not JsonObject folderUniformity
+            || ReadBool(folderUniformity, "enforceFolderStructure") != true)
+        {
+            return;
+        }
+
+        var rootPaths = ResolveRootPathsForWorkflow(rootPath, folderUniformity, enabledFolders);
+        if (rootPaths.Count == 0)
+        {
+            AppendLog(job, "enhancement workflow: folder uniformity skipped (no eligible folders/paths).");
+            return;
+        }
+
+        var options = new AutoTagOrganizerOptions
+        {
+            IncludeSubfolders = ReadBool(folderUniformity, "includeSubfolders") ?? true,
+            MoveMisplacedFiles = ReadBool(folderUniformity, "moveMisplacedFiles") ?? true,
+            RenameFilesToTemplate = ReadBool(folderUniformity, "renameFilesToTemplate") == true,
+            RemoveEmptyFolders = ReadBool(folderUniformity, "removeEmptyFolders") == true,
+            DryRun = ReadBool(folderUniformity, "dryRunMode") == true
+        };
+
+        AppendLog(job, $"enhancement workflow: folder uniformity starting ({rootPaths.Count} path(s)).");
+        foreach (var path in rootPaths)
+        {
+            if (!Directory.Exists(path))
+            {
+                continue;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            await _libraryOrganizer.OrganizePathAsync(path, options, line => AppendLog(job, $"folder uniformity: {line}"));
+        }
+        AppendLog(job, "enhancement workflow: folder uniformity completed.");
+    }
+
+    private async Task RunConfiguredCoverMaintenanceAsync(
+        AutoTagJob job,
+        string rootPath,
+        JsonObject enhancementRoot,
+        IReadOnlyList<FolderDto> enabledFolders,
+        CancellationToken cancellationToken)
+    {
+        if (enhancementRoot["coverMaintenance"] is not JsonObject coverMaintenance)
+        {
+            return;
+        }
+
+        var replaceMissingEmbedded = ReadBool(coverMaintenance, "replaceMissingEmbeddedCovers") == true;
+        var syncExternalCovers = ReadBool(coverMaintenance, "syncExternalCovers") == true;
+        var queueAnimatedArtwork = ReadBool(coverMaintenance, "queueAnimatedArtwork") == true;
+        if (!replaceMissingEmbedded && !syncExternalCovers && !queueAnimatedArtwork)
+        {
+            return;
+        }
+
+        var rootPaths = ResolveRootPathsForWorkflow(rootPath, coverMaintenance, enabledFolders);
+        if (rootPaths.Count == 0)
+        {
+            AppendLog(job, "enhancement workflow: cover maintenance skipped (no eligible folders/paths).");
+            return;
+        }
+
+        var minResolution = ReadBoundedInt(coverMaintenance, "minResolution", 500, 100, 5000);
+        var workerCount = ReadBoundedInt(coverMaintenance, "workerCount", 8, 1, 32);
+        var settings = _settingsService.LoadSettings();
+        var request = new CoverLibraryMaintenanceRequest(
+            RootPaths: rootPaths,
+            IncludeSubfolders: true,
+            WorkerCount: workerCount,
+            UpgradeLowResolutionCovers: true,
+            MinResolution: minResolution,
+            TargetResolution: Math.Max(minResolution, 1200),
+            SizeTolerancePercent: 25,
+            PreserveSourceFormat: false,
+            ReplaceMissingEmbeddedCovers: replaceMissingEmbedded,
+            SyncExternalCovers: syncExternalCovers,
+            QueueAnimatedArtwork: queueAnimatedArtwork,
+            AppleStorefront: string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront) ? "us" : settings.AppleMusic!.Storefront,
+            AnimatedArtworkMaxResolution: settings.Video?.AppleMusicVideoMaxResolution ?? 2160,
+            EnabledSources: null);
+
+        AppendLog(job, $"enhancement workflow: cover maintenance starting ({rootPaths.Count} path(s)).");
+        var result = await _coverMaintenanceService.RunAsync(request, cancellationToken);
+        AppendLog(job, $"enhancement workflow: cover maintenance finished ({result.Message})");
+    }
+
+    private async Task RunConfiguredQualityChecksAsync(
+        AutoTagJob job,
+        string rootPath,
+        JsonObject enhancementRoot,
+        IReadOnlyList<FolderDto> enabledFolders,
+        CancellationToken cancellationToken)
+    {
+        if (enhancementRoot["qualityChecks"] is not JsonObject qualityChecks)
+        {
+            return;
+        }
+
+        var options = BuildQualityCheckOptions(qualityChecks);
+        if (!options.ShouldRunAnyWorkflow)
+        {
+            return;
+        }
+
+        var scopedFolders = ResolveScopedFolders(rootPath, qualityChecks, enabledFolders);
+        if (scopedFolders.Count == 0)
+        {
+            AppendLog(job, "enhancement workflow: quality checks skipped (no eligible library folders in scope).");
+            return;
+        }
+
+        var scopedFolderIds = scopedFolders
+            .Select(folder => folder.Id)
+            .Distinct()
+            .ToList();
+
+        await StartQualityScannerIfRequestedAsync(job, qualityChecks, options, scopedFolderIds, cancellationToken);
+        await RunDuplicateCheckIfRequestedAsync(job, options, scopedFolders, cancellationToken);
+        await RunLyricsRefreshIfRequestedAsync(job, options, scopedFolderIds, cancellationToken);
+    }
+
+    private static QualityCheckOptions BuildQualityCheckOptions(JsonObject qualityChecks)
+    {
+        var flagDuplicates = ReadBool(qualityChecks, "flagDuplicates") == true;
+        var flagMissingTags = ReadBool(qualityChecks, "flagMissingTags") == true;
+        var flagMismatchedMetadata = ReadBool(qualityChecks, "flagMismatchedMetadata") == true;
+        var queueAtmosAlternatives = ReadBool(qualityChecks, "queueAtmosAlternatives") == true;
+        var queueLyricsRefresh = ReadBool(qualityChecks, "queueLyricsRefresh") == true;
+        var technicalProfiles = ReadStringList(qualityChecks, "technicalProfiles")
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var runQualityScanner = flagMissingTags || flagMismatchedMetadata || queueAtmosAlternatives || technicalProfiles.Count > 0;
+        return new QualityCheckOptions(
+            FlagDuplicates: flagDuplicates,
+            QueueLyricsRefresh: queueLyricsRefresh,
+            QueueAtmosAlternatives: queueAtmosAlternatives,
+            RunQualityScanner: runQualityScanner,
+            TechnicalProfiles: technicalProfiles);
+    }
+
+    private async Task StartQualityScannerIfRequestedAsync(
+        AutoTagJob job,
+        JsonObject qualityChecks,
+        QualityCheckOptions options,
+        IReadOnlyList<long> scopedFolderIds,
+        CancellationToken cancellationToken)
+    {
+        if (!options.RunQualityScanner)
+        {
+            return;
+        }
+
+        var started = await _qualityScannerService.StartAsync(
+            new QualityScannerStartRequest
+            {
+                Scope = "all",
+                FolderId = scopedFolderIds.Count == 1 ? scopedFolderIds[0] : null,
+                QueueAtmosAlternatives = options.QueueAtmosAlternatives,
+                CooldownMinutes = ReadOptionalInt(qualityChecks, "cooldownMinutes"),
+                Trigger = "enhancement",
+                MarkAutomationWindow = false,
+                TechnicalProfiles = options.TechnicalProfiles,
+                FolderIds = scopedFolderIds
+            },
+            cancellationToken);
+        AppendLog(job, started
+            ? "enhancement workflow: quality scanner started."
+            : "enhancement workflow: quality scanner skipped (already running).");
+    }
+
+    private async Task RunDuplicateCheckIfRequestedAsync(
+        AutoTagJob job,
+        QualityCheckOptions options,
+        IReadOnlyList<FolderDto> scopedFolders,
+        CancellationToken cancellationToken)
+    {
+        if (!options.FlagDuplicates)
+        {
+            return;
+        }
+
+        var duplicateResult = await _duplicateCleanerService.ScanAsync(scopedFolders, useDupsFolder: true, cancellationToken);
+        AppendLog(job,
+            $"enhancement workflow: duplicate check finished (scanned={duplicateResult.FilesScanned}, found={duplicateResult.DuplicatesFound}, moved={duplicateResult.Deleted}).");
+    }
+
+    private async Task RunLyricsRefreshIfRequestedAsync(
+        AutoTagJob job,
+        QualityCheckOptions options,
+        IReadOnlyList<long> scopedFolderIds,
+        CancellationToken cancellationToken)
+    {
+        if (!options.QueueLyricsRefresh)
+        {
+            return;
+        }
+
+        var settings = _settingsService.LoadSettings();
+        if (!LyricsSettingsPolicy.CanFetchLyrics(settings))
+        {
+            AppendLog(job, "enhancement workflow: lyrics refresh skipped (lyrics fetching disabled by settings).");
+            return;
+        }
+
+        var tracks = await _libraryRepository.GetQualityScanTracksAsync(
+            "all",
+            scopedFolderIds.Count == 1 ? scopedFolderIds[0] : null,
+            minFormat: null,
+            minBitDepth: null,
+            minSampleRateHz: null,
+            cancellationToken);
+
+        tracks = FilterTracksByScopedFolders(tracks, scopedFolderIds);
+        tracks = FilterTracksByTechnicalProfiles(tracks, options.TechnicalProfiles);
+
+        var trackIds = tracks
+            .Select(track => track.TrackId)
+            .Distinct()
+            .ToList();
+        var enqueueResult = _lyricsRefreshQueueService.Enqueue(trackIds);
+        AppendLog(job,
+            $"enhancement workflow: lyrics refresh queued (requested={enqueueResult.Requested}, enqueued={enqueueResult.Enqueued}, skipped={enqueueResult.Skipped}).");
+    }
+
+    private static IReadOnlyList<QualityScanTrackDto> FilterTracksByScopedFolders(
+        IReadOnlyList<QualityScanTrackDto> tracks,
+        IReadOnlyList<long> scopedFolderIds)
+    {
+        if (scopedFolderIds.Count <= 1)
+        {
+            return tracks;
+        }
+
+        var allowed = scopedFolderIds.ToHashSet();
+        return tracks
+            .Where(track => track.DestinationFolderId.HasValue && allowed.Contains(track.DestinationFolderId.Value))
+            .ToList();
+    }
+
+    private static IReadOnlyList<QualityScanTrackDto> FilterTracksByTechnicalProfiles(
+        IReadOnlyList<QualityScanTrackDto> tracks,
+        IReadOnlyList<string> technicalProfiles)
+    {
+        if (technicalProfiles.Count == 0)
+        {
+            return tracks;
+        }
+
+        var allowedProfiles = technicalProfiles.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return tracks
+            .Where(track => allowedProfiles.Contains(FormatTechnicalProfile(track)))
+            .ToList();
+    }
+
+    private sealed record QualityCheckOptions(
+        bool FlagDuplicates,
+        bool QueueLyricsRefresh,
+        bool QueueAtmosAlternatives,
+        bool RunQualityScanner,
+        IReadOnlyList<string> TechnicalProfiles)
+    {
+        public bool ShouldRunAnyWorkflow => RunQualityScanner || FlagDuplicates || QueueLyricsRefresh;
+    }
+
+    private async Task<IReadOnlyList<FolderDto>> ResolveEnabledMusicFoldersAsync(CancellationToken cancellationToken)
+    {
+        IReadOnlyList<FolderDto> folders;
+        try
+        {
+            folders = _libraryRepository.IsConfigured
+                ? await _libraryRepository.GetFoldersAsync(cancellationToken)
+                : _activityLog.GetFolders();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            folders = _activityLog.GetFolders();
+        }
+
+        return folders
+            .Where(folder => folder.Enabled
+                && !string.IsNullOrWhiteSpace(folder.RootPath)
+                && IsMusicCapableFolder(folder))
+            .ToList();
+    }
+
+    private static List<FolderDto> ResolveScopedFolders(
+        string rootPath,
+        JsonObject workflowOptions,
+        IReadOnlyList<FolderDto> enabledFolders)
+    {
+        var requestedIds = ParseFolderIds(workflowOptions, "folderIds");
+        if (requestedIds.Count > 0)
+        {
+            var requested = requestedIds.ToHashSet();
+            return enabledFolders
+                .Where(folder => requested.Contains(folder.Id))
+                .ToList();
+        }
+
+        if (string.IsNullOrWhiteSpace(rootPath))
+        {
+            return new List<FolderDto>();
+        }
+
+        return enabledFolders
+            .Where(folder => PathsOverlap(rootPath, folder.RootPath))
+            .ToList();
+    }
+
+    private static List<string> ResolveRootPathsForWorkflow(
+        string rootPath,
+        JsonObject workflowOptions,
+        IReadOnlyList<FolderDto> enabledFolders)
+    {
+        var scopedFolders = ResolveScopedFolders(rootPath, workflowOptions, enabledFolders);
+        if (scopedFolders.Count > 0)
+        {
+            return scopedFolders
+                .Select(folder => folder.RootPath)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(Path.GetFullPath)
+                .ToList();
+        }
+
+        if (string.IsNullOrWhiteSpace(rootPath))
+        {
+            return new List<string>();
+        }
+
+        var normalizedRoot = Path.GetFullPath(rootPath);
+        return Directory.Exists(normalizedRoot)
+            ? new List<string> { normalizedRoot }
+            : new List<string>();
+    }
+
+    private static List<long> ParseFolderIds(JsonObject node, string propertyName)
+    {
+        if (!node.TryGetPropertyValue(propertyName, out var valueNode) || valueNode is not JsonArray values)
+        {
+            return new List<long>();
+        }
+
+        var parsed = new List<long>();
+        foreach (var item in values)
+        {
+            if (item is JsonValue jsonValue && jsonValue.TryGetValue<long>(out var longValue) && longValue > 0)
+            {
+                parsed.Add(longValue);
+                continue;
+            }
+
+            if (item is JsonValue stringValue
+                && stringValue.TryGetValue<string>(out var raw)
+                && long.TryParse(raw, out var parsedValue)
+                && parsedValue > 0)
+            {
+                parsed.Add(parsedValue);
+            }
+        }
+
+        return parsed
+            .Distinct()
+            .ToList();
+    }
+
+    private static bool IsMusicCapableFolder(FolderDto folder)
+    {
+        var normalized = (folder.DesiredQuality ?? string.Empty).Trim().ToLowerInvariant();
+        return !normalized.Contains("video", StringComparison.Ordinal)
+            && !normalized.Contains("podcast", StringComparison.Ordinal);
+    }
+
+    private static bool PathsOverlap(string left, string right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+        {
+            return false;
+        }
+
+        var normalizedLeft = Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var normalizedRight = Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var leftPrefix = normalizedLeft + Path.DirectorySeparatorChar;
+        var rightPrefix = normalizedRight + Path.DirectorySeparatorChar;
+        return normalizedLeft.StartsWith(rightPrefix, StringComparison.OrdinalIgnoreCase)
+            || normalizedRight.StartsWith(leftPrefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int ReadBoundedInt(JsonObject node, string propertyName, int fallback, int min, int max)
+    {
+        if (!node.TryGetPropertyValue(propertyName, out var valueNode) || valueNode is not JsonValue value)
+        {
+            return fallback;
+        }
+
+        if (value.TryGetValue<int>(out var intValue))
+        {
+            return Math.Clamp(intValue, min, max);
+        }
+
+        if (value.TryGetValue<string>(out var raw) && int.TryParse(raw, out var parsed))
+        {
+            return Math.Clamp(parsed, min, max);
+        }
+
+        return fallback;
+    }
+
+    private static int? ReadOptionalInt(JsonObject node, string propertyName)
+    {
+        if (!node.TryGetPropertyValue(propertyName, out var valueNode) || valueNode is null)
+        {
+            return null;
+        }
+
+        if (valueNode is JsonValue intNode && intNode.TryGetValue<int>(out var intValue))
+        {
+            return intValue;
+        }
+
+        if (valueNode is JsonValue stringNode
+            && stringNode.TryGetValue<string>(out var raw)
+            && int.TryParse(raw, out var parsed))
+        {
+            return parsed;
+        }
+
+        return null;
+    }
+
+    private static string FormatTechnicalProfile(QualityScanTrackDto track)
+    {
+        var extension = string.IsNullOrWhiteSpace(track.BestExtension)
+            ? "UNKNOWN"
+            : track.BestExtension.Trim().ToUpperInvariant();
+        var bitDepth = track.BestBitsPerSample.HasValue && track.BestBitsPerSample.Value > 0
+            ? $"{track.BestBitsPerSample.Value}-bit"
+            : "unknown";
+        var sampleRate = track.BestSampleRateHz.HasValue && track.BestSampleRateHz.Value > 0
+            ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{track.BestSampleRateHz.Value / 1000d:0.0} kHz")
+            : "unknown";
+        return $"{extension} • {bitDepth} • {sampleRate}";
     }
 
     private JsonObject? LoadConfigRoot(string configPath)
@@ -1229,8 +1806,9 @@ public class AutoTagService
         WriteStringList(stageRoot, AutoTagLiterals.PlatformsKey, platforms);
         stageRoot[AutoTagLiterals.MultiPlatformKey] = platforms.Count > 1;
         WriteStringList(stageRoot, "tags", filtered);
+        // Enhancement should process on-disk files by default and only skip when
+        // an explicit enhancement-level setting is provided.
         stageRoot["skipTagged"] = ReadBool(baseRoot, "enhancementSkipTagged")
-            ?? ReadBool(baseRoot, "skipTagged")
             ?? false;
         strippedKeys = ApplyStageSchema(stageRoot, EnhancementStageAllowedKeys);
 

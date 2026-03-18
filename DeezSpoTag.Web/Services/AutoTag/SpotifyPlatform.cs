@@ -7,20 +7,6 @@ public sealed class SpotifyPlatform : AutoTagPlatformBase
     public override AutoTagPlatformDescriptor Describe()
     {
         var supportedTags = SharedDownloadParityTags();
-        supportedTags.AddRange(new[]
-        {
-            SupportedTag.Key,
-            SupportedTag.Danceability,
-            SupportedTag.Energy,
-            SupportedTag.Valence,
-            SupportedTag.Acousticness,
-            SupportedTag.Instrumentalness,
-            SupportedTag.Speechiness,
-            SupportedTag.Loudness,
-            SupportedTag.Tempo,
-            SupportedTag.TimeSignature,
-            SupportedTag.Liveness
-        });
 
         var info = new PlatformInfo
         {
@@ -46,18 +32,7 @@ public sealed class SpotifyPlatform : AutoTagPlatformBase
                 "explicit",
                 "isrc",
                 "length",
-                "key",
                 "label",
-                "danceability",
-                "energy",
-                "valence",
-                "acousticness",
-                "instrumentalness",
-                "speechiness",
-                "loudness",
-                "tempo",
-                "timeSignature",
-                "liveness",
                 "cover",
                 "source",
                 "url",

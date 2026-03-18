@@ -21,6 +21,10 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private const string VibeAnalyzerBatchTimeoutSecondsEnvironmentVariable = "VIBE_ANALYZER_BATCH_TIMEOUT_SECONDS";
     private const string VibeAnalyzerWorkersEnvironmentVariable = "VIBE_ANALYZER_WORKERS";
     private const string VibeAnalyzerUseBatchEnvironmentVariable = "VIBE_ANALYZER_USE_BATCH";
+    private const string Python3Executable = "python3";
+    private const string ToolsDirectoryName = "Tools";
+    private const string ModelsDirectoryName = "models";
+    private const string VibeAnalyzerScriptFileName = "vibe_analyzer.py";
     private const string DefaultVibeModelsRelativePath = "analysis/models";
     private const string DefaultVibeVenvRelativePath = "analysis/vibe/.venv";
     private const int DefaultVibeAnalyzerTimeoutSeconds = 60;
@@ -372,7 +376,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
     }
 
-    private IReadOnlyDictionary<long, BatchPrediction> TryPredictAnalysisOutputBatch(
+    private Dictionary<long, BatchPrediction> TryPredictAnalysisOutputBatch(
         IReadOnlyList<TrackAnalysisInputDto> tracks,
         CancellationToken cancellationToken)
     {
@@ -382,119 +386,50 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return new Dictionary<long, BatchPrediction>();
         }
 
-        var capability = GetOrProbeMlCapability();
-        if (!capability.Available)
+        if (!TryResolveBatchAnalyzerContext(tracks, out var context, out var failureMap))
         {
-            var reason = capability.Reason ?? "Unknown reason.";
-            LogMlUnavailable(reason);
-            return CreateBatchFailureMap(tracks, reason);
+            return failureMap;
         }
 
-        var scriptPath = ResolveAnalyzerScriptPath();
-        if (string.IsNullOrWhiteSpace(scriptPath) || !File.Exists(scriptPath))
-        {
-            var reason = $"Analyzer script missing at {scriptPath}. Set VIBE_ANALYZER_PATH or ensure Tools/vibe_analyzer.py exists.";
-            LogMlUnavailable(reason);
-            return CreateBatchFailureMap(tracks, reason);
-        }
-
-        var modelsDir = ResolveModelsDirectory();
-        if (string.IsNullOrWhiteSpace(modelsDir) || !Directory.Exists(modelsDir))
-        {
-            var reason = $"Models directory missing at {modelsDir}. Set VIBE_ANALYZER_MODELS or place models under Tools/models.";
-            LogMlUnavailable(reason);
-            return CreateBatchFailureMap(tracks, reason);
-        }
-
-        var batchTempFilePath = Path.GetTempFileName();
+        var request = tracks.Select(track => new BatchAnalysisRequestItem(track.TrackId, track.FilePath)).ToList();
+        var batchTempFilePath = WriteBatchRequestToSecureTempFile(request);
         try
         {
-            var request = tracks.Select(track => new BatchAnalysisRequestItem(track.TrackId, track.FilePath)).ToList();
-            File.WriteAllText(batchTempFilePath, JsonSerializer.Serialize(request));
-
-            var perTrackTimeout = (int)ResolveAnalyzerTimeout().TotalSeconds;
-            var batchTimeout = ResolveAnalyzerBatchTimeout();
-            var batchTimeoutSeconds = (int)batchTimeout.TotalSeconds;
-            var workers = ResolveAnalyzerWorkers();
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = ResolvePythonExecutable(),
-                Arguments =
-                    $"\"{scriptPath}\" --batch-json \"{batchTempFilePath}\" --models \"{modelsDir}\" --workers {workers} --per-track-timeout-seconds {perTrackTimeout} --batch-timeout-seconds {batchTimeoutSeconds}",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            ConfigurePythonEnvironment(startInfo);
-
-            using var process = Process.Start(startInfo);
+            using var process = Process.Start(CreateBatchProcessStartInfo(context, batchTempFilePath));
             if (process is null)
             {
                 return CreateBatchFailureMap(tracks, "Failed to start vibe analyzer batch process.");
             }
 
-            var stdoutTask = process.StandardOutput.ReadToEndAsync();
-            var stderrTask = process.StandardError.ReadToEndAsync();
-            var externalBatchTimeout = batchTimeout + TimeSpan.FromSeconds(30);
-            if (!process.WaitForExit((int)Math.Clamp(externalBatchTimeout.TotalMilliseconds, 1000, int.MaxValue)))
+            var execution = ExecuteBatchAnalyzerProcess(process, context.BatchTimeout, context.BatchTimeoutSeconds);
+            if (!execution.Succeeded)
             {
-                TryTerminate(process);
-                var timeoutReason = $"Vibe analyzer batch timed out after {batchTimeoutSeconds}s.";
-                _logger.LogWarning(timeoutReason);
-                return CreateBatchFailureMap(tracks, timeoutReason);
+                if (execution.TimedOut)
+                {
+                    _logger.LogWarning("Vibe analysis ML batch timed out after {BatchTimeoutSeconds}s.", context.BatchTimeoutSeconds);
+                }
+                else if (!string.IsNullOrWhiteSpace(execution.ErrorOutput))
+                {
+                    _logger.LogWarning("Vibe analysis ML batch failed: {Error}", execution.ErrorOutput);
+                }
+
+                return CreateBatchFailureMap(tracks, execution.FailureReason);
             }
 
-            var output = stdoutTask.GetAwaiter().GetResult();
-            var errorOutput = stderrTask.GetAwaiter().GetResult();
-            if (process.ExitCode != 0)
-            {
-                _logger.LogWarning("Vibe analysis ML batch failed: {Error}", errorOutput);
-                var failureReason = string.IsNullOrWhiteSpace(errorOutput)
-                    ? "Vibe analyzer batch process failed."
-                    : errorOutput.Trim();
-                return CreateBatchFailureMap(tracks, failureReason);
-            }
-
-            if (TryReadAnalyzerFailure(output, out var analyzerFailure))
+            if (TryReadAnalyzerFailure(execution.Output, out var analyzerFailure))
             {
                 SetMlCapabilityUnavailable(analyzerFailure);
                 LogMlUnavailable(analyzerFailure);
                 return CreateBatchFailureMap(tracks, analyzerFailure);
             }
 
-            var parsed = JsonSerializer.Deserialize<BatchAnalysisResponse>(output, CaseInsensitiveJsonOptions);
+            var parsed = JsonSerializer.Deserialize<BatchAnalysisResponse>(execution.Output, CaseInsensitiveJsonOptions);
             if (parsed?.Results is null)
             {
                 return CreateBatchFailureMap(tracks, "Vibe analyzer batch returned an invalid payload.");
             }
 
-            var predictionMap = new Dictionary<long, BatchPrediction>();
-            foreach (var item in parsed.Results)
-            {
-                if (item.TrackId is null)
-                {
-                    continue;
-                }
-
-                if (item.Ok && item.Payload is not null)
-                {
-                    predictionMap[item.TrackId.Value] = new BatchPrediction(item.Payload, null);
-                    continue;
-                }
-
-                predictionMap[item.TrackId.Value] = new BatchPrediction(null, BuildBatchFailureReason(item.ErrorCode, item.Message));
-            }
-
-            foreach (var track in tracks)
-            {
-                if (!predictionMap.ContainsKey(track.TrackId))
-                {
-                    predictionMap[track.TrackId] = new BatchPrediction(null, "Vibe analyzer batch produced no result.");
-                }
-            }
-
-            return predictionMap;
+            return BuildBatchPredictionMap(tracks, parsed.Results);
         }
         catch (Exception ex)
         {
@@ -516,6 +451,176 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             }
         }
     }
+
+    private bool TryResolveBatchAnalyzerContext(
+        IReadOnlyList<TrackAnalysisInputDto> tracks,
+        out BatchAnalyzerContext context,
+        out Dictionary<long, BatchPrediction> failureMap)
+    {
+        failureMap = new Dictionary<long, BatchPrediction>();
+        context = default!;
+
+        var capability = GetOrProbeMlCapability();
+        if (!capability.Available)
+        {
+            var reason = capability.Reason ?? "Unknown reason.";
+            LogMlUnavailable(reason);
+            failureMap = CreateBatchFailureMap(tracks, reason);
+            return false;
+        }
+
+        var scriptPath = ResolveAnalyzerScriptPath();
+        if (string.IsNullOrWhiteSpace(scriptPath) || !File.Exists(scriptPath))
+        {
+            var reason = $"Analyzer script missing at {scriptPath}. Set {VibePathEnvironmentVariable} or ensure {ToolsDirectoryName}/{VibeAnalyzerScriptFileName} exists.";
+            LogMlUnavailable(reason);
+            failureMap = CreateBatchFailureMap(tracks, reason);
+            return false;
+        }
+
+        var modelsDir = ResolveModelsDirectory();
+        if (string.IsNullOrWhiteSpace(modelsDir) || !Directory.Exists(modelsDir))
+        {
+            var reason = $"Models directory missing at {modelsDir}. Set {VibeModelsDirectoryEnvironmentVariable} or place models under {ToolsDirectoryName}/{ModelsDirectoryName}.";
+            LogMlUnavailable(reason);
+            failureMap = CreateBatchFailureMap(tracks, reason);
+            return false;
+        }
+
+        var batchTimeout = ResolveAnalyzerBatchTimeout();
+        context = new BatchAnalyzerContext(
+            scriptPath,
+            modelsDir,
+            ResolveAnalyzerWorkers(),
+            (int)ResolveAnalyzerTimeout().TotalSeconds,
+            batchTimeout,
+            (int)batchTimeout.TotalSeconds);
+        return true;
+    }
+
+    private static ProcessStartInfo CreateBatchProcessStartInfo(BatchAnalyzerContext context, string batchTempFilePath)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = ResolvePythonExecutable(),
+            Arguments =
+                $"\"{context.ScriptPath}\" --batch-json \"{batchTempFilePath}\" --models \"{context.ModelsDir}\" --workers {context.Workers} --per-track-timeout-seconds {context.PerTrackTimeoutSeconds} --batch-timeout-seconds {context.BatchTimeoutSeconds}",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        ConfigurePythonEnvironment(startInfo);
+        return startInfo;
+    }
+
+    private static BatchProcessExecution ExecuteBatchAnalyzerProcess(Process process, TimeSpan batchTimeout, int batchTimeoutSeconds)
+    {
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+        var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
+        var externalBatchTimeout = batchTimeout + TimeSpan.FromSeconds(30);
+        if (!process.WaitForExit((int)Math.Clamp(externalBatchTimeout.TotalMilliseconds, 1000, int.MaxValue)))
+        {
+            TryTerminate(process);
+            return new BatchProcessExecution(
+                Succeeded: false,
+                TimedOut: true,
+                Output: string.Empty,
+                ErrorOutput: string.Empty,
+                FailureReason: $"Vibe analyzer batch timed out after {batchTimeoutSeconds}s.");
+        }
+
+        var output = stdoutTask.GetAwaiter().GetResult();
+        var errorOutput = stderrTask.GetAwaiter().GetResult();
+        if (process.ExitCode != 0)
+        {
+            var failureReason = string.IsNullOrWhiteSpace(errorOutput)
+                ? "Vibe analyzer batch process failed."
+                : errorOutput.Trim();
+            return new BatchProcessExecution(
+                Succeeded: false,
+                TimedOut: false,
+                Output: output,
+                ErrorOutput: errorOutput,
+                FailureReason: failureReason);
+        }
+
+        return new BatchProcessExecution(
+            Succeeded: true,
+            TimedOut: false,
+            Output: output,
+            ErrorOutput: errorOutput,
+            FailureReason: string.Empty);
+    }
+
+    private static Dictionary<long, BatchPrediction> BuildBatchPredictionMap(
+        IReadOnlyList<TrackAnalysisInputDto> tracks,
+        IReadOnlyList<BatchAnalysisItem> results)
+    {
+        var predictionMap = new Dictionary<long, BatchPrediction>();
+        foreach (var item in results.Where(item => item.TrackId is not null))
+        {
+            var trackId = item.TrackId!.Value;
+            predictionMap[trackId] = item.Ok && item.Payload is not null
+                ? new BatchPrediction(item.Payload, null)
+                : new BatchPrediction(null, BuildBatchFailureReason(item.ErrorCode, item.Message));
+        }
+
+        foreach (var track in tracks.Where(track => !predictionMap.ContainsKey(track.TrackId)))
+        {
+            predictionMap[track.TrackId] = new BatchPrediction(null, "Vibe analyzer batch produced no result.");
+        }
+
+        return predictionMap;
+    }
+
+    private static string WriteBatchRequestToSecureTempFile(IReadOnlyList<BatchAnalysisRequestItem> request)
+    {
+        var tempDirectory = ResolveBatchRequestTempDirectory();
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            var candidatePath = Path.Join(tempDirectory, $"{Path.GetRandomFileName()}.json");
+            try
+            {
+                using var stream = OpenSecureTempFile(candidatePath);
+                JsonSerializer.Serialize(stream, request);
+                return candidatePath;
+            }
+            catch (IOException)
+            {
+                // Retry with a different random candidate on any create/write race.
+            }
+        }
+
+        throw new IOException("Unable to create a secure temporary file for vibe batch analysis.");
+    }
+
+    private static string ResolveBatchRequestTempDirectory()
+    {
+        var dataRoot = ResolveDataRootPath();
+        var baseDirectory = string.IsNullOrWhiteSpace(dataRoot) ? AppContext.BaseDirectory : dataRoot;
+        var tempDirectory = Path.Combine(baseDirectory, "analysis", "tmp", "vibe");
+        Directory.CreateDirectory(tempDirectory);
+        return tempDirectory;
+    }
+
+    private static FileStream OpenSecureTempFile(string candidatePath)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return new FileStream(candidatePath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+        }
+
+        return new FileStream(candidatePath, new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.ReadWrite,
+            Share = FileShare.None,
+            Options = FileOptions.None,
+            UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite
+        });
+    }
+
 
     private static bool IsFfmpegHandledExtension(string? extension)
     {
@@ -994,7 +1099,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         EnsureEssentiaPythonProvisioned();
     }
 
-    private void EnsureAnalyzerScriptEnvironmentPath()
+    private static void EnsureAnalyzerScriptEnvironmentPath()
     {
         var scriptPath = ResolveAnalyzerScriptPath();
         if (string.IsNullOrWhiteSpace(scriptPath) || !File.Exists(scriptPath))
@@ -1104,7 +1209,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             if (string.IsNullOrWhiteSpace(venvPython) || !File.Exists(venvPython))
             {
                 Directory.CreateDirectory(venvRoot);
-                if (!TryRunProcess("python3", $"-m venv \"{venvRoot}\"", PipInstallTimeout, out var venvError))
+                if (!TryRunProcess(Python3Executable, $"-m venv \"{venvRoot}\"", PipInstallTimeout, out var venvError))
                 {
                     _logger.LogWarning("Unable to create vibe analysis venv at {VenvRoot}: {Error}", venvRoot, venvError);
                     return;
@@ -1208,7 +1313,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return Path.Combine(dataRoot, DefaultVibeModelsRelativePath.Replace('/', Path.DirectorySeparatorChar));
         }
 
-        return Path.Combine(AppContext.BaseDirectory, "Tools", "models");
+        return Path.Combine(AppContext.BaseDirectory, ToolsDirectoryName, ModelsDirectoryName);
     }
 
     private static string ResolveAbsolutePath(string path)
@@ -1237,7 +1342,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
     private static string? ResolveVenvPythonPath(string venvRoot)
     {
-        var linuxPath = Path.Combine(venvRoot, "bin", "python3");
+        var linuxPath = Path.Combine(venvRoot, "bin", Python3Executable);
         if (File.Exists(linuxPath))
         {
             return linuxPath;
@@ -1273,7 +1378,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             using var process = Process.Start(startInfo);
             if (process is null)
             {
-                return new MlCapability(false, "Failed to start python3 for Essentia probe.");
+                return new MlCapability(false, $"Failed to start {Python3Executable} for Essentia probe.");
             }
 
             var stdoutTask = process.StandardOutput.ReadToEndAsync();
@@ -1340,7 +1445,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
 
         var venvExecutable = ResolveVenvPythonExecutable();
-        return string.IsNullOrWhiteSpace(venvExecutable) ? "python3" : venvExecutable;
+        return string.IsNullOrWhiteSpace(venvExecutable) ? Python3Executable : venvExecutable;
     }
 
     private static string? ResolvePythonOverrideExecutable()
@@ -1391,7 +1496,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         var venvDir = Path.Combine(scriptDir, "venv");
         var linuxPython = new[]
         {
-            Path.Combine(venvDir, "bin", "python3"),
+            Path.Combine(venvDir, "bin", Python3Executable),
             Path.Combine(venvDir, "bin", "python")
         }.FirstOrDefault(File.Exists);
         if (!string.IsNullOrWhiteSpace(linuxPython))
@@ -1563,11 +1668,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
         var candidates = new[]
         {
-            Path.Combine(AppContext.BaseDirectory, "Tools", "vibe_analyzer.py"),
-            Path.Combine(AppContext.BaseDirectory, "..", "Tools", "vibe_analyzer.py"),
-            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "Tools", "vibe_analyzer.py"),
-            Path.Combine(Directory.GetCurrentDirectory(), "Tools", "vibe_analyzer.py"),
-            Path.Combine(Directory.GetCurrentDirectory(), "DeezSpoTag.Web", "Tools", "vibe_analyzer.py")
+            Path.Combine(AppContext.BaseDirectory, ToolsDirectoryName, VibeAnalyzerScriptFileName),
+            Path.Combine(AppContext.BaseDirectory, "..", ToolsDirectoryName, VibeAnalyzerScriptFileName),
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ToolsDirectoryName, VibeAnalyzerScriptFileName),
+            Path.Combine(Directory.GetCurrentDirectory(), ToolsDirectoryName, VibeAnalyzerScriptFileName),
+            Path.Combine(Directory.GetCurrentDirectory(), "DeezSpoTag.Web", ToolsDirectoryName, VibeAnalyzerScriptFileName)
         };
 
         foreach (var candidate in candidates)
@@ -1616,13 +1721,13 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
         var candidates = new[]
         {
-            Path.Combine(AppContext.BaseDirectory, "models"),
-            Path.Combine(AppContext.BaseDirectory, "Tools", "models"),
-            Path.Combine(AppContext.BaseDirectory, "..", "Tools", "models"),
-            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "Tools", "models"),
-            Path.Combine(Directory.GetCurrentDirectory(), "Tools", "models"),
-            Path.Combine(Directory.GetCurrentDirectory(), "DeezSpoTag.Web", "Tools", "models"),
-            "/app/models"
+            Path.Combine(AppContext.BaseDirectory, ModelsDirectoryName),
+            Path.Combine(AppContext.BaseDirectory, ToolsDirectoryName, ModelsDirectoryName),
+            Path.Combine(AppContext.BaseDirectory, "..", ToolsDirectoryName, ModelsDirectoryName),
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ToolsDirectoryName, ModelsDirectoryName),
+            Path.Combine(Directory.GetCurrentDirectory(), ToolsDirectoryName, ModelsDirectoryName),
+            Path.Combine(Directory.GetCurrentDirectory(), "DeezSpoTag.Web", ToolsDirectoryName, ModelsDirectoryName),
+            Path.Combine(Path.DirectorySeparatorChar.ToString(), "app", ModelsDirectoryName)
         };
 
         foreach (var candidate in candidates)
@@ -1631,12 +1736,10 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             AddUniqueCandidate(resolvedCandidates, resolvedCandidate);
         }
 
-        foreach (var resolvedCandidate in resolvedCandidates)
+        var preferredCandidate = resolvedCandidates.FirstOrDefault(HasRequiredEnhancedModels);
+        if (!string.IsNullOrWhiteSpace(preferredCandidate))
         {
-            if (HasRequiredEnhancedModels(resolvedCandidate))
-            {
-                return resolvedCandidate;
-            }
+            return preferredCandidate;
         }
 
         return resolvedCandidates.Count > 0 ? resolvedCandidates[0] : null;
@@ -1649,41 +1752,17 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return false;
         }
 
-        foreach (var requiredModelFile in RequiredEnhancedModelFiles)
-        {
-            if (!File.Exists(Path.Combine(modelsDirectory, requiredModelFile)))
-            {
-                return false;
-            }
-        }
-
-        return true;
+        return RequiredEnhancedModelFiles.All(requiredModelFile => File.Exists(Path.Combine(modelsDirectory, requiredModelFile)));
     }
 
     private static string? TryResolveExistingFilePath(string path)
     {
-        foreach (var candidate in ExpandPathCandidates(path))
-        {
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        return null;
+        return ExpandPathCandidates(path).FirstOrDefault(File.Exists);
     }
 
     private static string? TryResolveExistingDirectoryPath(string path)
     {
-        foreach (var candidate in ExpandPathCandidates(path))
-        {
-            if (Directory.Exists(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        return null;
+        return ExpandPathCandidates(path).FirstOrDefault(Directory.Exists);
     }
 
     private static IEnumerable<string> ExpandPathCandidates(string path)
@@ -1776,6 +1855,21 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private sealed record BatchPrediction(
         AnalysisOutput? Output,
         string? FailureReason);
+
+    private sealed record BatchAnalyzerContext(
+        string ScriptPath,
+        string ModelsDir,
+        int Workers,
+        int PerTrackTimeoutSeconds,
+        TimeSpan BatchTimeout,
+        int BatchTimeoutSeconds);
+
+    private sealed record BatchProcessExecution(
+        bool Succeeded,
+        bool TimedOut,
+        string Output,
+        string ErrorOutput,
+        string FailureReason);
 
     private sealed record MlCapability(bool Available, string? Reason);
 

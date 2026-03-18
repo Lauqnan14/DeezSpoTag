@@ -2,6 +2,7 @@ using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using System.Text.Json;
 using System.Threading;
 
 namespace DeezSpoTag.Web.Services;
@@ -15,6 +16,7 @@ public sealed class LibraryScanRunner
     private readonly IServiceProvider _serviceProvider;
     private readonly ArtistPageCacheRepository _artistCacheRepository;
     private readonly ILogger<LibraryScanRunner> _logger;
+    private readonly string _scanCheckpointPath;
     private readonly object _scanLock = new();
     private readonly object _previewIngestLock = new();
     private CancellationTokenSource? _activeScanCts;
@@ -36,6 +38,10 @@ public sealed class LibraryScanRunner
         _serviceProvider = serviceProvider;
         _artistCacheRepository = artistCacheRepository;
         _logger = logger;
+        var dataRoot = AppDataPathResolver.ResolveDataRootOrDefault(Path.Join(environment.ContentRootPath, "Data"));
+        var checkpointDirectory = Path.Join(dataRoot, "library-scan");
+        Directory.CreateDirectory(checkpointDirectory);
+        _scanCheckpointPath = Path.Join(checkpointDirectory, "checkpoint.json");
     }
 
     public sealed record ScanStatus(
@@ -54,6 +60,22 @@ public sealed class LibraryScanRunner
         int AlbumCount,
         int TrackCount,
         Dictionary<string, List<string>> ArtistGenres);
+
+    private sealed record ScanResumeState(
+        List<FolderDto> FoldersToScan,
+        ScanProgressOffset ProgressOffset,
+        Dictionary<string, HashSet<string>> ArtistGenres,
+        bool Resumed);
+
+    private sealed class ScanCheckpointState
+    {
+        public long? FolderId { get; set; }
+        public List<long> RemainingFolderIds { get; set; } = new();
+        public int ProcessedFiles { get; set; }
+        public int TotalFiles { get; set; }
+        public int ErrorCount { get; set; }
+        public Dictionary<string, List<string>> ArtistGenres { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    }
 
     private readonly record struct ScanProgressOffset(int ProcessedFiles, int TotalFiles, int ErrorCount);
 
@@ -122,8 +144,35 @@ public sealed class LibraryScanRunner
                     AddInfoLog("Thumbnail cache cleared.");
                 }
 
-                AddInfoLog($"Library scan started ({enabledFolders.Count} folders).");
-                var scanResult = await ScanAndIngestIncrementally(enabledFolders, activeCts.Token);
+                var resumeState = BuildScanResumeState(folderId, enabledFolders, reset);
+                if (resumeState.ProgressOffset.ProcessedFiles > 0
+                    || resumeState.ProgressOffset.TotalFiles > 0
+                    || resumeState.ProgressOffset.ErrorCount > 0)
+                {
+                    _status = _status with
+                    {
+                        ProcessedFiles = resumeState.ProgressOffset.ProcessedFiles,
+                        TotalFiles = resumeState.ProgressOffset.TotalFiles,
+                        ErrorCount = resumeState.ProgressOffset.ErrorCount
+                    };
+                }
+
+                PersistScanCheckpoint(
+                    folderId,
+                    resumeState.FoldersToScan.Select(static folder => folder.Id),
+                    resumeState.ProgressOffset,
+                    resumeState.ArtistGenres);
+
+                AddInfoLog(resumeState.Resumed
+                    ? $"Library scan resumed ({resumeState.FoldersToScan.Count}/{enabledFolders.Count} folders remaining)."
+                    : $"Library scan started ({enabledFolders.Count} folders).");
+                var scanResult = await ScanAndIngestIncrementally(
+                    enabledFolders,
+                    resumeState.FoldersToScan,
+                    resumeState.ProgressOffset,
+                    resumeState.ArtistGenres,
+                    folderId,
+                    activeCts.Token);
                 PersistScanInfo(scanResult.ArtistCount, scanResult.AlbumCount, scanResult.TrackCount);
                 await SyncRepositoryArtifactsAsync(
                     enabledFolders,
@@ -132,6 +181,7 @@ public sealed class LibraryScanRunner
                     refreshImages,
                     cacheSpotifyImages,
                     activeCts.Token);
+                ClearScanCheckpoint();
                 AddInfoLog($"Library scan completed ({scanResult.ArtistCount} artists, {scanResult.AlbumCount} albums, {scanResult.TrackCount} tracks).");
             }
         }
@@ -239,16 +289,21 @@ public sealed class LibraryScanRunner
 
     private async Task<IncrementalScanResult> ScanAndIngestIncrementally(
         List<FolderDto> enabledFolders,
+        List<FolderDto> foldersToScan,
+        ScanProgressOffset initialProgressOffset,
+        Dictionary<string, HashSet<string>> initialArtistGenres,
+        long? requestedFolderId,
         CancellationToken cancellationToken)
     {
-        var aggregatedGenres = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-        var progressOffset = new ScanProgressOffset(0, 0, 0);
+        var aggregatedGenres = CloneArtistGenres(initialArtistGenres);
+        var progressOffset = initialProgressOffset;
+        var remainingFolderIds = foldersToScan.Select(static folder => folder.Id).ToList();
 
-        for (var i = 0; i < enabledFolders.Count; i++)
+        for (var i = 0; i < foldersToScan.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var folder = enabledFolders[i];
-            AddInfoLog($"Scanning folder {i + 1}/{enabledFolders.Count}: {folder.DisplayName}.");
+            var folder = foldersToScan[i];
+            AddInfoLog($"Scanning folder {i + 1}/{foldersToScan.Count}: {folder.DisplayName}.");
 
             var folderSnapshot = ScanSingleFolderSnapshot(
                 folder,
@@ -281,8 +336,11 @@ public sealed class LibraryScanRunner
                     TracksDetected = liveStats.TotalTracks,
                     CurrentFile = null
                 };
-                AddInfoLog($"Folder indexed ({i + 1}/{enabledFolders.Count}): {folder.DisplayName}.");
+                AddInfoLog($"Folder indexed ({i + 1}/{foldersToScan.Count}): {folder.DisplayName}.");
             }
+
+            remainingFolderIds.Remove(folder.Id);
+            PersistScanCheckpoint(requestedFolderId, remainingFolderIds, progressOffset, aggregatedGenres);
         }
 
         var finalCounts = await ResolveFinalCountsAsync(cancellationToken);
@@ -303,6 +361,170 @@ public sealed class LibraryScanRunner
                 pair => pair.Key,
                 pair => pair.Value.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList(),
                 StringComparer.OrdinalIgnoreCase));
+    }
+
+    private ScanResumeState BuildScanResumeState(long? folderId, List<FolderDto> enabledFolders, bool resetRequested)
+    {
+        if (resetRequested)
+        {
+            ClearScanCheckpoint();
+            return new ScanResumeState(
+                enabledFolders,
+                new ScanProgressOffset(0, 0, 0),
+                new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase),
+                Resumed: false);
+        }
+
+        if (enabledFolders.Count == 0)
+        {
+            ClearScanCheckpoint();
+            return new ScanResumeState(
+                enabledFolders,
+                new ScanProgressOffset(0, 0, 0),
+                new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase),
+                Resumed: false);
+        }
+
+        var checkpoint = LoadScanCheckpoint();
+        if (checkpoint is null)
+        {
+            return new ScanResumeState(
+                enabledFolders,
+                new ScanProgressOffset(0, 0, 0),
+                new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase),
+                Resumed: false);
+        }
+
+        if (checkpoint.FolderId != folderId || checkpoint.RemainingFolderIds.Count == 0)
+        {
+            ClearScanCheckpoint();
+            return new ScanResumeState(
+                enabledFolders,
+                new ScanProgressOffset(0, 0, 0),
+                new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase),
+                Resumed: false);
+        }
+
+        var foldersById = enabledFolders.ToDictionary(static folder => folder.Id);
+        var foldersToScan = checkpoint.RemainingFolderIds
+            .Distinct()
+            .Where(foldersById.ContainsKey)
+            .Select(id => foldersById[id])
+            .ToList();
+        if (foldersToScan.Count == 0)
+        {
+            ClearScanCheckpoint();
+            return new ScanResumeState(
+                enabledFolders,
+                new ScanProgressOffset(0, 0, 0),
+                new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase),
+                Resumed: false);
+        }
+
+        var restoredGenres = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in checkpoint.ArtistGenres)
+        {
+            var values = pair.Value
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .Select(static value => value.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (values.Count > 0)
+            {
+                restoredGenres[pair.Key] = values;
+            }
+        }
+
+        return new ScanResumeState(
+            foldersToScan,
+            new ScanProgressOffset(
+                Math.Max(0, checkpoint.ProcessedFiles),
+                Math.Max(0, checkpoint.TotalFiles),
+                Math.Max(0, checkpoint.ErrorCount)),
+            restoredGenres,
+            Resumed: true);
+    }
+
+    private ScanCheckpointState? LoadScanCheckpoint()
+    {
+        try
+        {
+            if (!File.Exists(_scanCheckpointPath))
+            {
+                return null;
+            }
+
+            var json = File.ReadAllText(_scanCheckpointPath);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return null;
+            }
+
+            return JsonSerializer.Deserialize<ScanCheckpointState>(json);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to load library scan checkpoint from {CheckpointPath}.", _scanCheckpointPath);
+            return null;
+        }
+    }
+
+    private void PersistScanCheckpoint(
+        long? folderId,
+        IEnumerable<long> remainingFolderIds,
+        ScanProgressOffset progressOffset,
+        IReadOnlyDictionary<string, HashSet<string>> artistGenres)
+    {
+        try
+        {
+            var checkpoint = new ScanCheckpointState
+            {
+                FolderId = folderId,
+                RemainingFolderIds = remainingFolderIds.ToList(),
+                ProcessedFiles = progressOffset.ProcessedFiles,
+                TotalFiles = progressOffset.TotalFiles,
+                ErrorCount = progressOffset.ErrorCount,
+                ArtistGenres = artistGenres.ToDictionary(
+                    pair => pair.Key,
+                    pair => pair.Value.OrderBy(static value => value, StringComparer.OrdinalIgnoreCase).ToList(),
+                    StringComparer.OrdinalIgnoreCase)
+            };
+
+            var json = JsonSerializer.Serialize(checkpoint);
+            var tempPath = $"{_scanCheckpointPath}.tmp";
+            File.WriteAllText(tempPath, json);
+            File.Move(tempPath, _scanCheckpointPath, overwrite: true);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to persist library scan checkpoint at {CheckpointPath}.", _scanCheckpointPath);
+        }
+    }
+
+    private void ClearScanCheckpoint()
+    {
+        try
+        {
+            if (File.Exists(_scanCheckpointPath))
+            {
+                File.Delete(_scanCheckpointPath);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to clear library scan checkpoint at {CheckpointPath}.", _scanCheckpointPath);
+        }
+    }
+
+    private static Dictionary<string, HashSet<string>> CloneArtistGenres(
+        IReadOnlyDictionary<string, HashSet<string>> source)
+    {
+        var clone = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in source)
+        {
+            clone[pair.Key] = new HashSet<string>(pair.Value, StringComparer.OrdinalIgnoreCase);
+        }
+
+        return clone;
     }
 
     private LibraryConfigStore.LocalLibrarySnapshot ScanSingleFolderSnapshot(

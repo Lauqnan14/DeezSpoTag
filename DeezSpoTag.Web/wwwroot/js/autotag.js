@@ -105,16 +105,6 @@
         { tag: "trackId", label: "Track ID" },
         { tag: "bpm", label: "BPM" },
         { tag: "key", label: "Key" },
-        { tag: "danceability", label: "Danceability", tooltip: "Spotify audio feature" },
-        { tag: "energy", label: "Energy", tooltip: "Spotify audio feature" },
-        { tag: "valence", label: "Valence", tooltip: "Spotify audio feature" },
-        { tag: "acousticness", label: "Acousticness", tooltip: "Spotify audio feature" },
-        { tag: "instrumentalness", label: "Instrumentalness", tooltip: "Spotify audio feature" },
-        { tag: "speechiness", label: "Speechiness", tooltip: "Spotify audio feature" },
-        { tag: "loudness", label: "Loudness", tooltip: "Spotify audio feature" },
-        { tag: "liveness", label: "Liveness", tooltip: "Spotify audio feature" },
-        { tag: "tempo", label: "Tempo (BPM)", tooltip: "Spotify audio feature" },
-        { tag: "timeSignature", label: "Time Signature", tooltip: "Spotify audio feature" },
         { tag: "mood", label: "Mood" },
         { tag: "catalogNumber", label: "Catalog Number" },
         { tag: "trackNumber", label: "Track Number" },
@@ -176,7 +166,7 @@
         releaseId: "Release ID (source)",
         rating: "Rating"
     };
-    const SPOTIFY_AUDIO_FEATURE_TAGS = [ // NOSONAR
+    const HIDDEN_SPOTIFY_AUDIO_FEATURE_TAGS = [ // NOSONAR
         "danceability",
         "energy",
         "valence",
@@ -188,6 +178,9 @@
         "tempo",
         "timeSignature"
     ];
+    const HIDDEN_SPOTIFY_AUDIO_FEATURE_TAG_SET = new Set(
+        HIDDEN_SPOTIFY_AUDIO_FEATURE_TAGS.map((tag) => String(tag).toLowerCase())
+    );
     const DEFAULT_LYRICS_TYPE_SELECTION = "lyrics,syllable-lyrics,unsynced-lyrics";
     const DEFAULT_ARTWORK_SOURCE_ORDER = Object.freeze(["apple", "deezer", "spotify"]);
     const DEFAULT_LYRICS_SOURCE_ORDER = Object.freeze(["apple", "deezer", "spotify", "lrclib"]);
@@ -646,42 +639,65 @@
     }
 
     function getDownloadTagSource() {
+        const deezerToggle = el("metadataSourceDeezerEnabled");
+        const spotifyToggle = el("metadataSourceSpotifyEnabled");
         const configuredSource = normalizeDownloadTagSource(state.config.downloadTagSource);
-        if (el("metadataSourceDeezerEnabled")?.checked) {
+
+        if (deezerToggle?.checked === true && spotifyToggle?.checked !== true) {
             return "deezer";
         }
-        if (el("metadataSourceSpotifyEnabled")?.checked) {
+        if (spotifyToggle?.checked === true && deezerToggle?.checked !== true) {
             return "spotify";
         }
+
         return configuredSource;
     }
 
-    function enforceSingleDownloadSource(changedId) {
-        const ids = ["metadataSourceDeezerEnabled", "metadataSourceSpotifyEnabled"];
-        const currentChecked = ids.filter((id) => el(id)?.checked);
-        if (!currentChecked.length) {
-            const fallback = ids.includes(changedId) ? changedId : ids[0];
-            if (el(fallback)) {
-                el(fallback).checked = true;
-                state.config.downloadTagSource = mapDownloadTagSource(fallback);
-            }
-            return;
+    function setDownloadTagSource(source, options = {}) {
+        const { syncUi = true } = options;
+        const normalized = normalizeDownloadTagSource(source);
+        state.config.downloadTagSource = normalized;
+
+        if (!syncUi) {
+            return normalized;
         }
-        if (changedId && el(changedId)?.checked) {
-            ids.forEach((id) => {
-                if (id !== changedId && el(id)) {
-                    el(id).checked = false;
-                }
-            });
-            state.config.downloadTagSource = mapDownloadTagSource(changedId);
+
+        const deezerToggle = el("metadataSourceDeezerEnabled");
+        const spotifyToggle = el("metadataSourceSpotifyEnabled");
+        if (deezerToggle) {
+            deezerToggle.checked = normalized === "deezer";
         }
+        if (spotifyToggle) {
+            spotifyToggle.checked = normalized === "spotify";
+        }
+
+        return normalized;
     }
 
-    function mapDownloadTagSource(toggleId) {
-        if (toggleId === "metadataSourceSpotifyEnabled") {
-            return "spotify";
+    function enforceSingleDownloadSource(changedId) {
+        const deezerToggle = el("metadataSourceDeezerEnabled");
+        const spotifyToggle = el("metadataSourceSpotifyEnabled");
+        if (!deezerToggle || !spotifyToggle) {
+            setDownloadTagSource(state.config.downloadTagSource || "deezer");
+            return;
         }
-        return "deezer";
+
+        let nextSource = null;
+        if (deezerToggle.checked && !spotifyToggle.checked) {
+            nextSource = "deezer";
+        } else if (spotifyToggle.checked && !deezerToggle.checked) {
+            nextSource = "spotify";
+        } else if (changedId === "metadataSourceSpotifyEnabled") {
+            nextSource = "spotify";
+        } else if (changedId === "metadataSourceDeezerEnabled") {
+            nextSource = "deezer";
+        }
+
+        if (!nextSource) {
+            nextSource = normalizeDownloadTagSource(state.config.downloadTagSource || "deezer");
+        }
+
+        setDownloadTagSource(nextSource);
     }
 
     function normalizeDownloadTagSource(downloadTagSource) {
@@ -698,6 +714,26 @@
             return "spotify";
         }
         return null;
+    }
+
+    function updateDownloadSourceAvailability() {
+        const deezerToggle = el("metadataSourceDeezerEnabled");
+        const spotifyToggle = el("metadataSourceSpotifyEnabled");
+        if (!(deezerToggle instanceof HTMLInputElement) || !(spotifyToggle instanceof HTMLInputElement)) {
+            return;
+        }
+
+        const spotifyUnavailable = state.authReady && state.spotifyStatus.connected !== true;
+        spotifyToggle.disabled = spotifyUnavailable;
+        spotifyToggle.title = spotifyUnavailable
+            ? "Connect Spotify in Login before using Spotify as the download metadata source."
+            : "";
+        deezerToggle.disabled = false;
+
+        if (spotifyUnavailable && spotifyToggle.checked) {
+            setDownloadTagSource("deezer");
+            refreshDownloadTagsForSource();
+        }
     }
 
     function trimTrailingPathSeparators(value) {
@@ -1222,7 +1258,9 @@
         const platformTags = Array.isArray(platform?.downloadTags) && platform.downloadTags.length > 0
             ? platform.downloadTags
             : [];
-        return platformTags.map((tagId) => ({
+        return platformTags
+            .filter((tagId) => !isHiddenSpotifyAudioFeatureTag(tagId))
+            .map((tagId) => ({
             tag: tagId,
             label: DOWNLOAD_TAG_LABELS[tagId] || tagId
         }));
@@ -1238,7 +1276,7 @@
         if (!platform || !Array.isArray(platform.downloadTags)) {
             return [];
         }
-        return platform.downloadTags;
+        return platform.downloadTags.filter((tagId) => !isHiddenSpotifyAudioFeatureTag(tagId));
     }
 
     function normalizeDownloadTags(selected) {
@@ -1258,6 +1296,10 @@
     }
 
     function isDownloadTagSupported(tagKey) {
+        if (isHiddenSpotifyAudioFeatureTag(tagKey)) {
+            return false;
+        }
+
         const source = getDownloadTagSource();
         if (!source) {
             return false;
@@ -2237,11 +2279,12 @@
         renderSuccessLibraryOptions();
         renderEnhancementFolderOptions();
         renderPlatforms();
+        setDownloadTagSource(state.config.downloadTagSource || "deezer");
         renderTags("autotag-tags", state.config.tags, "tags");
-        renderTags("autotag-download-tags", state.config.downloadTags || [], "downloadTags");
+        refreshDownloadTagsForSource();
         renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
         renderTags("autotag-overwrite-tags", state.config.overwriteTags, "overwriteTags");
-        updateDownloadTagsVisibility();
+        updateDownloadSourceAvailability();
 
         const setChecked = (id, value) => {
             const field = el(id);
@@ -2343,17 +2386,6 @@
         setChecked("autotag-write-lrc", state.config.writeLrc);
         setChecked("autotag-enhanced-lrc", state.config.enhancedLrc);
         setChecked("autotag-capitalize-genres", state.config.capitalizeGenres);
-
-        if (state.config.downloadTagSource) {
-            const source = normalizeDownloadTagSource(state.config.downloadTagSource);
-            state.config.downloadTagSource = source;
-            if (el("metadataSourceDeezerEnabled")) {
-                el("metadataSourceDeezerEnabled").checked = source === "deezer";
-            }
-            if (el("metadataSourceSpotifyEnabled")) {
-                el("metadataSourceSpotifyEnabled").checked = source === "spotify";
-            }
-        }
 
         updateConditionalSections();
         renderPlatformOptions();
@@ -2739,14 +2771,18 @@
         if (tag === "metaTags") {
             return true;
         }
-        if (SPOTIFY_AUDIO_FEATURE_TAGS.includes(tag)) {
-            return state.config.platforms.some((platformId) => String(platformId || "").toLowerCase() === "spotify");
+        if (isHiddenSpotifyAudioFeatureTag(tag)) {
+            return false;
         }
         return state.platforms.some((platform) =>
             state.config.platforms.includes(platform.id) &&
             Array.isArray(platform.supportedTags) &&
             platform.supportedTags.includes(tag)
         );
+    }
+
+    function isHiddenSpotifyAudioFeatureTag(tag) {
+        return HIDDEN_SPOTIFY_AUDIO_FEATURE_TAG_SET.has(String(tag || "").toLowerCase());
     }
 
     async function loadPlatforms() {
@@ -2782,25 +2818,83 @@
         }
     }
 
+    function hasSpotifyAuthFromPlatformState() {
+        const spotify = state.platformAuth?.spotify;
+        if (!spotify || typeof spotify !== "object") {
+            return false;
+        }
+
+        const hasCookieAuth = Boolean(
+            String(spotify.webPlayerSpDc || "").trim()
+            && String(spotify.webPlayerSpKey || "").trim()
+        );
+        if (hasCookieAuth) {
+            return true;
+        }
+
+        const activeAccount = String(spotify.activeAccount || "").trim();
+        const accounts = Array.isArray(spotify.accounts) ? spotify.accounts : [];
+        if (activeAccount && accounts.length > 0) {
+            const active = accounts.find((account) =>
+                String(account?.name || "").trim().toLowerCase() === activeAccount.toLowerCase());
+            if (active) {
+                const hasBlobPath = Boolean(
+                    String(active.blobPath || "").trim()
+                    || String(active.webPlayerBlobPath || "").trim()
+                    || String(active.librespotBlobPath || "").trim()
+                );
+                if (hasBlobPath) {
+                    return true;
+                }
+            }
+        }
+
+        return Boolean(
+            String(spotify.clientId || "").trim()
+            && String(spotify.clientSecret || "").trim()
+        );
+    }
+
     async function loadSpotifyStatus() {
         try {
-            const configResponse = await fetch("/api/spotify-credentials/config");
-            const accountsResponse = await fetch("/api/spotify-credentials/accounts");
-            if (!configResponse.ok || !accountsResponse.ok) {
-                return;
+            const [configResult, accountsResult] = await Promise.allSettled([
+                fetch("/api/spotify-credentials/config"),
+                fetch("/api/spotify-credentials/accounts")
+            ]);
+
+            let config = null;
+            let accountsData = null;
+
+            if (configResult.status === "fulfilled" && configResult.value.ok) {
+                config = await configResult.value.json();
             }
-            const config = await configResponse.json();
-            const accountsData = await accountsResponse.json();
-            state.config.spotify = {
-                clientId: config.clientId || null,
-                clientSecret: config.clientSecret || null
-            };
-            const hasConfig = config.hasConfig === true
-                || (config.clientId && config.clientSecretSaved);
-            const hasAccounts = Array.isArray(accountsData.accounts) && accountsData.accounts.length > 0;
+            if (accountsResult.status === "fulfilled" && accountsResult.value.ok) {
+                accountsData = await accountsResult.value.json();
+            }
+
+            if (config) {
+                state.config.spotify = {
+                    clientId: config.clientId || null,
+                    clientSecret: config.clientSecret || null
+                };
+            }
+
+            const hasConfig = Boolean(config && (
+                config.hasConfig === true
+                || (config.clientId && config.clientSecretSaved)
+            ));
+            const hasAccounts = Boolean(
+                accountsData
+                && Array.isArray(accountsData.accounts)
+                && accountsData.accounts.length > 0
+            );
+            const hasPlatformAuth = hasSpotifyAuthFromPlatformState();
+            const activeAccountFromPlatform = String(state.platformAuth?.spotify?.activeAccount || "").trim();
+            const activeAccount = accountsData?.activeAccount || activeAccountFromPlatform || null;
+
             state.spotifyStatus = {
-                connected: hasConfig && hasAccounts,
-                activeAccount: accountsData.activeAccount || null
+                connected: hasConfig || hasAccounts || hasPlatformAuth,
+                activeAccount
             };
         } catch (error) {
             console.warn("Failed to load Spotify config status", error);
@@ -5548,6 +5642,8 @@
                     storeSelectedPlatforms();
                 }
                 renderPlatforms();
+                updateDownloadSourceAvailability();
+                refreshDownloadTagsForSource();
                 renderTags("autotag-tags", state.config.tags, "tags");
                 renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
                 renderTags("autotag-overwrite-tags", state.config.overwriteTags, "overwriteTags");
