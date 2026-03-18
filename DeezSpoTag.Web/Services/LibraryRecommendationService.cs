@@ -1,4 +1,5 @@
 using DeezSpoTag.Integrations.Deezer;
+using DeezSpoTag.Core.Models.Deezer;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Library;
@@ -36,9 +37,20 @@ public sealed class LibraryRecommendationService
     private const int RecommendationPoolMultiplier = 3;
     private const int RecommendationPoolLimit = MaxDailyRecommendations * RecommendationPoolMultiplier;
     private const int ShazamRelatedPerSeed = 10;
+    private const double ShazamDeezerMinTitleSimilarity = 0.62d;
+    private const double ShazamDeezerMinArtistSimilarity = 0.52d;
+    private const int ShazamDeezerMaxDurationDeltaSeconds = 24;
     private const int ShazamInlineRefreshBudget = 12;
     private const int ShazamBackgroundBatchSize = 120;
     private static readonly TimeSpan ShazamCacheTtl = TimeSpan.FromDays(14);
+    private static readonly HashSet<string> RejectedDerivativeTerms = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "cover",
+        "parody",
+        "instrumental",
+        "karaoke",
+        "tribute"
+    };
 
     private readonly DeezerTrackRecommendationService _deezerRecommendations;
     private readonly LibraryRepository _repository;
@@ -1226,7 +1238,7 @@ public sealed class LibraryRecommendationService
         var deezerFromShazam = TryGetShazamDeezerId(card);
         if (!string.IsNullOrWhiteSpace(deezerFromShazam))
         {
-            resolved = await ValidateDeezerTrackIdAsync(deezerFromShazam, cancellationToken);
+            resolved = await ValidateDeezerTrackIdAsync(deezerFromShazam, card, cancellationToken);
         }
 
         if (string.IsNullOrWhiteSpace(resolved) && !string.IsNullOrWhiteSpace(card.Isrc))
@@ -1237,7 +1249,9 @@ public sealed class LibraryRecommendationService
                 var candidate = NormalizeId(byIsrc?.Id?.ToString());
                 if (!string.IsNullOrWhiteSpace(candidate))
                 {
-                    resolved = await ValidateDeezerTrackIdAsync(candidate, cancellationToken);
+                    resolved = ValidateDeezerTrackCandidate(candidate, byIsrc, card)
+                        ? candidate
+                        : string.Empty;
                 }
             }
             catch (OperationCanceledException)
@@ -1254,7 +1268,10 @@ public sealed class LibraryRecommendationService
         return resolved;
     }
 
-    private async Task<string> ValidateDeezerTrackIdAsync(string? deezerId, CancellationToken cancellationToken)
+    private async Task<string> ValidateDeezerTrackIdAsync(
+        string? deezerId,
+        ShazamTrackCard sourceCard,
+        CancellationToken cancellationToken)
     {
         var normalized = NormalizeId(deezerId);
         if (string.IsNullOrWhiteSpace(normalized))
@@ -1264,8 +1281,10 @@ public sealed class LibraryRecommendationService
 
         try
         {
-            var track = await _deezerClient.GetTrackAsync(normalized, cancellationToken);
-            return track is null ? string.Empty : normalized;
+            var track = await _deezerClient.GetTrackAsync(normalized).WaitAsync(cancellationToken);
+            return ValidateDeezerTrackCandidate(normalized, track, sourceCard)
+                ? normalized
+                : string.Empty;
         }
         catch (OperationCanceledException)
         {
@@ -1276,6 +1295,198 @@ public sealed class LibraryRecommendationService
             _logger.LogDebug(ex, "Deezer ID validation failed for recommendation candidate {DeezerId}.", normalized);
             return string.Empty;
         }
+    }
+
+    private bool ValidateDeezerTrackCandidate(
+        string deezerId,
+        ApiTrack? candidate,
+        ShazamTrackCard sourceCard)
+    {
+        if (candidate is null)
+        {
+            return false;
+        }
+
+        if (HasIsrcMismatch(sourceCard.Isrc, candidate.Isrc))
+        {
+            return false;
+        }
+
+        var sourceTitle = NormalizeMatchText(sourceCard.Title);
+        var candidateTitle = NormalizeMatchText(BuildCandidateTitle(candidate));
+        var titleScore = ComputeTokenSimilarity(sourceTitle, candidateTitle);
+        if (!string.IsNullOrWhiteSpace(sourceTitle) && titleScore < ShazamDeezerMinTitleSimilarity)
+        {
+            return false;
+        }
+
+        var sourceArtist = NormalizeMatchText(sourceCard.Artist);
+        var candidateArtist = NormalizeMatchText(candidate.Artist?.Name);
+        var artistScore = ComputeTokenSimilarity(sourceArtist, candidateArtist);
+        if (!string.IsNullOrWhiteSpace(sourceArtist) && artistScore < ShazamDeezerMinArtistSimilarity)
+        {
+            return false;
+        }
+
+        if (HasDurationMismatch(sourceCard.DurationMs, candidate.Duration, titleScore))
+        {
+            return false;
+        }
+
+        if (HasDerivativeVersionMismatch(sourceCard, candidate))
+        {
+            _logger.LogDebug(
+                "Rejected derivative mismatch for Shazam recommendation candidate {DeezerId}. Source='{SourceTitle}' Candidate='{CandidateTitle}'",
+                deezerId,
+                sourceCard.Title,
+                BuildCandidateTitle(candidate));
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool HasIsrcMismatch(string? sourceIsrc, string? candidateIsrc)
+    {
+        var source = NormalizeText(sourceIsrc, string.Empty);
+        var candidate = NormalizeText(candidateIsrc, string.Empty);
+        return !string.IsNullOrWhiteSpace(source)
+            && !string.IsNullOrWhiteSpace(candidate)
+            && !string.Equals(source, candidate, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasDurationMismatch(int? sourceDurationMs, int candidateDurationSeconds, double titleScore)
+    {
+        if (sourceDurationMs is not > 0 || candidateDurationSeconds <= 0)
+        {
+            return false;
+        }
+
+        var sourceSeconds = (int)Math.Round(sourceDurationMs.Value / 1000d);
+        var durationDiff = Math.Abs(sourceSeconds - candidateDurationSeconds);
+        return durationDiff > ShazamDeezerMaxDurationDeltaSeconds && titleScore < 0.90d;
+    }
+
+    private static bool HasDerivativeVersionMismatch(ShazamTrackCard sourceCard, ApiTrack candidate)
+    {
+        var sourceTerms = ExtractDerivativeTerms(string.Join(' ', new[]
+        {
+            sourceCard.Title,
+            sourceCard.Artist,
+            sourceCard.Album ?? string.Empty
+        }));
+        var candidateTerms = ExtractDerivativeTerms(string.Join(' ', new[]
+        {
+            BuildCandidateTitle(candidate),
+            candidate.Artist?.Name ?? string.Empty,
+            candidate.Album?.Title ?? string.Empty
+        }));
+
+        if (candidateTerms.Count == 0)
+        {
+            return false;
+        }
+
+        if (sourceTerms.Count == 0)
+        {
+            return true;
+        }
+
+        return !candidateTerms.IsSubsetOf(sourceTerms);
+    }
+
+    private static HashSet<string> ExtractDerivativeTerms(string input)
+    {
+        var normalized = NormalizeMatchText(input);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var terms = normalized
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(token => RejectedDerivativeTerms.Contains(token))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return terms;
+    }
+
+    private static string BuildCandidateTitle(ApiTrack candidate)
+    {
+        var title = NormalizeText(candidate.Title, string.Empty);
+        var version = NormalizeText(candidate.TitleVersion, string.Empty);
+        if (string.IsNullOrWhiteSpace(version))
+        {
+            return title;
+        }
+
+        return title.Contains(version, StringComparison.OrdinalIgnoreCase)
+            ? title
+            : $"{title} {version}".Trim();
+    }
+
+    private static string NormalizeMatchText(string? value)
+    {
+        var normalized = NormalizeText(value, string.Empty).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(normalized.Length);
+        var previousWasSpace = false;
+        foreach (var ch in normalized)
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                builder.Append(ch);
+                previousWasSpace = false;
+                continue;
+            }
+
+            if (!previousWasSpace)
+            {
+                builder.Append(' ');
+                previousWasSpace = true;
+            }
+        }
+
+        var compact = string.Join(
+            " ",
+            builder.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        return compact;
+    }
+
+    private static double ComputeTokenSimilarity(string left, string right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+        {
+            return 0d;
+        }
+
+        if (string.Equals(left, right, StringComparison.Ordinal))
+        {
+            return 1d;
+        }
+
+        if (left.Contains(right, StringComparison.Ordinal) || right.Contains(left, StringComparison.Ordinal))
+        {
+            return 0.92d;
+        }
+
+        var leftTokens = left
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToHashSet(StringComparer.Ordinal);
+        var rightTokens = right
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToHashSet(StringComparer.Ordinal);
+        if (leftTokens.Count == 0 || rightTokens.Count == 0)
+        {
+            return 0d;
+        }
+
+        var intersectionCount = leftTokens.Count(token => rightTokens.Contains(token));
+        var unionCount = leftTokens.Count + rightTokens.Count - intersectionCount;
+        return unionCount == 0 ? 0d : (double)intersectionCount / unionCount;
     }
 
     private static string TryGetShazamDeezerId(ShazamTrackCard card)

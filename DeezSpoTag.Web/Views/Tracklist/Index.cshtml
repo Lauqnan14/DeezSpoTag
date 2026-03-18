@@ -2321,6 +2321,8 @@ async function loadRecommendationsTracklist() {
 function mapRecommendationsTracklist(payload) {
     const tracks = (payload.tracks || []).map((track, index) => ({
         id: track.id || '',
+        deezerId: track.id || '',
+        deezer_id: track.id || '',
         title: track.title || 'Unknown',
         artist: {
             id: track.artist?.id || '',

@@ -205,6 +205,8 @@
         countEl.textContent = formatCount(playlists.length);
     };
 
+    loadRecommendations();
+
     fetch("/api/autoplaylists", { cache: "no-store" })
         .then((response) => response.json())
         .then((data) => {
@@ -220,13 +222,11 @@
                 sourceEl.textContent = "";
                 renderLists([]);
             }
-            loadRecommendations(playlists);
         })
         .catch(() => {
             setWarning("Failed to load playlists.");
             sourceEl.textContent = "";
             renderLists([]);
-            loadRecommendations([]);
         });
 
     function loadMixes(playlists) {
@@ -261,8 +261,8 @@
         return withLibrary ? withLibrary.libraryId : null;
     }
 
-    async function loadRecommendations(playlists) {
-        const libraryIds = await resolveRecommendationLibraryIds(playlists);
+    async function loadRecommendations() {
+        const libraryIds = await resolveRecommendationLibraryIds();
         if (libraryIds.length === 0) {
             recommendationsGrid.innerHTML = "";
             recommendationsEmpty.hidden = false;
@@ -287,24 +287,19 @@
         recommendationsEmpty.hidden = recommendationsGrid.children.length > 0;
     }
 
-    async function resolveRecommendationLibraryIds(playlists) {
-        const fromPlaylists = (playlists || [])
-            .map((item) => Number(item?.libraryId))
-            .filter((value) => Number.isFinite(value) && value > 0);
-        if (fromPlaylists.length > 0) {
-            return [...new Set(fromPlaylists)];
-        }
-
+    async function resolveRecommendationLibraryIds() {
         try {
-            const response = await fetch("/api/library/libraries", { cache: "no-store" });
-            const libraries = response.ok ? await response.json() : [];
-            return (Array.isArray(libraries) ? libraries : [])
-                .map((item) => Number(item?.id))
+            const folderResponse = await fetch("/api/library/folders?includeDisabled=false&contentType=stereo", { cache: "no-store" });
+            const folders = folderResponse.ok ? await folderResponse.json() : [];
+            const fromFolders = (Array.isArray(folders) ? folders : [])
+                .map((item) => Number(item?.libraryId))
                 .filter((value) => Number.isFinite(value) && value > 0)
                 .filter((value, index, array) => array.indexOf(value) === index);
+            return fromFolders;
         } catch (error) {
-            console.warn("Failed to load recommendation library ids.", error);
+            console.warn("Failed to load recommendation folder scope.", error);
         }
+
         return [];
     }
 })();
