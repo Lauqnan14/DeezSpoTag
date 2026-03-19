@@ -81,7 +81,7 @@ jobs:
 
   publish:
     needs: bump-version
-    if: github.ref == 'refs/heads/main' && (needs.bump-version.result != 'success' || needs.bump-version.outputs.bumped != 'true')
+    if: always() && github.ref == 'refs/heads/main' && (needs.bump-version.result != 'success' || needs.bump-version.outputs.bumped != 'true')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
