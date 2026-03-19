@@ -192,7 +192,7 @@
                         Enter your Apple Music email and password. We'll handle the wrapper login in the background and prompt for 2FA if needed.
                     </p>
                     <p class="text-muted" id="appleMusicWrapperModeHint">
-                        This login uses the external Apple wrapper container. It will be started automatically when you click Login.
+                        This login uses the external Apple wrapper container. Ensure apple-wrapper is running and reachable before login.
                     </p>
                     <form id="appleMusicLoginForm" class="space-y-5">
                         <label class="block mb-4">
@@ -2043,7 +2043,7 @@ function setAppleMusicWrapperModeHint() {
     if (!hint) {
         return;
     }
-    hint.textContent = 'This login uses the external Apple wrapper container. It will be started automatically when you click Login.';
+    hint.textContent = 'This login uses the external Apple wrapper container. Ensure apple-wrapper is running and reachable before login.';
 }
 
 async function startAppleMusicLogin() {
@@ -2052,7 +2052,7 @@ async function startAppleMusicLogin() {
         return;
     }
     if (!appleMusicWrapperAvailable && appleMusicExternalMode) {
-        showToast('Wrapper is not ready yet. Login will start it automatically.', 'info');
+        showToast('Wrapper is not ready yet. Start apple-wrapper and then retry login.', 'info');
     }
     const email = document.getElementById('appleMusicEmail').value.trim();
     const password = document.getElementById('appleMusicPassword').value.trim();

@@ -62,16 +62,31 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     private const string StatusStopped = "stopped";
     private const string StatusMissing = "missing";
     private const string ExternalWrapperHostEnv = "DEEZSPOTAG_APPLE_WRAPPER_HOST";
+    private const string ExternalWrapperControlModeEnv = "DEEZSPOTAG_APPLE_WRAPPER_CONTROL_MODE";
     private const string ExternalWrapperHelperModeEnv = "DEEZSPOTAG_APPLE_WRAPPER_HELPER_MODE";
     private const string ExternalWrapperContainerNameEnv = "DEEZSPOTAG_APPLE_WRAPPER_CONTAINER_NAME";
     private const string ExternalWrapperComposeFileEnv = "DEEZSPOTAG_APPLE_WRAPPER_COMPOSE_FILE";
+    private const string ExternalWrapperSharedDataDirEnv = "DEEZSPOTAG_APPLE_WRAPPER_SHARED_DATA_DIR";
+    private const string ExternalWrapperSharedSessionDirEnv = "DEEZSPOTAG_APPLE_WRAPPER_SHARED_SESSION_DIR";
+    private const string DeezSpoTagDataDirEnv = "DEEZSPOTAG_DATA_DIR";
+    private const string ComposeAppleWrapperDataPathEnv = "APPLE_WRAPPER_DATA_PATH";
+    private const string ComposeAppleWrapperSessionPathEnv = "APPLE_WRAPPER_SESSION_PATH";
     private const string LoopbackHost = "127.0.0.1";
     private const string DefaultWrapperContainerName = "apple-wrapper";
+    private const string ControlModeShared = "shared";
+    private const string ControlModeHelper = "helper";
     private const string HelperModeAuto = "auto";
     private const string HelperModeDirect = "direct";
     private const string HelperModeCompose = "compose";
     private const string ToolsDirectory = "Tools";
     private const string AppleMusicWrapperDirectory = "AppleMusicWrapper";
+    private const string DefaultSharedDataDir = "/apple-wrapper/data";
+    private const string DefaultSharedSessionDir = "/apple-wrapper/session";
+    private const string DefaultHostSharedDataDir = "DeezSpoTag.Workers/bin/Debug/net8.0/Data/apple-wrapper/data";
+    private const string DefaultHostSharedSessionDir = "DeezSpoTag.Workers/bin/Debug/net8.0/Data/apple-wrapper/session";
+    private const string SharedLoginFileName = "wrapper-login.txt";
+    private const string SharedTwoFactorStateFileName = "wrapper-2fa-state.txt";
+    private const string SharedTwoFactorCodeRelativePath = "files/2fa.txt";
     private static readonly string[] HelperLogoutArgs = ["logout"];
     private static readonly string[] HelperRunArgs = ["run"];
     private static readonly string[] HelperStatusArgs = ["status"];
@@ -195,31 +210,37 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         {
             StopProcess("external_login_restart");
 
-            // Always clear any persisted wrapper session before a credentialed login attempt.
-            // This prevents stale authenticated state from being misread as a fresh successful login.
-            var helperPath = ResolveExternalWrapperHelperPath();
-            if (!string.IsNullOrWhiteSpace(helperPath) && File.Exists(helperPath))
+            if (IsHelperControlModeEnabled())
             {
-                try
+                // Helper mode keeps legacy behavior for deployments that still drive wrapper orchestration via Docker CLI.
+                var helperPath = ResolveExternalWrapperHelperPath();
+                if (!string.IsNullOrWhiteSpace(helperPath) && File.Exists(helperPath))
                 {
-                    var resetResult = await RunExternalWrapperHelperAsync(HelperLogoutArgs, cancellationToken);
-                    if (!resetResult.Success)
+                    try
                     {
-                        var resetError = resetResult.Error ?? resetResult.Output;
-                        if (IsWrapperContainerMissingError(resetError))
+                        var resetResult = await RunExternalWrapperHelperAsync(HelperLogoutArgs, cancellationToken);
+                        if (!resetResult.Success)
                         {
-                            _logger.LogInformation("Pre-login wrapper session reset skipped: {Error}", resetError);
-                        }
-                        else
-                        {
-                            _logger.LogWarning("Pre-login wrapper session reset failed: {Error}", resetError);
+                            var resetError = resetResult.Error ?? resetResult.Output;
+                            if (IsWrapperContainerMissingError(resetError))
+                            {
+                                _logger.LogInformation("Pre-login wrapper session reset skipped: {Error}", resetError);
+                            }
+                            else
+                            {
+                                _logger.LogWarning("Pre-login wrapper session reset failed: {Error}", resetError);
+                            }
                         }
                     }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _logger.LogWarning(ex, "Pre-login wrapper session reset failed.");
+                    }
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    _logger.LogWarning(ex, "Pre-login wrapper session reset failed.");
-                }
+            }
+            else
+            {
+                ResetSharedControlMarkers();
             }
 
             lock (_sync)
@@ -455,18 +476,28 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             return;
         }
 
-        var helperPath = ResolveExternalWrapperHelperPath();
-        if (string.IsNullOrWhiteSpace(helperPath) || !File.Exists(helperPath))
-        {
-            return;
-        }
-
         // Use a generous timeout — the wrapper container may still be booting after a host restart.
         // A false negative here causes force-recreation of a healthy container, which triggers
         // Apple re-authentication and unwanted 2FA codes.
         var hostCandidates = ResolveExternalWrapperHosts();
         var portsOpen = hostCandidates.Any(candidate => AreWrapperPortsOpen(candidate, TimeSpan.FromSeconds(3)));
         if (portsOpen)
+        {
+            return;
+        }
+
+        if (!IsHelperControlModeEnabled())
+        {
+            lock (_sync)
+            {
+                _externalStartError = "External wrapper is not reachable. Start the apple-wrapper service/container and retry Apple login.";
+                _externalStartErrorAt = DateTimeOffset.UtcNow;
+            }
+            return;
+        }
+
+        var helperPath = ResolveExternalWrapperHelperPath();
+        if (string.IsNullOrWhiteSpace(helperPath) || !File.Exists(helperPath))
         {
             return;
         }
@@ -523,20 +554,56 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     public Task<AppleMusicWrapperHelperResult> GetExternalWrapperHelperStatusAsync(CancellationToken cancellationToken)
     {
+        if (!IsHelperControlModeEnabled())
+        {
+            var mode = ResolveExternalWrapperControlMode();
+            return Task.FromResult(
+                new AppleMusicWrapperHelperResult(
+                    true,
+                    0,
+                    $"Helper bypassed; using {mode} control mode via shared wrapper volumes.",
+                    null,
+                    null));
+        }
+
         return RunExternalWrapperHelperAsync(HelperStatusArgs, cancellationToken);
     }
 
     public async Task<AppleMusicWrapperHelperResult> LogoutExternalWrapperSessionAsync(CancellationToken cancellationToken)
     {
         AppleMusicWrapperHelperResult result;
-        try
+        if (!IsHelperControlModeEnabled())
         {
-            result = await RunExternalWrapperHelperAsync(HelperLogoutArgs, cancellationToken);
+            if (TryClearSharedWrapperSession(out var clearError))
+            {
+                result = new AppleMusicWrapperHelperResult(
+                    true,
+                    0,
+                    "Shared wrapper session cleared.",
+                    null,
+                    null);
+            }
+            else
+            {
+                result = new AppleMusicWrapperHelperResult(
+                    false,
+                    -1,
+                    null,
+                    clearError ?? "Failed to clear shared wrapper session.",
+                    null);
+            }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        else
         {
-            _logger.LogWarning(ex, "Failed to clear Apple Music wrapper session.");
-            result = new AppleMusicWrapperHelperResult(false, -1, null, ex.Message, null);
+            try
+            {
+                result = await RunExternalWrapperHelperAsync(HelperLogoutArgs, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Failed to clear Apple Music wrapper session.");
+                result = new AppleMusicWrapperHelperResult(false, -1, null, ex.Message, null);
+            }
         }
 
         lock (_sync)
@@ -584,7 +651,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         var helper = await GetExternalWrapperHelperStatusAsync(cancellationToken);
         var context = await BuildWrapperHealthContextAsync(helper, cancellationToken);
         var runningHint = IsWrapperRunningHint(helper.Output ?? helper.Error);
-        var accepting = helper.Success && (runningHint || context.PortsOpen);
+        var accepting = context.PortsOpen;
         var message = BuildWrapperHealthMessage(helper, context, runningHint);
 
         return new AppleMusicWrapperHealthResult(
@@ -671,8 +738,13 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         WrapperHealthContext context,
         bool runningHint)
     {
-        if (!helper.Success)
+        if (!helper.Success && !context.PortsOpen)
         {
+            if (IsDockerSocketPermissionDeniedError(helper.Error))
+            {
+                return BuildDockerSocketPermissionDeniedMessage(helper.Error);
+            }
+
             return helper.Error ?? "Wrapper helper failed.";
         }
 
@@ -740,6 +812,17 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     private async Task<(bool Success, string? Error)> StartExternalWrapperLoginAsync(string email, string password, CancellationToken cancellationToken)
     {
+        if (!IsHelperControlModeEnabled())
+        {
+            var queued = TryQueueSharedLoginCredentials(email, password, out var sharedError);
+            if (!queued)
+            {
+                return (false, sharedError);
+            }
+
+            return (true, null);
+        }
+
         var loginArgs = new[] { "login", $"{email}:{password}" };
         var helperResult = await TryRunExternalWrapperHelperAsync(loginArgs, cancellationToken);
         if (helperResult.Success)
@@ -751,6 +834,11 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         {
             var containerName = ResolveExternalWrapperContainerName();
             return (false, $"Wrapper container '{containerName}' is not present. Start the apple-wrapper service first.");
+        }
+
+        if (IsDockerSocketPermissionDeniedError(helperResult.Error))
+        {
+            return (false, BuildDockerSocketPermissionDeniedMessage(helperResult.Error));
         }
 
         var hostCandidates = ResolveExternalWrapperHosts();
@@ -765,6 +853,16 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     private async Task<(bool Success, string? Error)> WriteExternalTwoFactorAsync(string code, CancellationToken cancellationToken)
     {
+        if (!IsHelperControlModeEnabled())
+        {
+            if (TrySubmitSharedTwoFactorCode(code, out var sharedError))
+            {
+                return (true, null);
+            }
+
+            return (false, sharedError);
+        }
+
         (bool Success, string? Error) helperResult = (false, null);
         for (var attempt = 1; attempt <= 3; attempt++)
         {
@@ -882,6 +980,25 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                && message.Contains("not found", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsDockerSocketPermissionDeniedError(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        return message.Contains("docker.sock", StringComparison.OrdinalIgnoreCase)
+               && message.Contains("permission denied", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildDockerSocketPermissionDeniedMessage(string? helperError)
+    {
+        var detail = string.IsNullOrWhiteSpace(helperError) ? string.Empty : $" Details: {helperError.Trim()}";
+        return "Apple wrapper helper cannot access /var/run/docker.sock from this container. " +
+               "Set DEEZSPOTAG service Docker socket group access (group_add with host docker.sock GID) or run the container as a user that can access Docker." +
+               detail;
+    }
+
     private static string ResolveExternalWrapperContainerName()
     {
         var configured = Environment.GetEnvironmentVariable(ExternalWrapperContainerNameEnv);
@@ -913,6 +1030,261 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         }
 
         return LoopbackHost;
+    }
+
+    private static string ResolveExternalWrapperControlMode()
+    {
+        var configured = Environment.GetEnvironmentVariable(ExternalWrapperControlModeEnv);
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return ControlModeShared;
+        }
+
+        var normalized = configured.Trim().ToLowerInvariant();
+        if (normalized is ControlModeShared or ControlModeHelper)
+        {
+            return normalized;
+        }
+
+        return ControlModeShared;
+    }
+
+    private static bool IsHelperControlModeEnabled()
+    {
+        return string.Equals(
+            ResolveExternalWrapperControlMode(),
+            ControlModeHelper,
+            StringComparison.Ordinal);
+    }
+
+    private static string ResolveExternalWrapperSharedDataDir()
+    {
+        var configured = Environment.GetEnvironmentVariable(ExternalWrapperSharedDataDirEnv);
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return NormalizePath(configured.Trim());
+        }
+
+        if (IsRunningInContainer())
+        {
+            return DefaultSharedDataDir;
+        }
+
+        var composePath = Environment.GetEnvironmentVariable(ComposeAppleWrapperDataPathEnv);
+        if (!string.IsNullOrWhiteSpace(composePath))
+        {
+            return NormalizePath(composePath.Trim());
+        }
+
+        var dataDir = Environment.GetEnvironmentVariable(DeezSpoTagDataDirEnv);
+        if (!string.IsNullOrWhiteSpace(dataDir))
+        {
+            return NormalizePath(Path.Combine(dataDir.Trim(), "apple-wrapper", "data"));
+        }
+
+        return NormalizePath(DefaultHostSharedDataDir);
+    }
+
+    private static string ResolveExternalWrapperSharedSessionDir()
+    {
+        var configured = Environment.GetEnvironmentVariable(ExternalWrapperSharedSessionDirEnv);
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return NormalizePath(configured.Trim());
+        }
+
+        if (IsRunningInContainer())
+        {
+            return DefaultSharedSessionDir;
+        }
+
+        var composePath = Environment.GetEnvironmentVariable(ComposeAppleWrapperSessionPathEnv);
+        if (!string.IsNullOrWhiteSpace(composePath))
+        {
+            return NormalizePath(composePath.Trim());
+        }
+
+        var dataDir = Environment.GetEnvironmentVariable(DeezSpoTagDataDirEnv);
+        if (!string.IsNullOrWhiteSpace(dataDir))
+        {
+            return NormalizePath(Path.Combine(dataDir.Trim(), "apple-wrapper", "session"));
+        }
+
+        return NormalizePath(DefaultHostSharedSessionDir);
+    }
+
+    private static string ResolveExternalWrapperSharedLoginFilePath()
+    {
+        return Path.Combine(ResolveExternalWrapperSharedDataDir(), SharedLoginFileName);
+    }
+
+    private static string ResolveExternalWrapperSharedTwoFactorStateFilePath()
+    {
+        return Path.Combine(ResolveExternalWrapperSharedDataDir(), SharedTwoFactorStateFileName);
+    }
+
+    private static string ResolveExternalWrapperSharedTwoFactorCodeFilePath()
+    {
+        return Path.Combine(ResolveExternalWrapperSharedSessionDir(), "files", "2fa.txt");
+    }
+
+    private static bool TryQueueSharedLoginCredentials(string email, string password, out string? error)
+    {
+        error = null;
+        var credentials = $"{email.Trim()}:{password.Trim()}";
+        if (credentials.Contains('\n', StringComparison.Ordinal) || credentials.Contains('\r', StringComparison.Ordinal))
+        {
+            error = "Apple credentials contain invalid newline characters.";
+            return false;
+        }
+
+        try
+        {
+            var loginFilePath = ResolveExternalWrapperSharedLoginFilePath();
+            var parentDir = Path.GetDirectoryName(loginFilePath);
+            if (!string.IsNullOrWhiteSpace(parentDir))
+            {
+                Directory.CreateDirectory(parentDir);
+            }
+
+            File.WriteAllText(loginFilePath, credentials);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            error =
+                $"Unable to write shared Apple login file ({ResolveExternalWrapperSharedLoginFilePath()}). " +
+                $"Set {ExternalWrapperSharedDataDirEnv} to the wrapper data mount. Details: {ex.Message}";
+            return false;
+        }
+    }
+
+    private static bool TrySubmitSharedTwoFactorCode(string code, out string? error)
+    {
+        error = null;
+        var trimmedCode = code.Trim();
+        if (string.IsNullOrWhiteSpace(trimmedCode))
+        {
+            error = "Verification code is required.";
+            return false;
+        }
+
+        try
+        {
+            var twoFactorFilePath = ResolveExternalWrapperSharedTwoFactorCodeFilePath();
+            var parentDir = Path.GetDirectoryName(twoFactorFilePath);
+            if (!string.IsNullOrWhiteSpace(parentDir))
+            {
+                Directory.CreateDirectory(parentDir);
+            }
+
+            File.WriteAllText(twoFactorFilePath, trimmedCode);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            error =
+                $"Unable to write shared Apple 2FA file ({ResolveExternalWrapperSharedTwoFactorCodeFilePath()}). " +
+                $"Set {ExternalWrapperSharedSessionDirEnv} to the wrapper session mount. Details: {ex.Message}";
+            return false;
+        }
+    }
+
+    private static TwoFactorProbeState ProbeSharedTwoFactorState()
+    {
+        try
+        {
+            var stateFilePath = ResolveExternalWrapperSharedTwoFactorStateFilePath();
+            if (!File.Exists(stateFilePath))
+            {
+                return TwoFactorProbeState.Unknown;
+            }
+
+            var raw = File.ReadAllText(stateFilePath).Trim().ToLowerInvariant();
+            return raw switch
+            {
+                "waiting_for_2fa" => TwoFactorProbeState.Waiting,
+                "not_waiting_for_2fa" => TwoFactorProbeState.NotWaiting,
+                _ => TwoFactorProbeState.Unknown
+            };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return TwoFactorProbeState.Unknown;
+        }
+    }
+
+    private static void ResetSharedControlMarkers()
+    {
+        TryDeleteFileIfExists(ResolveExternalWrapperSharedTwoFactorCodeFilePath());
+        TryDeleteFileIfExists(ResolveExternalWrapperSharedTwoFactorStateFilePath());
+    }
+
+    private static bool TryClearSharedWrapperSession(out string? error)
+    {
+        error = null;
+        try
+        {
+            var sessionRoot = ResolveExternalWrapperSharedSessionDir();
+            ClearDirectoryContents(sessionRoot);
+            TryDeleteFileIfExists(ResolveExternalWrapperSharedLoginFilePath());
+            TryDeleteFileIfExists(ResolveExternalWrapperSharedTwoFactorStateFilePath());
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            error =
+                $"Failed to clear shared Apple wrapper session. " +
+                $"Verify {ExternalWrapperSharedSessionDirEnv} and {ExternalWrapperSharedDataDirEnv}. Details: {ex.Message}";
+            return false;
+        }
+    }
+
+    private static void TryDeleteFileIfExists(string path)
+    {
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+    }
+
+    private static void ClearDirectoryContents(string rootPath)
+    {
+        if (!Directory.Exists(rootPath))
+        {
+            return;
+        }
+
+        foreach (var filePath in Directory.EnumerateFiles(rootPath))
+        {
+            File.Delete(filePath);
+        }
+
+        foreach (var directoryPath in Directory.EnumerateDirectories(rootPath))
+        {
+            Directory.Delete(directoryPath, recursive: true);
+        }
+    }
+
+    private static string NormalizePath(string path)
+    {
+        if (Path.IsPathRooted(path))
+        {
+            return path;
+        }
+
+        return Path.GetFullPath(path, Directory.GetCurrentDirectory());
+    }
+
+    private static bool IsRunningInContainer()
+    {
+        var env = Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER");
+        if (string.Equals(env, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return File.Exists("/.dockerenv");
     }
 
     private void StopProcess(string reason)
@@ -1018,6 +1390,11 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     /// </summary>
     private async Task SanitizeWrapperContainerAsync()
     {
+        if (!IsHelperControlModeEnabled())
+        {
+            return;
+        }
+
         try
         {
             var result = await RunExternalWrapperHelperAsync(HelperSanitizeArgs, CancellationToken.None);
@@ -1085,6 +1462,11 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     private TwoFactorProbeState ProbeExternalWrapperTwoFactorState()
     {
+        if (!IsHelperControlModeEnabled())
+        {
+            return ProbeSharedTwoFactorState();
+        }
+
         var now = DateTimeOffset.UtcNow;
         lock (_sync)
         {
@@ -1258,7 +1640,12 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         var tokenStateValid = TryResolveAccountInfo(context);
         if (tokenStateValid)
         {
-            PromoteAuthenticatedState(context);
+            if (PromoteAuthenticatedState(context))
+            {
+                return;
+            }
+
+            context.HasAuthentication = false;
             return;
         }
 
@@ -1295,7 +1682,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         return false;
     }
 
-    private void PromoteAuthenticatedState(ExternalStatusContext context)
+    private bool PromoteAuthenticatedState(ExternalStatusContext context)
     {
         var wasAuthReady = false;
         var loginAttemptActive = false;
@@ -1303,6 +1690,16 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         {
             wasAuthReady = _authStateReady;
             loginAttemptActive = _loginInProgress || _awaitingTwoFactor || _startedAt.HasValue;
+
+            // Do not auto-reconnect solely because wrapper tokens exist.
+            // A reconnect must come from either an existing authenticated app state
+            // or an active login flow initiated through this service.
+            if (!wasAuthReady && !loginAttemptActive)
+            {
+                context.HasAuthentication = false;
+                return false;
+            }
+
             if (!_authStateReady || _awaitingTwoFactor || _loginInProgress || _startedAt.HasValue)
             {
                 _authStateReady = true;
@@ -1324,6 +1721,8 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         {
             context.PromotedFromLogin = true;
         }
+
+        return true;
     }
 
     private void DowngradeAuthStateIfNeeded()
@@ -1435,7 +1834,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             var containerState = ProbeExternalWrapperContainerState();
             if (containerState == ExternalWrapperContainerState.Exited)
             {
-                return SetAndReturnLoginFailure("Apple Music login failed. Verify your credentials and try again.");
+                return SetAndReturnLoginFailure("Apple wrapper container exited before authentication completed. Check apple-wrapper logs for crash, 2FA timeout, or runtime errors.");
             }
         }
 
@@ -1591,6 +1990,13 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     private ExternalWrapperContainerState ProbeExternalWrapperContainerState()
     {
+        if (!IsHelperControlModeEnabled())
+        {
+            var anyPortOpen = ResolveExternalWrapperHosts()
+                .Any(candidate => AreWrapperPortsOpen(candidate, TimeSpan.FromMilliseconds(200)));
+            return anyPortOpen ? ExternalWrapperContainerState.Running : ExternalWrapperContainerState.Unknown;
+        }
+
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
@@ -1624,34 +2030,6 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         {
             yield return host;
         }
-
-        if (!IsRunningInContainer() && !IsLoopbackHost(host) && seen.Add(LoopbackHost))
-        {
-            yield return LoopbackHost;
-        }
-    }
-
-    private static bool IsLoopbackHost(string? host)
-    {
-        if (string.IsNullOrWhiteSpace(host))
-        {
-            return false;
-        }
-
-        return string.Equals(host, LoopbackHost, StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(host, "::1", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsRunningInContainer()
-    {
-        var env = Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER");
-        if (string.Equals(env, "true", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return File.Exists("/.dockerenv");
     }
 
     private static bool TryFetchExternalAccountInfo(

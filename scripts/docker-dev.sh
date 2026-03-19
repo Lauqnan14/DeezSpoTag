@@ -2,6 +2,7 @@
 set -euo pipefail
 
 IMAGE_NAME="${IMAGE_NAME:-deezspotag-web:local}"
+APPLE_WRAPPER_PARITY_IMAGE="${APPLE_WRAPPER_PARITY_IMAGE:-deezspotag-apple-wrapper:local}"
 BENTO4_URL_DEFAULT="https://www.bok.net/Bento4/binaries/Bento4-SDK-1-6-0-641.x86_64-unknown-linux.zip"
 BENTO4_URL="${BENTO4_URL:-$BENTO4_URL_DEFAULT}"
 
@@ -76,6 +77,17 @@ build_local_image() {
     remove_old_local_tags_for_image "$IMAGE_NAME"
 }
 
+build_local_wrapper_image() {
+    local previous_image_id
+    local current_image_id
+
+    previous_image_id="$(get_image_id "$APPLE_WRAPPER_PARITY_IMAGE")"
+    docker build -f Tools/AppleMusicWrapper/Dockerfile -t "$APPLE_WRAPPER_PARITY_IMAGE" .
+    current_image_id="$(get_image_id "$APPLE_WRAPPER_PARITY_IMAGE")"
+    remove_replaced_image "$previous_image_id" "$current_image_id"
+    remove_old_local_tags_for_image "$APPLE_WRAPPER_PARITY_IMAGE"
+}
+
 case "${1:-up}" in
   build)
     build_local_image
@@ -100,7 +112,8 @@ case "${1:-up}" in
     ;;
   parity)
     build_local_image
-    ./scripts/docker-parity-smoke.sh "$IMAGE_NAME"
+    build_local_wrapper_image
+    PARITY_APPLE_WRAPPER_IMAGE="$APPLE_WRAPPER_PARITY_IMAGE" ./scripts/docker-parity-smoke.sh "$IMAGE_NAME"
     ;;
   down)
     docker compose down

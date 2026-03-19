@@ -885,9 +885,8 @@ public class DeezSpoTagSettingsService : ISettingsService
         var fullPath = NormalizeContainerPath(normalizedPath);
         if (IsPathUnderRoot(fullPath, "/data") || IsPathUnderRoot(fullPath, "/app/Data"))
         {
-            throw new InvalidOperationException(
-                $"Container download path '{fullPath}' is invalid. Downloads cannot live under app data paths (/data or /app/Data). " +
-                "Use /downloads or another dedicated mounted path.");
+            // Auto-migrate host/debug/appdata paths to the canonical in-container download root.
+            fullPath = ContainerDownloadsPath;
         }
 
         return ResolveContainerDownloadLocation(fullPath);
@@ -896,29 +895,46 @@ public class DeezSpoTagSettingsService : ISettingsService
     private static string ResolveContainerDownloadLocation(string path)
     {
         var normalizedPath = NormalizeContainerPath(path);
-        if (!IsPathBackedByMountedVolume(normalizedPath))
+        if (TryValidateContainerDownloadPath(normalizedPath, requireMountedVolume: true, out var validatedPath))
         {
-            throw new InvalidOperationException(
-                $"Container download path '{normalizedPath}' is not on a mounted volume. " +
-                "Mount it in Docker and then select that mounted path in Settings.");
+            return validatedPath;
+        }
+
+        var fallbackPath = NormalizeContainerPath(ContainerDownloadsPath);
+        if (TryValidateContainerDownloadPath(fallbackPath, requireMountedVolume: false, out validatedPath))
+        {
+            return validatedPath;
         }
 
         try
         {
-            Directory.CreateDirectory(normalizedPath);
-            if (IsDirectoryWritable(normalizedPath))
-            {
-                return normalizedPath;
-            }
+            Directory.CreateDirectory(fallbackPath);
         }
         catch
         {
-            // Create/write probes can fail on read-only or permission-restricted mounts.
-            // Surface the normalized "not writable" error below instead of leaking OS-specific exceptions.
+            // Avoid crashing startup; caller will keep a deterministic in-container location.
         }
 
-        throw new InvalidOperationException(
-            $"Container download path '{normalizedPath}' is not writable. Mount a writable downloads volume and set Settings > Download location to that mounted path.");
+        return fallbackPath;
+    }
+
+    private static bool TryValidateContainerDownloadPath(string path, bool requireMountedVolume, out string validatedPath)
+    {
+        validatedPath = NormalizeContainerPath(path);
+        if (requireMountedVolume && !IsPathBackedByMountedVolume(validatedPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(validatedPath);
+            return IsDirectoryWritable(validatedPath);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static bool IsRunningInContainer()

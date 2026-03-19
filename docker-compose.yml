@@ -5,14 +5,15 @@ services:
     pull_policy: always
     network_mode: host
     user: "${PUID:-1000}:${PGID:-1000}"
-    group_add:
-      - "${DOCKER_SOCKET_GID:-0}"
     env_file:
       - path: .env
         required: false
     environment:
       DEEZSPOTAG_APPLE_WRAPPER_MODE: external
+      DEEZSPOTAG_APPLE_WRAPPER_CONTROL_MODE: ${DEEZSPOTAG_APPLE_WRAPPER_CONTROL_MODE:-shared}
       DEEZSPOTAG_APPLE_WRAPPER_HOST: 127.0.0.1
+      DEEZSPOTAG_APPLE_WRAPPER_SHARED_DATA_DIR: /apple-wrapper/data
+      DEEZSPOTAG_APPLE_WRAPPER_SHARED_SESSION_DIR: /apple-wrapper/session
       DEEZSPOTAG_DATA_DIR: /data
       DEEZSPOTAG_CONFIG_DIR: /data
     volumes:
@@ -39,10 +40,17 @@ services:
         target: /library
         bind:
           create_host_path: true
-      # Required for apple-wrapperctl helper commands (login/2FA/sanitize) from inside container.
+      # Shared Apple wrapper control paths (no Docker socket dependency).
       - type: bind
-        source: /var/run/docker.sock
-        target: /var/run/docker.sock
+        source: ${APPLE_WRAPPER_DATA_PATH:-./Data/apple-wrapper/data}
+        target: /apple-wrapper/data
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${APPLE_WRAPPER_SESSION_PATH:-./Data/apple-wrapper/session}
+        target: /apple-wrapper/session
+        bind:
+          create_host_path: true
     restart: unless-stopped
 
   apple-wrapper:

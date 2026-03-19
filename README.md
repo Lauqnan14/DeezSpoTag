@@ -52,7 +52,7 @@ DeezSpoTag automates music workflows end-to-end:
 ### Apple Music Wrapper Integration
 
 - External `apple-wrapper` service orchestration.
-- Login + 2FA helper flow via `apple-wrapperctl.sh`.
+- Portable login + 2FA flow via shared wrapper control paths (no Docker socket requirement).
 - Persistent wrapper state under your data folder.
 - Health-checked wrapper ports on localhost.
 
@@ -89,6 +89,7 @@ If your host uses Compose v1, replace `docker compose` with `docker-compose`.
 - `DEEZSPOTAG_DATA_PATH`
 - `APPLE_WRAPPER_DATA_PATH`
 - `APPLE_WRAPPER_SESSION_PATH`
+- `DEEZSPOTAG_APPLE_WRAPPER_CONTROL_MODE` (`shared` recommended)
 - `DOWNLOADS_PATH`
 - `LIBRARY_PATH`
 
@@ -99,7 +100,11 @@ If your host uses Compose v1, replace `docker compose` with `docker-compose`.
 - `deezspotag` app state/config in-container uses `/data`, backed by the host Workers data path bind mount.
 - `apple-wrapper` binds directly on host ports `10020/20020/30020`.
 - `deezspotag` reaches `apple-wrapper` via `127.0.0.1` in host mode.
-- `apple-wrapper` image tracks upstream `WorldObservationLog/wrapper` runtime behavior; DeezSpoTag-specific logic is limited to container packaging and helper orchestration.
+- `deezspotag` and `apple-wrapper` share:
+  - `${APPLE_WRAPPER_DATA_PATH}` -> `/apple-wrapper/data` (app) and `/opt/apple-wrapper/data` (wrapper)
+  - `${APPLE_WRAPPER_SESSION_PATH}` -> `/apple-wrapper/session` (app) and `/opt/apple-wrapper/rootfs/data/data/com.apple.android.music` (wrapper)
+- Apple auth orchestration uses shared files and wrapper HTTP ports, so Docker daemon access is not required in the app container.
+- `apple-wrapper` image tracks upstream `WorldObservationLog/wrapper` runtime behavior; DeezSpoTag-specific logic is limited to container packaging and control-path integration.
 - Compose maps host `/dev/urandom` and `/dev/random` into wrapper rootfs to avoid distro-specific `mknod` variance.
 - App and wrapper state persist in host bind-mount paths.
 - Compose auto-creates:
@@ -124,6 +129,9 @@ Then start the app locally with Workers data paths:
 export DEEZSPOTAG_DATA_DIR=DeezSpoTag.Workers/Data
 export DEEZSPOTAG_CONFIG_DIR=DeezSpoTag.Workers/Data
 export DEEZSPOTAG_APPLE_WRAPPER_HOST=127.0.0.1
+export DEEZSPOTAG_APPLE_WRAPPER_CONTROL_MODE=shared
+export DEEZSPOTAG_APPLE_WRAPPER_SHARED_DATA_DIR=/absolute/path/to/apple-wrapper/data
+export DEEZSPOTAG_APPLE_WRAPPER_SHARED_SESSION_DIR=/absolute/path/to/apple-wrapper/session
 dotnet run --project DeezSpoTag.Web/DeezSpoTag.Web.csproj -c Debug
 ```
 
@@ -146,7 +154,7 @@ This checks:
 - media tools (`ffmpeg`, `mp4box`, `mp4decrypt`)
 - Python + Essentia import
 - analyzer assets (`Tools/vibe_analyzer.py`, `Tools/models`)
-- bundled Apple wrapper helper (`apple-wrapper-runv2`)
+- Apple wrapper image startup + shared-control compatibility
 - application HTTP startup on localhost
 - clean-start bootstrap with temporary writable app data
 

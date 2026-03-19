@@ -449,8 +449,7 @@ public class PlatformAuthService
         }
 
         _logger.LogInformation(
-            "Auth status: SpotifyApi={SpotifyApi} SpotifyAccount={SpotifyAccount} SpotifyBlob={SpotifyBlob} Discogs={Discogs} LastFm={LastFm} BpmSupreme={BpmSupreme} Plex={Plex} Jellyfin={Jellyfin} AppleMusic={AppleMusic}",
-            snapshot.SpotifyConfigured ? "configured" : MissingStatus,
+            "Auth status: SpotifyAccount={SpotifyAccount} SpotifyBlob={SpotifyBlob} Discogs={Discogs} LastFm={LastFm} BpmSupreme={BpmSupreme} Plex={Plex} Jellyfin={Jellyfin} AppleMusic={AppleMusic}",
             string.IsNullOrWhiteSpace(snapshot.SpotifyAccount) ? MissingStatus : PresentStatus,
             string.IsNullOrWhiteSpace(snapshot.SpotifyWebPlayerBlob) ? MissingStatus : PresentStatus,
             snapshot.DiscogsConfigured ? PresentStatus : MissingStatus,

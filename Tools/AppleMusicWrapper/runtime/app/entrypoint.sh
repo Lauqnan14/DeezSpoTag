@@ -7,9 +7,19 @@ DEV_DIR="$ROOTFS_DIR/dev"
 DEFAULT_WRAPPER_ARGS="-H 0.0.0.0 -D 10020 -M 20020 -A 30020"
 LOGIN_FILE_DEFAULT="/opt/apple-wrapper/data/wrapper-login.txt"
 LOGIN_ENV_MARKER_DEFAULT="/opt/apple-wrapper/data/.wrapper-login-env.sha256"
+TWO_FACTOR_STATE_FILE_DEFAULT="/opt/apple-wrapper/data/wrapper-2fa-state.txt"
 
 log() {
   printf '[entrypoint] %s\n' "$*" >&2
+}
+
+set_twofactor_state() {
+  local state_file="$1"
+  local state_value="$2"
+  local parent_dir
+  parent_dir="$(dirname "$state_file")"
+  mkdir -p "$parent_dir"
+  printf '%s\n' "$state_value" > "$state_file"
 }
 
 require_file() {
@@ -177,6 +187,31 @@ verify_urandom_readable() {
   fi
 }
 
+run_wrapper_with_state_tracking() {
+  local state_file="$1"
+  shift
+  local exit_code=0
+
+  set_twofactor_state "$state_file" "not_waiting_for_2fa"
+
+  "$ROOT_DIR/wrapper" "$@" 2> >(
+    while IFS= read -r line; do
+      printf '%s\n' "$line" >&2
+      case "$line" in
+        *"2FA: true"*|*"Enter your 2FA code"*|*"Waiting for input..."*)
+          set_twofactor_state "$state_file" "waiting_for_2fa"
+          ;;
+        *"Code file detected"*|*"credentialHandler:"*"2FA: false"*|*"returning account info"*)
+          set_twofactor_state "$state_file" "not_waiting_for_2fa"
+          ;;
+      esac
+    done
+  ) || exit_code=$?
+
+  set_twofactor_state "$state_file" "not_waiting_for_2fa"
+  return "$exit_code"
+}
+
 main() {
   require_file "$ROOT_DIR/wrapper"
   require_file "$ROOTFS_DIR/system/bin/main"
@@ -203,8 +238,9 @@ main() {
   fi
 
   IFS=' ' read -r -a wrapper_args <<< "$wrapper_args_string"
-
-  exec "$ROOT_DIR/wrapper" "${wrapper_args[@]}"
+  local two_factor_state_file
+  two_factor_state_file="${WRAPPER_2FA_STATE_FILE:-$TWO_FACTOR_STATE_FILE_DEFAULT}"
+  run_wrapper_with_state_tracking "$two_factor_state_file" "${wrapper_args[@]}"
 }
 
 main "$@"

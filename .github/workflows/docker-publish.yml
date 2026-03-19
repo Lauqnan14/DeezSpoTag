@@ -79,8 +79,36 @@ jobs:
           git commit -m "chore(release): bump version to ${target_version} [skip-version-bump]"
           git push origin HEAD:main
 
-  publish:
+  parity-smoke:
     needs: bump-version
+    if: always() && github.ref == 'refs/heads/main' && (needs.bump-version.result != 'success' || needs.bump-version.outputs.bumped != 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build DeezSpoTag parity image
+        run: |
+          docker build \
+            --build-arg DEEZSPOTAG_BUILD_VERSION=${GITHUB_SHA} \
+            -t deezspotag-parity:${GITHUB_SHA} \
+            .
+
+      - name: Build Apple wrapper parity image
+        run: |
+          docker build \
+            -f Tools/AppleMusicWrapper/Dockerfile \
+            -t deezspotag-apple-wrapper-parity:${GITHUB_SHA} \
+            .
+
+      - name: Run Docker parity smoke test
+        run: |
+          chmod +x scripts/docker-parity-smoke.sh
+          PARITY_APPLE_WRAPPER_IMAGE=deezspotag-apple-wrapper-parity:${GITHUB_SHA} \
+            ./scripts/docker-parity-smoke.sh deezspotag-parity:${GITHUB_SHA}
+
+  publish:
+    needs: [bump-version, parity-smoke]
     if: always() && github.ref == 'refs/heads/main' && (needs.bump-version.result != 'success' || needs.bump-version.outputs.bumped != 'true')
     runs-on: ubuntu-latest
     strategy:
