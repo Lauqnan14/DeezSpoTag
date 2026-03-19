@@ -87,14 +87,12 @@ public sealed class MoodBucketService
 
         foreach (var (mood, score) in scores)
         {
+            // Persist zero scores as well so completed tracks are marked as evaluated.
+            // Query paths that serve mixes and counts already filter on score >= 0.5.
+            await _repository.UpsertMoodBucketAsync(trackId, mood, score, cancellationToken);
             if (score > 0)
             {
-                await _repository.UpsertMoodBucketAsync(trackId, mood, score, cancellationToken);
                 assigned.Add(mood);
-            }
-            else
-            {
-                await _repository.DeleteMoodBucketAsync(trackId, mood, cancellationToken);
             }
         }
 
