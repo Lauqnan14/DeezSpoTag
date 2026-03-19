@@ -782,8 +782,6 @@
                         </div>
                         <div class="warning-text">Keeps the trending/Spotify feed cached to speed up home load.</div>
                     </div>
-                </div>
-                <div class="form-row">
                     <div class="form-group">
                         <div class="checkbox-group">
                             <input type="checkbox" id="spotifyHomeFeedAutoRefreshEnabled">
@@ -791,11 +789,8 @@
                         </div>
                         <div class="warning-text">Refreshes the Spotify home feed in the background.</div>
                     </div>
-                    <div class="form-group">
-                        <label for="spotifyHomeFeedAutoRefreshHours">Auto-refresh interval (hours)</label>
-                        <input type="number" id="spotifyHomeFeedAutoRefreshHours" min="2" max="24" value="2">
-                    </div>
                 </div>
+
                 <div class="form-row">
                     <div class="form-group">
                         <label for="spotifyBrowseCacheMinutes">Spotify browse cache (minutes)</label>
@@ -803,35 +798,37 @@
                         <div class="warning-text">Caches Spotify browse categories/playlists to reduce rate limits.</div>
                     </div>
                     <div class="form-group">
-                        <label for="spotifyArtistMetadataFetchBatchSize">Artist metadata batch size</label>
-                        <input type="number" id="spotifyArtistMetadataFetchBatchSize" min="1" max="500" value="25">
-                        <div class="warning-text">Controls how many artists are processed per queue batch before a short cooldown.</div>
+                        <label for="spotifyHomeFeedAutoRefreshHours">Auto-refresh interval (hours)</label>
+                        <input type="number" id="spotifyHomeFeedAutoRefreshHours" min="2" max="24" value="2">
                     </div>
                 </div>
 
                 <div class="form-row">
                     <div class="form-group">
-                        <label for="spotifyResolveConcurrency">Spotify resolve concurrency</label>
-                        <input type="number" id="spotifyResolveConcurrency" min="1" max="50" value="10">
+                        <label for="spotifyArtistMetadataFetchBatchSize">Artist metadata batch size</label>
+                        <input type="number" id="spotifyArtistMetadataFetchBatchSize" min="1" max="500" value="25">
+                        <div class="warning-text">Controls how many artists are processed per queue batch before a short cooldown.</div>
                     </div>
                     <div class="form-group">
-                        <label for="spotifyMatchConcurrency">Spotify match concurrency</label>
-                        <input type="number" id="spotifyMatchConcurrency" min="1" max="50" value="10">
+                        <label for="spotifyResolveMatchConcurrency">Spotify Resolve+Match concurrency</label>
+                        <input type="number" id="spotifyResolveMatchConcurrency" min="1" max="50" value="10">
+                        <div class="warning-text">Applies the same concurrency value to Spotify resolve and match workers.</div>
                     </div>
                 </div>
 
-                <div class="form-group">
-                    <label for="spotifyIsrcHydrationConcurrency">Spotify ISRC hydration concurrency</label>
-                    <input type="number" id="spotifyIsrcHydrationConcurrency" min="1" max="50" value="8">
-                </div>
-                <div class="warning-text">Higher values can speed up matching but increase CPU/network load and may hit rate limits; lower values reduce load but slow matching.</div>
-
-                <div class="form-group">
-                    <label for="spotifyPlaylistTrackSource">Spotify playlist track source</label>
-                    <select id="spotifyPlaylistTrackSource">
-                        <option value="pathfinder">Pathfinder</option>
-                        <option value="librespot">Librespot</option>
-                    </select>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="spotifyIsrcHydrationConcurrency">Spotify ISRC hydration concurrency</label>
+                        <input type="number" id="spotifyIsrcHydrationConcurrency" min="1" max="50" value="8">
+                        <div class="warning-text">Higher values can speed up matching but increase CPU/network load and may hit rate limits; lower values reduce load but slow matching.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="spotifyPlaylistTrackSource">Spotify playlist track source</label>
+                        <select id="spotifyPlaylistTrackSource">
+                            <option value="pathfinder">Pathfinder</option>
+                            <option value="librespot">Librespot</option>
+                        </select>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2281,8 +2278,8 @@ function loadSettings(settings) {
     localStorage.setItem('tabs-preference-enabled', settings.rememberTabsPreference ? 'true' : 'false');
     if (window.UserPrefs) window.UserPrefs.set('tabsPreferenceEnabled', !!settings.rememberTabsPreference);
     setFieldValue('librespotConcurrency', settings.librespotConcurrency);
-    setFieldValue('spotifyResolveConcurrency', settings.spotifyResolveConcurrency);
-    setFieldValue('spotifyMatchConcurrency', settings.spotifyMatchConcurrency);
+    const spotifyResolveMatchConcurrency = settings.spotifyResolveConcurrency ?? settings.spotifyMatchConcurrency ?? 10;
+    setFieldValue('spotifyResolveMatchConcurrency', spotifyResolveMatchConcurrency);
     setFieldValue('spotifyIsrcHydrationConcurrency', settings.spotifyIsrcHydrationConcurrency);
     const spotifyPlaylistTrackSource = (settings.spotifyPlaylistTrackSource || 'pathfinder').toLowerCase() === 'spotiflac'
         ? 'pathfinder'
@@ -2483,6 +2480,10 @@ function collectFormData() {
     const baseSettings = currentSettings || {};
     const baseApple = baseSettings.appleMusic || {};
     const multiQualityEnabledValue = getChecked('multiQualityEnabled', baseSettings.multiQuality?.enabled ?? false);
+    const spotifyResolveMatchConcurrency = getNumber(
+        'spotifyResolveMatchConcurrency',
+        baseSettings.spotifyResolveConcurrency ?? baseSettings.spotifyMatchConcurrency ?? 10
+    );
     const baseVideo = baseSettings.video || {};
     const baseTags = baseSettings.tags || {};
     const getAlbumGroups = () => {
@@ -2598,8 +2599,8 @@ function collectFormData() {
         tagsLanguage: baseSettings.tagsLanguage ?? "",
         rememberTabsPreference: getChecked('rememberTabsPreference', baseSettings.rememberTabsPreference ?? true),
         librespotConcurrency: getNumber('librespotConcurrency', baseSettings.librespotConcurrency ?? 2),
-        spotifyResolveConcurrency: getNumber('spotifyResolveConcurrency', baseSettings.spotifyResolveConcurrency ?? 10),
-        spotifyMatchConcurrency: getNumber('spotifyMatchConcurrency', baseSettings.spotifyMatchConcurrency ?? 10),
+        spotifyResolveConcurrency: spotifyResolveMatchConcurrency,
+        spotifyMatchConcurrency: spotifyResolveMatchConcurrency,
         spotifyIsrcHydrationConcurrency: getNumber('spotifyIsrcHydrationConcurrency', baseSettings.spotifyIsrcHydrationConcurrency ?? 8),
         spotifyPlaylistTrackSource: getValue('spotifyPlaylistTrackSource', ((baseSettings.spotifyPlaylistTrackSource || 'pathfinder').toLowerCase() === 'spotiflac' ? 'pathfinder' : (baseSettings.spotifyPlaylistTrackSource || 'pathfinder'))),
         spotifyHomeFeedCacheEnabled: getChecked('spotifyHomeFeedCacheEnabled', baseSettings.spotifyHomeFeedCacheEnabled ?? true),

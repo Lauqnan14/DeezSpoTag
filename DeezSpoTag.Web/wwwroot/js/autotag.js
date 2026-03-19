@@ -257,6 +257,7 @@
         profileSaveDirty: false,
         spotifyStatus: { connected: false, expiresAt: null, redirectUri: null },
         platformAuth: {},
+        lockedTabTarget: null,
         settingsCache: null,
         syncLyricsFallbackOrder: null,
         syncArtworkFallbackOrder: null,
@@ -724,16 +725,10 @@
         }
 
         const spotifyUnavailable = state.authReady && state.spotifyStatus.connected !== true;
-        spotifyToggle.disabled = spotifyUnavailable;
         spotifyToggle.title = spotifyUnavailable
-            ? "Connect Spotify in Login before using Spotify as the download metadata source."
+            ? "Spotify login is not detected right now. You can still select Spotify, but some tags may be unavailable until connected."
             : "";
         deezerToggle.disabled = false;
-
-        if (spotifyUnavailable && spotifyToggle.checked) {
-            setDownloadTagSource("deezer");
-            refreshDownloadTagsForSource();
-        }
     }
 
     function trimTrailingPathSeparators(value) {
@@ -2524,6 +2519,40 @@
         profilesTab.click();
     }
 
+    function getActiveAutoTagTabTarget() {
+        const activeTab = document.querySelector("#autotagTabs .nav-link.active");
+        return String(activeTab?.dataset?.bsTarget || "").trim() || null;
+    }
+
+    function findAutoTagTabByTarget(targetSelector) {
+        const normalized = String(targetSelector || "").trim();
+        if (!normalized) {
+            return null;
+        }
+
+        const tabs = Array.from(document.querySelectorAll("#autotagTabs .nav-link"));
+        return tabs.find((tab) => tab?.dataset?.bsTarget === normalized) || null;
+    }
+
+    function activateAutoTagTabByTarget(targetSelector) {
+        const tab = findAutoTagTabByTarget(targetSelector);
+        if (!(tab instanceof HTMLButtonElement) || tab.disabled) {
+            return false;
+        }
+
+        if (tab.classList.contains("active")) {
+            return true;
+        }
+
+        if (globalThis.bootstrap?.Tab) {
+            new bootstrap.Tab(tab).show();
+            return true;
+        }
+
+        tab.click();
+        return true;
+    }
+
     function guardProfileLockedTabNavigation(eventTarget, event) {
         if (!(eventTarget instanceof HTMLElement)) {
             return false;
@@ -2579,8 +2608,18 @@
         });
 
         if (!hasActiveProfile) {
+            const activeTarget = getActiveAutoTagTabTarget();
+            if (activeTarget && activeTarget !== "#autotag-profiles-panel") {
+                state.lockedTabTarget = activeTarget;
+            }
             activateProfilesTab();
+            return;
         }
+
+        if (state.lockedTabTarget && state.lockedTabTarget !== "#autotag-profiles-panel") {
+            activateAutoTagTabByTarget(state.lockedTabTarget);
+        }
+        state.lockedTabTarget = null;
     }
 
     function clearProfileAutoSaveState() {
@@ -2683,22 +2722,26 @@
     }
 
     function restoreActiveProfileSelection() {
-        const storedProfileId = state.activeProfileId;
+        const storedProfileId = normalizeStoredProfileId(state.activeProfileId) || loadStoredActiveProfileId();
         const profile = storedProfileId ? getProfileById(storedProfileId) : null;
         if (profile) {
             return applyLoadedProfile(profile);
-        }
-
-        const fallbackProfile = getProfileSelectionFallback();
-        if (fallbackProfile) {
-            return applyLoadedProfile(fallbackProfile);
         }
 
         const select = el("autotag-profile-select");
         if (select) {
             select.value = "";
         }
-        setActiveProfileId(null);
+
+        // Do not silently load a different profile.
+        // Rule: only the last loaded profile is auto-restored.
+        // If it cannot be loaded, keep tabs locked and stay on the first tab (Profiles).
+        if (!storedProfileId) {
+            state.activeProfileId = null;
+            clearProfileAutoSaveState();
+            updateActiveProfileSummary();
+        }
+
         return false;
     }
 
@@ -2855,22 +2898,87 @@
         );
     }
 
+    function buildAuthFetchOptions() {
+        return {
+            cache: "no-store",
+            credentials: "same-origin",
+            headers: {
+                Accept: "application/json"
+            }
+        };
+    }
+
+    function parseSettledJson(result) {
+        if (result.status !== "fulfilled" || !result.value.ok) {
+            return null;
+        }
+
+        return result.value.json();
+    }
+
+    function accountHasAnyBlob(account) {
+        if (!account || typeof account !== "object") {
+            return false;
+        }
+
+        return Boolean(
+            String(account.blobPath || "").trim()
+            || String(account.webPlayerBlobPath || "").trim()
+            || String(account.librespotBlobPath || "").trim()
+        );
+    }
+
+    function resolveAccountsConnected(accountsData, statusData) {
+        const accounts = Array.isArray(accountsData?.accounts) ? accountsData.accounts : [];
+        if (accounts.length === 0) {
+            return false;
+        }
+
+        const activeFromAccounts = String(accountsData?.activeAccount || "").trim();
+        const activeFromStatus = String(statusData?.activeAccount || "").trim();
+        const activeName = activeFromAccounts || activeFromStatus;
+        if (activeName) {
+            const active = accounts.find((account) =>
+                String(account?.name || "").trim().toLowerCase() === activeName.toLowerCase());
+            if (active) {
+                return accountHasAnyBlob(active);
+            }
+        }
+
+        return accounts.some((account) => accountHasAnyBlob(account));
+    }
+
+    function resolveStatusConnected(statusData) {
+        if (!statusData || typeof statusData !== "object") {
+            return false;
+        }
+
+        const probeOk = statusData.ok === true
+            || statusData.webPlayerOk === true
+            || statusData.librespotOk === true;
+        const hasBlob = Boolean(
+            String(statusData.webPlayerBlobPath || "").trim()
+            || String(statusData.librespotBlobPath || "").trim()
+        );
+        return probeOk && hasBlob;
+    }
+
     async function loadSpotifyStatus() {
         try {
-            const [configResult, accountsResult] = await Promise.allSettled([
-                fetch("/api/spotify-credentials/config"),
-                fetch("/api/spotify-credentials/accounts")
+            const fetchOptions = buildAuthFetchOptions();
+            const [configResult, accountsResult, statusResult] = await Promise.allSettled([
+                fetch("/api/spotify-credentials/config", fetchOptions),
+                fetch("/api/spotify-credentials/accounts", fetchOptions),
+                fetch("/api/spotify-credentials/status", fetchOptions)
             ]);
 
             let config = null;
             let accountsData = null;
+            let statusData = null;
 
-            if (configResult.status === "fulfilled" && configResult.value.ok) {
-                config = await configResult.value.json();
-            }
-            if (accountsResult.status === "fulfilled" && accountsResult.value.ok) {
-                accountsData = await accountsResult.value.json();
-            }
+            config = await parseSettledJson(configResult);
+            accountsData = await parseSettledJson(accountsResult);
+            statusData = await parseSettledJson(statusResult);
 
             if (config) {
                 state.config.spotify = {
@@ -2883,17 +2991,16 @@
                 config.hasConfig === true
                 || (config.clientId && config.clientSecretSaved)
             ));
-            const hasAccounts = Boolean(
-                accountsData
-                && Array.isArray(accountsData.accounts)
-                && accountsData.accounts.length > 0
-            );
+            const hasAccounts = resolveAccountsConnected(accountsData, statusData);
+            const hasStatus = resolveStatusConnected(statusData);
             const hasPlatformAuth = hasSpotifyAuthFromPlatformState();
-            const activeAccountFromPlatform = String(state.platformAuth?.spotify?.activeAccount || "").trim();
-            const activeAccount = accountsData?.activeAccount || activeAccountFromPlatform || null;
+            const activeAccountFromPlatform = String(state.platformAuth?.spotify?.activeAccount || "").trim() || null;
+            const activeAccountFromAccounts = String(accountsData?.activeAccount || "").trim() || null;
+            const activeAccountFromStatus = String(statusData?.activeAccount || "").trim() || null;
+            const activeAccount = activeAccountFromAccounts || activeAccountFromStatus || activeAccountFromPlatform;
 
             state.spotifyStatus = {
-                connected: hasConfig || hasAccounts || hasPlatformAuth,
+                connected: hasStatus || hasAccounts || hasConfig || hasPlatformAuth,
                 activeAccount
             };
         } catch (error) {
@@ -2905,7 +3012,7 @@
 
     async function applyProjectSpotifyConfig(config) {
         try {
-            const response = await fetch("/api/spotify-credentials/config");
+            const response = await fetch("/api/spotify-credentials/config", buildAuthFetchOptions());
             if (!response.ok) {
                 return;
             }
@@ -2921,7 +3028,7 @@
 
     async function loadStoredAuth() {
         try {
-            const response = await fetch("/api/platform-auth");
+            const response = await fetch("/api/platform-auth", buildAuthFetchOptions());
             if (!response.ok) {
                 return null;
             }
@@ -5244,16 +5351,6 @@
             return null;
         }
         return getProfileById(id);
-    }
-
-    function getProfileSelectionFallback() {
-        if (!Array.isArray(state.profiles) || state.profiles.length === 0) {
-            return null;
-        }
-
-        return state.profiles.find((profile) => profile?.isDefault || profile?.IsDefault)
-            || state.profiles[0]
-            || null;
     }
 
     function getProfileByName(profileName) {

@@ -1439,17 +1439,31 @@ WHERE f.library_id = @libraryId
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
 const string sql = @"
-SELECT DISTINCT COALESCE(NULLIF(TRIM(ts.source_id), ''), NULLIF(TRIM(t.deezer_id), '')) AS deezer_source_id
-FROM track t
-JOIN track_local tl ON tl.track_id = t.id
-JOIN audio_file af ON af.id = tl.audio_file_id
-JOIN folder f ON f.id = af.folder_id
-LEFT JOIN track_source ts
-       ON ts.track_id = t.id
-      AND ts.source = 'deezer'
-WHERE f.library_id = @libraryId
-  AND (@folderId IS NULL OR f.id = @folderId)
-  AND COALESCE(NULLIF(TRIM(ts.source_id), ''), NULLIF(TRIM(t.deezer_id), '')) IS NOT NULL;";
+WITH candidate_ids AS (
+    SELECT CASE
+               WHEN NULLIF(TRIM(ts.source_id), '') IS NOT NULL
+                    AND TRIM(ts.source_id) GLOB '[0-9]*'
+                    AND TRIM(ts.source_id) NOT GLOB '*[^0-9]*'
+                    THEN TRIM(ts.source_id)
+               WHEN NULLIF(TRIM(t.deezer_id), '') IS NOT NULL
+                    AND TRIM(t.deezer_id) GLOB '[0-9]*'
+                    AND TRIM(t.deezer_id) NOT GLOB '*[^0-9]*'
+                    THEN TRIM(t.deezer_id)
+               ELSE NULL
+           END AS deezer_source_id
+    FROM track t
+    JOIN track_local tl ON tl.track_id = t.id
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    LEFT JOIN track_source ts
+           ON ts.track_id = t.id
+          AND ts.source = 'deezer'
+    WHERE f.library_id = @libraryId
+      AND (@folderId IS NULL OR f.id = @folderId)
+)
+SELECT DISTINCT deezer_source_id
+FROM candidate_ids
+WHERE deezer_source_id IS NOT NULL;";
 
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(LibraryIdField, libraryId);
