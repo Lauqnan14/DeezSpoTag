@@ -5,6 +5,7 @@ ROOT_DIR="/opt/apple-wrapper"
 ROOTFS_DIR="$ROOT_DIR/rootfs"
 DEV_DIR="$ROOTFS_DIR/dev"
 DEFAULT_WRAPPER_ARGS="-H 0.0.0.0 -D 10020 -M 20020 -A 30020"
+LOGIN_FILE_DEFAULT="/opt/apple-wrapper/data/wrapper-login.txt"
 
 log() {
   printf '[entrypoint] %s\n' "$*" >&2
@@ -35,9 +36,78 @@ wrapper_args_include_login() {
     || [[ "$args_string" =~ (^|[[:space:]])--login([[:space:]]|$) ]]
 }
 
+args_include_code_from_file() {
+  local args_string="$1"
+  [[ "$args_string" =~ (^|[[:space:]])-F([[:space:]]|$) ]] \
+    || [[ "$args_string" =~ (^|[[:space:]])--code-from-file([[:space:]]|$) ]]
+}
+
 has_cached_session() {
   local session_root="$ROOTFS_DIR/data/data/com.apple.android.music/files"
   [[ -s "$session_root/IC-Info.sido" ]] || [[ -s "$session_root/MUSIC_TOKEN" ]]
+}
+
+append_login_args() {
+  local base_args="$1"
+  local creds="$2"
+  local use_code_file="${WRAPPER_CODE_FROM_FILE:-1}"
+  local effective="$base_args"
+  effective="$effective -L $creds"
+  if [[ "$use_code_file" != "0" ]] && ! args_include_code_from_file "$effective"; then
+    effective="$effective -F"
+  fi
+  printf '%s' "$effective"
+}
+
+read_login_credentials() {
+  local creds_env="${WRAPPER_LOGIN:-}"
+  if [[ -n "$creds_env" ]]; then
+    printf '%s' "$creds_env"
+    return 0
+  fi
+
+  local login_file="${WRAPPER_LOGIN_FILE:-$LOGIN_FILE_DEFAULT}"
+  if [[ -f "$login_file" ]]; then
+    local creds_file=""
+    creds_file="$(tr -d '\r\n' < "$login_file")"
+    if [[ -n "$creds_file" ]]; then
+      printf '%s' "$creds_file"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+wait_for_startup_inputs() {
+  local base_args="$1"
+  local wait_seconds=0
+  local last_notice=0
+
+  log "no Apple session cache found; wrapper will wait for login/session instead of exiting."
+  log "provide WRAPPER_LOGIN=user:pass or write credentials to ${WRAPPER_LOGIN_FILE:-$LOGIN_FILE_DEFAULT}"
+
+  while true; do
+    if has_cached_session; then
+      log "session cache detected; starting wrapper in normal mode."
+      printf '%s' "$base_args"
+      return 0
+    fi
+
+    local login_creds=""
+    if login_creds="$(read_login_credentials)"; then
+      log "login credentials detected; starting wrapper login flow."
+      append_login_args "$base_args" "$login_creds"
+      return 0
+    fi
+
+    if (( wait_seconds - last_notice >= 30 )); then
+      log "still waiting for Apple session/login credentials..."
+      last_notice=$wait_seconds
+    fi
+    sleep 2
+    wait_seconds=$((wait_seconds + 2))
+  done
 }
 
 ensure_runtime_layout() {
@@ -92,9 +162,7 @@ main() {
   wrapper_args_string="$(resolve_wrapper_args)"
 
   if ! wrapper_args_include_login "$wrapper_args_string" && ! has_cached_session; then
-    log "no Apple session cache found under $ROOTFS_DIR/data/data/com.apple.android.music/files"
-    log "run login first (apple-wrapperctl.sh login user:pass), then start normal run mode."
-    exit 64
+    wrapper_args_string="$(wait_for_startup_inputs "$wrapper_args_string")"
   fi
 
   IFS=' ' read -r -a wrapper_args <<< "$wrapper_args_string"
