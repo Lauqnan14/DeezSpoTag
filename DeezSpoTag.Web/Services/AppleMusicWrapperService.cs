@@ -742,14 +742,15 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     {
         var loginArgs = new[] { "login", $"{email}:{password}" };
         var helperResult = await TryRunExternalWrapperHelperAsync(loginArgs, cancellationToken);
-        if (!helperResult.Success && IsWrapperContainerMissingError(helperResult.Error))
-        {
-            // Host dotnet runs may start without apple-wrapper created yet; compose-mode login bootstraps it.
-            helperResult = await TryRunExternalWrapperHelperAsync(loginArgs, cancellationToken, HelperModeCompose);
-        }
         if (helperResult.Success)
         {
             return (true, null);
+        }
+
+        if (IsWrapperContainerMissingError(helperResult.Error))
+        {
+            var containerName = ResolveExternalWrapperContainerName();
+            return (false, $"Wrapper container '{containerName}' is not present. Start the apple-wrapper service first.");
         }
 
         var hostCandidates = ResolveExternalWrapperHosts();
