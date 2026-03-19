@@ -1281,15 +1281,95 @@ body.app-modal-open {
 }
 
 .auth-center {
-    min-height: calc(100vh - 40px);
+    min-height: 100dvh;
     display: flex;
     align-items: center;
     justify-content: center;
+    width: 100%;
+    padding: clamp(12px, 3vw, 28px);
 }
 
 .auth-main-content {
     margin-left: 0;
-    padding: 20px;
+    padding: 0;
+    min-height: 100dvh;
+    background:
+        radial-gradient(1000px 420px at 8% -12%, color-mix(in srgb, var(--primary-color) 14%, transparent), transparent 70%),
+        radial-gradient(900px 420px at 95% 8%, color-mix(in srgb, var(--primary-color) 10%, transparent), transparent 72%),
+        var(--bg-primary);
+}
+
+.auth-card {
+    width: min(440px, 100%);
+    margin: 0 auto;
+    padding: clamp(16px, 3vw, 24px);
+    border-radius: 16px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 30%, var(--border-secondary));
+    background: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
+    box-shadow: 0 20px 44px color-mix(in srgb, var(--bg-primary) 68%, black);
+}
+
+.auth-logo {
+    display: block;
+    width: min(320px, 100%);
+    max-width: 100%;
+    height: auto;
+}
+
+.auth-title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: clamp(1.5rem, 4vw, 1.9rem);
+    letter-spacing: 0.02em;
+}
+
+.theme-logo .logo-primary-stop {
+    stop-color: var(--primary-color);
+    stop-opacity: 1;
+}
+
+.theme-logo .logo-secondary-stop {
+    stop-color: var(--secondary-color);
+    stop-opacity: 1;
+}
+
+.theme-logo .logo-glow-flood {
+    flood-color: var(--primary-color);
+}
+
+.theme-logo .logo-bar-1 {
+    fill: var(--primary-color);
+}
+
+.theme-logo .logo-bar-2 {
+    fill: var(--primary-color);
+    opacity: 0.8;
+}
+
+.theme-logo .logo-bar-3 {
+    fill: var(--secondary-color);
+    opacity: 0.9;
+}
+
+.theme-logo .logo-bar-4 {
+    fill: var(--secondary-color);
+}
+
+.theme-logo .logo-tagline {
+    fill: var(--text-muted);
+}
+
+.theme-logo,
+.theme-logo * {
+    transition: fill 0.3s ease, stop-color 0.3s ease, flood-color 0.3s ease;
+}
+
+@media (max-width: 480px) {
+    .auth-card {
+        width: 100%;
+        border-radius: 12px;
+        padding: 14px;
+    }
 }
 
 .app-modal-footer {

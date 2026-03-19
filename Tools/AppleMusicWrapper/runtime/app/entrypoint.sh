@@ -71,6 +71,11 @@ read_login_credentials() {
     local creds_file=""
     creds_file="$(tr -d '\r\n' < "$login_file")"
     if [[ -n "$creds_file" ]]; then
+      # Consume credentials once to avoid login/2FA loops when the container restarts.
+      # Set WRAPPER_LOGIN_FILE_PERSIST=1 only if you explicitly want persistent auto-login.
+      if [[ "${WRAPPER_LOGIN_FILE_PERSIST:-0}" != "1" ]]; then
+        rm -f "$login_file" || true
+      fi
       printf '%s' "$creds_file"
       return 0
     fi

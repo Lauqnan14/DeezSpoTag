@@ -4,8 +4,8 @@
     ViewData["Title"] = "Login";
 }
 
-<div class="fixed-footer">
-    <h1 class="mb-8 text-5xl">Login</h1>
+<div class="fixed-footer platform-login-shell">
+    <h1 class="platform-login-title mb-8 text-5xl">Login</h1>
 
     <ul class="nav nav-tabs nav-fill mb-4" id="platformLoginTabs" data-no-global-tab-fallback="true" hidden>
         <li class="nav-item">
@@ -364,9 +364,23 @@ body {
 }
 
 .fixed-footer {
-    padding: 20px;
+    width: min(1120px, 100%);
+    margin: 0 auto;
+    padding: clamp(14px, 3vw, 24px);
     background: var(--bg-primary);
     color: var(--text-primary);
+}
+
+.platform-login-title {
+    color: var(--text-primary);
+    font-size: clamp(1.75rem, 5vw, 3rem);
+    line-height: 1.15;
+}
+
+.platform-login-shell {
+    background:
+        radial-gradient(960px 360px at 5% -10%, color-mix(in srgb, var(--primary-color) 12%, transparent), transparent 74%),
+        var(--bg-primary);
 }
 
 .fixed-footer .nav-tabs .nav-link {
@@ -452,7 +466,8 @@ body {
 
 @@media (max-width: 900px) {
     .fixed-footer {
-        padding: 20px 16px;
+        width: 100%;
+        padding: 18px 14px;
     }
 
     .settings-group__header {
@@ -481,6 +496,10 @@ body {
     .fixed-footer > h1,
     .text-5xl {
         text-align: center;
+    }
+
+    .platform-login-title {
+        font-size: clamp(1.5rem, 7vw, 2rem);
     }
 
     .nav-tabs {
