@@ -20,7 +20,11 @@ if [[ -n "${APPLE_WRAPPER_ENV_FILE:-}" ]]; then
     ENV_FILE="$REPO_ROOT/$APPLE_WRAPPER_ENV_FILE"
   fi
 else
-  ENV_FILE="$SCRIPT_DIR/apple-wrapper.env"
+  if [[ -w "$SCRIPT_DIR" ]]; then
+    ENV_FILE="$SCRIPT_DIR/apple-wrapper.env"
+  else
+    ENV_FILE="${TMPDIR:-/tmp}/apple-wrapper.env"
+  fi
 fi
 
 SERVICE="apple-wrapper"
@@ -37,7 +41,23 @@ has_docker_compose_v1() {
   command -v docker-compose >/dev/null 2>&1
 }
 
+is_running_in_container() {
+  if [[ -f "/.dockerenv" ]]; then
+    return 0
+  fi
+
+  grep -qaE '(docker|containerd|kubepods|podman)' /proc/1/cgroup 2>/dev/null
+}
+
 use_compose_mode() {
+  if [[ "${APPLE_WRAPPER_DISABLE_COMPOSE:-0}" == "1" ]]; then
+    return 1
+  fi
+
+  if is_running_in_container && [[ "${APPLE_WRAPPER_ALLOW_COMPOSE_IN_CONTAINER:-0}" != "1" ]]; then
+    return 1
+  fi
+
   [[ -f "$COMPOSE_FILE" ]] && (has_docker_compose_plugin || has_docker_compose_v1)
 }
 

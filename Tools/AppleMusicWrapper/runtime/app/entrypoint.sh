@@ -6,6 +6,7 @@ ROOTFS_DIR="$ROOT_DIR/rootfs"
 DEV_DIR="$ROOTFS_DIR/dev"
 DEFAULT_WRAPPER_ARGS="-H 0.0.0.0 -D 10020 -M 20020 -A 30020"
 LOGIN_FILE_DEFAULT="/opt/apple-wrapper/data/wrapper-login.txt"
+LOGIN_ENV_MARKER_DEFAULT="/opt/apple-wrapper/data/.wrapper-login-env.sha256"
 
 log() {
   printf '[entrypoint] %s\n' "$*" >&2
@@ -47,6 +48,34 @@ has_cached_session() {
   [[ -s "$session_root/IC-Info.sido" ]] || [[ -s "$session_root/MUSIC_TOKEN" ]]
 }
 
+hash_credentials() {
+  local credentials="$1"
+  printf '%s' "$credentials" | sha256sum | awk '{print $1}'
+}
+
+consume_env_login_credentials() {
+  local creds_env="$1"
+  local marker_file="${WRAPPER_LOGIN_ENV_MARKER_FILE:-$LOGIN_ENV_MARKER_DEFAULT}"
+  local marker_dir
+  marker_dir="$(dirname "$marker_file")"
+  mkdir -p "$marker_dir"
+
+  local env_hash
+  env_hash="$(hash_credentials "$creds_env")"
+
+  if [[ -f "$marker_file" ]]; then
+    local existing_hash=""
+    existing_hash="$(tr -d '\r\n' < "$marker_file")"
+    if [[ "$existing_hash" == "$env_hash" ]]; then
+      return 1
+    fi
+  fi
+
+  printf '%s' "$env_hash" > "$marker_file"
+  chmod 600 "$marker_file" || true
+  printf '%s' "$creds_env"
+}
+
 append_login_args() {
   local base_args="$1"
   local creds="$2"
@@ -62,8 +91,11 @@ append_login_args() {
 read_login_credentials() {
   local creds_env="${WRAPPER_LOGIN:-}"
   if [[ -n "$creds_env" ]]; then
-    printf '%s' "$creds_env"
-    return 0
+    local consumed_creds=""
+    if consumed_creds="$(consume_env_login_credentials "$creds_env")"; then
+      printf '%s' "$consumed_creds"
+      return 0
+    fi
   fi
 
   local login_file="${WRAPPER_LOGIN_FILE:-$LOGIN_FILE_DEFAULT}"
