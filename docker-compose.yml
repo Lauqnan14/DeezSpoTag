@@ -50,13 +50,7 @@ services:
     image: ${APPLE_WRAPPER_IMAGE:-ghcr.io/lauqnan14/deezspotag-apple-wrapper:latest}
     pull_policy: always
     network_mode: host
-    privileged: true
-    init: true
-    pid: host
-    ipc: host
-    security_opt:
-      - seccomp:unconfined
-      - apparmor:unconfined
+    user: "${APPLE_WRAPPER_UID:-0}:${APPLE_WRAPPER_GID:-0}"
     env_file:
       - path: ${APPLE_WRAPPER_ENV_FILE:-Tools/AppleMusicWrapper/docker/apple-wrapper.env}
         required: false
@@ -72,16 +66,13 @@ services:
         target: /opt/apple-wrapper/rootfs/data/data/com.apple.android.music
         bind:
           create_host_path: true
-      # Match the local wrapper runtime setup (setup-rootfs-mounts.sh).
+      # Map host random devices directly; this avoids mknod variance across Linux distros.
       - type: bind
-        source: /proc
-        target: /opt/apple-wrapper/rootfs/proc
+        source: /dev/urandom
+        target: /opt/apple-wrapper/rootfs/dev/urandom
         read_only: true
       - type: bind
-        source: /sys
-        target: /opt/apple-wrapper/rootfs/sys
+        source: /dev/random
+        target: /opt/apple-wrapper/rootfs/dev/random
         read_only: true
-      - type: bind
-        source: /dev/pts
-        target: /opt/apple-wrapper/rootfs/dev/pts
     restart: unless-stopped

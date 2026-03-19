@@ -99,6 +99,8 @@ If your host uses Compose v1, replace `docker compose` with `docker-compose`.
 - `deezspotag` app state/config in-container uses `/data`, backed by the host Workers data path bind mount.
 - `apple-wrapper` binds directly on host ports `10020/20020/30020`.
 - `deezspotag` reaches `apple-wrapper` via `127.0.0.1` in host mode.
+- `apple-wrapper` image tracks upstream `WorldObservationLog/wrapper` runtime behavior; DeezSpoTag-specific logic is limited to container packaging and helper orchestration.
+- Compose maps host `/dev/urandom` and `/dev/random` into wrapper rootfs to avoid distro-specific `mknod` variance.
 - App and wrapper state persist in host bind-mount paths.
 - Compose auto-creates:
   - `DEEZSPOTAG_DATA_PATH`

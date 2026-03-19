@@ -757,38 +757,6 @@ static inline void *new_socket_m3u8(void *args) {
     }
 }
 
-static int request_includes_tokens(const char *request_buffer)
-{
-    if (request_buffer == NULL || request_buffer[0] == '\0')
-    {
-        return 0;
-    }
-
-    char method[16] = {0};
-    char path[512] = {0};
-    if (sscanf(request_buffer, "%15s %511s", method, path) != 2)
-    {
-        return 0;
-    }
-
-    if (strcmp(method, "GET") != 0 && strcmp(method, "POST") != 0)
-    {
-        return 0;
-    }
-
-    if (strncmp(path, "/account/tokens", 15) == 0)
-    {
-        return 1;
-    }
-
-    if (strncmp(path, "/account", 8) == 0 && strstr(path, "include_tokens=1") != NULL)
-    {
-        return 1;
-    }
-
-    return 0;
-}
-
 void handle_account(const int connfd)
 {
     char buffer[4096];
@@ -798,45 +766,15 @@ void handle_account(const int connfd)
     }
     buffer[n] = '\0';
 
-    // Parse HTTP request (simple check for GET/POST)
+    // Parse HTTP request (simple check for GET)
     if (strncmp(buffer, "GET", 3) != 0 && strncmp(buffer, "POST", 4) != 0) {
         const char *error_response = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n";
         writefull(connfd, (void *)error_response, strlen(error_response));
         return;
     }
 
-    const char *storefront_id = g_storefront_id != NULL ? g_storefront_id : "";
-    const char *dev_token = g_dev_token != NULL ? g_dev_token : "";
-    const char *music_token = g_music_token != NULL ? g_music_token : "";
-    const int has_dev_token = dev_token[0] != '\0';
-    const int has_music_token = music_token[0] != '\0';
-    const int include_tokens = request_includes_tokens(buffer);
-
-    size_t json_size;
-    if (include_tokens)
-    {
-        json_size = (size_t)snprintf(
-            NULL,
-            0,
-            "{\"storefront_id\":\"%s\",\"has_dev_token\":%s,\"has_music_token\":%s,\"dev_token\":\"%s\",\"music_user_token\":\"%s\",\"music_token\":\"%s\"}",
-            storefront_id,
-            has_dev_token ? "true" : "false",
-            has_music_token ? "true" : "false",
-            dev_token,
-            music_token,
-            music_token) + 1;
-    }
-    else
-    {
-        json_size = (size_t)snprintf(
-            NULL,
-            0,
-            "{\"storefront_id\":\"%s\",\"has_dev_token\":%s,\"has_music_token\":%s}",
-            storefront_id,
-            has_dev_token ? "true" : "false",
-            has_music_token ? "true" : "false") + 1;
-    }
-
+    // Format JSON response body
+    size_t json_size = 1024;
     char *json_body = (char *)malloc(json_size);
     if (json_body == NULL)
     {
@@ -846,29 +784,8 @@ void handle_account(const int connfd)
         return;
     }
 
-    if (include_tokens)
-    {
-        snprintf(
-            json_body,
-            json_size,
-            "{\"storefront_id\":\"%s\",\"has_dev_token\":%s,\"has_music_token\":%s,\"dev_token\":\"%s\",\"music_user_token\":\"%s\",\"music_token\":\"%s\"}",
-            storefront_id,
-            has_dev_token ? "true" : "false",
-            has_music_token ? "true" : "false",
-            dev_token,
-            music_token,
-            music_token);
-    }
-    else
-    {
-        snprintf(
-            json_body,
-            json_size,
-            "{\"storefront_id\":\"%s\",\"has_dev_token\":%s,\"has_music_token\":%s}",
-            storefront_id,
-            has_dev_token ? "true" : "false",
-            has_music_token ? "true" : "false");
-    }
+    snprintf(json_body, json_size, "{\"storefront_id\":\"%s\",\"dev_token\":\"%s\",\"music_token\":\"%s\"}",
+             g_storefront_id, g_dev_token, g_music_token);
 
     int json_len = strlen(json_body);
 
@@ -887,7 +804,7 @@ void handle_account(const int connfd)
     snprintf(http_response, response_size, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
              json_len);
 
-    fprintf(stderr, "[.] returning account info, storefront: %s, include_tokens: %s\n", storefront_id, include_tokens ? "true" : "false");
+    fprintf(stderr, "[.] returning account info, storefront: %s\n", g_storefront_id);
     writefull(connfd, http_response, strlen(http_response));
     writefull(connfd, json_body, json_len);
 

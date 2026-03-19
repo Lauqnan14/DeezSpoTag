@@ -1,9 +1,8 @@
-FROM debian:trixie-slim
+FROM debian:stable-slim
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     bash \
-    proot \
     curl \
     unzip \
     && rm -rf /var/lib/apt/lists/*
@@ -14,8 +13,8 @@ WORKDIR /opt/apple-wrapper
 ARG WRAPPER_BUNDLE_URL_X86_64=https://github.com/WorldObservationLog/wrapper/releases/download/Wrapper.x86_64.1dac7bb/Wrapper.x86_64.1dac7bb.zip
 ARG WRAPPER_BUNDLE_URL_ARM64=https://github.com/WorldObservationLog/wrapper/releases/download/Wrapper.arm64.latest/Wrapper.arm64.e338fa6.zip
 
-# Some runtime bundles nest the Android rootfs under rootfs/rootfs.
-# Ensure system/bin/main exists at /opt/apple-wrapper/rootfs/system/bin/main.
+# Keep wrapper runtime aligned with upstream releases when the repo runtime snapshot
+# does not include rootfs/system/bin/main.
 RUN set -eux; \
     if [ -d /opt/apple-wrapper/rootfs/rootfs ] && [ ! -f /opt/apple-wrapper/rootfs/system/bin/main ]; then \
       cp -a /opt/apple-wrapper/rootfs/rootfs/* /opt/apple-wrapper/rootfs/; \
@@ -43,17 +42,14 @@ RUN set -eux; \
       rm -rf "$tmpdir"; \
     fi
 
-# Align Docker runtime with local setup scripts: ensure mount points exist so
-# wrapper startup is consistent in container mode. Device nodes are provided by
-# the runtime rootfs and host mounts; avoid creating char devices in image layers.
 RUN set -eux; \
-    dev_dir="/opt/apple-wrapper/rootfs/dev"; \
-    mkdir -p "$dev_dir" "/opt/apple-wrapper/rootfs/dev/pts" "/opt/apple-wrapper/rootfs/proc" "/opt/apple-wrapper/rootfs/sys"
+    mkdir -p \
+      /opt/apple-wrapper/rootfs/dev \
+      /opt/apple-wrapper/rootfs/data/data/com.apple.android.music/files \
+      /opt/apple-wrapper/data; \
+    chmod 755 /opt/apple-wrapper/entrypoint.sh; \
+    chmod 755 /opt/apple-wrapper/wrapper; \
+    if [ -f /opt/apple-wrapper/rootfs/system/bin/main ]; then chmod 755 /opt/apple-wrapper/rootfs/system/bin/main; fi; \
+    if [ -f /opt/apple-wrapper/rootfs/system/bin/linker64 ]; then chmod 755 /opt/apple-wrapper/rootfs/system/bin/linker64; fi
 
-RUN chmod 4755 /opt/apple-wrapper/wrapper && \
-    if [ -f /opt/apple-wrapper/rootfs/system/bin/main ]; then chmod 755 /opt/apple-wrapper/rootfs/system/bin/main; fi && \
-    if [ -f /opt/apple-wrapper/rootfs/system/bin/linker64 ]; then chmod 755 /opt/apple-wrapper/rootfs/system/bin/linker64; fi && \
-    if [ -f /opt/apple-wrapper/rootfs/rootfs/system/bin/main ]; then chmod 755 /opt/apple-wrapper/rootfs/rootfs/system/bin/main; fi && \
-    if [ -f /opt/apple-wrapper/rootfs/rootfs/system/bin/linker64 ]; then chmod 755 /opt/apple-wrapper/rootfs/rootfs/system/bin/linker64; fi
-
-ENTRYPOINT ["/bin/bash", "-lc", "set -euo pipefail; IFS=' ' read -r -a wrapper_args <<< \"${WRAPPER_ARGS:-}\"; exec /opt/apple-wrapper/wrapper \"${wrapper_args[@]}\""]
+ENTRYPOINT ["/opt/apple-wrapper/entrypoint.sh"]

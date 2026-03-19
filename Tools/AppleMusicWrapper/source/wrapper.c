@@ -1,17 +1,15 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
-#include <limits.h>
 #include <sched.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <string.h>
 
 #include "cmdline.h"
 
@@ -62,13 +60,6 @@ int has_cap_sys_admin() {
     }
 }
 
-static int build_path(char *buffer, size_t buffer_len, const char *rootfs, const char *suffix) {
-    if (snprintf(buffer, buffer_len, "%s/%s", rootfs, suffix) >= (int)buffer_len) {
-        return 0;
-    }
-    return 1;
-}
-
 int main(int argc, char *argv[], char *envp[]) {
     cmdline_parser(argc, argv, &args_info);
     if (signal(SIGINT, intHan) == SIG_ERR) {
@@ -76,27 +67,17 @@ int main(int argc, char *argv[], char *envp[]) {
         return 1;
     }
 
-    const char *rootfs_env = getenv("WRAPPER_ROOTFS");
-    const char *rootfs_input = (rootfs_env && rootfs_env[0] != '\0') ? rootfs_env : "./rootfs";
-    char rootfs_path[PATH_MAX];
-    if (realpath(rootfs_input, rootfs_path) == NULL) {
-        perror("realpath");
+    if (chdir("./rootfs") != 0) {
+        perror("chdir");
         return 1;
     }
-
-    char main_path[PATH_MAX];
-    if (!build_path(main_path, sizeof(main_path), rootfs_path, "system/bin/main")) {
-        fprintf(stderr, "[!] rootfs path too long\n");
+    if (chroot("./") != 0) {
+        perror("chroot");
         return 1;
     }
-    char linker_path[PATH_MAX];
-    if (!build_path(linker_path, sizeof(linker_path), rootfs_path, "system/bin/linker64")) {
-        fprintf(stderr, "[!] rootfs path too long\n");
-        return 1;
-    }
-
-    chmod(main_path, 0755);
-    chmod(linker_path, 0755);
+    mknod("/dev/urandom", S_IFCHR | 0666, makedev(0x1, 0x9));
+    chmod("/system/bin/linker64", 0755);
+    chmod("/system/bin/main", 0755);
 
     if (has_cap_sys_admin()) {
         if (unshare(CLONE_NEWPID)) {
@@ -119,22 +100,7 @@ int main(int argc, char *argv[], char *envp[]) {
     // Child process logic
     mkdir(args_info.base_dir_arg, 0777);
     mkdir(strcat(args_info.base_dir_arg, "/mpl_db"), 0777);
-    char **proot_argv = calloc((size_t)argc + 6, sizeof(char *));
-    if (proot_argv == NULL) {
-        perror("calloc");
-        return 1;
-    }
-    int idx = 0;
-    proot_argv[idx++] = "proot";
-    proot_argv[idx++] = "-S";
-    proot_argv[idx++] = rootfs_path;
-    proot_argv[idx++] = "/system/bin/main";
-    for (int i = 1; i < argc; i++) {
-        proot_argv[idx++] = argv[i];
-    }
-    proot_argv[idx] = NULL;
-
-    execvp("proot", proot_argv);
+    execve("/system/bin/main", argv, envp);
     perror("execve");
     return 1;
 }
