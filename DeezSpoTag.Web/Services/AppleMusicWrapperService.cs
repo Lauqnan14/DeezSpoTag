@@ -62,7 +62,14 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     private const string StatusStopped = "stopped";
     private const string StatusMissing = "missing";
     private const string ExternalWrapperHostEnv = "DEEZSPOTAG_APPLE_WRAPPER_HOST";
+    private const string ExternalWrapperHelperModeEnv = "DEEZSPOTAG_APPLE_WRAPPER_HELPER_MODE";
+    private const string ExternalWrapperContainerNameEnv = "DEEZSPOTAG_APPLE_WRAPPER_CONTAINER_NAME";
+    private const string ExternalWrapperComposeFileEnv = "DEEZSPOTAG_APPLE_WRAPPER_COMPOSE_FILE";
     private const string LoopbackHost = "127.0.0.1";
+    private const string DefaultWrapperContainerName = "apple-wrapper";
+    private const string HelperModeAuto = "auto";
+    private const string HelperModeDirect = "direct";
+    private const string HelperModeCompose = "compose";
     private const string ToolsDirectory = "Tools";
     private const string AppleMusicWrapperDirectory = "AppleMusicWrapper";
     private static readonly string[] HelperLogoutArgs = ["logout"];
@@ -198,7 +205,15 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                     var resetResult = await RunExternalWrapperHelperAsync(HelperLogoutArgs, cancellationToken);
                     if (!resetResult.Success)
                     {
-                        _logger.LogWarning("Pre-login wrapper session reset failed: {Error}", resetResult.Error ?? resetResult.Output);
+                        var resetError = resetResult.Error ?? resetResult.Output;
+                        if (IsWrapperContainerMissingError(resetError))
+                        {
+                            _logger.LogInformation("Pre-login wrapper session reset skipped: {Error}", resetError);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Pre-login wrapper session reset failed: {Error}", resetError);
+                        }
                     }
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
@@ -388,7 +403,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             false);
     }
 
-    private async Task<(bool Success, string? Error)> TryRunExternalWrapperHelperAsync(string[] args, CancellationToken cancellationToken)
+    private async Task<(bool Success, string? Error)> TryRunExternalWrapperHelperAsync(string[] args, CancellationToken cancellationToken, string? forcedHelperMode = null)
     {
         var helperPath = ResolveExternalWrapperHelperPath();
         if (string.IsNullOrWhiteSpace(helperPath) || !File.Exists(helperPath))
@@ -398,17 +413,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
         try
         {
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = helperPath,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false
-            };
-            foreach (var arg in args)
-            {
-                startInfo.ArgumentList.Add(arg);
-            }
+            var startInfo = CreateExternalWrapperHelperStartInfo(helperPath, args, forcedHelperMode);
 
             using var process = Process.Start(startInfo);
             if (process == null)
@@ -493,17 +498,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
         try
         {
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = helperPath,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false
-            };
-            foreach (var arg in args)
-            {
-                startInfo.ArgumentList.Add(arg);
-            }
+            var startInfo = CreateExternalWrapperHelperStartInfo(helperPath, args);
 
             using var process = Process.Start(startInfo);
             if (process == null)
@@ -745,7 +740,13 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     private async Task<(bool Success, string? Error)> StartExternalWrapperLoginAsync(string email, string password, CancellationToken cancellationToken)
     {
-        var helperResult = await TryRunExternalWrapperHelperAsync(new[] { "login", $"{email}:{password}" }, cancellationToken);
+        var loginArgs = new[] { "login", $"{email}:{password}" };
+        var helperResult = await TryRunExternalWrapperHelperAsync(loginArgs, cancellationToken);
+        if (!helperResult.Success && IsWrapperContainerMissingError(helperResult.Error))
+        {
+            // Host dotnet runs may start without apple-wrapper created yet; compose-mode login bootstraps it.
+            helperResult = await TryRunExternalWrapperHelperAsync(loginArgs, cancellationToken, HelperModeCompose);
+        }
         if (helperResult.Success)
         {
             return (true, null);
@@ -783,6 +784,123 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             : helperResult.Error;
         _logger.LogWarning("External wrapper helper failed to submit 2FA. {Message}", message);
         return (false, message);
+    }
+
+    private ProcessStartInfo CreateExternalWrapperHelperStartInfo(string helperPath, IEnumerable<string> args, string? forcedHelperMode = null)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = helperPath,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+
+        foreach (var arg in args)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+
+        ApplyExternalWrapperHelperEnvironment(startInfo, forcedHelperMode);
+        return startInfo;
+    }
+
+    private void ApplyExternalWrapperHelperEnvironment(ProcessStartInfo startInfo, string? forcedHelperMode = null)
+    {
+        if (!startInfo.Environment.TryGetValue("TMPDIR", out var tmpDir) || string.IsNullOrWhiteSpace(tmpDir))
+        {
+            startInfo.Environment["TMPDIR"] = "/tmp";
+        }
+
+        startInfo.Environment["APPLE_WRAPPER_CONTAINER_NAME"] = ResolveExternalWrapperContainerName();
+        var composeFile = ResolveExternalWrapperComposeFile();
+        if (!string.IsNullOrWhiteSpace(composeFile))
+        {
+            startInfo.Environment["APPLE_WRAPPER_COMPOSE_FILE"] = composeFile;
+        }
+
+        switch (ResolveExternalWrapperHelperMode(forcedHelperMode))
+        {
+            case HelperModeCompose:
+                startInfo.Environment["APPLE_WRAPPER_DISABLE_COMPOSE"] = "0";
+                startInfo.Environment["APPLE_WRAPPER_ALLOW_COMPOSE_IN_CONTAINER"] = "1";
+                startInfo.Environment["APPLE_WRAPPER_ENV_FILE"] = "/tmp/apple-wrapper.env";
+                break;
+            case HelperModeAuto:
+                break;
+            default:
+                // Force direct Docker mode by default to keep host dotnet and containerized dotnet behavior aligned.
+                startInfo.Environment["APPLE_WRAPPER_DISABLE_COMPOSE"] = "1";
+                startInfo.Environment["APPLE_WRAPPER_ALLOW_COMPOSE_IN_CONTAINER"] = "0";
+                break;
+        }
+    }
+
+    private string ResolveExternalWrapperHelperMode(string? forcedHelperMode = null)
+    {
+        if (!string.IsNullOrWhiteSpace(forcedHelperMode))
+        {
+            var forcedNormalized = forcedHelperMode.Trim().ToLowerInvariant();
+            if (forcedNormalized is HelperModeDirect or HelperModeCompose or HelperModeAuto)
+            {
+                return forcedNormalized;
+            }
+        }
+
+        var configured = Environment.GetEnvironmentVariable(ExternalWrapperHelperModeEnv);
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return HelperModeDirect;
+        }
+
+        var normalized = configured.Trim().ToLowerInvariant();
+        if (normalized is HelperModeDirect or HelperModeCompose or HelperModeAuto)
+        {
+            return normalized;
+        }
+
+        _logger.LogWarning(
+            "Invalid {EnvironmentVariable} value '{Value}'. Supported values are: {Direct}, {Compose}, {Auto}. Falling back to {Default}.",
+            ExternalWrapperHelperModeEnv,
+            configured,
+            HelperModeDirect,
+            HelperModeCompose,
+            HelperModeAuto,
+            HelperModeDirect);
+        return HelperModeDirect;
+    }
+
+    private static bool IsWrapperContainerMissingError(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        return message.Contains("Wrapper container", StringComparison.OrdinalIgnoreCase)
+               && message.Contains("not found", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveExternalWrapperContainerName()
+    {
+        var configured = Environment.GetEnvironmentVariable(ExternalWrapperContainerNameEnv);
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured.Trim();
+        }
+
+        return DefaultWrapperContainerName;
+    }
+
+    private static string? ResolveExternalWrapperComposeFile()
+    {
+        var configured = Environment.GetEnvironmentVariable(ExternalWrapperComposeFileEnv);
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return null;
+        }
+
+        return configured.Trim();
     }
 
     private static string ResolveExternalWrapperHost()
