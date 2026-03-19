@@ -12,7 +12,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 concurrency:
@@ -20,8 +20,68 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  bump-version:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip-version-bump]')
+    runs-on: ubuntu-latest
+    outputs:
+      bumped: ${{ steps.bump.outputs.bumped }}
+      target_version: ${{ steps.bump.outputs.target_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump version revision
+        id: bump
+        shell: bash
+        run: |
+          set -euo pipefail
+          props_file="Directory.Build.props"
+
+          current_prefix="$(sed -n 's:.*<VersionPrefix>\(.*\)</VersionPrefix>.*:\1:p' "$props_file" | head -n1)"
+          current_revision="$(sed -n 's:.*<VersionRevision>\([0-9]\+\)</VersionRevision>.*:\1:p' "$props_file" | head -n1)"
+
+          if [ -z "$current_prefix" ] || [ -z "$current_revision" ]; then
+            echo "Unable to read VersionPrefix/VersionRevision from $props_file" >&2
+            exit 1
+          fi
+
+          IFS='.' read -r major minor patch <<< "$current_prefix"
+          if [ -z "${major:-}" ] || [ -z "${minor:-}" ] || [ -z "${patch:-}" ]; then
+            echo "VersionPrefix must use major.minor.patch format, got: $current_prefix" >&2
+            exit 1
+          fi
+
+          next_revision=$((current_revision + 1))
+          next_prefix="$current_prefix"
+          if [ "$next_revision" -gt 9 ]; then
+            next_revision=0
+            next_prefix="${major}.${minor}.$((patch + 1))"
+          fi
+
+          sed -i "s|<VersionPrefix>${current_prefix}</VersionPrefix>|<VersionPrefix>${next_prefix}</VersionPrefix>|" "$props_file"
+          sed -i "s|<VersionRevision>${current_revision}</VersionRevision>|<VersionRevision>${next_revision}</VersionRevision>|" "$props_file"
+
+          if git diff --quiet -- "$props_file"; then
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            echo "target_version=${current_prefix}.${current_revision}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          target_version="${next_prefix}.${next_revision}"
+          echo "bumped=true" >> "$GITHUB_OUTPUT"
+          echo "target_version=${target_version}" >> "$GITHUB_OUTPUT"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$props_file"
+          git commit -m "chore(release): bump version to ${target_version} [skip-version-bump]"
+          git push origin HEAD:main
+
   publish:
-    if: github.ref == 'refs/heads/main'
+    needs: bump-version
+    if: github.ref == 'refs/heads/main' && (needs.bump-version.result != 'success' || needs.bump-version.outputs.bumped != 'true')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
