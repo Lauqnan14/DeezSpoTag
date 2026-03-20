@@ -41,7 +41,7 @@ public sealed class LocalLibraryScanner
         public int ProcessedFiles { get; set; }
         public int TotalFiles { get; set; }
         public int ErrorCount { get; set; }
-        public int ReportEvery { get; init; } = 25;
+        public int ReportEvery { get; init; } = 1;
     }
 
     private sealed record FolderScanBaseline(int ArtistCount, int AlbumCount, int TrackCount);

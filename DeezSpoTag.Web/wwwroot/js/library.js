@@ -1764,7 +1764,9 @@ function applyLibraryScanStatusSuccess(elements, status, stats) {
             const total = status?.progress?.totalFiles ?? 0;
             lastScanEl.textContent = total > 0
                 ? `Running ${processed.toLocaleString()}/${total.toLocaleString()}`
-                : 'Running...';
+                : (processed > 0
+                    ? `Running ${processed.toLocaleString()} files`
+                    : 'Running...');
         } else {
             lastScanEl.textContent = formatTimestamp(status?.lastRunUtc);
         }
