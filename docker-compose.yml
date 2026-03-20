@@ -1,7 +1,7 @@
 services:
   deezspotag:
     container_name: deezspotag
-    image: ${DEEZSPOTAG_IMAGE:-ghcr.io/lauqnan14/deezspotag:latest}
+    image: ${DEEZSPOTAG_IMAGE:-ghcr.io/lauqnan14/deezspotag:prerelease}
     pull_policy: always
     network_mode: host
     user: "${PUID:-1000}:${PGID:-1000}"
@@ -55,7 +55,7 @@ services:
 
   apple-wrapper:
     container_name: apple-wrapper
-    image: ${APPLE_WRAPPER_IMAGE:-ghcr.io/lauqnan14/deezspotag-apple-wrapper:latest}
+    image: ${APPLE_WRAPPER_IMAGE:-ghcr.io/lauqnan14/deezspotag-apple-wrapper:prerelease}
     pull_policy: always
     network_mode: host
     user: "${APPLE_WRAPPER_UID:-0}:${APPLE_WRAPPER_GID:-0}"
