@@ -17,34 +17,22 @@ FROM docker:27-cli AS docker-cli
 
 FROM golang:1.23-bookworm AS apple-wrapper-build
 WORKDIR /work
+ARG TARGETARCH
 
 COPY Tools/AppleMusicWrapper/runv2/go.mod Tools/AppleMusicWrapper/runv2/go.sum ./
 RUN go mod download
 COPY Tools/AppleMusicWrapper/runv2/*.go ./
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/apple-wrapper-runv2 .
-
-FROM debian:bookworm-slim AS media-tools
-ARG BENTO4_URL=https://www.bok.net/Bento4/binaries/Bento4-SDK-1-6-0-641.x86_64-unknown-linux.zip
-ARG BENTO4_SHA256=
-
-WORKDIR /tmp/media-tools
-
 RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl unzip; \
-    curl -fL -sS -o bento4.zip "$BENTO4_URL"; \
-    if [ -n "$BENTO4_SHA256" ]; then echo "$BENTO4_SHA256  bento4.zip" | sha256sum -c -; fi; \
-    mkdir -p /tmp/bento4; \
-    unzip -q bento4.zip -d /tmp/bento4; \
-    mp4decrypt_path="$(find /tmp/bento4 -type f -name mp4decrypt -perm -111 | head -n 1)"; \
-    if [ -z "$mp4decrypt_path" ]; then echo "mp4decrypt not found after Bento4 setup." >&2; exit 1; fi; \
-    install -m 0755 "$mp4decrypt_path" /usr/local/bin/mp4decrypt; \
-    rm -rf /var/lib/apt/lists/* /tmp/media-tools /tmp/bento4
+    target_arch="${TARGETARCH:-amd64}"; \
+    CGO_ENABLED=0 GOOS=linux GOARCH="${target_arch}" go build -trimpath -ldflags "-s -w" -o /out/apple-wrapper-runv2 .
 
 FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION} AS runtime
 WORKDIR /app
 ARG DEEZSPOTAG_BUILD_VERSION=dev
-ARG ESSENTIA_TF_WHEEL_URL=https://files.pythonhosted.org/packages/f0/5f/7283634ee1d5d195d75986adc98a2309fab2df121a4618f3826eb2073d29/essentia_tensorflow-2.1b6.dev1389-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+ARG TARGETARCH
+ARG BENTO4_URL_X86_64=https://www.bok.net/Bento4/binaries/Bento4-SDK-1-6-0-641.x86_64-unknown-linux.zip
+ARG BENTO4_SHA256=
+ARG ESSENTIA_TF_PACKAGE=essentia-tensorflow==2.1b6.dev1389
 LABEL org.opencontainers.image.source="https://github.com/Lauqnan14/DeezSpoTag" \
       org.opencontainers.image.title="deezspotag"
 
@@ -67,6 +55,17 @@ RUN apt-get update \
     && if [ -z "$mp4box_path" ]; then mp4box_path="$(command -v mp4box || true)"; fi \
     && if [ -z "$mp4box_path" ]; then echo "MP4Box not found after GPAC install." >&2; exit 1; fi \
     && install -m 0755 "$mp4box_path" /usr/local/bin/mp4box \
+    && if [ "${TARGETARCH:-amd64}" = "amd64" ]; then \
+         curl -fL -sS -o /tmp/bento4.zip "$BENTO4_URL_X86_64"; \
+         if [ -n "$BENTO4_SHA256" ]; then echo "$BENTO4_SHA256  /tmp/bento4.zip" | sha256sum -c -; fi; \
+         mkdir -p /tmp/bento4; \
+         unzip -q /tmp/bento4.zip -d /tmp/bento4; \
+         mp4decrypt_path="$(find /tmp/bento4 -type f -name mp4decrypt -perm -111 | head -n 1)"; \
+         if [ -n "$mp4decrypt_path" ]; then install -m 0755 "$mp4decrypt_path" /usr/local/bin/mp4decrypt; fi; \
+         rm -rf /tmp/bento4 /tmp/bento4.zip; \
+       else \
+         echo "Skipping mp4decrypt install for TARGETARCH=${TARGETARCH:-unknown}: no official Bento4 arm64 binary URL is configured."; \
+       fi \
     && rm -rf /var/lib/apt/lists/*
 
 COPY docker/openssl-legacy.cnf /etc/ssl/openssl-legacy.cnf
@@ -74,34 +73,15 @@ COPY docker/openssl-legacy.cnf /etc/ssl/openssl-legacy.cnf
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 
-COPY --from=media-tools /usr/local/bin/mp4decrypt /usr/local/bin/mp4decrypt
-
 RUN set -eux; \
     python3 -m venv /opt/venv; \
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip; \
     /opt/venv/bin/pip install --no-cache-dir "numpy>=1.25" pyyaml six; \
-    wheel_filename="$(basename "${ESSENTIA_TF_WHEEL_URL}")"; \
-    wheel_path="/tmp/${wheel_filename}"; \
-    aria2c \
-      --allow-overwrite=true \
-      --continue=true \
-      --file-allocation=none \
-      --max-connection-per-server=8 \
-      --split=8 \
-      --min-split-size=1M \
-      --connect-timeout=30 \
-      --timeout=60 \
-      --retry-wait=5 \
-      --max-tries=0 \
-      --summary-interval=15 \
-      --dir=/tmp \
-      --out="${wheel_filename}" \
-      "${ESSENTIA_TF_WHEEL_URL}"; \
-    /opt/venv/bin/pip install --no-cache-dir --no-deps "${wheel_path}"; \
-    rm -f "${wheel_path}"
+    if ! /opt/venv/bin/pip install --no-cache-dir "${ESSENTIA_TF_PACKAGE}"; then \
+      echo "essentia-tensorflow install failed for TARGETARCH=${TARGETARCH:-unknown}; continuing with degraded analysis support."; \
+    fi
 
 ENV OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf \
-    OPENSSL_MODULES=/usr/lib/x86_64-linux-gnu/ossl-modules \
     HOME=/data/home \
     XDG_CACHE_HOME=/data/.cache \
     PIP_CACHE_DIR=/data/.cache/pip \
