@@ -1945,7 +1945,9 @@ function setAppleMusic2faEnabled(enabled, hint) {
     const button = document.getElementById('appleMusicSubmit2faBtn');
     const hintEl = document.getElementById('appleMusic2faHint');
 
-    const canEnable = enabled && appleMusicWrapperAvailable;
+    // In external wrapper mode we submit 2FA via shared state, so keep the field
+    // editable even when port probes are briefly unavailable.
+    const canEnable = enabled && (appleMusicWrapperAvailable || appleMusicExternalMode);
     if (input) {
         input.disabled = !canEnable;
     }

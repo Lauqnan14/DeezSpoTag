@@ -1853,6 +1853,14 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                 }
             }
 
+            // On slower NAS disks/startup paths, wrapper readiness can exceed the startup hint
+            // timeout even though the login eventually succeeds. Keep the flow active up to
+            // the broader login timeout window instead of forcing a second manual login attempt.
+            if (elapsed <= TimeSpan.FromMinutes(2))
+            {
+                return SetAndReturnLoginStarting($"Wrapper startup is taking longer than expected. {modeHint} {details}");
+            }
+
             return SetAndReturnLoginFailure($"Wrapper did not start or stopped unexpectedly. {modeHint} {details}");
         }
 
@@ -1878,6 +1886,20 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             _loginInProgress = false;
             _startedAt = null;
             _twoFactorSubmittedAt = null;
+            return _status;
+        }
+    }
+
+    private AppleMusicWrapperStatusSnapshot SetAndReturnLoginStarting(string message)
+    {
+        lock (_sync)
+        {
+            _status = new AppleMusicWrapperStatusSnapshot(
+                StatusStarting,
+                message,
+                _email,
+                false,
+                false);
             return _status;
         }
     }
