@@ -2331,9 +2331,9 @@ function handleAppleMusicStatus(data) {
     const twoFactorRequired = needs2fa;
     const isAuthenticated = Boolean(wrapperReady) && !twoFactorRequired;
     const isSuccess = (hasExplicitSuccess || wrapperReady) && !twoFactorRequired;
-    const waitingFor2fa = twoFactorRequired && !isAuthenticated && loginFlowActive;
     const backendWaitingFor2fa = twoFactorRequired && !isAuthenticated;
-    const show2fa = waitingFor2fa;
+    const waitingFor2fa = backendWaitingFor2fa;
+    const show2fa = backendWaitingFor2fa;
     const syncSignature = `${status}|${wrapperReady ? '1' : '0'}|${needs2fa ? '1' : '0'}|${wrapperAvailable ? '1' : '0'}|${email || ''}`;
     if (syncSignature !== appleMusicLastSyncSignature) {
         appleMusicLastSyncSignature = syncSignature;
@@ -2358,8 +2358,6 @@ function handleAppleMusicStatus(data) {
             ? 'Verification code submitted. Waiting for wrapper confirmation.'
             : null;
         effectiveMessage = submittedHint || 'Waiting for two-factor verification code.';
-    } else if (backendWaitingFor2fa && !loginFlowActive) {
-        effectiveMessage = 'A previous Apple Music 2FA challenge is pending. Click Login to start a fresh session.';
     } else if (loginAttemptPending) {
         effectiveMessage = 'Submitting login request...';
     } else if (isSuccess) {
@@ -2418,6 +2416,7 @@ function handleAppleMusicStatus(data) {
         renderAppleMusicInfo({ email: email, wrapperReady: true });
         togglePlatformLoginState('appleMusic', true);
     } else if (show2fa) {
+        appleMusicLoginInProgress = true;
         appleMusicLoginRequestPending = false;
         showAppleMusic2fa(true);
         const normalizedMessage = (message || '').toLowerCase();
