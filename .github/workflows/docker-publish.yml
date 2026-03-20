@@ -187,3 +187,20 @@ jobs:
             DEEZSPOTAG_BUILD_VERSION=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.image_name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image_name }}
+
+      - name: Verify wrapper multi-arch manifest
+        if: matrix.image_name == 'deezspotag-apple-wrapper'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="${{ steps.vars.outputs.image }}:${{ steps.commit.outputs.full_sha }}"
+          inspect_output="$(docker buildx imagetools inspect "$ref")"
+          printf '%s\n' "$inspect_output"
+          if ! grep -q 'linux/amd64' <<< "$inspect_output"; then
+            echo "Missing linux/amd64 in published wrapper manifest: $ref" >&2
+            exit 1
+          fi
+          if ! grep -q 'linux/arm64' <<< "$inspect_output"; then
+            echo "Missing linux/arm64 in published wrapper manifest: $ref" >&2
+            exit 1
+          fi
