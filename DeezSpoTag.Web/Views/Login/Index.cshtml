@@ -203,7 +203,7 @@
                             <span class="block mb-2">Password</span>
                             <input type="password" id="appleMusicPassword" placeholder="Password" class="w-full" autocomplete="current-password" />
                         </label>
-                        <div id="appleMusic2faSection" class="hidden">
+                        <div id="appleMusic2faSection">
                             <label class="block mb-4">
                                 <span class="block mb-2">Verification Code</span>
                                 <input type="text" id="appleMusic2fa" placeholder="123456" class="w-full" autocomplete="one-time-code" />
@@ -1928,16 +1928,12 @@ function renderAppleMusicInfo(auth) {
 function showAppleMusic2fa(show = true) {
     const section = document.getElementById('appleMusic2faSection');
     if (section) {
-        if (show) {
-            section.classList.remove('hidden');
-        } else {
-            section.classList.add('hidden');
-        }
+        section.classList.remove('hidden');
     }
 }
 
 function hideAppleMusic2fa() {
-    showAppleMusic2fa(false);
+    showAppleMusic2fa(true);
 }
 
 function setAppleMusic2faEnabled(enabled, hint) {
