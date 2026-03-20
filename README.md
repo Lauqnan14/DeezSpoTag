@@ -93,6 +93,22 @@ If your host uses Compose v1, replace `docker compose` with `docker-compose`.
 - `DOWNLOADS_PATH`
 - `LIBRARY_PATH`
 
+### Release Channels
+
+- `prerelease` channel is published continuously from `main`.
+- `stable` channel is published only when manually promoted in GitHub Actions.
+- Docker channel selection is tag-based:
+  - prerelease: set
+    - `DEEZSPOTAG_IMAGE=ghcr.io/<owner>/deezspotag:prerelease`
+    - `APPLE_WRAPPER_IMAGE=ghcr.io/<owner>/deezspotag-apple-wrapper:prerelease`
+  - stable: set
+    - `DEEZSPOTAG_IMAGE=ghcr.io/<owner>/deezspotag:latest`
+    - `APPLE_WRAPPER_IMAGE=ghcr.io/<owner>/deezspotag-apple-wrapper:latest`
+- With `pull_policy: always`, `docker compose up -d` always pulls the selected channel tag.
+- GitHub Releases behavior:
+  - default (`push` to `main`): creates prerelease entries (`vX.Y.Z.W-pre`)
+  - manual promote (`workflow_dispatch` with `release_channel=stable`): creates stable release (`vX.Y.Z.W`)
+
 ### Current Runtime Model
 
 - `deezspotag` and `apple-wrapper` run in Docker `network_mode: host` (Linux host networking).

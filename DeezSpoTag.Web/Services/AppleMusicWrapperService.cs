@@ -68,6 +68,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     private const string ExternalWrapperComposeFileEnv = "DEEZSPOTAG_APPLE_WRAPPER_COMPOSE_FILE";
     private const string ExternalWrapperSharedDataDirEnv = "DEEZSPOTAG_APPLE_WRAPPER_SHARED_DATA_DIR";
     private const string ExternalWrapperSharedSessionDirEnv = "DEEZSPOTAG_APPLE_WRAPPER_SHARED_SESSION_DIR";
+    private const string ExternalWrapperStartupTimeoutSecondsEnv = "DEEZSPOTAG_APPLE_WRAPPER_START_TIMEOUT_SECONDS";
     private const string DeezSpoTagDataDirEnv = "DEEZSPOTAG_DATA_DIR";
     private const string ComposeAppleWrapperDataPathEnv = "APPLE_WRAPPER_DATA_PATH";
     private const string ComposeAppleWrapperSessionPathEnv = "APPLE_WRAPPER_SESSION_PATH";
@@ -120,6 +121,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     {
         Timeout = TimeSpan.FromSeconds(2)
     };
+    private static readonly TimeSpan ExternalWrapperStartupTimeout = ResolveExternalWrapperStartupTimeout();
 
     private enum ExternalWrapperContainerState
     {
@@ -1838,10 +1840,20 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             }
         }
 
-        if (!context.PortsOpen && elapsed > TimeSpan.FromSeconds(20))
+        if (!context.PortsOpen && elapsed > ExternalWrapperStartupTimeout)
         {
             var modeHint = "External wrapper mode is enabled. Start the wrapper container to continue.";
-            return SetAndReturnLoginFailure($"Wrapper did not start or stopped unexpectedly. {modeHint}");
+            var details = $"Host probe: {context.Host}:10020/20020/30020.";
+            if (!IsHelperControlModeEnabled())
+            {
+                var loginFilePath = ResolveExternalWrapperSharedLoginFilePath();
+                if (File.Exists(loginFilePath))
+                {
+                    details += $" Login credentials are still queued at {loginFilePath}, which usually means the wrapper data/session mounts are mismatched or the wrapper container is not reading them.";
+                }
+            }
+
+            return SetAndReturnLoginFailure($"Wrapper did not start or stopped unexpectedly. {modeHint} {details}");
         }
 
         if (!context.HasAuthentication && elapsed > TimeSpan.FromMinutes(2))
@@ -2026,10 +2038,10 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     {
         var host = ResolveExternalWrapperHost();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (!string.IsNullOrWhiteSpace(host) && seen.Add(host))
-        {
-            yield return host;
-        }
+        if (!string.IsNullOrWhiteSpace(host) && seen.Add(host)) yield return host;
+        if (seen.Add(LoopbackHost)) yield return LoopbackHost;
+        if (seen.Add("localhost")) yield return "localhost";
+        if (seen.Add(DefaultWrapperContainerName)) yield return DefaultWrapperContainerName;
     }
 
     private static bool TryFetchExternalAccountInfo(
@@ -2139,8 +2151,16 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     private static bool AreWrapperPortsOpen(string host, TimeSpan timeout)
     {
-        return CheckPort(host, 10020, timeout)
-            && CheckPort(host, 20020, timeout);
+        var decryptPortOpen = CheckPort(host, 10020, timeout);
+        var m3u8PortOpen = CheckPort(host, 20020, timeout);
+        if (decryptPortOpen && m3u8PortOpen)
+        {
+            return true;
+        }
+
+        // Account endpoint is enough to prove wrapper runtime is reachable during
+        // startup/auth on slower NAS hosts where one stream port can lag.
+        return CheckPort(host, 30020, timeout);
     }
 
     private static bool CheckPort(string host, int port, TimeSpan timeout)
@@ -2159,6 +2179,18 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         catch (Exception ex) when (ex is not OperationCanceledException) {
             return false;
         }
+    }
+
+    private static TimeSpan ResolveExternalWrapperStartupTimeout()
+    {
+        var raw = Environment.GetEnvironmentVariable(ExternalWrapperStartupTimeoutSecondsEnv);
+        if (!int.TryParse(raw, out var seconds))
+        {
+            return TimeSpan.FromSeconds(45);
+        }
+
+        seconds = Math.Clamp(seconds, 20, 300);
+        return TimeSpan.FromSeconds(seconds);
     }
 
     private static string? ResolveRepoRoot()

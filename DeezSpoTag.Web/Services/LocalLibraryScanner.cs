@@ -130,6 +130,9 @@ public sealed class LocalLibraryScanner
     private static readonly string[] WindowsFfprobeCandidates = ["ffprobe.exe", "ffprobe"];
     private static readonly string[] UnixFfprobeCandidates = ["/usr/bin/ffprobe", "/usr/local/bin/ffprobe", "/bin/ffprobe", "ffprobe"];
     private static readonly Lazy<string?> FfprobePath = new(ResolveFfprobePath);
+    private static readonly bool LibraryPrecountEnabled = ReadBooleanEnvironmentVariable("DEEZSPOTAG_LIBRARY_PRECOUNT", defaultValue: false);
+    private static readonly bool LegacyAggressiveFfprobeEnabled = ReadBooleanEnvironmentVariable("DEEZSPOTAG_LIBRARY_AGGRESSIVE_FFPROBE", defaultValue: false);
+    private static readonly bool SignalAnalysisDisabled = ReadBooleanEnvironmentVariable("DEEZSPOTAG_LIBRARY_DISABLE_SIGNAL_ANALYSIS", defaultValue: false);
 
     public LocalLibraryScanner(
         LibraryConfigStore configStore,
@@ -230,7 +233,11 @@ public sealed class LocalLibraryScanner
             return;
         }
 
-        context.TotalFiles = CountScannableAudioFiles(scannableFolders, cancellationToken);
+        if (LibraryPrecountEnabled)
+        {
+            context.TotalFiles = CountScannableAudioFiles(scannableFolders, cancellationToken);
+        }
+
         ReportProgress(context, currentFile: null, force: true);
     }
 
@@ -539,7 +546,8 @@ public sealed class LocalLibraryScanner
     private int? EstimateTrackQualityRank(string file, TrackScanData trackData)
     {
         SignalQualityAnalysis? signalAnalysis = null;
-        if (ShouldRunSignalAnalysis(file, trackData.Codec, trackData.BitrateKbps, trackData.BitsPerSample))
+        if (!SignalAnalysisDisabled
+            && ShouldRunSignalAnalysis(file, trackData.Codec, trackData.BitrateKbps, trackData.BitsPerSample))
         {
             signalAnalysis = _signalAnalyzer.Analyze(file, trackData.Codec, trackData.SampleRateHz, trackData.BitrateKbps);
         }
@@ -617,7 +625,7 @@ public sealed class LocalLibraryScanner
 
     private void RefreshTrackProbeData(string file, TrackScanData trackData)
     {
-        if (!NeedsFfprobeRefresh(file, trackData.Codec, trackData.DurationMs, trackData.SampleRateHz, trackData.Channels))
+        if (!NeedsFfprobeRefresh(file, trackData.Codec, trackData.DurationMs, trackData.BitrateKbps, trackData.SampleRateHz, trackData.Channels))
         {
             return;
         }
@@ -1379,13 +1387,25 @@ public sealed class LocalLibraryScanner
         string filePath,
         string? codec,
         int? durationMs,
+        int? bitrateKbps,
         int? sampleRateHz,
         int? channels)
     {
         var extension = Path.GetExtension(filePath)?.Trim().ToLowerInvariant() ?? string.Empty;
-        if (extension is ".m4a" or ".m4b" or ".aac" or ".ac3" or ".ec3")
+        if (LegacyAggressiveFfprobeEnabled
+            && extension is ".m4a" or ".m4b" or ".aac" or ".ac3" or ".ec3")
         {
             return true;
+        }
+
+        if (extension is ".m4a" or ".m4b" or ".aac" or ".ac3" or ".ec3")
+        {
+            // These containers are sometimes under-reported by TagLib; keep probing
+            // only when metadata is missing or the file shape looks fragmented.
+            if (IsFragmentedMp4Candidate(filePath, durationMs, bitrateKbps))
+            {
+                return true;
+            }
         }
 
         if (!durationMs.HasValue || durationMs.Value <= 0)
@@ -1404,6 +1424,17 @@ public sealed class LocalLibraryScanner
         }
 
         return IsGenericCodecDescription(codec);
+    }
+
+    private static bool ReadBooleanEnvironmentVariable(string variableName, bool defaultValue)
+    {
+        var raw = Environment.GetEnvironmentVariable(variableName);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return defaultValue;
+        }
+
+        return bool.TryParse(raw, out var parsed) ? parsed : defaultValue;
     }
 
     private static string? ResolveFfprobePath()

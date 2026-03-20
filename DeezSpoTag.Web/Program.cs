@@ -974,8 +974,13 @@ static void RegisterCoreApplicationServices(IServiceCollection services, IConfig
     services.AddSingleton<DeezSpoTag.Web.Services.LibraryConfigStore>();
     services.AddSingleton<DeezSpoTag.Web.Services.LocalLibraryScanner>();
     services.AddSingleton<DeezSpoTag.Web.Services.LibraryScanRunner>();
-    services.AddSingleton<DeezSpoTag.Web.Services.LibraryRealtimeScanService>();
-    services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>());
+    var realtimeLibraryScanEnabledRaw = Environment.GetEnvironmentVariable("DEEZSPOTAG_LIBRARY_REALTIME_SCAN_ENABLED");
+    var realtimeLibraryScanEnabled = string.IsNullOrWhiteSpace(realtimeLibraryScanEnabledRaw) || IsTrue(realtimeLibraryScanEnabledRaw);
+    if (realtimeLibraryScanEnabled)
+    {
+        services.AddSingleton<DeezSpoTag.Web.Services.LibraryRealtimeScanService>();
+        services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>());
+    }
     services.AddSingleton<DeezSpoTag.Web.Services.DeezerArtistImageService>();
     services.AddSingleton<DeezSpoTag.Web.Services.LibraryArtistImageQueueService>();
     services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryArtistImageQueueService>());

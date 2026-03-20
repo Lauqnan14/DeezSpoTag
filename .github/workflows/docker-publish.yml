@@ -7,6 +7,15 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      release_channel:
+        description: "Release channel to publish"
+        required: true
+        default: prerelease
+        type: choice
+        options:
+          - prerelease
+          - stable
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -20,6 +29,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-context:
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.resolve.outputs.channel }}
+    steps:
+      - name: Resolve release channel
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="prerelease"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            input_channel="${{ github.event.inputs.release_channel }}"
+            if [[ "$input_channel" == "stable" ]]; then
+              channel="stable"
+            fi
+          fi
+          echo "channel=${channel}" >> "$GITHUB_OUTPUT"
+          echo "Release channel: ${channel}"
+
   bump-version:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip-version-bump]')
     runs-on: ubuntu-latest
@@ -38,49 +67,37 @@ jobs:
         run: |
           set -euo pipefail
           props_file="Directory.Build.props"
+          changelog_file="CHANGELOG.md"
 
-          current_prefix="$(sed -n 's:.*<VersionPrefix>\(.*\)</VersionPrefix>.*:\1:p' "$props_file" | head -n1)"
-          current_revision="$(sed -n 's:.*<VersionRevision>\([0-9]\+\)</VersionRevision>.*:\1:p' "$props_file" | head -n1)"
+          ./scripts/release.sh change
 
-          if [ -z "$current_prefix" ] || [ -z "$current_revision" ]; then
-            echo "Unable to read VersionPrefix/VersionRevision from $props_file" >&2
+          target_prefix="$(sed -n 's:.*<VersionPrefix>\(.*\)</VersionPrefix>.*:\1:p' "$props_file" | head -n1)"
+          target_revision="$(sed -n 's:.*<VersionRevision>\([0-9]\+\)</VersionRevision>.*:\1:p' "$props_file" | head -n1)"
+
+          if [ -z "$target_prefix" ] || [ -z "$target_revision" ]; then
+            echo "Unable to read VersionPrefix/VersionRevision from $props_file after bump" >&2
             exit 1
           fi
 
-          IFS='.' read -r major minor patch <<< "$current_prefix"
-          if [ -z "${major:-}" ] || [ -z "${minor:-}" ] || [ -z "${patch:-}" ]; then
-            echo "VersionPrefix must use major.minor.patch format, got: $current_prefix" >&2
-            exit 1
-          fi
+          target_version="${target_prefix}.${target_revision}"
 
-          next_revision=$((current_revision + 1))
-          next_prefix="$current_prefix"
-          if [ "$next_revision" -gt 9 ]; then
-            next_revision=0
-            next_prefix="${major}.${minor}.$((patch + 1))"
-          fi
-
-          sed -i "s|<VersionPrefix>${current_prefix}</VersionPrefix>|<VersionPrefix>${next_prefix}</VersionPrefix>|" "$props_file"
-          sed -i "s|<VersionRevision>${current_revision}</VersionRevision>|<VersionRevision>${next_revision}</VersionRevision>|" "$props_file"
-
-          if git diff --quiet -- "$props_file"; then
+          if git diff --quiet -- "$props_file" "$changelog_file"; then
             echo "bumped=false" >> "$GITHUB_OUTPUT"
-            echo "target_version=${current_prefix}.${current_revision}" >> "$GITHUB_OUTPUT"
+            echo "target_version=${target_version}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          target_version="${next_prefix}.${next_revision}"
           echo "bumped=true" >> "$GITHUB_OUTPUT"
           echo "target_version=${target_version}" >> "$GITHUB_OUTPUT"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$props_file"
+          git add "$props_file" "$changelog_file"
           git commit -m "chore(release): bump version to ${target_version} [skip-version-bump]"
           git push origin HEAD:main
 
   parity-smoke:
-    needs: bump-version
+    needs: [release-context, bump-version]
     if: always() && github.ref == 'refs/heads/main' && (needs.bump-version.result != 'success' || needs.bump-version.outputs.bumped != 'true')
     runs-on: ubuntu-latest
     steps:
@@ -108,7 +125,7 @@ jobs:
             ./scripts/docker-parity-smoke.sh deezspotag-parity:${GITHUB_SHA}
 
   publish:
-    needs: [bump-version, parity-smoke]
+    needs: [release-context, bump-version, parity-smoke]
     if: always() && github.ref == 'refs/heads/main' && (needs.bump-version.result != 'success' || needs.bump-version.outputs.bumped != 'true')
     runs-on: ubuntu-latest
     strategy:
@@ -131,6 +148,24 @@ jobs:
         run: |
           echo "full_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
           echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute app version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          props_file="Directory.Build.props"
+          prefix="$(sed -n 's:.*<VersionPrefix>\(.*\)</VersionPrefix>.*:\1:p' "$props_file" | head -n1)"
+          revision="$(sed -n 's:.*<VersionRevision>\([0-9]\+\)</VersionRevision>.*:\1:p' "$props_file" | head -n1)"
+          if [[ -z "$prefix" || -z "$revision" ]]; then
+            echo "Unable to read VersionPrefix/VersionRevision from $props_file" >&2
+            exit 1
+          fi
+          app_version="${prefix}.${revision}"
+          IFS='.' read -r major minor _ <<< "$prefix"
+          app_major_minor="${major}.${minor}"
+          echo "app_version=${app_version}" >> "$GITHUB_OUTPUT"
+          echo "app_major_minor=${app_major_minor}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -157,14 +192,14 @@ jobs:
         with:
           images: ${{ steps.vars.outputs.image }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=prerelease,enable=${{ needs.release-context.outputs.channel == 'prerelease' }}
+            type=raw,value=${{ steps.version.outputs.app_version }}-pre,enable=${{ needs.release-context.outputs.channel == 'prerelease' }}
+            type=raw,value=latest,enable=${{ needs.release-context.outputs.channel == 'stable' }}
+            type=raw,value=${{ steps.version.outputs.app_version }},enable=${{ needs.release-context.outputs.channel == 'stable' }}
+            type=raw,value=${{ steps.version.outputs.app_major_minor }},enable=${{ needs.release-context.outputs.channel == 'stable' }}
             type=raw,value=${{ steps.commit.outputs.short_sha }}
             type=raw,value=${{ steps.commit.outputs.full_sha }}
-            type=ref,event=branch
-            type=ref,event=tag
             type=sha,prefix=sha-
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
           labels: |
             org.opencontainers.image.title=${{ matrix.image_name }}
             org.opencontainers.image.description=DeezSpoTag container image
@@ -172,6 +207,8 @@ jobs:
             org.opencontainers.image.url=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.vendor=${{ github.repository_owner }}
+            org.opencontainers.image.version=${{ steps.version.outputs.app_version }}
+            org.opencontainers.image.channel=${{ needs.release-context.outputs.channel }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -204,3 +241,56 @@ jobs:
             echo "Missing linux/arm64 in published wrapper manifest: $ref" >&2
             exit 1
           fi
+
+  release:
+    needs: [release-context, bump-version, publish]
+    if: always() && github.ref == 'refs/heads/main' && (needs.bump-version.result != 'success' || needs.bump-version.outputs.bumped != 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub release entry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          props_file="Directory.Build.props"
+          prefix="$(sed -n 's:.*<VersionPrefix>\(.*\)</VersionPrefix>.*:\1:p' "$props_file" | head -n1)"
+          revision="$(sed -n 's:.*<VersionRevision>\([0-9]\+\)</VersionRevision>.*:\1:p' "$props_file" | head -n1)"
+          if [[ -z "$prefix" || -z "$revision" ]]; then
+            echo "Unable to read VersionPrefix/VersionRevision from $props_file" >&2
+            exit 1
+          fi
+          app_version="${prefix}.${revision}"
+
+          channel="${{ needs.release-context.outputs.channel }}"
+          if [[ "$channel" == "stable" ]]; then
+            tag="v${app_version}"
+            title="v${app_version}"
+            prerelease_flag=""
+          else
+            tag="v${app_version}-pre"
+            title="v${app_version} (Prerelease)"
+            prerelease_flag="--prerelease"
+          fi
+
+          if ! git rev-parse --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+            git tag "${tag}" "${GITHUB_SHA}"
+            git push origin "${tag}"
+          fi
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists. Skipping."
+            exit 0
+          fi
+
+          gh release create "${tag}" \
+            --target "${GITHUB_SHA}" \
+            --title "${title}" \
+            ${prerelease_flag} \
+            --generate-notes
