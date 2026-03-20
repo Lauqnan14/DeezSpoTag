@@ -1166,6 +1166,17 @@ document.addEventListener('DOMContentLoaded', function() {
     bindAsyncClick('appleMusicLoginBtn', startAppleMusicLogin);
     bindAsyncClick('appleMusicTokensSaveBtn', saveAppleMusicSettings);
     bindAsyncClick('appleMusicSubmit2faBtn', submitAppleMusic2fa);
+    const appleMusic2faInput = document.getElementById('appleMusic2fa');
+    if (appleMusic2faInput) {
+        appleMusic2faInput.addEventListener('keydown', async function(event) {
+            if (event.key !== 'Enter') {
+                return;
+            }
+
+            event.preventDefault();
+            await submitAppleMusic2fa();
+        });
+    }
     bindAsyncClick('appleMusicWrapperHelperBtn', checkAppleMusicWrapperHelperStatus);
     bindAsyncClick('appleMusicWrapperHealthBtn', checkAppleMusicWrapperHealth);
     bindPlatformDisconnect('appleMusicDisconnectBtn', '/api/platform-auth/applemusic/disconnect', 'appleMusicStatus', function() {
@@ -1941,9 +1952,9 @@ function setAppleMusic2faEnabled(enabled, hint) {
     const button = document.getElementById('appleMusicSubmit2faBtn');
     const hintEl = document.getElementById('appleMusic2faHint');
 
-    // In external wrapper mode we submit 2FA via shared state, so keep the field
-    // editable even when port probes are briefly unavailable.
-    const canEnable = enabled && (appleMusicWrapperAvailable || appleMusicExternalMode);
+    // Keep 2FA controls interactive at all times; backend status decides whether
+    // a submitted code is currently acceptable.
+    const canEnable = true;
     if (input) {
         input.disabled = !canEnable;
     }
@@ -2016,9 +2027,7 @@ function applyAppleMusicWrapperAvailability(available) {
     const ids = [
         'appleMusicEmail',
         'appleMusicPassword',
-        'appleMusicLoginBtn',
-        'appleMusic2fa',
-        'appleMusicSubmit2faBtn'
+        'appleMusicLoginBtn'
     ];
     ids.forEach((id) => {
         const el = document.getElementById(id);
@@ -2030,9 +2039,7 @@ function applyAppleMusicWrapperAvailability(available) {
             }
         }
     });
-    if (!available) {
-        showAppleMusic2fa(false);
-    }
+    setAppleMusic2faEnabled(true, document.getElementById('appleMusic2faHint')?.textContent || '');
     setAppleMusicWrapperModeHint();
 }
 
@@ -2106,6 +2113,10 @@ async function startAppleMusicLogin() {
 }
 
 async function submitAppleMusic2fa() {
+    if (appleMusic2faSubmitting) {
+        return;
+    }
+
     const code = document.getElementById('appleMusic2fa').value.trim();
     if (!code) {
         showToast('Enter the verification code', 'warning');
