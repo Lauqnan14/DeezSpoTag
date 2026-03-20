@@ -98,11 +98,17 @@ jobs:
 
   parity-smoke:
     needs: [release-context, bump-version]
-    if: always() && github.ref == 'refs/heads/main' && (needs.bump-version.result != 'success' || needs.bump-version.outputs.bumped != 'true')
+    if: always() && github.ref == 'refs/heads/main' && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Sync to latest main
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags
+          git checkout -B main origin/main
 
       - name: Build DeezSpoTag parity image
         run: |
@@ -126,7 +132,7 @@ jobs:
 
   publish:
     needs: [release-context, bump-version, parity-smoke]
-    if: always() && github.ref == 'refs/heads/main' && (needs.bump-version.result != 'success' || needs.bump-version.outputs.bumped != 'true')
+    if: always() && github.ref == 'refs/heads/main' && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -143,11 +149,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Sync to latest main
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags
+          git checkout -B main origin/main
+
       - name: Compute commit tags
         id: commit
         run: |
-          echo "full_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          full_sha="$(git rev-parse HEAD)"
+          echo "full_sha=${full_sha}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${full_sha::7}" >> "$GITHUB_OUTPUT"
 
       - name: Compute app version
         id: version
@@ -205,7 +218,7 @@ jobs:
             org.opencontainers.image.description=DeezSpoTag container image
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.url=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ steps.commit.outputs.full_sha }}
             org.opencontainers.image.vendor=${{ github.repository_owner }}
             org.opencontainers.image.version=${{ steps.version.outputs.app_version }}
             org.opencontainers.image.channel=${{ needs.release-context.outputs.channel }}
@@ -221,7 +234,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            DEEZSPOTAG_BUILD_VERSION=${{ github.sha }}
+            DEEZSPOTAG_BUILD_VERSION=${{ steps.commit.outputs.full_sha }}
           cache-from: type=gha,scope=${{ matrix.image_name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image_name }}
 
@@ -244,13 +257,19 @@ jobs:
 
   release:
     needs: [release-context, bump-version, publish]
-    if: always() && github.ref == 'refs/heads/main' && (needs.bump-version.result != 'success' || needs.bump-version.outputs.bumped != 'true')
+    if: always() && github.ref == 'refs/heads/main' && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Sync to latest main
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags
+          git checkout -B main origin/main
 
       - name: Create GitHub release entry
         env:
@@ -267,30 +286,50 @@ jobs:
             exit 1
           fi
           app_version="${prefix}.${revision}"
+          release_sha="$(git rev-parse HEAD)"
 
           channel="${{ needs.release-context.outputs.channel }}"
           if [[ "$channel" == "stable" ]]; then
             tag="v${app_version}"
             title="v${app_version}"
             prerelease_flag=""
+            is_prerelease="false"
           else
             tag="v${app_version}-pre"
             title="v${app_version} (Prerelease)"
             prerelease_flag="--prerelease"
+            is_prerelease="true"
           fi
 
-          if ! git rev-parse --verify "refs/tags/${tag}" >/dev/null 2>&1; then
-            git tag "${tag}" "${GITHUB_SHA}"
+          if [[ "$is_prerelease" == "true" ]]; then
+            # Keep prerelease tag moving with latest main so prerelease entry auto-updates.
+            git tag -f "${tag}" "${release_sha}"
+            git push origin "refs/tags/${tag}" --force
+          elif ! git rev-parse --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+            git tag "${tag}" "${release_sha}"
             git push origin "${tag}"
           fi
 
-          if gh release view "${tag}" >/dev/null 2>&1; then
-            echo "Release ${tag} already exists. Skipping."
+          notes="$(gh api -X POST "repos/${{ github.repository }}/releases/generate-notes" \
+            -f tag_name="${tag}" \
+            -f target_commitish="${release_sha}" \
+            --jq '.body')"
+
+          if gh api "repos/${{ github.repository }}/releases/tags/${tag}" > /tmp/release.json 2>/dev/null; then
+            release_id="$(jq -r '.id' /tmp/release.json)"
+            gh api -X PATCH "repos/${{ github.repository }}/releases/${release_id}" \
+              -f tag_name="${tag}" \
+              -f target_commitish="${release_sha}" \
+              -f name="${title}" \
+              -F draft=false \
+              -F prerelease="${is_prerelease}" \
+              --raw-field body="${notes}" >/dev/null
+            echo "Updated release ${tag} at ${release_sha}."
             exit 0
           fi
 
           gh release create "${tag}" \
-            --target "${GITHUB_SHA}" \
+            --target "${release_sha}" \
             --title "${title}" \
             ${prerelease_flag} \
-            --generate-notes
+            --notes "${notes}"
