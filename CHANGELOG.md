@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.2.7] - 2026-03-21
+### Added
+- GitHub prerelease publication now tracks the amd64 publish path used for NAS-targeted parity.
+
+### Changed
+- Docker publish workflow audits and publishes `linux/amd64` images for both `deezspotag` and `deezspotag-apple-wrapper`.
+
+### Fixed
+- Apple wrapper login now retries transient Apple-side failures that surface as "system busy" or response type `4`.
+- Wrapper runtime state tracking now records transient login failures and response types for cleaner retry handling.
+
+### Security
+- _TBD_
+
 ## [0.1.2.5] - 2026-03-20
 ### Added
 - _TBD_
@@ -19,7 +33,6 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Security
 - _TBD_
-
 
 ## [0.1.2.4] - 2026-03-20
 ### Added

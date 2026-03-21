@@ -22,6 +22,15 @@ set_twofactor_state() {
   printf '%s\n' "$state_value" > "$state_file"
 }
 
+set_wrapper_runtime_flag() {
+  local flag_file="$1"
+  local value="$2"
+  local parent_dir
+  parent_dir="$(dirname "$flag_file")"
+  mkdir -p "$parent_dir"
+  printf '%s\n' "$value" > "$flag_file"
+}
+
 require_file() {
   local path="$1"
   if [[ ! -f "$path" ]]; then
@@ -189,10 +198,16 @@ verify_urandom_readable() {
 
 run_wrapper_with_state_tracking() {
   local state_file="$1"
+  local transient_flag_file="$2"
+  local response_type_file="$3"
+  shift
+  shift
   shift
   local exit_code=0
 
   set_twofactor_state "$state_file" "not_waiting_for_2fa"
+  set_wrapper_runtime_flag "$transient_flag_file" "0"
+  set_wrapper_runtime_flag "$response_type_file" ""
 
   "$ROOT_DIR/wrapper" "$@" 2> >(
     while IFS= read -r line; do
@@ -204,12 +219,39 @@ run_wrapper_with_state_tracking() {
         *"Code file detected"*|*"credentialHandler:"*"2FA: false"*|*"returning account info"*)
           set_twofactor_state "$state_file" "not_waiting_for_2fa"
           ;;
+        *"Unable to perform this operation"*|*"network connection is unstable"*|*"system is busy"*|*"temporarily unavailable"*)
+          set_wrapper_runtime_flag "$transient_flag_file" "1"
+          ;;
+        *"[.] response type "*)
+          set_wrapper_runtime_flag "$response_type_file" "${line##*response type }"
+          ;;
       esac
     done
   ) || exit_code=$?
 
   set_twofactor_state "$state_file" "not_waiting_for_2fa"
   return "$exit_code"
+}
+
+should_retry_login() {
+  local transient_flag_file="$1"
+  local response_type_file="$2"
+  local transient_flag="0"
+  local response_type=""
+
+  if [[ -f "$transient_flag_file" ]]; then
+    transient_flag="$(tr -d '\r\n' < "$transient_flag_file")"
+  fi
+  if [[ -f "$response_type_file" ]]; then
+    response_type="$(tr -d '\r\n' < "$response_type_file")"
+  fi
+
+  # Apple occasionally returns transient "system busy/network unstable" dialogs,
+  # often mapped to response type 4. These usually succeed on immediate retry.
+  if [[ "$transient_flag" == "1" ]]; then
+    return 0
+  fi
+  [[ "$response_type" == "4" ]]
 }
 
 main() {
@@ -240,7 +282,44 @@ main() {
   IFS=' ' read -r -a wrapper_args <<< "$wrapper_args_string"
   local two_factor_state_file
   two_factor_state_file="${WRAPPER_2FA_STATE_FILE:-$TWO_FACTOR_STATE_FILE_DEFAULT}"
-  run_wrapper_with_state_tracking "$two_factor_state_file" "${wrapper_args[@]}"
+  local transient_flag_file
+  transient_flag_file="${WRAPPER_TRANSIENT_FLAG_FILE:-/tmp/wrapper-transient-state.txt}"
+  local response_type_file
+  response_type_file="${WRAPPER_RESPONSE_TYPE_FILE:-/tmp/wrapper-response-type.txt}"
+  local retry_attempts
+  retry_attempts="${WRAPPER_LOGIN_RETRY_ATTEMPTS:-2}"
+  local retry_delay_seconds
+  retry_delay_seconds="${WRAPPER_LOGIN_RETRY_DELAY_SECONDS:-4}"
+
+  local attempt=0
+  while true; do
+    set_wrapper_runtime_flag "$transient_flag_file" "0"
+    set_wrapper_runtime_flag "$response_type_file" ""
+    local exit_code=0
+    if ! run_wrapper_with_state_tracking "$two_factor_state_file" "$transient_flag_file" "$response_type_file" "${wrapper_args[@]}"; then
+      exit_code=$?
+    fi
+    if [[ "$exit_code" -eq 0 ]]; then
+      return 0
+    fi
+
+    if ! wrapper_args_include_login "$wrapper_args_string"; then
+      return "$exit_code"
+    fi
+
+    if (( attempt >= retry_attempts )); then
+      return "$exit_code"
+    fi
+
+    if should_retry_login "$transient_flag_file" "$response_type_file"; then
+      attempt=$((attempt + 1))
+      log "detected transient Apple login failure; retrying wrapper login (${attempt}/${retry_attempts}) in ${retry_delay_seconds}s..."
+      sleep "$retry_delay_seconds"
+      continue
+    fi
+
+    return "$exit_code"
+  done
 }
 
 main "$@"
