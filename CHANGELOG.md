@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.2.8] - 2026-03-21
+### Added
+- _TBD_
+
+### Changed
+- _TBD_
+
+### Fixed
+- _TBD_
+
+### Security
+- _TBD_
+
+
 ## [0.1.2.7] - 2026-03-21
 ### Added
 - GitHub prerelease publication now tracks the amd64 publish path used for NAS-targeted parity.
