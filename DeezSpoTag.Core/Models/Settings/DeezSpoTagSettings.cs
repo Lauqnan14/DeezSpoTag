@@ -94,7 +94,7 @@ public class DeezSpoTagSettings
     // Shazam UI/capture settings
     public bool ShazamEnabled { get; set; } = true;
     public bool ShazamUseCenteredOverlay { get; set; } = true;
-    public int ShazamCaptureDurationSeconds { get; set; } = 7;
+    public int ShazamCaptureDurationSeconds { get; set; } = 11;
     public bool ShazamAllowHttpFileFallback { get; set; } = true;
     public bool ShazamRemoteMemoryOnly { get; set; } = true;
     
@@ -135,7 +135,6 @@ public class DeezSpoTagSettings
     public string ArtistCasing { get; set; } = "nothing";
 
     // EXACT PORT: Additional settings for compatibility from deezspotag DEFAULT_SETTINGS
-    public bool AutoCheckForUpdates { get; set; } = false;
     public bool ClearQueueOnExit { get; set; } = false;
     public bool SaveDownloadQueue { get; set; } = false;
     public string TagsLanguage { get; set; } = "";

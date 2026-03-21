@@ -1112,12 +1112,13 @@ public sealed class ShazamDiscoveryService
             return false;
         }
 
-        var match = element.EnumerateObject()
-            .FirstOrDefault(prop => string.Equals(prop.Name, propertyName, StringComparison.OrdinalIgnoreCase));
-        if (!string.IsNullOrWhiteSpace(match.Name))
+        foreach (var prop in element.EnumerateObject())
         {
-            value = match.Value;
-            return true;
+            if (string.Equals(prop.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                value = prop.Value;
+                return true;
+            }
         }
 
         value = default;

@@ -839,6 +839,10 @@ function renderHomeSections(sections) {
         const title = normalizeSectionTitle(section?.title);
         return title === 'recently played';
     };
+    const isEpisodesYouMightLikeSection = (section) => {
+        const title = normalizeSectionTitle(section?.title);
+        return title === 'episodes you might like' || title === 'episode you might like';
+    };
     const normalizeArtistNameKey = (value) => {
         if (value === null || value === undefined) {
             return '';
@@ -1019,6 +1023,9 @@ function renderHomeSections(sections) {
         return false;
     };
     sections = sections.filter(section => {
+        if (isEpisodesYouMightLikeSection(section)) {
+            return false;
+        }
         if (!isRecentlyPlayedSection(section)) {
             return true;
         }
@@ -1912,7 +1919,13 @@ function renderDiscoveryItem(item) {
         : '';
     const subtitle = escapeHtml(item.subtitle || '');
     const coverTitle = escapeHtml(item.cover_title || item.caption || item.label || item.title || '');
-    const click = buildHomeClick(item);
+    const avatarImage = collagePictures[0]?.md5
+        ? buildDeezerImageUrlWithSize(collagePictures[0].md5, collagePictures[0].type || 'artist', 1000, 90)
+        : image;
+    const heroImage = collagePictures[1]?.md5
+        ? buildDeezerImageUrlWithSize(collagePictures[1].md5, collagePictures[1].type || 'artist', 1000, 90)
+        : (avatarImage || image);
+    const click = buildDiscoverClick(item, avatarImage, heroImage);
     const coverStyle = collage ? '' : `background-image: url('${image}'); background-size: cover; background-position: center;`;
     return `
         <div class="discover-card" onclick="${click}">
@@ -1928,6 +1941,53 @@ function renderDiscoveryItem(item) {
 const renderTopGenresItem = window.HomeViewHelpers.renderTopGenresItem;
 const buildSpotifyBrowseClick = window.HomeViewHelpers.buildSpotifyBrowseClick;
 const buildHomeClick = window.HomeViewHelpers.buildHomeClick;
+
+function buildDiscoverClick(item, avatarImage, heroImage) {
+    if (!item) {
+        return 'void(0)';
+    }
+
+    const source = (item.source || '').toString().toLowerCase();
+    const type = (item.type || '').toString().toLowerCase();
+    const extraParams = new URLSearchParams();
+    if (avatarImage) {
+        extraParams.set('discoverAvatar', avatarImage);
+    }
+    if (heroImage) {
+        extraParams.set('discoverHero', heroImage);
+    }
+
+    const tracklistPrefixes = new Map([
+        ['/playlist/', 'playlist'],
+        ['/album/', 'album'],
+        ['/smarttracklist/', 'smarttracklist']
+    ]);
+    const target = (item.target || '').toString();
+    for (const [prefix, targetType] of tracklistPrefixes.entries()) {
+        if (target.startsWith(prefix)) {
+            const id = target.replace(prefix, '');
+            const qs = new URLSearchParams();
+            qs.set('id', id);
+            qs.set('type', targetType);
+            extraParams.forEach((value, key) => qs.set(key, value));
+            return `globalThis.location.href='/Tracklist?${qs.toString()}'`;
+        }
+    }
+
+    const tracklistTypes = new Set(['playlist', 'album', 'show', 'smarttracklist']);
+    if (source === 'spotify') {
+        return buildHomeClick(item);
+    }
+    if (tracklistTypes.has(type)) {
+        const qs = new URLSearchParams();
+        qs.set('id', item.id || '');
+        qs.set('type', type);
+        extraParams.forEach((value, key) => qs.set(key, value));
+        return `globalThis.location.href='/Tracklist?${qs.toString()}'`;
+    }
+
+    return buildHomeClick(item);
+}
 
 function normalizeSpotifyBrowseCategory(item) {
     if (!item) {

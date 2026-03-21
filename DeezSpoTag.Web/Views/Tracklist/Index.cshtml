@@ -1319,9 +1319,12 @@ const tracklistAppleUrl = '@Html.Raw(ViewData["AppleUrl"] ?? "")';
 const tracklistExternalUrl = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["ExternalUrl"]?.ToString() ?? ""));
 const tracklistType = '@Html.Raw(type)';
 const tracklistSource = '@Html.Raw(ViewData["Source"] ?? "deezer")';
+const tracklistQuery = new URLSearchParams(window.location.search);
+const tracklistDiscoverAvatar = tracklistQuery.get('discoverAvatar') || '';
+const tracklistDiscoverHero = tracklistQuery.get('discoverHero') || '';
 const requestSource = '@Html.Raw(ViewData["Source"] ?? "")';
 const spotifyHomeTrendingSourceId = 'home-trending-songs';
-const deezerSimilarParam = new URLSearchParams(window.location.search).get('deezerSimilar');
+const deezerSimilarParam = tracklistQuery.get('deezerSimilar');
 const boomplayDeezerSimilarMode = (() => {
     const source = (tracklistSource || '').toLowerCase();
     if (source !== 'boomplay') {
@@ -2657,7 +2660,7 @@ function renderTracklist(data, options = {}) {
     const container = document.getElementById('tracklist-container');
     const allowEmptyTracks = options?.allowEmptyTracks === true;
     
-    const coverImage = data.cover_xl
+    const baseCoverImage = data.cover_xl
         || data.cover_big
         || data.picture_xl
         || data.picture_big
@@ -2665,6 +2668,7 @@ function renderTracklist(data, options = {}) {
         || data.images?.[0]?.url
         || data.tracks?.items?.[0]?.track?.album?.images?.[0]?.url
         || '';
+    const coverImage = tracklistDiscoverAvatar || baseCoverImage;
     const title = data.title || data.name || 'Unknown';
     const artistName = data.artist?.name || data.creator?.name || data.user?.name || 'Unknown';
     const ownerAvatar = data.creator?.avatar || data.owner?.avatar || data.user?.picture || '';
@@ -2716,9 +2720,10 @@ function renderTracklist(data, options = {}) {
                 : (isPodcastShow ? 'Podcast' : 'Playlist')));
     const downloadLabel = typeLabel;
     const trackCountLabel = isPodcastShow ? 'episodes' : 'tracks';
-    const backgroundImage = (tracklistType === 'playlist' || tracklistType === 'trending') && coverImage
-        ? `/api/playlist/cover/background?url=${encodeURIComponent(coverImage)}`
-        : coverImage;
+    const backgroundImage = tracklistDiscoverHero
+        || (((tracklistType === 'playlist' || tracklistType === 'trending') && coverImage)
+            ? `/api/playlist/cover/background?url=${encodeURIComponent(coverImage)}`
+            : coverImage);
     
     // Update the download button text
     document.getElementById('download-all-text').textContent = isPodcastShow

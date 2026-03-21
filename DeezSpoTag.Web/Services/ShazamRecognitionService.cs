@@ -13,6 +13,7 @@ public sealed class ShazamRecognitionService
     private readonly IWebHostEnvironment _environment;
     private readonly ShazamDiscoveryService _discoveryService;
     private readonly ILogger<ShazamRecognitionService> _logger;
+    private readonly Lazy<RecognizerRuntimeProbe> _runtimeProbe;
 
     public ShazamRecognitionService(
         IWebHostEnvironment environment,
@@ -22,9 +23,10 @@ public sealed class ShazamRecognitionService
         _environment = environment;
         _discoveryService = discoveryService;
         _logger = logger;
+        _runtimeProbe = new Lazy<RecognizerRuntimeProbe>(ProbeRecognizerRuntime, LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
-    public bool IsAvailable => File.Exists(GetRecognizerScriptPath());
+    public bool IsAvailable => _runtimeProbe.Value.IsAvailable;
 
     public ShazamRecognitionInfo? Recognize(string filePath, CancellationToken cancellationToken = default)
     {
@@ -32,7 +34,10 @@ public sealed class ShazamRecognitionService
         return attempt.Matched ? attempt.Recognition : null;
     }
 
-    public ShazamRecognitionAttempt RecognizeWithDetails(string filePath, CancellationToken cancellationToken = default)
+    public ShazamRecognitionAttempt RecognizeWithDetails(
+        string filePath,
+        CancellationToken cancellationToken = default,
+        int? signatureWindowSeconds = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -43,7 +48,7 @@ public sealed class ShazamRecognitionService
         }
 
         var context = BuildLookupContext(filePath);
-        var portedStatus = EvaluatePortedRecognizer(filePath, cancellationToken, out var matchedFromPorted);
+        var portedStatus = EvaluatePortedRecognizer(filePath, cancellationToken, signatureWindowSeconds, out var matchedFromPorted);
         if (matchedFromPorted != null)
         {
             return matchedFromPorted;
@@ -82,10 +87,11 @@ public sealed class ShazamRecognitionService
     private PortedFailureState EvaluatePortedRecognizer(
         string filePath,
         CancellationToken cancellationToken,
+        int? signatureWindowSeconds,
         out ShazamRecognitionAttempt? matchedAttempt)
     {
         matchedAttempt = null;
-        var portedExecution = RunPortedRecognizer(filePath, cancellationToken);
+        var portedExecution = RunPortedRecognizer(filePath, cancellationToken, signatureWindowSeconds);
         if (portedExecution.State == PortedRecognizerState.Recognized && portedExecution.Result != null)
         {
             var fromPorted = ResolveFromPorted(portedExecution.Result, cancellationToken);
@@ -241,6 +247,12 @@ public sealed class ShazamRecognitionService
             return explicitPython;
         }
 
+        var shazamRuntimePython = Path.Combine(_environment.ContentRootPath, "Tools", "shazam_port", ".venv", "bin", "python3");
+        if (File.Exists(shazamRuntimePython))
+        {
+            return shazamRuntimePython;
+        }
+
         var vibePython = Environment.GetEnvironmentVariable("VIBE_ANALYZER_PYTHON");
         if (!string.IsNullOrWhiteSpace(vibePython) && File.Exists(vibePython))
         {
@@ -256,21 +268,24 @@ public sealed class ShazamRecognitionService
         return "python3";
     }
 
-    private PortedRecognizerExecution RunPortedRecognizer(string filePath, CancellationToken cancellationToken)
+    private PortedRecognizerExecution RunPortedRecognizer(
+        string filePath,
+        CancellationToken cancellationToken,
+        int? signatureWindowSeconds)
     {
         var scriptPath = GetRecognizerScriptPath();
-        if (!File.Exists(scriptPath))
+        var runtimeProbe = _runtimeProbe.Value;
+        if (!runtimeProbe.IsAvailable)
         {
-            _logger.LogDebug("Shazam ported recognizer script not found at {Path}.", scriptPath);
             return new PortedRecognizerExecution
             {
                 State = PortedRecognizerState.Unavailable,
-                Error = $"Shazam recognizer script not found at '{scriptPath}'."
+                Error = runtimeProbe.Error
             };
         }
 
         var pythonExecutable = ResolvePythonExecutable();
-        var startInfo = CreateRecognizerProcessStartInfo(scriptPath, filePath, pythonExecutable);
+        var startInfo = CreateRecognizerProcessStartInfo(scriptPath, filePath, pythonExecutable, signatureWindowSeconds);
         using var process = new Process { StartInfo = startInfo };
         if (!TryStartRecognizerProcess(process, pythonExecutable, out var startError))
         {
@@ -310,7 +325,11 @@ public sealed class ShazamRecognitionService
         return ParsePortedRecognizerOutput(stdout);
     }
 
-    private ProcessStartInfo CreateRecognizerProcessStartInfo(string scriptPath, string filePath, string pythonExecutable)
+    private ProcessStartInfo CreateRecognizerProcessStartInfo(
+        string scriptPath,
+        string filePath,
+        string pythonExecutable,
+        int? signatureWindowSeconds)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -323,6 +342,11 @@ public sealed class ShazamRecognitionService
         };
         startInfo.ArgumentList.Add(scriptPath);
         startInfo.ArgumentList.Add(filePath);
+        if (signatureWindowSeconds.HasValue)
+        {
+            startInfo.ArgumentList.Add("--signature-seconds");
+            startInfo.ArgumentList.Add(Math.Clamp(signatureWindowSeconds.Value, 3, 20).ToString());
+        }
         startInfo.Environment["PYTHONUNBUFFERED"] = "1";
         return startInfo;
     }
@@ -339,6 +363,73 @@ public sealed class ShazamRecognitionService
         {
             _logger.LogDebug(ex, "Failed to start Shazam ported recognizer using {Python}.", pythonExecutable);
             error = $"Failed to start Shazam recognizer with '{pythonExecutable}'. {ex.Message}";
+            return false;
+        }
+    }
+
+    private RecognizerRuntimeProbe ProbeRecognizerRuntime()
+    {
+        var scriptPath = GetRecognizerScriptPath();
+        if (!File.Exists(scriptPath))
+        {
+            return new RecognizerRuntimeProbe(false, $"Shazam recognizer script not found at '{scriptPath}'.");
+        }
+
+        var pythonExecutable = ResolvePythonExecutable();
+        if (!CanRunProcess(pythonExecutable, "--version", out var pythonError))
+        {
+            return new RecognizerRuntimeProbe(false, FirstNonEmpty(pythonError, $"Failed to start Shazam recognizer with '{pythonExecutable}'."));
+        }
+
+        var runtimeImportCheckArgs = "-c \"import shazamio; import shazamio_core; from shazamio import SearchParams, Shazam\"";
+        if (!CanRunProcess(pythonExecutable, runtimeImportCheckArgs, out var runtimeImportError, useShellArgumentParsing: true))
+        {
+            return new RecognizerRuntimeProbe(false, FirstNonEmpty(runtimeImportError, "Modern Shazam runtime dependencies are unavailable."));
+        }
+
+        return new RecognizerRuntimeProbe(true, null);
+    }
+
+    private bool CanRunProcess(string fileName, string arguments, out string? error, bool useShellArgumentParsing = false)
+    {
+        try
+        {
+            using var process = new Process();
+            process.StartInfo = new ProcessStartInfo
+            {
+                FileName = fileName,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            if (useShellArgumentParsing)
+            {
+                process.StartInfo.Arguments = arguments;
+            }
+            else
+            {
+                process.StartInfo.ArgumentList.Add(arguments);
+            }
+
+            process.Start();
+            process.WaitForExit();
+            if (process.ExitCode == 0)
+            {
+                error = null;
+                return true;
+            }
+
+            var stderr = process.StandardError.ReadToEnd().Trim();
+            error = string.IsNullOrWhiteSpace(stderr)
+                ? $"Command '{fileName} {arguments}' exited with code {process.ExitCode}."
+                : stderr;
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed probing Shazam recognizer dependency {FileName} {Arguments}.", fileName, arguments);
+            error = ex.Message;
             return false;
         }
     }
@@ -1000,6 +1091,7 @@ public sealed class ShazamRecognitionService
     }
 
     private sealed record ScoredCard(ShazamTrackCard Card, double Score, bool IsIsrcExact);
+    private sealed record RecognizerRuntimeProbe(bool IsAvailable, string? Error);
 }
 
 public sealed class ShazamRecognitionAttempt

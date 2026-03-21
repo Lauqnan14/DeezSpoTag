@@ -488,7 +488,7 @@ public sealed class LibraryRecommendationService
         var dayUtc = DateOnly.FromDateTime(DateTime.UtcNow);
         PruneOldCache(dayUtc);
 
-        var cacheKey = $"{scope.ScopeKey}:{dayUtc:yyyyMMdd}";
+        var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayUtc);
         if (!_dailyPoolCache.TryGetValue(cacheKey, out var basePool))
         {
             basePool = await BuildDailyPoolAsync(scope, dayUtc, stationImageUrl, cancellationToken);
@@ -538,6 +538,67 @@ public sealed class LibraryRecommendationService
             },
             cappedTracks,
             basePool.GeneratedAtUtc);
+    }
+
+    public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellationToken = default)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return;
+        }
+
+        var allRecommendationFolders = await GetRecommendationEligibleFoldersAsync(cancellationToken);
+        if (allRecommendationFolders.Count == 0)
+        {
+            return;
+        }
+
+        var nowLocal = DateTimeOffset.Now;
+        var dayUtc = DateOnly.FromDateTime(DateTime.UtcNow);
+        var artworkAssignments = BuildRecommendationArtworkAssignments(allRecommendationFolders, nowLocal);
+        var watchlistMap = await GetRecommendationWatchlistMapAsync(cancellationToken);
+
+        PruneOldCache(dayUtc);
+
+        foreach (var folder in allRecommendationFolders
+                     .Where(folder => folder.LibraryId.HasValue && folder.LibraryId.Value > 0)
+                     .OrderBy(folder => folder.LibraryId!.Value)
+                     .ThenBy(folder => folder.DisplayName, StringComparer.OrdinalIgnoreCase))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var scope = BuildScope(folder.LibraryId!.Value, folder);
+            watchlistMap.TryGetValue(scope.StationId, out var watchlistEntry);
+            var stationImageUrl = !string.IsNullOrWhiteSpace(watchlistEntry?.ImageUrl)
+                ? watchlistEntry.ImageUrl
+                : ResolveRecommendationArtworkUrl(scope.StationId, artworkAssignments);
+
+            try
+            {
+                await RefreshShazamScopeAsync(scope, cancellationToken);
+
+                var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayUtc);
+                _dailyPoolCache.TryRemove(cacheKey, out _);
+
+                var dailyPool = await BuildDailyPoolAsync(scope, dayUtc, stationImageUrl, cancellationToken);
+                if (dailyPool is not null)
+                {
+                    _dailyPoolCache[cacheKey] = dailyPool;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Failed to refresh daily recommendations for library {LibraryId}, folder {FolderId}.",
+                    scope.LibraryId,
+                    scope.FolderId);
+            }
+        }
     }
 
     public async Task<bool> TriggerFullLibraryShazamScanAsync(
@@ -871,6 +932,35 @@ public sealed class LibraryRecommendationService
     {
         return string.Equals(cache.Status, StatusMatched, StringComparison.OrdinalIgnoreCase)
                && cache.RelatedTracks.Count > 0;
+    }
+
+    private async Task RefreshShazamScopeAsync(
+        RecommendationScope scope,
+        CancellationToken cancellationToken)
+    {
+        if (!_shazamRecognitionService.IsAvailable)
+        {
+            return;
+        }
+
+        var staleBeforeUtc = DateTimeOffset.UtcNow - ShazamCacheTtl;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var batch = await _repository.GetTrackIdsNeedingShazamRefreshAsync(
+                scope.LibraryId,
+                staleBeforeUtc,
+                scope.FolderId,
+                ShazamBackgroundBatchSize,
+                cancellationToken);
+            if (batch.Count == 0)
+            {
+                break;
+            }
+
+            await RefreshShazamCacheForTrackBatchAsync(batch, cancellationToken);
+        }
     }
 
     private static void TryAddShazamRelatedRecommendation(
@@ -2192,6 +2282,9 @@ public sealed class LibraryRecommendationService
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(input));
         return BinaryPrimitives.ReadUInt64BigEndian(hash.AsSpan(0, sizeof(ulong)));
     }
+
+    private static string BuildDailyCacheKey(string scopeKey, DateOnly dayUtc)
+        => $"{scopeKey}:{dayUtc:yyyyMMdd}";
 
     private static ulong ComputeStableHash(string value)
     {

@@ -7,6 +7,26 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.2.9] - 2026-03-21
+### Added
+- Added automatic daily recommendation precomputation with a midnight background refresh for library recommendation stations.
+- Added a hosted recommendation automation service to warm current-day recommendation pools after startup.
+- Added a hardened wrapper runtime smoke audit and dedicated wrapper image build helper.
+
+### Changed
+- Migrated Shazam recognition to a pinned modern `shazamio_core` runtime with a dedicated Python environment in local and Docker builds.
+- LRC editor browsing is now scoped to library roots available on the current host and can load `.txt` sidecars as raw lyrics.
+- Settings now expose library scan performance controls for live ingest and signal analysis.
+- Home and settings mobile layouts were tightened for recommendation cards, discovery sections, and settings rows.
+
+### Fixed
+- Restored Shazam similar-song results by fixing related-track parsing for Shazam discovery responses.
+- Recommendation generation now keeps Shazam candidates normalized to Deezer IDs before merge and excludes tracks already present in the user library.
+- Removed a hardcoded personal GitHub URL from Cover source HTTP headers.
+
+### Security
+- Verified the hardened wrapper image does not embed local filesystem paths or the provided GitHub PAT in published image metadata.
+
 ## [0.1.2.8] - 2026-03-21
 ### Added
 - _TBD_

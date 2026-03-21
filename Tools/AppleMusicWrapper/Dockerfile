@@ -1,17 +1,28 @@
 FROM debian:stable-slim
 
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     bash \
     curl \
+    tini \
+    tzdata \
     unzip \
     && rm -rf /var/lib/apt/lists/*
+
+ENV WRAPPER_ARGS="-H 0.0.0.0 -D 10020 -M 20020 -A 30020" \
+    args="-H 0.0.0.0 -D 10020 -M 20020 -A 30020" \
+    WRAPPER_LOGIN_RETRY_ATTEMPTS=2 \
+    WRAPPER_LOGIN_RETRY_DELAY_SECONDS=4 \
+    TZ=UTC
 
 COPY Tools/AppleMusicWrapper/runtime/app /opt/apple-wrapper
 
 WORKDIR /opt/apple-wrapper
 ARG WRAPPER_BUNDLE_URL_X86_64=https://github.com/WorldObservationLog/wrapper/releases/download/Wrapper.x86_64.1dac7bb/Wrapper.x86_64.1dac7bb.zip
 ARG WRAPPER_BUNDLE_URL_ARM64=https://github.com/WorldObservationLog/wrapper/releases/download/Wrapper.arm64.latest/Wrapper.arm64.e338fa6.zip
+ARG ANDROID_TZDATA_URL=https://android.googlesource.com/platform/bionic/+/e5cabca516252addb5e305c8e1e0f35cafbcafbe/libc/zoneinfo/tzdata?format=TEXT
 ARG TARGETARCH
 
 # Always hydrate runtime from the upstream architecture-specific bundle so the pushed
@@ -46,12 +57,40 @@ RUN set -eux; \
 
 RUN set -eux; \
     mkdir -p \
+      /opt/apple-wrapper/rootfs/apex/com.android.tzdata/etc/tz \
       /opt/apple-wrapper/rootfs/dev \
+      /opt/apple-wrapper/rootfs/etc \
+      /opt/apple-wrapper/rootfs/tmp \
+      /opt/apple-wrapper/rootfs/usr/share/zoneinfo \
+      /opt/apple-wrapper/rootfs/system/usr/share/zoneinfo \
       /opt/apple-wrapper/rootfs/data/data/com.apple.android.music/files \
       /opt/apple-wrapper/data; \
+    chmod 1777 /opt/apple-wrapper/rootfs/tmp; \
+    rm -f \
+      /opt/apple-wrapper/rootfs/dev/null \
+      /opt/apple-wrapper/rootfs/dev/zero \
+      /opt/apple-wrapper/rootfs/dev/random \
+      /opt/apple-wrapper/rootfs/dev/urandom \
+      /opt/apple-wrapper/rootfs/dev/tty \
+      /opt/apple-wrapper/rootfs/dev/ptmx; \
+    mknod -m 666 /opt/apple-wrapper/rootfs/dev/null c 1 3; \
+    mknod -m 666 /opt/apple-wrapper/rootfs/dev/zero c 1 5; \
+    mknod -m 666 /opt/apple-wrapper/rootfs/dev/random c 1 8; \
+    mknod -m 666 /opt/apple-wrapper/rootfs/dev/urandom c 1 9; \
+    mknod -m 666 /opt/apple-wrapper/rootfs/dev/tty c 5 0; \
+    mknod -m 666 /opt/apple-wrapper/rootfs/dev/ptmx c 5 2; \
+    cp -a /usr/share/zoneinfo/. /opt/apple-wrapper/rootfs/usr/share/zoneinfo/; \
+    cp -a /usr/share/zoneinfo/. /opt/apple-wrapper/rootfs/system/usr/share/zoneinfo/; \
+    curl -fsSL "$ANDROID_TZDATA_URL" | base64 -d > /opt/apple-wrapper/rootfs/system/usr/share/zoneinfo/tzdata; \
+    cp -f /opt/apple-wrapper/rootfs/system/usr/share/zoneinfo/tzdata /opt/apple-wrapper/rootfs/usr/share/zoneinfo/tzdata; \
+    cp -f /opt/apple-wrapper/rootfs/system/usr/share/zoneinfo/tzdata /opt/apple-wrapper/rootfs/apex/com.android.tzdata/etc/tz/tzdata; \
+    cp -f /usr/share/zoneinfo/UTC /opt/apple-wrapper/rootfs/etc/localtime; \
+    printf 'UTC\n' > /opt/apple-wrapper/rootfs/etc/timezone; \
     chmod 755 /opt/apple-wrapper/entrypoint.sh; \
     chmod 755 /opt/apple-wrapper/wrapper; \
     if [ -f /opt/apple-wrapper/rootfs/system/bin/main ]; then chmod 755 /opt/apple-wrapper/rootfs/system/bin/main; fi; \
     if [ -f /opt/apple-wrapper/rootfs/system/bin/linker64 ]; then chmod 755 /opt/apple-wrapper/rootfs/system/bin/linker64; fi
 
-ENTRYPOINT ["/opt/apple-wrapper/entrypoint.sh"]
+EXPOSE 10020 20020 30020
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/apple-wrapper/entrypoint.sh"]

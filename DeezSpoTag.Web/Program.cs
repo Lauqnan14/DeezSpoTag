@@ -1006,6 +1006,7 @@ static void RegisterCoreApplicationServices(IServiceCollection services, IConfig
             SongLinkResolver = sp.GetRequiredService<DeezSpoTag.Services.Download.Utils.SongLinkResolver>()
         });
     services.AddSingleton<DeezSpoTag.Web.Services.LibraryRecommendationService>();
+    services.AddHostedService<DeezSpoTag.Web.Services.LibraryRecommendationAutomationHostedService>();
     services.AddSingleton<DeezSpoTag.Web.Services.PlexHistoryImportService>();
     services.AddSingleton<DeezSpoTag.Web.Services.MixSyncService>();
     services.AddSingleton<DeezSpoTag.Web.Services.VibeAnalysisSettingsStore>();

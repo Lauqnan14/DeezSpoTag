@@ -97,7 +97,7 @@ ENV OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf \
     VIBE_ANALYZER_PATH=/app/Tools/vibe_analyzer.py \
     VIBE_ANALYZER_MODELS=/app/Tools/models \
     VIBE_ANALYZER_PYTHON=/opt/venv/bin/python3 \
-    SHAZAM_PYTHON=/opt/venv/bin/python3 \
+    SHAZAM_PYTHON=/opt/shazam-venv/bin/python3 \
     PATH=/opt/venv/bin:$PATH
 
 RUN mkdir -p /data /data/home /data/.cache/pip \
@@ -107,6 +107,11 @@ COPY --from=build /app/publish .
 COPY --from=build /src/DeezSpoTag.Services/Library/Schema /app/Schema
 COPY --from=build /src/DeezSpoTag.Web/Tools /app/Tools
 COPY --from=apple-wrapper-build /out/apple-wrapper-runv2 /app/Tools/AppleMusicWrapper/runv2/apple-wrapper-runv2
+
+RUN set -eux; \
+    python3 -m venv /opt/shazam-venv; \
+    /opt/shazam-venv/bin/pip install --no-cache-dir --upgrade pip; \
+    /opt/shazam-venv/bin/pip install --no-cache-dir -r /app/Tools/shazam_port/requirements-modern.txt
 
 # Ensure all analyzer models required by current code paths are present.
 # Bundled repository models are used first; any missing files are fetched at build time.

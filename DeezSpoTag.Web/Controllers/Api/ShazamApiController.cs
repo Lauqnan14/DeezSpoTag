@@ -1,4 +1,5 @@
 using DeezSpoTag.Web.Services;
+using DeezSpoTag.Services.Settings;
 using Microsoft.AspNetCore.Mvc;
 
 namespace DeezSpoTag.Web.Controllers.Api;
@@ -12,15 +13,18 @@ public sealed class ShazamRecognitionApiController : ControllerBase
 
     private readonly ShazamRecognitionService _recognitionService;
     private readonly ShazamDiscoveryService _discoveryService;
+    private readonly DeezSpoTagSettingsService _settingsService;
     private readonly ILogger<ShazamRecognitionApiController> _logger;
 
     public ShazamRecognitionApiController(
         ShazamRecognitionService recognitionService,
         ShazamDiscoveryService discoveryService,
+        DeezSpoTagSettingsService settingsService,
         ILogger<ShazamRecognitionApiController> logger)
     {
         _recognitionService = recognitionService;
         _discoveryService = discoveryService;
+        _settingsService = settingsService;
         _logger = logger;
     }
 
@@ -51,13 +55,26 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         {
             await CopyUploadedAudioAsync(audio, tempPath, cancellationToken);
 
-            var attempt = _recognitionService.RecognizeWithDetails(tempPath, cancellationToken);
+            var captureDurationSeconds = ResolveCaptureDurationSeconds();
+            var attempt = _recognitionService.RecognizeWithDetails(tempPath, cancellationToken, captureDurationSeconds);
             if (!attempt.Matched)
             {
                 return BuildNoMatchResponse(attempt);
             }
 
-            return Ok(await BuildMatchPayloadAsync(attempt.Recognition!, cancellationToken));
+            try
+            {
+                return Ok(await BuildMatchPayloadAsync(attempt.Recognition!, cancellationToken));
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Shazam enrichment failed after a successful recognition match.");
+                return Ok(BuildMinimalMatchPayload(attempt.Recognition!));
+            }
         }
         catch (OperationCanceledException)
         {
@@ -74,6 +91,20 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         finally
         {
             TryDelete(tempPath);
+        }
+    }
+
+    private int ResolveCaptureDurationSeconds()
+    {
+        try
+        {
+            var settings = _settingsService.LoadSettings();
+            return Math.Clamp(settings.ShazamCaptureDurationSeconds, 3, 20);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to resolve Shazam capture duration from settings. Falling back to default.");
+            return 11;
         }
     }
 
@@ -165,19 +196,35 @@ public sealed class ShazamRecognitionApiController : ControllerBase
 
         if (!string.IsNullOrWhiteSpace(trackId))
         {
-            track = await _discoveryService.GetTrackAsync(trackId, cancellationToken);
-            related = await _discoveryService.GetRelatedTracksAsync(trackId, limit: 20, offset: 0, cancellationToken);
+            track = await SafeGetTrackAsync(trackId, cancellationToken);
+            related = await SafeGetRelatedTracksAsync(trackId, cancellationToken);
         }
 
         if ((track == null || related.Count == 0) && !string.IsNullOrWhiteSpace(query))
         {
-            fallbackSearch = await _discoveryService.SearchTracksAsync(query, limit: 20, offset: 0, cancellationToken);
+            fallbackSearch = await SafeSearchTracksAsync(query, cancellationToken);
             if (track == null && fallbackSearch.Count > 0)
             {
                 track = fallbackSearch[0];
             }
         }
 
+        return BuildMatchPayload(recognition, query, track, related, fallbackSearch);
+    }
+
+    private object BuildMinimalMatchPayload(ShazamRecognitionInfo recognition)
+    {
+        var query = BuildQuery(recognition);
+        return BuildMatchPayload(recognition, query, track: null, related: Array.Empty<ShazamTrackCard>(), fallbackSearch: Array.Empty<ShazamTrackCard>());
+    }
+
+    private object BuildMatchPayload(
+        ShazamRecognitionInfo recognition,
+        string? query,
+        ShazamTrackCard? track,
+        IReadOnlyList<ShazamTrackCard> related,
+        IReadOnlyList<ShazamTrackCard> fallbackSearch)
+    {
         return new
         {
             matched = true,
@@ -204,6 +251,57 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             fallbackSearch,
             relatedFallbackUsed = false
         };
+    }
+
+    private async Task<ShazamTrackCard?> SafeGetTrackAsync(string trackId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _discoveryService.GetTrackAsync(trackId, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Shazam track enrichment lookup failed for trackId {TrackId}.", trackId);
+            return null;
+        }
+    }
+
+    private async Task<IReadOnlyList<ShazamTrackCard>> SafeGetRelatedTracksAsync(string trackId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _discoveryService.GetRelatedTracksAsync(trackId, limit: 20, offset: 0, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Shazam related-track lookup failed for trackId {TrackId}.", trackId);
+            return Array.Empty<ShazamTrackCard>();
+        }
+    }
+
+    private async Task<IReadOnlyList<ShazamTrackCard>> SafeSearchTracksAsync(string query, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _discoveryService.SearchTracksAsync(query, limit: 20, offset: 0, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Shazam fallback search failed for query {Query}.", query);
+            return Array.Empty<ShazamTrackCard>();
+        }
     }
 
     private static string? BuildQuery(ShazamRecognitionInfo info)

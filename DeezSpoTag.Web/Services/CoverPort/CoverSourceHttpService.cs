@@ -83,7 +83,7 @@ public sealed class CoverSourceHttpService
             {
                 await ApplySourceRateLimitAsync(source, cancellationToken);
                 using var request = new HttpRequestMessage(HttpMethod.Head, url);
-                request.Headers.TryAddWithoutValidation("User-Agent", "DeezSpoTag/1.0 (+https://github.com/edzoh)");
+                request.Headers.TryAddWithoutValidation("User-Agent", "DeezSpoTag/1.0");
                 if (headers != null)
                 {
                     foreach (var pair in headers)
@@ -141,7 +141,7 @@ public sealed class CoverSourceHttpService
             {
                 await ApplySourceRateLimitAsync(source, cancellationToken);
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
-                request.Headers.TryAddWithoutValidation("User-Agent", "DeezSpoTag/1.0 (+https://github.com/edzoh)");
+                request.Headers.TryAddWithoutValidation("User-Agent", "DeezSpoTag/1.0");
                 if (headers != null)
                 {
                     foreach (var pair in headers)

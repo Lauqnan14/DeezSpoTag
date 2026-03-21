@@ -1,6 +1,10 @@
 namespace DeezSpoTag.Services.Library;
 
-public sealed record LibrarySettingsDto(decimal FuzzyThreshold, bool IncludeAllFolders);
+public sealed record LibrarySettingsDto(
+    decimal FuzzyThreshold,
+    bool IncludeAllFolders,
+    bool LivePreviewIngest,
+    bool EnableSignalAnalysis);
 
 public sealed record FolderDto(
     long Id,

@@ -938,17 +938,19 @@ WHERE id IN (SELECT id FROM missing_audio_file);";
     {
         await EnsureSettingsRowAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = "SELECT fuzzy_threshold, include_all_folders FROM library_settings WHERE id = 1;";
+        const string sql = "SELECT fuzzy_threshold, include_all_folders, live_preview_ingest, enable_signal_analysis FROM library_settings WHERE id = 1;";
         await using var command = new SqliteCommand(sql, connection);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (await reader.ReadAsync(cancellationToken))
         {
             var threshold = await reader.IsDBNullAsync(0, cancellationToken) ? 0.85m : Convert.ToDecimal(reader.GetDouble(0));
             var includeAll = !await reader.IsDBNullAsync(1, cancellationToken) && reader.GetBoolean(1);
-            return new LibrarySettingsDto(threshold, includeAll);
+            var livePreviewIngest = !await reader.IsDBNullAsync(2, cancellationToken) && reader.GetBoolean(2);
+            var enableSignalAnalysis = !await reader.IsDBNullAsync(3, cancellationToken) && reader.GetBoolean(3);
+            return new LibrarySettingsDto(threshold, includeAll, livePreviewIngest, enableSignalAnalysis);
         }
 
-        return new LibrarySettingsDto(0.85m, true);
+        return new LibrarySettingsDto(0.85m, true, false, false);
     }
 
     public async Task<LibrarySettingsDto> UpdateSettingsAsync(LibrarySettingsDto settings, CancellationToken cancellationToken = default)
@@ -959,11 +961,15 @@ WHERE id IN (SELECT id FROM missing_audio_file);";
 UPDATE library_settings
 SET fuzzy_threshold = @threshold,
     include_all_folders = @includeAll,
+    live_preview_ingest = @livePreviewIngest,
+    enable_signal_analysis = @enableSignalAnalysis,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = 1;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("threshold", (double)settings.FuzzyThreshold);
         command.Parameters.AddWithValue("includeAll", settings.IncludeAllFolders);
+        command.Parameters.AddWithValue("livePreviewIngest", settings.LivePreviewIngest);
+        command.Parameters.AddWithValue("enableSignalAnalysis", settings.EnableSignalAnalysis);
         await command.ExecuteNonQueryAsync(cancellationToken);
         return settings;
     }
@@ -6918,9 +6924,42 @@ WHERE folder_id IN (SELECT id FROM purge_non_library_folder);";
     private async Task EnsureSettingsRowAsync(CancellationToken cancellationToken)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        await EnsureLibrarySettingsColumnsAsync(connection, cancellationToken);
         const string sql = "INSERT INTO library_settings (id) VALUES (1) ON CONFLICT DO NOTHING;";
         await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task EnsureLibrarySettingsColumnsAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        const string pragmaSql = "PRAGMA table_info(library_settings);";
+        await using (var pragmaCommand = new SqliteCommand(pragmaSql, connection))
+        await using (var reader = await pragmaCommand.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (!await reader.IsDBNullAsync(1, cancellationToken))
+                {
+                    columns.Add(reader.GetString(1));
+                }
+            }
+        }
+
+        if (!columns.Contains("live_preview_ingest"))
+        {
+            const string alterSql = "ALTER TABLE library_settings ADD COLUMN live_preview_ingest INTEGER NOT NULL DEFAULT FALSE;";
+            await using var alterCommand = new SqliteCommand(alterSql, connection);
+            await alterCommand.ExecuteNonQueryAsync(cancellationToken);
+            columns.Add("live_preview_ingest");
+        }
+
+        if (!columns.Contains("enable_signal_analysis"))
+        {
+            const string alterSql = "ALTER TABLE library_settings ADD COLUMN enable_signal_analysis INTEGER NOT NULL DEFAULT FALSE;";
+            await using var alterCommand = new SqliteCommand(alterSql, connection);
+            await alterCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
     }
 
     private async Task EnsureQualityScannerAutomationSettingsRowAsync(CancellationToken cancellationToken)

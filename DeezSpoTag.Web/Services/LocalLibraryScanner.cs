@@ -36,6 +36,7 @@ public sealed class LocalLibraryScanner
         public required Dictionary<string, LibraryConfigStore.LibraryAlbum> AlbumIndex { get; init; }
         public required Dictionary<string, HashSet<string>> ArtistGenres { get; init; }
         public required bool UsePrimaryArtistFolders { get; init; }
+        public required bool EnableSignalAnalysis { get; init; }
         public required IProgress<ScanProgress>? Progress { get; init; }
         public required Action<LibraryConfigStore.LocalLibrarySnapshot>? SnapshotPublished { get; init; }
         public int ProcessedFiles { get; set; }
@@ -132,7 +133,7 @@ public sealed class LocalLibraryScanner
     private static readonly Lazy<string?> FfprobePath = new(ResolveFfprobePath);
     private static readonly bool LibraryPrecountEnabled = ReadBooleanEnvironmentVariable("DEEZSPOTAG_LIBRARY_PRECOUNT", defaultValue: false);
     private static readonly bool LegacyAggressiveFfprobeEnabled = ReadBooleanEnvironmentVariable("DEEZSPOTAG_LIBRARY_AGGRESSIVE_FFPROBE", defaultValue: false);
-    private static readonly bool SignalAnalysisDisabled = ReadBooleanEnvironmentVariable("DEEZSPOTAG_LIBRARY_DISABLE_SIGNAL_ANALYSIS", defaultValue: false);
+    private static readonly bool DefaultSignalAnalysisDisabled = ResolveSignalAnalysisDisabled();
 
     public LocalLibraryScanner(
         LibraryConfigStore configStore,
@@ -188,9 +189,24 @@ public sealed class LocalLibraryScanner
             AlbumIndex = new Dictionary<string, LibraryConfigStore.LibraryAlbum>(StringComparer.OrdinalIgnoreCase),
             ArtistGenres = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase),
             UsePrimaryArtistFolders = ResolveUsePrimaryArtistFolders(),
+            EnableSignalAnalysis = ResolveEnableSignalAnalysis(),
             Progress = progress,
             SnapshotPublished = snapshotPublished
         };
+    }
+
+    private bool ResolveEnableSignalAnalysis()
+    {
+        try
+        {
+            var settings = _configStore.GetSettings();
+            return settings.EnableSignalAnalysis;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to load library settings for signal analysis. Falling back to default scanner behavior.");
+            return !DefaultSignalAnalysisDisabled;
+        }
     }
 
     private bool ResolveUsePrimaryArtistFolders()
@@ -466,7 +482,7 @@ public sealed class LocalLibraryScanner
             using var tagFile = TagLib.File.Create(file);
             ApplyPrimaryTagValues(tagFile, trackData);
             ApplyAudioProperties(tagFile, trackData);
-            ApplyDerivedTagValues(file, tagFile, trackData);
+            ApplyDerivedTagValues(file, tagFile, trackData, context);
             ApplySourceValues(tagFile, trackData);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -528,12 +544,12 @@ public sealed class LocalLibraryScanner
         trackData.Genres = tagFile.Tag.Genres;
     }
 
-    private void ApplyDerivedTagValues(string file, TagLib.File tagFile, TrackScanData trackData)
+    private void ApplyDerivedTagValues(string file, TagLib.File tagFile, TrackScanData trackData, ScanContext context)
     {
         MergeEmbeddedLyrics(tagFile.Tag.Lyrics, trackData);
         trackData.TagBpm ??= TryParseInt(GetCustomValue(tagFile, "BPM"));
         trackData.TagTrackTotal ??= TryParseInt(GetCustomValue(tagFile, "TRACKTOTAL") ?? GetCustomValue(tagFile, "TRACK_TOTAL"));
-        trackData.QualityRank = EstimateTrackQualityRank(file, trackData);
+        trackData.QualityRank = EstimateTrackQualityRank(file, trackData, context);
         trackData.TagIsrc = NormalizeSourceId(tagFile.Tag.ISRC);
         trackData.Isrc = trackData.TagIsrc;
         trackData.TagGenres = SplitTagValues(tagFile.Tag.Genres);
@@ -543,10 +559,10 @@ public sealed class LocalLibraryScanner
         trackData.TagOtherTags = ExtractOtherTags(tagFile);
     }
 
-    private int? EstimateTrackQualityRank(string file, TrackScanData trackData)
+    private int? EstimateTrackQualityRank(string file, TrackScanData trackData, ScanContext context)
     {
         SignalQualityAnalysis? signalAnalysis = null;
-        if (!SignalAnalysisDisabled
+        if (context.EnableSignalAnalysis
             && ShouldRunSignalAnalysis(file, trackData.Codec, trackData.BitrateKbps, trackData.BitsPerSample))
         {
             signalAnalysis = _signalAnalyzer.Analyze(file, trackData.Codec, trackData.SampleRateHz, trackData.BitrateKbps);
@@ -1435,6 +1451,36 @@ public sealed class LocalLibraryScanner
         }
 
         return bool.TryParse(raw, out var parsed) ? parsed : defaultValue;
+    }
+
+    private static bool ResolveSignalAnalysisDisabled()
+    {
+        var explicitDisable = ReadNullableBooleanEnvironmentVariable("DEEZSPOTAG_LIBRARY_DISABLE_SIGNAL_ANALYSIS");
+        if (explicitDisable.HasValue)
+        {
+            return explicitDisable.Value;
+        }
+
+        var explicitEnable = ReadNullableBooleanEnvironmentVariable("DEEZSPOTAG_LIBRARY_ENABLE_SIGNAL_ANALYSIS");
+        if (explicitEnable.HasValue)
+        {
+            return !explicitEnable.Value;
+        }
+
+        // Keep library scan fast by default; expensive audio-content analysis belongs
+        // in an explicit quality-analysis pass rather than the baseline filesystem scan.
+        return true;
+    }
+
+    private static bool? ReadNullableBooleanEnvironmentVariable(string variableName)
+    {
+        var raw = Environment.GetEnvironmentVariable(variableName);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        return bool.TryParse(raw, out var parsed) ? parsed : null;
     }
 
     private static string? ResolveFfprobePath()

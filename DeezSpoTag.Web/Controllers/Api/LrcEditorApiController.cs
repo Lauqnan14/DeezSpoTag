@@ -1,6 +1,7 @@
 using DeezSpoTag.Services.Library;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.WebUtilities;
 using System.IO;
 using System.Text;
 
@@ -18,6 +19,10 @@ public sealed class LrcEditorApiController : ControllerBase
     private static readonly HashSet<string> AudioExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".mp3", ".flac", ".m4a", ".m4b", ".aac", ".wav", ".ogg", ".opus"
+    };
+    private static readonly HashSet<string> LrcBrowserExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".lrc", ".txt"
     };
 
     public LrcEditorApiController(LibraryRepository repository, ILogger<LrcEditorApiController> logger)
@@ -62,15 +67,11 @@ public sealed class LrcEditorApiController : ControllerBase
             return BadRequest(new { error = LibraryDbNotConfiguredMessage });
         }
 
-        var roots = (await _repository.GetFoldersAsync(cancellationToken))
-            .Where(folder => folder.Enabled)
-            .Select(folder => folder.RootPath)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var roots = await GetActiveLibraryRootsAsync(cancellationToken);
 
         if (roots.Count == 0)
         {
-            return Ok(new { path = string.Empty, entries = Array.Empty<object>() });
+            return Ok(new { path = string.Empty, displayPath = "Library roots", parentPath = string.Empty, entries = Array.Empty<object>() });
         }
 
         if (string.IsNullOrWhiteSpace(path))
@@ -78,42 +79,37 @@ public sealed class LrcEditorApiController : ControllerBase
             var rootEntries = roots
                 .Select(root => new
                 {
-                    name = Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
-                    path = root,
+                    name = root.DisplayName,
+                    path = BuildReference(root, root.RootPath),
                     type = "folder"
                 })
                 .OrderBy(entry => entry.name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            return Ok(new { path = string.Empty, entries = rootEntries });
+            return Ok(new { path = string.Empty, displayPath = "Library roots", parentPath = string.Empty, entries = rootEntries });
         }
 
-        var normalized = NormalizePath(path);
-        if (normalized == null || !IsUnderAnyRoot(normalized, roots))
+        var resolved = TryResolveReference(path, roots);
+        if (resolved == null || !Directory.Exists(resolved.FullPath))
         {
             return BadRequest(new { error = PathOutsideLibraryRootsMessage });
         }
 
-        if (!Directory.Exists(normalized))
-        {
-            return NotFound(new { error = "Folder not found." });
-        }
-
         var entries = new List<BrowserEntry>();
-        foreach (var directory in Directory.EnumerateDirectories(normalized))
+        foreach (var directory in Directory.EnumerateDirectories(resolved.FullPath))
         {
             var name = Path.GetFileName(directory);
-            entries.Add(new BrowserEntry(name, directory, "folder"));
+            entries.Add(new BrowserEntry(name, BuildReference(resolved.Root, directory), "folder"));
         }
 
-        foreach (var file in Directory.EnumerateFiles(normalized))
+        foreach (var file in Directory.EnumerateFiles(resolved.FullPath))
         {
             var extension = Path.GetExtension(file);
-            if (!AudioExtensions.Contains(extension) && !string.Equals(extension, ".lrc", StringComparison.OrdinalIgnoreCase))
+            if (!AudioExtensions.Contains(extension) && !LrcBrowserExtensions.Contains(extension))
             {
                 continue;
             }
-            entries.Add(new BrowserEntry(Path.GetFileName(file), file, "file"));
+            entries.Add(new BrowserEntry(Path.GetFileName(file), BuildReference(resolved.Root, file), "file"));
         }
 
         var sorted = entries
@@ -121,41 +117,53 @@ public sealed class LrcEditorApiController : ControllerBase
             .ThenBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        return Ok(new { path = normalized, entries = sorted });
+        var parentPath = string.Equals(resolved.FullPath, resolved.Root.RootPath, StringComparison.OrdinalIgnoreCase)
+            ? string.Empty
+            : BuildReference(resolved.Root, Path.GetDirectoryName(resolved.FullPath)!);
+
+        return Ok(new
+        {
+            path = path,
+            displayPath = BuildDisplayPath(resolved.Root, resolved.FullPath),
+            parentPath,
+            entries = sorted
+        });
     }
 
     [HttpGet("file/info")]
     public async Task<IActionResult> GetFileInfo([FromQuery] string path, CancellationToken cancellationToken)
     {
-        var (normalized, extension, errorResult) = await ValidateAudioPathAsync(path, "File not found.", cancellationToken);
+        var (resolved, extension, errorResult) = await ValidateAudioPathAsync(path, "File not found.", cancellationToken);
         if (errorResult != null)
         {
             return errorResult;
         }
 
-        var normalizedPath = normalized!;
+        var resolvedPath = resolved!;
+        var normalizedPath = resolvedPath.FullPath;
 
         return Ok(new
         {
-            filePath = normalizedPath,
+            fileRef = resolvedPath.Reference,
             fileName = Path.GetFileNameWithoutExtension(normalizedPath),
-            directory = Path.GetDirectoryName(normalizedPath) ?? string.Empty,
+            directory = BuildDisplayPath(resolvedPath.Root, Path.GetDirectoryName(normalizedPath) ?? resolvedPath.Root.RootPath),
             fileType = extension.TrimStart('.').ToUpperInvariant(),
-            audioUrl = $"/api/lrc/file/audio?path={Uri.EscapeDataString(normalizedPath)}",
-            lrcUrl = $"/api/lrc/file/lrc?path={Uri.EscapeDataString(normalizedPath)}"
+            audioUrl = $"/api/lrc/file/audio?path={Uri.EscapeDataString(resolvedPath.Reference)}",
+            lrcUrl = $"/api/lrc/file/lrc?path={Uri.EscapeDataString(resolvedPath.Reference)}",
+            txtUrl = $"/api/lrc/file/txt?path={Uri.EscapeDataString(resolvedPath.Reference)}"
         });
     }
 
     [HttpGet("file/audio")]
     public async Task<IActionResult> GetAudioForFile([FromQuery] string path, CancellationToken cancellationToken)
     {
-        var (normalized, _, errorResult) = await ValidateAudioPathAsync(path, "Track file missing.", cancellationToken);
+        var (resolved, _, errorResult) = await ValidateAudioPathAsync(path, "Track file missing.", cancellationToken);
         if (errorResult != null)
         {
             return errorResult;
         }
 
-        var normalizedPath = normalized!;
+        var normalizedPath = resolved!.FullPath;
         var contentType = GetContentType(normalizedPath);
         var stream = System.IO.File.OpenRead(normalizedPath);
         return new FileStreamResult(stream, contentType)
@@ -172,13 +180,13 @@ public sealed class LrcEditorApiController : ControllerBase
             return BadRequest(new { error = LibraryDbNotConfiguredMessage });
         }
 
-        var normalized = await NormalizeAndValidatePathAsync(path, cancellationToken);
-        if (normalized == null)
+        var resolved = await ResolveLibraryPathAsync(path, cancellationToken);
+        if (resolved == null)
         {
             return BadRequest(new { error = PathOutsideLibraryRootsMessage });
         }
 
-        var lrcPath = Path.ChangeExtension(normalized, ".lrc");
+        var lrcPath = Path.ChangeExtension(resolved.FullPath, ".lrc");
         if (!System.IO.File.Exists(lrcPath))
         {
             return NotFound(new { error = "LRC file not found." });
@@ -186,6 +194,31 @@ public sealed class LrcEditorApiController : ControllerBase
 
         var content = await System.IO.File.ReadAllTextAsync(lrcPath, cancellationToken);
         var lastWrite = System.IO.File.GetLastWriteTimeUtc(lrcPath);
+        return Ok(new { content, updatedAtUtc = lastWrite });
+    }
+
+    [HttpGet("file/txt")]
+    public async Task<IActionResult> GetTxtForFile([FromQuery] string path, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return BadRequest(new { error = LibraryDbNotConfiguredMessage });
+        }
+
+        var resolved = await ResolveLibraryPathAsync(path, cancellationToken);
+        if (resolved == null)
+        {
+            return BadRequest(new { error = PathOutsideLibraryRootsMessage });
+        }
+
+        var txtPath = Path.ChangeExtension(resolved.FullPath, ".txt");
+        if (!System.IO.File.Exists(txtPath))
+        {
+            return NotFound(new { error = "TXT file not found." });
+        }
+
+        var content = await System.IO.File.ReadAllTextAsync(txtPath, cancellationToken);
+        var lastWrite = System.IO.File.GetLastWriteTimeUtc(txtPath);
         return Ok(new { content, updatedAtUtc = lastWrite });
     }
 
@@ -202,13 +235,13 @@ public sealed class LrcEditorApiController : ControllerBase
             return BadRequest(new { error = "Path and content are required." });
         }
 
-        var normalized = await NormalizeAndValidatePathAsync(request.Path, cancellationToken);
-        if (normalized == null)
+        var resolved = await ResolveLibraryPathAsync(request.Path, cancellationToken);
+        if (resolved == null)
         {
             return BadRequest(new { error = PathOutsideLibraryRootsMessage });
         }
 
-        var lrcPath = Path.ChangeExtension(normalized, ".lrc");
+        var lrcPath = Path.ChangeExtension(resolved.FullPath, ".lrc");
         try
         {
             await System.IO.File.WriteAllTextAsync(lrcPath, request.Content, new UTF8Encoding(false), cancellationToken);
@@ -237,6 +270,12 @@ public sealed class LrcEditorApiController : ControllerBase
             return NotFound();
         }
 
+        var resolved = await ResolveTrackLibraryPathAsync(info.FilePath, cancellationToken);
+        if (resolved == null)
+        {
+            return NotFound(new { error = "Track file unavailable on this system." });
+        }
+
         return Ok(new
         {
             trackId = info.TrackId,
@@ -244,12 +283,15 @@ public sealed class LrcEditorApiController : ControllerBase
             artist = info.ArtistName,
             album = info.AlbumTitle,
             durationMs = info.DurationMs,
+            fileRef = resolved.Reference,
+            directory = BuildDisplayPath(resolved.Root, Path.GetDirectoryName(resolved.FullPath) ?? resolved.Root.RootPath),
             coverUrl = info.CoverPath is null
                 ? null
                 : $"/api/library/image?path={Uri.EscapeDataString(info.CoverPath)}&size=240",
-            fileType = Path.GetExtension(info.FilePath).TrimStart('.').ToUpperInvariant(),
+            fileType = Path.GetExtension(resolved.FullPath).TrimStart('.').ToUpperInvariant(),
             audioUrl = $"/api/lrc/track/{info.TrackId}/audio",
-            lrcUrl = $"/api/lrc/track/{info.TrackId}/lrc"
+            lrcUrl = $"/api/lrc/track/{info.TrackId}/lrc",
+            txtUrl = $"/api/lrc/track/{info.TrackId}/txt"
         });
     }
 
@@ -267,13 +309,14 @@ public sealed class LrcEditorApiController : ControllerBase
             return NotFound(new { error = "Track file unavailable." });
         }
 
-        if (!System.IO.File.Exists(info.FilePath))
+        var resolved = await ResolveTrackLibraryPathAsync(info.FilePath, cancellationToken);
+        if (resolved == null || !System.IO.File.Exists(resolved.FullPath))
         {
             return NotFound(new { error = "Track file missing." });
         }
 
-        var contentType = GetContentType(info.FilePath);
-        var stream = System.IO.File.OpenRead(info.FilePath);
+        var contentType = GetContentType(resolved.FullPath);
+        var stream = System.IO.File.OpenRead(resolved.FullPath);
         return new FileStreamResult(stream, contentType)
         {
             EnableRangeProcessing = true
@@ -294,7 +337,13 @@ public sealed class LrcEditorApiController : ControllerBase
             return NotFound(new { error = "Track file unavailable." });
         }
 
-        var lrcPath = Path.ChangeExtension(info.FilePath, ".lrc");
+        var resolved = await ResolveTrackLibraryPathAsync(info.FilePath, cancellationToken);
+        if (resolved == null)
+        {
+            return NotFound(new { error = "Track file unavailable on this system." });
+        }
+
+        var lrcPath = Path.ChangeExtension(resolved.FullPath, ".lrc");
         if (!System.IO.File.Exists(lrcPath))
         {
             return NotFound(new { error = "LRC file not found." });
@@ -302,6 +351,37 @@ public sealed class LrcEditorApiController : ControllerBase
 
         var content = await System.IO.File.ReadAllTextAsync(lrcPath, cancellationToken);
         var lastWrite = System.IO.File.GetLastWriteTimeUtc(lrcPath);
+        return Ok(new { content, updatedAtUtc = lastWrite });
+    }
+
+    [HttpGet("track/{id:long}/txt")]
+    public async Task<IActionResult> GetTxt(long id, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return BadRequest(new { error = LibraryDbNotConfiguredMessage });
+        }
+
+        var info = await _repository.GetTrackAudioInfoAsync(id, cancellationToken);
+        if (info is null || string.IsNullOrWhiteSpace(info.FilePath))
+        {
+            return NotFound(new { error = "Track file unavailable." });
+        }
+
+        var resolved = await ResolveTrackLibraryPathAsync(info.FilePath, cancellationToken);
+        if (resolved == null)
+        {
+            return NotFound(new { error = "Track file unavailable on this system." });
+        }
+
+        var txtPath = Path.ChangeExtension(resolved.FullPath, ".txt");
+        if (!System.IO.File.Exists(txtPath))
+        {
+            return NotFound(new { error = "TXT file not found." });
+        }
+
+        var content = await System.IO.File.ReadAllTextAsync(txtPath, cancellationToken);
+        var lastWrite = System.IO.File.GetLastWriteTimeUtc(txtPath);
         return Ok(new { content, updatedAtUtc = lastWrite });
     }
 
@@ -324,7 +404,13 @@ public sealed class LrcEditorApiController : ControllerBase
             return NotFound(new { error = "Track file unavailable." });
         }
 
-        var lrcPath = Path.ChangeExtension(info.FilePath, ".lrc");
+        var resolved = await ResolveTrackLibraryPathAsync(info.FilePath, cancellationToken);
+        if (resolved == null)
+        {
+            return NotFound(new { error = "Track file unavailable on this system." });
+        }
+
+        var lrcPath = Path.ChangeExtension(resolved.FullPath, ".lrc");
         try
         {
             await System.IO.File.WriteAllTextAsync(lrcPath, request.Content, new UTF8Encoding(false), cancellationToken);
@@ -339,7 +425,7 @@ public sealed class LrcEditorApiController : ControllerBase
         return Ok(new { updatedAtUtc = lastWrite });
     }
 
-    private async Task<(string? Normalized, string Extension, IActionResult? ErrorResult)> ValidateAudioPathAsync(
+    private async Task<(ResolvedLibraryPath? Resolved, string Extension, IActionResult? ErrorResult)> ValidateAudioPathAsync(
         string path,
         string notFoundMessage,
         CancellationToken cancellationToken)
@@ -349,24 +435,24 @@ public sealed class LrcEditorApiController : ControllerBase
             return (null, string.Empty, BadRequest(new { error = LibraryDbNotConfiguredMessage }));
         }
 
-        var normalized = await NormalizeAndValidatePathAsync(path, cancellationToken);
-        if (normalized == null)
+        var resolved = await ResolveLibraryPathAsync(path, cancellationToken);
+        if (resolved == null)
         {
             return (null, string.Empty, BadRequest(new { error = PathOutsideLibraryRootsMessage }));
         }
 
-        if (!System.IO.File.Exists(normalized))
+        if (!System.IO.File.Exists(resolved.FullPath))
         {
             return (null, string.Empty, NotFound(new { error = notFoundMessage }));
         }
 
-        var extension = Path.GetExtension(normalized);
+        var extension = Path.GetExtension(resolved.FullPath);
         if (!AudioExtensions.Contains(extension))
         {
             return (null, string.Empty, BadRequest(new { error = "Unsupported audio file." }));
         }
 
-        return (normalized, extension, null);
+        return (resolved, extension, null);
     }
 
     private static string GetContentType(string filePath)
@@ -390,6 +476,8 @@ public sealed class LrcEditorApiController : ControllerBase
 
     public sealed record LrcSavePathRequest(string? Path, string? Content);
     private sealed record BrowserEntry(string Name, string Path, string Type);
+    private sealed record LibraryRootScope(string DisplayName, string RootPath, string Token);
+    private sealed record ResolvedLibraryPath(LibraryRootScope Root, string FullPath, string Reference);
 
     private static string? NormalizePath(string? path)
     {
@@ -424,24 +512,143 @@ public sealed class LrcEditorApiController : ControllerBase
                 || string.Equals(normalized, rootFull, StringComparison.OrdinalIgnoreCase));
     }
 
-    private async Task<string?> NormalizeAndValidatePathAsync(string? path, CancellationToken cancellationToken)
+    private async Task<List<LibraryRootScope>> GetActiveLibraryRootsAsync(CancellationToken cancellationToken)
     {
+        return (await _repository.GetFoldersAsync(cancellationToken))
+            .Where(folder => folder.Enabled)
+            .Select(folder =>
+            {
+                var normalizedRoot = NormalizePath(folder.RootPath);
+                return new { folder.DisplayName, RootPath = normalizedRoot };
+            })
+            .Where(entry => !string.IsNullOrWhiteSpace(entry.RootPath) && Directory.Exists(entry.RootPath!))
+            .GroupBy(entry => entry.RootPath!, StringComparer.OrdinalIgnoreCase)
+            .Select(group =>
+            {
+                var rootPath = group.Key;
+                var displayName = group
+                    .Select(item => item.DisplayName?.Trim())
+                    .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
+
+                if (string.IsNullOrWhiteSpace(displayName))
+                {
+                    displayName = Path.GetFileName(rootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                }
+
+                if (string.IsNullOrWhiteSpace(displayName))
+                {
+                    displayName = "Library";
+                }
+
+                return new LibraryRootScope(displayName, rootPath, EncodePathSegment(rootPath));
+            })
+            .OrderBy(root => root.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private async Task<ResolvedLibraryPath?> ResolveLibraryPathAsync(string? reference, CancellationToken cancellationToken)
+    {
+        var roots = await GetActiveLibraryRootsAsync(cancellationToken);
+        if (roots.Count == 0)
+        {
+            return null;
+        }
+
+        return TryResolveReference(reference, roots);
+    }
+
+    private async Task<ResolvedLibraryPath?> ResolveTrackLibraryPathAsync(string? path, CancellationToken cancellationToken)
+    {
+        var roots = await GetActiveLibraryRootsAsync(cancellationToken);
+        if (roots.Count == 0)
+        {
+            return null;
+        }
+
         var normalized = NormalizePath(path);
         if (normalized == null)
         {
             return null;
         }
 
-        var roots = (await _repository.GetFoldersAsync(cancellationToken))
-            .Where(folder => folder.Enabled)
-            .Select(folder => folder.RootPath)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (roots.Count == 0)
+        var root = roots.FirstOrDefault(candidate =>
+            normalized.StartsWith(candidate.RootPath.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, candidate.RootPath, StringComparison.OrdinalIgnoreCase));
+
+        return root == null ? null : new ResolvedLibraryPath(root, normalized, BuildReference(root, normalized));
+    }
+
+    private static ResolvedLibraryPath? TryResolveReference(string? reference, IReadOnlyList<LibraryRootScope> roots)
+    {
+        if (string.IsNullOrWhiteSpace(reference))
         {
             return null;
         }
 
-        return IsUnderAnyRoot(normalized, roots) ? normalized : null;
+        var separatorIndex = reference.IndexOf(':');
+        if (separatorIndex <= 0)
+        {
+            return null;
+        }
+
+        var rootToken = reference[..separatorIndex];
+        var relativeToken = reference[(separatorIndex + 1)..];
+        var root = roots.FirstOrDefault(candidate => string.Equals(candidate.Token, rootToken, StringComparison.Ordinal));
+        if (root == null)
+        {
+            return null;
+        }
+
+        string relativePath;
+        try
+        {
+            relativePath = DecodePathSegment(relativeToken);
+        }
+        catch
+        {
+            return null;
+        }
+
+        var fullPath = string.IsNullOrWhiteSpace(relativePath)
+            ? root.RootPath
+            : Path.GetFullPath(Path.Combine(root.RootPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+
+        if (!string.Equals(fullPath, root.RootPath, StringComparison.OrdinalIgnoreCase)
+            && !fullPath.StartsWith(root.RootPath.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return new ResolvedLibraryPath(root, fullPath, BuildReference(root, fullPath));
     }
+
+    private static string BuildReference(LibraryRootScope root, string fullPath)
+    {
+        var relativePath = Path.GetRelativePath(root.RootPath, fullPath);
+        if (string.Equals(relativePath, ".", StringComparison.Ordinal))
+        {
+            relativePath = string.Empty;
+        }
+
+        return $"{root.Token}:{EncodePathSegment(relativePath.Replace(Path.DirectorySeparatorChar, '/'))}";
+    }
+
+    private static string BuildDisplayPath(LibraryRootScope root, string fullPath)
+    {
+        var relativePath = Path.GetRelativePath(root.RootPath, fullPath);
+        if (string.Equals(relativePath, ".", StringComparison.Ordinal))
+        {
+            return root.DisplayName;
+        }
+
+        return $"{root.DisplayName}/{relativePath.Replace(Path.DirectorySeparatorChar, '/')}";
+    }
+
+    private static string EncodePathSegment(string value)
+        => WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(value ?? string.Empty));
+
+    private static string DecodePathSegment(string value)
+        => string.IsNullOrEmpty(value)
+            ? string.Empty
+            : Encoding.UTF8.GetString(WebEncoders.Base64UrlDecode(value));
 }

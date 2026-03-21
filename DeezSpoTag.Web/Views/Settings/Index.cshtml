@@ -134,6 +134,14 @@
     user-select: none;
 }
 
+#livePreviewIngest + label,
+#enableSignalAnalysis + label {
+    color: var(--text-primary);
+    font-size: 16px !important;
+    font-weight: 500;
+    line-height: 1.4;
+}
+
 .form-row {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -935,15 +943,10 @@
                     <input type="checkbox" id="shazamUseCenteredOverlay">
                     <label for="shazamUseCenteredOverlay">Use centered Shazam overlay</label>
                 </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="shazamCaptureDurationSeconds">Capture duration (seconds)</label>
-                        <input type="number" id="shazamCaptureDurationSeconds" min="3" max="20" value="7">
-                    </div>
-                    <div class="form-group">
-                        <div class="form-label" aria-hidden="true">&nbsp;</div>
-                        <div class="warning-text">Longer duration can improve matching but increases wait time.</div>
-                    </div>
+                <div class="form-group">
+                    <label for="shazamCaptureDurationSeconds">Capture duration (seconds)</label>
+                    <input type="number" id="shazamCaptureDurationSeconds" min="3" max="20" value="11">
+                    <div class="warning-text">Longer duration can improve matching but increases wait time.</div>
                 </div>
                 <div class="checkbox-group">
                     <input type="checkbox" id="shazamAllowHttpFileFallback">
@@ -1159,9 +1162,21 @@
                 Other
             </div>
             <div class="settings-content">
-                <div class="checkbox-group">
-                    <input type="checkbox" id="autoCheckForUpdates">
-                    <label for="autoCheckForUpdates">Auto Check For Updates</label>
+                <div class="form-row">
+                    <div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="livePreviewIngest" class="form-checkbox">
+                            <label for="livePreviewIngest" class="checkbox-label">Live preview ingest during scan</label>
+                        </div>
+                        <div class="warning-text">Continuously writes partial scan results to SQLite while scanning. Slower, but updates library contents during the scan.</div>
+                    </div>
+                    <div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="enableSignalAnalysis" class="form-checkbox">
+                            <label for="enableSignalAnalysis" class="checkbox-label">Enable signal analysis during scan</label>
+                        </div>
+                        <div class="warning-text">Runs deeper ffmpeg/ffprobe audio-content analysis during the baseline library scan. Much slower on NAS storage.</div>
+                    </div>
                 </div>
 
                 <div class="form-row">
@@ -1259,6 +1274,12 @@
 <script>
 let currentSettings = {};
 let defaultSettings = {};
+let currentLibraryScanSettings = {
+    fuzzyThreshold: 0.85,
+    includeAllFolders: true,
+    livePreviewIngest: false,
+    enableSignalAnalysis: false
+};
 let settingsReady = false;
 let settingsSaveInFlight = false;
 let settingsSaveQueued = false;
@@ -2162,6 +2183,12 @@ async function initSettings() {
             const mergedSettings = mergeWithDefaults(settingsData.settings, defaultSettings);
             
             loadSettings(mergedSettings);
+            try {
+                await loadLibraryScanSettings();
+            } catch (librarySettingsError) {
+                console.warn('Failed to load library scan settings:', librarySettingsError);
+                showToast(`Library scan settings failed to load: ${librarySettingsError.message}`, 'error');
+            }
             loadAppleNotificationPreference();
             settingsReady = true;
         } else {
@@ -2215,6 +2242,57 @@ async function getSettingsData() {
         console.error('Failed to fetch settings:', error);
         throw error;
     }
+}
+
+function applyLibraryScanSettings(settings) {
+    currentLibraryScanSettings = {
+        fuzzyThreshold: settings?.fuzzyThreshold ?? settings?.FuzzyThreshold ?? 0.85,
+        includeAllFolders: settings?.includeAllFolders ?? settings?.IncludeAllFolders ?? true,
+        livePreviewIngest: settings?.livePreviewIngest ?? settings?.LivePreviewIngest ?? false,
+        enableSignalAnalysis: settings?.enableSignalAnalysis ?? settings?.EnableSignalAnalysis ?? false
+    };
+
+    setCheckboxValue('livePreviewIngest', currentLibraryScanSettings.livePreviewIngest);
+    setCheckboxValue('enableSignalAnalysis', currentLibraryScanSettings.enableSignalAnalysis);
+}
+
+async function loadLibraryScanSettings() {
+    const response = await fetch('/api/library/settings', {
+        credentials: 'same-origin'
+    });
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const settings = await response.json();
+    applyLibraryScanSettings(settings);
+}
+
+function collectLibraryScanSettings() {
+    return {
+        fuzzyThreshold: currentLibraryScanSettings.fuzzyThreshold ?? 0.85,
+        includeAllFolders: currentLibraryScanSettings.includeAllFolders ?? true,
+        livePreviewIngest: document.getElementById('livePreviewIngest')?.checked ?? currentLibraryScanSettings.livePreviewIngest ?? false,
+        enableSignalAnalysis: document.getElementById('enableSignalAnalysis')?.checked ?? currentLibraryScanSettings.enableSignalAnalysis ?? false
+    };
+}
+
+async function saveLibraryScanSettings(payload = null) {
+    const libraryScanSettings = payload || collectLibraryScanSettings();
+    const response = await fetch('/api/library/settings', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(libraryScanSettings),
+        credentials: 'same-origin'
+    });
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const saved = await response.json();
+    applyLibraryScanSettings(saved);
 }
 
 function loadSettings(settings) {
@@ -2348,7 +2426,6 @@ function loadSettings(settings) {
     setCheckboxValue('watchAlbumGroupCompilation', albumGroups.includes('compilation'));
     setCheckboxValue('watchAlbumGroupAppearsOn', albumGroups.includes('appears_on'));
     
-    setCheckboxValue('autoCheckForUpdates', settings.autoCheckForUpdates);
     setFieldValue('deezerLanguage', settings.deezerLanguage || 'en');
     setFieldValue('deezerCountry', settings.deezerCountry || 'US');
     setCheckboxValue('normalizeGenreTags', settings.normalizeGenreTags === true);
@@ -2356,7 +2433,7 @@ function loadSettings(settings) {
     updateGenreTagAliasRulesState();
     setCheckboxValue('shazamEnabled', settings.shazamEnabled !== false);
     setCheckboxValue('shazamUseCenteredOverlay', settings.shazamUseCenteredOverlay !== false);
-    setFieldValue('shazamCaptureDurationSeconds', settings.shazamCaptureDurationSeconds ?? 7);
+    setFieldValue('shazamCaptureDurationSeconds', settings.shazamCaptureDurationSeconds ?? 11);
     setCheckboxValue('shazamAllowHttpFileFallback', settings.shazamAllowHttpFileFallback !== false);
     setCheckboxValue('shazamRemoteMemoryOnly', settings.shazamRemoteMemoryOnly !== false);
     
@@ -2583,7 +2660,6 @@ function collectFormData() {
         jpegImageQuality: getNumber('jpegImageQuality', baseSettings.jpegImageQuality ?? 90),
 
 
-        autoCheckForUpdates: getChecked('autoCheckForUpdates', baseSettings.autoCheckForUpdates ?? false),
         deezerLanguage: getValue('deezerLanguage', baseSettings.deezerLanguage || 'en'),
         deezerCountry: getValue('deezerCountry', baseSettings.deezerCountry || 'US'),
         normalizeGenreTags: getChecked('normalizeGenreTags', baseSettings.normalizeGenreTags ?? false),
@@ -2591,7 +2667,7 @@ function collectFormData() {
         apiToken: baseSettings.apiToken || '',
         shazamEnabled: getChecked('shazamEnabled', baseSettings.shazamEnabled !== false),
         shazamUseCenteredOverlay: getChecked('shazamUseCenteredOverlay', baseSettings.shazamUseCenteredOverlay !== false),
-        shazamCaptureDurationSeconds: getNumber('shazamCaptureDurationSeconds', baseSettings.shazamCaptureDurationSeconds ?? 7),
+        shazamCaptureDurationSeconds: getNumber('shazamCaptureDurationSeconds', baseSettings.shazamCaptureDurationSeconds ?? 11),
         shazamAllowHttpFileFallback: getChecked('shazamAllowHttpFileFallback', baseSettings.shazamAllowHttpFileFallback !== false),
         shazamRemoteMemoryOnly: getChecked('shazamRemoteMemoryOnly', baseSettings.shazamRemoteMemoryOnly !== false),
         clearQueueOnExit: baseSettings.clearQueueOnExit ?? false,
@@ -2730,6 +2806,7 @@ async function saveSettings(showSuccessToast = true) {
         }
         
         if (response.ok && result?.result !== false) {
+            await saveLibraryScanSettings();
             currentSettings = settings;
             persistAppleNotificationPreference();
             if (showSuccessToast) {
@@ -2804,6 +2881,12 @@ async function resetSettings() {
         
         if (response.ok) {
             loadSettings(result.settings);
+            await saveLibraryScanSettings({
+                fuzzyThreshold: 0.85,
+                includeAllFolders: true,
+                livePreviewIngest: false,
+                enableSignalAnalysis: false
+            });
             showToast('Settings reset to defaults!', 'success');
         } else {
             throw new Error(result.error || 'Failed to reset settings');

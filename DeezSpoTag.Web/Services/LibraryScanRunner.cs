@@ -9,6 +9,7 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class LibraryScanRunner
 {
+    private static readonly bool DefaultLivePreviewIngestEnabled = ReadBooleanEnvironmentVariable("DEEZSPOTAG_LIBRARY_LIVE_INGEST", defaultValue: false);
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
     private readonly LocalLibraryScanner _scanner;
@@ -145,6 +146,7 @@ public sealed class LibraryScanRunner
                 }
 
                 var resumeState = BuildScanResumeState(folderId, enabledFolders, reset);
+                var livePreviewIngestEnabled = await ResolveLivePreviewIngestEnabledAsync(activeCts.Token);
                 if (resumeState.ProgressOffset.ProcessedFiles > 0
                     || resumeState.ProgressOffset.TotalFiles > 0
                     || resumeState.ProgressOffset.ErrorCount > 0)
@@ -171,6 +173,7 @@ public sealed class LibraryScanRunner
                     resumeState.FoldersToScan,
                     resumeState.ProgressOffset,
                     resumeState.ArtistGenres,
+                    livePreviewIngestEnabled,
                     folderId,
                     activeCts.Token);
                 PersistScanInfo(scanResult.ArtistCount, scanResult.AlbumCount, scanResult.TrackCount);
@@ -292,6 +295,7 @@ public sealed class LibraryScanRunner
         List<FolderDto> foldersToScan,
         ScanProgressOffset initialProgressOffset,
         Dictionary<string, HashSet<string>> initialArtistGenres,
+        bool livePreviewIngestEnabled,
         long? requestedFolderId,
         CancellationToken cancellationToken)
     {
@@ -308,6 +312,7 @@ public sealed class LibraryScanRunner
             var folderSnapshot = ScanSingleFolderSnapshot(
                 folder,
                 progressOffset,
+                livePreviewIngestEnabled,
                 out var folderProcessed,
                 out var folderTotal,
                 out var folderErrors,
@@ -530,6 +535,7 @@ public sealed class LibraryScanRunner
     private LibraryConfigStore.LocalLibrarySnapshot ScanSingleFolderSnapshot(
         FolderDto folder,
         ScanProgressOffset progressOffset,
+        bool livePreviewIngestEnabled,
         out int folderProcessed,
         out int folderTotal,
         out int folderErrors,
@@ -560,7 +566,9 @@ public sealed class LibraryScanRunner
         var snapshot = _scanner.Scan(
             [folder],
             progress,
-            partialSnapshot => TryIngestLiveFolderSnapshot(folder, partialSnapshot, cancellationToken),
+            livePreviewIngestEnabled
+                ? partialSnapshot => TryIngestLiveFolderSnapshot(folder, partialSnapshot, cancellationToken)
+                : null,
             cancellationToken);
         folderProcessed = latestProcessed;
         folderTotal = latestTotal;
@@ -596,6 +604,17 @@ public sealed class LibraryScanRunner
 
         var stats = await _repository.GetLibraryStatsAsync(cancellationToken);
         return (stats.TotalArtists, stats.TotalAlbums, stats.TotalTracks);
+    }
+
+    private async Task<bool> ResolveLivePreviewIngestEnabledAsync(CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return DefaultLivePreviewIngestEnabled;
+        }
+
+        var settings = await _repository.GetSettingsAsync(cancellationToken);
+        return settings.LivePreviewIngest;
     }
 
     private void PersistScanInfo(int artistCount, int albumCount, int trackCount)
@@ -813,5 +832,16 @@ public sealed class LibraryScanRunner
         catch (Exception ex) when (ex is not OperationCanceledException) {
             // Best-effort cleanup; scan can still proceed.
         }
+    }
+
+    private static bool ReadBooleanEnvironmentVariable(string variableName, bool defaultValue)
+    {
+        var raw = Environment.GetEnvironmentVariable(variableName);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return defaultValue;
+        }
+
+        return bool.TryParse(raw, out var parsed) ? parsed : defaultValue;
     }
 }

@@ -29,7 +29,7 @@ public sealed class LibraryConfigStore
     {
         if (!_repository.IsConfigured)
         {
-            return new LibrarySettingsDto(0.85m, true);
+            return new LibrarySettingsDto(0.85m, true, false, false);
         }
 
         return _repository.GetSettingsAsync().GetAwaiter().GetResult();

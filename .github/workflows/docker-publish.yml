@@ -204,12 +204,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm --platform linux/amd64 --entrypoint /bin/sh deezspotag-apple-wrapper-audit:${{ steps.commit.outputs.full_sha }} -c '
-          set -e
-          test -x /opt/apple-wrapper/wrapper
-          test -x /opt/apple-wrapper/rootfs/system/bin/main
-          test -x /opt/apple-wrapper/entrypoint.sh
-          '
+          chmod +x scripts/apple-wrapper-runtime-smoke.sh
+          PARITY_TEST_PLATFORM=linux/amd64 \
+            ./scripts/apple-wrapper-runtime-smoke.sh deezspotag-apple-wrapper-audit:${{ steps.commit.outputs.full_sha }}
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -287,12 +284,8 @@ jobs:
           IFS=',' read -ra expected_platforms <<< "${{ matrix.platforms }}"
           for platform in "${expected_platforms[@]}"; do
             docker pull --platform "$platform" "$ref"
-            docker run --rm --platform "$platform" --entrypoint /bin/sh "$ref" -c '
-            set -e
-            test -x /opt/apple-wrapper/wrapper
-            test -x /opt/apple-wrapper/rootfs/system/bin/main
-            test -x /opt/apple-wrapper/entrypoint.sh
-            '
+            PARITY_TEST_PLATFORM="$platform" \
+              ./scripts/apple-wrapper-runtime-smoke.sh "$ref"
           done
 
   release:

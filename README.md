@@ -122,6 +122,7 @@ If your host uses Compose v1, replace `docker compose` with `docker-compose`.
 - Apple auth orchestration uses shared files and wrapper HTTP ports, so Docker daemon access is not required in the app container.
 - `apple-wrapper` image tracks upstream `WorldObservationLog/wrapper` runtime behavior; DeezSpoTag-specific logic is limited to container packaging and control-path integration.
 - Compose maps host `/dev/urandom` and `/dev/random` into wrapper rootfs to avoid distro-specific `mknod` variance.
+- The published wrapper image also bakes the minimal rootfs device nodes and timezone payload required by the upstream wrapper, so startup does not depend on NAS-specific `mknod` behavior.
 - App and wrapper state persist in host bind-mount paths.
 - Compose auto-creates:
   - `DEEZSPOTAG_DATA_PATH`
@@ -173,6 +174,22 @@ This checks:
 - Apple wrapper image startup + shared-control compatibility
 - application HTTP startup on localhost
 - clean-start bootstrap with temporary writable app data
+
+### Local Wrapper Image Build
+
+Build the wrapper image that matches the supported `linux/amd64` release path:
+
+```bash
+./Tools/AppleMusicWrapper/build-image.sh
+```
+
+This builds `deezspotag-apple-wrapper:local-amd64` and runs the wrapper smoke audit:
+
+- static runtime contract (`wrapper`, `main`, baked `/dev` nodes, timezone payload)
+- idle startup without cached Apple session
+- wrapper process launch with shared-control mounts and fake login path
+
+Use this if you want to validate the wrapper image locally before publishing it.
 
 ## Security Notes
 

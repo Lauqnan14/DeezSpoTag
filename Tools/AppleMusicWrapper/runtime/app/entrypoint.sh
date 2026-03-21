@@ -196,6 +196,43 @@ verify_urandom_readable() {
   fi
 }
 
+ensure_timezone_payload() {
+  local source_zoneinfo="/usr/share/zoneinfo"
+  local rootfs_zoneinfo_dirs=(
+    "$ROOTFS_DIR/usr/share/zoneinfo"
+    "$ROOTFS_DIR/system/usr/share/zoneinfo"
+  )
+  local copied_any="0"
+
+  if [[ ! -d "$source_zoneinfo" ]]; then
+    return 0
+  fi
+
+  for zoneinfo_dir in "${rootfs_zoneinfo_dirs[@]}"; do
+    if [[ -f "$zoneinfo_dir/UTC" ]]; then
+      continue
+    fi
+
+    mkdir -p "$zoneinfo_dir"
+    cp -a "$source_zoneinfo/." "$zoneinfo_dir/"
+    copied_any="1"
+  done
+
+  mkdir -p "$ROOTFS_DIR/etc"
+  if [[ ! -f "$ROOTFS_DIR/etc/localtime" && -f "$source_zoneinfo/UTC" ]]; then
+    cp -f "$source_zoneinfo/UTC" "$ROOTFS_DIR/etc/localtime"
+    copied_any="1"
+  fi
+  if [[ ! -f "$ROOTFS_DIR/etc/timezone" ]]; then
+    printf 'UTC\n' > "$ROOTFS_DIR/etc/timezone"
+    copied_any="1"
+  fi
+
+  if [[ "$copied_any" == "1" ]]; then
+    log "hydrated timezone payload into wrapper rootfs."
+  fi
+}
+
 run_wrapper_with_state_tracking() {
   local state_file="$1"
   local transient_flag_file="$2"
@@ -268,6 +305,7 @@ main() {
   ensure_char_device "$DEV_DIR/tty" 5 0
   ensure_char_device "$DEV_DIR/ptmx" 5 2
   verify_urandom_readable
+  ensure_timezone_payload
 
   export ANDROID_DATA="${ANDROID_DATA:-/data}"
   export ANDROID_ROOT="${ANDROID_ROOT:-/system}"

@@ -29,6 +29,8 @@
     let trackModal;
     let rawLyricsModal;
     let currentBrowsePath = '';
+    let currentBrowseDisplayPath = 'Library roots';
+    let currentBrowseParentPath = '';
 
     function uiAlert(message, options = {}) {
         if (globalThis.DeezSpoTag?.ui?.alert) {
@@ -80,6 +82,7 @@
         elements.lrcFromLibraryBtn = document.getElementById('lrcfromlibrarybtn');
         elements.embedToggle = document.querySelector('#lrcEmbedToggle .status');
         elements.rawLyricsImportBtn = document.getElementById('rawLyricsImportBtn');
+        elements.rawLyricsFromLibraryBtn = document.getElementById('rawLyricsFromLibraryBtn');
         elements.rawLyricsInput = document.getElementById('rawLyricsInput');
         elements.browserPath = document.getElementById('browserPath');
         elements.browserList = document.getElementById('browserList');
@@ -169,6 +172,7 @@
         elements.lrcFileBtn?.addEventListener('click', () => elements.lrcFileInput?.click());
         elements.lrcFileInput?.addEventListener('change', handleLrcFileImport);
         elements.rawLyricsImportBtn?.addEventListener('click', importRawLyrics);
+        elements.rawLyricsFromLibraryBtn?.addEventListener('click', loadRawLyricsFromLibrary);
         elements.lrcFromLibraryBtn?.addEventListener('click', loadLrcFromLibrary);
         elements.embedToggle?.parentElement?.addEventListener('click', () => setEmbedLyrics(!state.embedLyrics));
 
@@ -247,6 +251,8 @@
             }
             const payload = await response.json();
             currentBrowsePath = payload.path || '';
+            currentBrowseDisplayPath = payload.displayPath || 'Library roots';
+            currentBrowseParentPath = payload.parentPath || '';
             renderBrowser(payload.entries || []);
         } catch (error) {
             if (elements.browserList) {
@@ -260,7 +266,7 @@
         if (!elements.browserList || !elements.browserPath) {
             return;
         }
-        elements.browserPath.textContent = currentBrowsePath || 'Library roots';
+        elements.browserPath.textContent = currentBrowseDisplayPath || 'Library roots';
         elements.browserList.innerHTML = '';
 
         if (currentBrowsePath) {
@@ -270,7 +276,7 @@
                 <div class="browser-icon"><span class="fa fa-level-up-alt"></span></div>
                 <div class="browser-details">..</div>
             `;
-            up.addEventListener('click', () => openBrowser(parentPath(currentBrowsePath)));
+            up.addEventListener('click', () => openBrowser(currentBrowseParentPath));
             elements.browserList.appendChild(up);
         }
 
@@ -290,6 +296,8 @@
                 icon = 'fa-folder';
             } else if (entry.name.toLowerCase().endsWith('.lrc')) {
                 icon = 'fa-file-lines';
+            } else if (entry.name.toLowerCase().endsWith('.txt')) {
+                icon = 'fa-file-lines';
             }
             item.innerHTML = `
                 <div class="browser-icon"><span class="fa ${icon}"></span></div>
@@ -300,15 +308,6 @@
         });
     }
 
-    function parentPath(path) {
-        let normalized = path;
-        while (normalized.endsWith('/') || normalized.endsWith('\\')) {
-            normalized = normalized.slice(0, -1);
-        }
-        const idx = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
-        return idx > 0 ? normalized.slice(0, idx) : '';
-    }
-
     async function handleBrowserSelect(entry) {
         if (entry.type === 'folder') {
             await openBrowser(entry.path);
@@ -316,6 +315,10 @@
         }
         if (entry.name.toLowerCase().endsWith('.lrc')) {
             await loadLrcFromFile(entry.path);
+            return;
+        }
+        if (entry.name.toLowerCase().endsWith('.txt')) {
+            await loadRawLyricsFromFile(entry.path);
             return;
         }
         await selectAudioFile(entry.path);
@@ -329,7 +332,7 @@
             }
             const info = await response.json();
             state.trackId = null;
-            state.trackInfo = { ...info, sourcePath: info.filePath };
+            state.trackInfo = { ...info, sourceRef: info.fileRef || '' };
             state.audio.src = info.audioUrl;
             state.audio.load();
             elements.statusFileName.textContent = info.fileName || 'Selected file';
@@ -339,7 +342,7 @@
             updateModeState();
             setDefaultMetadataFromPath(info);
             trackModal?.hide();
-            await loadLrcFromFile(info.filePath, true);
+            await loadLrcFromFile(info.fileRef, true);
         } catch (error) {
             console.debug('Audio load failed', error);
             uiAlert('Failed to load audio file.', { title: 'Audio Load Failed' });
@@ -355,7 +358,7 @@
 
             const info = await response.json();
             state.trackId = Number(info.trackId || trackId);
-            state.trackInfo = { ...info, sourcePath: info.filePath || '' };
+            state.trackInfo = { ...info, sourceRef: info.fileRef || '' };
             state.audio.src = info.audioUrl;
             state.audio.load();
             elements.statusFileName.textContent = info.title || 'Selected track';
@@ -487,11 +490,7 @@
             rawLyricsModal?.hide();
             return;
         }
-        const lines = raw.split(/\r?\n/);
-        state.entries = lines.map(line => ({ timeMs: null, text: line.trim() }));
-        state.activeIndex = 0;
-        state.syncHandleIndex = 0;
-        renderEntries();
+        applyRawLyricsText(raw);
         rawLyricsModal?.hide();
     }
 
@@ -521,6 +520,9 @@
     }
 
     async function loadLrcFromFile(path, silent = false) {
+        if (!path) {
+            return;
+        }
         try {
             const response = await fetch(`/api/lrc/file/lrc?path=${encodeURIComponent(path)}`);
             if (!response.ok) {
@@ -537,6 +539,61 @@
             }
             console.debug('LRC file load failed', error);
         }
+    }
+
+    async function loadRawLyricsFromLibrary(silent = false) {
+        if (!state.trackInfo?.txtUrl) {
+            if (!silent) {
+                uiAlert('Select a track first.', { title: 'No Track Selected' });
+            }
+            return;
+        }
+        try {
+            const response = await fetch(state.trackInfo.txtUrl);
+            if (!response.ok) {
+                if (!silent) {
+                    uiAlert('No existing .TXT file found for this track.', { title: 'TXT Not Found' });
+                }
+                return;
+            }
+            const payload = await response.json();
+            applyRawLyricsText(payload.content || '');
+        } catch (error) {
+            if (!silent) {
+                uiAlert('Failed to load TXT file.', { title: 'TXT Load Failed' });
+            }
+            console.debug('TXT library load failed', error);
+        }
+    }
+
+    async function loadRawLyricsFromFile(path, silent = false) {
+        if (!path) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/lrc/file/txt?path=${encodeURIComponent(path)}`);
+            if (!response.ok) {
+                if (!silent) {
+                    uiAlert('TXT file not found.', { title: 'TXT Not Found' });
+                }
+                return;
+            }
+            const payload = await response.json();
+            applyRawLyricsText(payload.content || '');
+        } catch (error) {
+            if (!silent) {
+                uiAlert('Failed to load TXT file.', { title: 'TXT Load Failed' });
+            }
+            console.debug('TXT file load failed', error);
+        }
+    }
+
+    function applyRawLyricsText(content) {
+        const lines = (content || '').split(/\r?\n/);
+        state.entries = lines.length ? lines.map(line => ({ timeMs: null, text: line.trim() })) : [{ timeMs: null, text: '' }];
+        state.activeIndex = 0;
+        state.syncHandleIndex = 0;
+        renderEntries();
     }
 
     function applyParsedLrc(content) {
@@ -1077,14 +1134,14 @@
                 uiAlert('Saved to library.', { title: 'Save Complete' });
                 return;
             }
-            if (!state.trackInfo?.sourcePath) {
+            if (!state.trackInfo?.sourceRef) {
                 uiAlert('Select an audio file first.', { title: 'No Audio Selected' });
                 return;
             }
             const response = await fetch('/api/lrc/file/lrc', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: state.trackInfo.sourcePath, content })
+                body: JSON.stringify({ path: state.trackInfo.sourceRef, content })
             });
             if (!response.ok) {
                 throw new Error('Save failed');

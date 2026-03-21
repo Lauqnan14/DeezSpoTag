@@ -1728,8 +1728,22 @@ async function logLibraryActivity(message, level = 'info') {
 
 async function loadLibrarySettings() {
     const settings = await fetchJson('/api/library/settings');
-    document.getElementById('fuzzyThreshold').value = settings.fuzzyThreshold ?? settings.FuzzyThreshold ?? 0.85;
-    document.getElementById('includeAllFolders').checked = settings.includeAllFolders ?? settings.IncludeAllFolders ?? true;
+    const fuzzyThreshold = document.getElementById('fuzzyThreshold');
+    const includeAllFolders = document.getElementById('includeAllFolders');
+    const livePreviewIngest = document.getElementById('livePreviewIngest');
+    const enableSignalAnalysis = document.getElementById('enableSignalAnalysis');
+    if (fuzzyThreshold) {
+        fuzzyThreshold.value = settings.fuzzyThreshold ?? settings.FuzzyThreshold ?? 0.85;
+    }
+    if (includeAllFolders) {
+        includeAllFolders.checked = settings.includeAllFolders ?? settings.IncludeAllFolders ?? true;
+    }
+    if (livePreviewIngest) {
+        livePreviewIngest.checked = settings.livePreviewIngest ?? settings.LivePreviewIngest ?? false;
+    }
+    if (enableSignalAnalysis) {
+        enableSignalAnalysis.checked = settings.enableSignalAnalysis ?? settings.EnableSignalAnalysis ?? false;
+    }
 }
 
 function getLibraryScanStatusElements() {
@@ -1940,15 +1954,27 @@ async function refreshArtistsDuringActiveScan(status) {
 }
 
 async function saveLibrarySettings() {
-    const threshold = Number.parseFloat(document.getElementById('fuzzyThreshold').value || '0.85');
-    const includeAll = document.getElementById('includeAllFolders').checked;
+    const fuzzyThreshold = document.getElementById('fuzzyThreshold');
+    const includeAllFolders = document.getElementById('includeAllFolders');
+    const livePreviewIngest = document.getElementById('livePreviewIngest');
+    const enableSignalAnalysis = document.getElementById('enableSignalAnalysis');
+    const payload = {};
+    if (fuzzyThreshold) {
+        payload.fuzzyThreshold = Number.parseFloat(fuzzyThreshold.value || '0.85');
+    }
+    if (includeAllFolders) {
+        payload.includeAllFolders = includeAllFolders.checked;
+    }
+    if (livePreviewIngest) {
+        payload.livePreviewIngest = livePreviewIngest.checked;
+    }
+    if (enableSignalAnalysis) {
+        payload.enableSignalAnalysis = enableSignalAnalysis.checked;
+    }
     await fetchJson('/api/library/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            fuzzyThreshold: threshold,
-            includeAllFolders: includeAll
-        })
+        body: JSON.stringify(payload)
     });
     showToast('Settings saved.');
 }

@@ -48,7 +48,11 @@ public class LibrarySettingsApiController : ControllerBase
         return await _repository.GetSettingsAsync(cancellationToken);
     }
 
-    public sealed record UpdateSettingsRequest(decimal? FuzzyThreshold, bool? IncludeAllFolders);
+    public sealed record UpdateSettingsRequest(
+        decimal? FuzzyThreshold,
+        bool? IncludeAllFolders,
+        bool? LivePreviewIngest,
+        bool? EnableSignalAnalysis);
 
     [HttpPost]
     public async Task<IActionResult> Update([FromBody] UpdateSettingsRequest request, CancellationToken cancellationToken)
@@ -61,7 +65,9 @@ public class LibrarySettingsApiController : ControllerBase
         var existing = await GetSettingsWithRetryAsync(cancellationToken);
         var update = new LibrarySettingsDto(
             request.FuzzyThreshold ?? existing.FuzzyThreshold,
-            request.IncludeAllFolders ?? existing.IncludeAllFolders);
+            request.IncludeAllFolders ?? existing.IncludeAllFolders,
+            request.LivePreviewIngest ?? existing.LivePreviewIngest,
+            request.EnableSignalAnalysis ?? existing.EnableSignalAnalysis);
         var updated = await _repository.UpdateSettingsAsync(update, cancellationToken);
         return Ok(updated);
     }
