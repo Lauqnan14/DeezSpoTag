@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="/opt/apple-wrapper"
 ROOTFS_DIR="$ROOT_DIR/rootfs"
 DEV_DIR="$ROOTFS_DIR/dev"
+WRAPPER_BINARY_DEFAULT="$ROOT_DIR/wrapper"
 DEFAULT_WRAPPER_ARGS="-H 0.0.0.0 -D 10020 -M 20020 -A 30020"
 LOGIN_FILE_DEFAULT="/opt/apple-wrapper/data/wrapper-login.txt"
 LOGIN_ENV_MARKER_DEFAULT="/opt/apple-wrapper/data/.wrapper-login-env.sha256"
@@ -37,6 +38,16 @@ require_file() {
     log "required file missing: $path"
     exit 1
   fi
+}
+
+resolve_wrapper_binary() {
+  local configured="${WRAPPER_EXECUTABLE:-${WRAPPER_BINARY:-}}"
+  if [[ -n "$configured" ]]; then
+    printf '%s' "$configured"
+    return 0
+  fi
+
+  printf '%s' "$WRAPPER_BINARY_DEFAULT"
 }
 
 resolve_wrapper_args() {
@@ -234,9 +245,11 @@ ensure_timezone_payload() {
 }
 
 run_wrapper_with_state_tracking() {
-  local state_file="$1"
-  local transient_flag_file="$2"
-  local response_type_file="$3"
+  local wrapper_binary="$1"
+  local state_file="$2"
+  local transient_flag_file="$3"
+  local response_type_file="$4"
+  shift
   shift
   shift
   shift
@@ -246,7 +259,7 @@ run_wrapper_with_state_tracking() {
   set_wrapper_runtime_flag "$transient_flag_file" "0"
   set_wrapper_runtime_flag "$response_type_file" ""
 
-  "$ROOT_DIR/wrapper" "$@" 2> >(
+  "$wrapper_binary" "$@" 2> >(
     while IFS= read -r line; do
       printf '%s\n' "$line" >&2
       case "$line" in
@@ -292,7 +305,10 @@ should_retry_login() {
 }
 
 main() {
-  require_file "$ROOT_DIR/wrapper"
+  local wrapper_binary
+  wrapper_binary="$(resolve_wrapper_binary)"
+
+  require_file "$wrapper_binary"
   require_file "$ROOTFS_DIR/system/bin/main"
 
   ensure_runtime_layout
@@ -334,7 +350,9 @@ main() {
     set_wrapper_runtime_flag "$transient_flag_file" "0"
     set_wrapper_runtime_flag "$response_type_file" ""
     local exit_code=0
-    if ! run_wrapper_with_state_tracking "$two_factor_state_file" "$transient_flag_file" "$response_type_file" "${wrapper_args[@]}"; then
+    if run_wrapper_with_state_tracking "$wrapper_binary" "$two_factor_state_file" "$transient_flag_file" "$response_type_file" "${wrapper_args[@]}"; then
+      exit_code=0
+    else
       exit_code=$?
     fi
     if [[ "$exit_code" -eq 0 ]]; then

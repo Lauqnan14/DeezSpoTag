@@ -43,6 +43,8 @@ public sealed record AppleMusicWrapperHealthResult(
     bool HasDevToken,
     bool HasMusicToken,
     string? StorefrontId,
+    bool SharedControlReady,
+    string? SharedControlDetails,
     AppleMusicWrapperHelperResult HelperStatus);
 
 public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IAppleWrapperStatusProvider
@@ -653,7 +655,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         var helper = await GetExternalWrapperHelperStatusAsync(cancellationToken);
         var context = await BuildWrapperHealthContextAsync(helper, cancellationToken);
         var runningHint = IsWrapperRunningHint(helper.Output ?? helper.Error);
-        var accepting = context.PortsOpen;
+        var accepting = context.PortsOpen || context.SharedControlReady;
         var message = BuildWrapperHealthMessage(helper, context, runningHint);
 
         return new AppleMusicWrapperHealthResult(
@@ -665,6 +667,8 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             context.HasDevToken,
             context.HasMusicToken,
             context.StorefrontId,
+            context.SharedControlReady,
+            context.SharedControlDetails,
             helper);
     }
 
@@ -679,6 +683,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             context = CreateWrapperHealthContext();
         }
 
+        ResolveWrapperHealthSharedControl(context);
         ResolveWrapperHealthAccountInfo(context);
         return context;
     }
@@ -728,6 +733,61 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         }
     }
 
+    private static void ResolveWrapperHealthSharedControl(WrapperHealthContext context)
+    {
+        if (IsHelperControlModeEnabled())
+        {
+            context.SharedControlReady = false;
+            context.SharedControlDetails = "Shared wrapper control is not active.";
+            return;
+        }
+
+        var dataPath = ResolveExternalWrapperSharedDataDir();
+        var sessionPath = Path.Combine(ResolveExternalWrapperSharedSessionDir(), "files");
+        var dataReady = TryProbeSharedControlPath(dataPath, ".wrapper-health-probe-data", out var dataError);
+        var sessionReady = TryProbeSharedControlPath(sessionPath, ".wrapper-health-probe-session", out var sessionError);
+
+        context.SharedControlReady = dataReady && sessionReady;
+        if (context.SharedControlReady)
+        {
+            context.SharedControlDetails = $"Shared wrapper control paths writable ({dataPath}, {sessionPath}).";
+            return;
+        }
+
+        var parts = new List<string>();
+        if (!dataReady)
+        {
+            parts.Add($"data path not writable: {dataPath} ({dataError})");
+        }
+
+        if (!sessionReady)
+        {
+            parts.Add($"session path not writable: {sessionPath} ({sessionError})");
+        }
+
+        context.SharedControlDetails = parts.Count > 0
+            ? string.Join("; ", parts)
+            : "Shared wrapper control paths unavailable.";
+    }
+
+    private static bool TryProbeSharedControlPath(string path, string probeFileName, out string? error)
+    {
+        error = null;
+        try
+        {
+            Directory.CreateDirectory(path);
+            var probePath = Path.Combine(path, probeFileName);
+            File.WriteAllText(probePath, "probe");
+            File.Delete(probePath);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
     private static bool IsWrapperRunningHint(string? output)
     {
         var value = output ?? string.Empty;
@@ -740,6 +800,11 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         WrapperHealthContext context,
         bool runningHint)
     {
+        if (!context.PortsOpen && context.SharedControlReady)
+        {
+            return "Shared wrapper control paths are writable. Queue Apple credentials to start wrapper login; ports 10020/20020 will open after the wrapper begins authentication.";
+        }
+
         if (!helper.Success && !context.PortsOpen)
         {
             if (IsDockerSocketPermissionDeniedError(helper.Error))
@@ -2254,6 +2319,8 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         public bool HasDevToken { get; set; }
         public bool HasMusicToken { get; set; }
         public string? StorefrontId { get; set; }
+        public bool SharedControlReady { get; set; }
+        public string? SharedControlDetails { get; set; }
     }
 
     private sealed class ExternalStatusContext
