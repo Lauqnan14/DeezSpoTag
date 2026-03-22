@@ -3462,6 +3462,59 @@
         }
     }
 
+    function buildFolderUniformityProgressMessage(status) {
+        const phase = String(status?.phase || "Running folder uniformity...");
+        const percent = Number(status?.percentComplete ?? 0);
+        const completedSteps = Number(status?.completedSteps ?? 0);
+        const totalSteps = Number(status?.totalSteps ?? 0);
+        const folderProgress = `${Number(status?.foldersProcessed ?? 0) + Number(status?.foldersSkipped ?? 0)}/${Number(status?.totalFolders ?? 0)}`;
+        if (totalSteps > 0) {
+            return `${phase} (${percent}%) - ${completedSteps}/${totalSteps} steps - ${folderProgress} folders`;
+        }
+
+        return `${phase} (${percent}%) - ${folderProgress} folders`;
+    }
+
+    async function pollFolderUniformityStatus(jobId) {
+        const id = String(jobId || "").trim();
+        if (!id) {
+            throw new Error("Folder uniformity job id was not provided by the server.");
+        }
+
+        let transientFailures = 0;
+        let latestStatus = null;
+        while (true) {
+            try {
+                const response = await fetch(`/api/autotag/enhancement/folder-uniformity/status?jobId=${encodeURIComponent(id)}`);
+                if (!response.ok) {
+                    const payload = await response.json().catch(() => null);
+                    const message = payload?.error || payload?.message || `Request failed (${response.status})`;
+                    throw new Error(message);
+                }
+
+                latestStatus = await response.json();
+                transientFailures = 0;
+                setEnhancementStatus("folderUniformityStatus", buildFolderUniformityProgressMessage(latestStatus));
+
+                if (Array.isArray(latestStatus?.reconciliationReports)) {
+                    renderFolderUniformityReports(latestStatus.reconciliationReports);
+                }
+
+                const runStatus = String(latestStatus?.status || "").toLowerCase();
+                if (runStatus && runStatus !== "running") {
+                    return latestStatus;
+                }
+            } catch (error) {
+                transientFailures += 1;
+                if (transientFailures >= 4) {
+                    throw error;
+                }
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+    }
+
     async function runFolderUniformity() {
         const button = el("runFolderUniformity");
         if (button) {
@@ -3473,8 +3526,8 @@
             const options = config.enhancement.folderUniformity;
             const technical = readTechnicalSettingsFromUI(getActiveProfile()?.technical || null);
             renderFolderUniformityReports([]);
-            setEnhancementStatus("folderUniformityStatus", "Running folder uniformity checks...");
-            const response = await fetch("/api/autotag/enhancement/folder-uniformity", {
+            setEnhancementStatus("folderUniformityStatus", "Starting folder uniformity run...");
+            const startResponse = await fetch("/api/autotag/enhancement/folder-uniformity/start", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -3503,12 +3556,22 @@
                     includeSubfolders: config.includeSubfolders !== false
                 })
             });
-            const payload = await response.json().catch(() => null);
-            if (!response.ok) {
-                const message = payload?.error || payload?.message || `Request failed (${response.status})`;
+            const startPayload = await startResponse.json().catch(() => null);
+            if (!startResponse.ok) {
+                const message = startPayload?.error || startPayload?.message || `Request failed (${startResponse.status})`;
                 throw new Error(message);
             }
 
+            const jobId = String(startPayload?.jobId || startPayload?.state?.jobId || "").trim();
+            if (!jobId) {
+                throw new Error("Folder uniformity job did not return a valid id.");
+            }
+
+            if (startPayload?.started === false) {
+                setEnhancementStatus("folderUniformityStatus", "Folder uniformity is already running. Monitoring current progress...");
+            }
+
+            const payload = await pollFolderUniformityStatus(jobId);
             const foldersProcessed = Number(payload?.foldersProcessed ?? 0);
             const foldersSkipped = Number(payload?.foldersSkipped ?? 0);
             const dedupe = payload?.dedupe;
@@ -3520,10 +3583,12 @@
                 : "";
             const summary = payload?.skipped
                 ? String(payload?.message || "Folder uniformity skipped.")
-                : `Folder uniformity finished: ${foldersProcessed} processed, ${foldersSkipped} skipped.${dedupeSummary}${reportSummary}`;
+                : String(payload?.message || `Folder uniformity finished: ${foldersProcessed} processed, ${foldersSkipped} skipped.`) + dedupeSummary + reportSummary;
             renderFolderUniformityReports(payload?.reconciliationReports);
             setEnhancementStatus("folderUniformityStatus", summary);
-            showToast(summary, payload?.success === false ? "warning" : "success");
+            const normalizedStatus = String(payload?.status || "").toLowerCase();
+            const failed = normalizedStatus === "error" || normalizedStatus === "canceled" || payload?.success === false;
+            showToast(summary, failed ? "warning" : "success");
         } catch (error) {
             const message = `Folder uniformity failed: ${error?.message || error}`;
             renderFolderUniformityReports([]);
