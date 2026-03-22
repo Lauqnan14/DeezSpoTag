@@ -9,7 +9,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/shazam")]
 public sealed class ShazamRecognitionApiController : ControllerBase
 {
-    private const long MaxUploadBytes = 16 * 1024 * 1024;
+    private const long MaxUploadBytes = 128 * 1024 * 1024;
 
     private readonly ShazamRecognitionService _recognitionService;
     private readonly ShazamDiscoveryService _discoveryService;

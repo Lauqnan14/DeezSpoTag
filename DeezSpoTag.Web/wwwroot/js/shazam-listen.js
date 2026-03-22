@@ -637,6 +637,33 @@
         globalThis.location.href = `/Shazam/Results?${params.toString()}`;
     };
 
+    const extractShazamApiError = (payload) => {
+        if (!payload || typeof payload !== 'object') {
+            return null;
+        }
+
+        if (typeof payload.error === 'string' && payload.error.trim()) {
+            return payload.error.trim();
+        }
+
+        if (payload.errors && typeof payload.errors === 'object') {
+            const firstKey = Object.keys(payload.errors)[0];
+            const firstValue = firstKey ? payload.errors[firstKey] : null;
+            if (Array.isArray(firstValue) && firstValue.length > 0) {
+                const firstMessage = String(firstValue[0] || '').trim();
+                if (firstMessage) {
+                    return firstMessage;
+                }
+            }
+        }
+
+        if (typeof payload.title === 'string' && payload.title.trim()) {
+            return payload.title.trim();
+        }
+
+        return null;
+    };
+
     const runRecognitionFromBlob = async (audioBlob, filename) => {
         setState('searching');
 
@@ -657,13 +684,15 @@
 
             if (!response.ok) {
                 const reason = payload?.reason;
-                const detail = payload?.error;
+                const detail = extractShazamApiError(payload);
                 setState('error');
 
                 if (reason === 'recognizer_unavailable') {
                     notify(detail || 'Shazam recognizer is unavailable on the server.', 'error');
                 } else if (reason === 'recognizer_error') {
                     notify(detail || 'Shazam recognizer failed while processing this sample.', 'error');
+                } else if (detail && detail.toLowerCase().includes('request body too large')) {
+                    notify('Selected audio file is too large for upload. Choose a smaller clip or use microphone capture.', 'error');
                 } else {
                     notify(detail || `Shazam lookup failed (${response.status}).`, 'error');
                 }
@@ -759,6 +788,9 @@
             });
 
             audioContext = new AudioContextCtor();
+            if (typeof audioContext.resume === 'function' && audioContext.state !== 'running') {
+                await audioContext.resume();
+            }
             sampleRate = audioContext.sampleRate || 44100;
             sourceNode = audioContext.createMediaStreamSource(stream);
             processor = audioContext.createScriptProcessor(4096, 1, 1);
@@ -774,6 +806,14 @@
 
             sourceNode.connect(processor);
             processor.connect(audioContext.destination);
+
+            if (typeof audioContext.resume === 'function' && audioContext.state !== 'running') {
+                await audioContext.resume();
+            }
+            if (audioContext.state !== 'running') {
+                throw new Error(`AudioContext is ${audioContext.state}.`);
+            }
+
             setState('listening');
 
             autoStopTimer = globalThis.setTimeout(() => {
@@ -810,7 +850,7 @@
 
         if (capturedChunks.length === 0) {
             setState('error');
-            notify('No audio captured. Try again.', 'warning');
+            notify('No audio frames were captured from the microphone. Verify mic access for this exact site and retry.', 'warning');
             globalThis.setTimeout(() => setState('idle'), 1500);
             return;
         }
