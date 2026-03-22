@@ -4933,6 +4933,16 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
     const playbackSource = (requestSource || tracklistSource || 'deezer').toLowerCase();
     const isPodcastShow = String(tracklistType || '').toLowerCase() === 'show';
     const forceFullStream = playbackSource === 'deezer' || isDeezerSource();
+    const resolveExternalDeezerId = (track) => {
+        if (!track) {
+            return '';
+        }
+
+        const candidate = playbackSource === 'boomplay'
+            ? String(track.deezerId || track.deezer_id || '').trim()
+            : String(track.deezerId || track.deezer_id || track.id || '').trim();
+        return /^\d+$/.test(candidate) ? candidate : '';
+    };
     tracks.forEach((track) => {
         if (!track.id && !track.deezerId && !track.deezer_id) {
             return;
@@ -4941,10 +4951,8 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
             return;
         }
         if (playbackSource !== 'apple') {
-            const deezerCandidate = playbackSource === 'boomplay'
-                ? String(track.deezerId || track.deezer_id || '').trim()
-                : String(track.deezerId || track.deezer_id || track.id || '').trim();
-            if (deezerCandidate && /^\d+$/.test(deezerCandidate)) {
+            const deezerCandidate = resolveExternalDeezerId(track);
+            if (deezerCandidate) {
                 const playbackContext = extractDeezerPlaybackContextFromTrack(track);
                 if (playbackContext) {
                     deezerPlaybackContextCache.set(deezerCandidate, playbackContext);
@@ -4985,10 +4993,9 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
         const availabilityTitleAttr = track.title ? ` data-availability-title="${escapeHtml(track.title)}"` : '';
         const availabilityArtistAttr = artistName ? ` data-availability-artist="${escapeHtml(artistName)}"` : '';
         const availabilityDurationAttr = track.duration ? ` data-availability-duration="${Math.round(track.duration * 1000)}"` : '';
-        const deezerCandidate = playbackSource === 'deezer'
+        const deezerId = playbackSource === 'deezer'
             ? String(track.deezerId || track.deezer_id || track.id || '').trim()
-            : String(track.deezerId || track.deezer_id || '').trim();
-        const deezerId = deezerCandidate && /^\d+$/.test(deezerCandidate) ? deezerCandidate : '';
+            : resolveExternalDeezerId(track);
         const availabilityDeezerAttr = deezerId ? ` data-availability-deezer-id="${escapeHtml(deezerId)}"` : '';
         const playbackContext = extractDeezerPlaybackContextFromTrack(track);
         if (deezerId && playbackContext) {

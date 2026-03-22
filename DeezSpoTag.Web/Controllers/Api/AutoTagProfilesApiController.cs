@@ -12,10 +12,14 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public class AutoTagProfilesApiController : ControllerBase
 {
     private readonly TaggingProfileService _profiles;
+    private readonly AutoTagProfileResolutionService _profileResolutionService;
 
-    public AutoTagProfilesApiController(TaggingProfileService profiles)
+    public AutoTagProfilesApiController(
+        TaggingProfileService profiles,
+        AutoTagProfileResolutionService profileResolutionService)
     {
         _profiles = profiles;
+        _profileResolutionService = profileResolutionService;
     }
 
     public sealed record LegacyAutoTagProfileRequest(string Name, JsonElement? Config);
@@ -60,7 +64,7 @@ public class AutoTagProfilesApiController : ControllerBase
     }
 
     [HttpDelete("{name}")]
-    public async Task<IActionResult> Delete(string name)
+    public async Task<IActionResult> Delete(string name, CancellationToken cancellationToken)
     {
         var profiles = await _profiles.LoadAsync();
         var existing = profiles.FirstOrDefault(item =>
@@ -71,6 +75,10 @@ public class AutoTagProfilesApiController : ControllerBase
         }
 
         var removed = await _profiles.DeleteAsync(existing.Id);
+        if (removed)
+        {
+            await _profileResolutionService.RemoveDeletedProfileReferencesAsync(existing.Id, existing.Name, cancellationToken);
+        }
         return Ok(new { removed });
     }
 

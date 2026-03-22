@@ -270,10 +270,10 @@ public class SpotifyCacheApiController : ControllerBase
             artistId.ToString()));
 
         var avatarVisual = includeAvatar
-            ? ResolvePushVisualSelection(managedArtistVisualRoot, request.AvatarImagePath, request.AvatarVisualUrl)
+            ? ResolveVisualSelection(managedArtistVisualRoot, request.AvatarImagePath, request.AvatarVisualUrl)
             : null;
         var backgroundVisual = includeBackground
-            ? ResolvePushVisualSelection(managedArtistVisualRoot, request.BackgroundImagePath, request.BackgroundVisualUrl)
+            ? ResolveVisualSelection(managedArtistVisualRoot, request.BackgroundImagePath, request.BackgroundVisualUrl)
             : null;
         var biography = includeBio ? (request.Biography ?? string.Empty).Trim() : null;
 
@@ -282,7 +282,7 @@ public class SpotifyCacheApiController : ControllerBase
             && string.IsNullOrWhiteSpace(request.AvatarImagePath)
             && string.IsNullOrWhiteSpace(request.AvatarVisualUrl))
         {
-            avatarVisual = ResolvePushVisualSelection(managedArtistVisualRoot, request.ImagePath, null);
+            avatarVisual = ResolveVisualSelection(managedArtistVisualRoot, request.ImagePath, null);
         }
 
         return (
@@ -706,12 +706,6 @@ public class SpotifyCacheApiController : ControllerBase
         }
 
         return null;
-    }
-
-    private static ResolvedVisualSelection? ResolvePushVisualSelection(string artistVisualRoot, string? explicitLocalPath, string? visualUrl)
-    {
-        var localPath = TryResolveLocalVisualPath(artistVisualRoot, explicitLocalPath, visualUrl);
-        return string.IsNullOrWhiteSpace(localPath) ? null : new ResolvedVisualSelection(localPath, null);
     }
 
     private static ResolvedVisualSelection? ResolveVisualSelection(string cacheRoot, string? explicitLocalPath, string? visualUrl)

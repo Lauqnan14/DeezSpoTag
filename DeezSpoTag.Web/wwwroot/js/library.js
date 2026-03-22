@@ -2877,6 +2877,9 @@ function initSpotifyCacheControls(artistId) {
         if (missingItems.length > 0) {
             showToast(`${missingItems.join(' and ')} not set in app visuals, pushing remaining items only.`, true);
         }
+        if (selection.includeBio && !selection.biography) {
+            showToast('Background info is empty, so background info push will be skipped.', true);
+        }
 
         const { includeAvatar, includeBackground, includeBio, payload } = buildSpotifySyncPayload(
             artistId,
@@ -3827,21 +3830,41 @@ function applyPersistedArtistVisualResult(artistId, result, prefs) {
 function getSpotifySyncSelectionState(artistId) {
     const requestedAvatar = document.getElementById('sync-include-avatar')?.checked ?? true;
     const requestedBackground = document.getElementById('sync-include-background')?.checked ?? true;
-    const includeBio = document.getElementById('sync-include-bio')?.checked ?? false;
+    const includeBio = document.getElementById('sync-include-bio')?.checked ?? true;
     const prefs = loadArtistVisualPrefs(artistId) || {};
     const serverAvatarPath = (libraryState.artistVisuals?.preferredAvatarPath || '').toString().trim();
     const serverBackgroundPath = (libraryState.artistVisuals?.preferredBackgroundPath || '').toString().trim();
+    const avatarImagePath = requestedAvatar
+        ? resolveManagedArtistVisualPath(artistId, prefs.avatarPath, serverAvatarPath)
+        : null;
+    const backgroundImagePath = requestedBackground
+        ? resolveManagedArtistVisualPath(artistId, prefs.backgroundPath, serverBackgroundPath)
+        : null;
+    const avatarVisualUrl = requestedAvatar
+        ? normalizeArtistVisualUrl(
+            prefs.avatarUrl
+            || (avatarImagePath ? buildLibraryImageUrl(avatarImagePath, 320) : '')
+            || selectImage(libraryState.currentSpotifyArtist?.images, 'medium')
+            || selectImage(libraryState.currentSpotifyArtist?.images, 'small')
+        )
+        : null;
+    const backgroundVisualUrl = requestedBackground
+        ? normalizeArtistVisualUrl(
+            prefs.backgroundUrl
+            || (backgroundImagePath ? buildLibraryImageUrl(backgroundImagePath) : '')
+            || libraryState.artistVisuals.headerImageUrl
+            || selectImage(libraryState.currentSpotifyArtist?.images, 'large')
+        )
+        : null;
 
     return {
         requestedAvatar,
         requestedBackground,
         includeBio,
-        avatarImagePath: requestedAvatar
-            ? resolveManagedArtistVisualPath(artistId, prefs.avatarPath, serverAvatarPath)
-            : null,
-        backgroundImagePath: requestedBackground
-            ? resolveManagedArtistVisualPath(artistId, prefs.backgroundPath, serverBackgroundPath)
-            : null,
+        avatarImagePath,
+        avatarVisualUrl: avatarVisualUrl || null,
+        backgroundImagePath,
+        backgroundVisualUrl: backgroundVisualUrl || null,
         biography: includeBio
             ? (libraryState.currentSpotifyArtist?.biography || '').toString().trim() || null
             : null
@@ -3850,10 +3873,10 @@ function getSpotifySyncSelectionState(artistId) {
 
 function getSpotifySyncMissingItems(selection) {
     const missingItems = [];
-    if (selection.requestedAvatar && !selection.avatarImagePath) {
+    if (selection.requestedAvatar && !selection.avatarImagePath && !selection.avatarVisualUrl) {
         missingItems.push('avatar');
     }
-    if (selection.requestedBackground && !selection.backgroundImagePath) {
+    if (selection.requestedBackground && !selection.backgroundImagePath && !selection.backgroundVisualUrl) {
         missingItems.push('background art');
     }
     return missingItems;
@@ -3862,10 +3885,6 @@ function getSpotifySyncMissingItems(selection) {
 function validateSpotifySyncSelection(selection, missingItems) {
     if (!selection.requestedAvatar && !selection.requestedBackground && !selection.includeBio) {
         showToast('Select at least one item to sync.', true);
-        return false;
-    }
-    if (selection.includeBio && !selection.biography) {
-        showToast('No biography loaded yet — load the artist page fully first.', true);
         return false;
     }
     if (missingItems.length > 0 && !selection.includeBio) {
@@ -3888,9 +3907,9 @@ function buildSpotifySyncPayload(artistId, target, selection) {
             includeBackground,
             includeBio: selection.includeBio,
             avatarImagePath: selection.avatarImagePath || null,
-            avatarVisualUrl: includeAvatar ? buildLibraryImageUrl(selection.avatarImagePath, 320) : null,
+            avatarVisualUrl: includeAvatar ? (selection.avatarVisualUrl || null) : null,
             backgroundImagePath: selection.backgroundImagePath || null,
-            backgroundVisualUrl: includeBackground ? buildLibraryImageUrl(selection.backgroundImagePath) : null,
+            backgroundVisualUrl: includeBackground ? (selection.backgroundVisualUrl || null) : null,
             biography: selection.biography || null,
             target: target || 'plex'
         }
@@ -3911,7 +3930,7 @@ function showSpotifySyncUpdateResult(result) {
     if (updatedParts.length > 0) {
         showToast(`Server updated: ${updatedParts.join(' + ')}.`, false);
     } else {
-        showToast('Push completed — no items were updated on the media server.', true);
+        showToast('Push incomplete — no items were updated on the media server.', true);
     }
 
     showSpotifySyncWarnings(result);

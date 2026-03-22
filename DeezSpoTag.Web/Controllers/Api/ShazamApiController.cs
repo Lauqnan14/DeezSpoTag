@@ -56,7 +56,10 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             await CopyUploadedAudioAsync(audio, tempPath, cancellationToken);
 
             var captureDurationSeconds = ResolveCaptureDurationSeconds();
-            var attempt = _recognitionService.RecognizeWithDetails(tempPath, cancellationToken, captureDurationSeconds);
+            var attempt = _recognitionService.RecognizeWithDetails(
+                tempPath,
+                captureDurationSeconds,
+                cancellationToken);
             if (!attempt.Matched)
             {
                 return BuildNoMatchResponse(attempt);
@@ -212,13 +215,13 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         return BuildMatchPayload(recognition, query, track, related, fallbackSearch);
     }
 
-    private object BuildMinimalMatchPayload(ShazamRecognitionInfo recognition)
+    private static object BuildMinimalMatchPayload(ShazamRecognitionInfo recognition)
     {
         var query = BuildQuery(recognition);
         return BuildMatchPayload(recognition, query, track: null, related: Array.Empty<ShazamTrackCard>(), fallbackSearch: Array.Empty<ShazamTrackCard>());
     }
 
-    private object BuildMatchPayload(
+    private static object BuildMatchPayload(
         ShazamRecognitionInfo recognition,
         string? query,
         ShazamTrackCard? track,

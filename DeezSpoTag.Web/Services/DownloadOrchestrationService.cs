@@ -4,6 +4,7 @@ using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Integrations.Plex;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -21,10 +22,15 @@ public sealed class DownloadOrchestrationService : BackgroundService
         TimeSpan? ScheduleInterval,
         bool IsDue,
         DateTimeOffset? LastRunAtUtc);
-    private sealed record AutomationProfileContext(List<TaggingProfile> Profiles, AutoTagDefaultsDto Defaults, TaggingProfile? DefaultProfile);
+    private sealed record AutomationProfileContext(
+        List<TaggingProfile> Profiles,
+        AutoTagDefaultsDto Defaults,
+        TaggingProfile? DefaultProfile,
+        IReadOnlyDictionary<long, FolderDto> FoldersById);
     private sealed record PipelineRunContext(
         DateTimeOffset PipelineStartedAt,
         string AutomationConfigJson,
+        TaggingProfile? AutomationProfile,
         AutoTagStages Stages,
         string DownloadRootPath);
     private sealed record EnhancementTargetPlan(List<EnhancementTarget> Targets, List<EnhancementTarget> DueTargets);
@@ -49,9 +55,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
     private readonly DownloadQueueRepository _queueRepository;
     private readonly LibraryRepository _libraryRepository;
     private readonly AutoTagService _autoTagService;
-    private readonly TaggingProfileService _profileService;
-    private readonly AutoTagDefaultsStore _defaultsStore;
     private readonly AutoTagConfigBuilder _configBuilder;
+    private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly LibraryScanRunner _scanRunner;
     private readonly PlatformAuthService _platformAuthService;
@@ -82,10 +87,9 @@ public sealed class DownloadOrchestrationService : BackgroundService
         _queueRepository = serviceProvider.GetRequiredService<DownloadQueueRepository>();
         _libraryRepository = serviceProvider.GetRequiredService<LibraryRepository>();
         _autoTagService = serviceProvider.GetRequiredService<AutoTagService>();
-        _profileService = serviceProvider.GetRequiredService<TaggingProfileService>();
-        _defaultsStore = serviceProvider.GetRequiredService<AutoTagDefaultsStore>();
         _settingsService = serviceProvider.GetRequiredService<DeezSpoTagSettingsService>();
         _configBuilder = serviceProvider.GetRequiredService<AutoTagConfigBuilder>();
+        _profileResolutionService = serviceProvider.GetRequiredService<AutoTagProfileResolutionService>();
         _scanRunner = serviceProvider.GetRequiredService<LibraryScanRunner>();
         _platformAuthService = serviceProvider.GetRequiredService<PlatformAuthService>();
         _plexApiClient = serviceProvider.GetRequiredService<PlexApiClient>();
@@ -283,10 +287,20 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return null;
         }
 
-        var configJson = await GetAutoTagConfigJsonAsync();
+        var profileContext = await BuildAutomationProfileContextAsync(cancellationToken);
+        var pendingItems = await GetPendingPostDownloadItemsAsync(cancellationToken);
+        var automationProfile = ResolveAutomationProfileForPendingDownloads(profileContext, pendingItems);
+        if (automationProfile == null)
+        {
+            _logger.LogWarning("Orchestration skipped: destination folder has no valid current AutoTag profile.");
+            _lastPipelineCompletedAt = pipelineStartedAt;
+            return null;
+        }
+
+        var configJson = GetAutoTagConfigJson(automationProfile);
         if (string.IsNullOrWhiteSpace(configJson))
         {
-            _logger.LogWarning("Orchestration skipped: no AutoTag profile or last config available.");
+            _logger.LogWarning("Orchestration skipped: the destination folder profile could not be materialized into AutoTag config.");
             _lastPipelineCompletedAt = pipelineStartedAt;
             return null;
         }
@@ -294,6 +308,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
         return new PipelineRunContext(
             pipelineStartedAt,
             configJson,
+            automationProfile,
             GetAutoTagStages(configJson),
             downloadRootPath);
     }
@@ -304,6 +319,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
         {
             await RunPostDownloadEnrichmentAsync(
                 context.AutomationConfigJson,
+                context.AutomationProfile,
                 context.DownloadRootPath,
                 cancellationToken);
             return;
@@ -317,6 +333,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
     private async Task RunPostDownloadEnrichmentAsync(
         string automationConfigJson,
+        TaggingProfile? automationProfile,
         string downloadRootPath,
         CancellationToken cancellationToken)
     {
@@ -330,15 +347,13 @@ public sealed class DownloadOrchestrationService : BackgroundService
         {
             _taggingInProgress = true;
             var enrichmentConfig = ClearEnhancementTags(automationConfigJson);
-            var profileContext = await BuildAutomationProfileContextAsync();
-            var enrichmentProfile = profileContext.DefaultProfile;
             enrichmentJob = await _autoTagService.StartJob(
                 downloadRootPath,
                 enrichmentConfig,
                 "automation",
-                enrichmentProfile?.Technical,
-                enrichmentProfile?.Id,
-                enrichmentProfile?.Name);
+                automationProfile?.Technical,
+                automationProfile?.Id,
+                automationProfile?.Name);
             await WaitForJobCompletionAsync(enrichmentJob, cancellationToken);
         }
         finally
@@ -412,11 +427,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
     private async Task<bool> HasPendingPostDownloadEnrichmentAsync(CancellationToken cancellationToken)
     {
-        var queueItems = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
-        return queueItems.Any(item =>
-            item.DestinationFolderId.HasValue
-            && string.Equals(item.Status, "completed", StringComparison.OrdinalIgnoreCase)
-            && item.UpdatedAt > _lastPipelineCompletedAt);
+        var pendingItems = await GetPendingPostDownloadItemsAsync(cancellationToken);
+        return pendingItems.Count > 0;
     }
 
     private async Task RunScheduledEnhancementIfDueAsync(CancellationToken cancellationToken)
@@ -427,25 +439,12 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return;
         }
 
-        var configJson = await GetAutoTagConfigJsonAsync();
-        if (string.IsNullOrWhiteSpace(configJson))
-        {
-            return;
-        }
-
-        var stages = GetAutoTagStages(configJson);
-        if (!stages.HasEnhancement)
-        {
-            return;
-        }
-
         if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
         {
             return;
         }
 
         _ = await RunEnhancementStageAsync(
-            configJson,
             forceRunEvenIfNotDue: false,
             sourceLabel: "schedule",
             quietWhenNoDue: true,
@@ -453,7 +452,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
     }
 
     private async Task<bool> RunEnhancementStageAsync(
-        string automationConfigJson,
         bool forceRunEvenIfNotDue,
         string sourceLabel,
         bool quietWhenNoDue = false,
@@ -465,11 +463,10 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return false;
         }
 
-        var profileContext = await BuildAutomationProfileContextAsync();
+        var profileContext = await BuildAutomationProfileContextAsync(cancellationToken);
         var executionResult = await ExecuteEnhancementTargetsAsync(
             plan.DueTargets,
             profileContext,
-            automationConfigJson,
             sourceLabel,
             cancellationToken);
 
@@ -560,7 +557,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
     private async Task<EnhancementExecutionResult> ExecuteEnhancementTargetsAsync(
         IEnumerable<EnhancementTarget> dueTargets,
         AutomationProfileContext profileContext,
-        string automationConfigJson,
         string sourceLabel,
         CancellationToken cancellationToken)
     {
@@ -578,7 +574,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
             var runResult = await RunEnhancementTargetAsync(
                 target,
                 profileContext,
-                automationConfigJson,
                 sourceLabel,
                 cancellationToken);
             if (runResult.Attempted)
@@ -598,7 +593,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
     private async Task<EnhancementTargetRunResult> RunEnhancementTargetAsync(
         EnhancementTarget target,
         AutomationProfileContext profileContext,
-        string automationConfigJson,
         string sourceLabel,
         CancellationToken cancellationToken)
     {
@@ -615,9 +609,25 @@ public sealed class DownloadOrchestrationService : BackgroundService
                 profileContext,
                 target.FolderId,
                 target.FolderProfileReference);
-            var profileConfigJson = enhancementProfile != null
-                ? (_configBuilder.BuildConfigJson(enhancementProfile) ?? automationConfigJson)
-                : automationConfigJson;
+            if (enhancementProfile == null)
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "warning",
+                    $"Automation: enhancement skipped for {target.RootPath} (folder has no valid current AutoTag profile)."));
+                return new EnhancementTargetRunResult(false, false);
+            }
+
+            var profileConfigJson = _configBuilder.BuildConfigJson(enhancementProfile);
+            if (string.IsNullOrWhiteSpace(profileConfigJson))
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "warning",
+                    $"Automation: enhancement skipped for {target.RootPath} (folder profile config could not be built)."));
+                return new EnhancementTargetRunResult(false, false);
+            }
+
             var enhancementConfig = ClearEnrichmentTags(profileConfigJson);
             if (!GetAutoTagStages(enhancementConfig).HasEnhancement)
             {
@@ -874,28 +884,10 @@ public sealed class DownloadOrchestrationService : BackgroundService
         }
     }
 
-    private async Task<string?> GetAutoTagConfigJsonAsync()
-    {
-        var profiles = await _profileService.LoadAsync();
-        var defaults = await _defaultsStore.LoadAsync();
-
-        TaggingProfile? profile = null;
-        if (!string.IsNullOrWhiteSpace(defaults.DefaultFileProfile))
-        {
-            profile = profiles.FirstOrDefault(item =>
-                string.Equals(item.Name, defaults.DefaultFileProfile, StringComparison.OrdinalIgnoreCase))
-                ?? profiles.FirstOrDefault(item =>
-                    string.Equals(item.Id, defaults.DefaultFileProfile, StringComparison.OrdinalIgnoreCase));
-        }
-
-        profile ??= profiles.FirstOrDefault(item => item.IsDefault) ?? profiles.FirstOrDefault();
-        if (profile is null)
-        {
-            return _autoTagService.TryGetLastConfigJson();
-        }
-
-        return _configBuilder.BuildConfigJson(profile) ?? _autoTagService.TryGetLastConfigJson();
-    }
+    private string? GetAutoTagConfigJson(TaggingProfile? profile)
+        => profile is null
+            ? null
+            : _configBuilder.BuildConfigJson(profile);
 
     private static AutoTagStages GetAutoTagStages(string configJson)
     {
@@ -970,14 +962,10 @@ public sealed class DownloadOrchestrationService : BackgroundService
         return root[key] is JsonArray array ? array.Count : 0;
     }
 
-    private async Task<AutomationProfileContext> BuildAutomationProfileContextAsync()
+    private async Task<AutomationProfileContext> BuildAutomationProfileContextAsync(CancellationToken cancellationToken)
     {
-        var profiles = await _profileService.LoadAsync();
-        var defaults = await _defaultsStore.LoadAsync();
-        var defaultProfile = ResolveProfileReference(profiles, defaults.DefaultFileProfile)
-            ?? profiles.FirstOrDefault(profile => profile.IsDefault)
-            ?? profiles.FirstOrDefault();
-        return new AutomationProfileContext(profiles, defaults, defaultProfile);
+        var state = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
+        return new AutomationProfileContext(state.Profiles, state.Defaults, state.DefaultProfile, state.FoldersById);
     }
 
     private static TaggingProfile? ResolveAutomationProfileForFolder(
@@ -985,6 +973,16 @@ public sealed class DownloadOrchestrationService : BackgroundService
         string folderId,
         string? folderProfileReference)
     {
+        if (long.TryParse(folderId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedFolderId)
+            && context.FoldersById.TryGetValue(parsedFolderId, out var folder))
+        {
+            var normalizedFolderProfile = ResolveProfileReference(context.Profiles, folder.AutoTagProfileId);
+            if (normalizedFolderProfile != null)
+            {
+                return normalizedFolderProfile;
+            }
+        }
+
         if (!string.IsNullOrWhiteSpace(folderProfileReference))
         {
             var assignedProfile = ResolveProfileReference(context.Profiles, folderProfileReference);
@@ -994,18 +992,61 @@ public sealed class DownloadOrchestrationService : BackgroundService
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(folderId)
-            && context.Defaults.LibraryProfiles is { Count: > 0 }
-            && context.Defaults.LibraryProfiles.TryGetValue(folderId, out var reference))
+        return null;
+    }
+
+    private async Task<List<DownloadQueueItem>> GetPendingPostDownloadItemsAsync(CancellationToken cancellationToken)
+    {
+        var queueItems = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
+        return queueItems
+            .Where(item =>
+                item.DestinationFolderId.HasValue
+                && string.Equals(item.Status, "completed", StringComparison.OrdinalIgnoreCase)
+                && item.UpdatedAt > _lastPipelineCompletedAt)
+            .OrderByDescending(item => item.UpdatedAt)
+            .ThenByDescending(item => item.Id)
+            .ToList();
+    }
+
+    private TaggingProfile? ResolveAutomationProfileForPendingDownloads(
+        AutomationProfileContext context,
+        IReadOnlyList<DownloadQueueItem> pendingItems)
+    {
+        if (pendingItems.Count == 0)
         {
-            var folderProfile = ResolveProfileReference(context.Profiles, reference);
-            if (folderProfile != null)
-            {
-                return folderProfile;
-            }
+            return null;
         }
 
-        return context.DefaultProfile;
+        var distinctFolderIds = pendingItems
+            .Select(item => item.DestinationFolderId!.Value)
+            .Distinct()
+            .ToList();
+        if (distinctFolderIds.Count > 1)
+        {
+            _logger.LogWarning(
+                "Multiple destination folders were queued for one post-download automation pass ({FolderIds}). The latest completed item will determine the AutoTag profile.",
+                string.Join(", ", distinctFolderIds));
+        }
+
+        var selectedItem = pendingItems[0];
+        var selectedFolderId = selectedItem.DestinationFolderId!.Value;
+        var selectedFolderReference = context.FoldersById.TryGetValue(selectedFolderId, out var folder)
+            ? folder.AutoTagProfileId
+            : null;
+        var selectedProfile = ResolveAutomationProfileForFolder(
+            context,
+            selectedFolderId.ToString(CultureInfo.InvariantCulture),
+            selectedFolderReference);
+
+        if (selectedProfile == null)
+        {
+            _logger.LogWarning(
+                "No resolvable AutoTag profile was found for destination folder {FolderId}.",
+                selectedFolderId);
+            return null;
+        }
+
+        return selectedProfile;
     }
 
     private static TaggingProfile? ResolveProfileReference(IEnumerable<TaggingProfile> profiles, string? reference)
@@ -1029,9 +1070,9 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return new List<EnhancementTarget>();
         }
 
-        var folders = await _libraryRepository.GetFoldersAsync(cancellationToken);
-        var defaults = await _defaultsStore.LoadAsync();
-        var schedules = defaults.LibrarySchedules ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var profileContext = await BuildAutomationProfileContextAsync(cancellationToken);
+        var folders = profileContext.FoldersById.Values.ToList();
+        var schedules = profileContext.Defaults.LibrarySchedules ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var state = await LoadEnhancementScheduleStateAsync();
         var targets = new List<EnhancementTarget>();
 

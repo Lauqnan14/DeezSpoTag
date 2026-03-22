@@ -18,20 +18,13 @@ public sealed class TaggingProfilesApiController : ControllerBase
     private const string DeezerSource = "deezer";
 
     private readonly TaggingProfileService _profiles;
-    private readonly AutoTagDefaultsStore _autoTagDefaultsStore;
-    private readonly LibraryRepository _libraryRepository;
-    private readonly ILogger<TaggingProfilesApiController> _logger;
-
+    private readonly AutoTagProfileResolutionService _profileResolutionService;
     public TaggingProfilesApiController(
         TaggingProfileService profiles,
-        AutoTagDefaultsStore autoTagDefaultsStore,
-        LibraryRepository libraryRepository,
-        ILogger<TaggingProfilesApiController> logger)
+        AutoTagProfileResolutionService profileResolutionService)
     {
         _profiles = profiles;
-        _autoTagDefaultsStore = autoTagDefaultsStore;
-        _libraryRepository = libraryRepository;
-        _logger = logger;
+        _profileResolutionService = profileResolutionService;
     }
 
     [HttpGet]
@@ -87,6 +80,45 @@ public sealed class TaggingProfilesApiController : ControllerBase
         if (saved is null)
         {
             return BadRequest("Profile name is required.");
+        }
+
+        return Ok(ToResponseModel(saved));
+    }
+
+    public sealed record CopyProfileRequest(string Name);
+
+    [HttpPost("{id}/copy")]
+    public async Task<IActionResult> Copy(string id, [FromBody] CopyProfileRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Name))
+        {
+            return BadRequest("Copied profile name is required.");
+        }
+
+        var source = await _profiles.GetByIdAsync(id);
+        if (source == null)
+        {
+            return NotFound(new { error = "Profile not found." });
+        }
+
+        var normalizedName = request.Name.Trim();
+        var profiles = await _profiles.LoadAsync();
+        var nameExists = profiles.Any(profile =>
+            string.Equals(profile.Name?.Trim(), normalizedName, StringComparison.OrdinalIgnoreCase));
+        if (nameExists)
+        {
+            return Conflict(new { error = $"A profile named '{normalizedName}' already exists." });
+        }
+
+        var copy = DeepCloneProfile(source);
+        copy.Id = string.Empty;
+        copy.Name = normalizedName;
+        copy.IsDefault = false;
+
+        var saved = await _profiles.UpsertAsync(copy);
+        if (saved == null)
+        {
+            return BadRequest("Copied profile name is required.");
         }
 
         return Ok(ToResponseModel(saved));
@@ -266,68 +298,15 @@ public sealed class TaggingProfilesApiController : ControllerBase
         var removed = await _profiles.DeleteAsync(id);
         if (removed)
         {
-            if (_libraryRepository.IsConfigured)
-            {
-                await ClearDeletedProfileReferencesAsync(id, existing?.Name, cancellationToken);
-            }
-            await ClearDeletedProfileDefaultsAsync(id, existing?.Name);
+            await _profileResolutionService.RemoveDeletedProfileReferencesAsync(id, existing?.Name, cancellationToken);
         }
 
         return Ok(new { removed });
     }
 
-    private async Task ClearDeletedProfileReferencesAsync(string profileId, string? profileName, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var folders = await _libraryRepository.GetFoldersAsync(cancellationToken);
-            foreach (var folder in folders)
-            {
-                var reference = folder.AutoTagProfileId;
-                if (string.IsNullOrWhiteSpace(reference))
-                {
-                    continue;
-                }
-
-                var shouldClear = string.Equals(reference, profileId, StringComparison.OrdinalIgnoreCase)
-                    || (!string.IsNullOrWhiteSpace(profileName)
-                        && string.Equals(reference, profileName, StringComparison.OrdinalIgnoreCase));
-                if (!shouldClear)
-                {
-                    continue;
-                }
-
-                await _libraryRepository.UpdateFolderProfileAsync(folder.Id, null, cancellationToken);
-                if (RequiresAutoTagProfile(folder))
-                {
-                    await _libraryRepository.UpdateFolderAutoTagEnabledAsync(folder.Id, false, cancellationToken);
-                }
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to clear folder profile links for deleted profile ProfileId");
-        }
-    }
-
-    private static bool RequiresAutoTagProfile(FolderDto folder)
-    {
-        var desiredQuality = folder.DesiredQuality?.Trim();
-        return !string.Equals(desiredQuality, "video", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(desiredQuality, "podcast", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private async Task ClearDeletedProfileDefaultsAsync(string profileId, string? profileName)
-    {
-        try
-        {
-            await _autoTagDefaultsStore.RemoveProfileReferencesAsync(profileId, profileName);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to clear AutoTag defaults references for deleted profile ProfileId");
-        }
-    }
+    private static TaggingProfile DeepCloneProfile(TaggingProfile profile)
+        => JsonSerializer.Deserialize<TaggingProfile>(JsonSerializer.Serialize(profile))
+            ?? new TaggingProfile();
 
     private static UnifiedTagConfig ConvertTagConfig(Dictionary<string, string>? input)
     {

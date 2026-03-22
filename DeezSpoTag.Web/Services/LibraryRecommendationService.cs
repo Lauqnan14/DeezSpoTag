@@ -1119,7 +1119,7 @@ public sealed class LibraryRecommendationService
     {
         try
         {
-            return _shazamRecognitionService.RecognizeWithDetails(filePath, cancellationToken);
+            return _shazamRecognitionService.RecognizeWithDetails(filePath, cancellationToken: cancellationToken);
         }
         catch (OperationCanceledException)
         {

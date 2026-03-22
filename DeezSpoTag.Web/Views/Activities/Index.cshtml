@@ -849,6 +849,14 @@
     letter-spacing: 0.08em;
 }
 
+.logs-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
 .logs-body {
     background: var(--bg-primary);
     border: 1px solid var(--border-secondary);
@@ -923,6 +931,58 @@
 @@media (max-width: 768px) {
     .downloads-tab .downloads-layout {
         padding: 16px;
+    }
+
+    .logs-panel {
+        padding: 14px;
+        border-radius: 14px;
+    }
+
+    .logs-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+    }
+
+    .logs-title {
+        font-size: 1rem;
+    }
+
+    .logs-actions {
+        justify-content: stretch;
+        align-items: stretch;
+    }
+
+    .logs-status-pill {
+        width: 100%;
+        justify-content: center;
+        text-align: center;
+        min-height: 38px;
+    }
+
+    .logs-actions .action-btn {
+        flex: 1 1 calc(50% - 4px);
+        min-width: 0;
+        justify-content: center;
+        padding-inline: 12px;
+    }
+
+    .logs-actions .action-btn span,
+    .logs-actions .action-btn .btn-text {
+        white-space: nowrap;
+    }
+
+    .logs-body {
+        padding: 12px;
+    }
+
+    .download-log-entry {
+        grid-template-columns: 1fr;
+        gap: 4px;
+    }
+
+    .download-log-level {
+        width: auto;
     }
 
     .downloads-tab .downloads-sticky {
@@ -2803,7 +2863,7 @@
                         <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 2H6c-1.1 0-2 .9-2 2v16l4-4h10c1.1 0 2-.9 2-2V8l-6-6zm0 1.5L18.5 8H14V3.5z"/></svg>
                         Logs
                     </div>
-                    <div class="d-flex align-items-center gap-2">
+                    <div class="logs-actions">
                         <span class="logs-status-pill" id="download-logs-status">No logs yet.</span>
                         <button class="action-btn action-btn-sm" type="button" id="download-logs-copy">
                             <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M16 1H4c-1.1 0-2 .9-2 2v12h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>

@@ -1112,17 +1112,10 @@ public sealed class ShazamDiscoveryService
             return false;
         }
 
-        foreach (var prop in element.EnumerateObject())
-        {
-            if (string.Equals(prop.Name, propertyName, StringComparison.OrdinalIgnoreCase))
-            {
-                value = prop.Value;
-                return true;
-            }
-        }
-
-        value = default;
-        return false;
+        var property = element.EnumerateObject()
+            .FirstOrDefault(prop => string.Equals(prop.Name, propertyName, StringComparison.OrdinalIgnoreCase));
+        value = property.Value;
+        return !string.IsNullOrWhiteSpace(property.Name);
     }
 
     private static string? FirstNonEmpty(params string?[] values)

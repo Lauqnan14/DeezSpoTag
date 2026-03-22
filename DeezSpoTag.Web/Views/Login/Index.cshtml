@@ -174,14 +174,22 @@
                     <h4 class="settings-group__header">Apple Music Tokens</h4>
                     <form id="appleMusicTokensForm" class="space-y-5">
                         <label class="block mb-4">
-                            <span class="block mb-2">Storefront</span>
+                            <span class="block mb-2 apple-login-label-row">
+                                <span>Storefront</span>
+                                <span class="apple-login-tooltip" title="2-letter storefront (example: us, gb, de)." aria-label="2-letter storefront (example: us, gb, de).">
+                                    <i class="fas fa-question-circle"></i>
+                                </span>
+                            </span>
                             <input type="text" id="appleStorefront" placeholder="us" class="w-full" />
-                            <span class="text-muted">2-letter storefront (example: us, gb, de).</span>
                         </label>
                         <label class="block mb-4">
-                            <span class="block mb-2">Media User Token (cookie: media-user-token)</span>
+                            <span class="block mb-2 apple-login-label-row">
+                                <span>Media User Token (cookie: media-user-token)</span>
+                                <span class="apple-login-tooltip" title="Required for AAC LC downloads and Apple lyrics; not the same as the wrapper session." aria-label="Required for AAC LC downloads and Apple lyrics; not the same as the wrapper session.">
+                                    <i class="fas fa-question-circle"></i>
+                                </span>
+                            </span>
                             <input type="password" id="appleMediaUserToken" placeholder="Paste media-user-token from https://music.apple.com cookies" class="w-full" autocomplete="off" />
-                            <span class="text-muted">Required for AAC LC downloads and Apple lyrics; not the same as the wrapper session.</span>
                         </label>
                     </form>
                     <button class="btn btn-primary action-btn" type="button" id="appleMusicTokensSaveBtn">Save Tokens</button>
@@ -189,10 +197,7 @@
                 </div>
                 <div id="appleMusicLoginFormSection">
                     <p class="text-muted">
-                        Enter your Apple Music email and password. We'll handle the wrapper login in the background and prompt for 2FA if needed.
-                    </p>
-                    <p class="text-muted" id="appleMusicWrapperModeHint">
-                        This login uses the external Apple wrapper container. Ensure apple-wrapper is running and reachable before login.
+                        Enter your Apple Music email and password.
                     </p>
                     <form id="appleMusicLoginForm" class="space-y-5">
                         <label class="block mb-4">
@@ -203,6 +208,7 @@
                             <span class="block mb-2">Password</span>
                             <input type="password" id="appleMusicPassword" placeholder="Password" class="w-full" autocomplete="current-password" />
                         </label>
+                        <button class="btn btn-primary action-btn" type="button" id="appleMusicLoginBtn">Login</button>
                         <div id="appleMusic2faSection">
                             <label class="block mb-4">
                                 <span class="block mb-2">Verification Code</span>
@@ -211,7 +217,6 @@
                             <button class="btn btn-primary action-btn" type="button" id="appleMusicSubmit2faBtn">Submit 2FA</button>
                             <p class="text-muted mt-2" id="appleMusic2faHint"></p>
                         </div>
-                        <button class="btn btn-primary action-btn" type="button" id="appleMusicLoginBtn">Login</button>
                         <div class="mt-4 space-y-3">
                             <button class="btn btn-primary action-btn" type="button" id="appleMusicWrapperHelperBtn">Check Wrapper Helper</button>
                             <button class="btn btn-primary action-btn" type="button" id="appleMusicWrapperHealthBtn">Check Wrapper Health</button>
@@ -288,10 +293,14 @@
                         </label>
                         <label class="block mb-4">
                             <span class="block mb-2">Library</span>
-                            <select id="bpmLibrary" class="w-full">
-                                <option value="Supreme">Supreme</option>
-                                <option value="Latino">Latino</option>
-                            </select>
+                            <div class="dropdown-select login-dropdown" data-dropdown="bpmLibrary">
+                                <input type="hidden" id="bpmLibrary" value="Supreme" />
+                                <button type="button" class="dropdown-trigger" id="bpmLibraryTrigger">Supreme</button>
+                                <div class="dropdown-menu" id="bpmLibraryMenu">
+                                    <button type="button" class="dropdown-option" data-value="Supreme" aria-selected="true">Supreme</button>
+                                    <button type="button" class="dropdown-option" data-value="Latino" aria-selected="false">Latino</button>
+                                </div>
+                            </div>
                         </label>
                         <button class="btn btn-primary action-btn" type="submit">Login</button>
                         <p class="text-muted" id="bpmStatus"></p>
@@ -601,6 +610,18 @@ body {
         min-width: 44px;
         min-height: 44px;
     }
+
+    #appleMusicLoginForm > * + * {
+        margin-top: 0.5rem;
+    }
+
+    #appleMusicLoginForm .mb-4 {
+        margin-bottom: 0.5rem;
+    }
+
+    #appleMusic2faSection {
+        margin-top: 0.75rem;
+    }
 }
 
 @@media (max-width: 400px) {
@@ -875,6 +896,68 @@ select.w-full,
     color: var(--text-primary);
 }
 
+.dropdown-select {
+    position: relative;
+    display: inline-flex;
+    width: 100%;
+}
+
+.dropdown-trigger {
+    width: 100%;
+    text-align: left;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-secondary);
+    padding: 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 14px;
+}
+
+.dropdown-trigger::after {
+    content: "▾";
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.dropdown-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
+    padding: 6px;
+    display: none;
+    z-index: 20;
+}
+
+.dropdown-menu.open {
+    display: block;
+}
+
+.dropdown-option {
+    width: 100%;
+    background: transparent;
+    border: 0;
+    color: var(--text-primary);
+    text-align: left;
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.dropdown-option:hover,
+.dropdown-option[aria-selected="true"] {
+    background: var(--bg-tertiary);
+}
+
 .fixed-footer input::placeholder {
     color: var(--text-primary);
     opacity: 0.7;
@@ -911,10 +994,40 @@ input[type="text"]:focus, input[type="password"]:focus, input[type="email"]:focu
     margin-top: 1.25rem;
 }
 
+#appleMusicLoginForm > * + * {
+    margin-top: 0.5rem;
+}
+
+#appleMusicLoginForm .mb-4 {
+    margin-bottom: 0.5rem;
+}
+
+#appleMusic2faSection {
+    margin-top: 0.75rem;
+}
+
 .block {
     display: block;
     color: var(--primary-color);
     text-decoration: none;
+}
+
+.apple-login-label-row {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+}
+
+.apple-login-tooltip {
+    display: inline-flex;
+    align-items: center;
+    color: var(--text-muted);
+    cursor: help;
+    font-size: 0.875rem;
+}
+
+.apple-login-tooltip:hover {
+    color: var(--primary-color);
 }
 
 .block:hover {
@@ -1096,8 +1209,76 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    function initializeLoginDropdowns() {
+        const dropdowns = document.querySelectorAll('.login-dropdown');
+        dropdowns.forEach(dropdown => {
+            const input = dropdown.querySelector('input[type="hidden"]');
+            const trigger = dropdown.querySelector('.dropdown-trigger');
+            const menu = dropdown.querySelector('.dropdown-menu');
+            const options = dropdown.querySelectorAll('.dropdown-option');
+            if (!input || !trigger || !menu) {
+                return;
+            }
+
+            const closeMenu = () => menu.classList.remove('open');
+            const syncSelection = (value) => {
+                const selectedOption = Array.from(options).find(option => (option.getAttribute('data-value') || '') === value)
+                    || options[0];
+                if (!selectedOption) {
+                    return;
+                }
+
+                input.value = selectedOption.getAttribute('data-value') || '';
+                trigger.textContent = selectedOption.textContent || input.value;
+                options.forEach(option => option.setAttribute('aria-selected', option === selectedOption ? 'true' : 'false'));
+            };
+
+            trigger.addEventListener('click', (event) => {
+                event.stopPropagation();
+                menu.classList.toggle('open');
+            });
+
+            options.forEach(option => {
+                option.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    syncSelection(option.getAttribute('data-value') || '');
+                    closeMenu();
+                });
+            });
+
+            document.addEventListener('click', closeMenu);
+            syncSelection(input.value || options[0]?.getAttribute('data-value') || '');
+        });
+    }
+
+    function setLoginDropdownValue(inputId, value) {
+        const input = document.getElementById(inputId);
+        if (!input) {
+            return;
+        }
+
+        input.value = value;
+        const dropdown = input.closest('.login-dropdown');
+        if (!dropdown) {
+            return;
+        }
+
+        const trigger = dropdown.querySelector('.dropdown-trigger');
+        const options = dropdown.querySelectorAll('.dropdown-option');
+        const selectedOption = Array.from(options).find(option => (option.getAttribute('data-value') || '') === value)
+            || options[0];
+        if (!selectedOption || !trigger) {
+            return;
+        }
+
+        input.value = selectedOption.getAttribute('data-value') || '';
+        trigger.textContent = selectedOption.textContent || input.value;
+        options.forEach(option => option.setAttribute('aria-selected', option === selectedOption ? 'true' : 'false'));
+    }
+
     // Render tab UI immediately, then hydrate async state in the background.
     initializeLoginTabs();
+    initializeLoginDropdowns();
     void initializeLoginPageState();
     
     // Set up ARL login button
@@ -1511,7 +1692,7 @@ async function loadPlatformAuthState() {
         if (data.bpmSupreme) {
             document.getElementById('bpmEmail').value = data.bpmSupreme.email || '';
             document.getElementById('bpmPassword').value = data.bpmSupreme.password || '';
-            document.getElementById('bpmLibrary').value = data.bpmSupreme.library || 'Supreme';
+            setLoginDropdownValue('bpmLibrary', data.bpmSupreme.library || 'Supreme');
             setStatus('bpmStatus', data.bpmSupreme.email && data.bpmSupreme.password);
             renderBpmInfo(data.bpmSupreme);
             togglePlatformLoginState('bpm', Boolean(data.bpmSupreme.email && data.bpmSupreme.password));
@@ -1829,6 +2010,7 @@ function clearLastFmInputs() {
 function clearBpmInputs() {
     resetFormById('bpmLoginForm');
     clearElementValue('bpmLibrary', 'Supreme');
+    setLoginDropdownValue('bpmLibrary', 'Supreme');
 }
 
 function clearPlexInputs() {
@@ -2040,15 +2222,6 @@ function applyAppleMusicWrapperAvailability(available) {
         }
     });
     setAppleMusic2faEnabled(true, document.getElementById('appleMusic2faHint')?.textContent || '');
-    setAppleMusicWrapperModeHint();
-}
-
-function setAppleMusicWrapperModeHint() {
-    const hint = document.getElementById('appleMusicWrapperModeHint');
-    if (!hint) {
-        return;
-    }
-    hint.textContent = 'This login uses the external Apple wrapper container. Ensure apple-wrapper is running and reachable before login.';
 }
 
 async function startAppleMusicLogin() {

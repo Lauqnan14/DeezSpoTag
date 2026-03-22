@@ -89,7 +89,6 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     private const string DefaultHostSharedSessionDir = "DeezSpoTag.Workers/bin/Debug/net8.0/Data/apple-wrapper/session";
     private const string SharedLoginFileName = "wrapper-login.txt";
     private const string SharedTwoFactorStateFileName = "wrapper-2fa-state.txt";
-    private const string SharedTwoFactorCodeRelativePath = "files/2fa.txt";
     private static readonly string[] HelperLogoutArgs = ["logout"];
     private static readonly string[] HelperRunArgs = ["run"];
     private static readonly string[] HelperStatusArgs = ["status"];
@@ -213,85 +212,17 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         if (IsExternalModeEnabled())
         {
             StopProcess("external_login_restart");
-
-            if (IsHelperControlModeEnabled())
-            {
-                // Helper mode keeps legacy behavior for deployments that still drive wrapper orchestration via Docker CLI.
-                var helperPath = ResolveExternalWrapperHelperPath();
-                if (!string.IsNullOrWhiteSpace(helperPath) && File.Exists(helperPath))
-                {
-                    try
-                    {
-                        var resetResult = await RunExternalWrapperHelperAsync(HelperLogoutArgs, cancellationToken);
-                        if (!resetResult.Success)
-                        {
-                            var resetError = resetResult.Error ?? resetResult.Output;
-                            if (IsWrapperContainerMissingError(resetError))
-                            {
-                                _logger.LogInformation("Pre-login wrapper session reset skipped: {Error}", resetError);
-                            }
-                            else
-                            {
-                                _logger.LogWarning("Pre-login wrapper session reset failed: {Error}", resetError);
-                            }
-                        }
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        _logger.LogWarning(ex, "Pre-login wrapper session reset failed.");
-                    }
-                }
-            }
-            else
-            {
-                ResetSharedControlMarkers();
-            }
-
-            lock (_sync)
-            {
-                ClearRecentOutputLocked();
-                _status = new AppleMusicWrapperStatusSnapshot(StatusStarting, "Starting wrapper login...", email, false, false);
-                _email = email;
-                _awaitingTwoFactor = false;
-                _authStateReady = false;
-                _loginInProgress = true;
-                _startedAt = DateTimeOffset.UtcNow;
-                _externalStartError = null;
-                _externalStartErrorAt = null;
-                _twoFactorSubmittedAt = null;
-                _lastTwoFactorProbeAt = null;
-                _lastTwoFactorProbeKnown = false;
-                _lastTwoFactorProbeResult = false;
-            }
+            await ResetExternalWrapperSessionAsync(cancellationToken);
+            InitializeExternalLoginState(email);
             _ = UpdateAuthStateAsync(false);
 
             var startResult = await StartExternalWrapperLoginAsync(email, password, cancellationToken);
             if (!startResult.Success)
             {
-                lock (_sync)
-                {
-                    _status = new AppleMusicWrapperStatusSnapshot(StatusFailed, startResult.Error ?? "External wrapper login failed.", email, false, false);
-                    _loginInProgress = false;
-                    _startedAt = null;
-                    _twoFactorSubmittedAt = null;
-                }
-                return _status;
+                return FinalizeExternalLoginStartFailure(email, startResult.Error);
             }
 
-            lock (_sync)
-            {
-                _status = new AppleMusicWrapperStatusSnapshot(
-                    StatusStarting,
-                    "Login request sent. Waiting for wrapper response.",
-                    email,
-                    false,
-                    false);
-                _awaitingTwoFactor = false;
-                _loginInProgress = true;
-                _startedAt = _startedAt ?? DateTimeOffset.UtcNow;
-                _twoFactorSubmittedAt = null;
-            }
-
+            MarkExternalLoginQueued(email);
             var externalUpdated = await WaitForWrapperStatusAsync(TimeSpan.FromSeconds(12), cancellationToken);
             return externalUpdated;
         }
@@ -973,10 +904,8 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     private void ApplyExternalWrapperHelperEnvironment(ProcessStartInfo startInfo, string? forcedHelperMode = null)
     {
-        if (!startInfo.Environment.TryGetValue("TMPDIR", out var tmpDir) || string.IsNullOrWhiteSpace(tmpDir))
-        {
-            startInfo.Environment["TMPDIR"] = "/tmp";
-        }
+        var helperTempDir = ResolveExternalWrapperHelperTempDirectory();
+        startInfo.Environment["TMPDIR"] = helperTempDir;
 
         startInfo.Environment["APPLE_WRAPPER_CONTAINER_NAME"] = ResolveExternalWrapperContainerName();
         var composeFile = ResolveExternalWrapperComposeFile();
@@ -990,7 +919,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             case HelperModeCompose:
                 startInfo.Environment["APPLE_WRAPPER_DISABLE_COMPOSE"] = "0";
                 startInfo.Environment["APPLE_WRAPPER_ALLOW_COMPOSE_IN_CONTAINER"] = "1";
-                startInfo.Environment["APPLE_WRAPPER_ENV_FILE"] = "/tmp/apple-wrapper.env";
+                startInfo.Environment["APPLE_WRAPPER_ENV_FILE"] = Path.Combine(helperTempDir, "apple-wrapper.env");
                 break;
             case HelperModeAuto:
                 break;
@@ -1034,6 +963,112 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             HelperModeAuto,
             HelperModeDirect);
         return HelperModeDirect;
+    }
+
+    private async Task ResetExternalWrapperSessionAsync(CancellationToken cancellationToken)
+    {
+        if (IsHelperControlModeEnabled())
+        {
+            await TryResetHelperControlledWrapperSessionAsync(cancellationToken);
+            return;
+        }
+
+        ResetSharedControlMarkers();
+    }
+
+    private async Task TryResetHelperControlledWrapperSessionAsync(CancellationToken cancellationToken)
+    {
+        // Helper mode keeps legacy behavior for deployments that still drive wrapper orchestration via Docker CLI.
+        var helperPath = ResolveExternalWrapperHelperPath();
+        if (string.IsNullOrWhiteSpace(helperPath) || !File.Exists(helperPath))
+        {
+            return;
+        }
+
+        try
+        {
+            var resetResult = await RunExternalWrapperHelperAsync(HelperLogoutArgs, cancellationToken);
+            if (!resetResult.Success)
+            {
+                LogExternalWrapperResetFailure(resetResult.Error ?? resetResult.Output);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Pre-login wrapper session reset failed.");
+        }
+    }
+
+    private void LogExternalWrapperResetFailure(string? resetError)
+    {
+        if (IsWrapperContainerMissingError(resetError))
+        {
+            _logger.LogInformation("Pre-login wrapper session reset skipped: {Error}", resetError);
+            return;
+        }
+
+        _logger.LogWarning("Pre-login wrapper session reset failed: {Error}", resetError);
+    }
+
+    private void InitializeExternalLoginState(string email)
+    {
+        lock (_sync)
+        {
+            ClearRecentOutputLocked();
+            _status = new AppleMusicWrapperStatusSnapshot(StatusStarting, "Starting wrapper login...", email, false, false);
+            _email = email;
+            _awaitingTwoFactor = false;
+            _authStateReady = false;
+            _loginInProgress = true;
+            _startedAt = DateTimeOffset.UtcNow;
+            _externalStartError = null;
+            _externalStartErrorAt = null;
+            _twoFactorSubmittedAt = null;
+            _lastTwoFactorProbeAt = null;
+            _lastTwoFactorProbeKnown = false;
+            _lastTwoFactorProbeResult = false;
+        }
+    }
+
+    private AppleMusicWrapperStatusSnapshot FinalizeExternalLoginStartFailure(string email, string? error)
+    {
+        lock (_sync)
+        {
+            _status = new AppleMusicWrapperStatusSnapshot(
+                StatusFailed,
+                error ?? "External wrapper login failed.",
+                email,
+                false,
+                false);
+            _loginInProgress = false;
+            _startedAt = null;
+            _twoFactorSubmittedAt = null;
+            return _status;
+        }
+    }
+
+    private void MarkExternalLoginQueued(string email)
+    {
+        lock (_sync)
+        {
+            _status = new AppleMusicWrapperStatusSnapshot(
+                StatusStarting,
+                "Login request sent. Waiting for wrapper response.",
+                email,
+                false,
+                false);
+            _awaitingTwoFactor = false;
+            _loginInProgress = true;
+            _startedAt = _startedAt ?? DateTimeOffset.UtcNow;
+            _twoFactorSubmittedAt = null;
+        }
+    }
+
+    private static string ResolveExternalWrapperHelperTempDirectory()
+    {
+        var helperTempDir = Path.Combine(ResolveExternalWrapperSharedDataDir(), "helper-runtime");
+        Directory.CreateDirectory(helperTempDir);
+        return helperTempDir;
     }
 
     private static bool IsWrapperContainerMissingError(string? message)
@@ -1896,45 +1931,67 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         }
 
         var elapsed = DateTimeOffset.UtcNow - context.StartedAt.Value;
-        if (!context.PortsOpen && elapsed > TimeSpan.FromSeconds(4))
+        return TryBuildExitedContainerStatus(context, elapsed)
+            ?? TryBuildStartupTimeoutStatus(context, elapsed)
+            ?? TryBuildAuthenticationTimeoutStatus(context, elapsed);
+    }
+
+    private AppleMusicWrapperStatusSnapshot? TryBuildExitedContainerStatus(ExternalStatusContext context, TimeSpan elapsed)
+    {
+        if (context.PortsOpen || elapsed <= TimeSpan.FromSeconds(4))
         {
-            var containerState = ProbeExternalWrapperContainerState();
-            if (containerState == ExternalWrapperContainerState.Exited)
-            {
-                return SetAndReturnLoginFailure("Apple wrapper container exited before authentication completed. Check apple-wrapper logs for crash, 2FA timeout, or runtime errors.");
-            }
+            return null;
         }
 
-        if (!context.PortsOpen && elapsed > ExternalWrapperStartupTimeout)
+        var containerState = ProbeExternalWrapperContainerState();
+        return containerState == ExternalWrapperContainerState.Exited
+            ? SetAndReturnLoginFailure("Apple wrapper container exited before authentication completed. Check apple-wrapper logs for crash, 2FA timeout, or runtime errors.")
+            : null;
+    }
+
+    private AppleMusicWrapperStatusSnapshot? TryBuildStartupTimeoutStatus(ExternalStatusContext context, TimeSpan elapsed)
+    {
+        if (context.PortsOpen || elapsed <= ExternalWrapperStartupTimeout)
         {
-            var modeHint = "External wrapper mode is enabled. Start the wrapper container to continue.";
-            var details = $"Host probe: {context.Host}:10020/20020/30020.";
-            if (!IsHelperControlModeEnabled())
-            {
-                var loginFilePath = ResolveExternalWrapperSharedLoginFilePath();
-                if (File.Exists(loginFilePath))
-                {
-                    details += $" Login credentials are still queued at {loginFilePath}, which usually means the wrapper data/session mounts are mismatched or the wrapper container is not reading them.";
-                }
-            }
-
-            // On slower NAS disks/startup paths, wrapper readiness can exceed the startup hint
-            // timeout even though the login eventually succeeds. Keep the flow active up to
-            // the broader login timeout window instead of forcing a second manual login attempt.
-            if (elapsed <= TimeSpan.FromMinutes(2))
-            {
-                return SetAndReturnLoginStarting($"Wrapper startup is taking longer than expected. {modeHint} {details}");
-            }
-
-            return SetAndReturnLoginFailure($"Wrapper did not start or stopped unexpectedly. {modeHint} {details}");
+            return null;
         }
 
-        if (!context.HasAuthentication && elapsed > TimeSpan.FromMinutes(2))
+        var modeHint = "External wrapper mode is enabled. Start the wrapper container to continue.";
+        var details = BuildStartupTimeoutDetails(context);
+
+        // On slower NAS disks/startup paths, wrapper readiness can exceed the startup hint
+        // timeout even though the login eventually succeeds. Keep the flow active up to
+        // the broader login timeout window instead of forcing a second manual login attempt.
+        if (elapsed <= TimeSpan.FromMinutes(2))
         {
-            return SetAndReturnLoginFailure("Login timed out. Check your credentials or 2FA code and try again.");
+            return SetAndReturnLoginStarting($"Wrapper startup is taking longer than expected. {modeHint} {details}");
         }
 
-        return null;
+        return SetAndReturnLoginFailure($"Wrapper did not start or stopped unexpectedly. {modeHint} {details}");
+    }
+
+    private static string BuildStartupTimeoutDetails(ExternalStatusContext context)
+    {
+        var details = $"Host probe: {context.Host}:10020/20020/30020.";
+        if (IsHelperControlModeEnabled())
+        {
+            return details;
+        }
+
+        var loginFilePath = ResolveExternalWrapperSharedLoginFilePath();
+        if (File.Exists(loginFilePath))
+        {
+            details += $" Login credentials are still queued at {loginFilePath}, which usually means the wrapper data/session mounts are mismatched or the wrapper container is not reading them.";
+        }
+
+        return details;
+    }
+
+    private AppleMusicWrapperStatusSnapshot? TryBuildAuthenticationTimeoutStatus(ExternalStatusContext context, TimeSpan elapsed)
+    {
+        return !context.HasAuthentication && elapsed > TimeSpan.FromMinutes(2)
+            ? SetAndReturnLoginFailure("Login timed out. Check your credentials or 2FA code and try again.")
+            : null;
     }
 
     private AppleMusicWrapperStatusSnapshot SetAndReturnLoginFailure(string message)

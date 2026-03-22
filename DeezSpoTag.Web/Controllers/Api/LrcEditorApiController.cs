@@ -14,6 +14,8 @@ public sealed class LrcEditorApiController : ControllerBase
 {
     private const string LibraryDbNotConfiguredMessage = "Library DB not configured.";
     private const string PathOutsideLibraryRootsMessage = "Path is outside library roots.";
+    private const string TrackFileUnavailableMessage = "Track file unavailable.";
+    private const string TrackFileUnavailableOnSystemMessage = "Track file unavailable on this system.";
     private readonly LibraryRepository _repository;
     private readonly ILogger<LrcEditorApiController> _logger;
     private static readonly HashSet<string> AudioExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -273,7 +275,7 @@ public sealed class LrcEditorApiController : ControllerBase
         var resolved = await ResolveTrackLibraryPathAsync(info.FilePath, cancellationToken);
         if (resolved == null)
         {
-            return NotFound(new { error = "Track file unavailable on this system." });
+            return NotFound(new { error = TrackFileUnavailableOnSystemMessage });
         }
 
         return Ok(new
@@ -306,7 +308,7 @@ public sealed class LrcEditorApiController : ControllerBase
         var info = await _repository.GetTrackAudioInfoAsync(id, cancellationToken);
         if (info is null || string.IsNullOrWhiteSpace(info.FilePath))
         {
-            return NotFound(new { error = "Track file unavailable." });
+            return NotFound(new { error = TrackFileUnavailableMessage });
         }
 
         var resolved = await ResolveTrackLibraryPathAsync(info.FilePath, cancellationToken);
@@ -334,13 +336,13 @@ public sealed class LrcEditorApiController : ControllerBase
         var info = await _repository.GetTrackAudioInfoAsync(id, cancellationToken);
         if (info is null || string.IsNullOrWhiteSpace(info.FilePath))
         {
-            return NotFound(new { error = "Track file unavailable." });
+            return NotFound(new { error = TrackFileUnavailableMessage });
         }
 
         var resolved = await ResolveTrackLibraryPathAsync(info.FilePath, cancellationToken);
         if (resolved == null)
         {
-            return NotFound(new { error = "Track file unavailable on this system." });
+            return NotFound(new { error = TrackFileUnavailableOnSystemMessage });
         }
 
         var lrcPath = Path.ChangeExtension(resolved.FullPath, ".lrc");
@@ -365,13 +367,13 @@ public sealed class LrcEditorApiController : ControllerBase
         var info = await _repository.GetTrackAudioInfoAsync(id, cancellationToken);
         if (info is null || string.IsNullOrWhiteSpace(info.FilePath))
         {
-            return NotFound(new { error = "Track file unavailable." });
+            return NotFound(new { error = TrackFileUnavailableMessage });
         }
 
         var resolved = await ResolveTrackLibraryPathAsync(info.FilePath, cancellationToken);
         if (resolved == null)
         {
-            return NotFound(new { error = "Track file unavailable on this system." });
+            return NotFound(new { error = TrackFileUnavailableOnSystemMessage });
         }
 
         var txtPath = Path.ChangeExtension(resolved.FullPath, ".txt");
@@ -401,13 +403,13 @@ public sealed class LrcEditorApiController : ControllerBase
         var info = await _repository.GetTrackAudioInfoAsync(id, cancellationToken);
         if (info is null || string.IsNullOrWhiteSpace(info.FilePath))
         {
-            return NotFound(new { error = "Track file unavailable." });
+            return NotFound(new { error = TrackFileUnavailableMessage });
         }
 
         var resolved = await ResolveTrackLibraryPathAsync(info.FilePath, cancellationToken);
         if (resolved == null)
         {
-            return NotFound(new { error = "Track file unavailable on this system." });
+            return NotFound(new { error = TrackFileUnavailableOnSystemMessage });
         }
 
         var lrcPath = Path.ChangeExtension(resolved.FullPath, ".lrc");
@@ -493,23 +495,6 @@ public sealed class LrcEditorApiController : ControllerBase
         catch (Exception ex) when (ex is not OperationCanceledException) {
             return null;
         }
-    }
-
-    private static bool IsUnderAnyRoot(string path, IReadOnlyList<string> roots)
-    {
-        var normalized = NormalizePath(path);
-        if (normalized == null)
-        {
-            return false;
-        }
-
-        return roots
-            .Select(NormalizePath)
-            .Where(static root => root != null)
-            .Select(static root => root!)
-            .Any(rootFull =>
-                normalized.StartsWith(rootFull.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(normalized, rootFull, StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task<List<LibraryRootScope>> GetActiveLibraryRootsAsync(CancellationToken cancellationToken)

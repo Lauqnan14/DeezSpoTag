@@ -5223,6 +5223,7 @@
             id: profileId,
             name,
             isDefault,
+            tagConfig: structuredClone(existing?.tagConfig || null),
             autoTag: getProfileAutoTagSnapshot(existing),
             folderStructure: readFolderStructureFromUI(),
             technical: readTechnicalSettingsFromUI(existing?.technical || null),
@@ -5411,15 +5412,10 @@
                 return;
             }
 
-            const response = await fetch("/api/tagging/profiles", {
+            const response = await fetch(`/api/tagging/profiles/${encodeURIComponent(profile.id)}/copy`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(buildProfileUpsertPayload({
-                    existing: profile,
-                    profileId: null,
-                    name: copiedName,
-                    isDefault: false
-                }))
+                body: JSON.stringify({ name: copiedName })
             });
             if (!response.ok) {
                 throw new Error(await readApiErrorMessage(response));

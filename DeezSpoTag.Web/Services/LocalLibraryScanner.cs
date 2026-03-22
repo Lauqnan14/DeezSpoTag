@@ -1414,14 +1414,12 @@ public sealed class LocalLibraryScanner
             return true;
         }
 
-        if (extension is ".m4a" or ".m4b" or ".aac" or ".ac3" or ".ec3")
+        if (extension is ".m4a" or ".m4b" or ".aac" or ".ac3" or ".ec3"
+            && IsFragmentedMp4Candidate(filePath, durationMs, bitrateKbps))
         {
             // These containers are sometimes under-reported by TagLib; keep probing
             // only when metadata is missing or the file shape looks fragmented.
-            if (IsFragmentedMp4Candidate(filePath, durationMs, bitrateKbps))
-            {
-                return true;
-            }
+            return true;
         }
 
         if (!durationMs.HasValue || durationMs.Value <= 0)

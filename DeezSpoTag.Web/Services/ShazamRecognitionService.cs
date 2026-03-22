@@ -30,14 +30,14 @@ public sealed class ShazamRecognitionService
 
     public ShazamRecognitionInfo? Recognize(string filePath, CancellationToken cancellationToken = default)
     {
-        var attempt = RecognizeWithDetails(filePath, cancellationToken);
+        var attempt = RecognizeWithDetails(filePath, cancellationToken: cancellationToken);
         return attempt.Matched ? attempt.Recognition : null;
     }
 
     public ShazamRecognitionAttempt RecognizeWithDetails(
         string filePath,
-        CancellationToken cancellationToken = default,
-        int? signatureWindowSeconds = null)
+        int? signatureWindowSeconds = null,
+        CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -48,7 +48,7 @@ public sealed class ShazamRecognitionService
         }
 
         var context = BuildLookupContext(filePath);
-        var portedStatus = EvaluatePortedRecognizer(filePath, cancellationToken, signatureWindowSeconds, out var matchedFromPorted);
+        var portedStatus = EvaluatePortedRecognizer(filePath, signatureWindowSeconds, out var matchedFromPorted, cancellationToken);
         if (matchedFromPorted != null)
         {
             return matchedFromPorted;
@@ -86,12 +86,12 @@ public sealed class ShazamRecognitionService
 
     private PortedFailureState EvaluatePortedRecognizer(
         string filePath,
-        CancellationToken cancellationToken,
         int? signatureWindowSeconds,
-        out ShazamRecognitionAttempt? matchedAttempt)
+        out ShazamRecognitionAttempt? matchedAttempt,
+        CancellationToken cancellationToken)
     {
         matchedAttempt = null;
-        var portedExecution = RunPortedRecognizer(filePath, cancellationToken, signatureWindowSeconds);
+        var portedExecution = RunPortedRecognizer(filePath, signatureWindowSeconds, cancellationToken);
         if (portedExecution.State == PortedRecognizerState.Recognized && portedExecution.Result != null)
         {
             var fromPorted = ResolveFromPorted(portedExecution.Result, cancellationToken);
@@ -270,8 +270,8 @@ public sealed class ShazamRecognitionService
 
     private PortedRecognizerExecution RunPortedRecognizer(
         string filePath,
-        CancellationToken cancellationToken,
-        int? signatureWindowSeconds)
+        int? signatureWindowSeconds,
+        CancellationToken cancellationToken)
     {
         var scriptPath = GetRecognizerScriptPath();
         var runtimeProbe = _runtimeProbe.Value;

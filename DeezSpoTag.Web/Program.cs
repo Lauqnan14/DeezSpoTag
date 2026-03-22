@@ -828,6 +828,7 @@ static void RegisterAutoTagServices(IServiceCollection services)
     services.AddSingleton<DeezSpoTag.Web.Services.TaggingProfileService>();
     services.AddSingleton<DeezSpoTag.Web.Services.ExternalFileImportService>();
     services.AddSingleton<DeezSpoTag.Web.Services.AutoTagConfigBuilder>();
+    services.AddSingleton<DeezSpoTag.Web.Services.AutoTagProfileResolutionService>();
     services.AddSingleton<DeezSpoTag.Web.Services.DownloadTagSettingsConverter>();
     services.AddSingleton<DeezSpoTag.Services.Download.Shared.IDownloadTagSettingsResolver, DeezSpoTag.Web.Services.DownloadTagSettingsResolver>();
     services.AddSingleton<DeezSpoTag.Web.Services.TagSettingsMigrationService>();
