@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.3.0] - 2026-03-22
+### Added
+- _TBD_
+
+### Changed
+- _TBD_
+
+### Fixed
+- _TBD_
+
+### Security
+- _TBD_
+
+
 ## [0.1.2.9] - 2026-03-21
 ### Added
 - Added automatic daily recommendation precomputation with a midnight background refresh for library recommendation stations.
