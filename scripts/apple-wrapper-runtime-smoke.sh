@@ -5,6 +5,7 @@ IMAGE="${1:-deezspotag-apple-wrapper:local-amd64}"
 PLATFORM="${PARITY_TEST_PLATFORM:-linux/amd64}"
 WAIT_CONTAINER_NAME="apple-wrapper-smoke-wait-$$"
 LOGIN_CONTAINER_NAME="apple-wrapper-smoke-login-$$"
+TWO_FACTOR_CONTAINER_NAME="apple-wrapper-smoke-2fa-$$"
 RETRY_CONTAINER_NAME="apple-wrapper-smoke-retry-$$"
 HOST_WRAPPER_DATA_DIR="${PARITY_TEST_WRAPPER_DATA_DIR:-}"
 HOST_WRAPPER_SESSION_DIR="${PARITY_TEST_WRAPPER_SESSION_DIR:-}"
@@ -16,6 +17,7 @@ AUTO_WRAPPER_TEST_DIR="0"
 cleanup() {
   docker rm -f "${WAIT_CONTAINER_NAME}" >/dev/null 2>&1 || true
   docker rm -f "${LOGIN_CONTAINER_NAME}" >/dev/null 2>&1 || true
+  docker rm -f "${TWO_FACTOR_CONTAINER_NAME}" >/dev/null 2>&1 || true
   docker rm -f "${RETRY_CONTAINER_NAME}" >/dev/null 2>&1 || true
   if [[ "${AUTO_WRAPPER_DATA_DIR}" == "1" && -n "${HOST_WRAPPER_DATA_DIR}" && -d "${HOST_WRAPPER_DATA_DIR}" ]]; then
     rm -rf "${HOST_WRAPPER_DATA_DIR}" >/dev/null 2>&1 || true
@@ -152,7 +154,58 @@ exit 0
 EOF
 chmod 755 "${HOST_WRAPPER_TEST_DIR}/fake-wrapper.sh"
 
-echo "[4/5] Verifying transient login retry coverage..."
+cat > "${HOST_WRAPPER_TEST_DIR}/fake-wrapper-2fa.sh" <<'EOF'
+#!/usr/bin/env sh
+set -eu
+echo "[+] starting..." >&2
+echo "[+] initializing ctx..." >&2
+echo "[+] logging in..." >&2
+echo "[.] credentialHandler: {title: , message: , 2FA: true}" >&2
+echo "[!] Enter your 2FA code into rootfs/data/data/com.apple.android.music/files/2fa.txt" >&2
+echo "[!] Waiting for input..." >&2
+sleep 8
+echo "[!] Failed to get 2FA Code in 60s. Exiting..." >&2
+exit 0
+EOF
+chmod 755 "${HOST_WRAPPER_TEST_DIR}/fake-wrapper-2fa.sh"
+
+echo "[4/6] Verifying 2FA state marker transitions..."
+docker_run -d \
+  --name "${TWO_FACTOR_CONTAINER_NAME}" \
+  --network host \
+  -e WRAPPER_LOGIN="parity@example.com:not-a-real-password" \
+  -e WRAPPER_LOGIN_RETRY_ATTEMPTS=0 \
+  -e WRAPPER_EXECUTABLE="/tmp/fake-wrapper-2fa.sh" \
+  -v "${HOST_WRAPPER_DATA_DIR}:/opt/apple-wrapper/data" \
+  -v "${HOST_WRAPPER_SESSION_DIR}:/opt/apple-wrapper/rootfs/data/data/com.apple.android.music" \
+  -v "${HOST_WRAPPER_TEST_DIR}/fake-wrapper-2fa.sh:/tmp/fake-wrapper-2fa.sh:ro" \
+  -v /dev/urandom:/opt/apple-wrapper/rootfs/dev/urandom:ro \
+  -v /dev/random:/opt/apple-wrapper/rootfs/dev/random:ro \
+  "${IMAGE}" >/dev/null
+
+sleep 3
+two_factor_state="$(tr -d '\r\n' < "${HOST_WRAPPER_DATA_DIR}/wrapper-2fa-state.txt" 2>/dev/null || true)"
+if [[ "${two_factor_state}" != "waiting_for_2fa" ]]; then
+  echo "Wrapper 2FA marker smoke failed: expected waiting_for_2fa during active prompt, got '${two_factor_state}'." >&2
+  docker logs "${TWO_FACTOR_CONTAINER_NAME}" || true
+  exit 1
+fi
+
+docker wait "${TWO_FACTOR_CONTAINER_NAME}" >/dev/null
+two_factor_state_end="$(tr -d '\r\n' < "${HOST_WRAPPER_DATA_DIR}/wrapper-2fa-state.txt" 2>/dev/null || true)"
+if [[ "${two_factor_state_end}" != "not_waiting_for_2fa" ]]; then
+  echo "Wrapper 2FA marker smoke failed: expected not_waiting_for_2fa after wrapper exits, got '${two_factor_state_end}'." >&2
+  docker logs "${TWO_FACTOR_CONTAINER_NAME}" || true
+  exit 1
+fi
+
+docker rm -f "${TWO_FACTOR_CONTAINER_NAME}" >/dev/null 2>&1 || true
+
+# Ensure env-login retry coverage is not short-circuited by the credential marker
+# written by the previous step.
+rm -f "${HOST_WRAPPER_DATA_DIR}/.wrapper-login-env.sha256"
+
+echo "[5/6] Verifying transient login retry coverage..."
 retry_logs="$(
   docker_run --rm \
     --name "${RETRY_CONTAINER_NAME}" \
@@ -190,4 +243,4 @@ if ! grep -Fq '[.] returning account info' <<< "${retry_logs}"; then
   exit 1
 fi
 
-echo "[5/5] Wrapper smoke audit passed."
+echo "[6/6] Wrapper smoke audit passed."

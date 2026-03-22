@@ -300,14 +300,43 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             var currentStatus = GetStatus();
             var wrapperAwaitingTwoFactor = currentStatus.NeedsTwoFactor ||
                                            string.Equals(currentStatus.Status, StatusWaiting, StringComparison.OrdinalIgnoreCase);
+            if (!wrapperAwaitingTwoFactor && !IsHelperControlModeEnabled())
+            {
+                // In shared-control mode, wrapper can be waiting for 2FA before ports open.
+                // Probe the shared state file directly so 2FA submission remains valid.
+                wrapperAwaitingTwoFactor =
+                    ProbeSharedTwoFactorState(maxAttempts: 4, delayBetweenAttempts: TimeSpan.FromMilliseconds(75)) ==
+                    TwoFactorProbeState.Waiting;
+                if (wrapperAwaitingTwoFactor)
+                {
+                    lock (_sync)
+                    {
+                        _awaitingTwoFactor = true;
+                        _loginInProgress = true;
+                        _startedAt ??= DateTimeOffset.UtcNow;
+                    }
+                }
+            }
             if (!wrapperAwaitingTwoFactor)
             {
-                return new AppleMusicWrapperStatusSnapshot(
-                    StatusFailed,
-                    "Wrapper is not waiting for a two-factor code. Restart Apple Music login and try again.",
-                    _email,
-                    false,
-                    false);
+                // Shared-control deployments can occasionally report a stale 2FA probe state
+                // right as the wrapper transitions into prompt mode. Accept 2FA while a login
+                // flow is still active instead of hard-failing the submission.
+                if (IsExternalLoginFlowActive())
+                {
+                    _logger.LogInformation(
+                        "Accepting Apple wrapper 2FA submission while probe reports not waiting. Status={Status}, LoginActive=true",
+                        currentStatus.Status);
+                }
+                else
+                {
+                    return new AppleMusicWrapperStatusSnapshot(
+                        StatusFailed,
+                        "Wrapper is not waiting for a two-factor code. Restart Apple Music login and try again.",
+                        _email,
+                        false,
+                        false);
+                }
             }
 
             var twoFactorResult = await WriteExternalTwoFactorAsync(code.Trim(), cancellationToken);
@@ -357,6 +386,20 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             _email,
             false,
             false);
+    }
+
+    private bool IsExternalLoginFlowActive()
+    {
+        lock (_sync)
+        {
+            if (_loginInProgress || _awaitingTwoFactor)
+            {
+                return true;
+            }
+
+            return _startedAt.HasValue &&
+                   DateTimeOffset.UtcNow - _startedAt.Value <= TimeSpan.FromMinutes(3);
+        }
     }
 
     private async Task<(bool Success, string? Error)> TryRunExternalWrapperHelperAsync(string[] args, CancellationToken cancellationToken, string? forcedHelperMode = null)
@@ -1292,7 +1335,28 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         }
     }
 
-    private static TwoFactorProbeState ProbeSharedTwoFactorState()
+    private static TwoFactorProbeState ProbeSharedTwoFactorState(int maxAttempts = 1, TimeSpan? delayBetweenAttempts = null)
+    {
+        var attempts = Math.Max(1, maxAttempts);
+        var delay = delayBetweenAttempts ?? TimeSpan.Zero;
+        for (var attempt = 1; attempt <= attempts; attempt++)
+        {
+            var state = ProbeSharedTwoFactorStateOnce();
+            if (state != TwoFactorProbeState.Unknown || attempt >= attempts)
+            {
+                return state;
+            }
+
+            if (delay > TimeSpan.Zero)
+            {
+                Thread.Sleep(delay);
+            }
+        }
+
+        return TwoFactorProbeState.Unknown;
+    }
+
+    private static TwoFactorProbeState ProbeSharedTwoFactorStateOnce()
     {
         try
         {
@@ -1566,7 +1630,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     {
         if (!IsHelperControlModeEnabled())
         {
-            return ProbeSharedTwoFactorState();
+            return ProbeSharedTwoFactorState(maxAttempts: 4, delayBetweenAttempts: TimeSpan.FromMilliseconds(75));
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -1853,7 +1917,14 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     private void RecoverTwoFactorAfterRestart(ExternalStatusContext context)
     {
-        if (!context.PortsOpen || context.HasAuthentication || context.ShouldPromptTwoFactor)
+        if (context.HasAuthentication || context.ShouldPromptTwoFactor)
+        {
+            return;
+        }
+
+        // Helper mode relies on runtime endpoints/ports for recovery.
+        // Shared-control mode can recover directly from wrapper-2fa-state.txt even when ports are still closed.
+        if (!context.PortsOpen && IsHelperControlModeEnabled())
         {
             return;
         }

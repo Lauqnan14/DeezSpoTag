@@ -18,18 +18,26 @@ set_twofactor_state() {
   local state_file="$1"
   local state_value="$2"
   local parent_dir
+  local tmp_file
   parent_dir="$(dirname "$state_file")"
   mkdir -p "$parent_dir"
-  printf '%s\n' "$state_value" > "$state_file"
+  tmp_file="$(mktemp "$parent_dir/.wrapper-2fa-state.XXXXXX")"
+  printf '%s\n' "$state_value" > "$tmp_file"
+  mv -f "$tmp_file" "$state_file"
+  chmod 644 "$state_file" || true
 }
 
 set_wrapper_runtime_flag() {
   local flag_file="$1"
   local value="$2"
   local parent_dir
+  local tmp_file
   parent_dir="$(dirname "$flag_file")"
   mkdir -p "$parent_dir"
-  printf '%s\n' "$value" > "$flag_file"
+  tmp_file="$(mktemp "$parent_dir/.wrapper-flag.XXXXXX")"
+  printf '%s\n' "$value" > "$tmp_file"
+  mv -f "$tmp_file" "$flag_file"
+  chmod 644 "$flag_file" || true
 }
 
 require_file() {
