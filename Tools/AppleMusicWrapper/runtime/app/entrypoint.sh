@@ -9,6 +9,7 @@ DEFAULT_WRAPPER_ARGS="-H 0.0.0.0 -D 10020 -M 20020 -A 30020"
 LOGIN_FILE_DEFAULT="/opt/apple-wrapper/data/wrapper-login.txt"
 LOGIN_ENV_MARKER_DEFAULT="/opt/apple-wrapper/data/.wrapper-login-env.sha256"
 TWO_FACTOR_STATE_FILE_DEFAULT="/opt/apple-wrapper/data/wrapper-2fa-state.txt"
+STARTUP_LOGIN_CREDS=""
 
 log() {
   printf '[entrypoint] %s\n' "$*" >&2
@@ -114,16 +115,71 @@ consume_env_login_credentials() {
   printf '%s' "$creds_env"
 }
 
-append_login_args() {
-  local base_args="$1"
-  local creds="$2"
-  local use_code_file="${WRAPPER_CODE_FROM_FILE:-1}"
-  local effective="$base_args"
-  effective="$effective -L $creds"
-  if [[ "$use_code_file" != "0" ]] && ! args_include_code_from_file "$effective"; then
-    effective="$effective -F"
+decode_base64_value() {
+  local value="$1"
+  printf '%s' "$value" | base64 -d 2>/dev/null
+}
+
+payload_uses_encoded_login_format() {
+  local payload="$1"
+  [[ "$payload" == *"email_b64="* ]] || [[ "$payload" == *"username_b64="* ]] || [[ "$payload" == *"password_b64="* ]]
+}
+
+parse_encoded_login_payload() {
+  local payload="$1"
+  local username_b64=""
+  local password_b64=""
+
+  while IFS='=' read -r raw_key raw_value; do
+    local key="${raw_key//$'\r'/}"
+    local value="${raw_value//$'\r'/}"
+    case "$key" in
+      email_b64|username_b64)
+        username_b64="$value"
+        ;;
+      password_b64)
+        password_b64="$value"
+        ;;
+    esac
+  done <<< "$payload"
+
+  if [[ -z "$username_b64" || -z "$password_b64" ]]; then
+    return 1
   fi
-  printf '%s' "$effective"
+
+  local username=""
+  local password=""
+  if ! username="$(decode_base64_value "$username_b64")"; then
+    log "invalid wrapper login payload: unable to decode email/username."
+    return 1
+  fi
+  if ! password="$(decode_base64_value "$password_b64")"; then
+    log "invalid wrapper login payload: unable to decode password."
+    return 1
+  fi
+
+  if [[ -z "$username" || -z "$password" ]]; then
+    log "invalid wrapper login payload: decoded credentials are empty."
+    return 1
+  fi
+  if [[ "$username" == *$'\n'* || "$username" == *$'\r'* || "$password" == *$'\n'* || "$password" == *$'\r'* ]]; then
+    log "invalid wrapper login payload: newline characters are not allowed in credentials."
+    return 1
+  fi
+
+  printf '%s:%s' "$username" "$password"
+}
+
+append_login_args_array() {
+  local -n args_ref="$1"
+  local existing_args_string="$2"
+  local creds="$3"
+  local use_code_file="${WRAPPER_CODE_FROM_FILE:-1}"
+
+  args_ref+=("-L" "$creds")
+  if [[ "$use_code_file" != "0" ]] && ! args_include_code_from_file "$existing_args_string"; then
+    args_ref+=("-F")
+  fi
 }
 
 read_login_credentials() {
@@ -138,8 +194,18 @@ read_login_credentials() {
 
   local login_file="${WRAPPER_LOGIN_FILE:-$LOGIN_FILE_DEFAULT}"
   if [[ -f "$login_file" ]]; then
+    local payload=""
+    payload="$(cat "$login_file" 2>/dev/null || true)"
     local creds_file=""
-    creds_file="$(tr -d '\r\n' < "$login_file")"
+    if payload_uses_encoded_login_format "$payload"; then
+      if ! creds_file="$(parse_encoded_login_payload "$payload")"; then
+        rm -f "$login_file" || true
+        return 1
+      fi
+    else
+      creds_file="$(printf '%s' "$payload" | tr -d '\r\n')"
+    fi
+
     if [[ -n "$creds_file" ]]; then
       # Consume credentials once to avoid login/2FA loops when the container restarts.
       # Set WRAPPER_LOGIN_FILE_PERSIST=1 only if you explicitly want persistent auto-login.
@@ -155,9 +221,9 @@ read_login_credentials() {
 }
 
 wait_for_startup_inputs() {
-  local base_args="$1"
   local wait_seconds=0
   local last_notice=0
+  STARTUP_LOGIN_CREDS=""
 
   log "no Apple session cache found; wrapper will wait for login/session instead of exiting."
   log "provide WRAPPER_LOGIN=user:pass or write credentials to ${WRAPPER_LOGIN_FILE:-$LOGIN_FILE_DEFAULT}"
@@ -165,14 +231,13 @@ wait_for_startup_inputs() {
   while true; do
     if has_cached_session; then
       log "session cache detected; starting wrapper in normal mode."
-      printf '%s' "$base_args"
       return 0
     fi
 
     local login_creds=""
     if login_creds="$(read_login_credentials)"; then
       log "login credentials detected; starting wrapper login flow."
-      append_login_args "$base_args" "$login_creds"
+      STARTUP_LOGIN_CREDS="$login_creds"
       return 0
     fi
 
@@ -337,11 +402,23 @@ main() {
   local wrapper_args_string
   wrapper_args_string="$(resolve_wrapper_args)"
 
-  if ! wrapper_args_include_login "$wrapper_args_string" && ! has_cached_session; then
-    wrapper_args_string="$(wait_for_startup_inputs "$wrapper_args_string")"
+  local wrapper_has_login="0"
+  if wrapper_args_include_login "$wrapper_args_string"; then
+    wrapper_has_login="1"
+  fi
+
+  if [[ "$wrapper_has_login" != "1" ]] && ! has_cached_session; then
+    wait_for_startup_inputs
+    if [[ -n "$STARTUP_LOGIN_CREDS" ]]; then
+      wrapper_has_login="1"
+    fi
   fi
 
   IFS=' ' read -r -a wrapper_args <<< "$wrapper_args_string"
+  if [[ -n "$STARTUP_LOGIN_CREDS" ]]; then
+    append_login_args_array wrapper_args "$wrapper_args_string" "$STARTUP_LOGIN_CREDS"
+  fi
+
   local two_factor_state_file
   two_factor_state_file="${WRAPPER_2FA_STATE_FILE:-$TWO_FACTOR_STATE_FILE_DEFAULT}"
   local transient_flag_file
@@ -367,7 +444,7 @@ main() {
       return 0
     fi
 
-    if ! wrapper_args_include_login "$wrapper_args_string"; then
+    if [[ "$wrapper_has_login" != "1" ]]; then
       return "$exit_code"
     fi
 

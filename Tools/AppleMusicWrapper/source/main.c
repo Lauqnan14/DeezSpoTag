@@ -1041,8 +1041,14 @@ int main(int argc, char *argv[]) {
     init();
     reqCtx = init_ctx();
     if (args_info.login_given) {
-        amUsername = strtok(args_info.login_arg, ":");
-        amPassword = strtok(NULL, ":");
+        char *separator = strchr(args_info.login_arg, ':');
+        if (separator == NULL || separator == args_info.login_arg || *(separator + 1) == '\0') {
+            fprintf(stderr, "[!] login argument is invalid. Expected username:password\n");
+            return EXIT_FAILURE;
+        }
+        *separator = '\0';
+        amUsername = args_info.login_arg;
+        amPassword = separator + 1;
     }
     if (args_info.login_given && !login(reqCtx)) {
         fprintf(stderr, "[!] login failed\n");

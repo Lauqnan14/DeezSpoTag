@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Collections.Generic;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Linq;
@@ -864,7 +865,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             return (true, null);
         }
 
-        var loginArgs = new[] { "login", $"{email}:{password}" };
+        var loginArgs = new[] { "login", email, password };
         var helperResult = await TryRunExternalWrapperHelperAsync(loginArgs, cancellationToken);
         if (helperResult.Success)
         {
@@ -1276,12 +1277,20 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     private static bool TryQueueSharedLoginCredentials(string email, string password, out string? error)
     {
         error = null;
-        var credentials = $"{email.Trim()}:{password.Trim()}";
-        if (credentials.Contains('\n', StringComparison.Ordinal) || credentials.Contains('\r', StringComparison.Ordinal))
+        var normalizedEmail = email.Trim();
+        var normalizedPassword = password;
+        if (normalizedEmail.Contains('\n', StringComparison.Ordinal) ||
+            normalizedEmail.Contains('\r', StringComparison.Ordinal) ||
+            normalizedPassword.Contains('\n', StringComparison.Ordinal) ||
+            normalizedPassword.Contains('\r', StringComparison.Ordinal))
         {
             error = "Apple credentials contain invalid newline characters.";
             return false;
         }
+
+        var emailB64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(normalizedEmail));
+        var passwordB64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(normalizedPassword));
+        var credentialsPayload = $"email_b64={emailB64}\npassword_b64={passwordB64}\n";
 
         try
         {
@@ -1292,7 +1301,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                 Directory.CreateDirectory(parentDir);
             }
 
-            File.WriteAllText(loginFilePath, credentials);
+            File.WriteAllText(loginFilePath, credentialsPayload);
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

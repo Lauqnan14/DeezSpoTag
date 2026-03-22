@@ -171,20 +171,6 @@ write_wrapper_env_file() {
   chmod 600 "$ENV_FILE"
 }
 
-write_temp_wrapper_env_file() {
-  local args_value="$1"
-  local temp_file
-  local escaped
-  temp_file="$(mktemp "${TMPDIR:-/tmp}/apple-wrapper-env.XXXXXX")"
-  escaped="$(escape_env_value "$args_value")"
-  chmod 600 "$temp_file"
-  {
-    printf 'WRAPPER_ARGS="%s"\n' "$escaped"
-    printf 'args="%s"\n' "$escaped"
-  } > "$temp_file"
-  printf '%s' "$temp_file"
-}
-
 resolve_mount_volume() {
   local cid="$1"
   local destination="$2"
@@ -239,11 +225,20 @@ clear_container_paths() {
 
 write_container_login_file() {
   local cid="$1"
-  local creds="$2"
-  docker run --rm --volumes-from "$cid" -e APPLE_WRAPPER_LOGIN="$creds" alpine:3.20 sh -lc '
+  local username="$2"
+  local password="$3"
+  docker run --rm --volumes-from "$cid" \
+    -e APPLE_WRAPPER_LOGIN_USER="$username" \
+    -e APPLE_WRAPPER_LOGIN_PASS="$password" \
+    alpine:3.20 sh -lc '
     set -e
+    user_b64="$(printf "%s" "$APPLE_WRAPPER_LOGIN_USER" | base64 | tr -d "\n")"
+    pass_b64="$(printf "%s" "$APPLE_WRAPPER_LOGIN_PASS" | base64 | tr -d "\n")"
     mkdir -p /opt/apple-wrapper/data
-    printf "%s" "$APPLE_WRAPPER_LOGIN" > /opt/apple-wrapper/data/wrapper-login.txt
+    {
+      printf "email_b64=%s\n" "$user_b64"
+      printf "password_b64=%s\n" "$pass_b64"
+    } > /opt/apple-wrapper/data/wrapper-login.txt
   ' >/dev/null
 }
 
@@ -296,58 +291,58 @@ probe_twofactor_state() {
 case "$cmd" in
   login)
     if [[ $# -lt 1 ]]; then
-      echo "Usage: apple-wrapperctl.sh login user:pass" >&2
+      echo "Usage: apple-wrapperctl.sh login user:pass | apple-wrapperctl.sh login user pass" >&2
       exit 1
     fi
-    creds="$1"
-    if [[ "$creds" != *:* ]]; then
-      echo "Credentials must be in username:password format." >&2
-      exit 1
+    username=""
+    password=""
+    if [[ $# -eq 1 ]]; then
+      creds="$1"
+      if [[ "$creds" != *:* ]]; then
+        echo "Credentials must be in username:password format when a single argument is used." >&2
+        exit 1
+      fi
+      username="${creds%%:*}"
+      password="${creds#*:}"
+    else
+      if [[ $# -ne 2 ]]; then
+        echo "Usage: apple-wrapperctl.sh login user pass" >&2
+        exit 1
+      fi
+      username="$1"
+      password="$2"
     fi
-    if [[ "$creds" =~ [[:space:]] ]]; then
-      echo "Credentials must not contain whitespace." >&2
+    if [[ -z "$username" || -z "$password" ]]; then
+      echo "Credentials must include both username and password." >&2
       exit 1
     fi
 
     base_args="-H 0.0.0.0 -D 10020 -M 20020 -A 30020"
-    login_args="$base_args -L $creds -F"
 
     if use_compose_mode; then
       cid="$(resolve_container_id)"
-      session_volume="$(resolve_mount_volume "$cid" "/opt/apple-wrapper/rootfs/data/data/com.apple.android.music")"
-      data_volume="$(resolve_mount_volume "$cid" "/opt/apple-wrapper/data")"
-
-      if [[ -z "$session_volume" ]]; then
-        session_volume="$(resolve_volume_by_suffix "apple_wrapper_session")"
-      fi
-      if [[ -z "$data_volume" ]]; then
-        data_volume="$(resolve_volume_by_suffix "apple_wrapper_data")"
-      fi
-
       service_stop
-      clear_volume_contents "$session_volume"
-      clear_volume_contents "$data_volume"
+      if [[ -n "$cid" ]]; then
+        clear_container_paths "$cid"
+      fi
 
       write_wrapper_env_file "$base_args"
-      temp_env="$(write_temp_wrapper_env_file "$login_args")"
-      trap 'rm -f "$temp_env"' EXIT
-      APPLE_WRAPPER_ENV_FILE="$temp_env" compose up -d --no-deps --force-recreate "$SERVICE"
+      compose up -d --no-deps --force-recreate "$SERVICE"
 
       cid="$(resolve_container_id)"
-      if [[ -n "$cid" ]]; then
-        docker update --restart=no "$cid" >/dev/null 2>&1 || true
+      if [[ -z "$cid" ]]; then
+        echo "Wrapper container '$CONTAINER_NAME' not found after compose recreate." >&2
+        exit 1
       fi
 
-      rm -f "$temp_env"
-      trap - EXIT
-      write_wrapper_env_file "$base_args"
+      write_container_login_file "$cid" "$username" "$password"
       exit 0
     fi
 
     cid="$(ensure_container_present)"
     service_stop
     clear_container_paths "$cid"
-    write_container_login_file "$cid" "$creds"
+    write_container_login_file "$cid" "$username" "$password"
     service_start
     ;;
 
@@ -488,7 +483,7 @@ case "$cmd" in
     ;;
 
   *)
-    echo "Usage: apple-wrapperctl.sh {login user:pass|run|2fa code|sanitize|logout|status|probe-2fa|logs}" >&2
+    echo "Usage: apple-wrapperctl.sh {login user:pass|login user pass|run|2fa code|sanitize|logout|status|probe-2fa|logs}" >&2
     exit 1
     ;;
 esac
