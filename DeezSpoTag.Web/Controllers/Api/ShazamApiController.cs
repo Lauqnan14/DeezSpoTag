@@ -59,6 +59,7 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             var attempt = _recognitionService.RecognizeWithDetails(
                 tempPath,
                 captureDurationSeconds,
+                ShazamRecognitionService.RecognitionMode.AudioOnly,
                 cancellationToken);
             if (!attempt.Matched)
             {
@@ -195,39 +196,33 @@ public sealed class ShazamRecognitionApiController : ControllerBase
 
         ShazamTrackCard? track = null;
         IReadOnlyList<ShazamTrackCard> related = Array.Empty<ShazamTrackCard>();
-        IReadOnlyList<ShazamTrackCard> fallbackSearch = Array.Empty<ShazamTrackCard>();
 
         if (!string.IsNullOrWhiteSpace(trackId))
         {
-            track = await SafeGetTrackAsync(trackId, cancellationToken);
-            related = await SafeGetRelatedTracksAsync(trackId, cancellationToken);
+            var trackTask = SafeGetTrackAsync(trackId, cancellationToken);
+            var relatedTask = SafeGetRelatedTracksAsync(trackId, cancellationToken);
+            await Task.WhenAll(trackTask, relatedTask);
+            track = trackTask.Result;
+            related = relatedTask.Result;
         }
 
-        if ((track == null || related.Count == 0) && !string.IsNullOrWhiteSpace(query))
-        {
-            fallbackSearch = await SafeSearchTracksAsync(query, cancellationToken);
-            if (track == null && fallbackSearch.Count > 0)
-            {
-                track = fallbackSearch[0];
-            }
-        }
-
-        return BuildMatchPayload(recognition, query, track, related, fallbackSearch);
+        return BuildMatchPayload(recognition, query, track, related);
     }
 
     private static object BuildMinimalMatchPayload(ShazamRecognitionInfo recognition)
     {
         var query = BuildQuery(recognition);
-        return BuildMatchPayload(recognition, query, track: null, related: Array.Empty<ShazamTrackCard>(), fallbackSearch: Array.Empty<ShazamTrackCard>());
+        return BuildMatchPayload(recognition, query, track: null, related: Array.Empty<ShazamTrackCard>());
     }
 
     private static object BuildMatchPayload(
         ShazamRecognitionInfo recognition,
         string? query,
         ShazamTrackCard? track,
-        IReadOnlyList<ShazamTrackCard> related,
-        IReadOnlyList<ShazamTrackCard> fallbackSearch)
+        IReadOnlyList<ShazamTrackCard> related)
     {
+        var similar = related;
+
         return new
         {
             matched = true,
@@ -251,7 +246,8 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             query,
             track,
             related,
-            fallbackSearch,
+            similar,
+            fallbackSearch = Array.Empty<ShazamTrackCard>(),
             relatedFallbackUsed = false
         };
     }
@@ -286,23 +282,6 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Shazam related-track lookup failed for trackId {TrackId}.", trackId);
-            return Array.Empty<ShazamTrackCard>();
-        }
-    }
-
-    private async Task<IReadOnlyList<ShazamTrackCard>> SafeSearchTracksAsync(string query, CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await _discoveryService.SearchTracksAsync(query, limit: 20, offset: 0, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Shazam fallback search failed for query {Query}.", query);
             return Array.Empty<ShazamTrackCard>();
         }
     }

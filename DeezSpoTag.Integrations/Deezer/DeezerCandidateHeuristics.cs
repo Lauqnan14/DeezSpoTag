@@ -18,6 +18,24 @@ internal static class DeezerCandidateHeuristics
         "as made famous by"
     };
 
+    private static readonly string[] VersionMarkers =
+    {
+        "remix",
+        "mix",
+        "edit",
+        "version",
+        "live",
+        "acoustic",
+        "demo",
+        "remaster",
+        "remastered",
+        "radio",
+        "extended",
+        "sped",
+        "slowed",
+        "nightcore"
+    };
+
     private static readonly string[] CompilationMarkers =
     {
         "greatest hits",
@@ -36,7 +54,7 @@ internal static class DeezerCandidateHeuristics
     public static bool SourceAllowsDerivative(string title, string artist, string album)
     {
         var normalized = NormalizeDescriptorToken($"{title} {artist} {album}");
-        return ContainsDerivativeMarker(normalized);
+        return ContainsDerivativeMarker(normalized) || ContainsVersionMarker(normalized);
     }
 
     public static bool IsDerivativeCandidate(ApiTrack track)
@@ -60,6 +78,17 @@ internal static class DeezerCandidateHeuristics
 
         var normalized = NormalizeDescriptorToken(descriptor.ToString());
         return ContainsDerivativeMarker(normalized);
+    }
+
+    public static bool IsVersionCandidate(ApiTrack track)
+    {
+        var descriptor = NormalizeDescriptorToken($"{track.Title} {track.TitleShort} {track.TitleVersion}");
+        return ContainsVersionMarker(descriptor);
+    }
+
+    public static bool IsVariantCandidate(ApiTrack track)
+    {
+        return IsDerivativeCandidate(track) || IsVersionCandidate(track);
     }
 
     public static bool IsCompilationLikeCandidate(ApiTrack track)
@@ -86,7 +115,7 @@ internal static class DeezerCandidateHeuristics
 
     public static int ScoreFastMatch(ApiTrack candidate, string title, string artist, int? durationSeconds, bool sourceAllowsDerivative, int compilationPenalty)
     {
-        if (!sourceAllowsDerivative && IsDerivativeCandidate(candidate))
+        if (!sourceAllowsDerivative && IsVariantCandidate(candidate))
         {
             return 0;
         }
@@ -196,6 +225,16 @@ internal static class DeezerCandidateHeuristics
         }
 
         return DerivativeMarkers.Any(marker => TextMatchUtils.ContainsWholeMarker(normalized, marker));
+    }
+
+    private static bool ContainsVersionMarker(string normalized)
+    {
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        return VersionMarkers.Any(marker => TextMatchUtils.ContainsWholeMarker(normalized, marker));
     }
 
     private static string ReplaceWithTimeout(string input, string pattern, string replacement, RegexOptions options = RegexOptions.None)

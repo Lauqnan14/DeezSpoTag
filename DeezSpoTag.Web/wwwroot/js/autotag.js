@@ -63,9 +63,23 @@
                 folderIds: [],
                 enforceFolderStructure: true,
                 moveMisplacedFiles: true,
-                renameFilesToTemplate: false,
+                mergeIntoExistingDestinationFolders: true,
+                renameFilesToTemplate: true,
                 removeEmptyFolders: true,
-                dryRunMode: false
+                resolveSameTrackQualityConflicts: true,
+                keepBothOnUnresolvedConflicts: true,
+                onlyMoveWhenTagged: false,
+                onlyReorganizeAlbumsWithFullTrackSets: false,
+                skipCompilationFolders: false,
+                skipVariousArtistsFolders: false,
+                generateReconciliationReport: false,
+                useShazamForUntaggedFiles: false,
+                duplicateConflictPolicy: "keep_best",
+                artworkPolicy: "preserve_existing",
+                lyricsPolicy: "merge",
+                runDedupe: true,
+                useShazamForDedupe: false,
+                duplicatesFolderName: "%duplicates%"
             },
             coverMaintenance: {
                 folderIds: [],
@@ -85,6 +99,8 @@
                 flagMissingTags: false,
                 flagMismatchedMetadata: false,
                 useDuplicatesFolder: true,
+                useShazamForDedupe: false,
+                duplicatesFolderName: "%duplicates%",
                 cooldownMinutes: null
             }
         }
@@ -1629,9 +1645,25 @@
         delete folderUniformity.folderId;
         folderUniformity.enforceFolderStructure = folderUniformity.enforceFolderStructure !== false;
         folderUniformity.moveMisplacedFiles = folderUniformity.moveMisplacedFiles !== false;
-        folderUniformity.renameFilesToTemplate = folderUniformity.renameFilesToTemplate === true;
+        folderUniformity.mergeIntoExistingDestinationFolders = folderUniformity.mergeIntoExistingDestinationFolders !== false;
+        folderUniformity.renameFilesToTemplate = folderUniformity.renameFilesToTemplate !== false;
         folderUniformity.removeEmptyFolders = folderUniformity.removeEmptyFolders !== false;
-        folderUniformity.dryRunMode = folderUniformity.dryRunMode === true;
+        folderUniformity.resolveSameTrackQualityConflicts = folderUniformity.resolveSameTrackQualityConflicts !== false;
+        folderUniformity.keepBothOnUnresolvedConflicts = folderUniformity.keepBothOnUnresolvedConflicts !== false;
+        folderUniformity.onlyMoveWhenTagged = folderUniformity.onlyMoveWhenTagged === true;
+        folderUniformity.onlyReorganizeAlbumsWithFullTrackSets = folderUniformity.onlyReorganizeAlbumsWithFullTrackSets === true;
+        folderUniformity.skipCompilationFolders = folderUniformity.skipCompilationFolders === true;
+        folderUniformity.skipVariousArtistsFolders = folderUniformity.skipVariousArtistsFolders === true;
+        folderUniformity.generateReconciliationReport = folderUniformity.generateReconciliationReport === true;
+        folderUniformity.useShazamForUntaggedFiles = folderUniformity.useShazamForUntaggedFiles === true;
+        folderUniformity.duplicateConflictPolicy = String(folderUniformity.duplicateConflictPolicy || "keep_best").trim().toLowerCase() || "keep_best";
+        folderUniformity.artworkPolicy = String(folderUniformity.artworkPolicy || "preserve_existing").trim().toLowerCase() || "preserve_existing";
+        folderUniformity.lyricsPolicy = String(folderUniformity.lyricsPolicy || "merge").trim().toLowerCase() || "merge";
+        folderUniformity.runDedupe = folderUniformity.runDedupe !== false;
+        folderUniformity.useShazamForDedupe = folderUniformity.useShazamForDedupe === true;
+        folderUniformity.duplicatesFolderName = String(
+            folderUniformity.duplicatesFolderName || DEFAULT_CONFIG.enhancement.folderUniformity.duplicatesFolderName
+        ).trim() || DEFAULT_CONFIG.enhancement.folderUniformity.duplicatesFolderName;
         delete folderUniformity.preferredExtensions;
 
         const coverMaintenance = enhancement.coverMaintenance;
@@ -1668,6 +1700,10 @@
         qualityChecks.flagMissingTags = qualityChecks.flagMissingTags === true;
         qualityChecks.flagMismatchedMetadata = qualityChecks.flagMismatchedMetadata === true;
         qualityChecks.useDuplicatesFolder = qualityChecks.useDuplicatesFolder !== false;
+        qualityChecks.useShazamForDedupe = qualityChecks.useShazamForDedupe === true;
+        qualityChecks.duplicatesFolderName = String(
+            qualityChecks.duplicatesFolderName || DEFAULT_CONFIG.enhancement.qualityChecks.duplicatesFolderName
+        ).trim() || DEFAULT_CONFIG.enhancement.qualityChecks.duplicatesFolderName;
         delete qualityChecks.minFormat;
         delete qualityChecks.minBitDepth;
         delete qualityChecks.minSampleRateKhz;
@@ -2356,9 +2392,23 @@
         setValue("autotag-untaggable-path", state.config.organizer?.moveUntaggedPath || "");
         setChecked("enforceFolderStructure", state.config.enhancement.folderUniformity.enforceFolderStructure);
         setChecked("moveMisplacedFiles", state.config.enhancement.folderUniformity.moveMisplacedFiles);
+        setChecked("mergeIntoExistingDestinationFolders", state.config.enhancement.folderUniformity.mergeIntoExistingDestinationFolders);
         setChecked("renameFilesToTemplate", state.config.enhancement.folderUniformity.renameFilesToTemplate);
         setChecked("removeEmptyFolders", state.config.enhancement.folderUniformity.removeEmptyFolders);
-        setChecked("dryRunMode", state.config.enhancement.folderUniformity.dryRunMode);
+        setChecked("resolveSameTrackQualityConflicts", state.config.enhancement.folderUniformity.resolveSameTrackQualityConflicts);
+        setChecked("keepBothOnUnresolvedConflicts", state.config.enhancement.folderUniformity.keepBothOnUnresolvedConflicts);
+        setChecked("folderUniformityOnlyMoveWhenTagged", state.config.enhancement.folderUniformity.onlyMoveWhenTagged);
+        setChecked("folderUniformityOnlyFullTrackSets", state.config.enhancement.folderUniformity.onlyReorganizeAlbumsWithFullTrackSets);
+        setChecked("folderUniformitySkipCompilationFolders", state.config.enhancement.folderUniformity.skipCompilationFolders);
+        setChecked("folderUniformitySkipVariousArtistsFolders", state.config.enhancement.folderUniformity.skipVariousArtistsFolders);
+        setChecked("folderUniformityGenerateReport", state.config.enhancement.folderUniformity.generateReconciliationReport);
+        setChecked("folderUniformityUseShazamForUntaggedFiles", state.config.enhancement.folderUniformity.useShazamForUntaggedFiles);
+        setValue("folderUniformityDuplicateConflictPolicy", state.config.enhancement.folderUniformity.duplicateConflictPolicy || "keep_best");
+        setValue("folderUniformityArtworkPolicy", state.config.enhancement.folderUniformity.artworkPolicy || "preserve_existing");
+        setValue("folderUniformityLyricsPolicy", state.config.enhancement.folderUniformity.lyricsPolicy || "merge");
+        setChecked("runFolderUniformityDedupe", state.config.enhancement.folderUniformity.runDedupe);
+        setChecked("folderUniformityUseShazamForDedupe", state.config.enhancement.folderUniformity.useShazamForDedupe);
+        setValue("folderUniformityDuplicatesFolderName", state.config.enhancement.folderUniformity.duplicatesFolderName || "%duplicates%");
         updateFolderUniformityFolderSummary(state.config.enhancement.folderUniformity.folderIds ?? []);
         setChecked("replaceMissingCovers", state.config.enhancement.coverMaintenance.replaceMissingEmbeddedCovers);
         setChecked("syncExternalCovers", state.config.enhancement.coverMaintenance.syncExternalCovers);
@@ -2368,6 +2418,8 @@
         setChecked("flagDuplicates", state.config.enhancement.qualityChecks.flagDuplicates);
         setChecked("flagMissingTags", state.config.enhancement.qualityChecks.flagMissingTags);
         setChecked("flagMismatchedMetadata", state.config.enhancement.qualityChecks.flagMismatchedMetadata);
+        setChecked("qualityChecksUseShazamForDedupe", state.config.enhancement.qualityChecks.useShazamForDedupe);
+        setValue("qualityChecksDuplicatesFolderName", state.config.enhancement.qualityChecks.duplicatesFolderName || "%duplicates%");
         updateQualityChecksFolderSummary(state.config.enhancement.qualityChecks.folderIds ?? []);
         state.config.enhancement.qualityChecks.scope = "all";
         state.config.enhancement.qualityChecks.technicalProfiles = normalizeTechnicalProfiles(
@@ -3232,9 +3284,26 @@
         folderUniformity.folderIds = parseFolderIdList(getValue("enhancementFolderUniformityFolder", (folderUniformity.folderIds ?? []).join(",")));
         folderUniformity.enforceFolderStructure = getChecked("enforceFolderStructure", folderUniformity.enforceFolderStructure);
         folderUniformity.moveMisplacedFiles = getChecked("moveMisplacedFiles", folderUniformity.moveMisplacedFiles);
+        folderUniformity.mergeIntoExistingDestinationFolders = getChecked("mergeIntoExistingDestinationFolders", folderUniformity.mergeIntoExistingDestinationFolders);
         folderUniformity.renameFilesToTemplate = getChecked("renameFilesToTemplate", folderUniformity.renameFilesToTemplate);
         folderUniformity.removeEmptyFolders = getChecked("removeEmptyFolders", folderUniformity.removeEmptyFolders);
-        folderUniformity.dryRunMode = getChecked("dryRunMode", folderUniformity.dryRunMode);
+        folderUniformity.resolveSameTrackQualityConflicts = getChecked("resolveSameTrackQualityConflicts", folderUniformity.resolveSameTrackQualityConflicts);
+        folderUniformity.keepBothOnUnresolvedConflicts = getChecked("keepBothOnUnresolvedConflicts", folderUniformity.keepBothOnUnresolvedConflicts);
+        folderUniformity.onlyMoveWhenTagged = getChecked("folderUniformityOnlyMoveWhenTagged", folderUniformity.onlyMoveWhenTagged);
+        folderUniformity.onlyReorganizeAlbumsWithFullTrackSets = getChecked("folderUniformityOnlyFullTrackSets", folderUniformity.onlyReorganizeAlbumsWithFullTrackSets);
+        folderUniformity.skipCompilationFolders = getChecked("folderUniformitySkipCompilationFolders", folderUniformity.skipCompilationFolders);
+        folderUniformity.skipVariousArtistsFolders = getChecked("folderUniformitySkipVariousArtistsFolders", folderUniformity.skipVariousArtistsFolders);
+        folderUniformity.generateReconciliationReport = getChecked("folderUniformityGenerateReport", folderUniformity.generateReconciliationReport);
+        folderUniformity.useShazamForUntaggedFiles = getChecked("folderUniformityUseShazamForUntaggedFiles", folderUniformity.useShazamForUntaggedFiles);
+        folderUniformity.duplicateConflictPolicy = getValue("folderUniformityDuplicateConflictPolicy", folderUniformity.duplicateConflictPolicy || "keep_best").trim() || "keep_best";
+        folderUniformity.artworkPolicy = getValue("folderUniformityArtworkPolicy", folderUniformity.artworkPolicy || "preserve_existing").trim() || "preserve_existing";
+        folderUniformity.lyricsPolicy = getValue("folderUniformityLyricsPolicy", folderUniformity.lyricsPolicy || "merge").trim() || "merge";
+        folderUniformity.runDedupe = getChecked("runFolderUniformityDedupe", folderUniformity.runDedupe);
+        folderUniformity.useShazamForDedupe = getChecked("folderUniformityUseShazamForDedupe", folderUniformity.useShazamForDedupe);
+        folderUniformity.duplicatesFolderName = getValue(
+            "folderUniformityDuplicatesFolderName",
+            folderUniformity.duplicatesFolderName || "%duplicates%"
+        ).trim() || "%duplicates%";
         delete folderUniformity.preferredExtensions;
 
         const coverMaintenance = state.config.enhancement.coverMaintenance;
@@ -3258,6 +3327,11 @@
         qualityChecks.flagMissingTags = getChecked("flagMissingTags", qualityChecks.flagMissingTags);
         qualityChecks.flagMismatchedMetadata = getChecked("flagMismatchedMetadata", qualityChecks.flagMismatchedMetadata);
         qualityChecks.useDuplicatesFolder = true;
+        qualityChecks.useShazamForDedupe = getChecked("qualityChecksUseShazamForDedupe", qualityChecks.useShazamForDedupe);
+        qualityChecks.duplicatesFolderName = getValue(
+            "qualityChecksDuplicatesFolderName",
+            qualityChecks.duplicatesFolderName || "%duplicates%"
+        ).trim() || "%duplicates%";
         syncSelectedTechnicalProfilesFromUI();
         qualityChecks.technicalProfiles = normalizeTechnicalProfiles(qualityChecks.technicalProfiles);
         qualityChecks.cooldownMinutes = null;
@@ -3282,6 +3356,104 @@
         }
     }
 
+    function createUniformityReportStat(label, value) {
+        const stat = document.createElement("div");
+        stat.className = "uniformity-report-stat";
+
+        const statLabel = document.createElement("span");
+        statLabel.className = "uniformity-report-stat-label";
+        statLabel.textContent = label;
+
+        const statValue = document.createElement("span");
+        statValue.className = "uniformity-report-stat-value";
+        statValue.textContent = String(value ?? 0);
+
+        stat.appendChild(statLabel);
+        stat.appendChild(statValue);
+        return stat;
+    }
+
+    function renderFolderUniformityReports(reports) {
+        const container = el("folderUniformityReports");
+        if (!container) {
+            return;
+        }
+
+        container.innerHTML = "";
+        if (!Array.isArray(reports) || reports.length === 0) {
+            container.classList.add("d-none");
+            return;
+        }
+
+        const orderedStats = [
+            ["Candidate files", "candidateFiles"],
+            ["Planned moves", "plannedMoves"],
+            ["Moved files", "movedFiles"],
+            ["Replaced duplicates", "replacedDuplicates"],
+            ["Quarantined duplicates", "quarantinedDuplicates"],
+            ["Skipped conflicts", "skippedConflicts"]
+        ];
+
+        reports.forEach((report) => {
+            const card = document.createElement("article");
+            card.className = "uniformity-report-card";
+
+            const header = document.createElement("div");
+            header.className = "uniformity-report-header";
+
+            const titleWrap = document.createElement("div");
+            const title = document.createElement("h6");
+            title.className = "uniformity-report-title";
+            title.textContent = String(report?.folderName || "Library folder");
+
+            const subtitle = document.createElement("div");
+            subtitle.className = "uniformity-report-subtitle";
+            subtitle.textContent = `Folder ${String(report?.folderId ?? "-")}`;
+
+            titleWrap.appendChild(title);
+            titleWrap.appendChild(subtitle);
+
+            const summary = document.createElement("div");
+            summary.className = "uniformity-report-subtitle";
+            summary.textContent = `${Number(report?.movedFolders ?? 0)} folders moved, ${Number(report?.movedSidecars ?? 0)} sidecars moved, ${Number(report?.mergedLyricsSidecars ?? 0)} lyrics merged`;
+
+            header.appendChild(titleWrap);
+            header.appendChild(summary);
+
+            const statsGrid = document.createElement("div");
+            statsGrid.className = "uniformity-report-stats";
+            orderedStats.forEach(([label, key]) => {
+                statsGrid.appendChild(createUniformityReportStat(label, report?.[key]));
+            });
+
+            card.appendChild(header);
+            card.appendChild(statsGrid);
+
+            const entries = Array.isArray(report?.entries)
+                ? report.entries.filter((entry) => typeof entry === "string" && entry.trim().length > 0)
+                : [];
+            if (entries.length > 0) {
+                const details = document.createElement("details");
+                details.className = "uniformity-report-details";
+
+                const detailsSummary = document.createElement("summary");
+                detailsSummary.textContent = `View reconciliation log (${entries.length})`;
+
+                const pre = document.createElement("pre");
+                pre.className = "uniformity-report-entries";
+                pre.textContent = entries.join("\n");
+
+                details.appendChild(detailsSummary);
+                details.appendChild(pre);
+                card.appendChild(details);
+            }
+
+            container.appendChild(card);
+        });
+
+        container.classList.remove("d-none");
+    }
+
     function setExternalStartStatus(message) {
         const target = el("autotag-external-start-status");
         if (target) {
@@ -3299,6 +3471,8 @@
         try {
             const config = readConfigFromUI();
             const options = config.enhancement.folderUniformity;
+            const technical = readTechnicalSettingsFromUI(getActiveProfile()?.technical || null);
+            renderFolderUniformityReports([]);
             setEnhancementStatus("folderUniformityStatus", "Running folder uniformity checks...");
             const response = await fetch("/api/autotag/enhancement/folder-uniformity", {
                 method: "POST",
@@ -3307,9 +3481,25 @@
                     folderIds: parseFolderIdList(options.folderIds),
                     enforceFolderStructure: options.enforceFolderStructure,
                     moveMisplacedFiles: options.moveMisplacedFiles,
+                    mergeIntoExistingDestinationFolders: options.mergeIntoExistingDestinationFolders,
                     renameFilesToTemplate: options.renameFilesToTemplate,
                     removeEmptyFolders: options.removeEmptyFolders,
-                    dryRunMode: options.dryRunMode,
+                    resolveSameTrackQualityConflicts: options.resolveSameTrackQualityConflicts,
+                    keepBothOnUnresolvedConflicts: options.keepBothOnUnresolvedConflicts,
+                    onlyMoveWhenTagged: options.onlyMoveWhenTagged,
+                    onlyReorganizeAlbumsWithFullTrackSets: options.onlyReorganizeAlbumsWithFullTrackSets,
+                    skipCompilationFolders: options.skipCompilationFolders,
+                    skipVariousArtistsFolders: options.skipVariousArtistsFolders,
+                    generateReconciliationReport: options.generateReconciliationReport,
+                    useShazamForUntaggedFiles: options.useShazamForUntaggedFiles,
+                    duplicateConflictPolicy: options.duplicateConflictPolicy,
+                    artworkPolicy: options.artworkPolicy,
+                    lyricsPolicy: options.lyricsPolicy,
+                    runDedupe: options.runDedupe,
+                    useShazamForDedupe: options.useShazamForDedupe,
+                    duplicatesFolderName: options.duplicatesFolderName,
+                    usePrimaryArtistFolders: technical.singleAlbumArtist !== false,
+                    multiArtistSeparator: String(technical.multiArtistSeparator || "default").trim() || "default",
                     includeSubfolders: config.includeSubfolders !== false
                 })
             });
@@ -3321,13 +3511,22 @@
 
             const foldersProcessed = Number(payload?.foldersProcessed ?? 0);
             const foldersSkipped = Number(payload?.foldersSkipped ?? 0);
+            const dedupe = payload?.dedupe;
+            const dedupeSummary = dedupe
+                ? ` Dedupe: ${Number(dedupe.duplicatesFound ?? 0)} duplicates handled into ${String(dedupe.duplicatesFolderName || "%duplicates%")}.`
+                : "";
+            const reportSummary = Array.isArray(payload?.reconciliationReports) && payload.reconciliationReports.length > 0
+                ? ` Report: ${payload.reconciliationReports.length} folder report(s) generated.`
+                : "";
             const summary = payload?.skipped
                 ? String(payload?.message || "Folder uniformity skipped.")
-                : `Folder uniformity finished: ${foldersProcessed} processed, ${foldersSkipped} skipped.`;
+                : `Folder uniformity finished: ${foldersProcessed} processed, ${foldersSkipped} skipped.${dedupeSummary}${reportSummary}`;
+            renderFolderUniformityReports(payload?.reconciliationReports);
             setEnhancementStatus("folderUniformityStatus", summary);
-            showToast(summary, "success");
+            showToast(summary, payload?.success === false ? "warning" : "success");
         } catch (error) {
             const message = `Folder uniformity failed: ${error?.message || error}`;
+            renderFolderUniformityReports([]);
             setEnhancementStatus("folderUniformityStatus", message);
             showToast(message, "error");
         } finally {
@@ -3357,6 +3556,8 @@
                     flagMissingTags: checks.flagMissingTags,
                     flagMismatchedMetadata: checks.flagMismatchedMetadata,
                     useDuplicatesFolder: true,
+                    useShazamForDedupe: checks.useShazamForDedupe,
+                    duplicatesFolderName: checks.duplicatesFolderName,
                     queueAtmosAlternatives: checks.queueAtmosAlternatives,
                     queueLyricsRefresh: checks.queueLyricsRefresh,
                     cooldownMinutes: checks.cooldownMinutes,
@@ -3373,7 +3574,7 @@
                 ? (payload?.qualityScanner?.started ? "Quality Scanner started" : "Quality Scanner already running") // NOSONAR
                 : "Quality Scanner skipped";
             const duplicateSummary = payload?.duplicateCheck
-                ? `Duplicates: ${Number(payload.duplicateCheck.duplicatesFound ?? 0)} found, ${Number(payload.duplicateCheck.deleted ?? 0)} moved to %duplicates%`
+                ? `Duplicates: ${Number(payload.duplicateCheck.duplicatesFound ?? 0)} found, ${Number(payload.duplicateCheck.deleted ?? 0)} moved to ${String(payload.duplicateCheck.duplicatesFolderName || "%duplicates%")}`
                 : "Duplicate Cleaner skipped";
             let lyricsSummary = "Lyrics refresh skipped";
             if (payload?.lyricsRefresh) {

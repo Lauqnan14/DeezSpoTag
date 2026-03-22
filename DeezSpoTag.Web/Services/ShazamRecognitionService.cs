@@ -6,6 +6,12 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class ShazamRecognitionService
 {
+    public enum RecognitionMode
+    {
+        SearchAssisted = 0,
+        AudioOnly = 1
+    }
+
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex TrackIdRegex = new(@"/track/(?<id>\d+)", RegexOptions.IgnoreCase | RegexOptions.Compiled, RegexTimeout);
     private static string ReplaceWithTimeout(string input, string pattern, string replacement, RegexOptions options = RegexOptions.None)
@@ -37,6 +43,7 @@ public sealed class ShazamRecognitionService
     public ShazamRecognitionAttempt RecognizeWithDetails(
         string filePath,
         int? signatureWindowSeconds = null,
+        RecognitionMode mode = RecognitionMode.AudioOnly,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -47,13 +54,18 @@ public sealed class ShazamRecognitionService
             return invalidInputAttempt;
         }
 
-        var context = BuildLookupContext(filePath);
         var portedStatus = EvaluatePortedRecognizer(filePath, signatureWindowSeconds, out var matchedFromPorted, cancellationToken);
         if (matchedFromPorted != null)
         {
             return matchedFromPorted;
         }
 
+        if (mode == RecognitionMode.AudioOnly)
+        {
+            return BuildFailureAttempt(portedStatus);
+        }
+
+        var context = BuildLookupContext(filePath);
         var queries = BuildSearchQueries(context, filePath);
         if (queries.Count == 0)
         {
@@ -381,7 +393,7 @@ public sealed class ShazamRecognitionService
             return new RecognizerRuntimeProbe(false, FirstNonEmpty(pythonError, $"Failed to start Shazam recognizer with '{pythonExecutable}'."));
         }
 
-        var runtimeImportCheckArgs = "-c \"import shazamio; import shazamio_core; from shazamio import SearchParams, Shazam\"";
+        var runtimeImportCheckArgs = "-c \"import shazamio; import shazamio_core; from aiohttp_retry import ExponentialRetry; from shazamio import HTTPClient, SearchParams, Shazam\"";
         if (!CanRunProcess(pythonExecutable, runtimeImportCheckArgs, out var runtimeImportError, useShellArgumentParsing: true))
         {
             return new RecognizerRuntimeProbe(false, FirstNonEmpty(runtimeImportError, "Modern Shazam runtime dependencies are unavailable."));
@@ -540,13 +552,14 @@ public sealed class ShazamRecognitionService
 
     private ShazamRecognitionInfo? ResolveFromPorted(PortedRecognitionResult ported, CancellationToken cancellationToken)
     {
-        var detailedInfo = TryResolveDetailedPortedInfo(ported, cancellationToken);
-        if (detailedInfo != null)
+        // Prefer recognizer output directly to keep recognition latency aligned with upstream flow.
+        var fallbackInfo = BuildFallbackPortedInfo(ported);
+        if (fallbackInfo != null)
         {
-            return detailedInfo;
+            return fallbackInfo;
         }
 
-        return BuildFallbackPortedInfo(ported);
+        return TryResolveDetailedPortedInfo(ported, cancellationToken);
     }
 
     private ShazamRecognitionInfo? TryResolveDetailedPortedInfo(PortedRecognitionResult ported, CancellationToken cancellationToken)

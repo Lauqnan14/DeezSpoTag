@@ -107,6 +107,88 @@
     gap: 8px 16px;
 }
 
+.uniformity-report-list {
+    display: grid;
+    gap: 16px;
+    margin-top: 16px;
+}
+
+.uniformity-report-card {
+    padding: 16px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+}
+
+.uniformity-report-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.uniformity-report-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.uniformity-report-subtitle {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.uniformity-report-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.uniformity-report-stat {
+    padding: 10px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+}
+
+.uniformity-report-stat-label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.uniformity-report-stat-value {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.uniformity-report-details {
+    margin-top: 8px;
+}
+
+.uniformity-report-details summary {
+    cursor: pointer;
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.uniformity-report-entries {
+    margin: 10px 0 0;
+    padding: 12px;
+    max-height: 240px;
+    overflow: auto;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    white-space: pre-wrap;
+    font-family: var(--font-family-monospace, monospace);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
 /* Prevent hard-refresh flash of hidden tabs before shared CSS loads */
 #autotagTabsContent > .tab-pane {
     display: none;
@@ -124,6 +206,14 @@
 @@media (max-width: 768px) {
     .enrichment-source-item .form-row-3 {
         grid-template-columns: repeat(2, 1fr);
+    }
+
+    .uniformity-report-header {
+        flex-direction: column;
+    }
+
+    .uniformity-report-stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
 </style>
@@ -810,7 +900,7 @@
                 </div>
                 <div class="card-body autotag-card-body">
                     <div class="download-section">
-                        <div class="download-grid download-grid-2">
+                        <div class="download-grid download-grid-3">
                             <div class="checkbox-group">
                                 <input type="checkbox" id="enforceFolderStructure" checked />
                                 <label for="enforceFolderStructure">Enforce folder structure on all library files</label>
@@ -820,16 +910,63 @@
                                 <label for="moveMisplacedFiles">Move misplaced files to correct location</label>
                             </div>
                             <div class="checkbox-group">
-                                <input type="checkbox" id="renameFilesToTemplate" />
-                                <label for="renameFilesToTemplate">Rename files to match template</label>
+                                <input type="checkbox" id="mergeIntoExistingDestinationFolders" checked />
+                                <label for="mergeIntoExistingDestinationFolders">Merge into existing destination folders</label>
                             </div>
                             <div class="checkbox-group">
-                                <input type="checkbox" id="removeEmptyFolders" />
+                                <input type="checkbox" id="renameFilesToTemplate" checked />
+                                <label for="renameFilesToTemplate">Apply file template during folder uniformity</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="removeEmptyFolders" checked />
                                 <label for="removeEmptyFolders">Remove empty folders after reorganization</label>
                             </div>
                             <div class="checkbox-group">
-                                <input type="checkbox" id="dryRunMode" />
-                                <label for="dryRunMode">Dry-run mode (preview changes without applying)</label>
+                                <input type="checkbox" id="resolveSameTrackQualityConflicts" checked />
+                                <label for="resolveSameTrackQualityConflicts">Resolve same-track quality conflicts</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="keepBothOnUnresolvedConflicts" checked />
+                                <label for="keepBothOnUnresolvedConflicts">Keep both on unresolved conflicts</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="runFolderUniformityDedupe" checked />
+                                <label for="runFolderUniformityDedupe">
+                                    Run dedupe alongside folder uniformity
+                                    <span class="autotag-tooltip-icon ms-1"
+                                          title="Runs folder and file template normalization first, then optional dedupe on the same scope."
+                                          aria-label="Runs folder and file template normalization first, then optional dedupe on the same scope.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="folderUniformityUseShazamForDedupe" />
+                                <label for="folderUniformityUseShazamForDedupe">Use Shazam-assisted dedupe for weak or noisy tags</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="folderUniformityUseShazamForUntaggedFiles" />
+                                <label for="folderUniformityUseShazamForUntaggedFiles">Use Shazam to route untagged files; leave unmatched files in place</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="folderUniformityOnlyMoveWhenTagged" />
+                                <label for="folderUniformityOnlyMoveWhenTagged">Only reorganize tagged files</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="folderUniformityOnlyFullTrackSets" />
+                                <label for="folderUniformityOnlyFullTrackSets">Only reorganize albums with full track sets</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="folderUniformitySkipCompilationFolders" />
+                                <label for="folderUniformitySkipCompilationFolders">Skip compilation folders</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="folderUniformitySkipVariousArtistsFolders" />
+                                <label for="folderUniformitySkipVariousArtistsFolders">Skip Various Artists folders</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="folderUniformityGenerateReport" />
+                                <label for="folderUniformityGenerateReport">Generate reconciliation report</label>
                             </div>
                         </div>
                         <div class="download-grid download-grid-3 mt-3">
@@ -844,11 +981,50 @@
                                 </div>
                                 <input type="hidden" id="enhancementFolderUniformityFolder" value="" />
                             </div>
+                            <div class="form-group">
+                                <label for="folderUniformityDuplicatesFolderName">
+                                    Duplicates folder name
+                                    <span class="autotag-tooltip-icon ms-1"
+                                          title="Duplicates are quarantined into this folder under each selected library root."
+                                          aria-label="Duplicates are quarantined into this folder under each selected library root.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <input type="text" id="folderUniformityDuplicatesFolderName" value="%duplicates%" />
+                            </div>
+                            <div class="form-group">
+                                <label for="folderUniformityDuplicateConflictPolicy">Duplicate conflict policy</label>
+                                <select id="folderUniformityDuplicateConflictPolicy">
+                                    <option value="keep_best">Keep best quality</option>
+                                    <option value="keep_lower">Keep lower-quality duplicates</option>
+                                    <option value="move_to_duplicates">Move duplicates to duplicates folder</option>
+                                    <option value="keep_both">Keep both</option>
+                                </select>
+                            </div>
                         </div>
-                        <span class="helper" id="folderUniformityStatus">Runs the organizer on selected library scope using these options.</span>
+                        <div class="download-grid download-grid-3 mt-3">
+                            <div class="form-group">
+                                <label for="folderUniformityArtworkPolicy">Artwork policy</label>
+                                <select id="folderUniformityArtworkPolicy">
+                                    <option value="preserve_existing">Preserve existing artwork</option>
+                                    <option value="prefer_higher_resolution">Prefer higher-resolution artwork</option>
+                                    <option value="preserve_all">Preserve all artwork variants</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="folderUniformityLyricsPolicy">Lyrics sidecar policy</label>
+                                <select id="folderUniformityLyricsPolicy">
+                                    <option value="merge">Merge lyrics sidecars</option>
+                                    <option value="preserve_existing">Preserve existing lyrics sidecars</option>
+                                    <option value="prefer_incoming">Prefer incoming lyrics sidecars</option>
+                                </select>
+                            </div>
+                        </div>
                         <div class="enhancement-action-row">
                             <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runFolderUniformity">Run Folder Uniformity</button>
                         </div>
+                        <span class="helper" id="folderUniformityStatus"></span>
+                        <div id="folderUniformityReports" class="uniformity-report-list d-none" aria-live="polite"></div>
                     </div>
                 </div>
             </div>
@@ -867,18 +1043,30 @@
                                 <input type="checkbox" id="flagDuplicates" />
                                 <label for="flagDuplicates">
                                     Flag duplicate tracks
-                                    <span class="autotag-tooltip-icon ms-1" title="Duplicate Cleaner moves duplicates to %duplicates%." aria-label="Duplicate Cleaner moves duplicates to %duplicates%.">
+                                    <span class="autotag-tooltip-icon ms-1" title="Duplicate Cleaner moves duplicates into the configured duplicates folder." aria-label="Duplicate Cleaner moves duplicates into the configured duplicates folder.">
                                         <i class="fas fa-info-circle"></i>
                                     </span>
                                 </label>
                             </div>
                             <div class="checkbox-group">
+                                <input type="checkbox" id="qualityChecksUseShazamForDedupe" />
+                                <label for="qualityChecksUseShazamForDedupe">Use Shazam-assisted dedupe</label>
+                            </div>
+                            <div class="checkbox-group">
                                 <input type="checkbox" id="flagMissingTags" />
-                                <label for="flagMissingTags">Run missing metadata scan (Quality Scanner)</label>
+                                <label for="flagMissingTags">Run missing metadata scan</label>
                             </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="flagMismatchedMetadata" />
-                                <label for="flagMismatchedMetadata">Run mismatched folder/tag scan (Quality Scanner)</label>
+                                <label for="flagMismatchedMetadata">Run mismatched folder/tag scan</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="enhancementQueueAtmosAlternatives" />
+                                <label for="enhancementQueueAtmosAlternatives">Queue Atmos alternatives</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="enhancementQueueLyricsRefresh" />
+                                <label for="enhancementQueueLyricsRefresh">Queue lyrics refresh</label>
                             </div>
                         </div>
                         <div class="download-grid download-grid-3 mt-3">
@@ -894,6 +1082,10 @@
                                 <input type="hidden" id="enhancementQualityFolder" value="" />
                             </div>
                             <div class="form-group">
+                                <label for="qualityChecksDuplicatesFolderName">Duplicates folder name</label>
+                                <input type="text" id="qualityChecksDuplicatesFolderName" value="%duplicates%" />
+                            </div>
+                            <div class="form-group">
                                 <label for="enhancementTechnicalProfilesTrigger">Technical Profiles</label>
                                 <div class="dropdown-select" id="enhancementTechnicalProfilesDropdown">
                                     <button type="button" class="dropdown-trigger" id="enhancementTechnicalProfilesTrigger">All profiles</button>
@@ -904,14 +1096,6 @@
                                         </div>
                                     </div>
                                 </div>
-                            </div>
-                            <div class="checkbox-group align-self-end">
-                                <input type="checkbox" id="enhancementQueueAtmosAlternatives" />
-                                <label for="enhancementQueueAtmosAlternatives">Queue Atmos alternatives</label>
-                            </div>
-                            <div class="checkbox-group align-self-end">
-                                <input type="checkbox" id="enhancementQueueLyricsRefresh" />
-                                <label for="enhancementQueueLyricsRefresh">Queue lyrics refresh</label>
                             </div>
                         </div>
                         <span class="helper" id="enhancementTechnicalProfilesStatus">Profiles are filtered by the selected library folder and scope.</span>

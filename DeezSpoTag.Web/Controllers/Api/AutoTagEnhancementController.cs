@@ -43,13 +43,15 @@ public class AutoTagEnhancementController : ControllerBase
         [FromBody] EnhancementFolderUniformityRequest request,
         CancellationToken cancellationToken)
     {
-        if (request.EnforceFolderStructure == false)
+        var runOrganizer = request.EnforceFolderStructure != false;
+        var runDedupe = request.RunDedupe != false;
+        if (!runOrganizer && !runDedupe)
         {
             return Ok(new
             {
                 success = true,
                 skipped = true,
-                message = "Folder uniformity is disabled by configuration.",
+                message = "Folder uniformity and dedupe are disabled by configuration.",
                 foldersProcessed = 0
             });
         }
@@ -73,48 +75,181 @@ public class AutoTagEnhancementController : ControllerBase
 
         var organizerOptions = new AutoTagOrganizerOptions
         {
-            DryRun = request.DryRunMode == true,
             IncludeSubfolders = request.IncludeSubfolders ?? true,
             MoveMisplacedFiles = request.MoveMisplacedFiles ?? true,
-            RenameFilesToTemplate = request.RenameFilesToTemplate == true,
-            RemoveEmptyFolders = request.RemoveEmptyFolders == true
+            MergeIntoExistingDestinationFolders = request.MergeIntoExistingDestinationFolders != false,
+            RenameFilesToTemplate = request.RenameFilesToTemplate != false,
+            RemoveEmptyFolders = request.RemoveEmptyFolders != false,
+            ResolveSameTrackQualityConflicts = request.ResolveSameTrackQualityConflicts != false,
+            KeepBothOnUnresolvedConflicts = request.KeepBothOnUnresolvedConflicts != false,
+            OnlyMoveWhenTagged = request.OnlyMoveWhenTagged == true,
+            OnlyReorganizeAlbumsWithFullTrackSets = request.OnlyReorganizeAlbumsWithFullTrackSets == true,
+            SkipCompilationFolders = request.SkipCompilationFolders == true,
+            SkipVariousArtistsFolders = request.SkipVariousArtistsFolders == true,
+            GenerateReconciliationReport = request.GenerateReconciliationReport == true,
+            UseShazamForUntaggedFiles = request.UseShazamForUntaggedFiles == true,
+            DuplicateConflictPolicy = string.IsNullOrWhiteSpace(request.DuplicateConflictPolicy)
+                ? AutoTagOrganizerOptions.DuplicateConflictKeepBest
+                : request.DuplicateConflictPolicy.Trim(),
+            ArtworkPolicy = string.IsNullOrWhiteSpace(request.ArtworkPolicy)
+                ? AutoTagOrganizerOptions.ArtworkPolicyPreserveExisting
+                : request.ArtworkPolicy.Trim(),
+            LyricsPolicy = string.IsNullOrWhiteSpace(request.LyricsPolicy)
+                ? AutoTagOrganizerOptions.LyricsPolicyMerge
+                : request.LyricsPolicy.Trim(),
+            DuplicatesFolderName = request.DuplicatesFolderName ?? DuplicateCleanerService.DuplicatesFolderName,
+            UsePrimaryArtistFoldersOverride = request.UsePrimaryArtistFolders,
+            MultiArtistSeparatorOverride = string.IsNullOrWhiteSpace(request.MultiArtistSeparator)
+                ? null
+                : request.MultiArtistSeparator.Trim()
         };
 
         var logs = new List<string>();
+        var errors = new List<string>();
+        var reports = new List<object>();
         var processed = 0;
         var skipped = 0;
-        foreach (var folder in enabledFolders)
+        if (runOrganizer)
         {
-            var rootPath = folder.RootPath?.Trim();
-            if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
+            foreach (var folder in enabledFolders)
             {
-                skipped++;
-                continue;
-            }
+                var rootPath = folder.RootPath?.Trim();
+                if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
+                {
+                    skipped++;
+                    continue;
+                }
 
-            processed++;
-            await _libraryOrganizer.OrganizePathAsync(rootPath, organizerOptions, message =>
+                try
+                {
+                    processed++;
+                    var report = organizerOptions.GenerateReconciliationReport
+                        ? new AutoTagLibraryOrganizer.AutoTagOrganizerReport()
+                        : null;
+                    await _libraryOrganizer.OrganizePathAsync(rootPath, organizerOptions, report, message =>
+                    {
+                        if (logs.Count < 600)
+                        {
+                            logs.Add($"[{folder.DisplayName}] {message}");
+                        }
+                    });
+                    if (report != null)
+                    {
+                        reports.Add(new
+                        {
+                            folderId = folder.Id,
+                            folderName = folder.DisplayName,
+                            report.CandidateFiles,
+                            report.PlannedMoves,
+                            report.MovedFolders,
+                            report.MovedFiles,
+                            report.MovedSidecars,
+                            report.MovedLeftovers,
+                            report.ReplacedDuplicates,
+                            report.QuarantinedDuplicates,
+                            report.KeptLowerQualityDuplicates,
+                            report.PreservedExistingArtwork,
+                            report.MergedLyricsSidecars,
+                            report.SkippedUntagged,
+                            report.SkippedCompilationFolders,
+                            report.SkippedVariousArtistsFolders,
+                            report.SkippedIncompleteAlbums,
+                            report.SkippedExistingFolderMerges,
+                            report.SkippedConflicts,
+                            entries = report.Entries
+                        });
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"[{folder.DisplayName}] {ex.Message}");
+                    if (logs.Count < 600)
+                    {
+                        logs.Add($"[{folder.DisplayName}] organizer failed: {ex.Message}");
+                    }
+                }
+            }
+        }
+
+        object? dedupe = null;
+        if (runDedupe)
+        {
+            try
             {
+                var dedupeResult = await _duplicateCleanerService.ScanAsync(
+                    enabledFolders.ToList(),
+                    new DuplicateCleanerOptions
+                    {
+                        UseDuplicatesFolder = true,
+                        DuplicatesFolderName = request.DuplicatesFolderName ?? DuplicateCleanerService.DuplicatesFolderName,
+                        UseShazamForIdentity = request.UseShazamForDedupe == true
+                    },
+                    cancellationToken);
+                dedupe = new
+                {
+                    filesScanned = dedupeResult.FilesScanned,
+                    duplicatesFound = dedupeResult.DuplicatesFound,
+                    deleted = dedupeResult.Deleted,
+                    spaceFreedBytes = dedupeResult.SpaceFreedBytes,
+                    duplicatesFolderName = dedupeResult.DuplicatesFolderName,
+                    usedShazamForIdentity = dedupeResult.UsedShazamForIdentity
+                };
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"[dedupe] {ex.Message}");
                 if (logs.Count < 600)
                 {
-                    logs.Add($"[{folder.DisplayName}] {message}");
+                    logs.Add($"[dedupe] failed: {ex.Message}");
                 }
-            });
+            }
         }
 
         return Ok(new
         {
-            success = true,
+            success = errors.Count == 0,
             foldersProcessed = processed,
             foldersSkipped = skipped,
             options = new
             {
-                DryRunMode = request.DryRunMode == true,
+                RunOrganizer = runOrganizer,
                 MoveMisplacedFiles = request.MoveMisplacedFiles ?? true,
-                RenameFilesToTemplate = request.RenameFilesToTemplate == true,
-                RemoveEmptyFolders = request.RemoveEmptyFolders == true
+                MergeIntoExistingDestinationFolders = request.MergeIntoExistingDestinationFolders != false,
+                RenameFilesToTemplate = request.RenameFilesToTemplate != false,
+                RemoveEmptyFolders = request.RemoveEmptyFolders != false,
+                ResolveSameTrackQualityConflicts = request.ResolveSameTrackQualityConflicts != false,
+                KeepBothOnUnresolvedConflicts = request.KeepBothOnUnresolvedConflicts != false,
+                OnlyMoveWhenTagged = request.OnlyMoveWhenTagged == true,
+                OnlyReorganizeAlbumsWithFullTrackSets = request.OnlyReorganizeAlbumsWithFullTrackSets == true,
+                SkipCompilationFolders = request.SkipCompilationFolders == true,
+                SkipVariousArtistsFolders = request.SkipVariousArtistsFolders == true,
+                GenerateReconciliationReport = request.GenerateReconciliationReport == true,
+                UseShazamForUntaggedFiles = request.UseShazamForUntaggedFiles == true,
+                DuplicateConflictPolicy = organizerOptions.DuplicateConflictPolicy,
+                ArtworkPolicy = organizerOptions.ArtworkPolicy,
+                LyricsPolicy = organizerOptions.LyricsPolicy,
+                RunDedupe = runDedupe,
+                UseShazamForDedupe = request.UseShazamForDedupe == true,
+                UsePrimaryArtistFolders = request.UsePrimaryArtistFolders,
+                MultiArtistSeparator = string.IsNullOrWhiteSpace(request.MultiArtistSeparator)
+                    ? null
+                    : request.MultiArtistSeparator.Trim(),
+                DuplicatesFolderName = string.IsNullOrWhiteSpace(request.DuplicatesFolderName)
+                    ? DuplicateCleanerService.DuplicatesFolderName
+                    : request.DuplicatesFolderName.Trim()
             },
-            logs
+            dedupe,
+            reconciliationReports = reports,
+            logs,
+            errors
         });
     }
 
@@ -290,18 +425,28 @@ public class AutoTagEnhancementController : ControllerBase
                 duplicatesFound = 0,
                 deleted = 0,
                 spaceFreedBytes = 0,
-                duplicatesFolderName = DuplicateCleanerService.DuplicatesFolderName
+                duplicatesFolderName = DuplicateCleanerService.DuplicatesFolderName,
+                usedShazamForIdentity = false
             };
         }
 
-        var result = await _duplicateCleanerService.ScanAsync(enabledFolders.ToList(), request.UseDuplicatesFolder ?? true, cancellationToken);
+        var result = await _duplicateCleanerService.ScanAsync(
+            enabledFolders.ToList(),
+            new DuplicateCleanerOptions
+            {
+                UseDuplicatesFolder = request.UseDuplicatesFolder ?? true,
+                DuplicatesFolderName = request.DuplicatesFolderName ?? DuplicateCleanerService.DuplicatesFolderName,
+                UseShazamForIdentity = request.UseShazamForDedupe == true
+            },
+            cancellationToken);
         return new
         {
             filesScanned = result.FilesScanned,
             duplicatesFound = result.DuplicatesFound,
             deleted = result.Deleted,
             spaceFreedBytes = result.SpaceFreedBytes,
-            duplicatesFolderName = DuplicateCleanerService.DuplicatesFolderName
+            duplicatesFolderName = result.DuplicatesFolderName,
+            usedShazamForIdentity = result.UsedShazamForIdentity
         };
     }
 

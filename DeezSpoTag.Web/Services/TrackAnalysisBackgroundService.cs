@@ -114,7 +114,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 var settings = await _settingsStore.LoadAsync();
                 if (settings.Enabled)
                 {
-                    await AnalyzeBatchAsync(settings.BatchSize, stoppingToken);
+                    await AnalyzeBatchAsync(settings.BatchSize, stoppingToken, stopWhenDisabled: true);
                 }
             }
             catch (Exception ex)
@@ -139,16 +139,24 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
     }
 
-    public async Task AnalyzeNowAsync(int batchSize, CancellationToken cancellationToken)
+    public async Task AnalyzeNowAsync(int batchSize, CancellationToken cancellationToken, bool forceWhenDisabled = false)
     {
         await _analysisLock.WaitAsync(cancellationToken);
         try
         {
-            var settings = await _settingsStore.LoadAsync();
             while (!cancellationToken.IsCancellationRequested)
             {
-                var effectiveBatch = settings.Enabled ? settings.BatchSize : batchSize;
-                var processed = await AnalyzeBatchAsync(Math.Clamp(effectiveBatch, 10, 500), cancellationToken);
+                var settings = await _settingsStore.LoadAsync();
+                if (!forceWhenDisabled && !settings.Enabled)
+                {
+                    break;
+                }
+
+                var effectiveBatch = forceWhenDisabled ? batchSize : settings.BatchSize;
+                var processed = await AnalyzeBatchAsync(
+                    Math.Clamp(effectiveBatch, 10, 500),
+                    cancellationToken,
+                    stopWhenDisabled: !forceWhenDisabled);
                 if (processed == 0)
                 {
                     break;
@@ -216,7 +224,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
     }
 
-    private async Task<int> AnalyzeBatchAsync(int batchSize, CancellationToken cancellationToken)
+    private async Task<int> AnalyzeBatchAsync(int batchSize, CancellationToken cancellationToken, bool stopWhenDisabled)
     {
         var tracks = await _repository.GetTracksForAnalysisAsync(batchSize, cancellationToken);
         if (tracks.Count == 0)
@@ -239,6 +247,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
         var summaries = await _repository.GetTrackSummariesAsync(tracks.Select(t => t.TrackId).ToList(), cancellationToken);
         var summaryMap = summaries.ToDictionary(item => item.TrackId);
+        var processedTracks = 0;
         foreach (var track in tracks)
         {
             if (cancellationToken.IsCancellationRequested)
@@ -246,10 +255,24 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 break;
             }
 
+            if (stopWhenDisabled)
+            {
+                var settings = await _settingsStore.LoadAsync();
+                if (!settings.Enabled)
+                {
+                    _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                        DateTimeOffset.UtcNow,
+                        "info",
+                        "Vibe analysis halted (disabled)."));
+                    break;
+                }
+            }
+
             await _repository.MarkTrackAnalysisProcessingAsync(track.TrackId, track.LibraryId, cancellationToken);
             summaryMap.TryGetValue(track.TrackId, out var summary);
             var result = await AnalyzeTrackWithOptionalLastFmAsync(track, summary, batchPredictions, cancellationToken);
             await _repository.UpsertTrackAnalysisAsync(result, cancellationToken);
+            processedTracks++;
             if (IsAnalysisCompleteStatus(result.Status))
             {
                 completed++;
@@ -283,7 +306,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 $"Vibe analysis errors: {string.Join(", ", topReasons)}"));
         }
 
-        return tracks.Count;
+        return processedTracks;
     }
 
     private static bool IsAnalysisCompleteStatus(string? status)

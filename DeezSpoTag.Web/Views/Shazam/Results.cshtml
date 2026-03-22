@@ -16,7 +16,11 @@
     <div class="shz-toolbar">
         <div class="shz-toolbar-group">
             <label for="shzDownloadDestination">Download destination</label>
-            <select id="shzDownloadDestination" class="download-destination-select"></select>
+            <select
+                id="shzDownloadDestination"
+                class="download-destination-select"
+                data-destination-content-mode="music"
+                data-destination-storage-key="download-destination-folder-stereo"></select>
         </div>
         <div class="shz-toolbar-hint">Preview tracks in-app, then download directly to the selected folder.</div>
     </div>
@@ -288,8 +292,10 @@
             const livePayload = readLiveCapturePayload();
             if (livePayload) {
                 match = livePayload.track || normalizeRecognitionCard(livePayload.recognition);
-                similar = Array.isArray(livePayload.related) ? livePayload.related : [];
-                searched = Array.isArray(livePayload.fallbackSearch) ? livePayload.fallbackSearch : [];
+                similar = Array.isArray(livePayload.similar)
+                    ? livePayload.similar
+                    : Array.isArray(livePayload.related) ? livePayload.related : [];
+                searched = [];
                 usedLivePayload = true;
                 renderPayload(match, similar, searched);
                 setStatus('Shazam results loaded from live capture.');
@@ -315,16 +321,6 @@
                     await fetchTrackAndRelated();
                 } else {
                     refreshPromise = fetchTrackAndRelated().catch(() => null);
-                }
-            }
-
-            if ((similar.length === 0 || !match) && query) {
-                const searchPayload = await fetchJson(`/api/shazam/search?query=${encodeURIComponent(query)}&limit=20`);
-                if (Array.isArray(searchPayload?.tracks)) {
-                    searched = searchPayload.tracks;
-                    if (!match && searched.length > 0) {
-                        match = searched[0];
-                    }
                 }
             }
 

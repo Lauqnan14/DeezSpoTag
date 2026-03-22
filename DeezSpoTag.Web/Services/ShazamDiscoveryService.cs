@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -79,7 +80,7 @@ public sealed class ShazamDiscoveryService
             return null;
         }
 
-        var root = doc.RootElement;
+        var root = doc.RootElement.Clone();
         if (TryGetObject(root, "track", out var trackElement))
         {
             return ParseTrack(trackElement);
@@ -108,14 +109,100 @@ public sealed class ShazamDiscoveryService
         limit = Math.Clamp(limit, 1, MaxTrackLimit);
         offset = Math.Max(0, offset);
 
-        var url = $"https://cdn.shazam.com/shazam/v3/{Language}/{Country}/web/-/tracks/track-similarities-id-{Uri.EscapeDataString(trackId)}?startFrom={offset}&pageSize={limit}&connected=&channel=";
+        var url = await ResolveRelatedTracksUrlAsync(trackId, cancellationToken);
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return Array.Empty<ShazamTrackCard>();
+        }
+
+        url = ApplyRelatedTracksPaging(url, limit, offset);
         using var doc = await GetJsonAsync(url, cancellationToken);
         if (doc == null)
         {
             return Array.Empty<ShazamTrackCard>();
         }
 
-        return ParseTrackList(doc.RootElement, limit);
+        var root = doc.RootElement.Clone();
+        return ParseTrackList(root, limit);
+    }
+
+    private async Task<string?> ResolveRelatedTracksUrlAsync(string trackId, CancellationToken cancellationToken)
+    {
+        var trackUrl = $"https://www.shazam.com/discovery/v5/{Language}/{Country}/iphone/-/track/{Uri.EscapeDataString(trackId)}?shazamapiversion=v3&video=v3";
+        using var trackDoc = await GetJsonAsync(trackUrl, cancellationToken);
+        if (trackDoc == null)
+        {
+            return null;
+        }
+
+        var root = trackDoc.RootElement;
+        var relatedUrl = TryGetString(root, "relatedtracksurl");
+        if (!string.IsNullOrWhiteSpace(relatedUrl))
+        {
+            return relatedUrl;
+        }
+
+        if (!TryGetArray(root, "sections", out var sections))
+        {
+            return null;
+        }
+
+        foreach (var section in sections.EnumerateArray())
+        {
+            var type = TryGetString(section, "type");
+            if (!string.Equals(type, "RELATED", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            relatedUrl = TryGetString(section, "url");
+            if (!string.IsNullOrWhiteSpace(relatedUrl))
+            {
+                return relatedUrl;
+            }
+        }
+
+        return null;
+    }
+
+    private static string ApplyRelatedTracksPaging(string url, int limit, int offset)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return url;
+        }
+
+        var updated = Regex.Replace(
+            url,
+            @"([?&]startFrom=)\d+",
+            match => $"{match.Groups[1].Value}{offset}",
+            RegexOptions.IgnoreCase);
+        updated = Regex.Replace(
+            updated,
+            @"([?&]pageSize=)\d+",
+            match => $"{match.Groups[1].Value}{limit}",
+            RegexOptions.IgnoreCase);
+
+        var hasStart = updated.Contains("startFrom=", StringComparison.OrdinalIgnoreCase);
+        var hasSize = updated.Contains("pageSize=", StringComparison.OrdinalIgnoreCase);
+        if (hasStart && hasSize)
+        {
+            return updated;
+        }
+
+        var separator = updated.Contains('?') ? "&" : "?";
+        if (!hasStart)
+        {
+            updated += $"{separator}startFrom={offset}";
+            separator = "&";
+        }
+
+        if (!hasSize)
+        {
+            updated += $"{separator}pageSize={limit}";
+        }
+
+        return updated;
     }
 
     public async Task<IReadOnlyList<ShazamTrackCard>> SearchTracksAsync(
@@ -161,7 +248,8 @@ public sealed class ShazamDiscoveryService
                 continue;
             }
 
-            var cards = ParseTrackList(doc.RootElement, limit);
+            var root = doc.RootElement.Clone();
+            var cards = ParseTrackList(root, limit);
             if (cards.Count > 0)
             {
                 foreach (var card in cards)
@@ -198,7 +286,8 @@ public sealed class ShazamDiscoveryService
         var cards = new List<ShazamTrackCard>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        if (!TryGetObject(doc.RootElement, "results", out var results)
+        var root = doc.RootElement.Clone();
+        if (!TryGetObject(root, "results", out var results)
             || !TryGetObject(results, "songs", out var songs)
             || !TryGetArray(songs, "data", out var data))
         {
@@ -424,7 +513,8 @@ public sealed class ShazamDiscoveryService
 
         var appleMusicUrl = FindFirstUri(track, uri => uri.Contains("music.apple.com", StringComparison.OrdinalIgnoreCase));
         var spotifyUrl = FindFirstUri(track, uri => uri.Contains("open.spotify.com", StringComparison.OrdinalIgnoreCase));
-        var deezerUrl = FindFirstUri(track, uri => uri.Contains("deezer.com/track/", StringComparison.OrdinalIgnoreCase));
+        var deezerUrls = FindUris(track, IsDeezerUriCandidate, limit: 8);
+        var deezerUrl = deezerUrls.FirstOrDefault();
 
         var isrc = FirstNonEmpty(
             TryGetString(track, "isrc"),
@@ -481,6 +571,7 @@ public sealed class ShazamDiscoveryService
             AppleMusicUrl = appleMusicUrl,
             SpotifyUrl = spotifyUrl,
             DeezerUrl = deezerUrl,
+            DeezerUrls = deezerUrls,
             Isrc = isrc,
             DurationMs = durationMs,
             Key = key,
@@ -915,6 +1006,7 @@ public sealed class ShazamDiscoveryService
         AddTagValue(tags, "SHAZAM_URL", context.ShazamUrl);
         AddTagValue(tags, "SHAZAM_APPLE_MUSIC_URL", context.AppleMusicUrl);
         AddTagValue(tags, "SHAZAM_SPOTIFY_URL", context.SpotifyUrl);
+        AddTagValues(tags, "SHAZAM_DEEZER_URL", context.DeezerUrls);
         AddTagValue(tags, "SHAZAM_DEEZER_URL", context.DeezerUrl);
         AddTagValue(tags, "SHAZAM_ALBUM", context.Album);
         AddTagValue(tags, "SHAZAM_GENRE", context.Genre);
@@ -984,6 +1076,52 @@ public sealed class ShazamDiscoveryService
         }
 
         return null;
+    }
+
+    private static List<string> FindUris(JsonElement element, Func<string, bool> predicate, int limit)
+    {
+        var results = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (limit <= 0)
+        {
+            return results;
+        }
+
+        var queue = new Queue<JsonElement>();
+        queue.Enqueue(element);
+
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            if (TryFindUriOnElement(current, predicate, out var match)
+                && !string.IsNullOrWhiteSpace(match)
+                && seen.Add(match))
+            {
+                results.Add(match);
+                if (results.Count >= limit)
+                {
+                    break;
+                }
+            }
+
+            EnqueueNestedElements(current, queue);
+        }
+
+        return results;
+    }
+
+    private static bool IsDeezerUriCandidate(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var normalized = value.Trim();
+        return normalized.Contains("deezer.com/track/", StringComparison.OrdinalIgnoreCase)
+               || normalized.StartsWith("deezer-query://", StringComparison.OrdinalIgnoreCase)
+               || normalized.StartsWith("deezer://", StringComparison.OrdinalIgnoreCase)
+               || normalized.StartsWith("deezer:track:", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryFindUriOnElement(JsonElement element, Func<string, bool> predicate, out string? match)
@@ -1112,10 +1250,27 @@ public sealed class ShazamDiscoveryService
             return false;
         }
 
-        var property = element.EnumerateObject()
-            .FirstOrDefault(prop => string.Equals(prop.Name, propertyName, StringComparison.OrdinalIgnoreCase));
-        value = property.Value;
-        return !string.IsNullOrWhiteSpace(property.Name);
+        try
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (!string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                value = property.Value;
+                return true;
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // Upstream schema shifts can produce invalid JsonElement instances.
+            // Treat as missing property instead of failing the entire request.
+        }
+
+        value = default;
+        return false;
     }
 
     private static string? FirstNonEmpty(params string?[] values)
@@ -1137,6 +1292,7 @@ public sealed class ShazamDiscoveryService
         public string? AppleMusicUrl { get; init; }
         public string? SpotifyUrl { get; init; }
         public string? DeezerUrl { get; init; }
+        public IEnumerable<string> DeezerUrls { get; init; } = Array.Empty<string>();
         public string? Isrc { get; init; }
         public int? DurationMs { get; init; }
         public string? Key { get; init; }

@@ -174,7 +174,7 @@ internal static class SpotifyTracklistResolver
 
         try
         {
-            var canonicalResolution = TryResolveFromCanonicalCache(context);
+            var canonicalResolution = await TryResolveFromCanonicalCacheAsync(context);
             if (canonicalResolution != null)
             {
                 return canonicalResolution;
@@ -239,20 +239,34 @@ internal static class SpotifyTracklistResolver
             "unresolved");
     }
 
-    private static SpotifyTracklistResolveResult? TryResolveFromCanonicalCache(ResolveContext context)
+    private static async Task<SpotifyTracklistResolveResult?> TryResolveFromCanonicalCacheAsync(ResolveContext context)
     {
         if (context.StrictWithoutIsrc || string.IsNullOrWhiteSpace(context.CanonicalKey))
         {
             return null;
         }
 
-        if (!TryGetCanonicalCached(context.CanonicalKey, out var cachedCanonicalId, out var cachedNegative))
+        if (!TryGetCanonicalCached(context.CanonicalKey, out var cachedEntry, out var cachedNegative))
         {
             return null;
         }
 
+        var cachedCanonicalId = cachedEntry.DeezerId;
+
         if (!string.IsNullOrWhiteSpace(cachedCanonicalId))
         {
+            if (NeedsCachedVariantValidation(context, cachedEntry))
+            {
+                var isVariantMismatch = await IsDisallowedVariantCachedHitAsync(context, cachedCanonicalId);
+                if (isVariantMismatch)
+                {
+                    InvalidateCanonicalCacheEntry(context.CanonicalKey, context.Options.Logger);
+                    return null;
+                }
+
+                PromoteValidatedCanonicalCacheEntry(context.CanonicalKey, cachedEntry, cachedCanonicalId, context.Options.Logger);
+            }
+
             return new SpotifyTracklistResolveResult(
                 cachedCanonicalId,
                 SpotifyTracklistResolveOutcome.Matched,
@@ -274,6 +288,54 @@ internal static class SpotifyTracklistResolver
             null,
             SpotifyTracklistResolveOutcome.HardMismatch,
             "canonical_negative_cache_hit");
+    }
+
+    private static bool NeedsCachedVariantValidation(ResolveContext context, CanonicalCacheEntry cachedEntry)
+    {
+        if (!string.IsNullOrWhiteSpace(context.NormalizedIsrc))
+        {
+            return false;
+        }
+
+        if (SourceAllowsVariant(context.Track))
+        {
+            return false;
+        }
+
+        var strategy = cachedEntry.Strategy?.Trim();
+        return string.Equals(strategy, "metadata", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(strategy, "metadata-cache", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(strategy, "songlink", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<bool> IsDisallowedVariantCachedHitAsync(ResolveContext context, string deezerId)
+    {
+        try
+        {
+            var candidate = await context.DeezerClient.GetTrackAsync(deezerId);
+            if (candidate == null || string.IsNullOrWhiteSpace(candidate.Id) || candidate.Id == "0")
+            {
+                return true;
+            }
+
+            return IsVariantCandidate(candidate);
+        }
+        catch (Exception ex) when (IsTransientException(ex))
+        {
+            context.Options.Logger.LogDebug(
+                ex,
+                "Transient Deezer cache-validation failure for {TrackName}",
+                context.Track.Name);
+            return false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            context.Options.Logger.LogDebug(
+                ex,
+                "Deezer cache-validation skipped for {TrackName}",
+                context.Track.Name);
+            return false;
+        }
     }
 
     private static async Task<ResolveStepResult> TryResolveFromIsrcAsync(ResolveContext context)
@@ -768,9 +830,28 @@ internal static class SpotifyTracklistResolver
 
     private static bool HasDerivativeMismatch(SpotifyTrackSummary sourceTrack, ApiTrack candidate)
     {
-        var sourceDescriptor = NormalizeDescriptor($"{sourceTrack.Name} {sourceTrack.Artists} {sourceTrack.Album}");
-        var sourceAllowsDerivative = ContainsDerivativeMarker(sourceDescriptor);
-        return !sourceAllowsDerivative && IsDerivativeCandidate(candidate);
+        var sourceAllowsVariant = SourceAllowsVariant(sourceTrack);
+        return !sourceAllowsVariant && IsVariantCandidate(candidate);
+    }
+
+    private static bool SourceAllowsVariant(SpotifyTrackSummary sourceTrack)
+    {
+        var titleDescriptor = NormalizeDescriptor(sourceTrack.Name);
+        var albumDescriptor = NormalizeDescriptor(sourceTrack.Album);
+        return ContainsDerivativeMarker(titleDescriptor)
+               || ContainsVersionMarker(titleDescriptor)
+               || ContainsVersionMarker(albumDescriptor);
+    }
+
+    private static bool IsVariantCandidate(ApiTrack track)
+    {
+        return IsDerivativeCandidate(track) || IsVersionCandidate(track);
+    }
+
+    private static bool IsVersionCandidate(ApiTrack track)
+    {
+        var descriptor = NormalizeDescriptor($"{track.Title} {track.TitleShort} {track.TitleVersion}");
+        return ContainsVersionMarker(descriptor);
     }
 
     private static CandidateValidationResult? TryValidateTitleScore(
@@ -1329,22 +1410,22 @@ internal static class SpotifyTracklistResolver
         return false;
     }
 
-    private static bool TryGetCanonicalCached(string key, out string? deezerId, out bool isNegative)
+    private static bool TryGetCanonicalCached(string key, out CanonicalCacheEntry entry, out bool isNegative)
     {
-        deezerId = null;
+        entry = default!;
         isNegative = false;
         if (string.IsNullOrWhiteSpace(key))
         {
             return false;
         }
 
-        if (!CanonicalTrackCache.TryGetValue(key, out var entry))
+        if (!CanonicalTrackCache.TryGetValue(key, out var cachedEntry))
         {
             return false;
         }
 
-        var age = DateTimeOffset.UtcNow - entry.Stamp;
-        var ttl = string.IsNullOrWhiteSpace(entry.DeezerId)
+        var age = DateTimeOffset.UtcNow - cachedEntry.Stamp;
+        var ttl = string.IsNullOrWhiteSpace(cachedEntry.DeezerId)
             ? NegativeCanonicalCacheTtl
             : PositiveCanonicalCacheTtl;
 
@@ -1354,9 +1435,42 @@ internal static class SpotifyTracklistResolver
             return false;
         }
 
-        deezerId = entry.DeezerId;
-        isNegative = string.IsNullOrWhiteSpace(entry.DeezerId);
+        entry = cachedEntry;
+        isNegative = string.IsNullOrWhiteSpace(cachedEntry.DeezerId);
         return true;
+    }
+
+    private static void PromoteValidatedCanonicalCacheEntry(
+        string key,
+        CanonicalCacheEntry cachedEntry,
+        string deezerId,
+        ILogger logger)
+    {
+        var stamp = DateTimeOffset.UtcNow;
+        var promoted = new CanonicalCacheEntry(stamp, deezerId, "validated", cachedEntry.Score);
+        CanonicalTrackCache[key] = promoted;
+
+        if (PersistentCanonicalCache.ContainsKey(key))
+        {
+            PersistentCanonicalCache[key] = new PersistentCacheEntry(stamp, deezerId, "validated", cachedEntry.Score);
+            _persistentCacheDirty = true;
+            TryFlushPersistentCache(logger);
+        }
+    }
+
+    private static void InvalidateCanonicalCacheEntry(string key, ILogger logger)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return;
+        }
+
+        CanonicalTrackCache.TryRemove(key, out _);
+        if (PersistentCanonicalCache.TryRemove(key, out _))
+        {
+            _persistentCacheDirty = true;
+            TryFlushPersistentCache(logger);
+        }
     }
 
     private static void CacheValue(

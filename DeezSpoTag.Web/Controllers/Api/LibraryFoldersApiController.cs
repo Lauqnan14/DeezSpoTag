@@ -86,18 +86,18 @@ public class LibraryFoldersApiController : ControllerBase
                 .ToList();
         }
 
-        if (downloadOnly)
-        {
-            folders = folders
-                .Where(folder => folder.AutoTagEnabled)
-                .ToList();
-        }
-
         var requestedContentType = NormalizeRequestedContentType(contentType);
         if (!string.IsNullOrWhiteSpace(requestedContentType))
         {
             folders = folders
                 .Where(folder => IsMatchingRequestedContentType(folder, requestedContentType))
+                .ToList();
+        }
+
+        if (downloadOnly)
+        {
+            folders = folders
+                .Where(IsEligibleDownloadDestination)
                 .ToList();
         }
 
@@ -409,10 +409,19 @@ public class LibraryFoldersApiController : ControllerBase
         }
 
         if (request.Enabled == true
-            && RequiresAutoTagProfile(folder)
-            && !HasAssignedAutoTagProfile(folder.AutoTagProfileId))
+            && RequiresAutoTagProfile(folder))
         {
-            return BadRequest("Music folders require an AutoTag profile before AutoTag can be enabled.");
+            var canonicalProfileId = await ResolveCanonicalProfileIdAsync(folder.AutoTagProfileId);
+            if (!HasAssignedAutoTagProfile(canonicalProfileId))
+            {
+                return BadRequest("Music folders require an AutoTag profile before AutoTag can be enabled.");
+            }
+
+            if (!string.Equals(folder.AutoTagProfileId?.Trim(), canonicalProfileId, StringComparison.OrdinalIgnoreCase))
+            {
+                folder = await _repository.UpdateFolderProfileAsync(id, canonicalProfileId, cancellationToken)
+                    ?? folder with { AutoTagProfileId = canonicalProfileId };
+            }
         }
 
         var updated = await _repository.UpdateFolderAutoTagEnabledAsync(id, true, cancellationToken);
@@ -632,6 +641,23 @@ public class LibraryFoldersApiController : ControllerBase
     private static bool HasAssignedAutoTagProfile(string? profileId)
     {
         return !string.IsNullOrWhiteSpace(profileId);
+    }
+
+    private static bool IsEligibleDownloadDestination(FolderDto folder)
+    {
+        if (!folder.Enabled)
+        {
+            return false;
+        }
+
+        if (!RequiresAutoTagProfile(folder))
+        {
+            // Video and podcast folders do not require AutoTag profiles.
+            return true;
+        }
+
+        return folder.AutoTagEnabled
+            && HasAssignedAutoTagProfile(folder.AutoTagProfileId);
     }
 
     private static string? NormalizeRequestedContentType(string? value)

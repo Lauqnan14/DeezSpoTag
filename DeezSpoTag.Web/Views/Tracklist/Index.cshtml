@@ -2275,12 +2275,33 @@ function mapRadioTracklist(payload) {
     };
 }
 
+function normalizeCoverUrl(value) {
+    if (typeof value !== 'string') {
+        return '';
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return '';
+    }
+
+    if (/^https?:\/\//i.test(trimmed) || /^data:image\//i.test(trimmed) || trimmed.startsWith('/')) {
+        return trimmed;
+    }
+
+    if (trimmed.startsWith('//')) {
+        return `https:${trimmed}`;
+    }
+
+    return '';
+}
+
 function mapLibraryStyleTracks(tracks) {
     return (tracks || []).map((track, index) => ({
         id: track.trackId || '',
         title: track.title || 'Unknown',
         artist: { name: track.artistName || 'Unknown', id: '' },
-        album: { title: track.albumTitle || 'Unknown', cover_medium: track.coverPath || '' },
+        album: { title: track.albumTitle || 'Unknown', cover_medium: normalizeCoverUrl(track.coverPath || '') },
         duration: track.durationMs ? Math.round(track.durationMs / 1000) : 0,
         preview: '',
         track_position: index + 1
@@ -2334,7 +2355,7 @@ function mapRecommendationsTracklist(payload) {
         album: {
             id: track.album?.id || '',
             title: track.album?.title || 'Unknown',
-            cover_medium: track.album?.coverMedium || track.album?.cover_medium || ''
+            cover_medium: normalizeCoverUrl(track.album?.coverMedium || track.album?.cover_medium || '')
         },
         duration: Number.isFinite(track.duration) ? track.duration : 0,
         isrc: track.isrc || '',
@@ -2371,7 +2392,7 @@ function mapPlexTracklist(playlist) {
         id: track.id || '',
         title: track.title || 'Unknown',
         artist: { name: track.artist || 'Unknown', id: '' },
-        album: { title: track.album || 'Unknown', cover_medium: track.coverUrl || '' },
+        album: { title: track.album || 'Unknown', cover_medium: normalizeCoverUrl(track.coverUrl || '') },
         duration: track.durationMs ? Math.round(track.durationMs / 1000) : 0,
         preview: track.streamUrl || '',
         track_position: index + 1,
@@ -2621,7 +2642,7 @@ async function loadAppleStationTracklist() {
         id: t.appleId || '',
         title: t.name || 'Unknown',
         artist: { name: t.artist || 'Unknown' },
-        album: { title: t.album || 'Unknown', cover_medium: t.image || '' },
+        album: { title: t.album || 'Unknown', cover_medium: normalizeCoverUrl(t.image || '') },
         duration: 0,
         preview: '',
         track_position: index + 1,
@@ -3264,7 +3285,7 @@ async function hydrateLibrespotTrackDetails(tracks) {
             const mapped = {
                 title: track.name || 'Unknown',
                 artist: { name: track.artists || 'Unknown', id: '' },
-                album: { title: track.album || 'Unknown', cover_medium: track.imageUrl || '' },
+                album: { title: track.album || 'Unknown', cover_medium: normalizeCoverUrl(track.imageUrl || '') },
                 duration: track.durationMs ? Math.round(track.durationMs / 1000) : 0,
                 isrc: track.isrc || '',
                 link: track.sourceUrl || `https://open.spotify.com/track/${track.id}`
@@ -3321,7 +3342,7 @@ function applyLibrespotTrackDetailsToRow(row, track) {
         checkbox.setAttribute('data-track-title', escapeHtml(track.title || ''));
         checkbox.setAttribute('data-track-artist', escapeHtml(track.artist?.name || ''));
         checkbox.setAttribute('data-track-album', escapeHtml(track.album?.title || ''));
-        checkbox.setAttribute('data-track-cover', escapeHtml(track.album?.cover_medium || ''));
+        checkbox.setAttribute('data-track-cover', escapeHtml(normalizeCoverUrl(track.album?.cover_medium || '')));
         checkbox.setAttribute('data-track-isrc', escapeHtml(track.isrc || ''));
         checkbox.setAttribute('data-track-duration-ms', track.duration ? track.duration * 1000 : 0);
     }
@@ -3589,7 +3610,10 @@ function applyDeezerMetadataToRow(row, metadata) {
     }
 
     if (metadata.coverMedium) {
-        const cover = metadata.coverMedium;
+        const cover = normalizeCoverUrl(metadata.coverMedium);
+        if (!cover) {
+            return;
+        }
         const coverImg = row.querySelector('.track-album-art');
         if (coverImg) {
             coverImg.src = cover;
@@ -4726,7 +4750,7 @@ function normalizeBoomplayLabelForDisplay(value, options = {}) {
 }
 
 function renderTrackTitleHtml(track) {
-    const cover = track.album?.cover_medium;
+    const cover = normalizeCoverUrl(track.album?.cover_medium);
     const explicit = track.explicit_lyrics;
     const rawTitle = track.title || 'Loading…';
     const rawArtist = resolveArtistName(track);
@@ -5069,7 +5093,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
 	                           data-track-album="${escapeHtml(track.album?.title || fallbackAlbumTitle || '')}"
 	                           data-track-album-id="${escapeHtml(albumId || '')}"
 	                           data-track-artist-id="${escapeHtml(artistId || '')}"
-		                           data-track-cover="${escapeHtml(track.album?.cover_medium || '')}"
+			                           data-track-cover="${escapeHtml(normalizeCoverUrl(track.album?.cover_medium || ''))}"
 		                           data-track-isrc="${escapeHtml(track.isrc || '')}"
                                data-stream-track-id="${escapeHtml(playbackContext?.streamTrackId || '')}"
                                data-track-token="${escapeHtml(playbackContext?.trackToken || '')}"

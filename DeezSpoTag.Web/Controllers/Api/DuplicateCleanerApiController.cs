@@ -25,7 +25,12 @@ public class DuplicateCleanerApiController : ControllerBase
     }
 
     [HttpPost("scan")]
-    public async Task<IActionResult> Scan([FromQuery] long? folderId, [FromQuery] bool useDupsFolder = true, CancellationToken cancellationToken = default)
+    public async Task<IActionResult> Scan(
+        [FromQuery] long? folderId,
+        [FromQuery] bool useDupsFolder = true,
+        [FromQuery] bool useShazamForIdentity = false,
+        [FromQuery] string? duplicatesFolderName = null,
+        CancellationToken cancellationToken = default)
     {
         var folders = _repository.IsConfigured
             ? await _repository.GetFoldersAsync(cancellationToken)
@@ -50,18 +55,28 @@ public class DuplicateCleanerApiController : ControllerBase
                 duplicatesFound = 0,
                 deleted = 0,
                 spaceFreedBytes = 0,
-                duplicatesFolderName = DuplicateCleanerService.DuplicatesFolderName
+                duplicatesFolderName = DuplicateCleanerService.DuplicatesFolderName,
+                usedShazamForIdentity = false
             });
         }
 
-        var result = await _duplicateCleanerService.ScanAsync(enabledFolders, useDupsFolder, cancellationToken);
+        var result = await _duplicateCleanerService.ScanAsync(
+            enabledFolders,
+            new DuplicateCleanerOptions
+            {
+                UseDuplicatesFolder = useDupsFolder,
+                DuplicatesFolderName = duplicatesFolderName ?? DuplicateCleanerService.DuplicatesFolderName,
+                UseShazamForIdentity = useShazamForIdentity
+            },
+            cancellationToken);
         return Ok(new
         {
             filesScanned = result.FilesScanned,
             duplicatesFound = result.DuplicatesFound,
             deleted = result.Deleted,
             spaceFreedBytes = result.SpaceFreedBytes,
-            duplicatesFolderName = DuplicateCleanerService.DuplicatesFolderName
+            duplicatesFolderName = result.DuplicatesFolderName,
+            usedShazamForIdentity = result.UsedShazamForIdentity
         });
     }
 }

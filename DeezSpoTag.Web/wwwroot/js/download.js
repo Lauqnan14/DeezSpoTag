@@ -214,7 +214,8 @@ DeezSpoTag.Download = {
         }
 
         try {
-            const params = new URLSearchParams({ downloadOnly: 'true' });
+            const params = new URLSearchParams();
+            params.set('downloadOnly', 'true');
             if (normalizedMode !== 'all') {
                 params.set('contentType', normalizedMode);
             }

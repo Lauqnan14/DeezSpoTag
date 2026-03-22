@@ -88,6 +88,18 @@ static string ConfigureDataDirectories()
         configuredDataDir = null;
     }
 
+    // Keep the host .NET app aligned with the canonical Workers runtime root.
+    // Legacy ../DeezSpoTag.Workers/Data causes shared-wrapper path drift locally.
+    if (AppDataPathResolver.IsLegacyWorkersDataDir(configuredConfigDir))
+    {
+        configuredConfigDir = null;
+    }
+
+    if (AppDataPathResolver.IsLegacyWorkersDataDir(configuredDataDir))
+    {
+        configuredDataDir = null;
+    }
+
     Environment.SetEnvironmentVariable("DEEZSPOTAG_CONFIG_DIR", string.IsNullOrWhiteSpace(configuredConfigDir) ? workersDataDir : configuredConfigDir);
     var dataDir = string.IsNullOrWhiteSpace(configuredDataDir) ? workersDataDir : configuredDataDir;
     Environment.SetEnvironmentVariable("DEEZSPOTAG_DATA_DIR", dataDir);

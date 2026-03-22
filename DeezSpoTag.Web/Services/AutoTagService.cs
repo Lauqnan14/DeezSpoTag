@@ -1253,9 +1253,20 @@ public class AutoTagService
         {
             IncludeSubfolders = ReadBool(folderUniformity, "includeSubfolders") ?? true,
             MoveMisplacedFiles = ReadBool(folderUniformity, "moveMisplacedFiles") ?? true,
-            RenameFilesToTemplate = ReadBool(folderUniformity, "renameFilesToTemplate") == true,
-            RemoveEmptyFolders = ReadBool(folderUniformity, "removeEmptyFolders") == true,
-            DryRun = ReadBool(folderUniformity, "dryRunMode") == true
+            MergeIntoExistingDestinationFolders = ReadBool(folderUniformity, "mergeIntoExistingDestinationFolders") != false,
+            RenameFilesToTemplate = ReadBool(folderUniformity, "renameFilesToTemplate") != false,
+            RemoveEmptyFolders = ReadBool(folderUniformity, "removeEmptyFolders") != false,
+            ResolveSameTrackQualityConflicts = ReadBool(folderUniformity, "resolveSameTrackQualityConflicts") != false,
+            KeepBothOnUnresolvedConflicts = ReadBool(folderUniformity, "keepBothOnUnresolvedConflicts") != false,
+            OnlyMoveWhenTagged = ReadBool(folderUniformity, "onlyMoveWhenTagged") == true,
+            OnlyReorganizeAlbumsWithFullTrackSets = ReadBool(folderUniformity, "onlyReorganizeAlbumsWithFullTrackSets") == true,
+            SkipCompilationFolders = ReadBool(folderUniformity, "skipCompilationFolders") == true,
+            SkipVariousArtistsFolders = ReadBool(folderUniformity, "skipVariousArtistsFolders") == true,
+            GenerateReconciliationReport = ReadBool(folderUniformity, "generateReconciliationReport") == true,
+            UseShazamForUntaggedFiles = ReadBool(folderUniformity, "useShazamForUntaggedFiles") == true,
+            DuplicateConflictPolicy = folderUniformity["duplicateConflictPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.DuplicateConflictKeepBest,
+            ArtworkPolicy = folderUniformity["artworkPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.ArtworkPolicyPreserveExisting,
+            LyricsPolicy = folderUniformity["lyricsPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.LyricsPolicyMerge
         };
 
         AppendLog(job, $"enhancement workflow: folder uniformity starting ({rootPaths.Count} path(s)).");
@@ -1267,8 +1278,39 @@ public class AutoTagService
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-            await _libraryOrganizer.OrganizePathAsync(path, options, line => AppendLog(job, $"folder uniformity: {line}"));
+            var organizerReport = options.GenerateReconciliationReport
+                ? new AutoTagLibraryOrganizer.AutoTagOrganizerReport()
+                : null;
+            await _libraryOrganizer.OrganizePathAsync(path, options, organizerReport, line => AppendLog(job, $"folder uniformity: {line}"));
+            if (organizerReport != null)
+            {
+                AppendLog(job,
+                    $"folder uniformity report: planned={organizerReport.PlannedMoves}, files={organizerReport.MovedFiles}, sidecars={organizerReport.MovedSidecars}, duplicate-replacements={organizerReport.ReplacedDuplicates}, duplicate-quarantine={organizerReport.QuarantinedDuplicates}.");
+            }
         }
+
+        if (ReadBool(folderUniformity, "runDedupe") != false)
+        {
+            var scopedFolders = enabledFolders
+                .Where(folder => !string.IsNullOrWhiteSpace(folder.RootPath)
+                    && rootPaths.Contains(folder.RootPath.Trim(), StringComparer.OrdinalIgnoreCase))
+                .ToList();
+            if (scopedFolders.Count > 0)
+            {
+                var duplicateResult = await _duplicateCleanerService.ScanAsync(
+                    scopedFolders,
+                    new DuplicateCleanerOptions
+                    {
+                        UseDuplicatesFolder = true,
+                        DuplicatesFolderName = folderUniformity["duplicatesFolderName"]?.GetValue<string>() ?? DuplicateCleanerService.DuplicatesFolderName,
+                        UseShazamForIdentity = ReadBool(folderUniformity, "useShazamForDedupe") == true
+                    },
+                    cancellationToken);
+                AppendLog(job,
+                    $"enhancement workflow: folder-uniformity dedupe finished (found={duplicateResult.DuplicatesFound}, moved={duplicateResult.Deleted}, folder={duplicateResult.DuplicatesFolderName}).");
+            }
+        }
+
         AppendLog(job, "enhancement workflow: folder uniformity completed.");
     }
 
@@ -1372,6 +1414,9 @@ public class AutoTagService
         var runQualityScanner = flagMissingTags || flagMismatchedMetadata || queueAtmosAlternatives || technicalProfiles.Count > 0;
         return new QualityCheckOptions(
             FlagDuplicates: flagDuplicates,
+            UseDuplicatesFolder: ReadBool(qualityChecks, "useDuplicatesFolder") != false,
+            UseShazamForDedupe: ReadBool(qualityChecks, "useShazamForDedupe") == true,
+            DuplicatesFolderName: qualityChecks["duplicatesFolderName"]?.GetValue<string>(),
             QueueLyricsRefresh: queueLyricsRefresh,
             QueueAtmosAlternatives: queueAtmosAlternatives,
             RunQualityScanner: runQualityScanner,
@@ -1419,9 +1464,15 @@ public class AutoTagService
             return;
         }
 
-        var duplicateResult = await _duplicateCleanerService.ScanAsync(scopedFolders, useDupsFolder: true, cancellationToken);
+        var duplicateOptions = new DuplicateCleanerOptions
+        {
+            UseDuplicatesFolder = options.UseDuplicatesFolder,
+            DuplicatesFolderName = options.DuplicatesFolderName ?? DuplicateCleanerService.DuplicatesFolderName,
+            UseShazamForIdentity = options.UseShazamForDedupe
+        };
+        var duplicateResult = await _duplicateCleanerService.ScanAsync(scopedFolders, duplicateOptions, cancellationToken);
         AppendLog(job,
-            $"enhancement workflow: duplicate check finished (scanned={duplicateResult.FilesScanned}, found={duplicateResult.DuplicatesFound}, moved={duplicateResult.Deleted}).");
+            $"enhancement workflow: duplicate check finished (scanned={duplicateResult.FilesScanned}, found={duplicateResult.DuplicatesFound}, moved={duplicateResult.Deleted}, folder={duplicateResult.DuplicatesFolderName}).");
     }
 
     private async Task RunLyricsRefreshIfRequestedAsync(
@@ -1494,6 +1545,9 @@ public class AutoTagService
 
     private sealed record QualityCheckOptions(
         bool FlagDuplicates,
+        bool UseDuplicatesFolder,
+        bool UseShazamForDedupe,
+        string? DuplicatesFolderName,
         bool QueueLyricsRefresh,
         bool QueueAtmosAlternatives,
         bool RunQualityScanner,

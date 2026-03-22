@@ -83,6 +83,8 @@ public sealed class SystemStatsApiController : ControllerBase
                     finishedUtc = duplicateSummary.FinishedUtc,
                     durationMs = duplicateSummary.DurationMs,
                     useDuplicatesFolder = duplicateSummary.UseDuplicatesFolder,
+                    duplicatesFolderName = duplicateSummary.DuplicatesFolderName,
+                    useShazamForIdentity = duplicateSummary.UseShazamForIdentity,
                     folderCount = duplicateSummary.FolderCount,
                     filesScanned = duplicateSummary.FilesScanned,
                     duplicatesFound = duplicateSummary.DuplicatesFound,

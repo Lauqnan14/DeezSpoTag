@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--language", default="en-US")
     parser.add_argument("--country", default="US")
     parser.add_argument("--timeout", type=int, default=25)
-    parser.add_argument("--signature-seconds", type=int, default=12)
+    parser.add_argument("--signature-seconds", type=int, default=10)
     return parser.parse_args()
 
 

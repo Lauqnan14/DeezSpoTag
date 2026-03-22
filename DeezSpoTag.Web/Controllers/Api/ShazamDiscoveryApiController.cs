@@ -9,11 +9,14 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public sealed class ShazamDiscoveryApiController : ControllerBase
 {
     private readonly ShazamDiscoveryService _discoveryService;
+    private readonly ILogger<ShazamDiscoveryApiController> _logger;
 
     public ShazamDiscoveryApiController(
-        ShazamDiscoveryService discoveryService)
+        ShazamDiscoveryService discoveryService,
+        ILogger<ShazamDiscoveryApiController> logger)
     {
         _discoveryService = discoveryService;
+        _logger = logger;
     }
 
     [HttpGet("track/{trackId}")]
@@ -24,17 +27,29 @@ public sealed class ShazamDiscoveryApiController : ControllerBase
             return BadRequest(new { error = "Track ID is required." });
         }
 
-        var track = await _discoveryService.GetTrackAsync(trackId, cancellationToken);
-        if (track == null)
+        try
         {
+            var track = await _discoveryService.GetTrackAsync(trackId, cancellationToken);
+            if (track == null)
+            {
+                return Ok(new { available = false });
+            }
+
+            return Ok(new
+            {
+                available = true,
+                track
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Shazam track lookup failed for trackId {TrackId}.", trackId);
             return Ok(new { available = false });
         }
-
-        return Ok(new
-        {
-            available = true,
-            track
-        });
     }
 
     [HttpGet("related/{trackId}")]
@@ -49,12 +64,28 @@ public sealed class ShazamDiscoveryApiController : ControllerBase
             return BadRequest(new { error = "Track ID is required." });
         }
 
-        var related = await _discoveryService.GetRelatedTracksAsync(trackId, limit, offset, cancellationToken);
-        return Ok(new
+        try
         {
-            available = related.Count > 0,
-            tracks = related
-        });
+            var related = await _discoveryService.GetRelatedTracksAsync(trackId, limit, offset, cancellationToken);
+            return Ok(new
+            {
+                available = related.Count > 0,
+                tracks = related
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Shazam related-track lookup failed for trackId {TrackId}.", trackId);
+            return Ok(new
+            {
+                available = false,
+                tracks = Array.Empty<ShazamTrackCard>()
+            });
+        }
     }
 
     [HttpGet("search")]
@@ -69,12 +100,28 @@ public sealed class ShazamDiscoveryApiController : ControllerBase
             return BadRequest(new { error = "Query is required." });
         }
 
-        var results = await _discoveryService.SearchTracksAsync(query, limit, offset, cancellationToken);
-        return Ok(new
+        try
         {
-            available = results.Count > 0,
-            tracks = results
-        });
+            var results = await _discoveryService.SearchTracksAsync(query, limit, offset, cancellationToken);
+            return Ok(new
+            {
+                available = results.Count > 0,
+                tracks = results
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Shazam search failed for query '{Query}'.", query);
+            return Ok(new
+            {
+                available = false,
+                tracks = Array.Empty<ShazamTrackCard>()
+            });
+        }
     }
 
 }

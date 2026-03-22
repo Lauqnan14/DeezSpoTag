@@ -71,7 +71,7 @@ public class LibraryAnalysisApiController : ControllerBase
     {
         batchSize = Math.Clamp(batchSize, 10, 500);
         _ = Task.Run(
-            () => _analysisService.AnalyzeNowAsync(batchSize, CancellationToken.None),
+            () => _analysisService.AnalyzeNowAsync(batchSize, CancellationToken.None, forceWhenDisabled: true),
             cancellationToken);
         return Ok(new { queued = batchSize, fullScan = true });
     }

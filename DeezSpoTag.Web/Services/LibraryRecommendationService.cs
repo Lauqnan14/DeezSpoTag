@@ -7,6 +7,7 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using GwTrack = DeezSpoTag.Core.Models.Deezer.GwTrack;
 
 namespace DeezSpoTag.Web.Services;
@@ -1281,7 +1282,7 @@ public sealed class LibraryRecommendationService
             new RecommendationAlbumDto(
                 NormalizeId(card.AlbumAdamId ?? string.Empty),
                 NormalizeText(card.Album, UnknownAlbum),
-                NormalizeText(card.ArtworkUrl, string.Empty))));
+                NormalizeCoverMedium(card.ArtworkUrl))));
     }
 
     private async Task PersistMatchedShazamCacheAsync(
@@ -1324,33 +1325,13 @@ public sealed class LibraryRecommendationService
         }
 
         var resolved = string.Empty;
-
-        var deezerFromShazam = TryGetShazamDeezerId(card);
-        if (!string.IsNullOrWhiteSpace(deezerFromShazam))
+        foreach (var deezerLink in EnumerateShazamDeezerLinks(card))
         {
-            resolved = await ValidateDeezerTrackIdAsync(deezerFromShazam, card, cancellationToken);
-        }
-
-        if (string.IsNullOrWhiteSpace(resolved) && !string.IsNullOrWhiteSpace(card.Isrc))
-        {
-            try
+            cancellationToken.ThrowIfCancellationRequested();
+            resolved = NormalizeId(await ResolveDeezerIdFromShazamLinkAsync(deezerLink, card, cancellationToken));
+            if (!string.IsNullOrWhiteSpace(resolved))
             {
-                var byIsrc = await _deezerClient.GetTrackByIsrcAsync(card.Isrc.Trim());
-                var candidate = NormalizeId(byIsrc?.Id?.ToString());
-                if (!string.IsNullOrWhiteSpace(candidate))
-                {
-                    resolved = ValidateDeezerTrackCandidate(candidate, byIsrc, card)
-                        ? candidate
-                        : string.Empty;
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Deezer ISRC resolve failed for Shazam card '{Title}' ({Isrc}).", card.Title, card.Isrc);
+                break;
             }
         }
 
@@ -1358,23 +1339,41 @@ public sealed class LibraryRecommendationService
         return resolved;
     }
 
-    private async Task<string> ValidateDeezerTrackIdAsync(
-        string? deezerId,
+    private async Task<string> ResolveDeezerIdFromShazamLinkAsync(
+        string deezerLink,
         ShazamTrackCard sourceCard,
         CancellationToken cancellationToken)
     {
-        var normalized = NormalizeId(deezerId);
-        if (string.IsNullOrWhiteSpace(normalized))
+        var directId = TryExtractDeezerTrackId(deezerLink);
+        if (!string.IsNullOrWhiteSpace(directId))
+        {
+            return directId;
+        }
+
+        var deezerQuery = TryBuildDeezerSearchQueryFromLink(deezerLink);
+        if (string.IsNullOrWhiteSpace(deezerQuery))
+        {
+            return string.Empty;
+        }
+
+        return await ResolveDeezerIdFromDeezerQueryAsync(deezerQuery, sourceCard, cancellationToken);
+    }
+
+    private async Task<string> ResolveDeezerIdFromDeezerQueryAsync(
+        string deezerQuery,
+        ShazamTrackCard sourceCard,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(deezerQuery))
         {
             return string.Empty;
         }
 
         try
         {
-            var track = await _deezerClient.GetTrackAsync(normalized).WaitAsync(cancellationToken);
-            return ValidateDeezerTrackCandidate(normalized, track, sourceCard)
-                ? normalized
-                : string.Empty;
+            var result = await _deezerClient.SearchTrackAsync(deezerQuery, new ApiOptions { Limit = 25 })
+                .WaitAsync(cancellationToken);
+            return SelectBestDeezerSearchCandidateId(result, sourceCard);
         }
         catch (OperationCanceledException)
         {
@@ -1382,9 +1381,128 @@ public sealed class LibraryRecommendationService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Deezer ID validation failed for recommendation candidate {DeezerId}.", normalized);
+            _logger.LogDebug(ex, "Deezer query resolve failed for Shazam Deezer query '{Query}'.", deezerQuery);
             return string.Empty;
         }
+    }
+
+    private string SelectBestDeezerSearchCandidateId(
+        DeezerSearchResult? result,
+        ShazamTrackCard sourceCard)
+    {
+        if (result?.Data == null || result.Data.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var firstId = string.Empty;
+        foreach (var item in result.Data)
+        {
+            if (!TryParseDeezerSearchCandidate(item, out var deezerId, out var candidate))
+            {
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(firstId))
+            {
+                firstId = deezerId;
+            }
+
+            if (candidate != null && ValidateDeezerTrackCandidate(deezerId, candidate, sourceCard))
+            {
+                return deezerId;
+            }
+        }
+
+        return firstId;
+    }
+
+    private static bool TryParseDeezerSearchCandidate(
+        object item,
+        out string deezerId,
+        out ApiTrack? candidate)
+    {
+        deezerId = string.Empty;
+        candidate = null;
+
+        if (item is not JsonElement element || element.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        deezerId = NormalizeId(GetJsonString(element, "id"));
+        if (string.IsNullOrWhiteSpace(deezerId))
+        {
+            return false;
+        }
+
+        candidate = new ApiTrack
+        {
+            Id = deezerId,
+            Title = NormalizeText(GetJsonString(element, "title"), string.Empty),
+            TitleVersion = NormalizeText(GetJsonString(element, "title_version"), string.Empty),
+            Isrc = NormalizeText(GetJsonString(element, "isrc"), string.Empty),
+            Duration = GetJsonInt(element, "duration") ?? 0,
+            Artist = new ApiArtist
+            {
+                Name = NormalizeText(
+                    GetJsonNestedString(element, "artist", "name") ?? GetJsonString(element, "artist"),
+                    string.Empty)
+            },
+            Album = new ApiAlbum
+            {
+                Title = NormalizeText(GetJsonNestedString(element, "album", "title"), string.Empty)
+            }
+        };
+
+        return true;
+    }
+
+    private static string? GetJsonString(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString()?.Trim(),
+            JsonValueKind.Number => value.ToString(),
+            _ => null
+        };
+    }
+
+    private static string? GetJsonNestedString(JsonElement element, string parentProperty, string childProperty)
+    {
+        if (!element.TryGetProperty(parentProperty, out var parent)
+            || parent.ValueKind != JsonValueKind.Object
+            || !parent.TryGetProperty(childProperty, out var child))
+        {
+            return null;
+        }
+
+        return child.ValueKind switch
+        {
+            JsonValueKind.String => child.GetString()?.Trim(),
+            JsonValueKind.Number => child.ToString(),
+            _ => null
+        };
+    }
+
+    private static int? GetJsonInt(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.Number when value.TryGetInt32(out var number) => number,
+            JsonValueKind.String when int.TryParse(value.GetString(), out var number) => number,
+            _ => null
+        };
     }
 
     private bool ValidateDeezerTrackCandidate(
@@ -1575,30 +1693,175 @@ public sealed class LibraryRecommendationService
         return unionCount == 0 ? 0d : (double)intersectionCount / unionCount;
     }
 
-    private static string TryGetShazamDeezerId(ShazamTrackCard card)
+    private static IEnumerable<string> EnumerateShazamDeezerLinks(ShazamTrackCard card)
     {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (card.Tags.TryGetValue("SHAZAM_DEEZER_URL", out var deezerUrls))
         {
             foreach (var deezerUrl in deezerUrls)
             {
-                var parsed = TryExtractDeezerTrackId(deezerUrl);
-                if (!string.IsNullOrWhiteSpace(parsed))
+                var normalized = NormalizeText(deezerUrl, string.Empty);
+                if (string.IsNullOrWhiteSpace(normalized)
+                    || !IsDeezerLinkCandidate(normalized)
+                    || !seen.Add(normalized))
                 {
-                    return parsed;
+                    continue;
                 }
+
+                yield return normalized;
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(card.Url))
+        if (IsDeezerLinkCandidate(card.Url))
         {
-            var parsed = TryExtractDeezerTrackId(card.Url);
-            if (!string.IsNullOrWhiteSpace(parsed))
+            var normalized = NormalizeText(card.Url, string.Empty);
+            if (!string.IsNullOrWhiteSpace(normalized) && seen.Add(normalized))
             {
-                return parsed;
+                yield return normalized;
+            }
+        }
+    }
+
+    private static bool IsDeezerLinkCandidate(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var normalized = value.Trim();
+        return long.TryParse(normalized, out _)
+               || normalized.StartsWith("deezer-query://", StringComparison.OrdinalIgnoreCase)
+               || normalized.StartsWith("deezer://", StringComparison.OrdinalIgnoreCase)
+               || normalized.StartsWith("deezer:track:", StringComparison.OrdinalIgnoreCase)
+               || normalized.Contains("deezer.com/track/", StringComparison.OrdinalIgnoreCase)
+               || normalized.Contains("deezer.com/play", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string TryBuildDeezerSearchQueryFromLink(string? deezerLink)
+    {
+        var queryValue = TryGetQueryParameterValue(deezerLink, "query");
+        if (string.IsNullOrWhiteSpace(queryValue))
+        {
+            return string.Empty;
+        }
+
+        var decoded = DecodeQueryValue(queryValue);
+        if (string.IsNullOrWhiteSpace(decoded))
+        {
+            return string.Empty;
+        }
+
+        var trackTerm = ExtractDeezerQueryTerm(decoded, "track:");
+        var artistTerm = ExtractDeezerQueryTerm(decoded, "artist:");
+        if (!string.IsNullOrWhiteSpace(trackTerm) && !string.IsNullOrWhiteSpace(artistTerm))
+        {
+            return $"track:\"{trackTerm}\" artist:\"{artistTerm}\"";
+        }
+
+        if (!string.IsNullOrWhiteSpace(trackTerm))
+        {
+            return $"track:\"{trackTerm}\"";
+        }
+
+        return NormalizeText(decoded, string.Empty);
+    }
+
+    private static string TryGetQueryParameterValue(string? value, string parameterName)
+    {
+        if (string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(parameterName))
+        {
+            return string.Empty;
+        }
+
+        if (Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri))
+        {
+            var query = uri.Query.TrimStart('?');
+            foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                var parts = pair.Split('=', 2, StringSplitOptions.TrimEntries);
+                if (!string.Equals(parts[0], parameterName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                return parts.Length == 2 ? parts[1] : string.Empty;
+            }
+        }
+        else
+        {
+            var marker = $"{parameterName}=";
+            var markerIndex = value.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (markerIndex >= 0)
+            {
+                var start = markerIndex + marker.Length;
+                var end = value.IndexOf('&', start);
+                return end >= 0 ? value[start..end] : value[start..];
             }
         }
 
         return string.Empty;
+    }
+
+    private static string DecodeQueryValue(string value)
+    {
+        var decoded = value.Replace('+', ' ');
+        for (var i = 0; i < 2; i++)
+        {
+            string unescaped;
+            try
+            {
+                unescaped = Uri.UnescapeDataString(decoded);
+            }
+            catch
+            {
+                break;
+            }
+
+            if (string.Equals(decoded, unescaped, StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            decoded = unescaped;
+        }
+
+        return decoded.Trim();
+    }
+
+    private static string ExtractDeezerQueryTerm(string value, string marker)
+    {
+        if (string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(marker))
+        {
+            return string.Empty;
+        }
+
+        var markerIndex = value.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (markerIndex < 0)
+        {
+            return string.Empty;
+        }
+
+        var start = markerIndex + marker.Length;
+        var end = value.Length;
+        var nextMarkers = new[] { " track:", " artist:", " album:", " genre:", " label:", " isrc:" };
+        foreach (var nextMarker in nextMarkers)
+        {
+            var index = value.IndexOf(nextMarker, start, StringComparison.OrdinalIgnoreCase);
+            if (index >= 0 && index < end)
+            {
+                end = index;
+            }
+        }
+
+        if (start >= end)
+        {
+            return string.Empty;
+        }
+
+        var normalized = NormalizeText(value[start..end], string.Empty);
+        normalized = normalized.Trim('{', '}', '[', ']', '(', ')', '"', '\'');
+        return NormalizeText(normalized, string.Empty);
     }
 
     private static string TryExtractDeezerTrackId(string? value)
@@ -1614,8 +1877,29 @@ public sealed class LibraryRecommendationService
             return trimmed;
         }
 
+        const string deezerTrackPrefix = "deezer:track:";
+        if (trimmed.StartsWith(deezerTrackPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var raw = trimmed[deezerTrackPrefix.Length..];
+            var candidate = new string(raw.TakeWhile(char.IsDigit).ToArray());
+            if (long.TryParse(candidate, out _))
+            {
+                return candidate;
+            }
+        }
+
         if (Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
         {
+            if (string.Equals(uri.Scheme, "deezer", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(uri.Host, "track", StringComparison.OrdinalIgnoreCase))
+            {
+                var candidate = uri.AbsolutePath.Trim('/');
+                if (long.TryParse(candidate, out _))
+                {
+                    return candidate;
+                }
+            }
+
             var segments = uri.AbsolutePath
                 .Split('/', StringSplitOptions.RemoveEmptyEntries);
             for (var i = 0; i < segments.Length - 1; i++)
@@ -1627,6 +1911,18 @@ public sealed class LibraryRecommendationService
 
                 var candidate = segments[i + 1];
                 return long.TryParse(candidate, out _) ? candidate : string.Empty;
+            }
+        }
+
+        const string deezerTrackMarker = "deezer.com/track/";
+        var markerIndex = trimmed.IndexOf(deezerTrackMarker, StringComparison.OrdinalIgnoreCase);
+        if (markerIndex >= 0)
+        {
+            var raw = trimmed[(markerIndex + deezerTrackMarker.Length)..];
+            var candidate = new string(raw.TakeWhile(char.IsDigit).ToArray());
+            if (long.TryParse(candidate, out _))
+            {
+                return candidate;
             }
         }
 
@@ -1935,7 +2231,7 @@ public sealed class LibraryRecommendationService
             new RecommendationAlbumDto(
                 NormalizeReferenceId(track.Album?.Id),
                 NormalizeText(track.Album?.Title, UnknownAlbum),
-                NormalizeText(track.Album?.CoverMedium, string.Empty)));
+                NormalizeCoverMedium(track.Album?.CoverMedium)));
     }
 
     private async Task<IReadOnlyList<RecommendationTrackDto>> EnrichRecommendationMetadataAsync(
@@ -2201,9 +2497,11 @@ public sealed class LibraryRecommendationService
         var mergedAlbumTitle = IsMissingOrUnknown(current.Album?.Title, UnknownAlbum)
             ? NormalizeText(deezerMetadata.Album?.Title, UnknownAlbum)
             : NormalizeText(current.Album?.Title, UnknownAlbum);
-        var mergedCover = !string.IsNullOrWhiteSpace(current.Album?.CoverMedium)
-            ? NormalizeText(current.Album.CoverMedium, string.Empty)
-            : NormalizeText(deezerMetadata.Album?.CoverMedium, string.Empty);
+        var currentCover = NormalizeCoverMedium(current.Album?.CoverMedium);
+        var deezerCover = NormalizeCoverMedium(deezerMetadata.Album?.CoverMedium);
+        var mergedCover = !string.IsNullOrWhiteSpace(currentCover)
+            ? currentCover
+            : deezerCover;
 
         return new RecommendationTrackDto(
             NormalizeTrackId(current.Id),
@@ -2240,6 +2538,53 @@ public sealed class LibraryRecommendationService
         var message = ex.Message ?? string.Empty;
         return message.Contains("No song data", StringComparison.OrdinalIgnoreCase)
                || message.Contains("DATA_ERROR", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeCoverMedium(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.StartsWith("//", StringComparison.Ordinal))
+        {
+            return $"https:{trimmed}";
+        }
+
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+        {
+            if (string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                return trimmed;
+            }
+
+            return string.Empty;
+        }
+
+        return LooksLikeDeezerCoverHash(trimmed)
+            ? BuildCoverUrl(trimmed)
+            : string.Empty;
+    }
+
+    private static bool LooksLikeDeezerCoverHash(string value)
+    {
+        if (value.Length != 32)
+        {
+            return false;
+        }
+
+        foreach (var ch in value)
+        {
+            if (!Uri.IsHexDigit(ch))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static string? FirstNonEmpty(params string?[] values)

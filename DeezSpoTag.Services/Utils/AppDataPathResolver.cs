@@ -5,39 +5,28 @@ public static class AppDataPathResolver
     public const string ConfigDirEnvVar = "DEEZSPOTAG_CONFIG_DIR";
     public const string DataDirEnvVar = "DEEZSPOTAG_DATA_DIR";
     private const string WorkersProjectDirectoryName = "DeezSpoTag.Workers";
+    private static readonly string[] CanonicalWorkersDataCandidates =
+    [
+        Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), WorkersProjectDirectoryName, "bin", "Debug", "net8.0", "Data")),
+        Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "..", "..", "..", "..", WorkersProjectDirectoryName, "bin", "Debug", "net8.0", "Data"))
+    ];
+    private static readonly string[] LegacyWorkersDataCandidates =
+    [
+        Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), WorkersProjectDirectoryName, "Data")),
+        Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "..", "..", "..", "..", WorkersProjectDirectoryName, "Data"))
+    ];
 
     public static string GetDefaultWorkersDataDir()
     {
-        var stableCandidates = new[]
+        var existingCanonicalCandidate = Array.Find(CanonicalWorkersDataCandidates, Directory.Exists);
+        if (!string.IsNullOrWhiteSpace(existingCanonicalCandidate))
         {
-            Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), WorkersProjectDirectoryName, "Data")),
-            Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "..", "..", "..", "..", WorkersProjectDirectoryName, "Data"))
-        };
-        var legacyCandidates = new[]
-        {
-            Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), WorkersProjectDirectoryName, "bin", "Debug", "net8.0", "Data")),
-            Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "..", "..", "..", "..", WorkersProjectDirectoryName, "bin", "Debug", "net8.0", "Data"))
-        };
-
-        var existingStableCandidate = Array.Find(stableCandidates, Directory.Exists);
-        var existingLegacyCandidate = Array.Find(legacyCandidates, Directory.Exists);
-
-        if (!string.IsNullOrWhiteSpace(existingStableCandidate)
-            && !HasSpotifyAuthState(existingStableCandidate)
-            && !string.IsNullOrWhiteSpace(existingLegacyCandidate)
-            && HasSpotifyAuthState(existingLegacyCandidate))
-        {
-            return existingLegacyCandidate;
+            return existingCanonicalCandidate;
         }
 
-        if (!string.IsNullOrWhiteSpace(existingStableCandidate))
+        foreach (var legacyCandidate in LegacyWorkersDataCandidates.Where(Directory.Exists))
         {
-            return existingStableCandidate;
-        }
-
-        foreach (var legacyCandidate in legacyCandidates.Where(Directory.Exists))
-        {
-            var migrateTarget = stableCandidates[0];
+            var migrateTarget = CanonicalWorkersDataCandidates[0];
             TryMigrateLegacyWorkersData(legacyCandidate, migrateTarget);
             if (Directory.Exists(migrateTarget))
             {
@@ -45,12 +34,30 @@ public static class AppDataPathResolver
             }
         }
 
+        var existingLegacyCandidate = Array.Find(LegacyWorkersDataCandidates, Directory.Exists);
         if (!string.IsNullOrWhiteSpace(existingLegacyCandidate))
         {
             return existingLegacyCandidate;
         }
 
-        return stableCandidates[0];
+        return CanonicalWorkersDataCandidates[0];
+    }
+
+    public static bool IsLegacyWorkersDataDir(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        var normalized = NormalizeConfiguredDataRoot(path);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        return LegacyWorkersDataCandidates.Any(candidate =>
+            string.Equals(candidate, normalized, StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool HasSpotifyAuthState(string dataRoot)

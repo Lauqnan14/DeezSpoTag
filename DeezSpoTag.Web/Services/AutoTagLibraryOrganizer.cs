@@ -13,12 +13,35 @@ namespace DeezSpoTag.Web.Services;
 
 public class AutoTagLibraryOrganizer
 {
+    public sealed class AutoTagOrganizerReport
+    {
+        public int CandidateFiles { get; set; }
+        public int PlannedMoves { get; set; }
+        public int MovedFolders { get; set; }
+        public int MovedFiles { get; set; }
+        public int MovedSidecars { get; set; }
+        public int MovedLeftovers { get; set; }
+        public int ReplacedDuplicates { get; set; }
+        public int QuarantinedDuplicates { get; set; }
+        public int KeptLowerQualityDuplicates { get; set; }
+        public int PreservedExistingArtwork { get; set; }
+        public int MergedLyricsSidecars { get; set; }
+        public int SkippedUntagged { get; set; }
+        public int SkippedCompilationFolders { get; set; }
+        public int SkippedVariousArtistsFolders { get; set; }
+        public int SkippedIncompleteAlbums { get; set; }
+        public int SkippedExistingFolderMerges { get; set; }
+        public int SkippedConflicts { get; set; }
+        public List<string> Entries { get; } = new();
+    }
+
     private const string MainArtistRole = "Main";
     private const string FeaturedArtistRole = "Featured";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private readonly ILogger<AutoTagLibraryOrganizer> _logger;
     private readonly ILoggerFactory _loggerFactory;
     private readonly DeezSpoTagSettingsService _settingsService;
+    private readonly ShazamRecognitionService _shazamRecognitionService;
 
     private static readonly HashSet<string> VariousArtistsTokens = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -33,16 +56,18 @@ public class AutoTagLibraryOrganizer
     public AutoTagLibraryOrganizer(
         ILogger<AutoTagLibraryOrganizer> logger,
         ILoggerFactory loggerFactory,
-        DeezSpoTagSettingsService settingsService)
+        DeezSpoTagSettingsService settingsService,
+        ShazamRecognitionService shazamRecognitionService)
     {
         _logger = logger;
         _loggerFactory = loggerFactory;
         _settingsService = settingsService;
+        _shazamRecognitionService = shazamRecognitionService;
     }
 
     public Task OrganizeAsync(string rootPath, IReadOnlyCollection<string> filePaths, Action<string>? log = null)
     {
-        return OrganizeAsync(rootPath, filePaths, new AutoTagOrganizerOptions(), log);
+        return OrganizeAsync(rootPath, filePaths, new AutoTagOrganizerOptions(), report: null, log);
     }
 
     public Task OrganizePathAsync(string rootPath, Action<string>? log = null)
@@ -51,6 +76,9 @@ public class AutoTagLibraryOrganizer
     }
 
     public Task OrganizePathAsync(string rootPath, AutoTagOrganizerOptions options, Action<string>? log = null)
+        => OrganizePathAsync(rootPath, options, report: null, log);
+
+    public Task OrganizePathAsync(string rootPath, AutoTagOrganizerOptions options, AutoTagOrganizerReport? report, Action<string>? log = null)
     {
         if (string.IsNullOrWhiteSpace(rootPath))
         {
@@ -59,10 +87,17 @@ public class AutoTagLibraryOrganizer
 
         var normalizedRoot = Path.GetFullPath(rootPath);
         var files = EnumerateAudioFiles(normalizedRoot, options.IncludeSubfolders).ToList();
-        return OrganizeAsync(normalizedRoot, files, options, log);
+        report?.Entries.Clear();
+        report ??= options.GenerateReconciliationReport ? new AutoTagOrganizerReport() : null;
+        if (report != null)
+        {
+            report.CandidateFiles += files.Count;
+        }
+
+        return OrganizeAsync(normalizedRoot, files, options, report, log);
     }
 
-    private Task OrganizeAsync(string rootPath, IReadOnlyCollection<string> filePaths, AutoTagOrganizerOptions options, Action<string>? log)
+    private Task OrganizeAsync(string rootPath, IReadOnlyCollection<string> filePaths, AutoTagOrganizerOptions options, AutoTagOrganizerReport? report, Action<string>? log)
     {
         if (string.IsNullOrWhiteSpace(rootPath) || filePaths.Count == 0)
         {
@@ -84,22 +119,27 @@ public class AutoTagLibraryOrganizer
 
         var usePrimaryArtistFolders = options.UsePrimaryArtistFoldersOverride
             ?? settings.Tags.SingleAlbumArtist;
-        var plan = BuildMovePlan(normalizedRoot, filePaths, options, settings, usePrimaryArtistFolders, log);
-        ExecuteMovePlan(normalizedRoot, plan, options, log);
+        var plan = BuildMovePlan(normalizedRoot, filePaths, options, settings, usePrimaryArtistFolders, report, log);
+        if (report != null)
+        {
+            report.PlannedMoves += plan.Count;
+        }
+
+        ExecuteMovePlan(normalizedRoot, plan, options, report, log);
         if (!options.DryRun && options.RemoveEmptyFolders)
         {
-            CleanupArtistFolders(normalizedRoot, usePrimaryArtistFolders, log);
+            CleanupArtistFolders(normalizedRoot, usePrimaryArtistFolders, report, log);
         }
         return Task.CompletedTask;
     }
 
     private sealed class MovePlanItem
     {
-        public required string SourcePath { get; init; }
-        public required string SourceDir { get; init; }
-        public required string DestinationPath { get; init; }
-        public required string DestinationDir { get; init; }
-        public bool IsUntagged { get; init; }
+        public required string SourcePath { get; set; }
+        public required string SourceDir { get; set; }
+        public required string DestinationPath { get; set; }
+        public required string DestinationDir { get; set; }
+        public bool IsUntagged { get; set; }
     }
 
     private sealed record MovePlanTargetContext(
@@ -111,15 +151,93 @@ public class AutoTagLibraryOrganizer
         AutoTagOrganizerOptions Options,
         Action<string>? Log);
 
+    private sealed record SourceDirectoryPolicy(
+        bool ShouldProcess,
+        string? Reason);
+
+    private static IReadOnlyDictionary<string, SourceDirectoryPolicy> BuildSourceDirectoryPolicies(
+        string rootPath,
+        IReadOnlyCollection<string> filePaths,
+        AutoTagOrganizerOptions options)
+    {
+        var policies = new Dictionary<string, SourceDirectoryPolicy>(StringComparer.OrdinalIgnoreCase);
+        var groups = filePaths
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .GroupBy(path => Path.GetDirectoryName(Path.GetFullPath(path)) ?? rootPath, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var group in groups)
+        {
+            var sourceDir = group.Key;
+            if (options.SkipVariousArtistsFolders && IsSourceDirectoryVariousArtists(rootPath, sourceDir))
+            {
+                policies[sourceDir] = new SourceDirectoryPolicy(false, "various_artists");
+                continue;
+            }
+
+            if (options.SkipCompilationFolders && IsCompilationDirectory(sourceDir))
+            {
+                policies[sourceDir] = new SourceDirectoryPolicy(false, "compilation");
+                continue;
+            }
+
+            if (options.OnlyReorganizeAlbumsWithFullTrackSets && !HasFullTrackSet(group))
+            {
+                policies[sourceDir] = new SourceDirectoryPolicy(false, "incomplete_album");
+                continue;
+            }
+
+            policies[sourceDir] = new SourceDirectoryPolicy(true, null);
+        }
+
+        return policies;
+    }
+
+    private static void RegisterSourceDirectorySkip(
+        string? reason,
+        string sourceDir,
+        AutoTagOrganizerReport? report,
+        Action<string>? log)
+    {
+        switch (reason)
+        {
+            case "various_artists":
+                if (report != null)
+                {
+                    report.SkippedVariousArtistsFolders++;
+                }
+                log?.Invoke($"organizer skipped Various Artists folder: {sourceDir}");
+                report?.Entries.Add($"skip: various artists folder -> {sourceDir}");
+                break;
+            case "compilation":
+                if (report != null)
+                {
+                    report.SkippedCompilationFolders++;
+                }
+                log?.Invoke($"organizer skipped compilation folder: {sourceDir}");
+                report?.Entries.Add($"skip: compilation folder -> {sourceDir}");
+                break;
+            case "incomplete_album":
+                if (report != null)
+                {
+                    report.SkippedIncompleteAlbums++;
+                }
+                log?.Invoke($"organizer skipped incomplete album folder: {sourceDir}");
+                report?.Entries.Add($"skip: incomplete album folder -> {sourceDir}");
+                break;
+        }
+    }
+
     private List<MovePlanItem> BuildMovePlan(
         string rootPath,
         IReadOnlyCollection<string> filePaths,
         AutoTagOrganizerOptions options,
         DeezSpoTagSettings settings,
         bool usePrimaryArtistFolders,
+        AutoTagOrganizerReport? report,
         Action<string>? log)
     {
         var results = new List<MovePlanItem>();
+        var sourcePolicies = BuildSourceDirectoryPolicies(rootPath, filePaths, options);
         foreach (var filePath in filePaths)
         {
             if (string.IsNullOrWhiteSpace(filePath))
@@ -132,7 +250,9 @@ public class AutoTagLibraryOrganizer
                     options,
                     settings,
                     usePrimaryArtistFolders,
+                    sourcePolicies,
                     filePath,
+                    report,
                     log,
                     out var item))
             {
@@ -148,7 +268,9 @@ public class AutoTagLibraryOrganizer
         AutoTagOrganizerOptions options,
         DeezSpoTagSettings settings,
         bool usePrimaryArtistFolders,
+        IReadOnlyDictionary<string, SourceDirectoryPolicy> sourcePolicies,
         string filePath,
+        AutoTagOrganizerReport? report,
         Action<string>? log,
         out MovePlanItem item)
     {
@@ -158,6 +280,13 @@ public class AutoTagLibraryOrganizer
             var fullPath = ResolveMovePlanSourcePath(filePath, rootPath);
             if (string.IsNullOrWhiteSpace(fullPath))
             {
+                return false;
+            }
+
+            var sourceDir = Path.GetDirectoryName(fullPath) ?? rootPath;
+            if (sourcePolicies.TryGetValue(sourceDir, out var sourcePolicy) && !sourcePolicy.ShouldProcess)
+            {
+                RegisterSourceDirectorySkip(sourcePolicy.Reason, sourceDir, report, log);
                 return false;
             }
 
@@ -177,6 +306,14 @@ public class AutoTagLibraryOrganizer
             if (normalized is null)
             {
                 return false;
+            }
+
+            if (target.IsUntagged)
+            {
+                if (report != null)
+                {
+                    report.SkippedUntagged++;
+                }
             }
 
             item = normalized;
@@ -254,24 +391,42 @@ public class AutoTagLibraryOrganizer
         string downloadType;
         if (IsMissingCoreTags(tag))
         {
-            track = BuildTrackFromPathFallback(
-                context.FullPath,
-                context.RootPath,
-                context.UsePrimaryArtistFolders,
-                context.Settings.Tags?.MultiArtistSeparator);
-            if (track == null)
+            if (context.Options.UseShazamForUntaggedFiles)
             {
-                return BuildUntaggedMovePlanItem(
+                track = BuildTrackFromShazamRecognition(
+                    context.FullPath,
+                    context.UsePrimaryArtistFolders,
+                    context.Settings.Tags?.MultiArtistSeparator,
+                    context.Log);
+                if (track == null)
+                {
+                    context.Log?.Invoke($"organizer left untagged file in place after Shazam produced no usable match: {context.FullPath}");
+                    return null;
+                }
+            }
+            else
+            {
+                track = BuildTrackFromPathFallback(
                     context.FullPath,
                     context.RootPath,
-                    context.SourceDir,
-                    context.Options,
-                    context.Log,
-                    "organizer skipped missing core tags");
+                    context.UsePrimaryArtistFolders,
+                    context.Settings.Tags?.MultiArtistSeparator);
+                if (track == null)
+                {
+                    return BuildUntaggedMovePlanItem(
+                        context.FullPath,
+                        context.RootPath,
+                        context.SourceDir,
+                        context.Options,
+                        context.Log,
+                        "organizer skipped missing core tags");
+                }
             }
 
             downloadType = IsSingleTrackDownload(track) ? "track" : "album";
-            context.Log?.Invoke($"organizer inferred core tags from path: {context.FullPath}");
+            context.Log?.Invoke(context.Options.UseShazamForUntaggedFiles
+                ? $"organizer inferred core tags from Shazam: {context.FullPath}"
+                : $"organizer inferred core tags from path: {context.FullPath}");
         }
         else
         {
@@ -384,7 +539,7 @@ public class AutoTagLibraryOrganizer
         };
     }
 
-    private void ExecuteMovePlan(string rootPath, List<MovePlanItem> plan, AutoTagOrganizerOptions options, Action<string>? log)
+    private void ExecuteMovePlan(string rootPath, List<MovePlanItem> plan, AutoTagOrganizerOptions options, AutoTagOrganizerReport? report, Action<string>? log)
     {
         if (plan.Count == 0)
         {
@@ -406,25 +561,39 @@ public class AutoTagLibraryOrganizer
 
             if (options.MoveMisplacedFiles
                 && destinationDirs.Count == 1
-                && TryMoveFolder(rootPath, sourceDir, destinationDirs[0], options, log))
+                && Directory.Exists(destinationDirs[0])
+                && !options.MergeIntoExistingDestinationFolders)
+            {
+                if (report != null)
+                {
+                    report.SkippedExistingFolderMerges++;
+                }
+                log?.Invoke($"organizer skipped merge into existing destination folder: {sourceDir} -> {destinationDirs[0]}");
+                report?.Entries.Add($"skip: existing destination folder merge -> {sourceDir} -> {destinationDirs[0]}");
+                continue;
+            }
+
+            if (options.MoveMisplacedFiles
+                && destinationDirs.Count == 1
+                && TryMoveFolder(rootPath, sourceDir, destinationDirs[0], options, report, log))
             {
                 continue;
             }
 
             foreach (var action in actions)
             {
-                MoveSingleFile(rootPath, action, options, log);
+                MoveSingleFile(rootPath, action, options, report, log);
             }
 
             var destinationDir = destinationDirs.FirstOrDefault();
             if (options.MoveMisplacedFiles && !string.IsNullOrWhiteSpace(destinationDir))
             {
-                MoveRemainingFilesIfAlbumDone(rootPath, sourceDir, destinationDir, log, options);
+                MoveRemainingFilesIfAlbumDone(rootPath, sourceDir, destinationDir, log, options, report);
             }
         }
     }
 
-    private bool TryMoveFolder(string rootPath, string sourceDir, string destinationDir, AutoTagOrganizerOptions options, Action<string>? log)
+    private bool TryMoveFolder(string rootPath, string sourceDir, string destinationDir, AutoTagOrganizerOptions options, AutoTagOrganizerReport? report, Action<string>? log)
     {
         if (!options.MoveMisplacedFiles)
         {
@@ -464,8 +633,13 @@ public class AutoTagLibraryOrganizer
 
         Directory.CreateDirectory(Path.GetDirectoryName(destinationDir) ?? destinationDir);
         Directory.Move(sourceDir, destinationDir);
+        if (report != null)
+        {
+            report.MovedFolders++;
+        }
         _logger.LogInformation("AutoTag organizer moved folder {SourceDir} -> {DestinationDir}", sourceDir, destinationDir);
         log?.Invoke($"organizer moved folder: {sourceDir} -> {destinationDir}");
+        report?.Entries.Add($"move-folder: {sourceDir} -> {destinationDir}");
         return true;
     }
 
@@ -487,9 +661,9 @@ public class AutoTagLibraryOrganizer
         return normalizedPath.StartsWith(rootWithSlash, StringComparison.OrdinalIgnoreCase);
     }
 
-    private void MoveSingleFile(string rootPath, MovePlanItem action, AutoTagOrganizerOptions options, Action<string>? log) // NOSONAR
+    private void MoveSingleFile(string rootPath, MovePlanItem action, AutoTagOrganizerOptions options, AutoTagOrganizerReport? report, Action<string>? log) // NOSONAR
     {
-        if (HandleDuplicateFileCollision(rootPath, action, options, log))
+        if (HandleDuplicateFileCollision(rootPath, action, options, report, log))
         {
             return;
         }
@@ -499,6 +673,11 @@ public class AutoTagLibraryOrganizer
             && PreferredExtensionComparer.ShouldSkipForPreferredExtension(action.SourcePath, action.DestinationPath, options.PreferredExtensions))
         {
             log?.Invoke($"organizer skipped (preferred format exists): {action.SourcePath}");
+            if (report != null)
+            {
+                report.SkippedConflicts++;
+            }
+            report?.Entries.Add($"skip: preferred format exists -> {action.SourcePath}");
             return;
         }
 
@@ -510,9 +689,14 @@ public class AutoTagLibraryOrganizer
 
         Directory.CreateDirectory(action.DestinationDir);
         MoveFileOverwrite(action.SourcePath, action.DestinationPath);
+        if (report != null)
+        {
+            report.MovedFiles++;
+        }
         _logger.LogInformation("AutoTag organizer moved file {SourcePath} -> {DestinationPath}", action.SourcePath, action.DestinationPath);
         log?.Invoke($"organizer moved file: {action.SourcePath} -> {action.DestinationPath}");
-        MoveSidecarFiles(rootPath, action.SourceDir, action.DestinationDir, action.SourcePath, action.DestinationPath, log, options);
+        report?.Entries.Add($"move-file: {action.SourcePath} -> {action.DestinationPath}");
+        MoveSidecarFiles(rootPath, action.SourceDir, action.DestinationDir, action.SourcePath, action.DestinationPath, log, options, report);
         CleanupSourceDirectoryIfConfigured(rootPath, action.SourceDir, options, log);
     }
 
@@ -520,6 +704,7 @@ public class AutoTagLibraryOrganizer
         string rootPath,
         MovePlanItem action,
         AutoTagOrganizerOptions options,
+        AutoTagOrganizerReport? report,
         Action<string>? log)
     {
         if (!IOFile.Exists(action.DestinationPath)
@@ -530,6 +715,42 @@ public class AutoTagLibraryOrganizer
         }
 
         var preferIncoming = AudioCollisionDedupe.ShouldPreferIncoming(action.DestinationPath, action.SourcePath);
+        if (!options.ResolveSameTrackQualityConflicts)
+        {
+            action.DestinationPath = GetUniquePath(action.DestinationPath, action.SourcePath);
+            log?.Invoke($"organizer kept duplicate due to disabled conflict resolution: {action.SourcePath}");
+            if (report != null)
+            {
+                report.KeptLowerQualityDuplicates++;
+            }
+            report?.Entries.Add($"keep-both-duplicate: {action.SourcePath} -> {action.DestinationPath}");
+            return false;
+        }
+
+        if (string.Equals(options.DuplicateConflictPolicy, AutoTagOrganizerOptions.DuplicateConflictKeepBoth, StringComparison.OrdinalIgnoreCase))
+        {
+            action.DestinationPath = GetUniquePath(action.DestinationPath, action.SourcePath);
+            log?.Invoke($"organizer kept both duplicates: {action.SourcePath} -> {action.DestinationPath}");
+            if (report != null)
+            {
+                report.KeptLowerQualityDuplicates++;
+            }
+            report?.Entries.Add($"keep-both-duplicate: {action.SourcePath} -> {action.DestinationPath}");
+            return false;
+        }
+
+        if (string.Equals(options.DuplicateConflictPolicy, AutoTagOrganizerOptions.DuplicateConflictKeepLower, StringComparison.OrdinalIgnoreCase))
+        {
+            action.DestinationPath = GetUniquePath(action.DestinationPath, action.SourcePath);
+            log?.Invoke($"organizer preserved lower-quality duplicate: {action.SourcePath} -> {action.DestinationPath}");
+            if (report != null)
+            {
+                report.KeptLowerQualityDuplicates++;
+            }
+            report?.Entries.Add($"keep-lower-duplicate: {action.SourcePath} -> {action.DestinationPath}");
+            return false;
+        }
+
         if (options.DryRun)
         {
             if (preferIncoming)
@@ -543,20 +764,58 @@ public class AutoTagLibraryOrganizer
             return true;
         }
 
+        if (string.Equals(options.DuplicateConflictPolicy, AutoTagOrganizerOptions.DuplicateConflictMoveToDuplicates, StringComparison.OrdinalIgnoreCase))
+        {
+            var losingPath = preferIncoming ? action.DestinationPath : action.SourcePath;
+            var duplicatesRoot = Path.Join(rootPath, options.DuplicatesFolderName);
+            Directory.CreateDirectory(duplicatesRoot);
+            var target = GetUniquePath(Path.Join(duplicatesRoot, Path.GetFileName(losingPath)), losingPath);
+            MoveFileOverwrite(losingPath, target);
+            if (report != null)
+            {
+                report.QuarantinedDuplicates++;
+            }
+            report?.Entries.Add($"quarantine-duplicate: {losingPath} -> {target}");
+
+            if (preferIncoming)
+            {
+                MoveFileOverwrite(action.SourcePath, action.DestinationPath);
+                if (report != null)
+                {
+                    report.ReplacedDuplicates++;
+                }
+                log?.Invoke($"organizer replaced duplicate destination: {action.DestinationPath} using {action.SourcePath}");
+            }
+            else
+            {
+                log?.Invoke($"organizer quarantined duplicate source: {action.SourcePath}");
+            }
+
+            MoveSidecarFiles(rootPath, action.SourceDir, action.DestinationDir, action.SourcePath, action.DestinationPath, log, options, report);
+            CleanupSourceDirectoryIfConfigured(rootPath, action.SourceDir, options, log);
+            return true;
+        }
+
         if (preferIncoming)
         {
             MoveFileOverwrite(action.SourcePath, action.DestinationPath);
+            if (report != null)
+            {
+                report.ReplacedDuplicates++;
+            }
             _logger.LogInformation("AutoTag organizer replaced duplicate destination {DestinationPath} using {SourcePath}", action.DestinationPath, action.SourcePath);
             log?.Invoke($"organizer replaced duplicate destination: {action.DestinationPath} using {action.SourcePath}");
+            report?.Entries.Add($"replace-duplicate: {action.DestinationPath} <= {action.SourcePath}");
         }
         else
         {
             TryDeleteFile(action.SourcePath);
             _logger.LogInformation("AutoTag organizer skipped duplicate source {SourcePath} (existing {DestinationPath})", action.SourcePath, action.DestinationPath);
             log?.Invoke($"organizer skipped duplicate: {action.SourcePath} (existing {action.DestinationPath})");
+            report?.Entries.Add($"skip-duplicate: {action.SourcePath} (existing {action.DestinationPath})");
         }
 
-        MoveSidecarFiles(rootPath, action.SourceDir, action.DestinationDir, action.SourcePath, action.DestinationPath, log, options);
+        MoveSidecarFiles(rootPath, action.SourceDir, action.DestinationDir, action.SourcePath, action.DestinationPath, log, options, report);
         CleanupSourceDirectoryIfConfigured(rootPath, action.SourceDir, options, log);
         return true;
     }
@@ -724,6 +983,111 @@ public class AutoTagLibraryOrganizer
         track.Album = album;
         track.GenerateMainFeatStrings();
         return track;
+    }
+
+    private Track? BuildTrackFromShazamRecognition(
+        string fullPath,
+        bool usePrimaryArtistFolders,
+        string? multiArtistSeparator,
+        Action<string>? log)
+    {
+        if (!_shazamRecognitionService.IsAvailable)
+        {
+            log?.Invoke($"organizer skipped Shazam fallback because the recognizer is unavailable: {fullPath}");
+            return null;
+        }
+
+        try
+        {
+            var recognition = _shazamRecognitionService.Recognize(fullPath);
+            if (recognition?.HasCoreMetadata != true)
+            {
+                return null;
+            }
+
+            var title = string.IsNullOrWhiteSpace(recognition.Title)
+                ? Path.GetFileNameWithoutExtension(fullPath)
+                : recognition.Title.Trim();
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                return null;
+            }
+
+            var normalizedArtists = recognition.Artists
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .Select(static value => value.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (normalizedArtists.Count == 0 && !string.IsNullOrWhiteSpace(recognition.Artist))
+            {
+                normalizedArtists.Add(recognition.Artist.Trim());
+            }
+
+            var expandedArtists = ExpandArtistNames(normalizedArtists);
+            if (expandedArtists.Count == 0)
+            {
+                return null;
+            }
+
+            var albumTitle = string.IsNullOrWhiteSpace(recognition.Album)
+                ? "Singles"
+                : recognition.Album.Trim();
+            var primaryArtistName = expandedArtists[0];
+            var keepBothArtistName = string.Join(GetArtistSeparator(multiArtistSeparator), expandedArtists);
+            var mainArtistName = usePrimaryArtistFolders ? primaryArtistName : keepBothArtistName;
+            var mainArtist = new Artist(mainArtistName);
+
+            var track = new Track
+            {
+                Title = title,
+                MainArtist = mainArtist,
+                TrackNumber = recognition.TrackNumber.GetValueOrDefault(),
+                DiscNumber = recognition.DiscNumber.GetValueOrDefault(),
+                DiskNumber = recognition.DiscNumber.GetValueOrDefault()
+            };
+
+            track.Artists = expandedArtists.ToList();
+            track.Artist[MainArtistRole] = usePrimaryArtistFolders
+                ? new List<string> { primaryArtistName }
+                : track.Artists.ToList();
+            if (usePrimaryArtistFolders && expandedArtists.Count > 1)
+            {
+                track.Artist[FeaturedArtistRole] = expandedArtists.Skip(1).ToList();
+            }
+
+            var album = new Album(albumTitle)
+            {
+                MainArtist = mainArtist,
+                Label = recognition.Label ?? string.Empty
+            };
+            album.Artists = track.Artists.ToList();
+            album.Artist[MainArtistRole] = usePrimaryArtistFolders
+                ? new List<string> { primaryArtistName }
+                : album.Artists.ToList();
+            if (usePrimaryArtistFolders && expandedArtists.Count > 1)
+            {
+                album.Artist[FeaturedArtistRole] = expandedArtists.Skip(1).ToList();
+            }
+
+            if (!string.IsNullOrWhiteSpace(recognition.ReleaseDate)
+                && DateTime.TryParse(recognition.ReleaseDate, out var parsedReleaseDate))
+            {
+                album.Date.Year = parsedReleaseDate.Year.ToString();
+                album.Date.Month = parsedReleaseDate.Month.ToString("00");
+                album.Date.Day = parsedReleaseDate.Day.ToString("00");
+                track.Date = album.Date;
+            }
+
+            track.Album = album;
+            track.GenerateMainFeatStrings();
+            return track;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "AutoTag organizer Shazam fallback failed for {Path}", fullPath);
+            log?.Invoke($"organizer Shazam fallback failed for {fullPath}: {ex.Message}");
+            return null;
+        }
     }
 
     private static string[] GetRelativePathParts(string fullPath, string rootPath, out string? directory)
@@ -895,6 +1259,62 @@ public class AutoTagLibraryOrganizer
         return VariousArtistsTokens.Contains(name.Trim());
     }
 
+    private static bool IsSourceDirectoryVariousArtists(string rootPath, string sourceDir)
+    {
+        var relative = Path.GetRelativePath(Path.GetFullPath(rootPath), Path.GetFullPath(sourceDir));
+        var relativeParts = relative
+            .Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries)
+            .Where(part => !string.IsNullOrWhiteSpace(part))
+            .ToArray();
+        return relativeParts.Any(IsVariousArtists);
+    }
+
+    private static bool IsCompilationDirectory(string sourceDir)
+    {
+        var name = Path.GetFileName(sourceDir)?.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        return name.Contains("compilation", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("compilations", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasFullTrackSet(IEnumerable<string> files)
+    {
+        var trackNumbers = new HashSet<int>();
+        var expectedTrackCount = 0;
+        foreach (var path in files)
+        {
+            try
+            {
+                using var file = TagLib.File.Create(path);
+                var tag = file.Tag;
+                if (tag.Track > 0)
+                {
+                    trackNumbers.Add((int)tag.Track);
+                }
+
+                if (tag.TrackCount > 0)
+                {
+                    expectedTrackCount = Math.Max(expectedTrackCount, (int)tag.TrackCount);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return false;
+            }
+        }
+
+        if (expectedTrackCount <= 0)
+        {
+            return false;
+        }
+
+        return trackNumbers.Count >= expectedTrackCount;
+    }
+
     private static string SanitizePathSegment(string value)
     {
         return CjkFilenameSanitizer.SanitizeSegment(
@@ -1008,7 +1428,8 @@ public class AutoTagLibraryOrganizer
         string sourcePath,
         string destinationPath,
         Action<string>? log,
-        AutoTagOrganizerOptions options)
+        AutoTagOrganizerOptions options,
+        AutoTagOrganizerReport? report)
     {
         var sourceBase = Path.GetFileNameWithoutExtension(sourcePath);
         var destinationBase = Path.GetFileNameWithoutExtension(destinationPath);
@@ -1028,16 +1449,40 @@ public class AutoTagLibraryOrganizer
 
             var ext = Path.GetExtension(file);
             var candidate = Path.Join(destinationDir, destinationBase + ext);
-            var target = GetUniquePath(candidate, file);
+            var target = ResolveSidecarTarget(file, candidate, options, report, log);
+            if (string.IsNullOrWhiteSpace(target))
+            {
+                continue;
+            }
+
             if (options.DryRun)
             {
                 log?.Invoke($"organizer dry-run: would move sidecar {file} -> {target}");
                 continue;
             }
 
+            if (ShouldMergeLyricsSidecar(file, target, options))
+            {
+                MergeLyricsSidecar(file, target);
+                TryDeleteFile(file);
+                if (report != null)
+                {
+                    report.MergedLyricsSidecars++;
+                }
+                report?.Entries.Add($"merge-lyrics-sidecar: {file} -> {target}");
+                log?.Invoke($"organizer merged lyrics sidecar: {file} -> {target}");
+                movedAny = true;
+                continue;
+            }
+
             MoveFileOverwrite(file, target);
+            if (report != null)
+            {
+                report.MovedSidecars++;
+            }
             _logger.LogInformation("AutoTag organizer moved sidecar {SourcePath} -> {DestinationPath}", file, target);
             log?.Invoke($"organizer moved sidecar: {file} -> {target}");
+            report?.Entries.Add($"move-sidecar: {file} -> {target}");
             movedAny = true;
         }
 
@@ -1047,7 +1492,7 @@ public class AutoTagLibraryOrganizer
         }
     }
 
-    private void MoveRemainingFilesIfAlbumDone(string rootPath, string sourceDir, string destinationDir, Action<string>? log, AutoTagOrganizerOptions options)
+    private void MoveRemainingFilesIfAlbumDone(string rootPath, string sourceDir, string destinationDir, Action<string>? log, AutoTagOrganizerOptions options, AutoTagOrganizerReport? report)
     {
         var remainingAudio = EnumerateAudioFiles(sourceDir, true)
             .Any(path => string.Equals(Path.GetDirectoryName(path), sourceDir, StringComparison.OrdinalIgnoreCase));
@@ -1066,8 +1511,13 @@ public class AutoTagLibraryOrganizer
             }
 
             MoveFileOverwrite(file, target);
+            if (report != null)
+            {
+                report.MovedLeftovers++;
+            }
             _logger.LogInformation("AutoTag organizer moved leftover {SourcePath} -> {DestinationPath}", file, target);
             log?.Invoke($"organizer moved leftover: {file} -> {target}");
+            report?.Entries.Add($"move-leftover: {file} -> {target}");
         }
 
         if (!options.DryRun && options.RemoveEmptyFolders)
@@ -1076,7 +1526,7 @@ public class AutoTagLibraryOrganizer
         }
     }
 
-    private void DeleteVariousArtistsArt(string sourceArtistDir, Action<string>? log)
+    private void DeleteVariousArtistsArt(string sourceArtistDir, AutoTagOrganizerReport? report, Action<string>? log)
     {
         foreach (var file in Directory.EnumerateFiles(sourceArtistDir))
         {
@@ -1089,6 +1539,7 @@ public class AutoTagLibraryOrganizer
             IOFile.Delete(file);
             _logger.LogInformation("AutoTag organizer deleted various artists art {SourcePath}", file);
             log?.Invoke($"organizer deleted various artists art: {file}");
+            report?.Entries.Add($"delete-various-artists-art: {file}");
         }
     }
 
@@ -1103,6 +1554,123 @@ public class AutoTagLibraryOrganizer
             || extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".png", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".webp", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsLyricsExtension(string? extension)
+    {
+        if (string.IsNullOrWhiteSpace(extension))
+        {
+            return false;
+        }
+
+        return extension.Equals(".lrc", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".txt", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".srt", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string? ResolveSidecarTarget(
+        string sourcePath,
+        string candidatePath,
+        AutoTagOrganizerOptions options,
+        AutoTagOrganizerReport? report,
+        Action<string>? log)
+    {
+        if (!IOFile.Exists(candidatePath))
+        {
+            return GetUniquePath(candidatePath, sourcePath);
+        }
+
+        var extension = Path.GetExtension(sourcePath);
+        if (IsImageExtension(extension))
+        {
+            if (string.Equals(options.ArtworkPolicy, AutoTagOrganizerOptions.ArtworkPolicyPreserveExisting, StringComparison.OrdinalIgnoreCase))
+            {
+                if (report != null)
+                {
+                    report.PreservedExistingArtwork++;
+                }
+                report?.Entries.Add($"preserve-artwork: {sourcePath} (existing {candidatePath})");
+                log?.Invoke($"organizer preserved existing artwork: {candidatePath}");
+                return null;
+            }
+
+            if (string.Equals(options.ArtworkPolicy, AutoTagOrganizerOptions.ArtworkPolicyPreferHigherResolution, StringComparison.OrdinalIgnoreCase))
+            {
+                var incomingScore = TryGetArtworkScore(sourcePath);
+                var existingScore = TryGetArtworkScore(candidatePath);
+                if (existingScore >= incomingScore)
+                {
+                    if (report != null)
+                    {
+                        report.PreservedExistingArtwork++;
+                    }
+                    report?.Entries.Add($"preserve-artwork: {sourcePath} (higher/equal existing {candidatePath})");
+                    log?.Invoke($"organizer preserved higher-resolution artwork: {candidatePath}");
+                    return null;
+                }
+
+                return candidatePath;
+            }
+
+            return GetUniquePath(candidatePath, sourcePath);
+        }
+
+        if (IsLyricsExtension(extension))
+        {
+            if (string.Equals(options.LyricsPolicy, AutoTagOrganizerOptions.LyricsPolicyPreserveExisting, StringComparison.OrdinalIgnoreCase))
+            {
+                report?.Entries.Add($"preserve-lyrics: {sourcePath} (existing {candidatePath})");
+                log?.Invoke($"organizer preserved existing lyrics sidecar: {candidatePath}");
+                return null;
+            }
+
+            if (string.Equals(options.LyricsPolicy, AutoTagOrganizerOptions.LyricsPolicyPreferIncoming, StringComparison.OrdinalIgnoreCase))
+            {
+                return candidatePath;
+            }
+
+            return candidatePath;
+        }
+
+        return options.KeepBothOnUnresolvedConflicts
+            ? GetUniquePath(candidatePath, sourcePath)
+            : null;
+    }
+
+    private static bool ShouldMergeLyricsSidecar(string sourcePath, string destinationPath, AutoTagOrganizerOptions options)
+    {
+        return IOFile.Exists(destinationPath)
+            && IsLyricsExtension(Path.GetExtension(sourcePath))
+            && string.Equals(options.LyricsPolicy, AutoTagOrganizerOptions.LyricsPolicyMerge, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void MergeLyricsSidecar(string sourcePath, string destinationPath)
+    {
+        var destinationLines = IOFile.ReadAllLines(destinationPath)
+            .Select(line => line.TrimEnd())
+            .ToList();
+        var existing = new HashSet<string>(destinationLines, StringComparer.OrdinalIgnoreCase);
+        foreach (var line in IOFile.ReadLines(sourcePath).Select(line => line.TrimEnd()))
+        {
+            if (existing.Add(line))
+            {
+                destinationLines.Add(line);
+            }
+        }
+
+        IOFile.WriteAllLines(destinationPath, destinationLines);
+    }
+
+    private static long TryGetArtworkScore(string path)
+    {
+        try
+        {
+            return new FileInfo(path).Length;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return 0;
+        }
     }
 
     private void DeleteEmptyDirectoryTree(string startDirectory, string rootPath, Action<string>? log)
@@ -1136,7 +1704,7 @@ public class AutoTagLibraryOrganizer
         }
     }
 
-    private void CleanupArtistFolders(string rootPath, bool usePrimaryArtistFolders, Action<string>? log) // NOSONAR
+    private void CleanupArtistFolders(string rootPath, bool usePrimaryArtistFolders, AutoTagOrganizerReport? report, Action<string>? log) // NOSONAR
     {
         foreach (var artistDir in Directory.EnumerateDirectories(rootPath))
         {
@@ -1145,7 +1713,7 @@ public class AutoTagLibraryOrganizer
                 continue;
             }
 
-            if (HandleVariousArtistsFolderCleanup(artistDir, artistName, log))
+            if (HandleVariousArtistsFolderCleanup(artistDir, artistName, report, log))
             {
                 continue;
             }
@@ -1164,14 +1732,14 @@ public class AutoTagLibraryOrganizer
         return !string.IsNullOrWhiteSpace(artistName);
     }
 
-    private bool HandleVariousArtistsFolderCleanup(string artistDir, string artistName, Action<string>? log)
+    private bool HandleVariousArtistsFolderCleanup(string artistDir, string artistName, AutoTagOrganizerReport? report, Action<string>? log)
     {
         if (!IsVariousArtists(artistName))
         {
             return false;
         }
 
-        DeleteVariousArtistsArt(artistDir, log);
+        DeleteVariousArtistsArt(artistDir, report, log);
         DeleteArtistFolderIfEmpty(artistDir, log);
         return true;
     }

@@ -7,9 +7,12 @@ public sealed class MelodaySettingsStore
 {
     private readonly string _settingsPath;
     private readonly ILogger<MelodaySettingsStore> _logger;
+    private readonly SemaphoreSlim _sync = new(1, 1);
+    private MelodayOptions? _cached;
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,
         WriteIndented = true
     };
 
@@ -23,41 +26,62 @@ public sealed class MelodaySettingsStore
 
     public async Task<MelodayOptions> LoadAsync(MelodayOptions defaults)
     {
+        await _sync.WaitAsync();
         try
         {
+            if (_cached is not null)
+            {
+                return Clone(_cached);
+            }
+
             if (!File.Exists(_settingsPath))
             {
-                return defaults;
+                _cached = Clone(defaults);
+                return Clone(_cached);
             }
 
             var json = await File.ReadAllTextAsync(_settingsPath);
             var stored = JsonSerializer.Deserialize<MelodayOptions>(json, _jsonOptions);
             if (stored == null)
             {
-                return defaults;
+                _cached = Clone(defaults);
+                return Clone(_cached);
             }
 
-            return Merge(defaults, stored);
+            _cached = Merge(defaults, stored);
+            return Clone(_cached);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to load Meloday settings.");
-            return defaults;
+            _logger.LogWarning(ex, "Failed to load Meloday settings from {Path}.", _settingsPath);
+            _cached ??= Clone(defaults);
+            return Clone(_cached);
+        }
+        finally
+        {
+            _sync.Release();
         }
     }
 
     public async Task<MelodayOptions> SaveAsync(MelodayOptions settings)
     {
+        await _sync.WaitAsync();
         try
         {
-            var json = JsonSerializer.Serialize(settings, _jsonOptions);
+            _cached = Clone(settings);
+            var json = JsonSerializer.Serialize(_cached, _jsonOptions);
             await File.WriteAllTextAsync(_settingsPath, json);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to save Meloday settings.");
+            _logger.LogWarning(ex, "Failed to save Meloday settings to {Path}. Using in-memory settings for this runtime.", _settingsPath);
         }
-        return settings;
+        finally
+        {
+            _sync.Release();
+        }
+
+        return Clone(_cached ?? settings);
     }
 
     private static MelodayOptions Merge(MelodayOptions defaults, MelodayOptions stored) => new()
@@ -78,5 +102,25 @@ public sealed class MelodaySettingsStore
         FontsPath = string.IsNullOrWhiteSpace(stored.FontsPath) ? defaults.FontsPath : stored.FontsPath,
         MainFontFile = string.IsNullOrWhiteSpace(stored.MainFontFile) ? defaults.MainFontFile : stored.MainFontFile,
         BrandFontFile = string.IsNullOrWhiteSpace(stored.BrandFontFile) ? defaults.BrandFontFile : stored.BrandFontFile
+    };
+
+    private static MelodayOptions Clone(MelodayOptions source) => new()
+    {
+        Enabled = source.Enabled,
+        LibraryName = source.LibraryName,
+        PlaylistPrefix = source.PlaylistPrefix,
+        BaseUrl = source.BaseUrl,
+        ExcludePlayedDays = source.ExcludePlayedDays,
+        HistoryLookbackDays = source.HistoryLookbackDays,
+        MaxTracks = source.MaxTracks,
+        HistoricalRatio = source.HistoricalRatio,
+        SonicSimilarLimit = source.SonicSimilarLimit,
+        SonicSimilarityDistance = source.SonicSimilarityDistance,
+        UpdateIntervalMinutes = source.UpdateIntervalMinutes,
+        MoodMapPath = source.MoodMapPath,
+        CoversPath = source.CoversPath,
+        FontsPath = source.FontsPath,
+        MainFontFile = source.MainFontFile,
+        BrandFontFile = source.BrandFontFile
     };
 }

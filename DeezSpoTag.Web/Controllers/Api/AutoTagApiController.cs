@@ -436,8 +436,24 @@ public sealed class EnhancementFolderUniformityRequest
     public bool? MoveMisplacedFiles { get; set; }
     public bool? RenameFilesToTemplate { get; set; }
     public bool? RemoveEmptyFolders { get; set; }
-    public bool? DryRunMode { get; set; }
+    public bool? MergeIntoExistingDestinationFolders { get; set; }
+    public bool? ResolveSameTrackQualityConflicts { get; set; }
+    public bool? KeepBothOnUnresolvedConflicts { get; set; }
+    public bool? OnlyMoveWhenTagged { get; set; }
+    public bool? OnlyReorganizeAlbumsWithFullTrackSets { get; set; }
+    public bool? SkipCompilationFolders { get; set; }
+    public bool? SkipVariousArtistsFolders { get; set; }
+    public bool? GenerateReconciliationReport { get; set; }
+    public string? DuplicateConflictPolicy { get; set; }
+    public string? ArtworkPolicy { get; set; }
+    public string? LyricsPolicy { get; set; }
+    public bool? RunDedupe { get; set; }
+    public bool? UseShazamForDedupe { get; set; }
+    public bool? UseShazamForUntaggedFiles { get; set; }
+    public string? DuplicatesFolderName { get; set; }
     public bool? IncludeSubfolders { get; set; }
+    public bool? UsePrimaryArtistFolders { get; set; }
+    public string? MultiArtistSeparator { get; set; }
 }
 
 public sealed class EnhancementQualityChecksRequest
@@ -449,6 +465,8 @@ public sealed class EnhancementQualityChecksRequest
     public bool? FlagMissingTags { get; set; }
     public bool? FlagMismatchedMetadata { get; set; }
     public bool? UseDuplicatesFolder { get; set; }
+    public bool? UseShazamForDedupe { get; set; }
+    public string? DuplicatesFolderName { get; set; }
     public bool? QueueAtmosAlternatives { get; set; }
     public bool? QueueLyricsRefresh { get; set; }
     public string? MinFormat { get; set; }

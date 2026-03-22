@@ -702,7 +702,7 @@ public sealed class DeezerClient : IDisposable
 
     private static bool CanUseMetadataCandidate(ApiTrack track, bool sourceAllowsDerivative)
     {
-        return sourceAllowsDerivative || !DeezerCandidateHeuristics.IsDerivativeCandidate(track);
+        return sourceAllowsDerivative || !DeezerCandidateHeuristics.IsVariantCandidate(track);
     }
 
     private static bool HasMatchingDuration(int? durationSeconds, int trackDuration)
