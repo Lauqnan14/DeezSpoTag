@@ -189,6 +189,24 @@
     line-height: 1.5;
 }
 
+.uniformity-live-log {
+    margin-top: 12px;
+    padding: 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+}
+
+.uniformity-live-log-title {
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.uniformity-live-log .uniformity-report-entries {
+    margin-top: 0;
+}
+
 /* Prevent hard-refresh flash of hidden tabs before shared CSS loads */
 #autotagTabsContent > .tab-pane {
     display: none;
@@ -1024,7 +1042,6 @@
                             <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runFolderUniformity">Run Folder Uniformity</button>
                         </div>
                         <span class="helper" id="folderUniformityStatus"></span>
-                        <div id="folderUniformityReports" class="uniformity-report-list d-none" aria-live="polite"></div>
                     </div>
                 </div>
             </div>

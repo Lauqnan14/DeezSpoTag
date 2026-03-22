@@ -126,6 +126,10 @@ public class DuplicateCleanerService
     private const int DurationToleranceMs = 2000;
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex WhitespaceRegex = new(@"\s+", RegexOptions.Compiled, RegexTimeout);
+    private static readonly Regex NumericOrTrackTokenRegex = new(
+        @"^(track\s*\d{0,4}|\d{1,4}|cd\s*\d{1,2}|disc\s*\d{1,2})$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase,
+        RegexTimeout);
     private readonly object _lastRunLock = new();
     private readonly ShazamRecognitionService _shazamRecognitionService;
     private readonly ILogger<DuplicateCleanerService> _logger;
@@ -150,6 +154,22 @@ public class DuplicateCleanerService
         [".aac"] = 3,
         [".mp3"] = 4,
         [".wma"] = 4
+    };
+
+    private static readonly HashSet<string> WeakIdentityTokens = new(StringComparer.Ordinal)
+    {
+        string.Empty,
+        "unknown",
+        "unknown artist",
+        "unknown album",
+        "untitled",
+        "audio",
+        "track",
+        "song",
+        "various artists",
+        "various",
+        "va",
+        "v/a"
     };
 
     public DuplicateCleanerService(
@@ -321,14 +341,28 @@ public class DuplicateCleanerService
             .ToList();
 
         var candidates = new List<DuplicateCandidate>(files.Count);
+        var shazamLookups = 0;
         foreach (var path in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var candidate = BuildCandidate(path, root, options.UseShazamForIdentity, cancellationToken);
+            var candidate = BuildCandidate(path, root, options.UseShazamForIdentity, cancellationToken, out var usedShazamLookup);
             candidates.Add(candidate);
+            if (usedShazamLookup)
+            {
+                shazamLookups++;
+            }
         }
 
         result.FilesScanned += candidates.Count;
+        if (options.UseShazamForIdentity)
+        {
+            _logger.LogInformation(
+                "Duplicate cleaner scanned {FileCount} files under {Root}. Shazam-assisted identity used for {ShazamLookupCount} weak/noisy files.",
+                candidates.Count,
+                root,
+                shazamLookups);
+        }
+
         if (candidates.Count <= 1)
         {
             return;
@@ -355,9 +389,11 @@ public class DuplicateCleanerService
         string path,
         string root,
         bool useShazamForIdentity,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        out bool usedShazamLookup)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        usedShazamLookup = false;
 
         var fileInfo = new FileInfo(path);
         var relativePath = Path.GetRelativePath(root, path);
@@ -399,8 +435,10 @@ public class DuplicateCleanerService
         var shazamIsrc = string.Empty;
         var shazamTitle = string.Empty;
         var shazamArtists = Array.Empty<string>();
-        if (useShazamForIdentity)
+        var shouldUseShazam = useShazamForIdentity && ShouldUseShazamIdentity(isrc, title, artists, durationMs);
+        if (shouldUseShazam)
         {
+            usedShazamLookup = true;
             try
             {
                 var recognition = _shazamRecognitionService.Recognize(path, cancellationToken);
@@ -863,5 +901,39 @@ public class DuplicateCleanerService
         cancellationToken.ThrowIfCancellationRequested();
         IOFile.Move(source, destination);
         return Task.CompletedTask;
+    }
+
+    private static bool ShouldUseShazamIdentity(
+        string isrc,
+        string title,
+        IReadOnlyList<string> artists,
+        int? durationMs)
+    {
+        // ISRC + stable tags are already a strong identity. Reserve Shazam for weak/noisy cases.
+        if (!string.IsNullOrWhiteSpace(isrc))
+        {
+            return false;
+        }
+
+        var hasDuration = durationMs.HasValue && durationMs.Value > 0;
+        var hasReliableTitle = !LooksWeakIdentityValue(title);
+        var hasReliableArtist = artists.Any() && artists.Any(artist => !LooksWeakIdentityValue(artist));
+        return !hasDuration || !hasReliableTitle || !hasReliableArtist;
+    }
+
+    private static bool LooksWeakIdentityValue(string? value)
+    {
+        var normalized = Normalize(value);
+        if (WeakIdentityTokens.Contains(normalized))
+        {
+            return true;
+        }
+
+        if (normalized.Length <= 1)
+        {
+            return true;
+        }
+
+        return NumericOrTrackTokenRegex.IsMatch(normalized);
     }
 }

@@ -1,3 +1,5 @@
+using DeezSpoTag.Core.Models.Settings;
+
 namespace DeezSpoTag.Web.Services;
 
 public sealed class AutoTagOrganizerOptions
@@ -38,4 +40,15 @@ public sealed class AutoTagOrganizerOptions
     public List<string> PreferredExtensions { get; set; } = new();
     public bool? UsePrimaryArtistFoldersOverride { get; set; }
     public string? MultiArtistSeparatorOverride { get; set; }
+    public bool? CreateArtistFolderOverride { get; set; }
+    public string? ArtistNameTemplateOverride { get; set; }
+    public bool? CreateAlbumFolderOverride { get; set; }
+    public string? AlbumNameTemplateOverride { get; set; }
+    public bool? CreateCDFolderOverride { get; set; }
+    public bool? CreateStructurePlaylistOverride { get; set; }
+    public bool? CreateSingleFolderOverride { get; set; }
+    public bool? CreatePlaylistFolderOverride { get; set; }
+    public string? PlaylistNameTemplateOverride { get; set; }
+    public string? IllegalCharacterReplacerOverride { get; set; }
+    public TechnicalTagSettings? TechnicalSettingsOverride { get; set; }
 }

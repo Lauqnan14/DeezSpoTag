@@ -112,6 +112,8 @@ public class AutoTagLibraryOrganizer
             settings.Tags = new TagSettings();
         }
 
+        ApplySettingsOverrides(settings, options);
+
         if (!string.IsNullOrWhiteSpace(options.MultiArtistSeparatorOverride))
         {
             settings.Tags.MultiArtistSeparator = options.MultiArtistSeparatorOverride!.Trim();
@@ -131,6 +133,77 @@ public class AutoTagLibraryOrganizer
             CleanupArtistFolders(normalizedRoot, usePrimaryArtistFolders, report, log);
         }
         return Task.CompletedTask;
+    }
+
+    private static void ApplySettingsOverrides(DeezSpoTagSettings settings, AutoTagOrganizerOptions options)
+    {
+        if (options.TechnicalSettingsOverride != null)
+        {
+            var technical = options.TechnicalSettingsOverride;
+            settings.Tags.SavePlaylistAsCompilation = technical.SavePlaylistAsCompilation;
+            settings.Tags.UseNullSeparator = technical.UseNullSeparator;
+            settings.Tags.SaveID3v1 = technical.SaveID3v1;
+            settings.Tags.MultiArtistSeparator = technical.MultiArtistSeparator;
+            settings.Tags.SingleAlbumArtist = technical.SingleAlbumArtist;
+            settings.Tags.CoverDescriptionUTF8 = technical.CoverDescriptionUTF8;
+            settings.AlbumVariousArtists = technical.AlbumVariousArtists;
+            settings.RemoveDuplicateArtists = technical.RemoveDuplicateArtists;
+            settings.RemoveAlbumVersion = technical.RemoveAlbumVersion;
+            settings.DateFormat = technical.DateFormat;
+            settings.FeaturedToTitle = technical.FeaturedToTitle;
+            settings.TitleCasing = technical.TitleCasing;
+            settings.ArtistCasing = technical.ArtistCasing;
+        }
+
+        if (options.CreateArtistFolderOverride.HasValue)
+        {
+            settings.CreateArtistFolder = options.CreateArtistFolderOverride.Value;
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.ArtistNameTemplateOverride))
+        {
+            settings.ArtistNameTemplate = options.ArtistNameTemplateOverride.Trim();
+        }
+
+        if (options.CreateAlbumFolderOverride.HasValue)
+        {
+            settings.CreateAlbumFolder = options.CreateAlbumFolderOverride.Value;
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.AlbumNameTemplateOverride))
+        {
+            settings.AlbumNameTemplate = options.AlbumNameTemplateOverride.Trim();
+        }
+
+        if (options.CreateCDFolderOverride.HasValue)
+        {
+            settings.CreateCDFolder = options.CreateCDFolderOverride.Value;
+        }
+
+        if (options.CreateStructurePlaylistOverride.HasValue)
+        {
+            settings.CreateStructurePlaylist = options.CreateStructurePlaylistOverride.Value;
+        }
+
+        if (options.CreateSingleFolderOverride.HasValue)
+        {
+            settings.CreateSingleFolder = options.CreateSingleFolderOverride.Value;
+        }
+
+        if (options.CreatePlaylistFolderOverride.HasValue)
+        {
+            settings.CreatePlaylistFolder = options.CreatePlaylistFolderOverride.Value;
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.PlaylistNameTemplateOverride))
+        {
+            settings.PlaylistNameTemplate = options.PlaylistNameTemplateOverride.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.IllegalCharacterReplacerOverride))
+        {
+            settings.IllegalCharacterReplacer = options.IllegalCharacterReplacerOverride.Trim();
+        }
     }
 
     private sealed class MovePlanItem

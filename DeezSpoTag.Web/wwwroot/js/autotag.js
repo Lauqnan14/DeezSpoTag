@@ -3475,6 +3475,39 @@
         return `${phase} (${percent}%) - ${folderProgress} folders`;
     }
 
+    function renderFolderUniformityLiveLog(status) {
+        const container = el("folderUniformityLiveLogContainer");
+        const pre = el("folderUniformityLiveLog");
+        if (!container || !pre) {
+            return;
+        }
+
+        const logs = Array.isArray(status?.logs)
+            ? status.logs
+                .map((line) => String(line || "").trim())
+                .filter((line) => line.length > 0)
+            : [];
+        const errors = Array.isArray(status?.errors)
+            ? status.errors
+                .map((line) => String(line || "").trim())
+                .filter((line) => line.length > 0)
+            : [];
+        const combined = [...logs];
+        if (errors.length > 0) {
+            combined.push(...errors.map((line) => `[error] ${line}`));
+        }
+
+        if (combined.length === 0) {
+            pre.textContent = "";
+            container.classList.add("d-none");
+            return;
+        }
+
+        const tailCount = 28;
+        pre.textContent = combined.slice(-tailCount).join("\n");
+        container.classList.remove("d-none");
+    }
+
     async function pollFolderUniformityStatus(jobId) {
         const id = String(jobId || "").trim();
         if (!id) {
@@ -3495,6 +3528,7 @@
                 latestStatus = await response.json();
                 transientFailures = 0;
                 setEnhancementStatus("folderUniformityStatus", buildFolderUniformityProgressMessage(latestStatus));
+                renderFolderUniformityLiveLog(latestStatus);
 
                 if (Array.isArray(latestStatus?.reconciliationReports)) {
                     renderFolderUniformityReports(latestStatus.reconciliationReports);
@@ -3524,8 +3558,8 @@
         try {
             const config = readConfigFromUI();
             const options = config.enhancement.folderUniformity;
-            const technical = readTechnicalSettingsFromUI(getActiveProfile()?.technical || null);
             renderFolderUniformityReports([]);
+            renderFolderUniformityLiveLog({ logs: [], errors: [] });
             setEnhancementStatus("folderUniformityStatus", "Starting folder uniformity run...");
             const startResponse = await fetch("/api/autotag/enhancement/folder-uniformity/start", {
                 method: "POST",
@@ -3551,8 +3585,6 @@
                     runDedupe: options.runDedupe,
                     useShazamForDedupe: options.useShazamForDedupe,
                     duplicatesFolderName: options.duplicatesFolderName,
-                    usePrimaryArtistFolders: technical.singleAlbumArtist !== false,
-                    multiArtistSeparator: String(technical.multiArtistSeparator || "default").trim() || "default",
                     includeSubfolders: config.includeSubfolders !== false
                 })
             });
@@ -3585,6 +3617,7 @@
                 ? String(payload?.message || "Folder uniformity skipped.")
                 : String(payload?.message || `Folder uniformity finished: ${foldersProcessed} processed, ${foldersSkipped} skipped.`) + dedupeSummary + reportSummary;
             renderFolderUniformityReports(payload?.reconciliationReports);
+            renderFolderUniformityLiveLog(payload);
             setEnhancementStatus("folderUniformityStatus", summary);
             const normalizedStatus = String(payload?.status || "").toLowerCase();
             const failed = normalizedStatus === "error" || normalizedStatus === "canceled" || payload?.success === false;

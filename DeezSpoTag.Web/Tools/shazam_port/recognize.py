@@ -70,10 +70,16 @@ async def recognize_async(args: argparse.Namespace) -> Dict[str, Any]:
         segment_duration_seconds=signature_seconds,
     )
 
-    response = await shazam.recognize(
-        args.audio_path,
-        options=SearchParams(segment_duration_seconds=signature_seconds),
-    )
+    try:
+        response = await asyncio.wait_for(
+            shazam.recognize(
+                args.audio_path,
+                options=SearchParams(segment_duration_seconds=signature_seconds),
+            ),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError as ex:
+        raise RuntimeError(f"Shazam recognize timeout after {timeout_seconds}s") from ex
 
     return {
         "ok": True,

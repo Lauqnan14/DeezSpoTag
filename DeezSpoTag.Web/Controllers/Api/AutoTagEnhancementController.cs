@@ -2,6 +2,7 @@ using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
+using DeezSpoTag.Core.Models.Settings;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -24,6 +25,7 @@ public class AutoTagEnhancementController : ControllerBase
     private readonly DuplicateCleanerService _duplicateCleanerService;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly LyricsRefreshQueueService _lyricsRefreshQueueService;
+    private readonly AutoTagProfileResolutionService _profileResolutionService;
 
     public AutoTagEnhancementController(
         LibraryRepository libraryRepository,
@@ -32,7 +34,8 @@ public class AutoTagEnhancementController : ControllerBase
         QualityScannerService qualityScannerService,
         DuplicateCleanerService duplicateCleanerService,
         DeezSpoTagSettingsService settingsService,
-        LyricsRefreshQueueService lyricsRefreshQueueService)
+        LyricsRefreshQueueService lyricsRefreshQueueService,
+        AutoTagProfileResolutionService profileResolutionService)
     {
         _libraryRepository = libraryRepository;
         _libraryConfigStore = libraryConfigStore;
@@ -41,6 +44,7 @@ public class AutoTagEnhancementController : ControllerBase
         _duplicateCleanerService = duplicateCleanerService;
         _settingsService = settingsService;
         _lyricsRefreshQueueService = lyricsRefreshQueueService;
+        _profileResolutionService = profileResolutionService;
     }
 
     private sealed class FolderUniformityRunState
@@ -285,11 +289,7 @@ public class AutoTagEnhancementController : ControllerBase
             LyricsPolicy = string.IsNullOrWhiteSpace(request.LyricsPolicy)
                 ? AutoTagOrganizerOptions.LyricsPolicyMerge
                 : request.LyricsPolicy.Trim(),
-            DuplicatesFolderName = request.DuplicatesFolderName ?? DuplicateCleanerService.DuplicatesFolderName,
-            UsePrimaryArtistFoldersOverride = request.UsePrimaryArtistFolders,
-            MultiArtistSeparatorOverride = string.IsNullOrWhiteSpace(request.MultiArtistSeparator)
-                ? null
-                : request.MultiArtistSeparator.Trim()
+            DuplicatesFolderName = request.DuplicatesFolderName ?? DuplicateCleanerService.DuplicatesFolderName
         };
 
         var options = new
@@ -312,10 +312,7 @@ public class AutoTagEnhancementController : ControllerBase
             LyricsPolicy = organizerOptions.LyricsPolicy,
             RunDedupe = runDedupe,
             UseShazamForDedupe = request.UseShazamForDedupe == true,
-            UsePrimaryArtistFolders = request.UsePrimaryArtistFolders,
-            MultiArtistSeparator = string.IsNullOrWhiteSpace(request.MultiArtistSeparator)
-                ? null
-                : request.MultiArtistSeparator.Trim(),
+            ProfileAwareFolderTemplates = true,
             DuplicatesFolderName = string.IsNullOrWhiteSpace(request.DuplicatesFolderName)
                 ? DuplicateCleanerService.DuplicatesFolderName
                 : request.DuplicatesFolderName.Trim()
@@ -350,7 +347,9 @@ public class AutoTagEnhancementController : ControllerBase
 
         var folders = await AutoTagFolderScopeHelper.ResolveLibraryFoldersAsync(_libraryRepository, _libraryConfigStore, cancellationToken);
         var enabledFolders = folders
-            .Where(folder => folder.Enabled && !string.IsNullOrWhiteSpace(folder.RootPath))
+            .Where(folder => folder.Enabled
+                && !string.IsNullOrWhiteSpace(folder.RootPath)
+                && IsMusicFolder(folder))
             .ToList();
         var scopedFolderIds = AutoTagFolderScopeHelper.NormalizeFolderIds(request.FolderIds, request.FolderId, enabledFolders);
         if (scopedFolderIds.Count > 0)
@@ -371,21 +370,23 @@ public class AutoTagEnhancementController : ControllerBase
                 state.TotalSteps = 0;
                 state.CompletedSteps = 0;
                 state.Phase = "No folders available";
-                state.Errors.Add("No enabled library folders are available for organizer checks.");
+                state.Errors.Add("No enabled music library folders are available for folder uniformity.");
             });
             return new FolderUniformityResultPayload(
                 Success: false,
                 Skipped: false,
-                Message: "No enabled library folders are available for organizer checks.",
+                Message: "No enabled music library folders are available for folder uniformity.",
                 FoldersProcessed: 0,
                 FoldersSkipped: 0,
                 Options: options,
                 Dedupe: null,
                 ReconciliationReports: Array.Empty<object>(),
                 Logs: Array.Empty<string>(),
-                Errors: new[] { "No enabled library folders are available for organizer checks." },
-                ValidationError: "No enabled library folders are available for organizer checks.");
+                Errors: new[] { "No enabled music library folders are available for folder uniformity." },
+                ValidationError: "No enabled music library folders are available for folder uniformity.");
         }
+
+        var profileState = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
 
         var logs = new List<string>();
         var errors = new List<string>();
@@ -431,6 +432,36 @@ public class AutoTagEnhancementController : ControllerBase
                     state.Phase = $"Processing {folderLabel} ({folderIndex}/{enabledFolders.Count})";
                 });
 
+                if (!TryBuildFolderOrganizerOptions(organizerOptions, profileState, folder, out var folderOrganizerOptions, out var profileError))
+                {
+                    skipped++;
+                    if (!string.IsNullOrWhiteSpace(profileError))
+                    {
+                        errors.Add(profileError);
+                    }
+
+                    var skippedMessage = $"[{folderLabel}] skipped: {profileError}";
+                    if (logs.Count < MaxFolderUniformityLogs)
+                    {
+                        logs.Add(skippedMessage);
+                    }
+
+                    AppendFolderUniformityLog(runState?.JobId, skippedMessage);
+                    UpdateFolderUniformityState(runState?.JobId, state =>
+                    {
+                        if (!string.IsNullOrWhiteSpace(profileError) && state.Errors.Count < MaxFolderUniformityLogs)
+                        {
+                            state.Errors.Add(profileError);
+                        }
+
+                        state.FoldersProcessed = processed;
+                        state.FoldersSkipped = skipped;
+                        state.CompletedSteps++;
+                        state.Phase = $"Processed {processed + skipped}/{enabledFolders.Count} folders";
+                    });
+                    continue;
+                }
+
                 var rootPath = folder.RootPath?.Trim();
                 if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
                 {
@@ -455,10 +486,10 @@ public class AutoTagEnhancementController : ControllerBase
                 try
                 {
                     processed++;
-                    var report = organizerOptions.GenerateReconciliationReport
+                    var report = folderOrganizerOptions.GenerateReconciliationReport
                         ? new AutoTagLibraryOrganizer.AutoTagOrganizerReport()
                         : null;
-                    await _libraryOrganizer.OrganizePathAsync(rootPath, organizerOptions, report, message =>
+                    await _libraryOrganizer.OrganizePathAsync(rootPath, folderOrganizerOptions, report, message =>
                     {
                         var line = $"[{folderLabel}] {message}";
                         if (logs.Count < MaxFolderUniformityLogs)
@@ -668,6 +699,119 @@ public class AutoTagEnhancementController : ControllerBase
 
             _folderUniformityRun.PercentComplete = 100;
         }
+    }
+
+    private static bool IsMusicFolder(FolderDto folder)
+    {
+        var mode = folder.DesiredQuality?.Trim().ToLowerInvariant();
+        return mode is not "video" and not "podcast";
+    }
+
+    private static bool TryBuildFolderOrganizerOptions(
+        AutoTagOrganizerOptions baseOptions,
+        AutoTagProfileResolutionService.ResolvedState profileState,
+        FolderDto folder,
+        out AutoTagOrganizerOptions folderOptions,
+        out string? error)
+    {
+        folderOptions = CloneOrganizerOptions(baseOptions);
+        error = null;
+
+        var profile = AutoTagProfileResolutionService.ResolveFolderProfile(
+            profileState,
+            folder.Id,
+            folder.AutoTagProfileId);
+        if (profile == null)
+        {
+            error = "destination music folder requires a valid AutoTag profile.";
+            return false;
+        }
+
+        ApplyProfileTechnicalOverrides(folderOptions, profile.Technical);
+        ApplyProfileFolderStructureOverrides(folderOptions, profile.FolderStructure);
+        return true;
+    }
+
+    private static AutoTagOrganizerOptions CloneOrganizerOptions(AutoTagOrganizerOptions source)
+    {
+        return new AutoTagOrganizerOptions
+        {
+            OnlyMoveWhenTagged = source.OnlyMoveWhenTagged,
+            MoveTaggedPath = source.MoveTaggedPath,
+            MoveUntaggedPath = source.MoveUntaggedPath,
+            DryRun = source.DryRun,
+            IncludeSubfolders = source.IncludeSubfolders,
+            MoveMisplacedFiles = source.MoveMisplacedFiles,
+            RenameFilesToTemplate = source.RenameFilesToTemplate,
+            RemoveEmptyFolders = source.RemoveEmptyFolders,
+            MergeIntoExistingDestinationFolders = source.MergeIntoExistingDestinationFolders,
+            ResolveSameTrackQualityConflicts = source.ResolveSameTrackQualityConflicts,
+            KeepBothOnUnresolvedConflicts = source.KeepBothOnUnresolvedConflicts,
+            OnlyReorganizeAlbumsWithFullTrackSets = source.OnlyReorganizeAlbumsWithFullTrackSets,
+            SkipCompilationFolders = source.SkipCompilationFolders,
+            SkipVariousArtistsFolders = source.SkipVariousArtistsFolders,
+            GenerateReconciliationReport = source.GenerateReconciliationReport,
+            UseShazamForUntaggedFiles = source.UseShazamForUntaggedFiles,
+            DuplicateConflictPolicy = source.DuplicateConflictPolicy,
+            DuplicatesFolderName = source.DuplicatesFolderName,
+            ArtworkPolicy = source.ArtworkPolicy,
+            LyricsPolicy = source.LyricsPolicy,
+            PreferredExtensions = source.PreferredExtensions.ToList(),
+            UsePrimaryArtistFoldersOverride = source.UsePrimaryArtistFoldersOverride,
+            MultiArtistSeparatorOverride = source.MultiArtistSeparatorOverride,
+            CreateArtistFolderOverride = source.CreateArtistFolderOverride,
+            ArtistNameTemplateOverride = source.ArtistNameTemplateOverride,
+            CreateAlbumFolderOverride = source.CreateAlbumFolderOverride,
+            AlbumNameTemplateOverride = source.AlbumNameTemplateOverride,
+            CreateCDFolderOverride = source.CreateCDFolderOverride,
+            CreateStructurePlaylistOverride = source.CreateStructurePlaylistOverride,
+            CreateSingleFolderOverride = source.CreateSingleFolderOverride,
+            CreatePlaylistFolderOverride = source.CreatePlaylistFolderOverride,
+            PlaylistNameTemplateOverride = source.PlaylistNameTemplateOverride,
+            IllegalCharacterReplacerOverride = source.IllegalCharacterReplacerOverride,
+            TechnicalSettingsOverride = source.TechnicalSettingsOverride
+        };
+    }
+
+    private static void ApplyProfileTechnicalOverrides(AutoTagOrganizerOptions options, TechnicalTagSettings? technical)
+    {
+        if (technical == null)
+        {
+            return;
+        }
+
+        options.TechnicalSettingsOverride = technical;
+        options.UsePrimaryArtistFoldersOverride = technical.SingleAlbumArtist;
+        options.MultiArtistSeparatorOverride = string.IsNullOrWhiteSpace(technical.MultiArtistSeparator)
+            ? "default"
+            : technical.MultiArtistSeparator.Trim();
+    }
+
+    private static void ApplyProfileFolderStructureOverrides(AutoTagOrganizerOptions options, FolderStructureSettings? folderStructure)
+    {
+        if (folderStructure == null)
+        {
+            return;
+        }
+
+        options.CreateArtistFolderOverride = folderStructure.CreateArtistFolder;
+        options.ArtistNameTemplateOverride = string.IsNullOrWhiteSpace(folderStructure.ArtistNameTemplate)
+            ? "%artist%"
+            : folderStructure.ArtistNameTemplate.Trim();
+        options.CreateAlbumFolderOverride = folderStructure.CreateAlbumFolder;
+        options.AlbumNameTemplateOverride = string.IsNullOrWhiteSpace(folderStructure.AlbumNameTemplate)
+            ? "%album%"
+            : folderStructure.AlbumNameTemplate.Trim();
+        options.CreateCDFolderOverride = folderStructure.CreateCDFolder;
+        options.CreateStructurePlaylistOverride = folderStructure.CreateStructurePlaylist;
+        options.CreateSingleFolderOverride = folderStructure.CreateSingleFolder;
+        options.CreatePlaylistFolderOverride = folderStructure.CreatePlaylistFolder;
+        options.PlaylistNameTemplateOverride = string.IsNullOrWhiteSpace(folderStructure.PlaylistNameTemplate)
+            ? "%playlist%"
+            : folderStructure.PlaylistNameTemplate.Trim();
+        options.IllegalCharacterReplacerOverride = string.IsNullOrWhiteSpace(folderStructure.IllegalCharacterReplacer)
+            ? "_"
+            : folderStructure.IllegalCharacterReplacer.Trim();
     }
 
     [HttpPost("enhancement/quality-checks")]
