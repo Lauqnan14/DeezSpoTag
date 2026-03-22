@@ -2225,6 +2225,10 @@ function applyAppleMusicWrapperAvailability(available) {
 }
 
 async function startAppleMusicLogin() {
+    if (appleMusicLoginRequestPending || appleMusicLoginInProgress || appleMusic2faSubmitting) {
+        return;
+    }
+
     if (!appleMusicWrapperAvailable && !appleMusicExternalMode) {
         showToast('Wrapper is not ready. Start the Apple Music wrapper and try again.', 'warning');
         return;
@@ -2233,7 +2237,7 @@ async function startAppleMusicLogin() {
         showToast('Wrapper is not ready yet. Start apple-wrapper and then retry login.', 'info');
     }
     const email = document.getElementById('appleMusicEmail').value.trim();
-    const password = document.getElementById('appleMusicPassword').value.trim();
+    const password = document.getElementById('appleMusicPassword').value;
     if (!email || !password) {
         showToast('Email and password are required', 'warning');
         return;

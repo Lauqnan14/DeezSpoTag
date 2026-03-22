@@ -212,6 +212,11 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
         if (IsExternalModeEnabled())
         {
+            if (TryGetInFlightLoginStatus(out var inFlightStatus))
+            {
+                return inFlightStatus;
+            }
+
             StopProcess("external_login_restart");
             await ResetExternalWrapperSessionAsync(cancellationToken);
             InitializeExternalLoginState(email);
@@ -233,6 +238,42 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             email,
             false,
             false);
+    }
+
+    private bool TryGetInFlightLoginStatus(out AppleMusicWrapperStatusSnapshot status)
+    {
+        lock (_sync)
+        {
+            if (_awaitingTwoFactor)
+            {
+                status = new AppleMusicWrapperStatusSnapshot(
+                    StatusWaiting,
+                    "Login already in progress. Submit the verification code to continue.",
+                    _email,
+                    true,
+                    false);
+                return true;
+            }
+
+            var loginStartedRecently =
+                _loginInProgress &&
+                _startedAt.HasValue &&
+                DateTimeOffset.UtcNow - _startedAt.Value < TimeSpan.FromMinutes(2);
+
+            if (loginStartedRecently)
+            {
+                status = new AppleMusicWrapperStatusSnapshot(
+                    StatusStarting,
+                    "Login already in progress. Please wait for wrapper response.",
+                    _email,
+                    false,
+                    false);
+                return true;
+            }
+        }
+
+        status = AppleMusicWrapperStatusSnapshot.Missing;
+        return false;
     }
 
     private async Task<AppleMusicWrapperStatusSnapshot> WaitForWrapperStatusAsync(TimeSpan timeout, CancellationToken cancellationToken)
@@ -861,6 +902,26 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             {
                 return (false, sharedError);
             }
+
+            var sharedLoginPath = ResolveExternalWrapperSharedLoginFilePath();
+            long sharedLoginFileBytes = -1;
+            try
+            {
+                if (File.Exists(sharedLoginPath))
+                {
+                    sharedLoginFileBytes = new FileInfo(sharedLoginPath).Length;
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Unable to inspect queued Apple wrapper login file size.");
+            }
+
+            _logger.LogInformation(
+                "Queued Apple wrapper login payload to {LoginFilePath}. Exists={Exists} SizeBytes={SizeBytes}",
+                sharedLoginPath,
+                File.Exists(sharedLoginPath),
+                sharedLoginFileBytes);
 
             return (true, null);
         }
