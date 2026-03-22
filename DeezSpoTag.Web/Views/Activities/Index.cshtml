@@ -1670,9 +1670,14 @@
 }
 
 .media-operations-tab .toggle-switch input {
+    position: absolute;
+    inset: 0;
     opacity: 0;
-    width: 0;
-    height: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    cursor: pointer;
+    z-index: 2;
 }
 
 .media-operations-tab .toggle-slider {
@@ -1682,6 +1687,7 @@
     border: 1px solid color-mix(in srgb, var(--primary-color) 30%, var(--border-secondary));
     border-radius: 999px;
     transition: background 0.2s ease, border-color 0.2s ease;
+    pointer-events: none;
 }
 
 .media-operations-tab .toggle-slider::after {
