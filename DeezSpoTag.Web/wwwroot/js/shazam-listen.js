@@ -28,8 +28,14 @@
     let sampleRate = 44100;
     let buffers = [];
     let autoStopTimer = null;
+    let quickProbeTimer = null;
+    let quickProbeInFlight = false;
     let overlay = null;
     let fallbackInput = null;
+
+    const QUICK_PROBE_FIRST_DELAY_MS = 3500;
+    const QUICK_PROBE_INTERVAL_MS = 1500;
+    const QUICK_PROBE_MIN_SECONDS = 3;
 
     logo.setAttribute('role', 'button');
     logo.setAttribute('tabindex', '0');
@@ -524,6 +530,11 @@
             globalThis.clearTimeout(autoStopTimer);
             autoStopTimer = null;
         }
+        if (quickProbeTimer) {
+            globalThis.clearTimeout(quickProbeTimer);
+            quickProbeTimer = null;
+        }
+        quickProbeInFlight = false;
 
         if (processor) {
             try {
@@ -556,18 +567,56 @@
         }
     };
 
-    const encodeWavBlob = (floatChunks, sr) => {
+    const flattenFloatChunks = (floatChunks) => {
         const totalSamples = floatChunks.reduce((sum, chunk) => sum + chunk.length, 0);
-        const pcm = new Int16Array(totalSamples);
-
+        const merged = new Float32Array(totalSamples);
         let offset = 0;
         for (const chunk of floatChunks) {
-            for (const sample of chunk) {
-                const clamped = Math.max(-1, Math.min(1, sample));
-                pcm[offset] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
-                offset += 1;
-            }
+            merged.set(chunk, offset);
+            offset += chunk.length;
         }
+        return merged;
+    };
+
+    const resampleMono = (samples, sourceRate, targetRate) => {
+        const from = Number(sourceRate) || 44100;
+        const to = Number(targetRate) || 16000;
+        if (!samples || samples.length === 0) {
+            return new Float32Array(0);
+        }
+
+        if (from === to) {
+            return samples;
+        }
+
+        const ratio = from / to;
+        const targetLength = Math.max(1, Math.floor(samples.length / ratio));
+        const output = new Float32Array(targetLength);
+        for (let i = 0; i < targetLength; i += 1) {
+            const sourceIndex = i * ratio;
+            const left = Math.floor(sourceIndex);
+            const right = Math.min(left + 1, samples.length - 1);
+            const frac = sourceIndex - left;
+            output[i] = (samples[left] * (1 - frac)) + (samples[right] * frac);
+        }
+
+        return output;
+    };
+
+    const floatToPcm16 = (samples) => {
+        const pcm = new Int16Array(samples.length);
+        for (let i = 0; i < samples.length; i += 1) {
+            const clamped = Math.max(-1, Math.min(1, samples[i]));
+            pcm[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+        }
+        return pcm;
+    };
+
+    const encodeWavBlob = (floatChunks, sr, targetRate = 16000) => {
+        const merged = flattenFloatChunks(floatChunks);
+        const resampled = resampleMono(merged, sr, targetRate);
+        const pcm = floatToPcm16(resampled);
+        const wavRate = Math.max(8000, Math.min(48000, Number(targetRate) || 16000));
 
         const buffer = new ArrayBuffer(44 + pcm.length * 2);
         const view = new DataView(buffer);
@@ -585,8 +634,8 @@
         view.setUint32(16, 16, true);
         view.setUint16(20, 1, true);
         view.setUint16(22, 1, true);
-        view.setUint32(24, sr, true);
-        view.setUint32(28, sr * 2, true);
+        view.setUint32(24, wavRate, true);
+        view.setUint32(28, wavRate * 2, true);
         view.setUint16(32, 2, true);
         view.setUint16(34, 16, true);
         writeText(36, 'data');
@@ -664,24 +713,35 @@
         return null;
     };
 
+    const performRecognitionRequest = async (audioBlob, filename) => {
+        const resolvedName = filename || 'capture.wav';
+        const form = new FormData();
+        form.append('audio', audioBlob, resolvedName);
+        console.info('Shazam mic upload', {
+            filename: resolvedName,
+            bytes: Number(audioBlob?.size || 0),
+            type: String(audioBlob?.type || '')
+        });
+
+        const response = await fetch('/api/shazam/recognize-mic', {
+            method: 'POST',
+            body: form
+        });
+
+        let payload = null;
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+            payload = await response.json();
+        }
+
+        return { response, payload };
+    };
+
     const runRecognitionFromBlob = async (audioBlob, filename) => {
         setState('searching');
 
         try {
-            const form = new FormData();
-            form.append('audio', audioBlob, filename || 'capture.wav');
-
-            const response = await fetch('/api/shazam/recognize-mic', {
-                method: 'POST',
-                body: form
-            });
-
-            let payload = null;
-            const contentType = response.headers.get('content-type') || '';
-            if (contentType.includes('application/json')) {
-                payload = await response.json();
-            }
-
+            const { response, payload } = await performRecognitionRequest(audioBlob, filename);
             if (!response.ok) {
                 const reason = payload?.reason;
                 const detail = extractShazamApiError(payload);
@@ -720,6 +780,61 @@
             setState('error');
             notify('Shazam lookup failed. Please try again.', 'error');
             globalThis.setTimeout(() => setState('idle'), 1500);
+        }
+    };
+
+    const scheduleQuickProbe = (delayMs = QUICK_PROBE_INTERVAL_MS) => {
+        if (quickProbeTimer || state !== 'listening') {
+            return;
+        }
+
+        quickProbeTimer = globalThis.setTimeout(() => {
+            quickProbeTimer = null;
+            void runQuickProbe();
+        }, Math.max(400, Number(delayMs) || QUICK_PROBE_INTERVAL_MS));
+    };
+
+    const runQuickProbe = async () => {
+        if (state !== 'listening' || quickProbeInFlight) {
+            return;
+        }
+
+        const capturedSamples = buffers.reduce((sum, chunk) => sum + chunk.length, 0);
+        const capturedSeconds = sampleRate > 0 ? (capturedSamples / sampleRate) : 0;
+        if (capturedSeconds < QUICK_PROBE_MIN_SECONDS) {
+            scheduleQuickProbe(QUICK_PROBE_INTERVAL_MS);
+            return;
+        }
+
+        quickProbeInFlight = true;
+        try {
+            const probeChunks = buffers.slice();
+            if (probeChunks.length === 0) {
+                scheduleQuickProbe(QUICK_PROBE_INTERVAL_MS);
+                return;
+            }
+
+            const wav = encodeWavBlob(probeChunks, sampleRate, 16000);
+            const { response, payload } = await performRecognitionRequest(wav, 'capture.wav');
+            if (state !== 'listening') {
+                return;
+            }
+
+            if (response.ok && payload?.matched) {
+                setState('searching');
+                await releaseAudio();
+                persistPayloadForResults(payload);
+                navigateToResults(payload);
+                return;
+            }
+        } catch (error) {
+            console.debug('Shazam quick probe failed; continuing capture.', error);
+        } finally {
+            quickProbeInFlight = false;
+        }
+
+        if (state === 'listening') {
+            scheduleQuickProbe(QUICK_PROBE_INTERVAL_MS);
         }
     };
 
@@ -815,6 +930,7 @@
             }
 
             setState('listening');
+            scheduleQuickProbe(QUICK_PROBE_FIRST_DELAY_MS);
 
             autoStopTimer = globalThis.setTimeout(() => {
                 void stopAndSearch();
@@ -855,7 +971,7 @@
             return;
         }
 
-        const wav = encodeWavBlob(capturedChunks, capturedRate);
+        const wav = encodeWavBlob(capturedChunks, capturedRate, 16000);
         await runRecognitionFromBlob(wav, 'capture.wav');
     };
 

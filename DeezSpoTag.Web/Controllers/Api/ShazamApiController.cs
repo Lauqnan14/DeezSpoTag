@@ -48,6 +48,12 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             return validationError;
         }
 
+        _logger.LogInformation(
+            "Shazam mic request accepted: bytes={Bytes}, contentType={ContentType}, fileName={FileName}.",
+            audio!.Length,
+            string.IsNullOrWhiteSpace(audio.ContentType) ? "unknown" : audio.ContentType,
+            string.IsNullOrWhiteSpace(audio.FileName) ? "unknown" : audio.FileName);
+
         var extension = ResolveAudioExtension(audio!.FileName);
         var tempPath = Path.Combine(Path.GetTempPath(), $"deezspotag-shazam-{Guid.NewGuid():N}{extension}");
 
@@ -56,15 +62,30 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             await CopyUploadedAudioAsync(audio, tempPath, cancellationToken);
 
             var captureDurationSeconds = ResolveCaptureDurationSeconds();
+            var signatureWindowSeconds = ResolveMicSignatureWindowSeconds(captureDurationSeconds);
+            _logger.LogInformation(
+                "Shazam mic recognition windows: captureDurationSeconds={CaptureDurationSeconds}, signatureWindowSeconds={SignatureWindowSeconds}.",
+                captureDurationSeconds,
+                signatureWindowSeconds);
             var attempt = _recognitionService.RecognizeWithDetails(
                 tempPath,
-                captureDurationSeconds,
+                signatureWindowSeconds,
                 ShazamRecognitionService.RecognitionMode.AudioOnly,
                 cancellationToken);
             if (!attempt.Matched)
             {
+                _logger.LogInformation(
+                    "Shazam mic match failed: outcome={Outcome}, error={Error}.",
+                    attempt.Outcome,
+                    string.IsNullOrWhiteSpace(attempt.Error) ? "none" : attempt.Error);
                 return BuildNoMatchResponse(attempt);
             }
+
+            _logger.LogInformation(
+                "Shazam mic matched: title={Title}, artist={Artist}, trackId={TrackId}.",
+                attempt.Recognition?.Title,
+                attempt.Recognition?.Artist,
+                attempt.Recognition?.TrackId);
 
             try
             {
@@ -110,6 +131,12 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             _logger.LogWarning(ex, "Failed to resolve Shazam capture duration from settings. Falling back to default.");
             return 11;
         }
+    }
+
+    private static int ResolveMicSignatureWindowSeconds(int captureDurationSeconds)
+    {
+        // Match the reference Shazam usage where recognize() commonly runs with a 5s search segment.
+        return Math.Clamp(Math.Min(captureDurationSeconds, 5), 3, 5);
     }
 
     private IActionResult? ValidateRecognizeMicRequest(IFormFile? audio)
