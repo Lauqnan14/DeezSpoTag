@@ -40,7 +40,7 @@ public sealed class TaggingProfilesApiController : ControllerBase
         string? Id,
         string Name,
         bool? IsDefault,
-        Dictionary<string, string>? TagConfig,
+        JsonElement? TagConfig,
         AutoTagSettings? AutoTag,
         TechnicalTagSettings? Technical,
         FolderStructureSettings? FolderStructure,
@@ -59,7 +59,7 @@ public sealed class TaggingProfilesApiController : ControllerBase
             ?? ConvertTagConfig(request.TagConfig);
 
         // Preserve existing tag config if the caller did not send tag sources.
-        if (request.TagConfig is null && request.AutoTag is null && existing is not null)
+        if (!HasTagConfigPayload(request.TagConfig) && request.AutoTag is null && existing is not null)
         {
             tagConfig = existing.TagConfig;
         }
@@ -308,26 +308,55 @@ public sealed class TaggingProfilesApiController : ControllerBase
         => JsonSerializer.Deserialize<TaggingProfile>(JsonSerializer.Serialize(profile))
             ?? new TaggingProfile();
 
-    private static UnifiedTagConfig ConvertTagConfig(Dictionary<string, string>? input)
+    private static UnifiedTagConfig ConvertTagConfig(JsonElement? input)
     {
-        if (input is null || input.Count == 0)
+        if (!HasTagConfigPayload(input))
+        {
+            return new UnifiedTagConfig();
+        }
+
+        var tagConfigObject = input!.Value;
+        if (tagConfigObject.ValueKind != JsonValueKind.Object)
         {
             return new UnifiedTagConfig();
         }
 
         TagSource Parse(string key)
         {
-            if (!input.TryGetValue(key, out var value))
+            if (!TryGetPropertyCaseInsensitive(tagConfigObject, key, out var value))
             {
                 return TagSource.DownloadSource;
             }
 
-            return value.ToLowerInvariant() switch
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var numericValue))
+            {
+                if (Enum.IsDefined(typeof(TagSource), numericValue))
+                {
+                    return (TagSource)numericValue;
+                }
+
+                return TagSource.DownloadSource;
+            }
+
+            if (value.ValueKind != JsonValueKind.String)
+            {
+                return TagSource.DownloadSource;
+            }
+
+            var normalized = value.GetString()?.Trim();
+            if (int.TryParse(normalized, out var enumValue) && Enum.IsDefined(typeof(TagSource), enumValue))
+            {
+                return (TagSource)enumValue;
+            }
+
+            return normalized?.ToLowerInvariant() switch
             {
                 "download" => TagSource.DownloadSource,
                 "autotag" => TagSource.AutoTagPlatform,
                 "both" => TagSource.Both,
                 "none" => TagSource.None,
+                "downloadsource" => TagSource.DownloadSource,
+                "autotagplatform" => TagSource.AutoTagPlatform,
                 _ => TagSource.DownloadSource
             };
         }
@@ -394,7 +423,7 @@ public sealed class TaggingProfilesApiController : ControllerBase
     {
         derived = false;
         hasDownloadTags = false;
-        if (request.TagConfig is { Count: > 0 })
+        if (HasTagConfigPayload(request.TagConfig))
         {
             return null;
         }
@@ -690,5 +719,36 @@ public sealed class TaggingProfilesApiController : ControllerBase
                 config.MetaTags = MergeTagSource(config.MetaTags, source);
                 break;
         }
+    }
+
+    private static bool HasTagConfigPayload(JsonElement? tagConfig)
+    {
+        if (!tagConfig.HasValue)
+        {
+            return false;
+        }
+
+        var value = tagConfig.Value;
+        if (value.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        return value.EnumerateObject().Any();
+    }
+
+    private static bool TryGetPropertyCaseInsensitive(JsonElement element, string key, out JsonElement value)
+    {
+        foreach (var property in element.EnumerateObject())
+        {
+            if (string.Equals(property.Name, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
     }
 }

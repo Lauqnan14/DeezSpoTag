@@ -42,12 +42,12 @@ services:
           create_host_path: true
       # Shared Apple wrapper control paths (no Docker socket dependency).
       - type: bind
-        source: ${APPLE_WRAPPER_DATA_PATH:-./Data/apple-wrapper/data}
+        source: ${APPLE_WRAPPER_DATA_PATH:-./DeezSpoTag.Workers/Data/apple-wrapper/data}
         target: /apple-wrapper/data
         bind:
           create_host_path: true
       - type: bind
-        source: ${APPLE_WRAPPER_SESSION_PATH:-./Data/apple-wrapper/session}
+        source: ${APPLE_WRAPPER_SESSION_PATH:-./DeezSpoTag.Workers/Data/apple-wrapper/session}
         target: /apple-wrapper/session
         bind:
           create_host_path: true
@@ -65,12 +65,12 @@ services:
     volumes:
       # Auto-create wrapper state folders if missing.
       - type: bind
-        source: ${APPLE_WRAPPER_DATA_PATH:-./Data/apple-wrapper/data}
+        source: ${APPLE_WRAPPER_DATA_PATH:-./DeezSpoTag.Workers/Data/apple-wrapper/data}
         target: /opt/apple-wrapper/data
         bind:
           create_host_path: true
       - type: bind
-        source: ${APPLE_WRAPPER_SESSION_PATH:-./Data/apple-wrapper/session}
+        source: ${APPLE_WRAPPER_SESSION_PATH:-./DeezSpoTag.Workers/Data/apple-wrapper/session}
         target: /opt/apple-wrapper/rootfs/data/data/com.apple.android.music
         bind:
           create_host_path: true

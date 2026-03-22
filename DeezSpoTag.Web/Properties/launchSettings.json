@@ -7,8 +7,8 @@
       "applicationUrl": "http://localhost:8668",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
-        "DEEZSPOTAG_DATA_DIR": "../DeezSpoTag.Workers/bin/Debug/net8.0/Data",
-        "DEEZSPOTAG_CONFIG_DIR": "../DeezSpoTag.Workers/bin/Debug/net8.0/Data",
+        "DEEZSPOTAG_DATA_DIR": "../DeezSpoTag.Workers/Data",
+        "DEEZSPOTAG_CONFIG_DIR": "../DeezSpoTag.Workers/Data",
         "DEEZSPOTAG_APPLE_WRAPPER_MODE": "external",
         "SHAZAM_PYTHON": "python3",
         "VIBE_ANALYZER_PATH": "DeezSpoTag.Web/Tools/vibe_analyzer.py",

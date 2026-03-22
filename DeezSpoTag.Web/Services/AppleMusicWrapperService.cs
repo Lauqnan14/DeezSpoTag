@@ -86,8 +86,8 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     private const string AppleMusicWrapperDirectory = "AppleMusicWrapper";
     private const string DefaultSharedDataDir = "/apple-wrapper/data";
     private const string DefaultSharedSessionDir = "/apple-wrapper/session";
-    private const string DefaultHostSharedDataDir = "DeezSpoTag.Workers/bin/Debug/net8.0/Data/apple-wrapper/data";
-    private const string DefaultHostSharedSessionDir = "DeezSpoTag.Workers/bin/Debug/net8.0/Data/apple-wrapper/session";
+    private const string DefaultHostSharedDataDir = "DeezSpoTag.Workers/Data/apple-wrapper/data";
+    private const string DefaultHostSharedSessionDir = "DeezSpoTag.Workers/Data/apple-wrapper/session";
     private const string SharedLoginFileName = "wrapper-login.txt";
     private const string SharedTwoFactorStateFileName = "wrapper-2fa-state.txt";
     private static readonly string[] HelperLogoutArgs = ["logout"];
