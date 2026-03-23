@@ -80,6 +80,7 @@
                 runDedupe: true,
                 useShazamForDedupe: false,
                 duplicatesFolderName: "%duplicates%",
+                includeSubfolders: true,
                 usePrimaryArtistFolders: true,
                 multiArtistSeparator: "default",
                 createArtistFolder: true,
@@ -1675,6 +1676,7 @@
         folderUniformity.lyricsPolicy = String(folderUniformity.lyricsPolicy || "merge").trim().toLowerCase() || "merge";
         folderUniformity.runDedupe = folderUniformity.runDedupe !== false;
         folderUniformity.useShazamForDedupe = folderUniformity.useShazamForDedupe === true;
+        folderUniformity.includeSubfolders = folderUniformity.includeSubfolders !== false;
         folderUniformity.duplicatesFolderName = String(
             folderUniformity.duplicatesFolderName || DEFAULT_CONFIG.enhancement.folderUniformity.duplicatesFolderName
         ).trim() || DEFAULT_CONFIG.enhancement.folderUniformity.duplicatesFolderName;
@@ -3517,11 +3519,20 @@
         const completedSteps = Number(status?.completedSteps ?? 0);
         const totalSteps = Number(status?.totalSteps ?? 0);
         const folderProgress = `${Number(status?.foldersProcessed ?? 0) + Number(status?.foldersSkipped ?? 0)}/${Number(status?.totalFolders ?? 0)}`;
+        const sourceFolderProcessed = Number(status?.artistFoldersProcessed ?? 0);
+        const sourceFolderTotal = Number(status?.artistFoldersTotal ?? 0);
+        const sourceFolder = String(status?.currentArtistFolder || "").trim();
+        const sourceFolderProgress = sourceFolderTotal > 0
+            ? ` - source folders ${sourceFolderProcessed}/${sourceFolderTotal}`
+            : "";
+        const sourceFolderSuffix = sourceFolder.length > 0
+            ? ` - current: ${sourceFolder}`
+            : "";
         if (totalSteps > 0) {
-            return `${phase} (${percent}%) - ${completedSteps}/${totalSteps} steps - ${folderProgress} folders`;
+            return `${phase} (${percent}%) - ${completedSteps}/${totalSteps} steps - ${folderProgress} folders${sourceFolderProgress}${sourceFolderSuffix}`;
         }
 
-        return `${phase} (${percent}%) - ${folderProgress} folders`;
+        return `${phase} (${percent}%) - ${folderProgress} folders${sourceFolderProgress}${sourceFolderSuffix}`;
     }
 
     function renderFolderUniformityLiveLog(status) {
@@ -3742,7 +3753,7 @@
                     createPlaylistFolder: options.createPlaylistFolder,
                     playlistNameTemplate: options.playlistNameTemplate,
                     illegalCharacterReplacer: options.illegalCharacterReplacer,
-                    includeSubfolders: config.includeSubfolders !== false
+                    includeSubfolders: options.includeSubfolders !== false
                 })
             });
             const startPayload = await startResponse.json().catch(() => null);

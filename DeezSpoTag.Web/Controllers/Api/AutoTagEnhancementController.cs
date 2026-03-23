@@ -5,6 +5,7 @@ using DeezSpoTag.Web.Services;
 using DeezSpoTag.Core.Models.Settings;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Text.RegularExpressions;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -17,6 +18,18 @@ public class AutoTagEnhancementController : ControllerBase
     private static FolderUniformityRunState? _folderUniformityRun;
 
     private const int MaxFolderUniformityLogs = 600;
+    private static readonly Regex ScanPreparedRegex = new(
+        @"organizer scan prepared:\s*root=(?<root>.+),\s*includeSubfolders=(?<include>true|false),\s*candidateFiles=(?<count>\d+)$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase,
+        TimeSpan.FromMilliseconds(250));
+    private static readonly Regex PlanPreparedRegex = new(
+        @"organizer plan prepared:\s*(?<count>\d+)\s+move action\(s\)$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(250));
+    private static readonly Regex SourceFolderProgressRegex = new(
+        @"organizer processing source folder \((?<index>\d+)\s*/\s*(?<total>\d+)\):\s*(?<path>.+)$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(250));
 
     private readonly LibraryRepository _libraryRepository;
     private readonly LibraryConfigStore _libraryConfigStore;
@@ -60,6 +73,10 @@ public class AutoTagEnhancementController : ControllerBase
         public int FoldersProcessed { get; set; }
         public int FoldersSkipped { get; set; }
         public int PercentComplete { get; set; }
+        public string? CurrentLibraryFolder { get; set; }
+        public string? CurrentArtistFolder { get; set; }
+        public int ArtistFoldersProcessed { get; set; }
+        public int ArtistFoldersTotal { get; set; }
         public bool? Success { get; set; }
         public string? Message { get; set; }
         public object? Options { get; set; }
@@ -99,6 +116,10 @@ public class AutoTagEnhancementController : ControllerBase
             foldersProcessed = state.FoldersProcessed,
             foldersSkipped = state.FoldersSkipped,
             percentComplete = state.PercentComplete,
+            currentLibraryFolder = state.CurrentLibraryFolder,
+            currentArtistFolder = state.CurrentArtistFolder,
+            artistFoldersProcessed = state.ArtistFoldersProcessed,
+            artistFoldersTotal = state.ArtistFoldersTotal,
             success = state.Success,
             message = state.Message,
             dedupe = state.Dedupe,
@@ -222,6 +243,10 @@ public class AutoTagEnhancementController : ControllerBase
                 state.Dedupe = payload.Dedupe;
                 state.FoldersProcessed = payload.FoldersProcessed;
                 state.FoldersSkipped = payload.FoldersSkipped;
+                state.CurrentLibraryFolder = null;
+                state.CurrentArtistFolder = null;
+                state.ArtistFoldersProcessed = 0;
+                state.ArtistFoldersTotal = 0;
                 state.ReconciliationReports.Clear();
                 state.ReconciliationReports.AddRange(payload.ReconciliationReports);
                 state.Logs.Clear();
@@ -297,6 +322,7 @@ public class AutoTagEnhancementController : ControllerBase
         {
             RunOrganizer = runOrganizer,
             OrganizerRunsBeforeDedupe = runOrganizer && runDedupe,
+            IncludeSubfolders = organizerOptions.IncludeSubfolders,
             MoveMisplacedFiles = request.MoveMisplacedFiles ?? true,
             MergeIntoExistingDestinationFolders = request.MergeIntoExistingDestinationFolders != false,
             RenameFilesToTemplate = request.RenameFilesToTemplate != false,
@@ -435,6 +461,10 @@ public class AutoTagEnhancementController : ControllerBase
             state.CompletedSteps = 0;
             state.FoldersProcessed = 0;
             state.FoldersSkipped = 0;
+            state.CurrentLibraryFolder = null;
+            state.CurrentArtistFolder = null;
+            state.ArtistFoldersProcessed = 0;
+            state.ArtistFoldersTotal = 0;
             state.Phase = runOrganizer
                 ? $"Running folder uniformity (0/{enabledFolders.Count})"
                 : "Running dedupe";
@@ -453,6 +483,10 @@ public class AutoTagEnhancementController : ControllerBase
                 var folderLabel = string.IsNullOrWhiteSpace(folder.DisplayName) ? $"Folder {folder.Id}" : folder.DisplayName!;
                 UpdateFolderUniformityState(runState?.JobId, state =>
                 {
+                    state.CurrentLibraryFolder = folderLabel;
+                    state.CurrentArtistFolder = null;
+                    state.ArtistFoldersProcessed = 0;
+                    state.ArtistFoldersTotal = 0;
                     state.Phase = $"Processing {folderLabel} ({folderIndex}/{enabledFolders.Count})";
                 });
 
@@ -522,6 +556,56 @@ public class AutoTagEnhancementController : ControllerBase
                         }
 
                         AppendFolderUniformityLog(runState?.JobId, line);
+                        if (TryParseSourceFolderProgress(message, out var sourceFolderIndex, out var sourceFolderTotal, out var sourceFolderPath))
+                        {
+                            UpdateFolderUniformityState(runState?.JobId, state =>
+                            {
+                                state.CurrentLibraryFolder = folderLabel;
+                                state.CurrentArtistFolder = sourceFolderPath;
+                                state.ArtistFoldersProcessed = sourceFolderIndex;
+                                state.ArtistFoldersTotal = sourceFolderTotal;
+                                state.Phase = $"Processing {folderLabel} ({folderIndex}/{enabledFolders.Count}) • {sourceFolderIndex}/{sourceFolderTotal} source folders";
+                            });
+                            return;
+                        }
+
+                        if (TryParseOrganizerScanPrepared(message, out var candidateFiles, out var includeSubfolders))
+                        {
+                            UpdateFolderUniformityState(runState?.JobId, state =>
+                            {
+                                state.CurrentLibraryFolder = folderLabel;
+                                state.CurrentArtistFolder = null;
+                                state.ArtistFoldersProcessed = 0;
+                                state.ArtistFoldersTotal = 0;
+                                state.Phase = $"Scanning {folderLabel} ({folderIndex}/{enabledFolders.Count}) • {candidateFiles} candidate files • includeSubfolders={includeSubfolders.ToString().ToLowerInvariant()}";
+                            });
+                            return;
+                        }
+
+                        if (TryParseOrganizerPlanPrepared(message, out var plannedMoveActions))
+                        {
+                            UpdateFolderUniformityState(runState?.JobId, state =>
+                            {
+                                state.CurrentLibraryFolder = folderLabel;
+                                state.CurrentArtistFolder = null;
+                                state.ArtistFoldersProcessed = 0;
+                                state.ArtistFoldersTotal = 0;
+                                state.Phase = $"Planning {folderLabel} ({folderIndex}/{enabledFolders.Count}) • {plannedMoveActions} move actions";
+                            });
+                            return;
+                        }
+
+                        if (IsOrganizerNoMoveActionsMessage(message))
+                        {
+                            UpdateFolderUniformityState(runState?.JobId, state =>
+                            {
+                                state.CurrentLibraryFolder = folderLabel;
+                                state.CurrentArtistFolder = null;
+                                state.ArtistFoldersProcessed = 0;
+                                state.ArtistFoldersTotal = 0;
+                                state.Phase = $"No folder changes needed for {folderLabel} ({folderIndex}/{enabledFolders.Count})";
+                            });
+                        }
                     });
 
                     if (report != null)
@@ -584,6 +668,10 @@ public class AutoTagEnhancementController : ControllerBase
                 {
                     UpdateFolderUniformityState(runState?.JobId, state =>
                     {
+                        state.CurrentLibraryFolder = folderLabel;
+                        state.CurrentArtistFolder = null;
+                        state.ArtistFoldersProcessed = 0;
+                        state.ArtistFoldersTotal = 0;
                         state.FoldersProcessed = processed;
                         state.FoldersSkipped = skipped;
                         state.CompletedSteps++;
@@ -597,6 +685,9 @@ public class AutoTagEnhancementController : ControllerBase
         {
             UpdateFolderUniformityState(runState?.JobId, state =>
             {
+                state.CurrentArtistFolder = null;
+                state.ArtistFoldersProcessed = 0;
+                state.ArtistFoldersTotal = 0;
                 state.Phase = runOrganizer ? "Running dedupe after organizer" : "Running dedupe";
             });
 
@@ -658,6 +749,9 @@ public class AutoTagEnhancementController : ControllerBase
                 UpdateFolderUniformityState(runState?.JobId, state =>
                 {
                     state.CompletedSteps++;
+                    state.CurrentArtistFolder = null;
+                    state.ArtistFoldersProcessed = 0;
+                    state.ArtistFoldersTotal = 0;
                     state.Phase = "Dedupe stage completed";
                 });
             }
@@ -720,7 +814,19 @@ public class AutoTagEnhancementController : ControllerBase
             {
                 var totalSteps = Math.Max(1, _folderUniformityRun.TotalSteps);
                 var completed = Math.Clamp(_folderUniformityRun.CompletedSteps, 0, totalSteps);
-                _folderUniformityRun.PercentComplete = (int)Math.Round((double)completed * 100d / totalSteps);
+                var progressSteps = (double)completed;
+                if (_folderUniformityRun.RunOrganizer
+                    && _folderUniformityRun.ArtistFoldersTotal > 0
+                    && _folderUniformityRun.ArtistFoldersProcessed > 0)
+                {
+                    var sourceFolderFraction = Math.Clamp(
+                        (double)_folderUniformityRun.ArtistFoldersProcessed / _folderUniformityRun.ArtistFoldersTotal,
+                        0d,
+                        0.999d);
+                    progressSteps = Math.Min(totalSteps, progressSteps + sourceFolderFraction);
+                }
+
+                _folderUniformityRun.PercentComplete = (int)Math.Round(progressSteps * 100d / totalSteps);
                 return;
             }
 
@@ -732,6 +838,84 @@ public class AutoTagEnhancementController : ControllerBase
     {
         var mode = folder.DesiredQuality?.Trim().ToLowerInvariant();
         return mode is not "video" and not "podcast";
+    }
+
+    private static bool TryParseSourceFolderProgress(
+        string? message,
+        out int sourceFolderIndex,
+        out int sourceFolderTotal,
+        out string sourceFolderPath)
+    {
+        sourceFolderIndex = 0;
+        sourceFolderTotal = 0;
+        sourceFolderPath = string.Empty;
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        var match = SourceFolderProgressRegex.Match(message.Trim());
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        if (!int.TryParse(match.Groups["index"].Value, out sourceFolderIndex)
+            || !int.TryParse(match.Groups["total"].Value, out sourceFolderTotal))
+        {
+            return false;
+        }
+
+        sourceFolderPath = match.Groups["path"].Value.Trim();
+        return sourceFolderIndex > 0
+            && sourceFolderTotal > 0
+            && sourceFolderIndex <= sourceFolderTotal
+            && !string.IsNullOrWhiteSpace(sourceFolderPath);
+    }
+
+    private static bool TryParseOrganizerScanPrepared(
+        string? message,
+        out int candidateFiles,
+        out bool includeSubfolders)
+    {
+        candidateFiles = 0;
+        includeSubfolders = false;
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        var match = ScanPreparedRegex.Match(message.Trim());
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        return int.TryParse(match.Groups["count"].Value, out candidateFiles)
+            && bool.TryParse(match.Groups["include"].Value, out includeSubfolders)
+            && candidateFiles >= 0;
+    }
+
+    private static bool TryParseOrganizerPlanPrepared(string? message, out int plannedMoveActions)
+    {
+        plannedMoveActions = 0;
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        var match = PlanPreparedRegex.Match(message.Trim());
+        return match.Success
+            && int.TryParse(match.Groups["count"].Value, out plannedMoveActions)
+            && plannedMoveActions >= 0;
+    }
+
+    private static bool IsOrganizerNoMoveActionsMessage(string? message)
+    {
+        return string.Equals(
+            message?.Trim(),
+            "organizer no move actions generated",
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryBuildFolderOrganizerOptions(

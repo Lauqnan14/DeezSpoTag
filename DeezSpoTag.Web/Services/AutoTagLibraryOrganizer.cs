@@ -87,6 +87,7 @@ public class AutoTagLibraryOrganizer
 
         var normalizedRoot = Path.GetFullPath(rootPath);
         var files = EnumerateAudioFiles(normalizedRoot, options.IncludeSubfolders).ToList();
+        log?.Invoke($"organizer scan prepared: root={normalizedRoot}, includeSubfolders={options.IncludeSubfolders}, candidateFiles={files.Count}");
         report?.Entries.Clear();
         report ??= options.GenerateReconciliationReport ? new AutoTagOrganizerReport() : null;
         if (report != null)
@@ -122,6 +123,7 @@ public class AutoTagLibraryOrganizer
         var usePrimaryArtistFolders = options.UsePrimaryArtistFoldersOverride
             ?? settings.Tags.SingleAlbumArtist;
         var plan = BuildMovePlan(normalizedRoot, filePaths, options, settings, usePrimaryArtistFolders, report, log);
+        log?.Invoke($"organizer plan prepared: {plan.Count} move action(s)");
         if (report != null)
         {
             report.PlannedMoves += plan.Count;
@@ -714,6 +716,8 @@ public class AutoTagLibraryOrganizer
     {
         if (plan.Count == 0)
         {
+            log?.Invoke("organizer no move actions generated");
+            report?.Entries.Add("noop: no move actions generated");
             return;
         }
 
@@ -721,14 +725,17 @@ public class AutoTagLibraryOrganizer
             .GroupBy(item => item.SourceDir, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        var sourceFolderIndex = 0;
         foreach (var group in actionsBySourceDir)
         {
+            sourceFolderIndex++;
             var sourceDir = group.Key;
             var actions = group.ToList();
             var destinationDirs = actions
                 .Select(item => item.DestinationDir)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
+            log?.Invoke($"organizer processing source folder ({sourceFolderIndex}/{actionsBySourceDir.Count}): {sourceDir}");
 
             if (options.MoveMisplacedFiles
                 && destinationDirs.Count == 1
