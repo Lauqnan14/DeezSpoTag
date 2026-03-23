@@ -36,10 +36,13 @@ ARG ESSENTIA_TF_PACKAGE=essentia-tensorflow==2.1b6.dev1389
 LABEL org.opencontainers.image.source="https://github.com/Lauqnan14/DeezSpoTag" \
       org.opencontainers.image.title="deezspotag"
 
-RUN apt-get update \
+RUN apt-get update -o Acquire::Retries=5 \
     && apt-get install -y --no-install-recommends openssl ca-certificates python3 python3-venv python3-pip curl aria2 ffmpeg unzip \
     && install -m 0755 -d /etc/apt/keyrings \
-    && curl -fsSL https://dist.gpac.io/gpac/linux/gpg.asc -o /etc/apt/keyrings/gpac.asc \
+    && curl --fail --show-error --silent --location \
+       --retry 8 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 120 \
+       https://dist.gpac.io/gpac/linux/gpg.asc \
+       -o /etc/apt/keyrings/gpac.asc \
     && chmod a+r /etc/apt/keyrings/gpac.asc \
     && codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")" \
     && printf '%s\n' \
@@ -49,14 +52,16 @@ RUN apt-get update \
       "Components: main" \
       "Signed-By: /etc/apt/keyrings/gpac.asc" \
       > /etc/apt/sources.list.d/gpac.sources \
-    && apt-get update \
+    && apt-get update -o Acquire::Retries=5 \
     && apt-get install -y --no-install-recommends gpac \
     && mp4box_path="$(command -v MP4Box || true)" \
     && if [ -z "$mp4box_path" ]; then mp4box_path="$(command -v mp4box || true)"; fi \
     && if [ -z "$mp4box_path" ]; then echo "MP4Box not found after GPAC install." >&2; exit 1; fi \
     && install -m 0755 "$mp4box_path" /usr/local/bin/mp4box \
     && if [ "${TARGETARCH:-amd64}" = "amd64" ]; then \
-         curl -fL -sS -o /tmp/bento4.zip "$BENTO4_URL_X86_64"; \
+         curl --fail --show-error --silent --location \
+           --retry 6 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 180 \
+           -o /tmp/bento4.zip "$BENTO4_URL_X86_64"; \
          if [ -n "$BENTO4_SHA256" ]; then echo "$BENTO4_SHA256  /tmp/bento4.zip" | sha256sum -c -; fi; \
          mkdir -p /tmp/bento4; \
          unzip -q /tmp/bento4.zip -d /tmp/bento4; \
