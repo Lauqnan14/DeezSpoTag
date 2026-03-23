@@ -4962,6 +4962,11 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
             return '';
         }
 
+        if (playbackSource === 'apple') {
+            const mappedAppleDeezerId = String(track.deezerId || track.deezer_id || '').trim();
+            return /^\d+$/.test(mappedAppleDeezerId) ? mappedAppleDeezerId : '';
+        }
+
         const candidate = playbackSource === 'boomplay'
             ? String(track.deezerId || track.deezer_id || '').trim()
             : String(track.deezerId || track.deezer_id || track.id || '').trim();
@@ -5044,12 +5049,20 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
         const rowSourceAttr = escapeHtml(playbackSource);
         const rowClass = isDeadExternalRow ? ' class="track-row-dead"' : '';
         const checkboxDisabledAttr = isDeadExternalRow ? ' disabled aria-disabled="true" title="Waiting for Deezer match"' : ' title="Select track"';
-        const previewUrl = deezerId
-            ? buildDeezerStreamUrl(deezerId, {
-                type: isPodcastShow ? 'episode' : '',
-                context: playbackContext
-            })
-            : (track.preview || '');
+        const previewUrl = playbackSource === 'apple'
+            ? (String(track.preview || '').trim()
+                || (deezerId
+                    ? buildDeezerStreamUrl(deezerId, {
+                        type: isPodcastShow ? 'episode' : '',
+                        context: playbackContext
+                    })
+                    : ''))
+            : (deezerId
+                ? buildDeezerStreamUrl(deezerId, {
+                    type: isPodcastShow ? 'episode' : '',
+                    context: playbackContext
+                })
+                : (track.preview || ''));
         const hasPreview = !!previewUrl;
         const previewLabel = hasPreview
             ? (isPodcastShow ? 'Play Episode' : 'Play Track')
