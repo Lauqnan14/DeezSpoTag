@@ -1345,13 +1345,7 @@ function renderHomeSections(sections) {
             if (itemCount >= minItemsToRenderSection) {
                 return true;
             }
-            if (itemCount < 1) {
-                return false;
-            }
-            if (isSingleCardNewReleaseSection(entry.meta.normalizedTitle)) {
-                return true;
-            }
-            return isSpotifyHomeSection(entry.section);
+            return itemCount >= 1 && isSingleCardNewReleaseSection(entry.meta.normalizedTitle);
         });
 
     if (!sectionsToRender.length) {

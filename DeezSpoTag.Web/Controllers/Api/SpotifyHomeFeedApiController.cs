@@ -1122,11 +1122,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
                 continue;
             }
 
-            var name = TryGetStringAtFromCandidates(candidates, CardRepresentationKey, TitleKey, TransformedLabelKey)
-                       ?? TryGetStringAtFromCandidates(candidates, CardRepresentationKey, TitleKey, TextKey)
-                       ?? TryGetStringAtFromCandidates(candidates, TitleKey, TransformedLabelKey)
-                       ?? TryGetStringAtFromCandidates(candidates, TitleKey, TextKey)
-                       ?? TryGetStringFromCandidates(candidates, "name")
+            var name = TryGetStringFromCandidates(candidates, "name")
                        ?? TryGetStringFromCandidates(candidates, TitleKey)
                        ?? TryGetStringFromCandidates(candidates, "episodeName")
                        ?? TryGetStringFromCandidates(candidates, ProfileKey, NameKey)
