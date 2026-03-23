@@ -1,0 +1,245 @@
+@{
+    ViewData["Title"] = "Popular Radio";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+@section Styles {
+<link rel="stylesheet" href="~/css/home-index.css" asp-append-version="true" />
+<style>
+.popular-radio-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+.popular-radio-title {
+    font-size: 30px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+.popular-radio-status {
+    color: var(--text-secondary);
+    margin-bottom: 14px;
+}
+</style>
+}
+
+<section>
+    <div class="popular-radio-header">
+        <h1 class="popular-radio-title">Popular Radio</h1>
+        <button type="button" class="action-btn action-btn-sm" onclick="loadPopularRadio()">Refresh</button>
+    </div>
+    <div id="popular-radio-status" class="popular-radio-status">Loading popular radio...</div>
+    <div id="popular-radio-items" class="home-grid">
+        <div class="empty-section">Loading popular radio...</div>
+    </div>
+</section>
+
+@section Scripts {
+<script src="~/js/home-view-helpers.js" asp-append-version="true"></script>
+<script>
+function normalizeTitle(value) {
+    return (value || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function isPopularRadioTitle(value) {
+    const title = normalizeTitle(value);
+    return title === 'popular radio' || title === 'popular radios';
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function extractFirstUrl(value) {
+    if (!value) return '';
+    if (Array.isArray(value)) {
+        for (const candidate of value) {
+            const resolved = extractFirstUrl(candidate);
+            if (resolved) {
+                return resolved;
+            }
+        }
+        return '';
+    }
+    if (typeof value === 'object') {
+        return extractFirstUrl(
+            value.url
+            || value.fullUrl
+            || value.full
+            || value.thumbUrl
+            || value.thumb
+            || value.src
+            || ''
+        );
+    }
+    const candidate = String(value).trim();
+    if (!candidate) return '';
+    return /^(https?:)?\/\//i.test(candidate) ? candidate : '';
+}
+
+function buildDeezerImageUrlWithSize(imageHash, type = 'cover', size = 1000, quality = 80) {
+    if (!imageHash) {
+        return '';
+    }
+    const raw = String(imageHash).trim();
+    if (!raw) {
+        return '';
+    }
+    if (/^(https?:)?\/\//i.test(raw)) {
+        return raw;
+    }
+    return `https://e-cdns-images.dzcdn.net/images/${type}/${raw}/${size}x${size}-000000-${quality}-0-0.jpg`;
+}
+
+function resolveItemImage(item) {
+    const imageType = item.picture_type || item.pictureType || item.imageType || 'cover';
+    const imageHash = item.md5_image
+        || item.md5
+        || item.imageHash
+        || item.PLAYLIST_PICTURE
+        || item.playlistPicture
+        || item.cover?.md5
+        || item.cover?.MD5
+        || item.background_image?.md5;
+
+    return extractFirstUrl(
+        item.image?.fullUrl
+        || item.image?.full
+        || item.image?.url
+        || item.imageUrl
+        || item.coverUrl
+        || item.image
+        || item.picture
+        || item.cover
+        || item.artwork
+        || item.image?.thumbUrl
+        || item.image?.thumb
+        || buildDeezerImageUrlWithSize(imageHash, imageType, 500, 80)
+        || ''
+    );
+}
+
+function buildSubtitle(item) {
+    const subtitle = (item.subtitle || item.description || item.artists || item.artist || item.ownerName || '').toString().trim();
+    return subtitle;
+}
+
+function openTracklist(id, type) {
+    window.location.href = `/Tracklist?id=${encodeURIComponent(id)}&type=${encodeURIComponent(type)}`;
+}
+
+function openSpotifyTracklist(id, type) {
+    window.location.href = `/Tracklist?id=${encodeURIComponent(id)}&type=${encodeURIComponent(type)}&source=spotify`;
+}
+
+function openArtist(id) {
+    window.location.href = `/Artist?id=${encodeURIComponent(id)}&source=deezer`;
+}
+
+function buildHomeChannelUrl(target, layout) {
+    if (!target) {
+        return '#';
+    }
+    const normalized = target.toString().replace(/^\//, '');
+    const params = new URLSearchParams();
+    params.set('channel', normalized);
+    if (layout) {
+        params.set('layout', layout);
+    }
+    return `/Home?${params.toString()}`;
+}
+
+function openHomeChannel(target, layout) {
+    const url = buildHomeChannelUrl(target, layout);
+    if (url && url !== '#') {
+        window.location.href = url;
+    }
+}
+
+window.openSpotifyArtistFallback = window.HomeViewHelpers?.openSpotifyArtistFallback;
+window.openSpotifyArtist = window.HomeViewHelpers?.openSpotifyArtist;
+
+function renderPopularRadioItem(item) {
+    if (!item) {
+        return '';
+    }
+
+    const click = window.HomeViewHelpers?.buildHomeClick?.(item) || '';
+    const titleRaw = (item.title || item.name || '').toString().trim();
+    if (!titleRaw) {
+        return '';
+    }
+
+    const title = escapeHtml(titleRaw);
+    const subtitleRaw = buildSubtitle(item);
+    const subtitle = escapeHtml(subtitleRaw);
+    const image = resolveItemImage(item);
+    const imageStyle = image
+        ? `style="background-image:url('${escapeHtml(image)}');background-size:cover;background-position:center;"`
+        : '';
+    const fallbackIcon = item.type === 'artist' ? '👤' : item.type === 'album' ? '💿' : '🎵';
+
+    return `
+        <div class="playlist-card playlist-card--playlist" onclick="${click}">
+            <div class="playlist-image" ${imageStyle}>${image ? '' : fallbackIcon}</div>
+            <div class="playlist-title"><span class="home-marquee">${title}</span></div>
+            ${subtitle ? `<div class="playlist-meta"><span class="home-marquee">${subtitle}</span></div>` : ''}
+        </div>
+    `;
+}
+
+function setStatus(message) {
+    const statusEl = document.getElementById('popular-radio-status');
+    if (statusEl) {
+        statusEl.textContent = message;
+    }
+}
+
+async function loadPopularRadio() {
+    const container = document.getElementById('popular-radio-items');
+    setStatus('Loading popular radio...');
+    container.innerHTML = '<div class="empty-section">Loading popular radio...</div>';
+
+    try {
+        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+        const response = await fetch(`/api/spotify/home-feed/sections?timeZone=${encodeURIComponent(timeZone)}`);
+        if (!response.ok) {
+            throw new Error(`Failed to load sections (${response.status})`);
+        }
+
+        const payload = await response.json();
+        const sections = Array.isArray(payload?.sections) ? payload.sections : [];
+        const section = sections.find(entry => isPopularRadioTitle(entry?.title));
+        if (!section) {
+            container.innerHTML = '<div class="empty-section">Popular Radio section is unavailable.</div>';
+            setStatus('Popular Radio section unavailable');
+            return;
+        }
+
+        const allItems = (Array.isArray(section?.items) ? section.items : [])
+            .filter(item => !!(item?.title || item?.name));
+        if (!allItems.length) {
+            container.innerHTML = '<div class="empty-section">No Popular Radio items available.</div>';
+            setStatus('Showing 0 items');
+            return;
+        }
+
+        container.innerHTML = allItems.map(renderPopularRadioItem).join('');
+        setStatus(`Showing ${allItems.length} items`);
+    } catch (error) {
+        console.error('Popular Radio load failed:', error);
+        container.innerHTML = '<div class="empty-section">Failed to load Popular Radio.</div>';
+        setStatus('Failed to load Popular Radio');
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadPopularRadio();
+});
+</script>
+}

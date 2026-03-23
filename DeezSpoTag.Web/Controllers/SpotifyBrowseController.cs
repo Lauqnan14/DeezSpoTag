@@ -14,4 +14,10 @@ public sealed class SpotifyBrowseController : Controller
         ViewData["BrowseSection"] = section ?? string.Empty;
         return View();
     }
+
+    [HttpGet("PopularRadio")]
+    public IActionResult PopularRadio()
+    {
+        return View();
+    }
 }

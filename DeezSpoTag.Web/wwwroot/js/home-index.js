@@ -884,6 +884,7 @@ function renderHomeSections(sections) {
     const urlParams = new URLSearchParams(window.location.search);
     const isChannelPage = !!urlParams.get('channel');
     const maxItemsPerSection = isChannelPage ? 60 : 16;
+    const popularRadioPreviewCount = 13;
     const normalizeTitle = (value) => (value || '').toString().trim().toLowerCase();
     const normalizeSectionTitle = (value) => normalizeTitle(value).replace(/\s+/g, ' ');
     const isContinueStreamingSection = (section) => {
@@ -923,8 +924,10 @@ function renderHomeSections(sections) {
         return normalizeSectionTitle(section?.title) === 'recommended for today';
     };
     const isNewReleasesForYouSection = (section) => {
-        const title = normalizeSectionTitle(section?.title);
-        return title === 'new releases for you' || title === 'new release for you';
+        return normalizeSectionTitle(section?.title) === 'new releases for you';
+    };
+    const isRecommendedNewReleasesCombinedSection = (section) => {
+        return normalizeSectionTitle(section?.title) === 'recommended new releases for you today';
     };
     const isPopularRadioSection = (section) => {
         const title = normalizeSectionTitle(section?.title);
@@ -1108,6 +1111,53 @@ function renderHomeSections(sections) {
 
         return deduped;
     };
+    const dedupeSectionItems = (items) => {
+        if (!Array.isArray(items) || items.length === 0) {
+            return [];
+        }
+
+        const normalizeKey = (value) => normalizeArtistNameKey(value);
+        const seen = new Set();
+        const deduped = [];
+
+        for (const item of items) {
+            if (!item || typeof item !== 'object') {
+                continue;
+            }
+
+            const source = (item.source || '').toString().trim().toLowerCase();
+            const type = (item.type || '').toString().trim().toLowerCase();
+            const id = (item.id || '').toString().trim();
+            const uri = (item.uri || '').toString().trim().toLowerCase();
+            const target = (item.target || item.link || '').toString().trim().toLowerCase();
+            const title = normalizeKey(item.title || item.name || '');
+            const subtitle = normalizeKey(item.subtitle || item.artist || item.artists || item.description || '');
+
+            const candidateKeys = [];
+            if (source && type && id) {
+                candidateKeys.push(`sid:${source}:${type}:${id}`);
+            }
+            if (uri) {
+                candidateKeys.push(`uri:${uri}`);
+            }
+            if (target) {
+                candidateKeys.push(`target:${target}`);
+            }
+            if (title) {
+                candidateKeys.push(`title:${type}:${title}:${subtitle}`);
+            }
+
+            const isDuplicate = candidateKeys.some((key) => seen.has(key));
+            if (isDuplicate) {
+                continue;
+            }
+
+            candidateKeys.forEach((key) => seen.add(key));
+            deduped.push(item);
+        }
+
+        return deduped;
+    };
     const isSpotifyHomeSection = (section) => {
         const source = (section?.source || '').toString().toLowerCase();
         if (source === 'spotify') return true;
@@ -1195,41 +1245,51 @@ function renderHomeSections(sections) {
             }
         }
 
-        const recommendedTodayIndex = sections.findIndex(section => isRecommendedForTodaySection(section));
-        const newReleasesForYouIndex = sections.findIndex(section => isNewReleasesForYouSection(section));
-        if (recommendedTodayIndex >= 0 && newReleasesForYouIndex >= 0 && recommendedTodayIndex !== newReleasesForYouIndex) {
-            const recommendedSection = sections[recommendedTodayIndex] || {};
-            const newReleasesForYouSection = sections[newReleasesForYouIndex] || {};
-            const mergeRecommendedAndNewReleases =
-                isSpotifyHomeSection(recommendedSection) && isSpotifyHomeSection(newReleasesForYouSection);
-            if (mergeRecommendedAndNewReleases) {
-                const mergedSection = {
-                    ...recommendedSection,
-                    title: 'Recommended new releases for you',
-                    __preserveAllItems: true,
-                    items: [
-                        ...(Array.isArray(recommendedSection.items) ? recommendedSection.items : []),
-                        ...(Array.isArray(newReleasesForYouSection.items) ? newReleasesForYouSection.items : [])
-                    ],
-                    hasMore: (recommendedSection.hasMore === true) || (newReleasesForYouSection.hasMore === true),
-                    pagePath: recommendedSection.pagePath || newReleasesForYouSection.pagePath || '',
-                    related: recommendedSection.related || newReleasesForYouSection.related || null,
-                    filter: recommendedSection.filter || newReleasesForYouSection.filter || null,
-                    layout: recommendedSection.layout || newReleasesForYouSection.layout || 'row'
-                };
-                const compactSections = sections.filter((_, index) => index !== recommendedTodayIndex && index !== newReleasesForYouIndex);
-                const popularRadioIndex = compactSections.findIndex(section => isPopularRadioSection(section));
-                const fallbackInsertIndex = Math.min(recommendedTodayIndex, newReleasesForYouIndex);
-                const insertIndex = popularRadioIndex >= 0
-                    ? popularRadioIndex
-                    : Math.min(fallbackInsertIndex, compactSections.length);
-                compactSections.splice(insertIndex, 0, mergedSection);
-                sections = compactSections;
-            }
+        const recommendedIndexes = sections
+            .map((section, index) => isRecommendedForTodaySection(section) ? index : -1)
+            .filter(index => index >= 0);
+        const newReleaseIndexes = sections
+            .map((section, index) => isNewReleasesForYouSection(section) ? index : -1)
+            .filter(index => index >= 0);
+        if (recommendedIndexes.length > 0 && newReleaseIndexes.length > 0) {
+            const mergeIndexes = new Set([...recommendedIndexes, ...newReleaseIndexes]);
+            const mergeSections = [...mergeIndexes]
+                .sort((left, right) => left - right)
+                .map(index => sections[index])
+                .filter(Boolean);
+            const preferredBaseSection = mergeSections.find(section => isSpotifyHomeSection(section))
+                || mergeSections[0]
+                || {};
+            const mergedItems = dedupeSectionItems(
+                mergeSections.flatMap(section => Array.isArray(section?.items) ? section.items : [])
+            );
+            const mergedSection = {
+                ...preferredBaseSection,
+                title: 'Recommended new releases for you today',
+                __preserveAllItems: true,
+                items: mergedItems,
+                hasMore: mergeSections.some(section => section?.hasMore === true),
+                pagePath: mergeSections
+                    .map(section => (section?.pagePath || '').toString().trim())
+                    .find(value => value.length > 0) || '',
+                related: mergeSections.map(section => section?.related).find(value => value) || null,
+                filter: mergeSections.map(section => section?.filter).find(value => value) || null,
+                layout: mergeSections
+                    .map(section => (section?.layout || '').toString().trim())
+                    .find(value => value.length > 0) || 'row'
+            };
+            const compactSections = sections.filter((_, index) => !mergeIndexes.has(index));
+            const popularRadioIndex = compactSections.findIndex(section => isPopularRadioSection(section));
+            const fallbackInsertIndex = Math.min(...[...mergeIndexes]);
+            const insertIndex = popularRadioIndex >= 0
+                ? popularRadioIndex + 1
+                : Math.min(fallbackInsertIndex, compactSections.length);
+            compactSections.splice(insertIndex, 0, mergedSection);
+            sections = compactSections;
         }
 
         const recommendedNewReleasesIndex = sections.findIndex(
-            section => normalizeSectionTitle(section?.title) === 'recommended new releases for you'
+            section => isRecommendedNewReleasesCombinedSection(section)
         );
         const categoriesIndex = sections.findIndex(
             section => normalizeTitle(section?.title) === 'categories'
@@ -1237,7 +1297,7 @@ function renderHomeSections(sections) {
         if (recommendedNewReleasesIndex >= 0 && categoriesIndex >= 0) {
             const [categoriesSection] = sections.splice(categoriesIndex, 1);
             const refreshedRecommendedIndex = sections.findIndex(
-                section => normalizeSectionTitle(section?.title) === 'recommended new releases for you'
+                section => isRecommendedNewReleasesCombinedSection(section)
             );
             const refreshedPopularRadioIndex = sections.findIndex(
                 section => isPopularRadioSection(section)
@@ -1276,8 +1336,8 @@ function renderHomeSections(sections) {
         pushPinned(section => isSpotifyHomeSection(section) && normalizeSectionTitle(section?.title) === 'trending songs');
         pushPinned(section => isSpotifyHomeSection(section) && isMadeForYouSection(section));
         pushPinned(section => normalizeSectionTitle(section?.title) === 'discover');
-        pushPinned(section => normalizeSectionTitle(section?.title) === 'recommended new releases for you');
         pushPinned(section => isPopularRadioSection(section));
+        pushPinned(section => isRecommendedNewReleasesCombinedSection(section));
         pushPinned(section => normalizeTitle(section?.title) === 'categories' || normalizeTitle(section?.title) === 'your top genres');
 
         const remaining = normalizedSections.filter((_, index) => !used.has(index));
@@ -1299,6 +1359,7 @@ function renderHomeSections(sections) {
     const computeSectionRenderMeta = (section) => {
         const normalizedTitle = normalizeTitle(section?.title);
         const isTrendingSongs = normalizedTitle === 'trending songs';
+        const isPopularRadio = isPopularRadioSection(section);
         const preserveAllItems = section?.__preserveAllItems === true || section?.preserveAllItems === true;
         const sectionLimit = preserveAllItems
             ? ((Array.isArray(section?.items) && section.items.length > 0) ? section.items.length : maxItemsPerSection)
@@ -1316,9 +1377,15 @@ function renderHomeSections(sections) {
             : isTrendingSongs
             ? 'home-trending-grid'
             : (isTopGenres || isChannelSection) ? 'top-genres-grid' : layoutClass;
-        const filteredItems = (isDiscover || isTopGenres || isTrendingSongs)
+        let filteredItems = (isDiscover || isTopGenres || isTrendingSongs)
             ? items
             : items.filter(item => !isGhostHomeItem(item));
+        if (!isChannelPage && isPopularRadio && filteredItems.length > popularRadioPreviewCount) {
+            filteredItems = [
+                ...filteredItems.slice(0, popularRadioPreviewCount),
+                { __homeAction: 'popular-radio-see-more' }
+            ];
+        }
         const isSpaceAware = filteredItems.length > 0
             && filteredItems.length < spaceAwareThreshold
             && rowClass !== 'discover-grid';
@@ -1326,6 +1393,7 @@ function renderHomeSections(sections) {
         return {
             normalizedTitle,
             isTrendingSongs,
+            isPopularRadio,
             layoutRaw,
             filter,
             hasFilter,
@@ -1363,7 +1431,7 @@ function renderHomeSections(sections) {
                 ${meta.filter.options.map(opt => `<button class="home-filter-btn" data-filter-id="${opt.id}">${escapeHtml(opt.label || opt.id)}</button>`).join('')}
                </div>`
             : '';
-        const showMore = section.hasMore && section.pagePath
+        const showMore = !meta.isPopularRadio && section.hasMore && section.pagePath
             ? `<div class="home-section-more"><button class="action-btn action-btn-sm" onclick="openHomeChannel('${section.pagePath}')">Show more</button></div>`
             : '';
         const maxTopGenresSlots = isChannelPage ? meta.items.length : 14;
@@ -1385,25 +1453,29 @@ function renderHomeSections(sections) {
         const titleHtml = trendingWatchKey
             ? `<button type="button" class="home-section-title home-section-title--action" data-home-trending-tracklist="${trendingWatchKey}">${escapeHtml(section.title || '')}</button>`
             : `<div class="home-section-title">${escapeHtml(section.title || '')}</div>`;
+        const renderSectionCardItem = (item) => {
+            if (item?.__homeAction === 'popular-radio-see-more') {
+                return renderPopularRadioSeeMoreCard();
+            }
+            if (!meta.hasFilter) {
+                if (meta.isDiscover) {
+                    return renderDiscoveryItem(item);
+                }
+                if (meta.isTopGenres) {
+                    return renderTopGenresItem(item);
+                }
+                return renderHomeItem(item);
+            }
+            const filterIds = (item?.filter_option_ids || []).map(String);
+            const dataAttr = filterIds.length ? ` data-filter-ids="${filterIds.join(',')}"` : '';
+            const rendered = meta.isDiscover ? renderDiscoveryItem(item) : meta.isTopGenres ? renderTopGenresItem(item) : renderHomeItem(item);
+            return `<div class="home-filtered-item"${dataAttr}>${rendered}</div>`;
+        };
         const sectionItemsHtml = meta.isTopGenres
             ? topGenresCards
             : (meta.isTrendingSongs
                 ? meta.filteredItems.map(item => renderHomeTrendingSongItem(item)).join('')
-                : (meta.filteredItems.map(item => {
-                    if (!meta.hasFilter) {
-                        if (meta.isDiscover) {
-                            return renderDiscoveryItem(item);
-                        }
-                        if (meta.isTopGenres) {
-                            return renderTopGenresItem(item);
-                        }
-                        return renderHomeItem(item);
-                    }
-                    const filterIds = (item?.filter_option_ids || []).map(String);
-                    const dataAttr = filterIds.length ? ` data-filter-ids="${filterIds.join(',')}"` : '';
-                    const rendered = meta.isDiscover ? renderDiscoveryItem(item) : meta.isTopGenres ? renderTopGenresItem(item) : renderHomeItem(item);
-                    return `<div class="home-filtered-item"${dataAttr}>${rendered}</div>`;
-                }).join('')));
+                : (meta.filteredItems.map(item => renderSectionCardItem(item)).join('')));
         const rowClass = meta.isSpaceAware ? `${meta.rowClass} home-space-aware-row` : meta.rowClass;
         const rowSpaceAwareMin = meta.rowClass === 'home-grid'
             ? 'var(--art-grid-min)'
@@ -1424,6 +1496,18 @@ function renderHomeSections(sections) {
     }).join('');
 
     setupHomeFilters(sectionsToRender.map(entry => entry.section));
+}
+
+function renderPopularRadioSeeMoreCard() {
+    return `
+        <a class="playlist-card playlist-card--playlist playlist-card--see-more" href="/Spotify/PopularRadio">
+            <div class="playlist-image playlist-image--see-more">
+                <span class="playlist-image--see-more-label">See more</span>
+            </div>
+            <div class="playlist-title"><span class="home-marquee">Popular Radio</span></div>
+            <div class="playlist-meta"><span class="home-marquee">Open full list</span></div>
+        </a>
+    `;
 }
 
 function cacheHomeTrendingWatchMeta(section, items) {
