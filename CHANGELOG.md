@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.3.7] - 2026-03-23
+### Added
+- _TBD_
+
+### Changed
+- _TBD_
+
+### Fixed
+- _TBD_
+
+### Security
+- _TBD_
+
+
 ## [0.1.3.6] - 2026-03-22
 ### Added
 - _TBD_
