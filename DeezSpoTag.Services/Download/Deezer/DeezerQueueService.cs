@@ -392,6 +392,11 @@ public sealed class DeezerQueueService
             return true;
         }
 
+        if (await ShouldSkipForExistingTrackIdAsync(payload, isSecondary, retry, isEpisode))
+        {
+            return true;
+        }
+
         if (await ShouldSkipForMetadataDuplicateAsync(payload, retry, isEpisode, dedupeData))
         {
             return true;
@@ -417,13 +422,48 @@ public sealed class DeezerQueueService
             return false;
         }
 
-        var isLibraryDuplicate = await IsLibraryDuplicateAsync(payload, libraryRepository, payload.DestinationFolderId);
+        var isLibraryDuplicate = await IsLibraryDuplicateAsync(payload, libraryRepository);
         if (!isLibraryDuplicate)
         {
             return false;
         }
 
         NotifyAlreadyInQueue(payload);
+        return true;
+    }
+
+    private async Task<bool> ShouldSkipForExistingTrackIdAsync(
+        DeezerQueueItem payload,
+        bool isSecondary,
+        bool retry,
+        bool isEpisode)
+    {
+        if (isEpisode || isSecondary || retry || string.IsNullOrWhiteSpace(payload.DeezerId))
+        {
+            return false;
+        }
+
+        var existingTrack = await _queueRepository.GetByDeezerTrackIdAsync(DeezerEngine, payload.DeezerId);
+        if (existingTrack == null)
+        {
+            return false;
+        }
+
+        var existingStatus = existingTrack.Status ?? string.Empty;
+        if (existingStatus is QueuedStatus or RunningStatus or PausedStatus || IsCompletedStatus(existingStatus))
+        {
+            NotifyAlreadyInQueue(payload);
+            return true;
+        }
+
+        if (!IsRetryableStatus(existingStatus))
+        {
+            return false;
+        }
+
+        await _queueRepository.RequeueAsync(existingTrack.QueueUuid);
+        _activityLog.Info($"Track-id duplicate triggered retry (engine=deezer): {existingTrack.QueueUuid}");
+        NotifyRequeued(existingTrack.QueueUuid);
         return true;
     }
 
@@ -904,8 +944,7 @@ public sealed class DeezerQueueService
 
     private static async Task<bool> IsLibraryDuplicateAsync(
         DeezerQueueItem payload,
-        LibraryRepository libraryRepository,
-        long? destinationFolderId)
+        LibraryRepository libraryRepository)
     {
         var sourceIds = new List<(string Source, string Id)>();
         if (!string.IsNullOrWhiteSpace(payload.DeezerId))
@@ -925,12 +964,25 @@ public sealed class DeezerQueueService
 
         foreach (var (source, id) in sourceIds)
         {
-            if (destinationFolderId.HasValue
-                ? await libraryRepository.ExistsTrackSourceInFolderAsync(source, id, destinationFolderId.Value)
-                : await libraryRepository.ExistsTrackSourceAsync(source, id))
+            if (await libraryRepository.ExistsTrackSourceAsync(source, id))
             {
                 return true;
             }
+        }
+
+        var durationMs = payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : (int?)null;
+        var existence = await libraryRepository.ExistsInLibraryAsync(
+            new[]
+            {
+                new LibraryRepository.LibraryExistenceInput(
+                    payload.Isrc,
+                    payload.Title,
+                    payload.Artist,
+                    durationMs)
+            });
+        if (existence.Count > 0 && existence[0])
+        {
+            return true;
         }
 
         return false;

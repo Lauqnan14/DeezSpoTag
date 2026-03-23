@@ -368,6 +368,7 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             return false;
         }
 
+        await SyncEffectiveQualityAsync(queueUuid, payload, track.Bitrate, cancellationToken);
         UpdatePayloadFiles(payload, result.Path);
         var sizeMb = QueueHelperUtils.TryGetFileSizeMb(result.Path);
         await QueueHelperUtils.UpdateFinalDestinationPayloadAsync(
@@ -1245,6 +1246,39 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         return sanitized.EndsWith(extension, StringComparison.OrdinalIgnoreCase)
             ? sanitized
             : $"{sanitized}{extension}";
+    }
+
+    private async Task SyncEffectiveQualityAsync(
+        string queueUuid,
+        DeezerQueueItem payload,
+        int effectiveBitrate,
+        CancellationToken cancellationToken)
+    {
+        if (effectiveBitrate <= 0)
+        {
+            return;
+        }
+
+        var effectiveQuality = effectiveBitrate.ToString();
+        var bitrateChanged = payload.Bitrate != effectiveBitrate;
+        if (!bitrateChanged
+            && string.Equals(payload.Quality, effectiveQuality, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        payload.Bitrate = effectiveBitrate;
+        var qualitySynced = await EngineQueueQualitySyncHelper.SyncQualityAsync(
+            _queueRepository,
+            _listener,
+            queueUuid,
+            payload,
+            effectiveQuality,
+            cancellationToken);
+        if (!qualitySynced)
+        {
+            await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken);
+        }
     }
 
     private static void UpdatePayloadFiles(DeezerQueueItem payload, string outputPath)

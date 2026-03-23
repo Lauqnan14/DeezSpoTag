@@ -12,6 +12,8 @@ public static class QobuzRequestBuilder
             item.Quality,
             settings.QobuzQuality,
             "6");
+        request.AllowQualityFallback = settings.FallbackBitrate
+            && !string.Equals(settings.Service, "auto", StringComparison.OrdinalIgnoreCase);
         return request;
     }
 }
@@ -21,6 +23,7 @@ public sealed class QobuzDownloadRequest : EngineDownloadRequestBase
     public string Quality { get; set; } = "";
     public string? TrackUrl { get; set; }
     public bool EmbedMaxQualityCover { get; set; }
+    public bool AllowQualityFallback { get; set; } = true;
     public TagSettings? TagSettings { get; set; }
     public Func<double, double, Task>? ProgressCallback { get; set; }
 }

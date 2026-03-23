@@ -134,6 +134,13 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             sourceSelection,
             progressReporter,
             itemToken);
+        await EngineQueueQualitySyncHelper.SyncQualityAsync(
+            _queueRepository,
+            _deezspotagListener,
+            next.QueueUuid,
+            payload,
+            request.Quality,
+            itemToken);
         outputPath = await TryApplyPostDownloadSettingsAsync(next.QueueUuid, context, payload, outputPath, settings, itemToken);
 
         await CompleteDownloadAsync(next.QueueUuid, payload, outputPath, itemToken);

@@ -147,16 +147,17 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         var track = resolution.Track;
-        var downloadUrl = await GetDownloadUrlWithRetryAsync(track.Id, request.Quality, cancellationToken);
-        if (string.IsNullOrWhiteSpace(downloadUrl))
+        var downloadResolution = await GetDownloadUrlWithRetryAsync(track.Id, request.Quality, request.AllowQualityFallback, cancellationToken);
+        if (string.IsNullOrWhiteSpace(downloadResolution.Url))
         {
             throw new InvalidOperationException("Qobuz download URL not available");
         }
+        request.Quality = downloadResolution.SelectedQuality;
 
         var outputPath = expectedPath;
         await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
         {
-            DownloadUrl = downloadUrl,
+            DownloadUrl = downloadResolution.Url!,
             OutputPath = outputPath,
             Request = request
         }, cancellationToken);
@@ -197,16 +198,17 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             return resolvedPath;
         }
 
-        var downloadUrl = await GetDownloadUrlWithRetryAsync(trackId.Value, request.Quality, cancellationToken);
-        if (string.IsNullOrWhiteSpace(downloadUrl))
+        var downloadResolution = await GetDownloadUrlWithRetryAsync(trackId.Value, request.Quality, request.AllowQualityFallback, cancellationToken);
+        if (string.IsNullOrWhiteSpace(downloadResolution.Url))
         {
             throw new InvalidOperationException("Qobuz download URL not available");
         }
+        request.Quality = downloadResolution.SelectedQuality;
 
         var outputPath = expectedPath;
         await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
         {
-            DownloadUrl = downloadUrl,
+            DownloadUrl = downloadResolution.Url!,
             OutputPath = outputPath,
             Request = request
         }, cancellationToken);
@@ -275,14 +277,21 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         return AudioFilePathHelper.BuildOutputPath(outputPathContext, extension);
     }
 
-    private async Task<string?> GetDownloadUrlWithRetryAsync(long trackId, string quality, CancellationToken cancellationToken)
+    private readonly record struct DownloadUrlResolution(string? Url, string SelectedQuality);
+
+    private async Task<DownloadUrlResolution> GetDownloadUrlWithRetryAsync(
+        long trackId,
+        string quality,
+        bool allowQualityFallback,
+        CancellationToken cancellationToken)
     {
+        var normalizedRequestedQuality = NormalizeQobuzQualityCode(quality);
         const int maxAttempts = 3;
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             try
             {
-                return await GetDownloadUrlAsync(trackId, quality, cancellationToken);
+                return await GetDownloadUrlAsync(trackId, quality, allowQualityFallback, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -294,7 +303,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             }
         }
 
-        return null;
+        return new DownloadUrlResolution(null, normalizedRequestedQuality);
     }
 
     private async Task DownloadFileWithRetryAsync(
@@ -460,27 +469,36 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     }
 
 
-    private async Task<string?> GetDownloadUrlAsync(long trackId, string quality, CancellationToken cancellationToken)
+    private async Task<DownloadUrlResolution> GetDownloadUrlAsync(
+        long trackId,
+        string quality,
+        bool allowQualityFallback,
+        CancellationToken cancellationToken)
     {
         var requestedQuality = NormalizeQobuzQualityCode(quality);
-        var qualityOrder = GetQualityFallbackOrder(requestedQuality);
+        var qualityOrder = GetQualityFallbackOrder(requestedQuality, allowQualityFallback);
 
         foreach (var qualityCode in qualityOrder)
         {
             var url = await TryGetDownloadUrlForQualityAsync(trackId, qualityCode, cancellationToken);
             if (!string.IsNullOrWhiteSpace(url))
             {
-                return url;
+                return new DownloadUrlResolution(url, qualityCode);
             }
         }
 
-        return null;
+        return new DownloadUrlResolution(null, requestedQuality);
     }
 
     private static string NormalizeQobuzQualityCode(string? quality) => QobuzQualityCodeNormalizer.Normalize(quality, defaultCode: "6");
 
-    private static List<string> GetQualityFallbackOrder(string quality)
+    private static List<string> GetQualityFallbackOrder(string quality, bool allowQualityFallback)
     {
+        if (!allowQualityFallback)
+        {
+            return new List<string> { string.IsNullOrWhiteSpace(quality) ? "6" : quality };
+        }
+
         if (string.Equals(quality, "27", StringComparison.OrdinalIgnoreCase))
         {
             return new List<string> { "27", "7", "6" };
