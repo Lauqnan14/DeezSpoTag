@@ -4868,11 +4868,26 @@ public sealed class DownloadIntentService
         }
 
         var isCompletedStatus = IsCompletedQueueStatus(status);
-        if (isCompletedStatus && !context.AllowQualityUpgrade)
+        if (isCompletedStatus)
         {
-            return new QueueDuplicateResolution(
-                EnqueueItemDecision.Fail("queue_recently_downloaded", BuildCooldownMessage(context.Settings.RedownloadCooldownMinutes)),
-                false);
+            if (!context.AllowQualityUpgrade || !context.QueueQualityUpgradeRequested)
+            {
+                return new QueueDuplicateResolution(
+                    EnqueueItemDecision.Fail("queue_recently_downloaded", BuildCooldownMessage(context.Settings.RedownloadCooldownMinutes)),
+                    false);
+            }
+
+            var existingRank = existing.QualityRank;
+            if (existingRank.HasValue && context.RequestedRank <= existingRank.Value)
+            {
+                return new QueueDuplicateResolution(
+                    EnqueueItemDecision.Fail(
+                        "queue_quality_not_higher",
+                        $"Skipped: queue already has this track at same or higher quality (status={status})."),
+                    false);
+            }
+
+            return new QueueDuplicateResolution(null, true);
         }
 
         if (!isCompletedStatus && context.QueueQualityUpgradeRequested)
@@ -4887,11 +4902,6 @@ public sealed class DownloadIntentService
             {
                 return upgradeResolution;
             }
-        }
-
-        if (isCompletedStatus && context.AllowQualityUpgrade)
-        {
-            return new QueueDuplicateResolution(null, true);
         }
 
         return new QueueDuplicateResolution(

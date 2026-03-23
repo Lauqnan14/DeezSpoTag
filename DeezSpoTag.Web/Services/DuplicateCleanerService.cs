@@ -21,6 +21,7 @@ public sealed record DuplicateCleanerOptions
     public bool UseDuplicatesFolder { get; set; } = true;
     public string DuplicatesFolderName { get; set; } = DuplicateCleanerService.DuplicatesFolderName;
     public bool UseShazamForIdentity { get; set; }
+    public string ConflictPolicy { get; set; } = AutoTagOrganizerOptions.DuplicateConflictKeepBest;
 }
 
 public sealed record DuplicateCleanerRunSummary(
@@ -288,11 +289,17 @@ public class DuplicateCleanerService
     private static DuplicateCleanerOptions NormalizeOptions(DuplicateCleanerOptions? options)
     {
         var resolved = options ?? new DuplicateCleanerOptions();
+        var conflictPolicy = NormalizeConflictPolicy(resolved.ConflictPolicy);
+        var useDuplicatesFolder = resolved.UseDuplicatesFolder
+            || string.Equals(conflictPolicy, AutoTagOrganizerOptions.DuplicateConflictMoveToDuplicates, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(conflictPolicy, AutoTagOrganizerOptions.DuplicateConflictKeepBest, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(conflictPolicy, AutoTagOrganizerOptions.DuplicateConflictKeepLower, StringComparison.OrdinalIgnoreCase);
         return new DuplicateCleanerOptions
         {
-            UseDuplicatesFolder = resolved.UseDuplicatesFolder,
+            UseDuplicatesFolder = useDuplicatesFolder,
             UseShazamForIdentity = resolved.UseShazamForIdentity,
-            DuplicatesFolderName = NormalizeDuplicatesFolderName(resolved.DuplicatesFolderName)
+            DuplicatesFolderName = NormalizeDuplicatesFolderName(resolved.DuplicatesFolderName),
+            ConflictPolicy = conflictPolicy
         };
     }
 
@@ -628,6 +635,13 @@ public class DuplicateCleanerService
             yield return $"album-track:{candidate.Album}|{candidate.TrackNumber.Value}|{candidate.DiscNumber.GetValueOrDefault()}";
         }
 
+        if (candidate.FileSize > 0)
+        {
+            // Catch cross-folder clones even when tags are missing/corrupt; final duplicate decision
+            // is still validated by metadata/audio-collision checks in AreDuplicates.
+            yield return $"basename-size:{candidate.BaseName}|{candidate.FileSize}";
+        }
+
         yield return $"basename:{Path.GetDirectoryName(candidate.RelativePath)?.ToLowerInvariant() ?? string.Empty}|{candidate.BaseName}";
     }
 
@@ -673,7 +687,15 @@ public class DuplicateCleanerService
         CancellationToken cancellationToken)
     {
         result.DuplicatesFound += cluster.Count - 1;
-        var bestIndex = PickBest(cluster, candidates);
+        var policy = NormalizeConflictPolicy(options.ConflictPolicy);
+        if (string.Equals(policy, AutoTagOrganizerOptions.DuplicateConflictKeepBoth, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var bestIndex = string.Equals(policy, AutoTagOrganizerOptions.DuplicateConflictKeepLower, StringComparison.OrdinalIgnoreCase)
+            ? PickLowestQuality(cluster, candidates)
+            : PickBest(cluster, candidates);
 
         foreach (var index in cluster)
         {
@@ -713,6 +735,15 @@ public class DuplicateCleanerService
             .OrderBy(index => candidates[index].QualityRank)
             .ThenByDescending(index => candidates[index].FileSize)
             .ThenByDescending(index => ComputeMetadataScore(candidates[index]))
+            .First();
+    }
+
+    private static int PickLowestQuality(IReadOnlyList<int> cluster, IReadOnlyList<DuplicateCandidate> candidates)
+    {
+        return cluster
+            .OrderByDescending(index => candidates[index].QualityRank)
+            .ThenBy(index => candidates[index].FileSize)
+            .ThenBy(index => ComputeMetadataScore(candidates[index]))
             .First();
     }
 
@@ -873,6 +904,24 @@ public class DuplicateCleanerService
         var invalidCharacters = Path.GetInvalidFileNameChars();
         var sanitized = new string(fileName.Select(ch => invalidCharacters.Contains(ch) ? '_' : ch).ToArray()).Trim();
         return string.IsNullOrWhiteSpace(sanitized) ? DuplicatesFolderName : sanitized;
+    }
+
+    private static string NormalizeConflictPolicy(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return AutoTagOrganizerOptions.DuplicateConflictKeepBest;
+        }
+
+        var normalized = value.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            AutoTagOrganizerOptions.DuplicateConflictKeepBest => AutoTagOrganizerOptions.DuplicateConflictKeepBest,
+            AutoTagOrganizerOptions.DuplicateConflictKeepLower => AutoTagOrganizerOptions.DuplicateConflictKeepLower,
+            AutoTagOrganizerOptions.DuplicateConflictMoveToDuplicates => AutoTagOrganizerOptions.DuplicateConflictMoveToDuplicates,
+            AutoTagOrganizerOptions.DuplicateConflictKeepBoth => AutoTagOrganizerOptions.DuplicateConflictKeepBoth,
+            _ => AutoTagOrganizerOptions.DuplicateConflictKeepBest
+        };
     }
 
     private static string EnsureUniquePath(string path)

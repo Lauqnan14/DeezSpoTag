@@ -128,6 +128,7 @@ public class AutoTagLibraryOrganizer
         }
 
         ExecuteMovePlan(normalizedRoot, plan, options, report, log);
+        ReconcileOrphanCombinedArtistFolders(normalizedRoot, usePrimaryArtistFolders, options, report, log);
         if (!options.DryRun && options.RemoveEmptyFolders)
         {
             CleanupArtistFolders(normalizedRoot, usePrimaryArtistFolders, report, log);
@@ -431,20 +432,28 @@ public class AutoTagLibraryOrganizer
             usePrimaryArtistFolders,
             options,
             log);
-
-        using var tagFile = TagLib.File.Create(fullPath);
-        if (ShouldRouteToUntaggedDestination(tagFile, extension, options))
+        try
         {
-            return BuildUntaggedMovePlanItem(
-                context.FullPath,
-                context.RootPath,
-                context.SourceDir,
-                context.Options,
-                context.Log,
-                "organizer skipped untagged file");
-        }
+            using var tagFile = TagLib.File.Create(fullPath);
+            if (ShouldRouteToUntaggedDestination(tagFile, extension, options))
+            {
+                return BuildUntaggedMovePlanItem(
+                    context.FullPath,
+                    context.RootPath,
+                    context.SourceDir,
+                    context.Options,
+                    context.Log,
+                    "organizer skipped untagged file");
+            }
 
-        return BuildTaggedMovePlanItem(tagFile, context);
+            return BuildTaggedMovePlanItem(tagFile, context);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "AutoTag organizer metadata read failed for {Path}; falling back to inferred identity.", fullPath);
+            context.Log?.Invoke($"organizer metadata read failed; using fallback inference: {fullPath} ({ex.Message})");
+            return BuildUnreadableMetadataMovePlanItem(context);
+        }
     }
 
     private static bool ShouldRouteToUntaggedDestination(
@@ -511,6 +520,20 @@ public class AutoTagLibraryOrganizer
             downloadType = string.IsNullOrWhiteSpace(tag.Album) ? "track" : "album";
         }
 
+        return BuildMovePlanItemFromTrack(track, downloadType, context);
+    }
+
+    private static bool IsSingleTrackDownload(Track track)
+    {
+        return string.IsNullOrWhiteSpace(track.Album?.Title)
+            || string.Equals(track.Album.Title, "Singles", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private MovePlanItem BuildMovePlanItemFromTrack(
+        Track track,
+        string downloadType,
+        MovePlanTargetContext context)
+    {
         track.ApplySettings(context.Settings);
         var pathProcessor = new EnhancedPathTemplateProcessor(_loggerFactory.CreateLogger<EnhancedPathTemplateProcessor>());
         var pathResult = pathProcessor.GeneratePaths(track, downloadType, context.Settings);
@@ -519,7 +542,7 @@ public class AutoTagLibraryOrganizer
         var destinationDir = string.IsNullOrWhiteSpace(destinationIoDir)
             ? context.RootPath
             : destinationIoDir;
-        var extension = Path.GetExtension(context.FullPath);
+        var extension = ResolveContainerAwareExtension(context.FullPath, context.Log);
         var destinationPath = GetUniquePath(Path.Join(destinationDir, $"{pathResult.Filename}{extension}"), context.FullPath);
 
         return new MovePlanItem
@@ -532,10 +555,85 @@ public class AutoTagLibraryOrganizer
         };
     }
 
-    private static bool IsSingleTrackDownload(Track track)
+    private static string ResolveContainerAwareExtension(string fullPath, Action<string>? log)
     {
-        return string.IsNullOrWhiteSpace(track.Album?.Title)
-            || string.Equals(track.Album.Title, "Singles", StringComparison.OrdinalIgnoreCase);
+        var currentExtension = Path.GetExtension(fullPath);
+        if (string.IsNullOrWhiteSpace(currentExtension))
+        {
+            return currentExtension;
+        }
+
+        var normalized = currentExtension.ToLowerInvariant();
+        if (!string.Equals(normalized, ".flac", StringComparison.OrdinalIgnoreCase))
+        {
+            return currentExtension;
+        }
+
+        try
+        {
+            using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            Span<byte> header = stackalloc byte[12];
+            var read = stream.Read(header);
+            if (read < 12)
+            {
+                return currentExtension;
+            }
+
+            var looksLikeMp4 = header[4] == (byte)'f'
+                && header[5] == (byte)'t'
+                && header[6] == (byte)'y'
+                && header[7] == (byte)'p';
+            if (!looksLikeMp4)
+            {
+                return currentExtension;
+            }
+
+            log?.Invoke($"organizer normalized extension for container mismatch: {fullPath} (.flac -> .m4a)");
+            return ".m4a";
+        }
+        catch (Exception)
+        {
+            return currentExtension;
+        }
+    }
+
+    private MovePlanItem? BuildUnreadableMetadataMovePlanItem(MovePlanTargetContext context)
+    {
+        Track? track = null;
+        var usedShazam = false;
+
+        if (context.Options.UseShazamForUntaggedFiles)
+        {
+            track = BuildTrackFromShazamRecognition(
+                context.FullPath,
+                context.UsePrimaryArtistFolders,
+                context.Settings.Tags?.MultiArtistSeparator,
+                context.Log);
+            usedShazam = track != null;
+        }
+
+        track ??= BuildTrackFromPathFallback(
+            context.FullPath,
+            context.RootPath,
+            context.UsePrimaryArtistFolders,
+            context.Settings.Tags?.MultiArtistSeparator);
+
+        if (track == null)
+        {
+            return BuildUntaggedMovePlanItem(
+                context.FullPath,
+                context.RootPath,
+                context.SourceDir,
+                context.Options,
+                context.Log,
+                "organizer skipped unreadable metadata file");
+        }
+
+        var downloadType = IsSingleTrackDownload(track) ? "track" : "album";
+        context.Log?.Invoke(usedShazam
+            ? $"organizer inferred core tags from Shazam for unreadable metadata file: {context.FullPath}"
+            : $"organizer inferred core tags from path for unreadable metadata file: {context.FullPath}");
+        return BuildMovePlanItemFromTrack(track, downloadType, context);
     }
 
     private static MovePlanItem? BuildUntaggedMovePlanItem(
@@ -840,10 +938,7 @@ public class AutoTagLibraryOrganizer
         if (string.Equals(options.DuplicateConflictPolicy, AutoTagOrganizerOptions.DuplicateConflictMoveToDuplicates, StringComparison.OrdinalIgnoreCase))
         {
             var losingPath = preferIncoming ? action.DestinationPath : action.SourcePath;
-            var duplicatesRoot = Path.Join(rootPath, options.DuplicatesFolderName);
-            Directory.CreateDirectory(duplicatesRoot);
-            var target = GetUniquePath(Path.Join(duplicatesRoot, Path.GetFileName(losingPath)), losingPath);
-            MoveFileOverwrite(losingPath, target);
+            var target = QuarantineDuplicateFile(rootPath, options.DuplicatesFolderName, losingPath);
             if (report != null)
             {
                 report.QuarantinedDuplicates++;
@@ -871,6 +966,12 @@ public class AutoTagLibraryOrganizer
 
         if (preferIncoming)
         {
+            var quarantinedPath = QuarantineDuplicateFile(rootPath, options.DuplicatesFolderName, action.DestinationPath);
+            if (report != null)
+            {
+                report.QuarantinedDuplicates++;
+            }
+            report?.Entries.Add($"quarantine-duplicate: {action.DestinationPath} -> {quarantinedPath}");
             MoveFileOverwrite(action.SourcePath, action.DestinationPath);
             if (report != null)
             {
@@ -882,15 +983,31 @@ public class AutoTagLibraryOrganizer
         }
         else
         {
-            TryDeleteFile(action.SourcePath);
-            _logger.LogInformation("AutoTag organizer skipped duplicate source {SourcePath} (existing {DestinationPath})", action.SourcePath, action.DestinationPath);
-            log?.Invoke($"organizer skipped duplicate: {action.SourcePath} (existing {action.DestinationPath})");
-            report?.Entries.Add($"skip-duplicate: {action.SourcePath} (existing {action.DestinationPath})");
+            var quarantinedPath = QuarantineDuplicateFile(rootPath, options.DuplicatesFolderName, action.SourcePath);
+            if (report != null)
+            {
+                report.QuarantinedDuplicates++;
+            }
+            _logger.LogInformation("AutoTag organizer quarantined duplicate source {SourcePath} (existing {DestinationPath})", action.SourcePath, action.DestinationPath);
+            log?.Invoke($"organizer quarantined duplicate source: {action.SourcePath} -> {quarantinedPath}");
+            report?.Entries.Add($"quarantine-duplicate: {action.SourcePath} -> {quarantinedPath}");
         }
 
         MoveSidecarFiles(rootPath, action.SourceDir, action.DestinationDir, action.SourcePath, action.DestinationPath, log, options, report);
         CleanupSourceDirectoryIfConfigured(rootPath, action.SourceDir, options, log);
         return true;
+    }
+
+    private static string QuarantineDuplicateFile(string rootPath, string? duplicatesFolderName, string sourcePath)
+    {
+        var folderName = string.IsNullOrWhiteSpace(duplicatesFolderName)
+            ? DuplicateCleanerService.DuplicatesFolderName
+            : duplicatesFolderName.Trim();
+        var duplicatesRoot = Path.Join(rootPath, folderName);
+        Directory.CreateDirectory(duplicatesRoot);
+        var target = GetUniquePath(Path.Join(duplicatesRoot, Path.GetFileName(sourcePath)), sourcePath);
+        MoveFileOverwrite(sourcePath, target);
+        return target;
     }
 
     private void CleanupSourceDirectoryIfConfigured(
@@ -1627,6 +1744,141 @@ public class AutoTagLibraryOrganizer
             || extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".png", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".webp", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void ReconcileOrphanCombinedArtistFolders(
+        string rootPath,
+        bool usePrimaryArtistFolders,
+        AutoTagOrganizerOptions options,
+        AutoTagOrganizerReport? report,
+        Action<string>? log)
+    {
+        if (!usePrimaryArtistFolders || !options.MoveMisplacedFiles || !Directory.Exists(rootPath))
+        {
+            return;
+        }
+
+        IEnumerable<string> artistDirs;
+        try
+        {
+            artistDirs = Directory.EnumerateDirectories(rootPath).ToList();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return;
+        }
+
+        foreach (var sourceArtistDir in artistDirs)
+        {
+            var artistFolderName = Path.GetFileName(sourceArtistDir)?.Trim();
+            if (string.IsNullOrWhiteSpace(artistFolderName))
+            {
+                continue;
+            }
+
+            var expandedArtists = ExpandArtistNames(new[] { artistFolderName });
+            if (expandedArtists.Count <= 1)
+            {
+                continue;
+            }
+
+            var primaryArtist = expandedArtists[0];
+            var targetArtistDir = ResolvePrimaryArtistDirectory(rootPath, primaryArtist);
+            if (string.Equals(sourceArtistDir, targetArtistDir, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            foreach (var albumDir in Directory.EnumerateDirectories(sourceArtistDir).ToList())
+            {
+                if (DirectoryContainsAudio(albumDir))
+                {
+                    continue;
+                }
+
+                var albumFolderName = Path.GetFileName(albumDir);
+                if (string.IsNullOrWhiteSpace(albumFolderName))
+                {
+                    continue;
+                }
+
+                var targetAlbumDir = Path.Join(targetArtistDir, albumFolderName);
+                if (options.DryRun)
+                {
+                    log?.Invoke($"organizer dry-run: would reconcile orphan combined-artist folder {albumDir} -> {targetAlbumDir}");
+                    continue;
+                }
+
+                try
+                {
+                    Directory.CreateDirectory(targetArtistDir);
+                    if (!Directory.Exists(targetAlbumDir))
+                    {
+                        Directory.Move(albumDir, targetAlbumDir);
+                        if (report != null)
+                        {
+                            report.MovedFolders++;
+                        }
+
+                        log?.Invoke($"organizer reconciled orphan combined-artist folder: {albumDir} -> {targetAlbumDir}");
+                        report?.Entries.Add($"reconcile-orphan-folder: {albumDir} -> {targetAlbumDir}");
+                        continue;
+                    }
+
+                    var movedFiles = 0;
+                    foreach (var sourceFile in Directory.EnumerateFiles(albumDir, "*.*", SearchOption.AllDirectories))
+                    {
+                        var relativePath = Path.GetRelativePath(albumDir, sourceFile);
+                        var destinationFile = Path.Join(targetAlbumDir, relativePath);
+                        var destinationDir = Path.GetDirectoryName(destinationFile);
+                        if (!string.IsNullOrWhiteSpace(destinationDir))
+                        {
+                            Directory.CreateDirectory(destinationDir);
+                        }
+
+                        destinationFile = GetUniquePath(destinationFile, sourceFile);
+                        MoveFileOverwrite(sourceFile, destinationFile);
+                        movedFiles++;
+                        log?.Invoke($"organizer moved orphan sidecar: {sourceFile} -> {destinationFile}");
+                        report?.Entries.Add($"move-orphan-sidecar: {sourceFile} -> {destinationFile}");
+                    }
+
+                    if (report != null && movedFiles > 0)
+                    {
+                        report.MovedLeftovers += movedFiles;
+                    }
+
+                    if (options.RemoveEmptyFolders)
+                    {
+                        DeleteEmptyDirectoryTree(albumDir, rootPath, log);
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "AutoTag organizer failed reconciling orphan combined-artist folder {SourceDir}", albumDir);
+                    log?.Invoke($"organizer failed reconciling orphan combined-artist folder: {albumDir} ({ex.Message})");
+                }
+            }
+        }
+    }
+
+    private static bool DirectoryContainsAudio(string directoryPath)
+    {
+        return EnumerateAudioFiles(directoryPath, includeSubfolders: true).Any();
+    }
+
+    private static string ResolvePrimaryArtistDirectory(string rootPath, string primaryArtist)
+    {
+        foreach (var existing in Directory.EnumerateDirectories(rootPath))
+        {
+            var name = Path.GetFileName(existing);
+            if (string.Equals(name, primaryArtist, StringComparison.OrdinalIgnoreCase))
+            {
+                return existing;
+            }
+        }
+
+        return Path.Join(rootPath, SanitizePathSegment(primaryArtist));
     }
 
     private static bool IsLyricsExtension(string? extension)

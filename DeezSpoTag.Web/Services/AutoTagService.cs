@@ -1249,6 +1249,7 @@ public class AutoTagService
             return;
         }
 
+        var settings = _settingsService.LoadSettings();
         var options = new AutoTagOrganizerOptions
         {
             IncludeSubfolders = ReadBool(folderUniformity, "includeSubfolders") ?? true,
@@ -1266,7 +1267,36 @@ public class AutoTagService
             UseShazamForUntaggedFiles = ReadBool(folderUniformity, "useShazamForUntaggedFiles") == true,
             DuplicateConflictPolicy = folderUniformity["duplicateConflictPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.DuplicateConflictKeepBest,
             ArtworkPolicy = folderUniformity["artworkPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.ArtworkPolicyPreserveExisting,
-            LyricsPolicy = folderUniformity["lyricsPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.LyricsPolicyMerge
+            LyricsPolicy = folderUniformity["lyricsPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.LyricsPolicyMerge,
+            UsePrimaryArtistFoldersOverride = ReadBool(folderUniformity, "usePrimaryArtistFolders")
+                ?? settings.Tags?.SingleAlbumArtist,
+            MultiArtistSeparatorOverride = string.IsNullOrWhiteSpace(folderUniformity["multiArtistSeparator"]?.GetValue<string>())
+                ? settings.Tags?.MultiArtistSeparator
+                : folderUniformity["multiArtistSeparator"]!.GetValue<string>().Trim(),
+            CreateArtistFolderOverride = ReadBool(folderUniformity, "createArtistFolder")
+                ?? settings.CreateArtistFolder,
+            ArtistNameTemplateOverride = string.IsNullOrWhiteSpace(folderUniformity["artistNameTemplate"]?.GetValue<string>())
+                ? settings.ArtistNameTemplate
+                : folderUniformity["artistNameTemplate"]!.GetValue<string>().Trim(),
+            CreateAlbumFolderOverride = ReadBool(folderUniformity, "createAlbumFolder")
+                ?? settings.CreateAlbumFolder,
+            AlbumNameTemplateOverride = string.IsNullOrWhiteSpace(folderUniformity["albumNameTemplate"]?.GetValue<string>())
+                ? settings.AlbumNameTemplate
+                : folderUniformity["albumNameTemplate"]!.GetValue<string>().Trim(),
+            CreateCDFolderOverride = ReadBool(folderUniformity, "createCDFolder")
+                ?? settings.CreateCDFolder,
+            CreateStructurePlaylistOverride = ReadBool(folderUniformity, "createStructurePlaylist")
+                ?? settings.CreateStructurePlaylist,
+            CreateSingleFolderOverride = ReadBool(folderUniformity, "createSingleFolder")
+                ?? settings.CreateSingleFolder,
+            CreatePlaylistFolderOverride = ReadBool(folderUniformity, "createPlaylistFolder")
+                ?? settings.CreatePlaylistFolder,
+            PlaylistNameTemplateOverride = string.IsNullOrWhiteSpace(folderUniformity["playlistNameTemplate"]?.GetValue<string>())
+                ? settings.PlaylistNameTemplate
+                : folderUniformity["playlistNameTemplate"]!.GetValue<string>().Trim(),
+            IllegalCharacterReplacerOverride = string.IsNullOrWhiteSpace(folderUniformity["illegalCharacterReplacer"]?.GetValue<string>())
+                ? settings.IllegalCharacterReplacer
+                : folderUniformity["illegalCharacterReplacer"]!.GetValue<string>().Trim()
         };
 
         AppendLog(job, $"enhancement workflow: folder uniformity starting ({rootPaths.Count} path(s)).");
@@ -1303,7 +1333,8 @@ public class AutoTagService
                     {
                         UseDuplicatesFolder = true,
                         DuplicatesFolderName = folderUniformity["duplicatesFolderName"]?.GetValue<string>() ?? DuplicateCleanerService.DuplicatesFolderName,
-                        UseShazamForIdentity = ReadBool(folderUniformity, "useShazamForDedupe") == true
+                        UseShazamForIdentity = ReadBool(folderUniformity, "useShazamForDedupe") == true,
+                        ConflictPolicy = folderUniformity["duplicateConflictPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.DuplicateConflictKeepBest
                     },
                     cancellationToken);
                 AppendLog(job,

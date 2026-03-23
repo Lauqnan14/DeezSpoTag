@@ -79,7 +79,19 @@
                 lyricsPolicy: "merge",
                 runDedupe: true,
                 useShazamForDedupe: false,
-                duplicatesFolderName: "%duplicates%"
+                duplicatesFolderName: "%duplicates%",
+                usePrimaryArtistFolders: true,
+                multiArtistSeparator: "default",
+                createArtistFolder: true,
+                artistNameTemplate: "%artist%",
+                createAlbumFolder: true,
+                albumNameTemplate: "%album%",
+                createCDFolder: false,
+                createStructurePlaylist: false,
+                createSingleFolder: false,
+                createPlaylistFolder: true,
+                playlistNameTemplate: "%playlist%",
+                illegalCharacterReplacer: "_"
             },
             coverMaintenance: {
                 folderIds: [],
@@ -254,6 +266,7 @@
     const AUTOTAG_SELECTED_PLATFORMS_KEY = "autotag-selected-platforms";
     const AUTOTAG_PREFERENCES_KEY = "autotag-preferences";
     const AUTOTAG_ACTIVE_PROFILE_KEY = "autotag-active-profile-id";
+    const AUTOTAG_FOLDER_UNIFORMITY_JOB_KEY = "autotag-folder-uniformity-job-id";
     const AUTOTAG_LIBRARY_FOLDERS_API = "/api/library/folders";
     const PROFILE_AUTOSAVE_DEBOUNCE_MS = 900;
 
@@ -275,6 +288,7 @@
         platformAuth: {},
         lockedTabTarget: null,
         settingsCache: null,
+        folderUniformityJobId: null,
         syncLyricsFallbackOrder: null,
         syncArtworkFallbackOrder: null,
         syncArtistArtworkFallbackOrder: null,
@@ -1664,6 +1678,28 @@
         folderUniformity.duplicatesFolderName = String(
             folderUniformity.duplicatesFolderName || DEFAULT_CONFIG.enhancement.folderUniformity.duplicatesFolderName
         ).trim() || DEFAULT_CONFIG.enhancement.folderUniformity.duplicatesFolderName;
+        folderUniformity.usePrimaryArtistFolders = folderUniformity.usePrimaryArtistFolders !== false;
+        folderUniformity.multiArtistSeparator = String(
+            folderUniformity.multiArtistSeparator || DEFAULT_CONFIG.enhancement.folderUniformity.multiArtistSeparator
+        ).trim() || DEFAULT_CONFIG.enhancement.folderUniformity.multiArtistSeparator;
+        folderUniformity.createArtistFolder = folderUniformity.createArtistFolder !== false;
+        folderUniformity.artistNameTemplate = String(
+            folderUniformity.artistNameTemplate || DEFAULT_CONFIG.enhancement.folderUniformity.artistNameTemplate
+        ).trim() || DEFAULT_CONFIG.enhancement.folderUniformity.artistNameTemplate;
+        folderUniformity.createAlbumFolder = folderUniformity.createAlbumFolder !== false;
+        folderUniformity.albumNameTemplate = String(
+            folderUniformity.albumNameTemplate || DEFAULT_CONFIG.enhancement.folderUniformity.albumNameTemplate
+        ).trim() || DEFAULT_CONFIG.enhancement.folderUniformity.albumNameTemplate;
+        folderUniformity.createCDFolder = folderUniformity.createCDFolder === true;
+        folderUniformity.createStructurePlaylist = folderUniformity.createStructurePlaylist === true;
+        folderUniformity.createSingleFolder = folderUniformity.createSingleFolder === true;
+        folderUniformity.createPlaylistFolder = folderUniformity.createPlaylistFolder !== false;
+        folderUniformity.playlistNameTemplate = String(
+            folderUniformity.playlistNameTemplate || DEFAULT_CONFIG.enhancement.folderUniformity.playlistNameTemplate
+        ).trim() || DEFAULT_CONFIG.enhancement.folderUniformity.playlistNameTemplate;
+        folderUniformity.illegalCharacterReplacer = String(
+            folderUniformity.illegalCharacterReplacer || DEFAULT_CONFIG.enhancement.folderUniformity.illegalCharacterReplacer
+        ).trim() || DEFAULT_CONFIG.enhancement.folderUniformity.illegalCharacterReplacer;
         delete folderUniformity.preferredExtensions;
 
         const coverMaintenance = enhancement.coverMaintenance;
@@ -3304,6 +3340,19 @@
             "folderUniformityDuplicatesFolderName",
             folderUniformity.duplicatesFolderName || "%duplicates%"
         ).trim() || "%duplicates%";
+        folderUniformity.usePrimaryArtistFolders = getChecked("singleAlbumArtist", folderUniformity.usePrimaryArtistFolders !== false);
+        folderUniformity.multiArtistSeparator = getValue("multiArtistSeparator", folderUniformity.multiArtistSeparator || "default").trim() || "default";
+        const folderStructure = readFolderStructureFromUI();
+        folderUniformity.createArtistFolder = folderStructure.createArtistFolder;
+        folderUniformity.artistNameTemplate = folderStructure.artistNameTemplate;
+        folderUniformity.createAlbumFolder = folderStructure.createAlbumFolder;
+        folderUniformity.albumNameTemplate = folderStructure.albumNameTemplate;
+        folderUniformity.createCDFolder = folderStructure.createCDFolder;
+        folderUniformity.createStructurePlaylist = folderStructure.createStructurePlaylist;
+        folderUniformity.createSingleFolder = folderStructure.createSingleFolder;
+        folderUniformity.createPlaylistFolder = folderStructure.createPlaylistFolder;
+        folderUniformity.playlistNameTemplate = folderStructure.playlistNameTemplate;
+        folderUniformity.illegalCharacterReplacer = folderStructure.illegalCharacterReplacer;
         delete folderUniformity.preferredExtensions;
 
         const coverMaintenance = state.config.enhancement.coverMaintenance;
@@ -3536,6 +3585,7 @@
 
                 const runStatus = String(latestStatus?.status || "").toLowerCase();
                 if (runStatus && runStatus !== "running") {
+                    clearActiveFolderUniformityJob();
                     return latestStatus;
                 }
             } catch (error) {
@@ -3546,6 +3596,101 @@
             }
 
             await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+    }
+
+    function rememberActiveFolderUniformityJob(jobId) {
+        const id = String(jobId || "").trim();
+        if (!id) {
+            return;
+        }
+
+        state.folderUniformityJobId = id;
+        localStorage.setItem(AUTOTAG_FOLDER_UNIFORMITY_JOB_KEY, id);
+    }
+
+    function clearActiveFolderUniformityJob() {
+        state.folderUniformityJobId = null;
+        localStorage.removeItem(AUTOTAG_FOLDER_UNIFORMITY_JOB_KEY);
+    }
+
+    function getActiveFolderUniformityJobId() {
+        const inMemory = String(state.folderUniformityJobId || "").trim();
+        if (inMemory) {
+            return inMemory;
+        }
+
+        return String(localStorage.getItem(AUTOTAG_FOLDER_UNIFORMITY_JOB_KEY) || "").trim();
+    }
+
+    function setFolderUniformityRunButtonDisabled(disabled) {
+        const button = el("runFolderUniformity");
+        if (button) {
+            button.disabled = !!disabled;
+        }
+    }
+
+    function applyFolderUniformityCompletion(payload, showNotification = true) {
+        const foldersProcessed = Number(payload?.foldersProcessed ?? 0);
+        const foldersSkipped = Number(payload?.foldersSkipped ?? 0);
+        const dedupe = payload?.dedupe;
+        const dedupeSummary = dedupe
+            ? ` Dedupe: ${Number(dedupe.duplicatesFound ?? 0)} duplicates handled into ${String(dedupe.duplicatesFolderName || "%duplicates%")}.`
+            : "";
+        const reportSummary = Array.isArray(payload?.reconciliationReports) && payload.reconciliationReports.length > 0
+            ? ` Report: ${payload.reconciliationReports.length} folder report(s) generated.`
+            : "";
+        const summary = payload?.skipped
+            ? String(payload?.message || "Folder uniformity skipped.")
+            : String(payload?.message || `Folder uniformity finished: ${foldersProcessed} processed, ${foldersSkipped} skipped.`) + dedupeSummary + reportSummary;
+        renderFolderUniformityReports(payload?.reconciliationReports);
+        renderFolderUniformityLiveLog(payload);
+        setEnhancementStatus("folderUniformityStatus", summary);
+        const normalizedStatus = String(payload?.status || "").toLowerCase();
+        const failed = normalizedStatus === "error" || normalizedStatus === "canceled" || payload?.success === false;
+        if (showNotification) {
+            showToast(summary, failed ? "warning" : "success");
+        }
+    }
+
+    async function resumeFolderUniformityRunIfNeeded() {
+        const jobId = getActiveFolderUniformityJobId();
+        if (!jobId) {
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/autotag/enhancement/folder-uniformity/status?jobId=${encodeURIComponent(jobId)}`);
+            if (!response.ok) {
+                if (response.status === 404) {
+                    clearActiveFolderUniformityJob();
+                }
+                return;
+            }
+
+            const status = await response.json();
+            renderFolderUniformityLiveLog(status);
+            if (Array.isArray(status?.reconciliationReports)) {
+                renderFolderUniformityReports(status.reconciliationReports);
+            }
+
+            const runStatus = String(status?.status || "").toLowerCase();
+            if (runStatus && runStatus !== "running") {
+                clearActiveFolderUniformityJob();
+                applyFolderUniformityCompletion(status, false);
+                setFolderUniformityRunButtonDisabled(false);
+                return;
+            }
+
+            rememberActiveFolderUniformityJob(jobId);
+            setEnhancementStatus("folderUniformityStatus", buildFolderUniformityProgressMessage(status));
+            setFolderUniformityRunButtonDisabled(true);
+            const payload = await pollFolderUniformityStatus(jobId);
+            applyFolderUniformityCompletion(payload, true);
+        } catch (error) {
+            // Keep the active job id so monitoring can resume on next focus/page load.
+        } finally {
+            setFolderUniformityRunButtonDisabled(false);
         }
     }
 
@@ -3585,6 +3730,18 @@
                     runDedupe: options.runDedupe,
                     useShazamForDedupe: options.useShazamForDedupe,
                     duplicatesFolderName: options.duplicatesFolderName,
+                    usePrimaryArtistFolders: options.usePrimaryArtistFolders,
+                    multiArtistSeparator: options.multiArtistSeparator,
+                    createArtistFolder: options.createArtistFolder,
+                    artistNameTemplate: options.artistNameTemplate,
+                    createAlbumFolder: options.createAlbumFolder,
+                    albumNameTemplate: options.albumNameTemplate,
+                    createCDFolder: options.createCDFolder,
+                    createStructurePlaylist: options.createStructurePlaylist,
+                    createSingleFolder: options.createSingleFolder,
+                    createPlaylistFolder: options.createPlaylistFolder,
+                    playlistNameTemplate: options.playlistNameTemplate,
+                    illegalCharacterReplacer: options.illegalCharacterReplacer,
                     includeSubfolders: config.includeSubfolders !== false
                 })
             });
@@ -3598,36 +3755,23 @@
             if (!jobId) {
                 throw new Error("Folder uniformity job did not return a valid id.");
             }
+            rememberActiveFolderUniformityJob(jobId);
 
             if (startPayload?.started === false) {
                 setEnhancementStatus("folderUniformityStatus", "Folder uniformity is already running. Monitoring current progress...");
             }
 
             const payload = await pollFolderUniformityStatus(jobId);
-            const foldersProcessed = Number(payload?.foldersProcessed ?? 0);
-            const foldersSkipped = Number(payload?.foldersSkipped ?? 0);
-            const dedupe = payload?.dedupe;
-            const dedupeSummary = dedupe
-                ? ` Dedupe: ${Number(dedupe.duplicatesFound ?? 0)} duplicates handled into ${String(dedupe.duplicatesFolderName || "%duplicates%")}.`
-                : "";
-            const reportSummary = Array.isArray(payload?.reconciliationReports) && payload.reconciliationReports.length > 0
-                ? ` Report: ${payload.reconciliationReports.length} folder report(s) generated.`
-                : "";
-            const summary = payload?.skipped
-                ? String(payload?.message || "Folder uniformity skipped.")
-                : String(payload?.message || `Folder uniformity finished: ${foldersProcessed} processed, ${foldersSkipped} skipped.`) + dedupeSummary + reportSummary;
-            renderFolderUniformityReports(payload?.reconciliationReports);
-            renderFolderUniformityLiveLog(payload);
-            setEnhancementStatus("folderUniformityStatus", summary);
-            const normalizedStatus = String(payload?.status || "").toLowerCase();
-            const failed = normalizedStatus === "error" || normalizedStatus === "canceled" || payload?.success === false;
-            showToast(summary, failed ? "warning" : "success");
+            applyFolderUniformityCompletion(payload, true);
         } catch (error) {
             const message = `Folder uniformity failed: ${error?.message || error}`;
-            renderFolderUniformityReports([]);
             setEnhancementStatus("folderUniformityStatus", message);
             showToast(message, "error");
         } finally {
+            const activeJobId = getActiveFolderUniformityJobId();
+            if (!activeJobId) {
+                clearActiveFolderUniformityJob();
+            }
             if (button) {
                 button.disabled = false;
             }
@@ -6022,6 +6166,7 @@
             }
         }
         await initAutoTagDefaultsPanel();
+        await resumeFolderUniformityRunIfNeeded();
         const recoveredJobId = await resolveActiveAutoTagJobId();
         if (recoveredJobId && hasStatusUI()) {
             schedulePoll();
