@@ -202,6 +202,13 @@ public class DeezerStreamApiController : ControllerBase
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Authenticated Deezer stream failed for track TrackId");
+            if (Response.HasStarted)
+            {
+                HttpContext.Abort();
+                return true;
+            }
+
+            Response.ContentType = null;
             return false;
         }
     }
@@ -469,6 +476,12 @@ public class DeezerStreamApiController : ControllerBase
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to stream Deezer episode EpisodeId");
+            if (Response.HasStarted)
+            {
+                HttpContext.Abort();
+                return new EmptyResult();
+            }
+
             return StatusCode(StatusCodes.Status502BadGateway, new { error = "Episode stream failed." });
         }
     }
