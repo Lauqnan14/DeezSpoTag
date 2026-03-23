@@ -212,6 +212,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
         if (IsExternalModeEnabled())
         {
+            RecoverStaleSharedLoginState();
             if (TryGetInFlightLoginStatus(out var inFlightStatus))
             {
                 return inFlightStatus;
@@ -238,6 +239,92 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             email,
             false,
             false);
+    }
+
+    private void RecoverStaleSharedLoginState()
+    {
+        if (IsHelperControlModeEnabled())
+        {
+            return;
+        }
+
+        DateTimeOffset? startedAt;
+        var loginInProgress = false;
+        var awaitingTwoFactor = false;
+        lock (_sync)
+        {
+            loginInProgress = _loginInProgress;
+            awaitingTwoFactor = _awaitingTwoFactor;
+            startedAt = _startedAt;
+        }
+
+        if (!loginInProgress || awaitingTwoFactor || !startedAt.HasValue)
+        {
+            return;
+        }
+
+        var elapsed = DateTimeOffset.UtcNow - startedAt.Value;
+        if (elapsed < TimeSpan.FromSeconds(20))
+        {
+            return;
+        }
+
+        var loginFileQueued = false;
+        try
+        {
+            loginFileQueued = File.Exists(ResolveExternalWrapperSharedLoginFilePath());
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Unable to inspect shared wrapper login file while recovering stale state.");
+        }
+
+        if (loginFileQueued)
+        {
+            return;
+        }
+
+        var anyPortOpen = ResolveExternalWrapperHosts()
+            .Any(candidate => AreWrapperPortsOpen(candidate, TimeSpan.FromMilliseconds(200)));
+        if (anyPortOpen)
+        {
+            return;
+        }
+
+        var sharedTwoFactorState = ProbeSharedTwoFactorState(
+            maxAttempts: 2,
+            delayBetweenAttempts: TimeSpan.FromMilliseconds(50));
+        if (sharedTwoFactorState == TwoFactorProbeState.Waiting)
+        {
+            return;
+        }
+
+        lock (_sync)
+        {
+            if (!_loginInProgress || _awaitingTwoFactor)
+            {
+                return;
+            }
+
+            if (!_startedAt.HasValue || DateTimeOffset.UtcNow - _startedAt.Value < TimeSpan.FromSeconds(20))
+            {
+                return;
+            }
+
+            _loginInProgress = false;
+            _startedAt = null;
+            _twoFactorSubmittedAt = null;
+            _status = new AppleMusicWrapperStatusSnapshot(
+                StatusMissing,
+                "Recovered stale login state. Enter credentials to start a fresh login.",
+                _email,
+                false,
+                false);
+        }
+
+        _logger.LogWarning(
+            "Recovered stale shared-wrapper login state after {ElapsedSeconds}s with no queued login file, no open ports, and no 2FA wait state.",
+            elapsed.TotalSeconds);
     }
 
     private bool TryGetInFlightLoginStatus(out AppleMusicWrapperStatusSnapshot status)
