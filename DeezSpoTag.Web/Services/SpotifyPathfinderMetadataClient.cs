@@ -94,6 +94,8 @@ public sealed class SpotifyPathfinderMetadataClient
 
 	private const string BrowseSectionOperationName = "browseSection";
 
+	private const string HomeSectionOperationName = "homeSection";
+
 	private const string IntegrationWebPlayer = "INTEGRATION_WEB_PLAYER";
 
 	private const string SpotifyTrackFallbackTitle = "Spotify track";
@@ -221,6 +223,8 @@ public sealed class SpotifyPathfinderMetadataClient
 	private const string BrowsePageHashDefault = "4078a5c7df7638dfff465e5d4e03713fdbcab8b351b9db7cd2214f20b7b76a7a";
 
 	private const string BrowseSectionHashDefault = "9633db277767830756013f68eb0889ce7a099d2ed06c2f27b3944173cec2903b";
+
+	private const string HomeSectionHashDefault = "3e8e118c033b10353783ec0404451de66ed44e5cb5e0caefc65e4fab7b9e0aef";
 
 	private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250.0);
 
@@ -3337,6 +3341,30 @@ public sealed class SpotifyPathfinderMetadataClient
 		return await QueryWithBlobAuthContextAsync(BuildBrowseSectionPayload(uri, offset, limit), "browseSection", cancellationToken);
 	}
 
+	public async Task<JsonDocument?> FetchHomeSectionWithBlobAsync(string uri, string? timeZone, int offset, int limit, CancellationToken cancellationToken)
+	{
+		if (string.IsNullOrWhiteSpace(uri))
+		{
+			return null;
+		}
+
+		string? blobPath = await TryResolveActiveSpotifyBlobPathAsync(cancellationToken);
+		if (string.IsNullOrWhiteSpace(blobPath))
+		{
+			_logger.LogWarning("Spotify {OperationName} (blob) failed: missing blob path.", HomeSectionOperationName);
+			return null;
+		}
+
+		PathfinderAuthContext? context = await BuildBlobAuthContextAsync(blobPath, cancellationToken);
+		if (context is null)
+		{
+			_logger.LogWarning("Spotify {OperationName} (blob) failed: blob auth unavailable.", HomeSectionOperationName);
+			return null;
+		}
+
+		return await QueryAsync(context, BuildHomeSectionPayload(uri, timeZone, offset, limit, context), cancellationToken);
+	}
+
 	private async Task<JsonDocument?> QueryWithAuthContextAsync(object payload, CancellationToken cancellationToken)
 	{
 		PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
@@ -3436,6 +3464,40 @@ public sealed class SpotifyPathfinderMetadataClient
 				uri,
 				browseEndUserIntegration = IntegrationWebPlayer
 			},
+			extensions = new
+			{
+				persistedQuery = new
+				{
+					version = persisted.Version,
+					sha256Hash = persisted.Sha256Hash
+				}
+			}
+		};
+	}
+
+	private static object BuildHomeSectionPayload(string uri, string? timeZone, int offset, int limit, PathfinderAuthContext context)
+	{
+		string normalizedTimeZone = string.IsNullOrWhiteSpace(timeZone) ? "America/New_York" : timeZone.Trim();
+		int boundedOffset = Math.Max(0, offset);
+		int boundedLimit = Math.Clamp((limit <= 0) ? 20 : limit, 1, 100);
+		Dictionary<string, object?> variables = new Dictionary<string, object?>
+		{
+			["uri"] = uri,
+			["homeEndUserIntegration"] = IntegrationWebPlayer,
+			["timeZone"] = normalizedTimeZone,
+			["sectionItemsOffset"] = boundedOffset,
+			["sectionItemsLimit"] = boundedLimit
+		};
+		if (!string.IsNullOrWhiteSpace(context.DeviceId))
+		{
+			variables["sp_t"] = context.DeviceId;
+		}
+
+		PersistedQueryOverride persisted = GetPersistedQuery(HomeSectionOperationName, 1, HomeSectionHashDefault);
+		return new
+		{
+			operationName = HomeSectionOperationName,
+			variables,
 			extensions = new
 			{
 				persistedQuery = new

@@ -60,6 +60,10 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     private const string TotalMillisecondsKey = "totalMilliseconds";
     private const string DefaultCacheKey = "default";
     private const string TrendingSongsTitle = "Trending songs";
+    private const string PopularRadioTitle = "Popular radio";
+    private const string PopularRadiosTitle = "Popular radios";
+    private const string DefaultMusicBrowseCategoryId = "0JQ5DAqbMKFSi39LMRT0Cy";
+    private const string FallbackPopularRadioSectionUri = "spotify:section:0JQ5DAnM3wGh0gz1MXnu4h";
     private const string ErrorBrowseDisabled = "Spotify browse disabled.";
     private const string ErrorCategoryIdRequired = "Category id is required.";
     private const string ErrorCategoryPlaylistsUnavailable = "Spotify category playlists unavailable.";
@@ -101,9 +105,12 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     private static readonly object FeedCacheLock = new();
     private static readonly Dictionary<string, (DateTimeOffset Stamp, string Greeting, List<object> Sections)> HomeFeedCache
         = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object PopularRadioCacheLock = new();
+    private static (DateTimeOffset Stamp, object Section)? PopularRadioSectionCache;
     private const string HomeFeedCacheFileName = "spotify/home-feed-cache.json";
     private const string BrowseCategoriesCacheFileName = "spotify/browse-categories-cache.json";
     private static readonly TimeSpan HomeFeedCacheTtl = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan PopularRadioCacheTtl = TimeSpan.FromMinutes(20);
     private static readonly JsonSerializerOptions CompactJsonSerializerOptions = new()
     {
         WriteIndented = false
@@ -342,6 +349,10 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
 
         TryDeleteHomeFeedCache();
         TryDeleteBrowseCategoriesCache();
+        lock (PopularRadioCacheLock)
+        {
+            PopularRadioSectionCache = null;
+        }
     }
 
     private static void StoreBrowseCategoriesCache(List<object> categories)
@@ -936,6 +947,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             ? (Success: false, Greeting: string.Empty, Sections: new List<object>())
             : ParseHomeFeed(legacyDoc);
         var selectedSections = blobResult.Sections.Count > 0 ? blobResult.Sections : legacyResult.Sections;
+        selectedSections = MergeMissingPopularRadioSection(selectedSections, legacyResult.Sections);
+        selectedSections = await EnsurePopularRadioSectionAsync(selectedSections, timeZone, cancellationToken);
         var greeting = !string.IsNullOrWhiteSpace(blobResult.Greeting) ? blobResult.Greeting : legacyResult.Greeting ?? string.Empty;
         var finalSections = AddTrendingSection(selectedSections, await trendingTask);
 
@@ -946,6 +959,385 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             blobResult.Sections.Count,
             legacyResult.Sections.Count,
             blobDoc);
+    }
+
+    private static List<object> MergeMissingPopularRadioSection(
+        IReadOnlyList<object> primarySections,
+        IReadOnlyList<object> legacySections)
+    {
+        var merged = primarySections.ToList();
+        if (ContainsSectionTitle(merged, PopularRadioTitle) || ContainsSectionTitle(merged, PopularRadiosTitle))
+        {
+            return merged;
+        }
+
+        foreach (var section in legacySections)
+        {
+            if (!TitleMatches(section, PopularRadioTitle) && !TitleMatches(section, PopularRadiosTitle))
+            {
+                continue;
+            }
+
+            var items = TryGetAnonymousItems(section);
+            if (items == null || items.Count == 0)
+            {
+                continue;
+            }
+
+            merged.Add(section);
+            break;
+        }
+
+        if (ContainsSectionTitle(merged, PopularRadioTitle) || ContainsSectionTitle(merged, PopularRadiosTitle))
+        {
+            return merged;
+        }
+
+        if (TryBuildPopularRadioSectionFromFanSections(primarySections) is { } synthesized)
+        {
+            merged.Add(synthesized);
+        }
+
+        return merged;
+    }
+
+    private async Task<List<object>> EnsurePopularRadioSectionAsync(
+        IReadOnlyList<object> sections,
+        string? timeZone,
+        CancellationToken cancellationToken)
+    {
+        var merged = sections.ToList();
+        var existingIndex = FindPopularRadioSectionIndex(merged);
+        var existingCount = existingIndex >= 0
+            ? (TryGetAnonymousItems(merged[existingIndex])?.Count ?? 0)
+            : 0;
+
+        // Existing home/legacy popular-radio payloads are often thin (8-10 cards).
+        // Rehydrate from browse page when absent or clearly truncated.
+        if (existingIndex >= 0 && existingCount > 10)
+        {
+            return merged;
+        }
+
+        var hydratedSection = await TryFetchPopularRadioSectionFromBrowseAsync(timeZone, cancellationToken);
+        if (hydratedSection is null)
+        {
+            return merged;
+        }
+
+        if (existingIndex >= 0)
+        {
+            merged[existingIndex] = hydratedSection;
+            return merged;
+        }
+
+        merged.Add(hydratedSection);
+        return merged;
+    }
+
+    private async Task<object?> TryFetchPopularRadioSectionFromBrowseAsync(string? timeZone, CancellationToken cancellationToken)
+    {
+        if (!SpotifyBrowseEnabled)
+        {
+            return null;
+        }
+
+        if (TryGetCachedPopularRadioSection(out var cached))
+        {
+            return cached;
+        }
+
+        var pageUri = await TryResolveMusicBrowsePageUriAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(pageUri))
+        {
+            return null;
+        }
+
+        var pageDoc = await _pathfinderClient.FetchBrowsePageWithBlobAsync(pageUri, 0, 50, 0, 50, cancellationToken);
+        var pageSections = pageDoc is null ? new List<object>() : ParseBrowsePageSections(pageDoc);
+        var popularRadioSection = pageSections.FirstOrDefault(section =>
+            IsPopularRadioTitle(TryGetAnonymousTitle(section)));
+        var sectionUri = popularRadioSection is null
+            ? string.Empty
+            : (TryGetAnonymousString(popularRadioSection, UriKey) ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(sectionUri))
+        {
+            sectionUri = FallbackPopularRadioSectionUri;
+        }
+        var hydratedItems = new List<object>();
+
+        if (!string.IsNullOrWhiteSpace(sectionUri))
+        {
+            var homeSectionDoc = await _pathfinderClient.FetchHomeSectionWithBlobAsync(sectionUri, timeZone, 0, 60, cancellationToken);
+            if (homeSectionDoc is not null)
+            {
+                var homeSectionItems = ParseBrowsePlaylistItems(homeSectionDoc);
+                foreach (var homeSectionItem in homeSectionItems)
+                {
+                    var mapped = MapBrowsePlaylistToHomeRawItem(homeSectionItem);
+                    if (mapped is not null)
+                    {
+                        hydratedItems.Add(mapped);
+                    }
+                }
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(sectionUri))
+        {
+            var sectionDoc = await _pathfinderClient.FetchBrowseSectionWithBlobAsync(sectionUri, 0, 60, cancellationToken);
+            if (sectionDoc is not null)
+            {
+                var browseItems = ParseBrowsePlaylistItems(sectionDoc);
+                foreach (var browseItem in browseItems)
+                {
+                    var mapped = MapBrowsePlaylistToHomeRawItem(browseItem);
+                    if (mapped is not null)
+                    {
+                        hydratedItems.Add(mapped);
+                    }
+                }
+            }
+        }
+
+        if (hydratedItems.Count == 0)
+        {
+            var inlineItems = popularRadioSection is null ? null : TryGetAnonymousItems(popularRadioSection);
+            if (inlineItems is not null && inlineItems.Count > 0)
+            {
+                hydratedItems.AddRange(inlineItems.Where(item => item is not null)!);
+            }
+        }
+
+        if (hydratedItems.Count == 0)
+        {
+            return null;
+        }
+
+        hydratedItems = hydratedItems
+            .Where(item => item is not null)
+            .GroupBy(item => TryGetAnonymousString(item, UriKey) ?? $"{TryGetAnonymousString(item, TypeKey)}:{TryGetAnonymousString(item, IdKey)}", StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToList();
+
+        var normalizedSection = new
+        {
+            uri = sectionUri,
+            title = PopularRadioTitle,
+            __preserveAllItems = true,
+            preserveAllItems = true,
+            items = hydratedItems
+        };
+
+        CachePopularRadioSection(normalizedSection);
+        return normalizedSection;
+    }
+
+    private async Task<string?> TryResolveMusicBrowsePageUriAsync(CancellationToken cancellationToken)
+    {
+        var browseDoc = await _pathfinderClient.FetchBrowseAllWithBlobAsync(cancellationToken);
+        if (browseDoc is not null)
+        {
+            var categories = ParseBrowseCategories(browseDoc);
+            var musicCategory = categories.FirstOrDefault(category =>
+            {
+                var name = TryGetAnonymousString(category, NameKey);
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    return false;
+                }
+
+                return string.Equals(name.Trim(), "Music", StringComparison.OrdinalIgnoreCase);
+            });
+
+            if (musicCategory is not null)
+            {
+                var categoryId = TryGetAnonymousString(musicCategory, IdKey);
+                var categoryUri = TryGetAnonymousString(musicCategory, UriKey);
+                var categoryPageUri = BuildBrowsePageUri(categoryId, categoryUri);
+                if (!string.IsNullOrWhiteSpace(categoryPageUri))
+                {
+                    return categoryPageUri;
+                }
+            }
+        }
+
+        return BuildBrowsePageUri(DefaultMusicBrowseCategoryId, null);
+    }
+
+    private static int FindPopularRadioSectionIndex(IReadOnlyList<object> sections)
+    {
+        for (var i = 0; i < sections.Count; i++)
+        {
+            if (IsPopularRadioTitle(TryGetAnonymousTitle(sections[i])))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private static bool IsPopularRadioTitle(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return false;
+        }
+
+        var normalized = title.Trim();
+        return string.Equals(normalized, PopularRadioTitle, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, PopularRadiosTitle, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static object? MapBrowsePlaylistToHomeRawItem(object? browseItem)
+    {
+        if (browseItem is null)
+        {
+            return null;
+        }
+
+        var uri = TryGetAnonymousString(browseItem, UriKey);
+        var (itemType, itemId) = TryParseSpotifyUri(uri);
+        if (string.IsNullOrWhiteSpace(itemId) ||
+            !string.Equals(itemType, PlaylistType, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var name = TryGetAnonymousString(browseItem, NameKey);
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        var coverUrl = TryGetAnonymousString(browseItem, "imageUrl");
+        var description = TryGetAnonymousString(browseItem, DescriptionKey);
+
+        return new
+        {
+            id = itemId,
+            uri = uri ?? $"spotify:{PlaylistType}:{itemId}",
+            type = PlaylistType,
+            name,
+            artists = (string?)null,
+            description,
+            coverUrl,
+            trackCount = (int?)null,
+            followers = (int?)null,
+            @public = (bool?)null,
+            collaborative = (bool?)null,
+            albumId = (string?)null,
+            albumName = (string?)null,
+            durationMs = (int?)null
+        };
+    }
+
+    private static bool TryGetCachedPopularRadioSection(out object? section)
+    {
+        lock (PopularRadioCacheLock)
+        {
+            if (PopularRadioSectionCache is { } cached &&
+                DateTimeOffset.UtcNow - cached.Stamp <= PopularRadioCacheTtl)
+            {
+                section = cached.Section;
+                return true;
+            }
+        }
+
+        section = null;
+        return false;
+    }
+
+    private static void CachePopularRadioSection(object section)
+    {
+        lock (PopularRadioCacheLock)
+        {
+            PopularRadioSectionCache = (DateTimeOffset.UtcNow, section);
+        }
+    }
+
+    private static object? TryBuildPopularRadioSectionFromFanSections(IReadOnlyList<object> sections)
+    {
+        var radioItems = new List<object>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var section in sections)
+        {
+            var title = TryGetAnonymousTitle(section);
+            if (string.IsNullOrWhiteSpace(title) ||
+                !title.StartsWith("For fans of", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var items = TryGetAnonymousItems(section);
+            if (items == null || items.Count == 0)
+            {
+                continue;
+            }
+
+            foreach (var item in items)
+            {
+                if (!IsPopularRadioCandidateItem(item))
+                {
+                    continue;
+                }
+
+                var key = TryGetAnonymousString(item, UriKey);
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    var itemType = TryGetAnonymousString(item, TypeKey) ?? string.Empty;
+                    var itemId = TryGetAnonymousString(item, IdKey) ?? string.Empty;
+                    key = $"{itemType}:{itemId}";
+                }
+
+                if (!seen.Add(key))
+                {
+                    continue;
+                }
+
+                radioItems.Add(item!);
+            }
+        }
+
+        if (radioItems.Count < 4)
+        {
+            return null;
+        }
+
+        return new
+        {
+            uri = "spotify:section:popular-radio-synth",
+            title = PopularRadioTitle,
+            items = radioItems.Take(20).ToList()
+        };
+    }
+
+    private static bool IsPopularRadioCandidateItem(object? item)
+    {
+        if (item == null)
+        {
+            return false;
+        }
+
+        var itemType = TryGetAnonymousString(item, TypeKey) ?? string.Empty;
+        if (!itemType.Equals(PlaylistType, StringComparison.OrdinalIgnoreCase) &&
+            !itemType.Equals(StationType, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var name = TryGetAnonymousString(item, NameKey)
+                   ?? TryGetAnonymousString(item, TitleKey)
+                   ?? string.Empty;
+        if (name.Contains("radio", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var uri = TryGetAnonymousString(item, UriKey) ?? string.Empty;
+        return uri.StartsWith("spotify:station:", StringComparison.OrdinalIgnoreCase);
     }
 
     private static List<object> AddTrendingSection(IReadOnlyList<object> sections, object? trendingSection)
@@ -2486,13 +2878,20 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
                 continue;
             }
 
+            var preserveAllItems = TryGetAnonymousBool(section, "__preserveAllItems") == true
+                                   || TryGetAnonymousBool(section, "preserveAllItems") == true;
+            var pagePath = TryGetAnonymousString(section, "pagePath") ?? string.Empty;
+            var hasMore = TryGetAnonymousBool(section, "hasMore") ?? false;
+
             result.Add(new
             {
                 source = SpotifySource,
                 title,
                 layout = "row",
-                pagePath = string.Empty,
-                hasMore = false,
+                pagePath,
+                hasMore,
+                __preserveAllItems = preserveAllItems,
+                preserveAllItems,
                 items = mappedItems
             });
         }
@@ -2774,6 +3173,9 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             return null;
         }
 
+        var preserveAllItems = TryGetAnonymousBool(section, "__preserveAllItems") == true
+                               || TryGetAnonymousBool(section, "preserveAllItems") == true;
+
         return new
         {
             source,
@@ -2781,6 +3183,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             layout = TryGetAnonymousString(section, "layout") ?? "row",
             pagePath = TryGetAnonymousString(section, "pagePath") ?? string.Empty,
             hasMore = TryGetAnonymousBool(section, "hasMore") ?? false,
+            __preserveAllItems = preserveAllItems,
+            preserveAllItems,
             items = enrichedItems
         };
     }

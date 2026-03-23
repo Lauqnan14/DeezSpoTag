@@ -1299,7 +1299,7 @@ function renderHomeSections(sections) {
     const computeSectionRenderMeta = (section) => {
         const normalizedTitle = normalizeTitle(section?.title);
         const isTrendingSongs = normalizedTitle === 'trending songs';
-        const preserveAllItems = section?.__preserveAllItems === true;
+        const preserveAllItems = section?.__preserveAllItems === true || section?.preserveAllItems === true;
         const sectionLimit = preserveAllItems
             ? ((Array.isArray(section?.items) && section.items.length > 0) ? section.items.length : maxItemsPerSection)
             : (isChannelPage ? 60 : (isTrendingSongs ? 20 : maxItemsPerSection));
