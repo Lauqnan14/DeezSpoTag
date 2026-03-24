@@ -399,26 +399,6 @@ main() {
   export ANDROID_DATA="${ANDROID_DATA:-/data}"
   export ANDROID_ROOT="${ANDROID_ROOT:-/system}"
 
-  local wrapper_args_string
-  wrapper_args_string="$(resolve_wrapper_args)"
-
-  local wrapper_has_login="0"
-  if wrapper_args_include_login "$wrapper_args_string"; then
-    wrapper_has_login="1"
-  fi
-
-  if [[ "$wrapper_has_login" != "1" ]] && ! has_cached_session; then
-    wait_for_startup_inputs
-    if [[ -n "$STARTUP_LOGIN_CREDS" ]]; then
-      wrapper_has_login="1"
-    fi
-  fi
-
-  IFS=' ' read -r -a wrapper_args <<< "$wrapper_args_string"
-  if [[ -n "$STARTUP_LOGIN_CREDS" ]]; then
-    append_login_args_array wrapper_args "$wrapper_args_string" "$STARTUP_LOGIN_CREDS"
-  fi
-
   local two_factor_state_file
   two_factor_state_file="${WRAPPER_2FA_STATE_FILE:-$TWO_FACTOR_STATE_FILE_DEFAULT}"
   local transient_flag_file
@@ -429,33 +409,70 @@ main() {
   retry_attempts="${WRAPPER_LOGIN_RETRY_ATTEMPTS:-2}"
   local retry_delay_seconds
   retry_delay_seconds="${WRAPPER_LOGIN_RETRY_DELAY_SECONDS:-4}"
+  local exit_on_login_failure
+  exit_on_login_failure="${WRAPPER_EXIT_ON_LOGIN_FAILURE:-0}"
 
-  local attempt=0
   while true; do
-    set_wrapper_runtime_flag "$transient_flag_file" "0"
-    set_wrapper_runtime_flag "$response_type_file" ""
+    local wrapper_args_string
+    wrapper_args_string="$(resolve_wrapper_args)"
+
+    local wrapper_has_login="0"
+    if wrapper_args_include_login "$wrapper_args_string"; then
+      wrapper_has_login="1"
+    fi
+
+    STARTUP_LOGIN_CREDS=""
+    if [[ "$wrapper_has_login" != "1" ]] && ! has_cached_session; then
+      wait_for_startup_inputs
+      if [[ -n "$STARTUP_LOGIN_CREDS" ]]; then
+        wrapper_has_login="1"
+      fi
+    fi
+
+    IFS=' ' read -r -a wrapper_args <<< "$wrapper_args_string"
+    if [[ -n "$STARTUP_LOGIN_CREDS" ]]; then
+      append_login_args_array wrapper_args "$wrapper_args_string" "$STARTUP_LOGIN_CREDS"
+    fi
+
+    local attempt=0
     local exit_code=0
-    if run_wrapper_with_state_tracking "$wrapper_binary" "$two_factor_state_file" "$transient_flag_file" "$response_type_file" "${wrapper_args[@]}"; then
-      exit_code=0
-    else
-      exit_code=$?
-    fi
-    if [[ "$exit_code" -eq 0 ]]; then
-      return 0
-    fi
+    while true; do
+      set_wrapper_runtime_flag "$transient_flag_file" "0"
+      set_wrapper_runtime_flag "$response_type_file" ""
+      if run_wrapper_with_state_tracking "$wrapper_binary" "$two_factor_state_file" "$transient_flag_file" "$response_type_file" "${wrapper_args[@]}"; then
+        exit_code=0
+      else
+        exit_code=$?
+      fi
 
-    if [[ "$wrapper_has_login" != "1" ]]; then
-      return "$exit_code"
-    fi
+      if [[ "$exit_code" -eq 0 ]]; then
+        return 0
+      fi
 
-    if (( attempt >= retry_attempts )); then
-      return "$exit_code"
-    fi
+      if [[ "$wrapper_has_login" != "1" ]]; then
+        return "$exit_code"
+      fi
 
-    if should_retry_login "$transient_flag_file" "$response_type_file"; then
-      attempt=$((attempt + 1))
-      log "detected transient Apple login failure; retrying wrapper login (${attempt}/${retry_attempts}) in ${retry_delay_seconds}s..."
-      sleep "$retry_delay_seconds"
+      if (( attempt >= retry_attempts )); then
+        break
+      fi
+
+      if should_retry_login "$transient_flag_file" "$response_type_file"; then
+        attempt=$((attempt + 1))
+        log "detected transient Apple login failure; retrying wrapper login (${attempt}/${retry_attempts}) in ${retry_delay_seconds}s..."
+        sleep "$retry_delay_seconds"
+        continue
+      fi
+
+      break
+    done
+
+    # In shared-login mode, return to waiting state after failed auth instead of
+    # exiting and letting Docker restart-loop the container.
+    if [[ "$wrapper_has_login" == "1" ]] && ! has_cached_session && [[ "$exit_on_login_failure" != "1" ]]; then
+      log "wrapper login flow failed (exit=${exit_code}); waiting for fresh credentials/session instead of exiting."
+      set_twofactor_state "$two_factor_state_file" "not_waiting_for_2fa"
+      sleep 1
       continue
     fi
 

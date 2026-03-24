@@ -2009,15 +2009,17 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     {
         var wasAuthReady = false;
         var loginAttemptActive = false;
+        var allowTokenBasedPromotion = false;
         lock (_sync)
         {
             wasAuthReady = _authStateReady;
             loginAttemptActive = _loginInProgress || _awaitingTwoFactor || _startedAt.HasValue;
 
-            // Do not auto-reconnect solely because wrapper tokens exist.
-            // A reconnect must come from either an existing authenticated app state
-            // or an active login flow initiated through this service.
-            if (!wasAuthReady && !loginAttemptActive)
+            // In shared-control Docker mode, wrapper account tokens are the source of truth.
+            // Login state can be lost after container/app restarts even when wrapper auth is valid.
+            // Keep stricter behavior for helper mode.
+            allowTokenBasedPromotion = !IsHelperControlModeEnabled();
+            if (!wasAuthReady && !loginAttemptActive && !allowTokenBasedPromotion)
             {
                 context.HasAuthentication = false;
                 return false;
@@ -2132,6 +2134,22 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     private AppleMusicWrapperStatusSnapshot? TryBuildTransientLoginStatus(ExternalStatusContext context)
     {
+        if (context.HasAuthentication)
+        {
+            lock (_sync)
+            {
+                _awaitingTwoFactor = false;
+                _loginInProgress = false;
+                _startedAt = null;
+                _twoFactorSubmittedAt = null;
+            }
+
+            context.LoginActive = false;
+            context.LoginInProgress = false;
+            context.ShouldPromptTwoFactor = false;
+            return null;
+        }
+
         if (!context.LoginActive)
         {
             return null;

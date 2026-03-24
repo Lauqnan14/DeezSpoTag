@@ -1,7 +1,16 @@
 .env
+*.env.local
+*.env.private
+.claude
+.gocache
+.gocache/**
 DeezSpoTag.Web/Data/*
 !DeezSpoTag.Web/Data/*.cs
 Data
+DeezSpoTag.Workers/Data
+DeezSpoTag.Workers/Data/**
+DeezSpoTag.Workers/bin
+DeezSpoTag.Workers/obj
 DeezSpoTag Diagnostic
 reports
 test-results
@@ -20,9 +29,13 @@ obj
 .gitignore
 docker-compose.yml
 downloads
+Downloads
+library
+Library
 node_modules
 spotizerr-2.5.0
 deemix
+Tools/AppleMusicWrapper/docker/apple-wrapper.env
 Tools/AppleMusicWrapper/runtime/app/rootfs/proc
 Tools/AppleMusicWrapper/runtime/app/rootfs/sys
 Tools/AppleMusicWrapper/runtime/app/rootfs/dev/pts
