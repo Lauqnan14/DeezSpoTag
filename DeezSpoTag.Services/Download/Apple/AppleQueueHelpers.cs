@@ -102,6 +102,7 @@ public static class AppleQueueHelpers
     private const string AttributesKey = "attributes";
     private const string VideoType = "video";
     private const string UnknownValue = "Unknown";
+    private const string RawItunesArtworkMarker = "#deezspotag-itunes-raw";
     private static readonly MemoryCache AppleArtworkCache = new(new MemoryCacheOptions { SizeLimit = 512 });
     private static readonly string? FfmpegExecutable = ResolveExecutablePath(
         OperatingSystem.IsWindows()
@@ -532,7 +533,6 @@ public static class AppleQueueHelpers
                 var pageArtwork = await TryResolveItunesArtistPageArtworkAsync(
                     client,
                     artistLinkUrl,
-                    size,
                     cancellationToken);
                 if (!string.IsNullOrWhiteSpace(pageArtwork))
                 {
@@ -556,7 +556,6 @@ public static class AppleQueueHelpers
     private static async Task<string?> TryResolveItunesArtistPageArtworkAsync(
         HttpClient client,
         string artistLinkUrl,
-        int size,
         CancellationToken cancellationToken)
     {
         using var response = await client.GetAsync(artistLinkUrl, cancellationToken);
@@ -581,7 +580,8 @@ public static class AppleQueueHelpers
         }
 
         var raw = WebUtility.HtmlDecode(ogImage.Groups["url"].Value);
-        return string.IsNullOrWhiteSpace(raw) ? null : NormalizeArtworkUrl(raw, size);
+        // iTunes og:image already points to a concrete asset URL; keep it unchanged.
+        return string.IsNullOrWhiteSpace(raw) ? null : raw;
     }
 
     public static async Task<string?> ResolveAppleArtistImageFromSongAsync(
@@ -795,13 +795,42 @@ public static class AppleQueueHelpers
         var preferMaxQuality = request.PreferMaxQuality;
         var logger = request.Logger;
 
+        var isRawItunesArtwork = IsRawItunesArtworkUrl(rawUrl);
+        var sourceUrl = StripRawItunesArtworkMarker(rawUrl);
+
+        if (isRawItunesArtwork)
+        {
+            var (preferredWidth, preferredHeight, preferredSizeText) = GetAppleArtworkDimensions(settings);
+            var preferredUrl = NormalizeArtworkUrl(sourceUrl, preferredSizeText, preferredWidth, preferredHeight);
+            var effectivePath = outputPath;
+            var requestedExtension = Path.GetExtension(outputPath).TrimStart('.');
+            var rawExtension = GetAppleArtworkExtension(preferredUrl, DefaultArtworkFormat);
+            if (!string.IsNullOrWhiteSpace(rawExtension)
+                && !string.Equals(requestedExtension, rawExtension, StringComparison.OrdinalIgnoreCase))
+            {
+                effectivePath = Path.ChangeExtension(outputPath, rawExtension);
+            }
+
+            logger.LogDebug(
+                "Downloading iTunes artwork with configured size preference: {Url} (target: {Path})",
+                preferredUrl,
+                effectivePath);
+
+            return await downloader.DownloadImageAsync(
+                preferredUrl,
+                effectivePath,
+                overwrite,
+                preferMaxQuality,
+                cancellationToken);
+        }
+
         var (_, _, sizeText) = GetAppleArtworkDimensions(settings);
         var pathExtension = Path.GetExtension(outputPath)?.TrimStart('.').ToLowerInvariant();
         var format = pathExtension is "jpg" or "png"
             ? pathExtension
             : GetAppleArtworkFormat(settings);
         var effectiveSizeText = size > 0 ? $"{size}x{size}" : sizeText;
-        var url = BuildAppleArtworkUrl(rawUrl, effectiveSizeText, size, size, format);
+        var url = BuildAppleArtworkUrl(sourceUrl, effectiveSizeText, size, size, format);
 
         var downloaded = await downloader.DownloadImageAsync(
             url,
@@ -815,7 +844,7 @@ public static class AppleQueueHelpers
             return downloaded;
         }
 
-        var fallbackUrl = BuildAppleArtworkFallbackUrl(rawUrl, effectiveSizeText, size, size, format);
+        var fallbackUrl = BuildAppleArtworkFallbackUrl(sourceUrl, effectiveSizeText, size, size, format);
         if (!string.IsNullOrWhiteSpace(fallbackUrl))
         {
             logger.LogDebug("Apple artwork fallback URL: {Url}", fallbackUrl);
@@ -828,6 +857,63 @@ public static class AppleQueueHelpers
         }
 
         return null;
+    }
+
+    public static bool IsRawItunesArtworkUrl(string? rawUrl)
+    {
+        if (string.IsNullOrWhiteSpace(rawUrl))
+        {
+            return false;
+        }
+
+        if (rawUrl.Contains(RawItunesArtworkMarker, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (rawUrl.Contains("{w}", StringComparison.OrdinalIgnoreCase)
+            || rawUrl.Contains("{h}", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        if (!uri.Host.Contains("mzstatic.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (uri.AbsolutePath.Contains("/source/", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!uri.AbsolutePath.Contains("/image/thumb/", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return MatchWithTimeout(
+            uri.AbsolutePath,
+            @"/\d{2,5}x\d{2,5}[a-z]{0,8}\.[a-zA-Z0-9]+$",
+            RegexOptions.IgnoreCase).Success;
+    }
+
+    private static string StripRawItunesArtworkMarker(string rawUrl)
+    {
+        if (string.IsNullOrWhiteSpace(rawUrl))
+        {
+            return rawUrl;
+        }
+
+        var markerIndex = rawUrl.IndexOf(RawItunesArtworkMarker, StringComparison.Ordinal);
+        return markerIndex >= 0
+            ? rawUrl[..markerIndex]
+            : rawUrl;
     }
 
     public static string NormalizeArtworkUrl(string raw, string sizeText, int width, int height)
