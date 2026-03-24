@@ -350,10 +350,11 @@ public sealed class DownloadOrchestrationService : BackgroundService
             enrichmentJob = await _autoTagService.StartJob(
                 downloadRootPath,
                 enrichmentConfig,
-                "automation",
+                AutoTagLiterals.AutomationTrigger,
                 automationProfile?.Technical,
                 automationProfile?.Id,
-                automationProfile?.Name);
+                automationProfile?.Name,
+                AutoTagLiterals.RunIntentDownloadEnrichment);
             await WaitForJobCompletionAsync(enrichmentJob, cancellationToken);
         }
         finally
@@ -641,10 +642,11 @@ public sealed class DownloadOrchestrationService : BackgroundService
             enhancementJob = await _autoTagService.StartJob(
                 target.RootPath,
                 enhancementConfig,
-                "automation",
+                AutoTagLiterals.ScheduleTrigger,
                 enhancementProfile?.Technical,
                 enhancementProfile?.Id,
-                enhancementProfile?.Name);
+                enhancementProfile?.Name,
+                AutoTagLiterals.RunIntentEnhancementOnly);
             MarkEnhancementStageStarted(enhancementJob);
             await WaitForJobCompletionAsync(enhancementJob, cancellationToken);
         }

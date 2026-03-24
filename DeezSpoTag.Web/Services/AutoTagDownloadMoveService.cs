@@ -4,6 +4,7 @@ using System.IO;
 using System.Text.RegularExpressions;
 using System.Linq;
 using System.Collections.Generic;
+using System.Security.Cryptography;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Conversion;
@@ -546,12 +547,28 @@ public sealed class AutoTagDownloadMoveService
             .Select(pair => BuildSidecarKey(pair.Key))
             .Where(key => !string.IsNullOrWhiteSpace(key))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (runtime.Classification.ExplicitResultSets)
+        {
+            foreach (var file in runtime.Classification.TaggedSet)
+            {
+                if (!IsAudioExtension(file) || !IsUnderRoot(runtime.Paths.RootIo, file))
+                {
+                    continue;
+                }
+
+                var key = BuildSidecarKey(file);
+                if (!string.IsNullOrWhiteSpace(key))
+                {
+                    taggedAudioKeys.Add(key);
+                }
+            }
+        }
 
         return new ResidualBuckets(
             audioBuckets,
             taggedAudioKeys,
-            BuildSidecarBuckets(audioBuckets),
-            BuildFolderBuckets(audioBuckets));
+            BuildSidecarBuckets(audioBuckets, runtime),
+            BuildFolderBuckets(audioBuckets, runtime));
     }
 
     private async Task ProcessResidualAudioFileAsync(
@@ -625,10 +642,20 @@ public sealed class AutoTagDownloadMoveService
         ResidualBuckets buckets,
         Dictionary<string, string> moved)
     {
-        var sidecarBucket = ResolveSidecarBucket(file, buckets.SidecarBucketsByKey, buckets.FolderBucketsByDirectory);
+        var sidecarBucket = ResolveSidecarBucket(
+            file,
+            buckets.SidecarBucketsByKey,
+            buckets.FolderBucketsByDirectory,
+            runtime.Paths.RootIo);
         if (sidecarBucket == ResidualBucket.Skip)
         {
             return;
+        }
+
+        if (sidecarBucket == ResidualBucket.Failed && string.IsNullOrWhiteSpace(runtime.Paths.FailedIo))
+        {
+            // Mirror audio routing behavior: without a failed target, sidecars must go to success.
+            sidecarBucket = ResidualBucket.Tagged;
         }
 
         var sidecarTarget = sidecarBucket == ResidualBucket.Failed ? runtime.Paths.FailedIo : runtime.Paths.SuccessIo;
@@ -858,7 +885,9 @@ public sealed class AutoTagDownloadMoveService
         return AutoTagTaggedDateProbe.HasTaggedDate(file) ? ResidualBucket.Tagged : ResidualBucket.Failed;
     }
 
-    private static Dictionary<string, ResidualBucket> BuildSidecarBuckets(IReadOnlyDictionary<string, ResidualBucket> audioBuckets)
+    private static Dictionary<string, ResidualBucket> BuildSidecarBuckets(
+        IReadOnlyDictionary<string, ResidualBucket> audioBuckets,
+        ResidualRuntime runtime)
     {
         var sidecarBuckets = new Dictionary<string, ResidualBucket>(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in audioBuckets)
@@ -879,10 +908,45 @@ public sealed class AutoTagDownloadMoveService
             }
         }
 
+        if (runtime.Classification.ExplicitResultSets)
+        {
+            foreach (var file in runtime.Classification.TaggedSet)
+            {
+                if (!IsAudioExtension(file) || !IsUnderRoot(runtime.Paths.RootIo, file))
+                {
+                    continue;
+                }
+
+                var key = BuildSidecarKey(file);
+                if (!string.IsNullOrWhiteSpace(key))
+                {
+                    sidecarBuckets[key] = ResidualBucket.Tagged;
+                }
+            }
+
+            foreach (var file in runtime.Classification.FailedSet)
+            {
+                if (!IsAudioExtension(file) || !IsUnderRoot(runtime.Paths.RootIo, file))
+                {
+                    continue;
+                }
+
+                var key = BuildSidecarKey(file);
+                if (string.IsNullOrWhiteSpace(key) || sidecarBuckets.ContainsKey(key))
+                {
+                    continue;
+                }
+
+                sidecarBuckets[key] = ResidualBucket.Failed;
+            }
+        }
+
         return sidecarBuckets;
     }
 
-    private static Dictionary<string, ResidualBucket> BuildFolderBuckets(IReadOnlyDictionary<string, ResidualBucket> audioBuckets)
+    private static Dictionary<string, ResidualBucket> BuildFolderBuckets(
+        IReadOnlyDictionary<string, ResidualBucket> audioBuckets,
+        ResidualRuntime runtime)
     {
         var folderBuckets = new Dictionary<string, ResidualBucket>(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in audioBuckets)
@@ -905,13 +969,49 @@ public sealed class AutoTagDownloadMoveService
             }
         }
 
+        if (runtime.Classification.ExplicitResultSets)
+        {
+            foreach (var file in runtime.Classification.TaggedSet)
+            {
+                if (!IsAudioExtension(file) || !IsUnderRoot(runtime.Paths.RootIo, file))
+                {
+                    continue;
+                }
+
+                var directory = Path.GetDirectoryName(file);
+                if (string.IsNullOrWhiteSpace(directory))
+                {
+                    continue;
+                }
+
+                folderBuckets[directory] = ResidualBucket.Tagged;
+            }
+
+            foreach (var file in runtime.Classification.FailedSet)
+            {
+                if (!IsAudioExtension(file) || !IsUnderRoot(runtime.Paths.RootIo, file))
+                {
+                    continue;
+                }
+
+                var directory = Path.GetDirectoryName(file);
+                if (string.IsNullOrWhiteSpace(directory) || folderBuckets.ContainsKey(directory))
+                {
+                    continue;
+                }
+
+                folderBuckets[directory] = ResidualBucket.Failed;
+            }
+        }
+
         return folderBuckets;
     }
 
     private static ResidualBucket ResolveSidecarBucket(
         string file,
         IReadOnlyDictionary<string, ResidualBucket> sidecarBuckets,
-        IReadOnlyDictionary<string, ResidualBucket> folderBuckets)
+        IReadOnlyDictionary<string, ResidualBucket> folderBuckets,
+        string rootIo)
     {
         var key = BuildSidecarKey(file);
         if (string.IsNullOrWhiteSpace(key))
@@ -926,7 +1026,7 @@ public sealed class AutoTagDownloadMoveService
 
         if (!IsDirectorySharedSidecar(file))
         {
-            return ResidualBucket.Skip;
+            return ResolveArtistArtworkBucket(file, folderBuckets, rootIo);
         }
 
         var directory = Path.GetDirectoryName(file);
@@ -935,9 +1035,64 @@ public sealed class AutoTagDownloadMoveService
             return ResidualBucket.Skip;
         }
 
-        return folderBuckets.TryGetValue(directory, out var folderBucket)
-            ? folderBucket
-            : ResidualBucket.Skip;
+        if (folderBuckets.TryGetValue(directory, out var folderBucket))
+        {
+            return folderBucket;
+        }
+
+        return ResolveArtistArtworkBucket(file, folderBuckets, rootIo);
+    }
+
+    private static ResidualBucket ResolveArtistArtworkBucket(
+        string file,
+        IReadOnlyDictionary<string, ResidualBucket> folderBuckets,
+        string rootIo)
+    {
+        if (!IsArtistArtworkFile(file, rootIo))
+        {
+            return ResidualBucket.Skip;
+        }
+
+        var artistDirectory = Path.GetDirectoryName(file);
+        if (string.IsNullOrWhiteSpace(artistDirectory))
+        {
+            return ResidualBucket.Skip;
+        }
+
+        var hasTaggedDescendant = false;
+        var hasFailedDescendant = false;
+        var prefix = artistDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        foreach (var pair in folderBuckets)
+        {
+            if (!pair.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (pair.Value == ResidualBucket.Tagged)
+            {
+                hasTaggedDescendant = true;
+                break;
+            }
+
+            if (pair.Value == ResidualBucket.Failed)
+            {
+                hasFailedDescendant = true;
+            }
+        }
+
+        if (hasTaggedDescendant)
+        {
+            return ResidualBucket.Tagged;
+        }
+
+        if (hasFailedDescendant)
+        {
+            return ResidualBucket.Failed;
+        }
+
+        return ResidualBucket.Skip;
     }
 
     private static bool IsDirectorySharedSidecar(string file)
@@ -950,6 +1105,104 @@ public sealed class AutoTagDownloadMoveService
 
         var baseName = Path.GetFileNameWithoutExtension(file);
         return DirectoryArtworkSidecarNames.Contains(baseName);
+    }
+
+    private static bool IsArtistArtworkFile(string file, string rootIo)
+    {
+        if (string.IsNullOrWhiteSpace(file) || string.IsNullOrWhiteSpace(rootIo))
+        {
+            return false;
+        }
+
+        var extension = Path.GetExtension(file);
+        if (!DirectoryArtworkSidecarExtensions.Contains(extension))
+        {
+            return false;
+        }
+
+        var artistDirectory = Path.GetDirectoryName(file);
+        if (string.IsNullOrWhiteSpace(artistDirectory) || !IsUnderRoot(rootIo, artistDirectory))
+        {
+            return false;
+        }
+
+        if (!TryGetRelativePathUnderRoot(rootIo, file, out var relativePath))
+        {
+            return false;
+        }
+
+        var segments = relativePath.Split(
+            new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+            StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length < 2)
+        {
+            // Ignore root-level images; artist artwork should be inside an artist folder.
+            return false;
+        }
+
+        if (HasTopLevelAudioFiles(artistDirectory))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool HasTopLevelAudioFiles(string directoryPath)
+    {
+        try
+        {
+            return Directory.EnumerateFiles(directoryPath).Any(IsAudioExtension);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryResolveArtistArtworkConflict(
+        string sourcePath,
+        string destinationPath,
+        string rootIo,
+        string destinationRoot,
+        out (bool IsHandled, string? PathResult, string DestinationPath) result)
+    {
+        result = (false, null, destinationPath);
+        if (!IOFile.Exists(destinationPath) || !IsArtistArtworkFile(sourcePath, rootIo))
+        {
+            return false;
+        }
+
+        var sourceHash = TryComputeSha256(sourcePath);
+        var destinationHash = TryComputeSha256(destinationPath);
+        if (string.IsNullOrWhiteSpace(sourceHash) || string.IsNullOrWhiteSpace(destinationHash))
+        {
+            return false;
+        }
+
+        if (string.Equals(sourceHash, destinationHash, StringComparison.OrdinalIgnoreCase))
+        {
+            TryDeleteDuplicateSource(sourcePath);
+            result = (true, DownloadPathResolver.NormalizeDisplayPath(destinationPath), destinationPath);
+            return true;
+        }
+
+        result = (false, null, GetUniqueDestinationPath(destinationRoot, destinationPath));
+        return true;
+    }
+
+    private static string? TryComputeSha256(string filePath)
+    {
+        try
+        {
+            using var stream = IOFile.OpenRead(filePath);
+            var hash = SHA256.HashData(stream);
+            return Convert.ToHexString(hash);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
     }
 
     private static string? MoveResidualFile( // NOSONAR
@@ -970,6 +1223,7 @@ public sealed class AutoTagDownloadMoveService
             var existingResult = HandleExistingResidualDestination(
                 sourcePath,
                 destinationPath,
+                rootIo,
                 destinationDir ?? destinationRoot,
                 overwritePolicy,
                 preferredExtensions);
@@ -1018,10 +1272,16 @@ public sealed class AutoTagDownloadMoveService
     private static (bool IsHandled, string? PathResult, string DestinationPath) HandleExistingResidualDestination(
         string sourcePath,
         string destinationPath,
+        string rootIo,
         string destinationRoot,
         string overwritePolicy,
         IReadOnlyList<string> preferredExtensions)
     {
+        if (TryResolveArtistArtworkConflict(sourcePath, destinationPath, rootIo, destinationRoot, out var artistResult))
+        {
+            return artistResult;
+        }
+
         if (!string.Equals(sourcePath, destinationPath, StringComparison.OrdinalIgnoreCase)
             && AudioCollisionDedupe.IsDuplicate(destinationPath, sourcePath))
         {
@@ -1505,6 +1765,7 @@ public sealed class AutoTagDownloadMoveService
         var existingResolution = ResolveExistingDestinationPath(
             sourceIo,
             destinationPath,
+            stagingRoot,
             destinationDir ?? destinationIo,
             overwritePolicy);
         if (existingResolution.IsHandled)
@@ -1588,12 +1849,18 @@ public sealed class AutoTagDownloadMoveService
     private static (bool IsHandled, string? PathResult, string DestinationPath) ResolveExistingDestinationPath(
         string sourcePath,
         string destinationPath,
+        string stagingRoot,
         string destinationRoot,
         string overwritePolicy)
     {
         if (!IOFile.Exists(destinationPath))
         {
             return (false, null, destinationPath);
+        }
+
+        if (TryResolveArtistArtworkConflict(sourcePath, destinationPath, stagingRoot, destinationRoot, out var artistResult))
+        {
+            return artistResult;
         }
 
         if (!string.Equals(sourcePath, destinationPath, StringComparison.OrdinalIgnoreCase)

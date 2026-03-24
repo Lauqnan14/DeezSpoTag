@@ -23,6 +23,9 @@ internal static class AutoTagLiterals
     internal const string ManualTrigger = "manual";
     internal const string AutomationTrigger = "automation";
     internal const string ScheduleTrigger = "schedule";
+    internal const string RunIntentDefault = "default";
+    internal const string RunIntentDownloadEnrichment = "download_enrichment";
+    internal const string RunIntentEnhancementOnly = "enhancement_only";
     internal const string CanceledStatus = "canceled";
     internal const string FailedStatus = "failed";
     internal const string CompletedStatus = "completed";
@@ -60,6 +63,7 @@ public abstract class AutoTagRunState
     public int SkippedCount { get; set; }
     public string? RootPath { get; set; }
     public string Trigger { get; set; } = AutoTagLiterals.ManualTrigger;
+    public string RunIntent { get; set; } = AutoTagLiterals.RunIntentDefault;
     public string? ProfileId { get; set; }
     public string? ProfileName { get; set; }
 }
@@ -406,24 +410,44 @@ public class AutoTagService
         string trigger = AutoTagLiterals.ManualTrigger,
         TechnicalTagSettings? technicalOverride = null,
         string? profileId = null,
-        string? profileName = null)
+        string? profileName = null,
+        string? runIntent = null)
     {
+        var normalizedPath = NormalizePathForJob(path);
+        var normalizedTrigger = NormalizeRunTrigger(trigger);
+        var normalizedRunIntent = NormalizeRunIntent(runIntent);
+
         if (await _queueRepository.HasActiveDownloadsAsync())
         {
-            var blockedJob = new AutoTagJob
-            {
-                Id = Guid.NewGuid().ToString("N"),
-                Status = "blocked",
-                StartedAt = DateTimeOffset.UtcNow,
-                FinishedAt = DateTimeOffset.UtcNow,
-                Error = "Downloads active; AutoTag skipped."
-            };
-
-            _jobs[blockedJob.Id] = blockedJob;
-            SaveJob(blockedJob);
-            TrySaveLastJobId(blockedJob.Id);
+            var blockedJob = CreateBlockedJob(
+                "Downloads active; AutoTag skipped.",
+                normalizedPath,
+                normalizedTrigger,
+                normalizedRunIntent,
+                profileId,
+                profileName);
             AppendActivityLog(blockedJob.Id, "autotag skipped: downloads active");
             _logger.LogInformation("AutoTag skipped: downloads active.");
+            return blockedJob;
+        }
+
+        var runIntentScopeError = await ValidateRunIntentScopeAsync(normalizedPath, normalizedRunIntent, CancellationToken.None);
+        if (!string.IsNullOrWhiteSpace(runIntentScopeError))
+        {
+            var blockedJob = CreateBlockedJob(
+                runIntentScopeError,
+                normalizedPath,
+                normalizedTrigger,
+                normalizedRunIntent,
+                profileId,
+                profileName);
+            AppendActivityLog(blockedJob.Id, $"autotag blocked: {runIntentScopeError}");
+            _logger.LogWarning(
+                "AutoTag blocked by scope policy. intent={Intent}, trigger={Trigger}, path={Path}, reason={Reason}",
+                normalizedRunIntent,
+                normalizedTrigger,
+                normalizedPath,
+                runIntentScopeError);
             return blockedJob;
         }
 
@@ -432,8 +456,9 @@ public class AutoTagService
             Id = Guid.NewGuid().ToString("N"),
             Status = "running",
             StartedAt = DateTimeOffset.UtcNow,
-            RootPath = path,
-            Trigger = NormalizeRunTrigger(trigger),
+            RootPath = normalizedPath,
+            Trigger = normalizedTrigger,
+            RunIntent = normalizedRunIntent,
             ProfileId = string.IsNullOrWhiteSpace(profileId) ? null : profileId.Trim(),
             ProfileName = string.IsNullOrWhiteSpace(profileName) ? null : profileName.Trim()
         };
@@ -442,10 +467,9 @@ public class AutoTagService
         _activeJobIds.TryAdd(job.Id, 0);
         SaveJob(job);
         TrySaveLastJobId(job.Id);
-        AppendActivityLog(job.Id, $"autotag started: {path}");
+        AppendActivityLog(job.Id, $"autotag started: {normalizedPath}");
 
         InitializeRunArchive(job);
-        var normalizedTrigger = job.Trigger;
         var runtimeConfigJson = SanitizeConfigJson(configJson);
         runtimeConfigJson = await InjectDeezerAuthAsync(runtimeConfigJson);
         runtimeConfigJson = InjectDeezerDownloadOptions(runtimeConfigJson);
@@ -458,9 +482,124 @@ public class AutoTagService
         var runtimeConfigPath = WriteRuntimeConfigFile(job.Id, "base", runtimeConfigJson);
         TrySaveLastConfig(persistedConfigJson);
 
-        _ = Task.Run(() => RunJobAsync(job, path, runtimeConfigPath));
+        _ = Task.Run(() => RunJobAsync(job, normalizedPath, runtimeConfigPath));
 
         return job;
+    }
+
+    private AutoTagJob CreateBlockedJob(
+        string error,
+        string rootPath,
+        string trigger,
+        string runIntent,
+        string? profileId,
+        string? profileName)
+    {
+        var blockedJob = new AutoTagJob
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Status = "blocked",
+            StartedAt = DateTimeOffset.UtcNow,
+            FinishedAt = DateTimeOffset.UtcNow,
+            Error = error,
+            RootPath = rootPath,
+            Trigger = trigger,
+            RunIntent = runIntent,
+            ProfileId = string.IsNullOrWhiteSpace(profileId) ? null : profileId.Trim(),
+            ProfileName = string.IsNullOrWhiteSpace(profileName) ? null : profileName.Trim()
+        };
+
+        _jobs[blockedJob.Id] = blockedJob;
+        SaveJob(blockedJob);
+        TrySaveLastJobId(blockedJob.Id);
+        return blockedJob;
+    }
+
+    private async Task<string?> ValidateRunIntentScopeAsync(
+        string normalizedPath,
+        string runIntent,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(runIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!ConfiguredDownloadRootResolver.TryResolve(
+                    _settingsService,
+                    "download location",
+                    "download location is not configured.",
+                    out var downloadRoot,
+                    out var error))
+            {
+                return $"Download enrichment run blocked: {error}";
+            }
+
+            if (!IsPathUnderRoot(normalizedPath, downloadRoot))
+            {
+                return $"Download enrichment run blocked: path '{normalizedPath}' is outside configured download location '{downloadRoot}'.";
+            }
+
+            return null;
+        }
+
+        if (!string.Equals(runIntent, AutoTagLiterals.RunIntentEnhancementOnly, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var libraryRoots = await ResolveAllowedLibraryRootsAsync(cancellationToken);
+        if (libraryRoots.Count == 0)
+        {
+            return "Enhancement run blocked: no accessible library folders are configured.";
+        }
+
+        if (!libraryRoots.Any(root => IsPathUnderRoot(normalizedPath, root)))
+        {
+            return $"Enhancement run blocked: path '{normalizedPath}' is outside configured library roots.";
+        }
+
+        if (ConfiguredDownloadRootResolver.TryResolve(
+                _settingsService,
+                "download location",
+                "download location is not configured.",
+                out var configuredDownloadRoot,
+                out _)
+            && IsPathUnderRoot(normalizedPath, configuredDownloadRoot))
+        {
+            return $"Enhancement run blocked: path '{normalizedPath}' is inside download location '{configuredDownloadRoot}'.";
+        }
+
+        return null;
+    }
+
+    private async Task<IReadOnlyList<string>> ResolveAllowedLibraryRootsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var folders = _libraryRepository.IsConfigured
+                ? await _libraryRepository.GetFoldersAsync(cancellationToken)
+                : _activityLog.GetFolders();
+            return LibraryFolderRootResolver.ResolveAccessibleRoots(folders);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return LibraryFolderRootResolver.ResolveAccessibleRoots(_activityLog.GetFolders());
+        }
+    }
+
+    private static string NormalizePathForJob(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            return Path.GetFullPath(path);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return path.Trim();
+        }
     }
 
     public AutoTagJob? GetJob(string id)
@@ -1167,25 +1306,37 @@ public class AutoTagService
         var platformCaps = await LoadPlatformCapabilitiesAsync();
         var eligiblePlatforms = await ResolveEligiblePlatformsAsync(root, platformCaps, job);
         var stages = new List<AutoTagStageConfig>();
+        var runIntent = NormalizeRunIntent(job.RunIntent);
 
-        if (TryBuildEnrichmentStage(root, platformCaps, eligiblePlatforms, job.Id, out var enrichmentStage, out var enrichmentSkipReason, out var enrichmentStrippedKeys))
+        var shouldRunEnrichment = ShouldRunEnrichmentForIntent(runIntent);
+        var enrichmentSkipReason = string.Empty;
+        if (shouldRunEnrichment
+            && TryBuildEnrichmentStage(root, platformCaps, eligiblePlatforms, runIntent, job.Id, out var enrichmentStage, out enrichmentSkipReason, out var enrichmentStrippedKeys))
         {
             stages.Add(enrichmentStage);
             AppendStageSchemaLog(job, AutoTagLiterals.EnrichmentStage, enrichmentStrippedKeys);
         }
         else
         {
-            AppendLog(job, $"enrichment skipped: {enrichmentSkipReason}");
+            var reason = shouldRunEnrichment
+                ? enrichmentSkipReason
+                : $"disabled for run intent '{runIntent}'";
+            AppendLog(job, $"enrichment skipped: {reason}");
         }
 
-        if (TryBuildEnhancementStage(root, platformCaps, eligiblePlatforms, job.Id, out var enhancementStage, out var enhancementStrippedKeys))
+        var shouldRunEnhancement = ShouldRunEnhancementForIntent(runIntent);
+        if (shouldRunEnhancement
+            && TryBuildEnhancementStage(root, platformCaps, eligiblePlatforms, job.Id, out var enhancementStage, out var enhancementStrippedKeys))
         {
             stages.Add(enhancementStage);
             AppendStageSchemaLog(job, AutoTagLiterals.EnhancementStage, enhancementStrippedKeys);
         }
         else
         {
-            AppendLog(job, "enhancement skipped: gap-fill tags not configured");
+            var reason = shouldRunEnhancement
+                ? "gap-fill tags not configured"
+                : $"disabled for run intent '{runIntent}'";
+            AppendLog(job, $"enhancement skipped: {reason}");
         }
 
         return stages;
@@ -1199,6 +1350,7 @@ public class AutoTagService
         CancellationToken cancellationToken)
     {
         if (!includesEnhancementStage
+            || !ShouldRunEnhancementForIntent(job.RunIntent)
             || !string.Equals(job.Status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase)
             || !IsEnhancementWorkflowTrigger(job.Trigger))
         {
@@ -1225,7 +1377,6 @@ public class AutoTagService
         }
 
         return string.Equals(trigger, AutoTagLiterals.ManualTrigger, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(trigger, AutoTagLiterals.AutomationTrigger, StringComparison.OrdinalIgnoreCase)
             || string.Equals(trigger, AutoTagLiterals.ScheduleTrigger, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -1716,6 +1867,24 @@ public class AutoTagService
             || normalizedRight.StartsWith(leftPrefix, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsPathUnderRoot(string path, string root)
+    {
+        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(root))
+        {
+            return false;
+        }
+
+        var normalizedPath = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var normalizedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.Equals(normalizedPath, normalizedRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var rootPrefix = normalizedRoot + Path.DirectorySeparatorChar;
+        return normalizedPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static int ReadBoundedInt(JsonObject node, string propertyName, int fallback, int min, int max)
     {
         if (!node.TryGetPropertyValue(propertyName, out var valueNode) || valueNode is not JsonValue value)
@@ -1800,6 +1969,7 @@ public class AutoTagService
         JsonObject baseRoot,
         Dictionary<string, PlatformTagCapabilities> platformCaps,
         IReadOnlyList<string> eligiblePlatforms,
+        string runIntent,
         string jobId,
         out AutoTagStageConfig stage,
         out string skipReason,
@@ -1822,10 +1992,13 @@ public class AutoTagService
             return false;
         }
 
-        var runTrigger = ResolveRunTrigger(baseRoot);
-        var isManualRun = string.Equals(runTrigger, AutoTagLiterals.ManualTrigger, StringComparison.OrdinalIgnoreCase);
-        var excludedPlatform = isManualRun ? null : ResolveDownloadSourcePlatform(baseRoot);
-        if (!isManualRun && !string.IsNullOrWhiteSpace(excludedPlatform))
+        var excludedPlatform = string.Equals(
+            NormalizeRunIntent(runIntent),
+            AutoTagLiterals.RunIntentDownloadEnrichment,
+            StringComparison.OrdinalIgnoreCase)
+            ? ResolveDownloadSourcePlatform(baseRoot)
+            : null;
+        if (!string.IsNullOrWhiteSpace(excludedPlatform))
         {
             platforms = platforms
                 .Where(platform => !string.Equals(platform, excludedPlatform, StringComparison.OrdinalIgnoreCase))
@@ -3060,9 +3233,48 @@ public class AutoTagService
 
     private static string NormalizeRunTrigger(string? trigger)
     {
-        return string.Equals(trigger, "automation", StringComparison.OrdinalIgnoreCase)
-            ? "automation"
-            : AutoTagLiterals.ManualTrigger;
+        if (string.IsNullOrWhiteSpace(trigger))
+        {
+            return AutoTagLiterals.ManualTrigger;
+        }
+
+        return trigger.Trim().ToLowerInvariant() switch
+        {
+            AutoTagLiterals.AutomationTrigger => AutoTagLiterals.AutomationTrigger,
+            AutoTagLiterals.ScheduleTrigger => AutoTagLiterals.ScheduleTrigger,
+            _ => AutoTagLiterals.ManualTrigger
+        };
+    }
+
+    private static string NormalizeRunIntent(string? runIntent)
+    {
+        if (string.IsNullOrWhiteSpace(runIntent))
+        {
+            return AutoTagLiterals.RunIntentDefault;
+        }
+
+        return runIntent.Trim().ToLowerInvariant() switch
+        {
+            AutoTagLiterals.RunIntentDownloadEnrichment => AutoTagLiterals.RunIntentDownloadEnrichment,
+            AutoTagLiterals.RunIntentEnhancementOnly => AutoTagLiterals.RunIntentEnhancementOnly,
+            _ => AutoTagLiterals.RunIntentDefault
+        };
+    }
+
+    private static bool ShouldRunEnrichmentForIntent(string? runIntent)
+    {
+        return !string.Equals(
+            NormalizeRunIntent(runIntent),
+            AutoTagLiterals.RunIntentEnhancementOnly,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ShouldRunEnhancementForIntent(string? runIntent)
+    {
+        return !string.Equals(
+            NormalizeRunIntent(runIntent),
+            AutoTagLiterals.RunIntentDownloadEnrichment,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private static string InjectRunTrigger(string configJson, string trigger)
@@ -3135,23 +3347,6 @@ public class AutoTagService
             _logger.LogDebug(ex, "Failed to inject profile technical settings into AutoTag config.");
             return configJson;
         }
-    }
-
-    private static string ResolveRunTrigger(JsonObject root)
-    {
-        if (!root.TryGetPropertyValue("runTrigger", out var triggerNode) || triggerNode is null)
-        {
-            return AutoTagLiterals.ManualTrigger;
-        }
-
-        if (triggerNode is JsonValue triggerValue
-            && triggerValue.TryGetValue<string>(out var rawTrigger)
-            && !string.IsNullOrWhiteSpace(rawTrigger))
-        {
-            return NormalizeRunTrigger(rawTrigger);
-        }
-
-        return AutoTagLiterals.ManualTrigger;
     }
 
     private async Task<string> InjectPlatformAuthAsync(string configJson) // NOSONAR
@@ -4052,6 +4247,7 @@ public class AutoTagService
             SkippedCount = job.SkippedCount,
             RootPath = job.RootPath,
             Trigger = string.IsNullOrWhiteSpace(job.Trigger) ? AutoTagLiterals.ManualTrigger : job.Trigger,
+            RunIntent = NormalizeRunIntent(job.RunIntent),
             ProfileId = job.ProfileId,
             ProfileName = job.ProfileName,
             LogCount = GetArchivedLogCount(job.Id, job.Logs.Count),
@@ -4601,6 +4797,9 @@ public class AutoTagService
 
     private void NormalizeLoadedJobState(AutoTagJob job)
     {
+        job.Trigger = NormalizeRunTrigger(job.Trigger);
+        job.RunIntent = NormalizeRunIntent(job.RunIntent);
+
         if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase))
         {
             return;
