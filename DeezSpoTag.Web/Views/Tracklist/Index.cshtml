@@ -1338,6 +1338,7 @@ const boomplayDeezerSimilarMode = (() => {
 })();
 const tracklistLibraryId = '@Html.Raw(ViewData["LibraryId"] ?? "")';
 const externalDeezerMatchCache = new Map();
+const externalDeezerMatchInFlight = new Map();
 const deezerPlaybackContextCache = new Map();
 const deezerPlaybackContextRequests = new Map();
 const radioType = '@Html.Raw(ViewData["RadioType"] ?? "")';
@@ -1383,6 +1384,25 @@ let boomplayTracksEventSource = null;
 let spotifyRecommendationState = null;
 let boomplayRecommendationState = null;
 let librespotHydratedIds = new Set();
+let externalBatchMatchTimer = null;
+let externalBatchMatchSessionId = 0;
+const externalMatchInitialBatchSize = 24;
+const externalMatchBackgroundBatchSize = 96;
+const externalMatchMaxConcurrent = 4;
+const externalMatchLowConcurrencyCap = 2;
+const externalResolverScheduler = {
+    activeHigh: 0,
+    activeLow: 0,
+    queueHigh: [],
+    queueLow: []
+};
+const deezerMatchedExternalSources = new Set([
+    'spotify',
+    'boomplay',
+    'tidal',
+    'qobuz',
+    'bandcamp'
+]);
 
 function isSpotifyArtistTopTracksView() {
     const source = (requestSource || tracklistSource || '').toLowerCase();
@@ -1747,6 +1767,13 @@ function resetSpotifyState() {
     spotifyRecommendationState = null;
     boomplayRecommendationState = null;
     librespotHydratedIds = new Set();
+    externalBatchMatchSessionId += 1;
+    if (externalBatchMatchTimer) {
+        clearTimeout(externalBatchMatchTimer);
+    }
+    externalBatchMatchTimer = null;
+    externalResolverScheduler.queueHigh.length = 0;
+    externalResolverScheduler.queueLow.length = 0;
     updateSpotifyNotice();
 }
 
@@ -2678,6 +2705,70 @@ async function getAppleMediaUserToken() {
     }
 }
 
+function scheduleExternalTracklistMatches(tracks, source) {
+    if (!Array.isArray(tracks) || tracks.length === 0) {
+        return;
+    }
+
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    if (!normalizedSource || normalizedSource === 'deezer' || normalizedSource === 'apple') {
+        return;
+    }
+
+    externalBatchMatchSessionId += 1;
+    const sessionId = externalBatchMatchSessionId;
+    if (externalBatchMatchTimer) {
+        clearTimeout(externalBatchMatchTimer);
+        externalBatchMatchTimer = null;
+    }
+
+    const initialCount = Math.min(externalMatchInitialBatchSize, tracks.length);
+    const initialBatch = tracks.slice(0, initialCount);
+    void resolveExternalTracklistMatches(initialBatch, normalizedSource, {
+        incremental: false,
+        finalize: tracks.length <= initialCount
+    }).catch((error) => {
+        console.warn('Initial external match batch failed', error);
+    });
+
+    if (tracks.length <= initialCount) {
+        return;
+    }
+
+    let offset = initialCount;
+    const runNextBatch = () => {
+        if (sessionId !== externalBatchMatchSessionId) {
+            return;
+        }
+
+        const batch = tracks.slice(offset, offset + externalMatchBackgroundBatchSize);
+        if (batch.length === 0) {
+            externalBatchMatchTimer = null;
+            return;
+        }
+
+        offset += batch.length;
+        const isLast = offset >= tracks.length;
+        void resolveExternalTracklistMatches(batch, normalizedSource, {
+            incremental: true,
+            finalize: isLast
+        }).catch((error) => {
+            console.warn('External Deezer background match batch failed', error);
+        }).finally(() => {
+            if (sessionId !== externalBatchMatchSessionId) {
+                return;
+            }
+            if (isLast) {
+                externalBatchMatchTimer = null;
+                return;
+            }
+            externalBatchMatchTimer = setTimeout(runNextBatch, 0);
+        });
+    };
+
+    externalBatchMatchTimer = setTimeout(runNextBatch, 0);
+}
+
 function renderTracklist(data, options = {}) {
     const container = document.getElementById('tracklist-container');
     const allowEmptyTracks = options?.allowEmptyTracks === true;
@@ -2840,7 +2931,7 @@ function renderTracklist(data, options = {}) {
 
     const externalSource = (tracklistSource || '').toLowerCase();
     if (externalSource && externalSource !== 'deezer') {
-        resolveExternalTracklistMatches(tracks, externalSource);
+        scheduleExternalTracklistMatches(tracks, externalSource);
     }
 
     preloadDeezerPlaybackContextsForVisibleRows();
@@ -3478,14 +3569,12 @@ function getRowTrackSource(row) {
 
 function isDeezerMatchedExternalSource(source) {
     const normalizedSource = String(source || '').trim().toLowerCase();
-    return normalizedSource === 'spotify'
-        || normalizedSource === 'boomplay'
-        || normalizedSource === 'youtube'
-        || normalizedSource === 'soundcloud'
-        || normalizedSource === 'tidal'
-        || normalizedSource === 'qobuz'
-        || normalizedSource === 'bandcamp'
-        || normalizedSource === 'pandora';
+    return deezerMatchedExternalSources.has(normalizedSource);
+}
+
+function shouldHydrateDeezerMetadata(source) {
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    return deezerMatchedExternalSources.has(normalizedSource);
 }
 
 function buildExternalMatchRequestFromTrack(track, source, fallbackIndex) {
@@ -3546,51 +3635,76 @@ function buildExternalMatchRequestFromRow(row) {
     };
 }
 
-async function resolveExternalRequestToDeezer(current, source, row) {
+async function resolveExternalRequestToDeezer(current, source, row, options = {}) {
     if (!current || !current.link) {
         return '';
     }
 
-    let deezerId = '';
-    if (source === 'spotify') {
-        const data = await fetchJsonWithRetry(`/api/spotify/resolve-deezer?url=${encodeURIComponent(current.link)}`, 3);
-        deezerId = data?.deezerId || '';
+    const cacheKey = String(current.link || '').trim();
+    if (!cacheKey) {
+        return '';
     }
 
-    if (!deezerId) {
-        const qs = new URLSearchParams();
-        qs.set('url', current.link);
-        if (current.title) {
-            qs.set('title', current.title);
-        }
-        if (current.artist) {
-            qs.set('artist', current.artist);
-        }
-        if (current.album) {
-            qs.set('album', current.album);
-        }
-        if (current.isrc) {
-            qs.set('isrc', current.isrc);
-        }
-        if (current.durationMs && Number.isFinite(current.durationMs) && current.durationMs > 0) {
-            qs.set('durationMs', String(current.durationMs));
-        }
-        if (source === 'boomplay') {
-            qs.set('includeMeta', 'true');
-        }
-        const data = await fetchJsonWithRetry(`/api/resolve/deezer?${qs.toString()}`, 3);
-        deezerId = data?.deezerId || '';
-        if (deezerId && data && row) {
-            applyDeezerMetadataToRow(row, data);
-        }
+    const priority = options?.priority === 'high' ? 'high' : 'low';
+    let inFlight = externalDeezerMatchInFlight.get(cacheKey);
+    if (!inFlight) {
+        inFlight = runExternalResolverTask(async () => {
+            let deezerId = '';
+            let resolvePayload = null;
+
+            if (source === 'spotify') {
+                const data = await fetchJsonWithRetry(`/api/spotify/resolve-deezer?url=${encodeURIComponent(current.link)}`, 3);
+                deezerId = data?.deezerId || '';
+            }
+
+            if (!deezerId) {
+                const qs = new URLSearchParams();
+                qs.set('url', current.link);
+                if (current.title) {
+                    qs.set('title', current.title);
+                }
+                if (current.artist) {
+                    qs.set('artist', current.artist);
+                }
+                if (current.album) {
+                    qs.set('album', current.album);
+                }
+                if (current.isrc) {
+                    qs.set('isrc', current.isrc);
+                }
+                if (current.durationMs && Number.isFinite(current.durationMs) && current.durationMs > 0) {
+                    qs.set('durationMs', String(current.durationMs));
+                }
+                if (shouldHydrateDeezerMetadata(source)) {
+                    qs.set('includeMeta', 'true');
+                }
+
+                const data = await fetchJsonWithRetry(`/api/resolve/deezer?${qs.toString()}`, 3);
+                resolvePayload = data;
+                deezerId = data?.deezerId || '';
+            }
+
+            externalDeezerMatchCache.set(cacheKey, deezerId);
+            return { deezerId, resolvePayload };
+        }, priority);
+        externalDeezerMatchInFlight.set(cacheKey, inFlight);
     }
 
-    externalDeezerMatchCache.set(current.link, deezerId);
-    if (deezerId && row) {
-        applyExternalMatchToRow(row, deezerId);
+    try {
+        const result = await inFlight;
+        const deezerId = String(result?.deezerId || '').trim();
+        if (deezerId && row) {
+            if (result?.resolvePayload) {
+                applyDeezerMetadataToRow(row, result.resolvePayload);
+            }
+            applyExternalMatchToRow(row, deezerId);
+        }
+        return deezerId;
+    } finally {
+        if (externalDeezerMatchInFlight.get(cacheKey) === inFlight) {
+            externalDeezerMatchInFlight.delete(cacheKey);
+        }
     }
-
-    return deezerId;
 }
 
 async function ensureRowPreviewForPlayback(row, control) {
@@ -3622,7 +3736,7 @@ async function ensureRowPreviewForPlayback(row, control) {
 
     let deezerId = externalDeezerMatchCache.get(request.link) || '';
     if (!deezerId) {
-        deezerId = await resolveExternalRequestToDeezer(request, source, row);
+        deezerId = await resolveExternalRequestToDeezer(request, source, row, { priority: 'high' });
     }
     if (!/^\d+$/.test(deezerId)) {
         return '';
@@ -3849,6 +3963,58 @@ async function fetchJsonWithRetry(url, attempts = 3) {
     return null;
 }
 
+function drainExternalResolverQueue() {
+    while ((externalResolverScheduler.activeHigh + externalResolverScheduler.activeLow) < externalMatchMaxConcurrent) {
+        let priority = '';
+        let task = null;
+
+        if (externalResolverScheduler.queueHigh.length > 0) {
+            priority = 'high';
+            task = externalResolverScheduler.queueHigh.shift();
+        } else if (externalResolverScheduler.queueLow.length > 0
+            && externalResolverScheduler.activeLow < externalMatchLowConcurrencyCap) {
+            priority = 'low';
+            task = externalResolverScheduler.queueLow.shift();
+        } else {
+            return;
+        }
+
+        if (!task) {
+            continue;
+        }
+
+        if (priority === 'high') {
+            externalResolverScheduler.activeHigh += 1;
+        } else {
+            externalResolverScheduler.activeLow += 1;
+        }
+
+        Promise.resolve()
+            .then(task.work)
+            .then(task.resolve, task.reject)
+            .finally(() => {
+                if (priority === 'high') {
+                    externalResolverScheduler.activeHigh = Math.max(0, externalResolverScheduler.activeHigh - 1);
+                } else {
+                    externalResolverScheduler.activeLow = Math.max(0, externalResolverScheduler.activeLow - 1);
+                }
+                drainExternalResolverQueue();
+            });
+    }
+}
+
+function runExternalResolverTask(work, priority = 'low') {
+    return new Promise((resolve, reject) => {
+        const task = { work, resolve, reject };
+        if (priority === 'high') {
+            externalResolverScheduler.queueHigh.push(task);
+        } else {
+            externalResolverScheduler.queueLow.push(task);
+        }
+        drainExternalResolverQueue();
+    });
+}
+
 async function resolveExternalTracklistMatches(tracks, source, options = {}) {
     if (!Array.isArray(tracks) || tracks.length === 0) {
         return;
@@ -3930,7 +4096,7 @@ async function resolveExternalTracklistMatches(tracks, source, options = {}) {
                 continue;
             }
             try {
-                const deezerId = await resolveExternalRequestToDeezer(current, normalizedSource, row);
+                const deezerId = await resolveExternalRequestToDeezer(current, normalizedSource, row, { priority: 'low' });
                 if (showProgress) {
                     externalMatchState.pending = Math.max(0, externalMatchState.pending - 1);
                     if (deezerId) {
