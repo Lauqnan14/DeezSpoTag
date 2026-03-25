@@ -392,55 +392,6 @@
     font-weight: 500;
 }
 
-.switch {
-    position: relative;
-    display: inline-block;
-    width: 48px;
-    height: 26px;
-}
-
-.switch input {
-    position: absolute;
-    inset: 0;
-    opacity: 0;
-    width: 100%;
-    height: 100%;
-    margin: 0;
-    cursor: pointer;
-    z-index: 1;
-}
-
-.slider {
-    position: absolute;
-    cursor: pointer;
-    inset: 0;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-secondary);
-    transition: 0.2s ease;
-    border-radius: 999px;
-}
-
-.slider::before {
-    position: absolute;
-    content: "";
-    height: 20px;
-    width: 20px;
-    left: 3px;
-    top: 2px;
-    background: var(--text-primary);
-    transition: 0.2s ease;
-    border-radius: 50%;
-}
-
-.switch input:checked + .slider {
-    background: var(--primary-color);
-    border-color: var(--primary-color);
-}
-
-.switch input:checked + .slider::before {
-    transform: translateX(22px);
-}
-
 .settings-section--toggle-style .switch-row {
     padding: 12px 14px;
     border-radius: 16px;
@@ -453,36 +404,6 @@
     color: var(--text-primary);
     font-weight: 600;
     font-size: 14px;
-}
-
-.settings-section--toggle-style .switch {
-    width: 58px;
-    height: 30px;
-}
-
-.settings-section--toggle-style .slider {
-    background: var(--bg-primary);
-    border: 1px solid color-mix(in srgb, var(--primary-color) 30%, var(--border-secondary));
-    transition: background 0.2s ease, border-color 0.2s ease;
-}
-
-.settings-section--toggle-style .slider::before {
-    height: 24px;
-    width: 24px;
-    left: 3px;
-    top: 2px;
-    background: var(--text-primary);
-    transition: transform 0.2s ease, background 0.2s ease;
-}
-
-.settings-section--toggle-style .switch input:checked + .slider {
-    background: color-mix(in srgb, var(--primary-color) 20%, var(--bg-secondary));
-    border-color: var(--primary-color);
-}
-
-.settings-section--toggle-style .switch input:checked + .slider::before {
-    transform: translateX(26px);
-    background: var(--primary-color);
 }
 
 .read-only-field {
@@ -499,6 +420,168 @@
 
 .settings-link:hover {
     border-bottom-color: var(--primary-color);
+}
+
+.server-library-controls {
+    margin-bottom: 14px;
+}
+
+.server-library-pin-controls {
+    display: grid;
+    grid-template-columns: auto minmax(180px, 280px) minmax(180px, 280px) auto auto;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.server-library-pin-label {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.server-library-pin-controls input {
+    width: 100%;
+    min-width: 0;
+    padding: 8px 10px;
+}
+
+.server-library-pin-status {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-bottom: 10px;
+}
+
+.server-library-status {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-bottom: 12px;
+}
+
+.server-library-config {
+    display: grid;
+    gap: 14px;
+}
+
+.server-library-card {
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+    padding: 14px;
+}
+
+.server-library-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.server-library-card-title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 15px;
+    font-weight: 700;
+}
+
+.server-library-badges {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.server-library-badge {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 11px;
+    border: 1px solid var(--border-secondary);
+    color: var(--text-muted);
+    background: var(--bg-secondary);
+}
+
+.server-library-badge.connected {
+    color: var(--success-color);
+    border-color: color-mix(in srgb, var(--success-color) 35%, var(--border-secondary));
+}
+
+.server-library-table-wrap {
+    overflow-x: auto;
+}
+
+.server-library-table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 640px;
+}
+
+.server-library-table th,
+.server-library-table td {
+    border-top: 1px solid var(--border-secondary);
+    padding: 9px 10px;
+    text-align: left;
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+.server-library-table th {
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.server-library-empty {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin: 0;
+}
+
+.server-library-hidden-note {
+    margin: 0 0 10px 0;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.server-library-advanced {
+    border: 1px dashed var(--border-secondary);
+    border-radius: 8px;
+    padding: 10px;
+    margin-bottom: 10px;
+    display: grid;
+    gap: 8px;
+}
+
+.server-library-advanced-title {
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.server-library-advanced-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.server-library-inline-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-primary);
+    min-width: 180px;
+}
+
+.server-library-header-toggle {
+    margin: 0;
+    min-width: 250px;
+}
+
+.server-library-include-cell {
+    text-align: center;
 }
 
 .dropdown-select {
@@ -617,6 +700,10 @@
     
     .btn-group {
         flex-direction: column;
+    }
+
+    .server-library-pin-controls {
+        grid-template-columns: 1fr;
     }
 }
 </style>
@@ -1238,6 +1325,44 @@
                 
             </div>
         </div>
+        <div class="settings-section" id="server-library-settings">
+            <div class="settings-header">
+                <span class="material-icons">dns</span>
+                Server Libraries
+            </div>
+            <div class="settings-content">
+                <p class="secondary-text">
+                    Configure Plex/Jellyfin soundtrack categories. Use the Include toggle for each library, and PIN unlock to manage hidden libraries/categories.
+                </p>
+                <div class="btn-group server-library-controls">
+                    <button type="button" class="action-btn action-btn-sm" id="syncServerLibrariesBtn">
+                        <span class="material-icons">sync</span>
+                        <span>Refresh Libraries</span>
+                    </button>
+                    <button type="button" class="action-btn action-btn-sm" id="saveServerLibrariesBtn">
+                        <span class="material-icons">save</span>
+                        <span>Save Server Libraries</span>
+                    </button>
+                </div>
+                <div class="server-library-pin-controls">
+                    <label for="serverLibraryPinInput" class="server-library-pin-label">PIN Unlock (Hidden Libraries)</label>
+                    <input type="password" id="serverLibraryPinInput" placeholder="Enter PIN to manage hidden libraries" autocomplete="off">
+                    <input type="password" id="serverLibraryPinConfirmInput" placeholder="Confirm PIN (required when creating PIN)" autocomplete="off">
+                    <button type="button" class="action-btn action-btn-sm" id="unlockServerLibrariesBtn">
+                        <span class="material-icons">lock_open</span>
+                        <span>Unlock</span>
+                    </button>
+                    <button type="button" class="action-btn action-btn-sm" id="lockServerLibrariesBtn" hidden>
+                        <span class="material-icons">lock</span>
+                        <span>Lock</span>
+                    </button>
+                </div>
+                <div id="serverLibraryPinStatus" class="server-library-pin-status">Hidden libraries are locked.</div>
+                <div id="serverLibraryStatus" class="server-library-status">Loading server libraries...</div>
+                <div id="serverLibraryConfigContainer" class="server-library-config"></div>
+            </div>
+        </div>
+
         <div class="settings-section" id="download-path-settings">
             <div class="settings-header">
                 <span class="material-icons">folder</span>
@@ -1284,6 +1409,11 @@ let settingsReady = false;
 let settingsSaveInFlight = false;
 let settingsSaveQueued = false;
 let settingsSaveQueuedToast = false;
+let mediaServerLibraryConfig = null;
+let mediaServerLibraryAdvancedUnlocked = false;
+let mediaServerLibraryAutoSaveTimer = 0;
+let mediaServerLibraryAutoSaveInFlight = false;
+const SERVER_LIBRARY_PIN_STORAGE_KEY = 'deezspotag-server-library-pin';
 const APPLE_NOTIFICATION_MODE_KEY = 'apple-download-notification-mode';
 const engineQualityOptions = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
     DeezSpoTag.Services.Download.QualityCatalog.GetEngineQualityOptions()
@@ -1333,6 +1463,8 @@ document.addEventListener('DOMContentLoaded', function() {
     initSecondarySourceControls();
     setupArtworkFallbackOrder();
     initializeSettingsTooltips();
+    bindMediaServerLibraryPinActions();
+    bindMediaServerLibraryActions();
 });
 
 function createSettingsTooltipIcon(message) {
@@ -2174,6 +2306,475 @@ function persistAppleNotificationPreference() {
     }
 }
 
+function normalizeMediaServerCategory(category) {
+    return String(category || '').trim().toLowerCase() === 'tv_show' ? 'tv_show' : 'movie';
+}
+
+function getMediaServerCategoryLabel(category) {
+    return normalizeMediaServerCategory(category) === 'tv_show' ? 'TV Shows' : 'Movies';
+}
+
+function setMediaServerLibraryStatus(message, isError = false) {
+    const status = document.getElementById('serverLibraryStatus');
+    if (!status) {
+        return;
+    }
+    status.textContent = message;
+    status.style.color = isError ? 'var(--danger-color)' : 'var(--text-muted)';
+}
+
+function setMediaServerLibraryPinStatus(message, isError = false) {
+    const status = document.getElementById('serverLibraryPinStatus');
+    if (!status) {
+        return;
+    }
+
+    status.textContent = message;
+    status.style.color = isError ? 'var(--danger-color)' : 'var(--text-muted)';
+}
+
+function hasMediaServerLibraryPinConfigured() {
+    const pin = localStorage.getItem(SERVER_LIBRARY_PIN_STORAGE_KEY);
+    return typeof pin === 'string' && pin.trim().length > 0;
+}
+
+function setMediaServerLibraryUnlockButtonLabel(text) {
+    const unlockButton = document.getElementById('unlockServerLibrariesBtn');
+    if (!unlockButton) {
+        return;
+    }
+
+    const label = unlockButton.querySelector('span:not(.material-icons)');
+    if (label) {
+        label.textContent = text;
+    }
+}
+
+function updateMediaServerLibraryPinControls() {
+    const pinInput = document.getElementById('serverLibraryPinInput');
+    const pinConfirmInput = document.getElementById('serverLibraryPinConfirmInput');
+    const unlockButton = document.getElementById('unlockServerLibrariesBtn');
+    const lockButton = document.getElementById('lockServerLibrariesBtn');
+    if (!pinInput || !pinConfirmInput || !unlockButton || !lockButton) {
+        return;
+    }
+
+    if (mediaServerLibraryAdvancedUnlocked) {
+        pinInput.disabled = true;
+        pinConfirmInput.disabled = true;
+        pinConfirmInput.value = '';
+        pinConfirmInput.placeholder = 'Confirm PIN';
+        pinConfirmInput.hidden = true;
+        unlockButton.hidden = true;
+        lockButton.hidden = false;
+        setMediaServerLibraryPinStatus('Hidden libraries are unlocked for editing.');
+        return;
+    }
+
+    pinInput.disabled = false;
+    unlockButton.hidden = false;
+    lockButton.hidden = true;
+    if (hasMediaServerLibraryPinConfigured()) {
+        setMediaServerLibraryUnlockButtonLabel('Unlock');
+        pinInput.placeholder = 'Enter PIN';
+        pinConfirmInput.disabled = true;
+        pinConfirmInput.value = '';
+        pinConfirmInput.placeholder = 'Confirm PIN (only needed when creating PIN)';
+        pinConfirmInput.hidden = true;
+        setMediaServerLibraryPinStatus('Hidden libraries are locked. Enter PIN to manage hidden libraries.');
+    } else {
+        setMediaServerLibraryUnlockButtonLabel('Set PIN & Unlock');
+        pinInput.placeholder = 'Create PIN';
+        pinConfirmInput.disabled = false;
+        pinConfirmInput.placeholder = 'Confirm new PIN';
+        pinConfirmInput.hidden = false;
+        setMediaServerLibraryPinStatus('No PIN configured yet. Enter and confirm a new PIN to unlock.');
+    }
+}
+
+function setMediaServerLibraryAdvancedUnlocked(unlocked) {
+    mediaServerLibraryAdvancedUnlocked = unlocked === true;
+    updateMediaServerLibraryPinControls();
+    if (mediaServerLibraryConfig) {
+        renderMediaServerLibraryConfiguration(mediaServerLibraryConfig);
+    }
+}
+
+function bindMediaServerLibraryPinActions() {
+    const pinInput = document.getElementById('serverLibraryPinInput');
+    const pinConfirmInput = document.getElementById('serverLibraryPinConfirmInput');
+    const unlockButton = document.getElementById('unlockServerLibrariesBtn');
+    const lockButton = document.getElementById('lockServerLibrariesBtn');
+    if (!pinInput || !pinConfirmInput || !unlockButton || !lockButton || unlockButton.dataset.bound === 'true') {
+        return;
+    }
+
+    unlockButton.addEventListener('click', () => {
+        const entered = String(pinInput.value || '').trim();
+        if (!entered) {
+            setMediaServerLibraryPinStatus('Enter a PIN first.', true);
+            return;
+        }
+
+        const stored = String(localStorage.getItem(SERVER_LIBRARY_PIN_STORAGE_KEY) || '').trim();
+        if (!stored) {
+            if (entered.length < 4) {
+                setMediaServerLibraryPinStatus('PIN must be at least 4 characters.', true);
+                return;
+            }
+
+            const confirmation = String(pinConfirmInput.value || '').trim();
+            if (!confirmation) {
+                setMediaServerLibraryPinStatus('Confirm your new PIN.', true);
+                return;
+            }
+
+            if (entered !== confirmation) {
+                setMediaServerLibraryPinStatus('PIN confirmation does not match.', true);
+                return;
+            }
+
+            localStorage.setItem(SERVER_LIBRARY_PIN_STORAGE_KEY, entered);
+            pinInput.value = '';
+            pinConfirmInput.value = '';
+            setMediaServerLibraryAdvancedUnlocked(true);
+            setMediaServerLibraryPinStatus('PIN created. Hidden libraries are now unlocked.');
+            return;
+        }
+
+        if (entered !== stored) {
+            setMediaServerLibraryPinStatus('Invalid PIN.', true);
+            return;
+        }
+
+        pinInput.value = '';
+        pinConfirmInput.value = '';
+        setMediaServerLibraryAdvancedUnlocked(true);
+    });
+
+    lockButton.addEventListener('click', () => {
+        setMediaServerLibraryAdvancedUnlocked(false);
+    });
+
+    unlockButton.dataset.bound = 'true';
+    updateMediaServerLibraryPinControls();
+}
+
+function applyLibraryHideToggleForRow(row) {
+    if (!row) {
+        return;
+    }
+
+    const includeInput = row.querySelector('[data-library-include]');
+    const hideInput = row.querySelector('[data-library-hide]');
+    if (!includeInput || !hideInput) {
+        return;
+    }
+
+    const hidden = hideInput.checked === true;
+    if (hidden) {
+        includeInput.checked = false;
+    }
+    includeInput.disabled = hidden;
+}
+
+function applyLibraryHideTogglesWithinCard(card) {
+    if (!card) {
+        return;
+    }
+
+    card.querySelectorAll('[data-library-row]').forEach(row => {
+        applyLibraryHideToggleForRow(row);
+    });
+}
+
+function renderMediaServerLibraryConfiguration(configuration) {
+    const container = document.getElementById('serverLibraryConfigContainer');
+    if (!container) {
+        return;
+    }
+
+    const servers = Array.isArray(configuration?.servers) ? configuration.servers : [];
+    if (servers.length === 0) {
+        container.innerHTML = '<p class="server-library-empty">No server libraries discovered yet. Click Refresh Libraries after connecting Plex or Jellyfin.</p>';
+        return;
+    }
+
+    container.innerHTML = servers.map(server => {
+        const serverType = String(server?.serverType || '').trim().toLowerCase();
+        const serverIdToken = (serverType || 'server').replace(/[^a-z0-9_-]/gi, '-');
+        const serverLabel = String(server?.displayName || serverType || 'Server').trim();
+        const connected = server?.connected === true;
+        const autoInclude = server?.autoIncludeNewLibraries !== false;
+        const autoIncludeToggleId = `server-autoinclude-${serverIdToken}`;
+        const libraries = Array.isArray(server?.libraries) ? server.libraries : [];
+        const sortedLibraries = libraries
+            .slice()
+            .sort((left, right) => String(left?.name || left?.libraryId || '').localeCompare(String(right?.name || right?.libraryId || ''), undefined, { sensitivity: 'base' }));
+
+        const visibleLibraries = mediaServerLibraryAdvancedUnlocked
+            ? sortedLibraries
+            : sortedLibraries.filter(library => !(library?.ignored === true || library?.enabled === false));
+        const hiddenCount = sortedLibraries.length - visibleLibraries.length;
+
+        const libraryRows = visibleLibraries.length === 0
+            ? `<tr><td colspan="${mediaServerLibraryAdvancedUnlocked ? 5 : 4}" class="server-library-empty">${
+                hiddenCount > 0
+                    ? `All libraries for this server are currently hidden. Unlock PIN to manage hidden libraries.`
+                    : `No libraries discovered for this server yet.`
+            }</td></tr>`
+            : visibleLibraries.map(library => {
+                const libraryId = String(library?.libraryId || '').trim();
+                const libraryName = String(library?.name || libraryId || 'Library').trim();
+                const libraryIdToken = libraryId.replace(/[^a-z0-9_-]/gi, '-');
+                const categoryKey = normalizeMediaServerCategory(library?.category);
+                const category = getMediaServerCategoryLabel(categoryKey);
+                const libraryConnected = library?.connected === true;
+                const include = library?.enabled !== false && library?.ignored !== true;
+                const hidden = library?.ignored === true || library?.enabled === false;
+                const includeToggleId = `server-include-${serverIdToken}-${libraryIdToken}`;
+                const hideToggleId = `server-hide-${serverIdToken}-${libraryIdToken}`;
+                return `<tr data-library-row="${escapeHtml(libraryId)}">
+                    <td>${escapeHtml(libraryName)}</td>
+                    <td>${escapeHtml(category)}</td>
+                    <td>${libraryConnected ? '<span class="server-library-badge connected">Connected</span>' : '<span class="server-library-badge">Not connected</span>'}</td>
+                    <td class="server-library-include-cell" data-library-category="${escapeHtml(categoryKey)}">
+                        <label for="${escapeHtml(includeToggleId)}" class="visually-hidden">Include ${escapeHtml(libraryName)}</label>
+                        <span class="switch">
+                            <input id="${escapeHtml(includeToggleId)}" type="checkbox" data-library-include="${escapeHtml(libraryId)}" ${include ? 'checked' : ''} ${hidden ? 'disabled' : ''}>
+                            <span class="slider"></span>
+                        </span>
+                    </td>${
+                        mediaServerLibraryAdvancedUnlocked
+                            ? `<td class="server-library-include-cell">
+                                <label for="${escapeHtml(hideToggleId)}" class="visually-hidden">Hide ${escapeHtml(libraryName)}</label>
+                                <span class="switch">
+                                    <input id="${escapeHtml(hideToggleId)}" type="checkbox" data-library-hide="${escapeHtml(libraryId)}" ${hidden ? 'checked' : ''}>
+                                    <span class="slider"></span>
+                                </span>
+                            </td>`
+                            : ''
+                    }
+                </tr>`;
+            }).join('');
+
+        return `<article class="server-library-card" data-server-card="${escapeHtml(serverType)}">
+            <div class="server-library-card-header">
+                <div>
+                    <h3 class="server-library-card-title">${escapeHtml(serverLabel)}</h3>
+                    <div class="server-library-badges">
+                        ${connected ? '<span class="server-library-badge connected">Connected</span>' : '<span class="server-library-badge">Not connected</span>'}
+                    </div>
+                </div>
+                <div class="switch-row server-library-header-toggle">
+                    <label class="switch-label" for="${escapeHtml(autoIncludeToggleId)}">Auto-include new libraries</label>
+                    <span class="switch">
+                        <input id="${escapeHtml(autoIncludeToggleId)}" type="checkbox" data-server-autoinclude="${escapeHtml(serverType)}" ${autoInclude ? 'checked' : ''}>
+                        <span class="slider"></span>
+                    </span>
+                </div>
+            </div>
+            ${hiddenCount > 0 && !mediaServerLibraryAdvancedUnlocked
+                ? `<p class="server-library-hidden-note">${hiddenCount} hidden librar${hiddenCount === 1 ? 'y' : 'ies'} are hidden from this view until PIN unlock.</p>`
+                : ''}
+            <div class="server-library-table-wrap">
+                <table class="server-library-table">
+                    <thead>
+                        <tr>
+                            <th>Library</th>
+                            <th>Category</th>
+                            <th>Status</th>
+                            <th>Include</th>${
+                                mediaServerLibraryAdvancedUnlocked
+                                    ? '<th>Hidden</th>'
+                                    : ''
+                            }
+                        </tr>
+                    </thead>
+                    <tbody>${libraryRows}</tbody>
+                </table>
+            </div>
+        </article>`;
+    }).join('');
+
+    container.querySelectorAll('[data-server-card]').forEach(card => applyLibraryHideTogglesWithinCard(card));
+}
+
+async function loadMediaServerLibraryConfiguration(refresh = false) {
+    const container = document.getElementById('serverLibraryConfigContainer');
+    if (!container) {
+        return;
+    }
+
+    setMediaServerLibraryStatus(refresh ? 'Refreshing server libraries...' : 'Loading server libraries...');
+    try {
+        const endpoint = refresh
+            ? '/api/media-server/soundtracks/configuration?refresh=true'
+            : '/api/media-server/soundtracks/configuration';
+        const response = await fetch(endpoint, { credentials: 'same-origin' });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const configuration = await response.json();
+        mediaServerLibraryConfig = configuration;
+        renderMediaServerLibraryConfiguration(configuration);
+        const servers = Array.isArray(configuration?.servers) ? configuration.servers : [];
+        const libraries = servers.reduce((total, server) => total + (Array.isArray(server?.libraries) ? server.libraries.length : 0), 0);
+        setMediaServerLibraryStatus(`Loaded ${libraries} libraries across ${servers.length} server${servers.length === 1 ? '' : 's'}.`);
+    } catch (error) {
+        console.error('Failed to load media server library configuration.', error);
+        container.innerHTML = '<p class="server-library-empty">Failed to load server libraries.</p>';
+        setMediaServerLibraryStatus(error?.message || 'Failed to load server libraries.', true);
+    }
+}
+
+function collectMediaServerLibraryConfigurationUpdateRequest() {
+    const container = document.getElementById('serverLibraryConfigContainer');
+    if (!container) {
+        return { servers: [] };
+    }
+
+    const servers = [];
+    container.querySelectorAll('[data-server-card]').forEach(card => {
+        const serverType = String(card.getAttribute('data-server-card') || '').trim().toLowerCase();
+        if (!serverType) {
+            return;
+        }
+
+        const autoIncludeInput = card.querySelector(`[data-server-autoinclude="${serverType}"]`);
+        const libraries = [];
+        card.querySelectorAll('[data-library-row]').forEach(row => {
+            const libraryId = String(row.getAttribute('data-library-row') || '').trim();
+            if (!libraryId) {
+                return;
+            }
+
+            const includeInput = row.querySelector('[data-library-include]');
+            const hideInput = row.querySelector('[data-library-hide]');
+            const include = includeInput?.checked === true;
+            const hidden = hideInput?.checked === true;
+            libraries.push({
+                libraryId,
+                enabled: include,
+                ignored: hidden || !include
+            });
+        });
+
+        servers.push({
+            serverType,
+            autoIncludeNewLibraries: autoIncludeInput?.checked === true,
+            libraries
+        });
+    });
+
+    return { servers };
+}
+
+async function saveMediaServerLibraryConfiguration() {
+    const request = collectMediaServerLibraryConfigurationUpdateRequest();
+    setMediaServerLibraryStatus('Saving server libraries...');
+    const response = await fetch('/api/media-server/soundtracks/configuration', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(request),
+        credentials: 'same-origin'
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    mediaServerLibraryConfig = await response.json();
+    renderMediaServerLibraryConfiguration(mediaServerLibraryConfig);
+    setMediaServerLibraryStatus('Server library configuration saved.');
+}
+
+function queueMediaServerLibraryAutoSave() {
+    if (mediaServerLibraryAutoSaveTimer) {
+        window.clearTimeout(mediaServerLibraryAutoSaveTimer);
+        mediaServerLibraryAutoSaveTimer = 0;
+    }
+
+    mediaServerLibraryAutoSaveTimer = window.setTimeout(async () => {
+        if (mediaServerLibraryAutoSaveInFlight) {
+            return;
+        }
+
+        mediaServerLibraryAutoSaveInFlight = true;
+        try {
+            setMediaServerLibraryStatus('Saving server libraries...');
+            await saveMediaServerLibraryConfiguration();
+        } catch (error) {
+            console.error('Failed to auto-save media server library configuration.', error);
+            setMediaServerLibraryStatus(error?.message || 'Failed to save server libraries.', true);
+        } finally {
+            mediaServerLibraryAutoSaveInFlight = false;
+        }
+    }, 450);
+}
+
+function bindMediaServerLibraryActions() {
+    const syncButton = document.getElementById('syncServerLibrariesBtn');
+    const saveButton = document.getElementById('saveServerLibrariesBtn');
+    const container = document.getElementById('serverLibraryConfigContainer');
+    if (!syncButton || !saveButton || !container || syncButton.dataset.bound === 'true') {
+        return;
+    }
+
+    syncButton.addEventListener('click', async () => {
+        try {
+            syncButton.disabled = true;
+            await loadMediaServerLibraryConfiguration(true);
+            showToast('Server libraries refreshed.', 'success');
+        } catch (error) {
+            showToast(error?.message || 'Failed to refresh server libraries.', 'error');
+        } finally {
+            syncButton.disabled = false;
+        }
+    });
+
+    saveButton.addEventListener('click', async () => {
+        try {
+            if (mediaServerLibraryAutoSaveTimer) {
+                window.clearTimeout(mediaServerLibraryAutoSaveTimer);
+                mediaServerLibraryAutoSaveTimer = 0;
+            }
+            saveButton.disabled = true;
+            await saveMediaServerLibraryConfiguration();
+            showToast('Server library configuration saved.', 'success');
+        } catch (error) {
+            console.error('Failed to save media server library configuration.', error);
+            setMediaServerLibraryStatus(error?.message || 'Failed to save server libraries.', true);
+            showToast(error?.message || 'Failed to save server libraries.', 'error');
+        } finally {
+            saveButton.disabled = false;
+        }
+    });
+
+    container.addEventListener('change', event => {
+        const input = event.target;
+        if (!(input instanceof HTMLInputElement)) {
+            return;
+        }
+
+        if (!input.matches('[data-library-hide]')) {
+            if (input.matches('[data-library-include], [data-server-autoinclude]')) {
+                queueMediaServerLibraryAutoSave();
+            }
+            return;
+        }
+
+        const row = input.closest('[data-library-row]');
+        applyLibraryHideToggleForRow(row);
+        queueMediaServerLibraryAutoSave();
+    });
+
+    syncButton.dataset.bound = 'true';
+}
+
 async function initSettings() {
     try {
         const settingsData = await getSettingsData();
@@ -2190,6 +2791,7 @@ async function initSettings() {
                 showToast(`Library scan settings failed to load: ${librarySettingsError.message}`, 'error');
             }
             loadAppleNotificationPreference();
+            await loadMediaServerLibraryConfiguration(false);
             settingsReady = true;
         } else {
             throw new Error('No settings data received');

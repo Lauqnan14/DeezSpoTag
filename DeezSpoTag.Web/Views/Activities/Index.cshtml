@@ -1662,57 +1662,6 @@
     margin-top: 2px;
 }
 
-.media-operations-tab .toggle-switch {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    width: 58px;
-    height: 30px;
-}
-
-.media-operations-tab .toggle-switch input {
-    position: absolute;
-    inset: 0;
-    opacity: 0;
-    width: 100%;
-    height: 100%;
-    margin: 0;
-    cursor: pointer;
-    z-index: 2;
-}
-
-.media-operations-tab .toggle-slider {
-    position: absolute;
-    inset: 0;
-    background: var(--bg-primary);
-    border: 1px solid color-mix(in srgb, var(--primary-color) 30%, var(--border-secondary));
-    border-radius: 999px;
-    transition: background 0.2s ease, border-color 0.2s ease;
-    pointer-events: none;
-}
-
-.media-operations-tab .toggle-slider::after {
-    content: '';
-    position: absolute;
-    height: 24px;
-    width: 24px;
-    left: 3px;
-    top: 2px;
-    border-radius: 50%;
-    background: var(--text-primary);
-    transition: transform 0.2s ease, background 0.2s ease;
-}
-
-.media-operations-tab .toggle-switch input:checked + .toggle-slider {
-    background: color-mix(in srgb, var(--primary-color) 20%, var(--bg-secondary));
-    border-color: var(--primary-color);
-}
-
-.media-operations-tab .toggle-switch input:checked + .toggle-slider::after {
-    transform: translateX(26px);
-    background: var(--primary-color);
-}
-
 @@media (max-width: 640px) {
     .media-operations-tab .tool-card {
         padding: 14px;
@@ -2237,19 +2186,19 @@
         width: 100%;
     }
 
-    .media-operations-tab .toggle-switch {
+    .media-operations-tab .toggle-row .switch {
         width: 52px;
         height: 28px;
     }
 
-    .media-operations-tab .toggle-slider::after {
+    .media-operations-tab .toggle-row .slider::before {
         height: 22px;
         width: 22px;
         top: 2px;
         left: 2px;
     }
 
-    .media-operations-tab .toggle-switch input:checked + .toggle-slider::after {
+    .media-operations-tab .toggle-row .switch input:checked + .slider::before {
         transform: translateX(24px);
     }
 }
@@ -2551,9 +2500,9 @@
                                             <label class="toggle-label" for="analysis-enabled">Background analysis</label>
                                             <div class="toggle-subtext">Runs analysis automatically in the background</div>
                                         </div>
-                                        <span class="toggle-switch">
+                                        <span class="switch">
                                             <input id="analysis-enabled" type="checkbox" />
-                                            <span class="toggle-slider" aria-hidden="true"></span>
+                                            <span class="slider" aria-hidden="true"></span>
                                         </span>
                                     </div>
                                     <div class="tool-card-action-group">
@@ -2669,9 +2618,9 @@
                                 <div class="tool-card-footer">
                                     <div class="toggle-row">
                                         <label class="toggle-label" for="meloday-enabled">Enable Meloday</label>
-                                        <span class="toggle-switch">
+                                        <span class="switch">
                                             <input id="meloday-enabled" type="checkbox" />
-                                            <span class="toggle-slider" aria-hidden="true"></span>
+                                            <span class="slider" aria-hidden="true"></span>
                                         </span>
                                     </div>
                                     <div class="tool-card-action-group">

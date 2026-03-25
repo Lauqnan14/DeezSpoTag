@@ -923,6 +923,9 @@ static void RegisterCoreApplicationServices(IServiceCollection services, IConfig
         });
     services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchService>();
     services.AddHostedService<DeezSpoTag.Web.Services.PlaylistWatchHostedService>();
+    services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackStore>();
+    services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackService>();
+    services.AddHostedService<DeezSpoTag.Web.Services.MediaServerSoundtrackMonitorService>();
     services.AddSingleton<DeezSpoTag.Services.Matching.TrackMatchService>();
     services.AddSingleton<DeezSpoTag.Services.Download.Queue.DownloadCancellationRegistry>();
     services.AddSingleton<DeezSpoTag.Services.Download.Queue.DownloadRetryScheduler>(sp =>

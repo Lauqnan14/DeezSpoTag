@@ -56,6 +56,163 @@ public class JellyfinApiClient
         return response.IsSuccessStatusCode;
     }
 
+    public async Task<List<JellyfinLibrarySection>> GetLibrariesAsync(
+        string serverUrl,
+        string apiKey,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(apiKey))
+        {
+            return new List<JellyfinLibrarySection>();
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, "/Library/VirtualFolders"));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new List<JellyfinLibrarySection>();
+        }
+
+        var libraries = await response.Content.ReadFromJsonAsync<List<JellyfinLibrarySection>>(cancellationToken: cancellationToken);
+        return libraries ?? new List<JellyfinLibrarySection>();
+    }
+
+    public async Task<List<JellyfinMediaItem>> GetLibraryItemsAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string libraryId,
+        int offset = 0,
+        int? maxItems = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(userId)
+            || string.IsNullOrWhiteSpace(libraryId))
+        {
+            return new List<JellyfinMediaItem>();
+        }
+
+        var items = new List<JellyfinMediaItem>();
+        var startIndex = Math.Max(offset, 0);
+        var remaining = Math.Clamp(maxItems.GetValueOrDefault(200), 1, 2000);
+        const int maxPageSize = 200;
+
+        while (true)
+        {
+            var pageSize = Math.Min(maxPageSize, remaining);
+            var query = new StringBuilder();
+            query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
+            query.Append($"?ParentId={Uri.EscapeDataString(libraryId)}");
+            query.Append("&Recursive=true");
+            query.Append("&SortBy=SortName");
+            query.Append("&SortOrder=Ascending");
+            query.Append("&IncludeItemTypes=Movie,Series");
+            query.Append($"&Limit={pageSize}");
+            query.Append($"&StartIndex={startIndex}");
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
+            request.Headers.Add(EmbyTokenHeader, apiKey);
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                break;
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
+            var page = payload?.Items ?? new List<JellyfinMediaItem>();
+            if (page.Count == 0)
+            {
+                break;
+            }
+
+            items.AddRange(page);
+            startIndex += page.Count;
+            remaining -= page.Count;
+
+            if (page.Count < pageSize || remaining <= 0)
+            {
+                break;
+            }
+        }
+
+        return items;
+    }
+
+    public async Task<List<JellyfinMediaItem>> GetShowSeasonsAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string showId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(userId)
+            || string.IsNullOrWhiteSpace(showId))
+        {
+            return new List<JellyfinMediaItem>();
+        }
+
+        var query = new StringBuilder();
+        query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
+        query.Append($"?ParentId={Uri.EscapeDataString(showId)}");
+        query.Append("&Recursive=false");
+        query.Append("&SortBy=SortName");
+        query.Append("&SortOrder=Ascending");
+        query.Append("&IncludeItemTypes=Season");
+        query.Append("&Fields=IndexNumber,ParentIndexNumber,ProductionYear,ImageTags");
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new List<JellyfinMediaItem>();
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
+        return payload?.Items ?? new List<JellyfinMediaItem>();
+    }
+
+    public async Task<List<JellyfinMediaItem>> GetSeasonEpisodesAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string seasonId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(userId)
+            || string.IsNullOrWhiteSpace(seasonId))
+        {
+            return new List<JellyfinMediaItem>();
+        }
+
+        var query = new StringBuilder();
+        query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
+        query.Append($"?ParentId={Uri.EscapeDataString(seasonId)}");
+        query.Append("&Recursive=false");
+        query.Append("&SortBy=SortName");
+        query.Append("&SortOrder=Ascending");
+        query.Append("&IncludeItemTypes=Episode");
+        query.Append("&Fields=IndexNumber,ParentIndexNumber,ProductionYear,ImageTags");
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new List<JellyfinMediaItem>();
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
+        return payload?.Items ?? new List<JellyfinMediaItem>();
+    }
+
     public async Task<string?> FindArtistIdAsync(string serverUrl, string apiKey, string artistName, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(artistName))
@@ -241,4 +398,46 @@ public sealed class JellyfinArtistItem
 {
     [JsonPropertyName("Id")]
     public string? Id { get; set; }
+}
+
+public sealed class JellyfinLibrarySection
+{
+    [JsonPropertyName("Name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("CollectionType")]
+    public string? CollectionType { get; set; }
+
+    [JsonPropertyName("ItemId")]
+    public string? Id { get; set; }
+}
+
+public sealed class JellyfinItemsResponse
+{
+    [JsonPropertyName("Items")]
+    public List<JellyfinMediaItem>? Items { get; set; }
+}
+
+public sealed class JellyfinMediaItem
+{
+    [JsonPropertyName("Id")]
+    public string? Id { get; set; }
+
+    [JsonPropertyName("Name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("Type")]
+    public string? Type { get; set; }
+
+    [JsonPropertyName("ProductionYear")]
+    public int? ProductionYear { get; set; }
+
+    [JsonPropertyName("IndexNumber")]
+    public int? IndexNumber { get; set; }
+
+    [JsonPropertyName("ParentIndexNumber")]
+    public int? ParentIndexNumber { get; set; }
+
+    [JsonPropertyName("ImageTags")]
+    public Dictionary<string, string>? ImageTags { get; set; }
 }

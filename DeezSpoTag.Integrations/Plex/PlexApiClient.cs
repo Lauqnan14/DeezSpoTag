@@ -866,6 +866,253 @@ public class PlexApiClient
             return new List<PlexLibrarySection>();
         }
     }
+
+    public async Task<List<PlexMediaItem>> GetLibraryMediaItemsAsync(
+        string serverUrl,
+        string token,
+        string sectionKey,
+        int offset = 0,
+        int? limit = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(token)
+            || string.IsNullOrWhiteSpace(sectionKey))
+        {
+            return new List<PlexMediaItem>();
+        }
+
+        try
+        {
+            var encodedSection = Uri.EscapeDataString(sectionKey.Trim());
+            var normalizedOffset = Math.Max(offset, 0);
+            var normalizedLimit = Math.Clamp(limit.GetValueOrDefault(200), 1, 500);
+            var url = $"{serverUrl.TrimEnd('/')}/library/sections/{encodedSection}/all?X-Plex-Token={Uri.EscapeDataString(token)}&X-Plex-Container-Start={normalizedOffset}&X-Plex-Container-Size={normalizedLimit}";
+            var response = await _httpClient.GetAsync(url, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning(
+                    "Failed to load Plex media items for section {SectionKey}: {StatusCode}",
+                    sectionKey,
+                    response.StatusCode);
+                return new List<PlexMediaItem>();
+            }
+
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+            var doc = XDocument.Parse(content);
+            var mediaById = new Dictionary<string, PlexMediaItem>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var node in doc.Descendants("Video"))
+            {
+                var type = node.Attribute("type")?.Value ?? string.Empty;
+                if (!string.Equals(type, "movie", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var mapped = MapPlexMediaItem(node, type, serverUrl, token);
+                if (!string.IsNullOrWhiteSpace(mapped.Id))
+                {
+                    mediaById[mapped.Id] = mapped;
+                }
+            }
+
+            foreach (var node in doc.Descendants(DirectoryElementName))
+            {
+                var type = node.Attribute("type")?.Value ?? string.Empty;
+                if (!string.Equals(type, "show", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(type, "series", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var mapped = MapPlexMediaItem(node, "show", serverUrl, token);
+                if (!string.IsNullOrWhiteSpace(mapped.Id))
+                {
+                    mediaById[mapped.Id] = mapped;
+                }
+            }
+
+            return mediaById.Values
+                .OrderBy(item => item.Title, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed reading Plex media items for section {SectionKey}", sectionKey);
+            return new List<PlexMediaItem>();
+        }
+    }
+
+    public async Task<List<PlexSeasonItem>> GetShowSeasonsAsync(
+        string serverUrl,
+        string token,
+        string showId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(token)
+            || string.IsNullOrWhiteSpace(showId))
+        {
+            return new List<PlexSeasonItem>();
+        }
+
+        try
+        {
+            var url = $"{serverUrl.TrimEnd('/')}/library/metadata/{Uri.EscapeDataString(showId.Trim())}/children?X-Plex-Token={Uri.EscapeDataString(token)}";
+            var response = await _httpClient.GetAsync(url, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning(
+                    "Failed to load Plex seasons for show {ShowId}: {StatusCode}",
+                    showId,
+                    response.StatusCode);
+                return new List<PlexSeasonItem>();
+            }
+
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+            var doc = XDocument.Parse(content);
+            var seasons = new List<PlexSeasonItem>();
+
+            foreach (var node in doc.Descendants(DirectoryElementName))
+            {
+                var type = node.Attribute("type")?.Value ?? string.Empty;
+                if (!string.Equals(type, "season", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var seasonId = node.Attribute(RatingKeyAttributeName)?.Value ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(seasonId))
+                {
+                    continue;
+                }
+
+                var thumb = node.Attribute("thumb")?.Value
+                            ?? node.Attribute("art")?.Value
+                            ?? node.Attribute("parentThumb")?.Value
+                            ?? string.Empty;
+
+                seasons.Add(new PlexSeasonItem
+                {
+                    Id = seasonId,
+                    Title = node.Attribute(TitleAttributeName)?.Value ?? string.Empty,
+                    SeasonNumber = ParseNullableInt(node.Attribute("index")?.Value),
+                    ImageUrl = ToAbsoluteUrl(serverUrl, token, thumb)
+                });
+            }
+
+            return seasons
+                .OrderBy(item => item.SeasonNumber ?? int.MaxValue)
+                .ThenBy(item => item.Title, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed reading Plex seasons for show {ShowId}", showId);
+            return new List<PlexSeasonItem>();
+        }
+    }
+
+    public async Task<List<PlexEpisodeItem>> GetSeasonEpisodesAsync(
+        string serverUrl,
+        string token,
+        string seasonId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(token)
+            || string.IsNullOrWhiteSpace(seasonId))
+        {
+            return new List<PlexEpisodeItem>();
+        }
+
+        try
+        {
+            var url = $"{serverUrl.TrimEnd('/')}/library/metadata/{Uri.EscapeDataString(seasonId.Trim())}/children?X-Plex-Token={Uri.EscapeDataString(token)}";
+            var response = await _httpClient.GetAsync(url, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning(
+                    "Failed to load Plex episodes for season {SeasonId}: {StatusCode}",
+                    seasonId,
+                    response.StatusCode);
+                return new List<PlexEpisodeItem>();
+            }
+
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+            var doc = XDocument.Parse(content);
+            var episodes = new List<PlexEpisodeItem>();
+
+            foreach (var node in doc.Descendants("Video"))
+            {
+                var type = node.Attribute("type")?.Value ?? string.Empty;
+                if (!string.Equals(type, "episode", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var episodeId = node.Attribute(RatingKeyAttributeName)?.Value ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(episodeId))
+                {
+                    continue;
+                }
+
+                var thumb = node.Attribute("thumb")?.Value
+                            ?? node.Attribute("art")?.Value
+                            ?? node.Attribute("parentThumb")?.Value
+                            ?? node.Attribute("grandparentThumb")?.Value
+                            ?? string.Empty;
+
+                episodes.Add(new PlexEpisodeItem
+                {
+                    Id = episodeId,
+                    Title = node.Attribute(TitleAttributeName)?.Value ?? string.Empty,
+                    SeasonNumber = ParseNullableInt(node.Attribute("parentIndex")?.Value),
+                    EpisodeNumber = ParseNullableInt(node.Attribute("index")?.Value),
+                    Year = ParseNullableInt(node.Attribute("year")?.Value),
+                    ImageUrl = ToAbsoluteUrl(serverUrl, token, thumb)
+                });
+            }
+
+            return episodes
+                .OrderBy(item => item.SeasonNumber ?? int.MaxValue)
+                .ThenBy(item => item.EpisodeNumber ?? int.MaxValue)
+                .ThenBy(item => item.Title, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed reading Plex episodes for season {SeasonId}", seasonId);
+            return new List<PlexEpisodeItem>();
+        }
+    }
+
+    private static PlexMediaItem MapPlexMediaItem(
+        XElement node,
+        string type,
+        string serverUrl,
+        string token)
+    {
+        var ratingKey = node.Attribute(RatingKeyAttributeName)?.Value ?? string.Empty;
+        var title = node.Attribute(TitleAttributeName)?.Value ?? string.Empty;
+        var year = ParseInt(node.Attribute("year")?.Value);
+        var thumb = node.Attribute("thumb")?.Value
+                    ?? node.Attribute("art")?.Value
+                    ?? node.Attribute("parentThumb")?.Value
+                    ?? node.Attribute("grandparentThumb")?.Value
+                    ?? string.Empty;
+        var imageUrl = ToAbsoluteUrl(serverUrl, token, thumb);
+
+        return new PlexMediaItem
+        {
+            Id = ratingKey,
+            Type = type,
+            Title = title,
+            Year = year,
+            ImageUrl = imageUrl
+        };
+    }
     public async Task<PlexPlaylist?> GetPlaylistAsync(string serverUrl, string token, string playlistId, CancellationToken cancellationToken = default)
     {
         try
@@ -1335,6 +1582,11 @@ public class PlexApiClient
         return int.TryParse(value, out var parsed) ? parsed : 0;
     }
 
+    private static int? ParseNullableInt(string? value)
+    {
+        return int.TryParse(value, out var parsed) ? parsed : null;
+    }
+
     private static long ParseLong(string? value)
     {
         return long.TryParse(value, out var parsed) ? parsed : 0;
@@ -1486,6 +1738,33 @@ public class PlexPlaylistTrack
     public string? CoverUrl { get; set; }
     public string? StreamUrl { get; set; }
     public string? FilePath { get; set; }
+}
+
+public sealed class PlexMediaItem
+{
+    public string Id { get; set; } = "";
+    public string Type { get; set; } = "";
+    public string Title { get; set; } = "";
+    public int? Year { get; set; }
+    public string? ImageUrl { get; set; }
+}
+
+public sealed class PlexSeasonItem
+{
+    public string Id { get; set; } = "";
+    public string Title { get; set; } = "";
+    public int? SeasonNumber { get; set; }
+    public string? ImageUrl { get; set; }
+}
+
+public sealed class PlexEpisodeItem
+{
+    public string Id { get; set; } = "";
+    public string Title { get; set; } = "";
+    public int? SeasonNumber { get; set; }
+    public int? EpisodeNumber { get; set; }
+    public int? Year { get; set; }
+    public string? ImageUrl { get; set; }
 }
 
 public sealed class PlexTrackMetadata

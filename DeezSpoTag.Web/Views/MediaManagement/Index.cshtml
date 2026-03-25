@@ -11,7 +11,7 @@
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
             <h1 class="welcome-title mb-2">Media Management</h1>
-            <p class="text-muted">Manage your playlists, watchlists, and media integrations</p>
+            <p class="text-muted">Manage your playlists, watchlists, soundtracks, and media integrations</p>
         </div>
     </div>
 
@@ -25,6 +25,11 @@
         <li class="nav-item">
             <button class="nav-link" id="watchlist-tab" data-bs-toggle="tab" data-bs-target="#watchlist-content" type="button" role="tab">
                 <i class="fas fa-eye me-2"></i>Watchlist
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" id="soundtracks-tab" data-bs-toggle="tab" data-bs-target="#soundtracks-content" type="button" role="tab">
+                <i class="fas fa-film me-2"></i>Soundtracks
             </button>
         </li>
         <li class="nav-item">
@@ -112,6 +117,58 @@
                     <div id="blockedWatchlistContainer" class="watchlist-blocked-grid"></div>
                 </div>
             </div>
+        </div>
+
+        <!-- Soundtracks Tab -->
+        <div class="tab-pane fade" id="soundtracks-content" role="tabpanel">
+            <ul class="nav nav-tabs nav-fill mb-3" id="soundtrackSubTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="soundtrack-movies-tab" type="button" data-soundtrack-category="movie" aria-selected="true">
+                        Movies
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="soundtrack-tv-tab" type="button" data-soundtrack-category="tv_show" aria-selected="false">
+                        TV Shows
+                    </button>
+                </li>
+            </ul>
+            <div class="media-tab-header">
+                <div>
+                    <h2>Soundtracks</h2>
+                    <p>Browse movie and TV libraries from Plex/Jellyfin and open matched Deezer soundtracks.</p>
+                </div>
+            </div>
+            <section class="auto-section">
+                <div class="soundtrack-toolbar">
+                    <div id="soundtrackServerFilterGroup" class="soundtrack-filter-group">
+                        <div id="soundtrackServerFilterLabel" class="soundtrack-filter-label">Servers</div>
+                        <div id="soundtrackServerPills" class="soundtrack-pill-row"></div>
+                    </div>
+                    <div id="soundtrackLibraryFilterGroup" class="soundtrack-filter-group">
+                        <div id="soundtrackLibraryFilterLabel" class="soundtrack-filter-label">Libraries</div>
+                        <div id="soundtrackLibraryPills" class="soundtrack-pill-row"></div>
+                    </div>
+                    <button id="soundtrackRefreshItems" class="btn btn-secondary action-btn btn-sm" type="button">Refresh</button>
+                    <button id="soundtrackSyncLibraries" class="btn btn-primary action-btn btn-sm" type="button">Sync Libraries</button>
+                </div>
+                <div id="soundtrackStatus" class="auto-playlists-meta"></div>
+                <div id="soundtrackTvNav" class="soundtrack-tv-nav" hidden>
+                    <button id="soundtrackTvBack" type="button" class="btn btn-secondary action-btn btn-sm">Back to TV Shows</button>
+                    <div class="soundtrack-tv-show">
+                        <span class="soundtrack-filter-label">Selected Show</span>
+                        <strong id="soundtrackTvShowTitle"></strong>
+                    </div>
+                    <div id="soundtrackTvSeasonFilterGroup" class="soundtrack-filter-group" style="display:none;">
+                        <div class="soundtrack-filter-label">Seasons</div>
+                        <div id="soundtrackTvSeasonPills" class="soundtrack-pill-row"></div>
+                    </div>
+                </div>
+                <div id="soundtrackGrid" class="soundtrack-grid"></div>
+                <div id="soundtrackEmpty" class="auto-playlists-empty" hidden>
+                    No soundtrack items available for this category and filter.
+                </div>
+            </section>
         </div>
 
         <!-- Auto Playlists Tab -->
@@ -400,7 +457,8 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 
 #mediaManagementTabs,
-#watchlistSubTabs {
+#watchlistSubTabs,
+#soundtrackSubTabs {
     border-bottom: 2px solid var(--border-primary);
     margin-bottom: 2rem;
     gap: 8px;
@@ -408,12 +466,14 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 
 #mediaManagementTabs .nav-item,
-#watchlistSubTabs .nav-item {
+#watchlistSubTabs .nav-item,
+#soundtrackSubTabs .nav-item {
     min-width: 0;
 }
 
 #mediaManagementTabs .nav-link,
-#watchlistSubTabs .nav-link {
+#watchlistSubTabs .nav-link,
+#soundtrackSubTabs .nav-link {
     background: transparent;
     border: none;
     color: var(--text-muted);
@@ -431,26 +491,30 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 
 #mediaManagementTabs .nav-link:hover,
-#watchlistSubTabs .nav-link:hover {
+#watchlistSubTabs .nav-link:hover,
+#soundtrackSubTabs .nav-link:hover {
     background: color-mix(in srgb, var(--primary-color) 12%, transparent);
     color: var(--primary-color);
     border-bottom: 2px solid var(--primary-color);
 }
 
 #mediaManagementTabs .nav-link.active,
-#watchlistSubTabs .nav-link.active {
+#watchlistSubTabs .nav-link.active,
+#soundtrackSubTabs .nav-link.active {
     background: color-mix(in srgb, var(--primary-color) 12%, transparent) !important;
     color: var(--primary-color) !important;
     border-bottom: 2px solid var(--primary-color) !important;
     box-shadow: 0 4px 12px color-mix(in srgb, var(--primary-color) 20%, transparent);
 }
 #mediaManagementTabs .nav-link.active i,
-#watchlistSubTabs .nav-link.active i {
+#watchlistSubTabs .nav-link.active i,
+#soundtrackSubTabs .nav-link.active i {
     color: var(--primary-color) !important;
 }
 
 #mediaManagementTabs .nav-link i,
-#watchlistSubTabs .nav-link i {
+#watchlistSubTabs .nav-link i,
+#soundtrackSubTabs .nav-link i {
     margin-right: 0.5rem;
     font-size: 1.1rem;
     color: inherit;
@@ -731,10 +795,231 @@ document.addEventListener('DOMContentLoaded', function() {
     padding: 2px 6px;
 }
 
+.soundtrack-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) max-content max-content;
+    gap: 10px;
+    align-items: end;
+    margin-bottom: 14px;
+}
+
+.soundtrack-toolbar #soundtrackRefreshItems,
+.soundtrack-toolbar #soundtrackSyncLibraries {
+    width: 160px;
+    min-width: 160px;
+    justify-self: stretch;
+}
+
+.soundtrack-toolbar #soundtrackRefreshItems {
+    grid-column: 3;
+}
+
+.soundtrack-toolbar #soundtrackSyncLibraries {
+    grid-column: 4;
+}
+
+.soundtrack-filter-group {
+    display: grid;
+    gap: 6px;
+}
+
+.soundtrack-filter-label {
+    color: var(--text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+}
+
+.soundtrack-pill-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-height: 40px;
+}
+
+.soundtrack-pill {
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border-radius: 999px;
+    padding: 8px 12px;
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.soundtrack-pill:hover {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+}
+
+.soundtrack-pill.is-active {
+    background: color-mix(in srgb, var(--primary-color) 14%, transparent);
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-color) 22%, transparent);
+}
+
+.soundtrack-pill.is-empty {
+    cursor: default;
+    opacity: 0.75;
+}
+
+.soundtrack-tv-nav {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px 16px;
+    align-items: end;
+    margin-bottom: 12px;
+}
+
+.soundtrack-tv-show {
+    display: grid;
+    gap: 3px;
+}
+
+.soundtrack-tv-show strong {
+    color: var(--text-primary);
+    font-size: 14px;
+    line-height: 1.2;
+}
+
+.soundtrack-tv-nav .soundtrack-filter-group {
+    grid-column: 1 / -1;
+}
+
+.soundtrack-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 16px;
+}
+
+.soundtrack-card {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 14px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.soundtrack-card-art {
+    width: 100%;
+    object-fit: cover;
+    background: var(--bg-secondary);
+}
+
+.soundtrack-card-art--poster {
+    aspect-ratio: 2 / 3;
+}
+
+.soundtrack-card-art--landscape {
+    aspect-ratio: 16 / 9;
+}
+
+.soundtrack-card--skeleton {
+    pointer-events: none;
+}
+
+.soundtrack-skeleton-block,
+.soundtrack-skeleton-line {
+    background: linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--bg-secondary) 70%, transparent) 0%,
+        color-mix(in srgb, var(--bg-secondary) 88%, transparent) 45%,
+        color-mix(in srgb, var(--bg-secondary) 70%, transparent) 100%
+    );
+    background-size: 220% 100%;
+    animation: soundtrackSkeletonPulse 1.2s ease-in-out infinite;
+}
+
+.soundtrack-skeleton-line {
+    height: 12px;
+    border-radius: 8px;
+}
+
+.soundtrack-skeleton-line--title {
+    width: 80%;
+    height: 14px;
+}
+
+.soundtrack-skeleton-line--meta {
+    width: 62%;
+}
+
+.soundtrack-skeleton-line.short {
+    width: 40%;
+}
+
+@@keyframes soundtrackSkeletonPulse {
+    0% {
+        background-position: 100% 0;
+    }
+    100% {
+        background-position: -100% 0;
+    }
+}
+
+.soundtrack-card-body {
+    padding: 12px;
+    display: grid;
+    gap: 6px;
+}
+
+.soundtrack-card-title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 15px;
+    font-weight: 700;
+}
+
+.soundtrack-card-meta {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.soundtrack-card-match {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--primary-color);
+    text-decoration: none;
+    margin-top: 4px;
+}
+
+.soundtrack-card-match:hover {
+    text-decoration: underline;
+}
+
+.soundtrack-card-browse {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    width: fit-content;
+}
+
+.soundtrack-card-browse:hover {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+}
+
 /* Responsive adjustments */
 @@media (max-width: 992px) {
     #mediaManagementTabs,
-    #watchlistSubTabs {
+    #watchlistSubTabs,
+    #soundtrackSubTabs {
         flex-wrap: nowrap;
         overflow-x: auto;
         overflow-y: hidden;
@@ -747,18 +1032,21 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     #mediaManagementTabs::-webkit-scrollbar,
-    #watchlistSubTabs::-webkit-scrollbar {
+    #watchlistSubTabs::-webkit-scrollbar,
+    #soundtrackSubTabs::-webkit-scrollbar {
         display: none;
     }
 
     #mediaManagementTabs .nav-item,
-    #watchlistSubTabs .nav-item {
+    #watchlistSubTabs .nav-item,
+    #soundtrackSubTabs .nav-item {
         flex: 0 0 auto;
         scroll-snap-align: start;
     }
 
     #mediaManagementTabs .nav-link,
-    #watchlistSubTabs .nav-link {
+    #watchlistSubTabs .nav-link,
+    #soundtrackSubTabs .nav-link {
         width: auto;
         min-width: max-content;
         border-radius: 999px;
@@ -770,16 +1058,35 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     #mediaManagementTabs .nav-link:hover,
-    #watchlistSubTabs .nav-link:hover {
+    #watchlistSubTabs .nav-link:hover,
+    #soundtrackSubTabs .nav-link:hover {
         border: 1px solid var(--primary-color);
         border-bottom: 1px solid var(--primary-color);
     }
 
     #mediaManagementTabs .nav-link.active,
-    #watchlistSubTabs .nav-link.active {
+    #watchlistSubTabs .nav-link.active,
+    #soundtrackSubTabs .nav-link.active {
         border: 1px solid var(--primary-color) !important;
         border-bottom: 1px solid var(--primary-color) !important;
         box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-color) 20%, transparent) !important;
+    }
+
+    .soundtrack-toolbar {
+        grid-template-columns: 1fr;
+        align-items: stretch;
+    }
+
+    .soundtrack-toolbar #soundtrackRefreshItems,
+    .soundtrack-toolbar #soundtrackSyncLibraries {
+        grid-column: auto;
+        width: 100%;
+        min-width: 0;
+        justify-self: stretch;
+    }
+
+    .soundtrack-tv-nav {
+        grid-template-columns: 1fr;
     }
 
 }
@@ -796,13 +1103,15 @@ document.addEventListener('DOMContentLoaded', function() {
 
 @@media (max-width: 768px) {
     #mediaManagementTabs .nav-link,
-    #watchlistSubTabs .nav-link {
+    #watchlistSubTabs .nav-link,
+    #soundtrackSubTabs .nav-link {
         padding: 0.75rem 1rem;
         font-size: 0.875rem;
     }
     
     #mediaManagementTabs .nav-link i,
-    #watchlistSubTabs .nav-link i {
+    #watchlistSubTabs .nav-link i,
+    #soundtrackSubTabs .nav-link i {
         font-size: 1rem;
     }
 
@@ -813,13 +1122,15 @@ document.addEventListener('DOMContentLoaded', function() {
 
 @@media (max-width: 640px) {
     #mediaManagementTabs .nav-link,
-    #watchlistSubTabs .nav-link {
+    #watchlistSubTabs .nav-link,
+    #soundtrackSubTabs .nav-link {
         font-size: 0.8125rem;
         padding: 0.55rem 0.85rem;
     }
 
     #mediaManagementTabs .nav-link i,
-    #watchlistSubTabs .nav-link i {
+    #watchlistSubTabs .nav-link i,
+    #soundtrackSubTabs .nav-link i {
         font-size: 0.95rem;
     }
 

@@ -88,6 +88,19 @@ const analysisState = {
     lastRunUtc: null
 };
 
+const soundtrackState = {
+    category: 'movie',
+    selectedServerType: '',
+    selectedLibraryId: '',
+    configuration: null,
+    initialized: false,
+    lastItemsRequestId: 0,
+    selectedTvShow: null,
+    selectedTvSeasonId: '',
+    backgroundRefreshTimer: 0,
+    backgroundRefreshAttempt: 0
+};
+
 const librarySpotifyArtistCacheTtlMs = 2 * 60 * 60 * 1000;
 let activeFolderQualityDropdown = null;
 let activeFolderQualityPanel = null;
@@ -8133,6 +8146,866 @@ async function applyLibraryViewFilter(requestId = null) {
     renderArtistGrid(filtered);
 }
 
+function normalizeSoundtrackCategory(category) {
+    return String(category || '').trim().toLowerCase() === 'tv_show' ? 'tv_show' : 'movie';
+}
+
+function getSoundtrackCategoryLabel(category) {
+    return normalizeSoundtrackCategory(category) === 'tv_show' ? 'TV Shows' : 'Movies';
+}
+
+function getSoundtrackElements() {
+    return {
+        tab: document.getElementById('soundtracks-content'),
+        categoryTabs: document.querySelectorAll('#soundtrackSubTabs [data-soundtrack-category]'),
+        serverFilterGroup: document.getElementById('soundtrackServerFilterGroup'),
+        serverFilterLabel: document.getElementById('soundtrackServerFilterLabel'),
+        serverPills: document.getElementById('soundtrackServerPills'),
+        libraryFilterGroup: document.getElementById('soundtrackLibraryFilterGroup'),
+        libraryFilterLabel: document.getElementById('soundtrackLibraryFilterLabel'),
+        libraryPills: document.getElementById('soundtrackLibraryPills'),
+        refreshButton: document.getElementById('soundtrackRefreshItems'),
+        syncButton: document.getElementById('soundtrackSyncLibraries'),
+        status: document.getElementById('soundtrackStatus'),
+        tvNav: document.getElementById('soundtrackTvNav'),
+        tvBackButton: document.getElementById('soundtrackTvBack'),
+        tvShowTitle: document.getElementById('soundtrackTvShowTitle'),
+        tvSeasonFilterGroup: document.getElementById('soundtrackTvSeasonFilterGroup'),
+        tvSeasonPills: document.getElementById('soundtrackTvSeasonPills'),
+        grid: document.getElementById('soundtrackGrid'),
+        empty: document.getElementById('soundtrackEmpty')
+    };
+}
+
+function setActiveSoundtrackCategory(category) {
+    const normalizedCategory = normalizeSoundtrackCategory(category);
+    soundtrackState.category = normalizedCategory;
+    getSoundtrackElements().categoryTabs.forEach(button => {
+        const buttonCategory = normalizeSoundtrackCategory(button.dataset.soundtrackCategory);
+        const active = buttonCategory === normalizedCategory;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+}
+
+function getSoundtrackLibraries(configuration, category, serverTypeFilter) {
+    if (!configuration || !Array.isArray(configuration.servers)) {
+        return [];
+    }
+
+    const normalizedCategory = normalizeSoundtrackCategory(category);
+    const normalizedServerFilter = String(serverTypeFilter || '').trim().toLowerCase();
+    const libraries = [];
+
+    configuration.servers.forEach(server => {
+        const serverType = String(server?.serverType || '').trim().toLowerCase();
+        if (!serverType) {
+            return;
+        }
+        if (normalizedServerFilter && normalizedServerFilter !== serverType) {
+            return;
+        }
+
+        (Array.isArray(server?.libraries) ? server.libraries : []).forEach(library => {
+            if (!library || library.enabled === false || library.ignored === true) {
+                return;
+            }
+
+            const libraryCategory = normalizeSoundtrackCategory(library.category);
+            if (libraryCategory !== normalizedCategory) {
+                return;
+            }
+
+            const libraryId = String(library.libraryId || '').trim();
+            if (!libraryId) {
+                return;
+            }
+
+            libraries.push({
+                serverType,
+                serverLabel: String(server.displayName || serverType),
+                libraryId,
+                libraryName: String(library.name || libraryId),
+                connected: library.connected !== false
+            });
+        });
+    });
+
+    return libraries;
+}
+
+function renderSoundtrackFilters(configuration) {
+    const elements = getSoundtrackElements();
+    if (!elements.serverPills || !elements.libraryPills) {
+        return;
+    }
+
+    const category = soundtrackState.category;
+    const servers = Array.isArray(configuration?.servers) ? configuration.servers : [];
+    const serverOptions = [];
+
+    servers.forEach(server => {
+        const serverType = String(server?.serverType || '').trim().toLowerCase();
+        if (!serverType) {
+            return;
+        }
+
+        const hasLibraries = getSoundtrackLibraries(configuration, category, serverType).length > 0;
+        if (!hasLibraries) {
+            return;
+        }
+
+        const label = String(server?.displayName || serverType).trim();
+        serverOptions.push({ serverType, label: label || serverType });
+    });
+
+    const validServerTypes = new Set(serverOptions.map(option => option.serverType));
+    if (!validServerTypes.has(soundtrackState.selectedServerType)) {
+        soundtrackState.selectedServerType = '';
+    }
+    if (serverOptions.length === 1) {
+        soundtrackState.selectedServerType = serverOptions[0].serverType;
+    }
+
+    const selectedServer = soundtrackState.selectedServerType;
+    const selectedServerLabel = serverOptions.find(option => option.serverType === selectedServer)?.label || '';
+    const libraries = getSoundtrackLibraries(configuration, category, selectedServer);
+    const libraryOptions = [];
+    libraries.forEach(library => {
+        const serverHint = selectedServer ? '' : ` (${library.serverLabel})`;
+        libraryOptions.push({
+            libraryId: library.libraryId,
+            label: library.libraryName + serverHint
+        });
+    });
+
+    const validLibraryIds = new Set(libraryOptions.map(option => option.libraryId));
+    if (!validLibraryIds.has(soundtrackState.selectedLibraryId)) {
+        soundtrackState.selectedLibraryId = '';
+    }
+
+    if (elements.serverFilterLabel) {
+        elements.serverFilterLabel.textContent = 'Servers';
+    }
+    if (elements.serverFilterGroup) {
+        elements.serverFilterGroup.style.display = serverOptions.length >= 2 ? '' : 'none';
+    }
+
+    if (serverOptions.length >= 2) {
+        const serverPills = [
+            `<button type="button" class="soundtrack-pill ${soundtrackState.selectedServerType ? '' : 'is-active'}" data-soundtrack-server="">All servers</button>`,
+            ...serverOptions.map(option => `<button type="button" class="soundtrack-pill ${soundtrackState.selectedServerType === option.serverType ? 'is-active' : ''}" data-soundtrack-server="${escapeHtml(option.serverType)}">${escapeHtml(option.label)}</button>`)
+        ];
+        elements.serverPills.innerHTML = serverPills.join('');
+    } else if (serverOptions.length === 0) {
+        elements.serverPills.innerHTML = '<span class="soundtrack-pill is-empty">No servers available</span>';
+    } else {
+        elements.serverPills.innerHTML = '';
+    }
+
+    if (elements.libraryFilterLabel) {
+        elements.libraryFilterLabel.textContent = selectedServerLabel
+            ? `${selectedServerLabel} Libraries`
+            : 'Libraries';
+    }
+    if (elements.libraryFilterGroup) {
+        elements.libraryFilterGroup.style.display = libraryOptions.length >= 2 ? '' : 'none';
+    }
+
+    if (libraryOptions.length >= 2) {
+        const libraryPills = [
+            `<button type="button" class="soundtrack-pill ${soundtrackState.selectedLibraryId ? '' : 'is-active'}" data-soundtrack-library="">All libraries</button>`,
+            ...libraryOptions.map(option => `<button type="button" class="soundtrack-pill ${soundtrackState.selectedLibraryId === option.libraryId ? 'is-active' : ''}" data-soundtrack-library="${escapeHtml(option.libraryId)}">${escapeHtml(option.label)}</button>`)
+        ];
+        elements.libraryPills.innerHTML = libraryPills.join('');
+    } else if (libraryOptions.length === 0) {
+        elements.libraryPills.innerHTML = '<span class="soundtrack-pill is-empty">No libraries available</span>';
+    } else {
+        elements.libraryPills.innerHTML = '';
+    }
+}
+
+function resetSoundtrackTvSelection() {
+    soundtrackState.selectedTvShow = null;
+    soundtrackState.selectedTvSeasonId = '';
+}
+
+function clearSoundtrackBackgroundRefreshTimer() {
+    if (soundtrackState.backgroundRefreshTimer) {
+        window.clearTimeout(soundtrackState.backgroundRefreshTimer);
+        soundtrackState.backgroundRefreshTimer = 0;
+    }
+}
+
+function resolveSoundtrackCardArtVariant(category) {
+    const normalizedCategory = normalizeSoundtrackCategory(category);
+    if (normalizedCategory === 'movie') {
+        return 'poster';
+    }
+
+    if (soundtrackState.selectedTvShow && soundtrackState.selectedTvSeasonId) {
+        return 'landscape';
+    }
+
+    return 'poster';
+}
+
+function renderSoundtrackLoadingState(category) {
+    const elements = getSoundtrackElements();
+    if (!elements.grid) {
+        return;
+    }
+
+    const variant = resolveSoundtrackCardArtVariant(category);
+    const cardCount = 8;
+    const cards = Array.from({ length: cardCount }, () => `<article class="soundtrack-card soundtrack-card--skeleton">
+        <div class="soundtrack-card-art soundtrack-card-art--${variant} soundtrack-skeleton-block"></div>
+        <div class="soundtrack-card-body">
+            <div class="soundtrack-skeleton-line soundtrack-skeleton-line--title"></div>
+            <div class="soundtrack-skeleton-line soundtrack-skeleton-line--meta"></div>
+            <div class="soundtrack-skeleton-line soundtrack-skeleton-line--meta short"></div>
+        </div>
+    </article>`);
+
+    elements.grid.innerHTML = cards.join('');
+    if (elements.empty) {
+        elements.empty.hidden = true;
+    }
+    if (elements.status) {
+        elements.status.textContent = `Loading ${getSoundtrackCategoryLabel(category)}...`;
+    }
+}
+
+function renderSoundtrackTvNavigation() {
+    const elements = getSoundtrackElements();
+    const isTvCategory = normalizeSoundtrackCategory(soundtrackState.category) === 'tv_show';
+    const selectedShow = soundtrackState.selectedTvShow;
+    const hasSelectedShow = isTvCategory && selectedShow && String(selectedShow.showId || '').trim();
+
+    if (elements.tvNav) {
+        elements.tvNav.hidden = !hasSelectedShow;
+    }
+
+    if (elements.tvBackButton) {
+        elements.tvBackButton.textContent = soundtrackState.selectedTvSeasonId
+            ? 'Back to Seasons'
+            : 'Back to TV Shows';
+    }
+
+    if (!hasSelectedShow) {
+        if (elements.tvShowTitle) {
+            elements.tvShowTitle.textContent = '';
+        }
+        if (elements.tvSeasonPills) {
+            elements.tvSeasonPills.innerHTML = '';
+        }
+        if (elements.tvSeasonFilterGroup) {
+            elements.tvSeasonFilterGroup.style.display = 'none';
+        }
+        return;
+    }
+
+    if (elements.tvShowTitle) {
+        elements.tvShowTitle.textContent = String(selectedShow.showTitle || 'TV Show');
+    }
+
+    const seasons = Array.isArray(selectedShow.seasons) ? selectedShow.seasons : [];
+    if (!elements.tvSeasonFilterGroup || !elements.tvSeasonPills) {
+        return;
+    }
+
+    if (seasons.length < 2) {
+        elements.tvSeasonFilterGroup.style.display = 'none';
+        elements.tvSeasonPills.innerHTML = '';
+        return;
+    }
+
+    elements.tvSeasonFilterGroup.style.display = '';
+    const pills = [
+        `<button type="button" class="soundtrack-pill ${soundtrackState.selectedTvSeasonId ? '' : 'is-active'}" data-soundtrack-season="">All seasons</button>`,
+        ...seasons.map(season => {
+            const seasonId = String(season?.seasonId || '').trim();
+            const seasonNumber = Number.isFinite(season?.seasonNumber) ? `S${season.seasonNumber}` : '';
+            const seasonTitle = String(season?.title || '').trim();
+            const label = seasonNumber || seasonTitle || 'Season';
+            const active = soundtrackState.selectedTvSeasonId === seasonId;
+            return `<button type="button" class="soundtrack-pill ${active ? 'is-active' : ''}" data-soundtrack-season="${escapeHtml(seasonId)}">${escapeHtml(label)}</button>`;
+        })
+    ];
+    elements.tvSeasonPills.innerHTML = pills.join('');
+}
+
+function buildSoundtrackMatchMarkup(soundtrack) {
+    const matchTitle = String(soundtrack?.title || 'Search on Deezer').trim();
+    const matchUrl = String(soundtrack?.url || '').trim();
+    const matchKind = String(soundtrack?.kind || 'search').trim().toLowerCase();
+    const matchLabel = matchKind === 'album'
+        ? 'Open album'
+        : matchKind === 'playlist'
+            ? 'Open playlist'
+            : 'Search on Deezer';
+
+    if (!matchUrl) {
+        return `<p class="soundtrack-card-meta">${escapeHtml(matchTitle)}</p>`;
+    }
+
+    return `<a class="soundtrack-card-match" href="${escapeHtml(matchUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(matchLabel)}: ${escapeHtml(matchTitle)}</a>`;
+}
+
+function renderSoundtrackItems(items, category) {
+    const elements = getSoundtrackElements();
+    if (!elements.grid || !elements.empty) {
+        return;
+    }
+
+    const rows = Array.isArray(items) ? items : [];
+    const normalizedCategory = normalizeSoundtrackCategory(category);
+    if (rows.length === 0) {
+        elements.grid.innerHTML = '';
+        elements.empty.hidden = false;
+        if (elements.status) {
+            if (normalizedCategory === 'tv_show' && soundtrackState.selectedTvShow) {
+                elements.status.textContent = 'TV Shows: 0 episodes';
+            } else {
+                elements.status.textContent = `${getSoundtrackCategoryLabel(category)}: 0 items`;
+            }
+        }
+        return;
+    }
+
+    elements.empty.hidden = true;
+    if (normalizedCategory === 'movie') {
+        elements.grid.innerHTML = rows.map(item => {
+            const title = String(item?.title || '').trim() || 'Untitled';
+            const year = Number.isFinite(item?.year) ? ` (${item.year})` : '';
+            const libraryName = String(item?.libraryName || '').trim();
+            const serverLabel = String(item?.serverLabel || item?.serverType || '').trim();
+            const context = [libraryName, serverLabel].filter(Boolean).join(' • ');
+            const image = String(item?.imageUrl || '').trim();
+
+            return `<article class="soundtrack-card soundtrack-card--movie">
+                ${image
+                    ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
+                    : `<div class="soundtrack-card-art soundtrack-card-art--poster watchlist-card-art-placeholder"><i class="fa-solid fa-compact-disc"></i></div>`}
+                <div class="soundtrack-card-body">
+                    <h3 class="soundtrack-card-title">${escapeHtml(title)}${escapeHtml(year)}</h3>
+                    ${context ? `<p class="soundtrack-card-meta">${escapeHtml(context)}</p>` : ''}
+                    ${buildSoundtrackMatchMarkup(item?.soundtrack)}
+                </div>
+            </article>`;
+        }).join('');
+
+        if (elements.status) {
+            elements.status.textContent = `Movies: ${rows.length} item${rows.length === 1 ? '' : 's'}`;
+        }
+        return;
+    }
+
+    if (soundtrackState.selectedTvShow) {
+        const selectedSeasonId = String(soundtrackState.selectedTvSeasonId || '').trim();
+        if (!selectedSeasonId) {
+            const seasons = Array.isArray(soundtrackState.selectedTvShow?.seasons)
+                ? soundtrackState.selectedTvShow.seasons
+                    .slice()
+                    .sort((left, right) => {
+                        const leftNum = Number.isFinite(left?.seasonNumber) ? left.seasonNumber : Number.MAX_SAFE_INTEGER;
+                        const rightNum = Number.isFinite(right?.seasonNumber) ? right.seasonNumber : Number.MAX_SAFE_INTEGER;
+                        if (leftNum !== rightNum) {
+                            return leftNum - rightNum;
+                        }
+                        return String(left?.title || '').localeCompare(String(right?.title || ''), undefined, { sensitivity: 'base' });
+                    })
+                : [];
+
+            if (seasons.length > 0) {
+                elements.grid.innerHTML = seasons.map(season => {
+                    const title = String(season?.title || '').trim() || 'Season';
+                    const seasonId = String(season?.seasonId || '').trim();
+                    const seasonNumber = Number.isFinite(season?.seasonNumber) ? `Season ${season.seasonNumber}` : '';
+                    const episodeCount = Number.isFinite(season?.episodeCount)
+                        ? `${season.episodeCount} episode${season.episodeCount === 1 ? '' : 's'}`
+                        : '';
+                    const context = [seasonNumber, episodeCount].filter(Boolean).join(' • ');
+                    const image = String(season?.imageUrl || '').trim();
+
+                    return `<article class="soundtrack-card soundtrack-card--tv-season">
+                        ${image
+                            ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
+                            : `<div class="soundtrack-card-art soundtrack-card-art--poster watchlist-card-art-placeholder"><i class="fa-solid fa-photo-film"></i></div>`}
+                        <div class="soundtrack-card-body">
+                            <h3 class="soundtrack-card-title">${escapeHtml(title)}</h3>
+                            ${context ? `<p class="soundtrack-card-meta">${escapeHtml(context)}</p>` : ''}
+                            ${seasonId
+                                ? `<button type="button" class="soundtrack-card-browse" data-soundtrack-open-season="${escapeHtml(seasonId)}">Open Episodes</button>`
+                                : ''}
+                        </div>
+                    </article>`;
+                }).join('');
+
+                if (elements.status) {
+                    elements.status.textContent = `TV Shows: ${seasons.length} season${seasons.length === 1 ? '' : 's'}`;
+                }
+                return;
+            }
+        }
+
+        elements.grid.innerHTML = rows.map(item => {
+            const title = String(item?.title || '').trim() || 'Untitled';
+            const seasonNumber = Number.isFinite(item?.seasonNumber) ? `S${item.seasonNumber}` : '';
+            const episodeNumber = Number.isFinite(item?.episodeNumber) ? `E${item.episodeNumber}` : '';
+            const seasonLabel = [seasonNumber, episodeNumber].filter(Boolean).join(' • ');
+            const seasonTitle = String(item?.seasonTitle || '').trim();
+            const context = [seasonTitle, seasonLabel].filter(Boolean).join(' • ');
+            const image = String(item?.imageUrl || '').trim();
+
+            return `<article class="soundtrack-card soundtrack-card--tv-episode">
+                ${image
+                    ? `<img class="soundtrack-card-art soundtrack-card-art--landscape" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
+                    : `<div class="soundtrack-card-art soundtrack-card-art--landscape watchlist-card-art-placeholder"><i class="fa-solid fa-tv"></i></div>`}
+                <div class="soundtrack-card-body">
+                    <h3 class="soundtrack-card-title">${escapeHtml(title)}</h3>
+                    ${context ? `<p class="soundtrack-card-meta">${escapeHtml(context)}</p>` : ''}
+                    ${buildSoundtrackMatchMarkup(item?.soundtrack)}
+                </div>
+            </article>`;
+        }).join('');
+
+        if (elements.status) {
+            elements.status.textContent = `TV Shows: ${rows.length} episode${rows.length === 1 ? '' : 's'}`;
+        }
+        return;
+    }
+
+    elements.grid.innerHTML = rows.map(item => {
+        const title = String(item?.title || '').trim() || 'Untitled';
+        const year = Number.isFinite(item?.year) ? ` (${item.year})` : '';
+        const libraryName = String(item?.libraryName || '').trim();
+        const serverLabel = String(item?.serverLabel || item?.serverType || '').trim();
+        const context = [libraryName, serverLabel].filter(Boolean).join(' • ');
+        const image = String(item?.imageUrl || '').trim();
+        const showId = String(item?.itemId || '').trim();
+        const itemServerType = String(item?.serverType || '').trim().toLowerCase();
+        const itemLibraryId = String(item?.libraryId || '').trim();
+        const showTitle = title;
+
+        return `<article class="soundtrack-card soundtrack-card--tv-show">
+            ${image
+                ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
+                : `<div class="soundtrack-card-art soundtrack-card-art--poster watchlist-card-art-placeholder"><i class="fa-solid fa-tv"></i></div>`}
+            <div class="soundtrack-card-body">
+                <h3 class="soundtrack-card-title">${escapeHtml(title)}${escapeHtml(year)}</h3>
+                ${context ? `<p class="soundtrack-card-meta">${escapeHtml(context)}</p>` : ''}
+                ${showId
+                    ? `<button type="button" class="soundtrack-card-browse" data-soundtrack-open-show="${escapeHtml(showId)}" data-soundtrack-show-title="${escapeHtml(showTitle)}" data-soundtrack-server="${escapeHtml(itemServerType)}" data-soundtrack-library="${escapeHtml(itemLibraryId)}" data-soundtrack-show-image="${escapeHtml(image)}">Browse Episodes</button>`
+                    : ''}
+                ${buildSoundtrackMatchMarkup(item?.soundtrack)}
+            </div>
+        </article>`;
+    }).join('');
+
+    if (elements.status) {
+        elements.status.textContent = `TV Shows: ${rows.length} show${rows.length === 1 ? '' : 's'}`;
+    }
+}
+
+function hasPendingSoundtrackMatches(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) {
+        return false;
+    }
+
+    return rows.some(row => {
+        const kind = String(row?.soundtrack?.kind || '').trim().toLowerCase();
+        const deezerId = String(row?.soundtrack?.deezerId || '').trim();
+        return !deezerId || kind === 'search';
+    });
+}
+
+function scheduleSoundtrackBackgroundRefresh(rows) {
+    // Background matching warmup is handled server-side. Avoid client-side repaint polling,
+    // which causes visible poster flicker from repeated full-grid rerenders.
+    void rows;
+}
+
+async function loadSoundtrackEpisodes(options = {}) {
+    const { showLoadingSkeleton = true } = options;
+    const elements = getSoundtrackElements();
+    const selectedShow = soundtrackState.selectedTvShow;
+    if (!selectedShow || !elements.grid) {
+        return;
+    }
+
+    if (showLoadingSkeleton) {
+        soundtrackState.backgroundRefreshAttempt = 0;
+        renderSoundtrackLoadingState('tv_show');
+    }
+
+    if (elements.status) {
+        elements.status.textContent = `Loading episodes for ${selectedShow.showTitle || 'TV Show'}...`;
+    }
+
+    const params = new URLSearchParams();
+    params.set('serverType', String(selectedShow.serverType || '').trim());
+    params.set('libraryId', String(selectedShow.libraryId || '').trim());
+    params.set('showId', String(selectedShow.showId || '').trim());
+    if (soundtrackState.selectedTvSeasonId) {
+        params.set('seasonId', soundtrackState.selectedTvSeasonId);
+    }
+    params.set('limit', '1200');
+
+    try {
+        const payload = await fetchJson(`/api/media-server/soundtracks/episodes?${params.toString()}`);
+        soundtrackState.selectedTvShow = {
+            showId: String(payload?.showId || selectedShow.showId || '').trim(),
+            showTitle: String(payload?.showTitle || selectedShow.showTitle || 'TV Show').trim(),
+            showImageUrl: String(payload?.showImageUrl || selectedShow.showImageUrl || '').trim(),
+            serverType: String(payload?.serverType || selectedShow.serverType || '').trim().toLowerCase(),
+            libraryId: String(payload?.libraryId || selectedShow.libraryId || '').trim(),
+            seasons: Array.isArray(payload?.seasons) ? payload.seasons : [],
+            episodes: Array.isArray(payload?.episodes) ? payload.episodes : []
+        };
+
+        renderSoundtrackTvNavigation();
+        renderSoundtrackItems(soundtrackState.selectedTvShow.episodes, 'tv_show');
+        scheduleSoundtrackBackgroundRefresh(soundtrackState.selectedTvShow.episodes);
+    } catch (error) {
+        elements.grid.innerHTML = '';
+        if (elements.empty) {
+            elements.empty.hidden = false;
+        }
+        if (elements.status) {
+            elements.status.textContent = 'Failed to load TV show episodes.';
+        }
+        showToast(`TV episode load failed: ${error?.message || 'Unknown error'}`, true);
+    }
+}
+
+async function loadSoundtrackConfiguration(refresh = false) {
+    const query = refresh ? '?refresh=true' : '';
+    const configuration = await fetchJson(`/api/media-server/soundtracks/configuration${query}`);
+    soundtrackState.configuration = configuration;
+    renderSoundtrackFilters(configuration);
+    return configuration;
+}
+
+function buildSoundtrackItemKey(item) {
+    const serverType = String(item?.serverType || '').trim().toLowerCase();
+    const libraryId = String(item?.libraryId || '').trim();
+    const itemId = String(item?.itemId || '').trim();
+    return `${serverType}::${libraryId}::${itemId}`;
+}
+
+function resolveSoundtrackLibraryTargets(configuration, category) {
+    const serverType = String(soundtrackState.selectedServerType || '').trim();
+    const selectedLibraryId = String(soundtrackState.selectedLibraryId || '').trim();
+    const allLibraries = getSoundtrackLibraries(configuration, category, serverType);
+    if (!selectedLibraryId) {
+        return allLibraries;
+    }
+
+    return allLibraries.filter(library =>
+        String(library?.libraryId || '').trim() === selectedLibraryId
+        && String(library?.serverType || '').trim().toLowerCase() === String(serverType || library?.serverType || '').trim().toLowerCase());
+}
+
+async function loadSoundtrackItemsLazy(configuration, category, requestId) {
+    const elements = getSoundtrackElements();
+    const targets = resolveSoundtrackLibraryTargets(configuration, category);
+    if (targets.length === 0) {
+        renderSoundtrackItems([], category);
+        return;
+    }
+
+    const selectedLibraryId = String(soundtrackState.selectedLibraryId || '').trim();
+    const perLibraryCap = selectedLibraryId ? 180 : 60;
+    const batchSize = 20;
+    const merged = new Map();
+    let completedLibraries = 0;
+
+    for (const target of targets) {
+        let offset = 0;
+        let loadedForLibrary = 0;
+
+        while (loadedForLibrary < perLibraryCap) {
+            if (requestId !== soundtrackState.lastItemsRequestId) {
+                return;
+            }
+
+            const requestLimit = Math.min(batchSize, perLibraryCap - loadedForLibrary);
+            const params = new URLSearchParams();
+            params.set('category', category);
+            params.set('serverType', String(target.serverType || '').trim());
+            params.set('libraryId', String(target.libraryId || '').trim());
+            params.set('offset', String(offset));
+            params.set('limit', String(requestLimit));
+
+            const payload = await fetchJson(`/api/media-server/soundtracks/items?${params.toString()}`);
+            if (requestId !== soundtrackState.lastItemsRequestId) {
+                return;
+            }
+
+            const rows = Array.isArray(payload?.items) ? payload.items : [];
+            if (rows.length === 0) {
+                break;
+            }
+
+            rows.forEach(row => {
+                const key = buildSoundtrackItemKey(row);
+                if (key !== '::') {
+                    merged.set(key, row);
+                }
+            });
+
+            offset += rows.length;
+            loadedForLibrary += rows.length;
+            renderSoundtrackItems(Array.from(merged.values()), category);
+            if (elements.status) {
+                elements.status.textContent = `${getSoundtrackCategoryLabel(category)}: ${merged.size} item${merged.size === 1 ? '' : 's'} • ${completedLibraries}/${targets.length} libraries loaded`;
+            }
+
+            if (rows.length < requestLimit) {
+                break;
+            }
+        }
+
+        completedLibraries += 1;
+        if (elements.status) {
+            elements.status.textContent = `${getSoundtrackCategoryLabel(category)}: ${merged.size} item${merged.size === 1 ? '' : 's'} • ${completedLibraries}/${targets.length} libraries loaded`;
+        }
+    }
+
+    const finalRows = Array.from(merged.values());
+    renderSoundtrackItems(finalRows, category);
+    return finalRows;
+}
+
+async function loadSoundtrackItems(options = {}) {
+    const { refreshConfiguration = false, showLoadingSkeleton = true } = options;
+    const elements = getSoundtrackElements();
+    if (!elements.grid) {
+        return;
+    }
+
+    const requestId = ++soundtrackState.lastItemsRequestId;
+    clearSoundtrackBackgroundRefreshTimer();
+    if (showLoadingSkeleton) {
+        soundtrackState.backgroundRefreshAttempt = 0;
+        renderSoundtrackLoadingState(soundtrackState.category);
+    }
+    const category = soundtrackState.category;
+    if (elements.status) {
+        elements.status.textContent = `Loading ${getSoundtrackCategoryLabel(category)}...`;
+    }
+
+    try {
+        const configuration = refreshConfiguration || !soundtrackState.configuration
+            ? await loadSoundtrackConfiguration(refreshConfiguration)
+            : soundtrackState.configuration;
+        if (requestId !== soundtrackState.lastItemsRequestId) {
+            return;
+        }
+
+        renderSoundtrackFilters(configuration);
+
+        if (category === 'tv_show' && soundtrackState.selectedTvShow) {
+            await loadSoundtrackEpisodes({ showLoadingSkeleton });
+            return;
+        }
+
+        const finalRows = await loadSoundtrackItemsLazy(configuration, category, requestId);
+        scheduleSoundtrackBackgroundRefresh(finalRows);
+        renderSoundtrackTvNavigation();
+    } catch (error) {
+        if (requestId !== soundtrackState.lastItemsRequestId) {
+            return;
+        }
+        elements.grid.innerHTML = '';
+        if (elements.empty) {
+            elements.empty.hidden = false;
+        }
+        if (elements.status) {
+            elements.status.textContent = `Failed to load ${getSoundtrackCategoryLabel(category)}.`;
+        }
+        renderSoundtrackTvNavigation();
+        showToast(`Soundtracks load failed: ${error?.message || 'Unknown error'}`, true);
+    }
+}
+
+function bindSoundtrackTabHandlers() {
+    const elements = getSoundtrackElements();
+    if (!elements.tab || elements.tab.dataset.soundtracksBound === 'true') {
+        return;
+    }
+
+    setActiveSoundtrackCategory(soundtrackState.category);
+
+    elements.categoryTabs.forEach(button => {
+        button.addEventListener('click', async () => {
+            const category = normalizeSoundtrackCategory(button.dataset.soundtrackCategory);
+            setActiveSoundtrackCategory(category);
+            resetSoundtrackTvSelection();
+            renderSoundtrackTvNavigation();
+            renderSoundtrackLoadingState(category);
+            await loadSoundtrackItems();
+        });
+    });
+
+    if (elements.serverPills) {
+        elements.serverPills.addEventListener('click', async event => {
+            const button = event.target.closest('[data-soundtrack-server]');
+            if (!button) {
+                return;
+            }
+            const selectedServerType = String(button.dataset.soundtrackServer || '').trim().toLowerCase();
+            if (selectedServerType === soundtrackState.selectedServerType) {
+                return;
+            }
+            soundtrackState.selectedServerType = selectedServerType;
+            soundtrackState.selectedLibraryId = '';
+            resetSoundtrackTvSelection();
+            renderSoundtrackTvNavigation();
+            await loadSoundtrackItems();
+        });
+    }
+
+    if (elements.libraryPills) {
+        elements.libraryPills.addEventListener('click', async event => {
+            const button = event.target.closest('[data-soundtrack-library]');
+            if (!button) {
+                return;
+            }
+            const selectedLibraryId = String(button.dataset.soundtrackLibrary || '').trim();
+            if (selectedLibraryId === soundtrackState.selectedLibraryId) {
+                return;
+            }
+            soundtrackState.selectedLibraryId = selectedLibraryId;
+            resetSoundtrackTvSelection();
+            renderSoundtrackTvNavigation();
+            await loadSoundtrackItems();
+        });
+    }
+
+    if (elements.grid) {
+        elements.grid.addEventListener('click', async event => {
+            const seasonButton = event.target.closest('[data-soundtrack-open-season]');
+            if (seasonButton) {
+                const seasonId = String(seasonButton.dataset.soundtrackOpenSeason || '').trim();
+                if (!seasonId || seasonId === soundtrackState.selectedTvSeasonId) {
+                    return;
+                }
+
+                soundtrackState.selectedTvSeasonId = seasonId;
+                renderSoundtrackTvNavigation();
+                await loadSoundtrackEpisodes();
+                return;
+            }
+
+            const button = event.target.closest('[data-soundtrack-open-show]');
+            if (!button) {
+                return;
+            }
+
+            const showId = String(button.dataset.soundtrackOpenShow || '').trim();
+            const serverType = String(button.dataset.soundtrackServer || soundtrackState.selectedServerType || '').trim().toLowerCase();
+            const libraryId = String(button.dataset.soundtrackLibrary || soundtrackState.selectedLibraryId || '').trim();
+            if (!showId || !serverType || !libraryId) {
+                return;
+            }
+
+            soundtrackState.selectedTvShow = {
+                showId,
+                showTitle: String(button.dataset.soundtrackShowTitle || 'TV Show').trim(),
+                showImageUrl: String(button.dataset.soundtrackShowImage || '').trim(),
+                serverType,
+                libraryId,
+                seasons: [],
+                episodes: []
+            };
+            soundtrackState.selectedTvSeasonId = '';
+            renderSoundtrackTvNavigation();
+            await loadSoundtrackEpisodes();
+        });
+    }
+
+    if (elements.tvBackButton) {
+        elements.tvBackButton.addEventListener('click', async () => {
+            if (soundtrackState.selectedTvShow && soundtrackState.selectedTvSeasonId) {
+                soundtrackState.selectedTvSeasonId = '';
+                renderSoundtrackTvNavigation();
+                renderSoundtrackItems(soundtrackState.selectedTvShow.episodes, 'tv_show');
+                return;
+            }
+
+            resetSoundtrackTvSelection();
+            renderSoundtrackTvNavigation();
+            await loadSoundtrackItems();
+        });
+    }
+
+    if (elements.tvSeasonPills) {
+        elements.tvSeasonPills.addEventListener('click', async event => {
+            const button = event.target.closest('[data-soundtrack-season]');
+            if (!button) {
+                return;
+            }
+            const seasonId = String(button.dataset.soundtrackSeason || '').trim();
+            if (seasonId === soundtrackState.selectedTvSeasonId) {
+                return;
+            }
+            soundtrackState.selectedTvSeasonId = seasonId;
+            renderSoundtrackTvNavigation();
+            if (!seasonId) {
+                renderSoundtrackItems(soundtrackState.selectedTvShow?.episodes || [], 'tv_show');
+                return;
+            }
+            await loadSoundtrackEpisodes();
+        });
+    }
+
+    if (elements.refreshButton) {
+        elements.refreshButton.addEventListener('click', async () => {
+            await loadSoundtrackItems();
+        });
+    }
+
+    if (elements.syncButton) {
+        elements.syncButton.addEventListener('click', async () => {
+            try {
+                if (elements.status) {
+                    elements.status.textContent = 'Syncing media server libraries...';
+                }
+                const configuration = await fetchJson('/api/media-server/soundtracks/sync', { method: 'POST' });
+                soundtrackState.configuration = configuration;
+                renderSoundtrackFilters(configuration);
+                resetSoundtrackTvSelection();
+                renderSoundtrackTvNavigation();
+                await loadSoundtrackItems();
+                showToast('Media server soundtrack libraries synced.');
+            } catch (error) {
+                showToast(`Soundtrack sync failed: ${error?.message || 'Unknown error'}`, true);
+            }
+        });
+    }
+
+    elements.tab.dataset.soundtracksBound = 'true';
+}
+
+async function initializeSoundtracksTab() {
+    const elements = getSoundtrackElements();
+    if (!elements.grid) {
+        return;
+    }
+
+    bindSoundtrackTabHandlers();
+    renderSoundtrackTvNavigation();
+    if (soundtrackState.initialized) {
+        await loadSoundtrackItems({ refreshConfiguration: true });
+        return;
+    }
+
+    soundtrackState.initialized = true;
+    await loadSoundtrackItems({ refreshConfiguration: true });
+}
+
 function formatRelativeTime(dateStr) {
     if (!dateStr) return null;
     const diff = Date.now() - new Date(dateStr).getTime();
@@ -10722,6 +11595,7 @@ function getLibraryLoadTargets() {
         shouldLoadWatchlist: document.getElementById('watchlistContainer'),
         shouldLoadPlaylistWatchlist: document.getElementById('playlistWatchlistContainer'),
         shouldLoadPlaylistBlockedRules: document.getElementById('blockedWatchlistContainer'),
+        shouldLoadSoundtracks: document.getElementById('soundtrackGrid'),
         shouldLoadAnalysis: document.getElementById('analysisStatus'),
         analysisButton: document.getElementById('runAnalysis'),
         shouldLoadFavorites: document.getElementById('favoritesContainer'),
@@ -10767,6 +11641,9 @@ function queueStandardInitialLoadTasks(targets, tasks) {
     }
     if (targets.shouldLoadPlaylistBlockedRules) {
         tasks.push(loadPlaylistBlockedRules());
+    }
+    if (targets.shouldLoadSoundtracks) {
+        tasks.push(initializeSoundtracksTab());
     }
     if (targets.shouldLoadAlbumTracks) {
         tasks.push(loadAlbum());
