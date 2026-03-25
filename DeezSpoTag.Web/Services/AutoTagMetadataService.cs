@@ -108,7 +108,7 @@ public class AutoTagMetadataService
         return lookup;
     }
 
-    private string? MergePortedPlatforms(string? nativeJson, PlatformCapabilitiesSnapshot? snapshot) // NOSONAR
+    private string? MergePortedPlatforms(string? nativeJson, PlatformCapabilitiesSnapshot? snapshot)
     {
         var ported = _portedPlatforms.DescribeAll();
         if (ported.Count == 0)

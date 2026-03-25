@@ -11,12 +11,18 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public sealed class TidalSearchApiController : ControllerBase
 {
     private const string TidalSource = "tidal";
+    private const string TrackType = "track";
+    private const string AlbumType = "album";
+    private const string ArtistType = "artist";
+    private const string PlaylistType = "playlist";
+    private const string TitleProperty = "title";
+    private const string AuthHost = "auth.tidal.com";
+    private const string AuthPath = "v1/oauth2/token";
     private const string EncodedClientId = "NkJEU1JkcEs5aHFFQlRnVQ==";
     private const string EncodedClientSecret = "eGV1UG1ZN25icFo5SUliTEFjUTkzc2hrYTFWTmhlVUFxTjZJY3N6alRHOD0=";
-    private const string AuthUrl = "https://auth.tidal.com/v1/oauth2/token";
-    private static readonly SemaphoreSlim TokenLock = new(1, 1);
-    private static string _cachedToken = string.Empty;
-    private static DateTimeOffset _cachedTokenExpiresUtc = DateTimeOffset.MinValue;
+    private readonly SemaphoreSlim _tokenLock = new(1, 1);
+    private string _cachedToken = string.Empty;
+    private DateTimeOffset _cachedTokenExpiresUtc = DateTimeOffset.MinValue;
 
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<TidalSearchApiController> _logger;
@@ -47,16 +53,16 @@ public sealed class TidalSearchApiController : ControllerBase
         try
         {
             var token = await GetAccessTokenAsync(cancellationToken);
-            var tracks = normalizedType is null or "track"
+            var tracks = normalizedType is null or TrackType
                 ? await SearchTypedAsync("tracks", query, limit, token, MapTrack, cancellationToken)
                 : new List<object>();
-            var albums = normalizedType is null or "album"
+            var albums = normalizedType is null or AlbumType
                 ? await SearchTypedAsync("albums", query, limit, token, MapAlbum, cancellationToken)
                 : new List<object>();
-            var artists = normalizedType is null or "artist"
+            var artists = normalizedType is null or ArtistType
                 ? await SearchTypedAsync("artists", query, limit, token, MapArtist, cancellationToken)
                 : new List<object>();
-            var playlists = normalizedType is null or "playlist"
+            var playlists = normalizedType is null or PlaylistType
                 ? await SearchTypedAsync("playlists", query, limit, token, MapPlaylist, cancellationToken)
                 : new List<object>();
 
@@ -167,7 +173,7 @@ public sealed class TidalSearchApiController : ControllerBase
             return _cachedToken;
         }
 
-        await TokenLock.WaitAsync(cancellationToken);
+        await _tokenLock.WaitAsync(cancellationToken);
         try
         {
             if (!string.IsNullOrWhiteSpace(_cachedToken) && _cachedTokenExpiresUtc > DateTimeOffset.UtcNow.AddSeconds(30))
@@ -179,7 +185,8 @@ public sealed class TidalSearchApiController : ControllerBase
             var clientId = Encoding.UTF8.GetString(Convert.FromBase64String(EncodedClientId));
             var clientSecret = Encoding.UTF8.GetString(Convert.FromBase64String(EncodedClientSecret));
             var authValue = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{clientId}:{clientSecret}"));
-            using var request = new HttpRequestMessage(HttpMethod.Post, AuthUrl)
+            var authUrl = new UriBuilder(Uri.UriSchemeHttps, AuthHost) { Path = AuthPath }.Uri;
+            using var request = new HttpRequestMessage(HttpMethod.Post, authUrl)
             {
                 Content = new FormUrlEncodedContent(new Dictionary<string, string>
                 {
@@ -210,11 +217,11 @@ public sealed class TidalSearchApiController : ControllerBase
         }
         finally
         {
-            TokenLock.Release();
+            _tokenLock.Release();
         }
     }
 
-    private static void InvalidateCachedToken()
+    private void InvalidateCachedToken()
     {
         _cachedToken = string.Empty;
         _cachedTokenExpiresUtc = DateTimeOffset.MinValue;
@@ -245,8 +252,8 @@ public sealed class TidalSearchApiController : ControllerBase
         return new
         {
             source = TidalSource,
-            type = "track",
-            name = ComposeTitle(GetString(item, "title"), GetString(item, "version")),
+            type = TrackType,
+            name = ComposeTitle(GetString(item, TitleProperty), GetString(item, "version")),
             artist,
             album = albumTitle,
             image = BuildImageUrl(coverId),
@@ -254,7 +261,7 @@ public sealed class TidalSearchApiController : ControllerBase
             durationMs = Math.Max(0, duration) * 1000L,
             isrc = GetString(item, "isrc"),
             tidalId = id,
-            tidalType = "track",
+            tidalType = TrackType,
             tidalUrl = url,
             externalUrl = url,
             hasHiRes = audioQuality.Contains("HI_RES", StringComparison.OrdinalIgnoreCase),
@@ -277,14 +284,14 @@ public sealed class TidalSearchApiController : ControllerBase
         return new
         {
             source = TidalSource,
-            type = "album",
-            name = ComposeTitle(GetString(item, "title"), GetString(item, "version")),
+            type = AlbumType,
+            name = ComposeTitle(GetString(item, TitleProperty), GetString(item, "version")),
             artist,
             image = BuildImageUrl(GetString(item, "cover")),
             release_date = GetString(item, "releaseDate"),
             trackCount = GetInt(item, "numberOfTracks"),
             tidalId = id,
-            tidalType = "album",
+            tidalType = AlbumType,
             tidalUrl = url,
             externalUrl = url,
             audioQuality = GetString(item, "audioQuality")
@@ -303,12 +310,12 @@ public sealed class TidalSearchApiController : ControllerBase
         return new
         {
             source = TidalSource,
-            type = "artist",
+            type = ArtistType,
             name = GetString(item, "name"),
             image = BuildImageUrl(GetString(item, "picture")),
             followers = (int?)null,
             tidalId = id,
-            tidalType = "artist",
+            tidalType = ArtistType,
             tidalUrl = url,
             externalUrl = url
         };
@@ -331,13 +338,13 @@ public sealed class TidalSearchApiController : ControllerBase
         return new
         {
             source = TidalSource,
-            type = "playlist",
-            name = GetString(item, "title"),
+            type = PlaylistType,
+            name = GetString(item, TitleProperty),
             owner = "Tidal",
             image = BuildImageUrl(GetString(item, "squareImage"), fallbackId: GetString(item, "image")),
             trackCount = GetInt(item, "numberOfTracks"),
             tidalId = id,
-            tidalType = "playlist",
+            tidalType = PlaylistType,
             tidalUrl = url,
             externalUrl = url
         };
@@ -371,10 +378,10 @@ public sealed class TidalSearchApiController : ControllerBase
 
         return type.Trim().ToLowerInvariant() switch
         {
-            "track" => "track",
-            "album" => "album",
-            "artist" => "artist",
-            "playlist" => "playlist",
+            TrackType => TrackType,
+            AlbumType => AlbumType,
+            ArtistType => ArtistType,
+            PlaylistType => PlaylistType,
             _ => null
         };
     }

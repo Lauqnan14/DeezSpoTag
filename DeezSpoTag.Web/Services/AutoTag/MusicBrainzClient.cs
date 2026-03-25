@@ -1,7 +1,6 @@
 using System.Net;
 using System.Text.Json;
 
-#pragma warning disable CA1860
 namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class MusicBrainzClient
@@ -29,7 +28,7 @@ public sealed class MusicBrainzClient
                 Path = "ws/2/"
             }.Uri;
         }
-        if (!_httpClient.DefaultRequestHeaders.UserAgent.Any()) // NOSONAR
+        if (_httpClient.DefaultRequestHeaders.UserAgent.Count == 0)
         {
             _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("DeezSpoTag/1.0 (MusicBrainz)");
         }

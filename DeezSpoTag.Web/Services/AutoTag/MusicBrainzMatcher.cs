@@ -1,7 +1,5 @@
 using System.Globalization;
 
-#pragma warning disable CA1846
-#pragma warning disable CA1859
 namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class MusicBrainzMatcher
@@ -199,7 +197,7 @@ public sealed class MusicBrainzMatcher
         return track;
     }
 
-    private async Task ExtendTrackAsync(MusicBrainzTrack track, MusicBrainzPreferences preferences, CancellationToken cancellationToken) // NOSONAR
+    private async Task ExtendTrackAsync(MusicBrainzTrack track, MusicBrainzPreferences preferences, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(track.TrackId))
         {
@@ -307,7 +305,7 @@ public sealed class MusicBrainzMatcher
         {
             return null;
         }
-        return int.TryParse(date.Substring(0, 4), NumberStyles.Integer, CultureInfo.InvariantCulture, out var year) // NOSONAR
+        return int.TryParse(date.AsSpan(0, 4), NumberStyles.Integer, CultureInfo.InvariantCulture, out var year)
             ? year
             : null;
     }
@@ -500,7 +498,7 @@ public sealed class MusicBrainzMatcher
         return best;
     }
 
-    private static IEnumerable<string> GetRecordingIds(AutoTagAudioInfo info) // NOSONAR
+    private static List<string> GetRecordingIds(AutoTagAudioInfo info)
     {
         var result = new List<string>();
         var keys = new[]

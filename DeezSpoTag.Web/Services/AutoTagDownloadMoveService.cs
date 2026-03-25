@@ -16,8 +16,6 @@ using Microsoft.Extensions.Logging;
 using TagLib;
 using IOFile = System.IO.File;
 
-#pragma warning disable CA1847
-#pragma warning disable CA1859
 namespace DeezSpoTag.Web.Services;
 
 public sealed class AutoTagDownloadMoveService
@@ -221,7 +219,7 @@ public sealed class AutoTagDownloadMoveService
         return Path.GetFullPath(candidatePath);
     }
 
-    private async Task MoveRemainingContentByDestinationAsync( // NOSONAR
+    private async Task MoveRemainingContentByDestinationAsync(
         IReadOnlyList<DownloadQueueItem> items,
         string rootPath,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
@@ -630,7 +628,7 @@ public sealed class AutoTagDownloadMoveService
         moved[DownloadPathResolver.NormalizeDisplayPath(file)] = finalPath;
     }
 
-    private static bool IsTaggedDuplicateArtifact(string file, IReadOnlySet<string> taggedAudioKeys)
+    private static bool IsTaggedDuplicateArtifact(string file, HashSet<string> taggedAudioKeys)
     {
         var sidecarKey = BuildSidecarKey(file);
         return !string.IsNullOrWhiteSpace(sidecarKey) && taggedAudioKeys.Contains(sidecarKey);
@@ -733,7 +731,7 @@ public sealed class AutoTagDownloadMoveService
         return value.Trim();
     }
 
-    private async Task<string> ApplyDestinationConversionIfNeededAsync( // NOSONAR
+    private async Task<string> ApplyDestinationConversionIfNeededAsync(
         string movedPath,
         ConversionPlan conversionPlan,
         CancellationToken cancellationToken)
@@ -861,8 +859,8 @@ public sealed class AutoTagDownloadMoveService
         string file,
         AutoTagOrganizerOptions options,
         bool explicitResultSets,
-        IReadOnlySet<string> taggedSet, // NOSONAR
-        IReadOnlySet<string> failedSet) // NOSONAR
+        IReadOnlySet<string> taggedSet,
+        IReadOnlySet<string> failedSet)
     {
         if (explicitResultSets)
         {
@@ -892,53 +890,12 @@ public sealed class AutoTagDownloadMoveService
         var sidecarBuckets = new Dictionary<string, ResidualBucket>(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in audioBuckets)
         {
-            var key = BuildSidecarKey(pair.Key);
-            if (string.IsNullOrWhiteSpace(key))
-            {
-                continue;
-            }
-
-            if (pair.Value == ResidualBucket.Tagged)
-            {
-                sidecarBuckets[key] = ResidualBucket.Tagged;
-            }
-            else if (pair.Value == ResidualBucket.Failed && !sidecarBuckets.ContainsKey(key))
-            {
-                sidecarBuckets[key] = ResidualBucket.Failed;
-            }
+            ApplyAudioBucketToSidecarBuckets(pair, sidecarBuckets);
         }
 
         if (runtime.Classification.ExplicitResultSets)
         {
-            foreach (var file in runtime.Classification.TaggedSet)
-            {
-                if (!IsAudioExtension(file) || !IsUnderRoot(runtime.Paths.RootIo, file))
-                {
-                    continue;
-                }
-
-                var key = BuildSidecarKey(file);
-                if (!string.IsNullOrWhiteSpace(key))
-                {
-                    sidecarBuckets[key] = ResidualBucket.Tagged;
-                }
-            }
-
-            foreach (var file in runtime.Classification.FailedSet)
-            {
-                if (!IsAudioExtension(file) || !IsUnderRoot(runtime.Paths.RootIo, file))
-                {
-                    continue;
-                }
-
-                var key = BuildSidecarKey(file);
-                if (string.IsNullOrWhiteSpace(key) || sidecarBuckets.ContainsKey(key))
-                {
-                    continue;
-                }
-
-                sidecarBuckets[key] = ResidualBucket.Failed;
-            }
+            ApplyExplicitSidecarBuckets(runtime, sidecarBuckets);
         }
 
         return sidecarBuckets;
@@ -951,60 +908,143 @@ public sealed class AutoTagDownloadMoveService
         var folderBuckets = new Dictionary<string, ResidualBucket>(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in audioBuckets)
         {
-            var directory = Path.GetDirectoryName(pair.Key);
-            if (string.IsNullOrWhiteSpace(directory))
-            {
-                continue;
-            }
-
-            if (pair.Value == ResidualBucket.Tagged)
-            {
-                folderBuckets[directory] = ResidualBucket.Tagged;
-                continue;
-            }
-
-            if (pair.Value == ResidualBucket.Failed && !folderBuckets.ContainsKey(directory))
-            {
-                folderBuckets[directory] = ResidualBucket.Failed;
-            }
+            ApplyAudioBucketToFolderBuckets(pair, folderBuckets);
         }
 
         if (runtime.Classification.ExplicitResultSets)
         {
-            foreach (var file in runtime.Classification.TaggedSet)
-            {
-                if (!IsAudioExtension(file) || !IsUnderRoot(runtime.Paths.RootIo, file))
-                {
-                    continue;
-                }
-
-                var directory = Path.GetDirectoryName(file);
-                if (string.IsNullOrWhiteSpace(directory))
-                {
-                    continue;
-                }
-
-                folderBuckets[directory] = ResidualBucket.Tagged;
-            }
-
-            foreach (var file in runtime.Classification.FailedSet)
-            {
-                if (!IsAudioExtension(file) || !IsUnderRoot(runtime.Paths.RootIo, file))
-                {
-                    continue;
-                }
-
-                var directory = Path.GetDirectoryName(file);
-                if (string.IsNullOrWhiteSpace(directory) || folderBuckets.ContainsKey(directory))
-                {
-                    continue;
-                }
-
-                folderBuckets[directory] = ResidualBucket.Failed;
-            }
+            ApplyExplicitFolderBuckets(runtime, folderBuckets);
         }
 
         return folderBuckets;
+    }
+
+    private static void ApplyAudioBucketToSidecarBuckets(
+        KeyValuePair<string, ResidualBucket> pair,
+        Dictionary<string, ResidualBucket> sidecarBuckets)
+    {
+        var key = BuildSidecarKey(pair.Key);
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return;
+        }
+
+        if (pair.Value == ResidualBucket.Tagged)
+        {
+            sidecarBuckets[key] = ResidualBucket.Tagged;
+            return;
+        }
+
+        if (pair.Value == ResidualBucket.Failed && !sidecarBuckets.ContainsKey(key))
+        {
+            sidecarBuckets[key] = ResidualBucket.Failed;
+        }
+    }
+
+    private static void ApplyExplicitSidecarBuckets(
+        ResidualRuntime runtime,
+        Dictionary<string, ResidualBucket> sidecarBuckets)
+    {
+        foreach (var file in runtime.Classification.TaggedSet)
+        {
+            if (!IsEligibleExplicitAudioFile(file, runtime.Paths.RootIo))
+            {
+                continue;
+            }
+
+            var key = BuildSidecarKey(file);
+            if (!string.IsNullOrWhiteSpace(key))
+            {
+                sidecarBuckets[key] = ResidualBucket.Tagged;
+            }
+        }
+
+        foreach (var file in runtime.Classification.FailedSet)
+        {
+            if (!IsEligibleExplicitAudioFile(file, runtime.Paths.RootIo))
+            {
+                continue;
+            }
+
+            var key = BuildSidecarKey(file);
+            if (string.IsNullOrWhiteSpace(key) || sidecarBuckets.ContainsKey(key))
+            {
+                continue;
+            }
+
+            sidecarBuckets[key] = ResidualBucket.Failed;
+        }
+    }
+
+    private static void ApplyAudioBucketToFolderBuckets(
+        KeyValuePair<string, ResidualBucket> pair,
+        Dictionary<string, ResidualBucket> folderBuckets)
+    {
+        var directory = Path.GetDirectoryName(pair.Key);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return;
+        }
+
+        if (pair.Value == ResidualBucket.Tagged)
+        {
+            folderBuckets[directory] = ResidualBucket.Tagged;
+            return;
+        }
+
+        if (pair.Value == ResidualBucket.Failed && !folderBuckets.ContainsKey(directory))
+        {
+            folderBuckets[directory] = ResidualBucket.Failed;
+        }
+    }
+
+    private static void ApplyExplicitFolderBuckets(
+        ResidualRuntime runtime,
+        Dictionary<string, ResidualBucket> folderBuckets)
+    {
+        foreach (var file in runtime.Classification.TaggedSet)
+        {
+            if (!TryGetExplicitAudioDirectory(file, runtime.Paths.RootIo, out var directory))
+            {
+                continue;
+            }
+
+            folderBuckets[directory] = ResidualBucket.Tagged;
+        }
+
+        foreach (var file in runtime.Classification.FailedSet)
+        {
+            if (!TryGetExplicitAudioDirectory(file, runtime.Paths.RootIo, out var directory)
+                || folderBuckets.ContainsKey(directory))
+            {
+                continue;
+            }
+
+            folderBuckets[directory] = ResidualBucket.Failed;
+        }
+    }
+
+    private static bool IsEligibleExplicitAudioFile(string file, string rootIo)
+    {
+        return IsAudioExtension(file) && IsUnderRoot(rootIo, file);
+    }
+
+    private static bool TryGetExplicitAudioDirectory(string file, string rootIo, out string directory)
+    {
+        directory = string.Empty;
+        if (!IsEligibleExplicitAudioFile(file, rootIo))
+        {
+            return false;
+        }
+
+        var candidate = Path.GetDirectoryName(file);
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            return false;
+        }
+
+        directory = candidate;
+        return true;
     }
 
     private static ResidualBucket ResolveSidecarBucket(
@@ -1204,7 +1244,7 @@ public sealed class AutoTagDownloadMoveService
         }
     }
 
-    private static string? MoveResidualFile( // NOSONAR
+    private static string? MoveResidualFile(
         string sourcePath,
         string rootIo,
         string destinationRoot,
@@ -1537,7 +1577,7 @@ public sealed class AutoTagDownloadMoveService
         }
     }
 
-    private static void AddGenericPayloadSources( // NOSONAR
+    private static void AddGenericPayloadSources(
         PayloadSourceMaps maps,
         DownloadQueueItem item,
         string rootPath)
@@ -1948,7 +1988,7 @@ public sealed class AutoTagDownloadMoveService
         return false;
     }
 
-    private static IReadOnlyDictionary<string, string> MoveDirectoryTreeUnderRoot( // NOSONAR
+    private static Dictionary<string, string> MoveDirectoryTreeUnderRoot(
         string stagingRoot,
         string moveRoot,
         string destinationRoot,
@@ -2018,8 +2058,21 @@ public sealed class AutoTagDownloadMoveService
                 IOFile.Delete(sourcePath);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        { // NOSONAR
+        catch (IOException ex)
+        {
+            _ = ex.HResult;
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            _ = ex.HResult;
+        }
+        catch (ArgumentException ex)
+        {
+            _ = ex.HResult;
+        }
+        catch (NotSupportedException ex)
+        {
+            _ = ex.HResult;
         }
     }
 
@@ -2038,12 +2091,20 @@ public sealed class AutoTagDownloadMoveService
                 IOFile.Delete(sourcePath);
                 return true;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
             {
                 return false;
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
         {
             return false;
         }
@@ -2200,7 +2261,7 @@ public sealed class AutoTagDownloadMoveService
 
     private async Task PersistFinalDestinationsAsync(
         IReadOnlyList<DownloadQueueItem> items,
-        IReadOnlyDictionary<string, Dictionary<string, string>> transitionsByQueue, // NOSONAR
+        Dictionary<string, Dictionary<string, string>> transitionsByQueue,
         CancellationToken cancellationToken)
     {
         if (transitionsByQueue.Count == 0)
@@ -2231,7 +2292,7 @@ public sealed class AutoTagDownloadMoveService
         }
     }
 
-    private async Task PersistFinalDestinationsByPayloadLookupAsync( // NOSONAR
+    private async Task PersistFinalDestinationsByPayloadLookupAsync(
         IReadOnlyList<DownloadQueueItem> items,
         IReadOnlyDictionary<string, string> transitions,
         CancellationToken cancellationToken)
@@ -2279,8 +2340,8 @@ public sealed class AutoTagDownloadMoveService
     }
 
     private static bool IsTrackedTransitionMatch(
-        IReadOnlySet<string> trackedPaths,
-        IReadOnlySet<string> trackedNames,
+        HashSet<string> trackedPaths,
+        HashSet<string> trackedNames,
         KeyValuePair<string, string> transition)
     {
         var sourcePath = DownloadPathResolver.NormalizeDisplayPath(transition.Key);

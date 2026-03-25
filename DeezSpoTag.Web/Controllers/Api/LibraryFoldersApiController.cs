@@ -396,8 +396,7 @@ public class LibraryFoldersApiController : ControllerBase
 
             if (!string.Equals(folder.AutoTagProfileId?.Trim(), canonicalProfileId, StringComparison.OrdinalIgnoreCase))
             {
-                folder = await _repository.UpdateFolderProfileAsync(id, canonicalProfileId, cancellationToken)
-                    ?? folder with { AutoTagProfileId = canonicalProfileId };
+                await _repository.UpdateFolderProfileAsync(id, canonicalProfileId, cancellationToken);
             }
         }
 

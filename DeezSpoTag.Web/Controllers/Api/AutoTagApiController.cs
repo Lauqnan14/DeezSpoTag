@@ -6,7 +6,6 @@ using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
-#pragma warning disable CA2016
 namespace DeezSpoTag.Web.Controllers.Api;
 
 [ApiController]
@@ -137,7 +136,7 @@ public class AutoTagJobsController : ControllerBase
             return BadRequest("Path is outside configured AutoTag roots.");
         }
 
-        if (await _queueRepository.HasActiveDownloadsAsync())
+        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
         {
             return StatusCode(409, "Downloads are active. AutoTag cannot start until the queue is idle.");
         }

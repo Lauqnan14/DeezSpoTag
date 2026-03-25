@@ -17,7 +17,7 @@ public sealed class TraxsourceClient
         }
     }
 
-    public async Task<List<TraxsourceTrackInfo>> SearchTracksAsync(string query, CancellationToken cancellationToken) // NOSONAR
+    public async Task<List<TraxsourceTrackInfo>> SearchTracksAsync(string query, CancellationToken cancellationToken)
     {
         var url = $"https://www.traxsource.com/search/tracks?term={Uri.EscapeDataString(query)}";
         var html = await _httpClient.GetStringAsync(url, cancellationToken);

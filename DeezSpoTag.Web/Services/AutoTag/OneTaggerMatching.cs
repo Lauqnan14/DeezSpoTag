@@ -150,7 +150,7 @@ internal static class OneTaggerMatching
         return trimmed.Length == 0 ? title : $"{title} ({trimmed})";
     }
 
-    public static MatchSelection<T>? MatchTrack<T>( // NOSONAR
+    public static MatchSelection<T>? MatchTrack<T>(
         AutoTagAudioInfo info,
         IReadOnlyList<T> tracks,
         AutoTagMatchingConfig config,
@@ -196,7 +196,7 @@ internal static class OneTaggerMatching
         return new MatchSelection<T>(top[0].Score, top[0].Track);
     }
 
-    private static MatchSelection<T>? MatchTrackExactFallback<T>( // NOSONAR
+    private static MatchSelection<T>? MatchTrackExactFallback<T>(
         AutoTagAudioInfo info,
         IReadOnlyList<T> tracks,
         AutoTagMatchingConfig config,

@@ -2566,8 +2566,8 @@ function renderSpotifyArtistUnavailable(reason = 'Spotify artist data unavailabl
     if (bio) {
         bio.textContent = message;
     }
-    if (typeof window.refreshArtistBiographyClamp === 'function') {
-        window.refreshArtistBiographyClamp(true);
+    if (typeof globalThis.refreshArtistBiographyClamp === 'function') {
+        globalThis.refreshArtistBiographyClamp(true);
     }
 
     const topTracks = document.getElementById('spotifyTopTracksList');

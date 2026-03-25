@@ -11,14 +11,18 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/external/playlist/tracklist")]
 [Authorize]
-public sealed class ExternalPlaylistTracklistApiController : ControllerBase
+public sealed partial class ExternalPlaylistTracklistApiController : ControllerBase
 {
     private const string TidalSource = "tidal";
     private const string QobuzSource = "qobuz";
     private const string BandcampSource = "bandcamp";
+    private const string TidalAuthHost = "auth.tidal.com";
+    private const string TidalAuthTokenPath = "/v1/oauth2/token";
+    private const string MetadataTitleKey = "title";
+    private const string MetadataDescriptionKey = "description";
+    private const string MetadataImageKey = "image";
     private const string EncodedClientId = "NkJEU1JkcEs5aHFFQlRnVQ==";
     private const string EncodedClientSecret = "eGV1UG1ZN25icFo5SUliTEFjUTkzc2hrYTFWTmhlVUFxTjZJY3N6alRHOD0=";
-    private const string AuthUrl = "https://auth.tidal.com/v1/oauth2/token";
     private const int DefaultPageSize = 100;
     private static readonly SemaphoreSlim TokenLock = new(1, 1);
 
@@ -136,12 +140,12 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
             return null;
         }
 
-        var title = metadata.GetValueOrDefault("title");
-        var description = metadata.GetValueOrDefault("description");
+        var title = metadata.GetValueOrDefault(MetadataTitleKey);
+        var description = metadata.GetValueOrDefault(MetadataDescriptionKey);
         var coverId = metadata.GetValueOrDefault("squareImage");
         if (string.IsNullOrWhiteSpace(coverId))
         {
-            coverId = metadata.GetValueOrDefault("image");
+            coverId = metadata.GetValueOrDefault(MetadataImageKey);
         }
 
         var coverUrl = BuildTidalImageUrl(coverId);
@@ -196,7 +200,7 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
             title = GetFirstNodeText(
                 document,
                 "//h1[contains(@class,'album-meta__title')]",
-                "title");
+                MetadataTitleKey);
         }
         if (string.IsNullOrWhiteSpace(title))
         {
@@ -224,7 +228,7 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
             creatorName = GetFirstNodeText(
                 document,
                 "//h2[contains(@class,'album-meta__artist')]",
-                "title");
+                MetadataTitleKey);
         }
 
         if (string.IsNullOrWhiteSpace(creatorName))
@@ -236,77 +240,7 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
         var resolvedId = ResolveQobuzPlaylistId(idHint, playlistUrl);
         var tracks = new List<object>();
         var dedupeKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var position = 0;
-        var trackRows = document.DocumentNode.SelectNodes("//div[contains(@class,'track') and contains(@class,'track--playlist') and @data-track]");
-        if (trackRows != null && trackRows.Count > 0)
-        {
-            foreach (var row in trackRows)
-            {
-                var trackId = row.GetAttributeValue("data-track", string.Empty).Trim();
-                if (string.IsNullOrWhiteSpace(trackId))
-                {
-                    continue;
-                }
-
-                position++;
-
-                var trackPosition = ParseTrackPosition(
-                    GetFirstNodeText(row, ".//div[contains(@class,'track__item--number')]/span[1]", string.Empty));
-                if (trackPosition <= 0)
-                {
-                    trackPosition = position;
-                }
-
-                var trackTitle = GetFirstNodeText(row, ".//div[contains(@class,'track__item--name')]", "title");
-                if (string.IsNullOrWhiteSpace(trackTitle))
-                {
-                    trackTitle = GetFirstNodeText(row, ".//div[contains(@class,'track__item--name')]/span[1]", string.Empty);
-                }
-                if (string.IsNullOrWhiteSpace(trackTitle))
-                {
-                    continue;
-                }
-
-                var artistName = GetFirstNodeText(row, ".//span[contains(@class,'track__item--artist')]", "title");
-                if (string.IsNullOrWhiteSpace(artistName))
-                {
-                    artistName = GetFirstNodeText(row, ".//span[contains(@class,'track__item--artist')]//a[1]", string.Empty);
-                }
-                if (string.IsNullOrWhiteSpace(artistName))
-                {
-                    artistName = "Unknown Artist";
-                }
-
-                var albumTitle = GetFirstNodeText(row, ".//span[contains(@class,'track__item--album')]", "title");
-                if (string.IsNullOrWhiteSpace(albumTitle))
-                {
-                    albumTitle = GetFirstNodeText(row, ".//span[contains(@class,'track__item--album')]//a[1]", string.Empty);
-                }
-
-                var durationText = GetFirstNodeText(row, ".//span[contains(@class,'track__item--duration')]", string.Empty);
-                var duration = ParseClockDurationSeconds(durationText);
-
-                var trackUrl = $"https://open.qobuz.com/track/{Uri.EscapeDataString(trackId)}";
-                dedupeKeys.Add(BuildQobuzTrackDedupeKey(trackTitle, artistName, albumTitle, duration));
-                tracks.Add(new
-                {
-                    id = trackId,
-                    title = trackTitle,
-                    duration,
-                    track_position = trackPosition,
-                    link = trackUrl,
-                    sourceUrl = trackUrl,
-                    isrc = string.Empty,
-                    artist = new { id = string.Empty, name = artistName },
-                    album = new
-                    {
-                        id = string.Empty,
-                        title = string.IsNullOrWhiteSpace(albumTitle) ? string.Empty : albumTitle,
-                        cover_medium = coverUrl
-                    }
-                });
-            }
-        }
+        AppendQobuzTracksFromRows(document, coverUrl, tracks, dedupeKeys);
 
         AppendMissingQobuzTracksFromJsonLd(
             playlistNode,
@@ -338,6 +272,113 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
         };
     }
 
+    private static void AppendQobuzTracksFromRows(
+        HtmlDocument document,
+        string coverUrl,
+        List<object> tracks,
+        HashSet<string> dedupeKeys)
+    {
+        var position = 0;
+        var trackRows = document.DocumentNode
+            .SelectNodes("//div[contains(@class,'track') and contains(@class,'track--playlist') and @data-track]");
+        if (trackRows == null || trackRows.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var row in trackRows)
+        {
+            position++;
+            if (!TryBuildQobuzTrackFromRow(row, position, coverUrl, out var track, out var dedupeKey))
+            {
+                continue;
+            }
+
+            dedupeKeys.Add(dedupeKey);
+            tracks.Add(track);
+        }
+    }
+
+    private static bool TryBuildQobuzTrackFromRow(
+        HtmlNode row,
+        int fallbackPosition,
+        string coverUrl,
+        out object track,
+        out string dedupeKey)
+    {
+        track = null!;
+        dedupeKey = string.Empty;
+
+        var trackId = row.GetAttributeValue("data-track", string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(trackId))
+        {
+            return false;
+        }
+
+        var trackPosition = ParseTrackPosition(
+            GetFirstNodeText(row, ".//div[contains(@class,'track__item--number')]/span[1]", string.Empty));
+        if (trackPosition <= 0)
+        {
+            trackPosition = fallbackPosition;
+        }
+
+        var trackTitle = GetNodeTextWithFallback(
+            row,
+            [(".//div[contains(@class,'track__item--name')]", MetadataTitleKey), (".//div[contains(@class,'track__item--name')]/span[1]", string.Empty)]);
+        if (string.IsNullOrWhiteSpace(trackTitle))
+        {
+            return false;
+        }
+
+        var artistName = GetNodeTextWithFallback(
+            row,
+            [(".//span[contains(@class,'track__item--artist')]", MetadataTitleKey), (".//span[contains(@class,'track__item--artist')]//a[1]", string.Empty)]);
+        if (string.IsNullOrWhiteSpace(artistName))
+        {
+            artistName = "Unknown Artist";
+        }
+
+        var albumTitle = GetNodeTextWithFallback(
+            row,
+            [(".//span[contains(@class,'track__item--album')]", MetadataTitleKey), (".//span[contains(@class,'track__item--album')]//a[1]", string.Empty)]);
+        var durationText = GetFirstNodeText(row, ".//span[contains(@class,'track__item--duration')]", string.Empty);
+        var duration = ParseClockDurationSeconds(durationText);
+        var trackUrl = $"https://open.qobuz.com/track/{Uri.EscapeDataString(trackId)}";
+        dedupeKey = BuildQobuzTrackDedupeKey(trackTitle, artistName, albumTitle, duration);
+        track = new
+        {
+            id = trackId,
+            title = trackTitle,
+            duration,
+            track_position = trackPosition,
+            link = trackUrl,
+            sourceUrl = trackUrl,
+            isrc = string.Empty,
+            artist = new { id = string.Empty, name = artistName },
+            album = new
+            {
+                id = string.Empty,
+                title = string.IsNullOrWhiteSpace(albumTitle) ? string.Empty : albumTitle,
+                cover_medium = coverUrl
+            }
+        };
+        return true;
+    }
+
+    private static string GetNodeTextWithFallback(HtmlNode row, (string XPath, string AttributeName)[] selectors)
+    {
+        foreach (var selector in selectors)
+        {
+            var value = GetFirstNodeText(row, selector.XPath, selector.AttributeName);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return string.Empty;
+    }
+
     private async Task<object?> BuildBandcampAlbumTracklistAsync(
         string albumUrl,
         CancellationToken cancellationToken)
@@ -363,15 +404,7 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
         using var trAlbumDoc = JsonDocument.Parse(trAlbumJson);
         var root = trAlbumDoc.RootElement;
 
-        string title;
-        if (root.TryGetProperty("current", out var currentNode) && currentNode.ValueKind == JsonValueKind.Object)
-        {
-            title = GetString(currentNode, "title");
-        }
-        else
-        {
-            title = string.Empty;
-        }
+        var title = ResolveBandcampTitle(root);
         if (string.IsNullOrWhiteSpace(title))
         {
             title = "Bandcamp Album";
@@ -384,55 +417,7 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
         }
 
         var coverUrl = ResolveBandcampCoverUrl(document, root);
-        var tracks = new List<object>();
-        if (root.TryGetProperty("trackinfo", out var trackInfoNode) && trackInfoNode.ValueKind == JsonValueKind.Array)
-        {
-            var fallbackPosition = 0;
-            foreach (var trackNode in trackInfoNode.EnumerateArray())
-            {
-                fallbackPosition++;
-                var trackTitle = GetString(trackNode, "title");
-                if (string.IsNullOrWhiteSpace(trackTitle))
-                {
-                    continue;
-                }
-
-                var trackNumber = GetInt(trackNode, "track_num");
-                if (trackNumber <= 0)
-                {
-                    trackNumber = fallbackPosition;
-                }
-
-                var duration = ParseDurationSeconds(trackNode, "duration");
-                var trackId = GetAnyString(trackNode, "track_id");
-                if (string.IsNullOrWhiteSpace(trackId))
-                {
-                    trackId = trackNumber.ToString();
-                }
-
-                var titleLink = GetString(trackNode, "title_link");
-                var trackUrl = BuildBandcampTrackUrl(albumUrl, titleLink, trackNumber);
-                var isrc = GetString(trackNode, "isrc");
-
-                tracks.Add(new
-                {
-                    id = trackId,
-                    title = trackTitle,
-                    duration,
-                    track_position = trackNumber,
-                    link = trackUrl,
-                    sourceUrl = trackUrl,
-                    isrc,
-                    artist = new { id = string.Empty, name = creatorName },
-                    album = new
-                    {
-                        id = string.Empty,
-                        title,
-                        cover_medium = coverUrl
-                    }
-                });
-            }
-        }
+        var tracks = BuildBandcampTracks(root, albumUrl, creatorName, title, coverUrl);
 
         if (tracks.Count == 0)
         {
@@ -456,6 +441,96 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
             nb_tracks = tracks.Count,
             tracks
         };
+    }
+
+    private static string ResolveBandcampTitle(JsonElement root)
+    {
+        if (root.TryGetProperty("current", out var currentNode) && currentNode.ValueKind == JsonValueKind.Object)
+        {
+            return GetString(currentNode, MetadataTitleKey);
+        }
+
+        return string.Empty;
+    }
+
+    private static List<object> BuildBandcampTracks(
+        JsonElement root,
+        string albumUrl,
+        string creatorName,
+        string albumTitle,
+        string coverUrl)
+    {
+        var tracks = new List<object>();
+        if (!root.TryGetProperty("trackinfo", out var trackInfoNode) || trackInfoNode.ValueKind != JsonValueKind.Array)
+        {
+            return tracks;
+        }
+
+        var fallbackPosition = 0;
+        foreach (var trackNode in trackInfoNode.EnumerateArray())
+        {
+            fallbackPosition++;
+            if (!TryBuildBandcampTrack(trackNode, fallbackPosition, albumUrl, creatorName, albumTitle, coverUrl, out var track))
+            {
+                continue;
+            }
+
+            tracks.Add(track);
+        }
+
+        return tracks;
+    }
+
+    private static bool TryBuildBandcampTrack(
+        JsonElement trackNode,
+        int fallbackPosition,
+        string albumUrl,
+        string creatorName,
+        string albumTitle,
+        string coverUrl,
+        out object track)
+    {
+        track = null!;
+        var trackTitle = GetString(trackNode, MetadataTitleKey);
+        if (string.IsNullOrWhiteSpace(trackTitle))
+        {
+            return false;
+        }
+
+        var trackNumber = GetInt(trackNode, "track_num");
+        if (trackNumber <= 0)
+        {
+            trackNumber = fallbackPosition;
+        }
+
+        var duration = ParseDurationSeconds(trackNode, "duration");
+        var trackId = GetAnyString(trackNode, "track_id");
+        if (string.IsNullOrWhiteSpace(trackId))
+        {
+            trackId = trackNumber.ToString(CultureInfo.InvariantCulture);
+        }
+
+        var titleLink = GetString(trackNode, "title_link");
+        var trackUrl = BuildBandcampTrackUrl(albumUrl, titleLink, trackNumber);
+        var isrc = GetString(trackNode, "isrc");
+        track = new
+        {
+            id = trackId,
+            title = trackTitle,
+            duration,
+            track_position = trackNumber,
+            link = trackUrl,
+            sourceUrl = trackUrl,
+            isrc,
+            artist = new { id = string.Empty, name = creatorName },
+            album = new
+            {
+                id = string.Empty,
+                title = albumTitle,
+                cover_medium = coverUrl
+            }
+        };
+        return true;
     }
 
     private async Task<Dictionary<string, string>> FetchTidalPlaylistMetadataAsync(
@@ -485,10 +560,10 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
 
         return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["title"] = GetString(root, "title"),
-            ["description"] = GetString(root, "description"),
+            [MetadataTitleKey] = GetString(root, MetadataTitleKey),
+            [MetadataDescriptionKey] = GetString(root, MetadataDescriptionKey),
             ["squareImage"] = GetString(root, "squareImage"),
-            ["image"] = GetString(root, "image"),
+            [MetadataImageKey] = GetString(root, MetadataImageKey),
             ["creatorName"] = creatorName
         };
     }
@@ -519,80 +594,13 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
             using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
             var root = doc.RootElement;
 
-            var pageTotal = GetInt(root, "totalNumberOfItems");
-            if (pageTotal > 0)
-            {
-                total = pageTotal;
-            }
-
-            if (!root.TryGetProperty("items", out var itemsElement)
-                || itemsElement.ValueKind != JsonValueKind.Array
-                || itemsElement.GetArrayLength() == 0)
+            total = ResolveTidalTotalCount(root, total);
+            if (!TryGetTidalItems(root, out var itemsElement))
             {
                 break;
             }
 
-            var appended = 0;
-            foreach (var wrapper in itemsElement.EnumerateArray())
-            {
-                var trackNode = wrapper;
-                if (wrapper.TryGetProperty("item", out var itemNode) && itemNode.ValueKind == JsonValueKind.Object)
-                {
-                    trackNode = itemNode;
-                }
-
-                var trackId = GetAnyString(trackNode, "id");
-                if (string.IsNullOrWhiteSpace(trackId))
-                {
-                    continue;
-                }
-
-                position++;
-                appended++;
-
-                var trackTitle = ComposeTitle(GetString(trackNode, "title"), GetString(trackNode, "version"));
-                var duration = GetInt(trackNode, "duration");
-                var isrc = GetString(trackNode, "isrc");
-                var trackUrl = GetString(trackNode, "url");
-                if (string.IsNullOrWhiteSpace(trackUrl))
-                {
-                    trackUrl = $"https://tidal.com/browse/track/{Uri.EscapeDataString(trackId)}";
-                }
-                else if (Uri.TryCreate(trackUrl, UriKind.Absolute, out var parsedTrackUrl)
-                    && string.Equals(parsedTrackUrl.Host, "www.tidal.com", StringComparison.OrdinalIgnoreCase))
-                {
-                    trackUrl = trackUrl.Replace("https://www.tidal.com", "https://tidal.com/browse", StringComparison.OrdinalIgnoreCase);
-                }
-
-                var artistName = ResolveArtistName(trackNode);
-                var albumTitle = string.Empty;
-                var albumCover = string.Empty;
-                var albumId = string.Empty;
-                if (trackNode.TryGetProperty("album", out var albumNode) && albumNode.ValueKind == JsonValueKind.Object)
-                {
-                    albumTitle = GetString(albumNode, "title");
-                    albumCover = BuildTidalImageUrl(GetString(albumNode, "cover"));
-                    albumId = GetAnyString(albumNode, "id");
-                }
-
-                tracks.Add(new
-                {
-                    id = trackId,
-                    title = string.IsNullOrWhiteSpace(trackTitle) ? $"Track {position}" : trackTitle,
-                    duration,
-                    track_position = position,
-                    link = trackUrl,
-                    sourceUrl = trackUrl,
-                    isrc,
-                    artist = new { id = string.Empty, name = artistName },
-                    album = new
-                    {
-                        id = albumId,
-                        title = albumTitle,
-                        cover_medium = albumCover
-                    }
-                });
-            }
+            var appended = AppendTidalTracks(itemsElement, tracks, ref position);
 
             if (appended == 0)
             {
@@ -603,6 +611,115 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
         }
 
         return tracks;
+    }
+
+    private static int ResolveTidalTotalCount(JsonElement root, int fallbackTotal)
+    {
+        var pageTotal = GetInt(root, "totalNumberOfItems");
+        return pageTotal > 0 ? pageTotal : fallbackTotal;
+    }
+
+    private static bool TryGetTidalItems(JsonElement root, out JsonElement itemsElement)
+    {
+        if (!root.TryGetProperty("items", out itemsElement) || itemsElement.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        return itemsElement.GetArrayLength() > 0;
+    }
+
+    private static int AppendTidalTracks(JsonElement itemsElement, List<object> tracks, ref int position)
+    {
+        var appended = 0;
+        foreach (var wrapper in itemsElement.EnumerateArray())
+        {
+            var trackNode = ResolveTidalTrackNode(wrapper);
+            if (!TryBuildTidalTrack(trackNode, ++position, out var track))
+            {
+                position--;
+                continue;
+            }
+
+            tracks.Add(track);
+            appended++;
+        }
+
+        return appended;
+    }
+
+    private static JsonElement ResolveTidalTrackNode(JsonElement wrapper)
+    {
+        if (wrapper.TryGetProperty("item", out var itemNode) && itemNode.ValueKind == JsonValueKind.Object)
+        {
+            return itemNode;
+        }
+
+        return wrapper;
+    }
+
+    private static bool TryBuildTidalTrack(JsonElement trackNode, int position, out object track)
+    {
+        track = null!;
+        var trackId = GetAnyString(trackNode, "id");
+        if (string.IsNullOrWhiteSpace(trackId))
+        {
+            return false;
+        }
+
+        var trackTitle = ComposeTitle(GetString(trackNode, MetadataTitleKey), GetString(trackNode, "version"));
+        var duration = GetInt(trackNode, "duration");
+        var isrc = GetString(trackNode, "isrc");
+        var trackUrl = NormalizeTidalTrackUrl(GetString(trackNode, "url"), trackId);
+        var artistName = ResolveArtistName(trackNode);
+        var albumMetadata = ResolveTidalAlbumMetadata(trackNode);
+        track = new
+        {
+            id = trackId,
+            title = string.IsNullOrWhiteSpace(trackTitle) ? $"Track {position}" : trackTitle,
+            duration,
+            track_position = position,
+            link = trackUrl,
+            sourceUrl = trackUrl,
+            isrc,
+            artist = new { id = string.Empty, name = artistName },
+            album = new
+            {
+                id = albumMetadata.Id,
+                title = albumMetadata.Title,
+                cover_medium = albumMetadata.Cover
+            }
+        };
+        return true;
+    }
+
+    private static string NormalizeTidalTrackUrl(string trackUrl, string trackId)
+    {
+        if (string.IsNullOrWhiteSpace(trackUrl))
+        {
+            return $"https://tidal.com/browse/track/{Uri.EscapeDataString(trackId)}";
+        }
+
+        if (Uri.TryCreate(trackUrl, UriKind.Absolute, out var parsedTrackUrl)
+            && string.Equals(parsedTrackUrl.Host, "www.tidal.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return trackUrl.Replace("https://www.tidal.com", "https://tidal.com/browse", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return trackUrl;
+    }
+
+    private static (string Id, string Title, string Cover) ResolveTidalAlbumMetadata(JsonElement trackNode)
+    {
+        if (!trackNode.TryGetProperty("album", out var albumNode) || albumNode.ValueKind != JsonValueKind.Object)
+        {
+            return (string.Empty, string.Empty, string.Empty);
+        }
+
+        return (
+            GetAnyString(albumNode, "id"),
+            GetString(albumNode, MetadataTitleKey),
+            BuildTidalImageUrl(GetString(albumNode, "cover")));
     }
 
     private async Task<HttpResponseMessage> SendTidalRequestAsync(
@@ -692,7 +809,11 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
             var clientSecret = Encoding.UTF8.GetString(Convert.FromBase64String(EncodedClientSecret));
             var authValue = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{clientId}:{clientSecret}"));
 
-            using var request = new HttpRequestMessage(HttpMethod.Post, AuthUrl)
+            var authUri = new UriBuilder(Uri.UriSchemeHttps, TidalAuthHost)
+            {
+                Path = TidalAuthTokenPath
+            }.Uri;
+            using var request = new HttpRequestMessage(HttpMethod.Post, authUri)
             {
                 Content = new FormUrlEncodedContent(new Dictionary<string, string>
                 {
@@ -719,14 +840,19 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
             }
 
             var expiresIn = GetInt(doc.RootElement, "expires_in");
-            _cachedToken = token;
-            _cachedTokenExpiresUtc = DateTimeOffset.UtcNow.AddSeconds(expiresIn > 0 ? expiresIn : 300);
+            SetCachedToken(token, DateTimeOffset.UtcNow.AddSeconds(expiresIn > 0 ? expiresIn : 300));
             return _cachedToken;
         }
         finally
         {
             TokenLock.Release();
         }
+    }
+
+    private static void SetCachedToken(string token, DateTimeOffset expiresUtc)
+    {
+        _cachedToken = token;
+        _cachedTokenExpiresUtc = expiresUtc;
     }
 
     private static string ResolveTidalPlaylistId(string? id, string? url)
@@ -804,7 +930,7 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
             }
             catch (JsonException)
             {
-                continue;
+                // Ignore malformed JSON-LD blocks.
             }
         }
 
@@ -813,34 +939,38 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
 
     private static IEnumerable<JsonElement> EnumerateJsonNodes(JsonElement element)
     {
-        if (element.ValueKind == JsonValueKind.Object)
+        switch (element.ValueKind)
         {
-            if (element.TryGetProperty("@graph", out var graphNode) && graphNode.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var item in graphNode.EnumerateArray())
+            case JsonValueKind.Object:
+                foreach (var node in EnumerateObjectNodes(element))
                 {
-                    if (item.ValueKind == JsonValueKind.Object)
+                    yield return node;
+                }
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    foreach (var nested in EnumerateJsonNodes(item))
                     {
-                        yield return item;
+                        yield return nested;
                     }
                 }
-                yield break;
-            }
+                break;
+        }
+    }
 
-            yield return element;
+    private static IEnumerable<JsonElement> EnumerateObjectNodes(JsonElement element)
+    {
+        if (element.TryGetProperty("@graph", out var graphNode) && graphNode.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in graphNode.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.Object))
+            {
+                yield return item;
+            }
             yield break;
         }
 
-        if (element.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var item in element.EnumerateArray())
-            {
-                foreach (var nested in EnumerateJsonNodes(item))
-                {
-                    yield return nested;
-                }
-            }
-        }
+        yield return element;
     }
 
     private static bool IsJsonNodeType(JsonElement node, string expectedType)
@@ -919,54 +1049,46 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
             return string.Empty;
         }
 
-        if (node.ValueKind == JsonValueKind.String)
+        return node.ValueKind switch
         {
-            return node.GetString() ?? string.Empty;
-        }
+            JsonValueKind.String => node.GetString() ?? string.Empty,
+            JsonValueKind.Array => GetJsonImageUrlFromArray(node),
+            JsonValueKind.Object => GetUrlOrContentUrl(node),
+            _ => string.Empty
+        };
+    }
 
-        if (node.ValueKind == JsonValueKind.Array)
+    private static string GetJsonImageUrlFromArray(JsonElement node)
+    {
+        foreach (var item in node.EnumerateArray())
         {
-            foreach (var item in node.EnumerateArray())
+            if (item.ValueKind == JsonValueKind.String)
             {
-                if (item.ValueKind == JsonValueKind.String)
-                {
-                    return item.GetString() ?? string.Empty;
-                }
-
-                if (item.ValueKind == JsonValueKind.Object)
-                {
-                    var url = GetString(item, "url");
-                    if (!string.IsNullOrWhiteSpace(url))
-                    {
-                        return url;
-                    }
-
-                    url = GetString(item, "contentUrl");
-                    if (!string.IsNullOrWhiteSpace(url))
-                    {
-                        return url;
-                    }
-                }
-            }
-            return string.Empty;
-        }
-
-        if (node.ValueKind == JsonValueKind.Object)
-        {
-            var url = GetString(node, "url");
-            if (!string.IsNullOrWhiteSpace(url))
-            {
-                return url;
+                return item.GetString() ?? string.Empty;
             }
 
-            url = GetString(node, "contentUrl");
-            if (!string.IsNullOrWhiteSpace(url))
+            if (item.ValueKind == JsonValueKind.Object)
             {
-                return url;
+                var url = GetUrlOrContentUrl(item);
+                if (!string.IsNullOrWhiteSpace(url))
+                {
+                    return url;
+                }
             }
         }
 
         return string.Empty;
+    }
+
+    private static string GetUrlOrContentUrl(JsonElement node)
+    {
+        var url = GetString(node, "url");
+        if (!string.IsNullOrWhiteSpace(url))
+        {
+            return url;
+        }
+
+        return GetString(node, "contentUrl");
     }
 
     private static string GetFirstNodeText(HtmlDocument document, string xpath, string attributeName)
@@ -1079,15 +1201,12 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
             return (int)Math.Round(plainSeconds, MidpointRounding.AwayFromZero);
         }
 
-        if (TimeSpan.TryParse(durationText, out var parsedTime))
+        if (TimeSpan.TryParse(durationText, CultureInfo.InvariantCulture, out var parsedTime))
         {
             return (int)Math.Round(parsedTime.TotalSeconds, MidpointRounding.AwayFromZero);
         }
 
-        var match = Regex.Match(
-            durationText,
-            @"^PT(?:(?<h>\d+)H)?(?:(?<m>\d+)M)?(?:(?<s>\d+(?:\.\d+)?)S)?$",
-            RegexOptions.IgnoreCase);
+        var match = IsoDurationRegex().Match(durationText);
         if (!match.Success)
         {
             return 0;
@@ -1109,8 +1228,8 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
         JsonElement? playlistNode,
         string playlistUrl,
         string resolvedPlaylistId,
-        ICollection<object> tracks,
-        ISet<string> dedupeKeys)
+        List<object> tracks,
+        HashSet<string> dedupeKeys)
     {
         if (!playlistNode.HasValue
             || !playlistNode.Value.TryGetProperty("track", out var trackNode)
@@ -1175,41 +1294,20 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
             return string.Empty;
         }
 
-        if (artistNode.ValueKind == JsonValueKind.String)
+        return artistNode.ValueKind switch
         {
-            return artistNode.GetString() ?? string.Empty;
-        }
-
-        if (artistNode.ValueKind == JsonValueKind.Object)
-        {
-            var artistName = GetString(artistNode, "name");
-            if (!string.IsNullOrWhiteSpace(artistName))
-            {
-                return artistName;
-            }
-        }
-
-        if (artistNode.ValueKind == JsonValueKind.Array)
-        {
-            var names = new List<string>();
-            foreach (var item in artistNode.EnumerateArray())
-            {
-                var name = item.ValueKind == JsonValueKind.String
-                    ? item.GetString() ?? string.Empty
-                    : GetString(item, "name");
-                if (!string.IsNullOrWhiteSpace(name))
-                {
-                    names.Add(name.Trim());
-                }
-            }
-
-            if (names.Count > 0)
-            {
-                return string.Join(", ", names);
-            }
-        }
-
-        return string.Empty;
+            JsonValueKind.String => artistNode.GetString() ?? string.Empty,
+            JsonValueKind.Object => GetString(artistNode, "name"),
+            JsonValueKind.Array => string.Join(
+                ", ",
+                artistNode.EnumerateArray()
+                    .Select(item => item.ValueKind == JsonValueKind.String
+                        ? item.GetString()
+                        : GetString(item, "name"))
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .Select(name => name!.Trim())),
+            _ => string.Empty
+        };
     }
 
     private static string BuildQobuzFallbackTrackId(string playlistId, int position)
@@ -1266,25 +1364,10 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
 
     private static string SelectPreferredQobuzCover(params string[] candidates)
     {
-        foreach (var candidate in candidates)
-        {
-            if (string.IsNullOrWhiteSpace(candidate) || IsQobuzLogoCover(candidate))
-            {
-                continue;
-            }
-
-            return candidate;
-        }
-
-        foreach (var candidate in candidates)
-        {
-            if (!string.IsNullOrWhiteSpace(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        return string.Empty;
+        return candidates.FirstOrDefault(candidate =>
+                   !string.IsNullOrWhiteSpace(candidate) && !IsQobuzLogoCover(candidate))
+               ?? candidates.FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate))
+               ?? string.Empty;
     }
 
     private static bool IsQobuzLogoCover(string value)
@@ -1321,7 +1404,7 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
         }
 
         var path = uri.AbsolutePath;
-        var match = Regex.Match(path, @"/playlists?/[^/]+/([^/?#]+)", RegexOptions.IgnoreCase);
+        var match = QobuzPlaylistIdRegex().Match(path);
         if (match.Success)
         {
             return match.Groups[1].Value;
@@ -1388,7 +1471,7 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
 
         if (!string.IsNullOrWhiteSpace(titleLink))
         {
-            var normalizedPath = titleLink.StartsWith("/", StringComparison.Ordinal) ? titleLink : $"/{titleLink}";
+            var normalizedPath = titleLink.StartsWith('/') ? titleLink : $"/{titleLink}";
             if (Uri.TryCreate(albumUri, normalizedPath, out var combined))
             {
                 return combined.GetComponents(UriComponents.HttpRequestUrl, UriFormat.UriEscaped);
@@ -1476,4 +1559,10 @@ public sealed class ExternalPlaylistTracklistApiController : ControllerBase
             _ => 0
         };
     }
+
+    [GeneratedRegex(@"^PT(?:(?<h>\d+)H)?(?:(?<m>\d+)M)?(?:(?<s>\d+(?:\.\d+)?)S)?$", RegexOptions.IgnoreCase)]
+    private static partial Regex IsoDurationRegex();
+
+    [GeneratedRegex(@"/playlists?/[^/]+/([^/?#]+)", RegexOptions.IgnoreCase)]
+    private static partial Regex QobuzPlaylistIdRegex();
 }

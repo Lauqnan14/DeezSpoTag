@@ -321,98 +321,100 @@ public sealed class TaggingProfilesApiController : ControllerBase
             return new UnifiedTagConfig();
         }
 
-        TagSource Parse(string key)
-        {
-            if (!TryGetPropertyCaseInsensitive(tagConfigObject, key, out var value))
-            {
-                return TagSource.DownloadSource;
-            }
-
-            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var numericValue))
-            {
-                if (Enum.IsDefined(typeof(TagSource), numericValue))
-                {
-                    return (TagSource)numericValue;
-                }
-
-                return TagSource.DownloadSource;
-            }
-
-            if (value.ValueKind != JsonValueKind.String)
-            {
-                return TagSource.DownloadSource;
-            }
-
-            var normalized = value.GetString()?.Trim();
-            if (int.TryParse(normalized, out var enumValue) && Enum.IsDefined(typeof(TagSource), enumValue))
-            {
-                return (TagSource)enumValue;
-            }
-
-            return normalized?.ToLowerInvariant() switch
-            {
-                "download" => TagSource.DownloadSource,
-                "autotag" => TagSource.AutoTagPlatform,
-                "both" => TagSource.Both,
-                "none" => TagSource.None,
-                "downloadsource" => TagSource.DownloadSource,
-                "autotagplatform" => TagSource.AutoTagPlatform,
-                _ => TagSource.DownloadSource
-            };
-        }
-
         return new UnifiedTagConfig
         {
-            Title = Parse("title"),
-            Artist = Parse("artist"),
-            Artists = Parse("artists"),
-            Album = Parse("album"),
-            AlbumArtist = Parse("albumArtist"),
-            Cover = Parse("cover"),
-            TrackNumber = Parse("trackNumber"),
-            TrackTotal = Parse("trackTotal"),
-            DiscNumber = Parse("discNumber"),
-            DiscTotal = Parse("discTotal"),
-            Genre = Parse("genre"),
-            Year = Parse("year"),
-            Date = Parse("date"),
-            Isrc = Parse("isrc"),
-            Barcode = Parse("barcode"),
-            Bpm = Parse("bpm"),
-            Duration = Parse("duration"),
-            ReplayGain = Parse("replayGain"),
-            Danceability = Parse("danceability"),
-            Energy = Parse("energy"),
-            Valence = Parse("valence"),
-            Acousticness = Parse("acousticness"),
-            Instrumentalness = Parse("instrumentalness"),
-            Speechiness = Parse("speechiness"),
-            Loudness = Parse("loudness"),
-            Tempo = Parse("tempo"),
-            TimeSignature = Parse("timeSignature"),
-            Liveness = Parse("liveness"),
-            Label = Parse("label"),
-            Copyright = Parse("copyright"),
-            UnsyncedLyrics = Parse("unsyncedLyrics"),
-            SyncedLyrics = Parse("syncedLyrics"),
-            Composer = Parse("composer"),
-            InvolvedPeople = Parse("involvedPeople"),
-            Source = Parse("source"),
-            Explicit = Parse("explicit"),
-            Rating = Parse("rating"),
-            Style = Parse("style"),
-            ReleaseDate = Parse("releaseDate"),
-            PublishDate = Parse("publishDate"),
-            ReleaseId = Parse("releaseId"),
-            TrackId = Parse("trackId"),
-            CatalogNumber = Parse("catalogNumber"),
-            Key = Parse("key"),
-            Remixer = Parse("remixer"),
-            Version = Parse("version"),
-            Mood = Parse("mood"),
-            Url = Parse("url"),
-            OtherTags = Parse("otherTags"),
-            MetaTags = Parse("metaTags")
+            Title = ParseTagSource(tagConfigObject, "title"),
+            Artist = ParseTagSource(tagConfigObject, "artist"),
+            Artists = ParseTagSource(tagConfigObject, "artists"),
+            Album = ParseTagSource(tagConfigObject, "album"),
+            AlbumArtist = ParseTagSource(tagConfigObject, "albumArtist"),
+            Cover = ParseTagSource(tagConfigObject, "cover"),
+            TrackNumber = ParseTagSource(tagConfigObject, "trackNumber"),
+            TrackTotal = ParseTagSource(tagConfigObject, "trackTotal"),
+            DiscNumber = ParseTagSource(tagConfigObject, "discNumber"),
+            DiscTotal = ParseTagSource(tagConfigObject, "discTotal"),
+            Genre = ParseTagSource(tagConfigObject, "genre"),
+            Year = ParseTagSource(tagConfigObject, "year"),
+            Date = ParseTagSource(tagConfigObject, "date"),
+            Isrc = ParseTagSource(tagConfigObject, "isrc"),
+            Barcode = ParseTagSource(tagConfigObject, "barcode"),
+            Bpm = ParseTagSource(tagConfigObject, "bpm"),
+            Duration = ParseTagSource(tagConfigObject, "duration"),
+            ReplayGain = ParseTagSource(tagConfigObject, "replayGain"),
+            Danceability = ParseTagSource(tagConfigObject, "danceability"),
+            Energy = ParseTagSource(tagConfigObject, "energy"),
+            Valence = ParseTagSource(tagConfigObject, "valence"),
+            Acousticness = ParseTagSource(tagConfigObject, "acousticness"),
+            Instrumentalness = ParseTagSource(tagConfigObject, "instrumentalness"),
+            Speechiness = ParseTagSource(tagConfigObject, "speechiness"),
+            Loudness = ParseTagSource(tagConfigObject, "loudness"),
+            Tempo = ParseTagSource(tagConfigObject, "tempo"),
+            TimeSignature = ParseTagSource(tagConfigObject, "timeSignature"),
+            Liveness = ParseTagSource(tagConfigObject, "liveness"),
+            Label = ParseTagSource(tagConfigObject, "label"),
+            Copyright = ParseTagSource(tagConfigObject, "copyright"),
+            UnsyncedLyrics = ParseTagSource(tagConfigObject, "unsyncedLyrics"),
+            SyncedLyrics = ParseTagSource(tagConfigObject, "syncedLyrics"),
+            Composer = ParseTagSource(tagConfigObject, "composer"),
+            InvolvedPeople = ParseTagSource(tagConfigObject, "involvedPeople"),
+            Source = ParseTagSource(tagConfigObject, "source"),
+            Explicit = ParseTagSource(tagConfigObject, "explicit"),
+            Rating = ParseTagSource(tagConfigObject, "rating"),
+            Style = ParseTagSource(tagConfigObject, "style"),
+            ReleaseDate = ParseTagSource(tagConfigObject, "releaseDate"),
+            PublishDate = ParseTagSource(tagConfigObject, "publishDate"),
+            ReleaseId = ParseTagSource(tagConfigObject, "releaseId"),
+            TrackId = ParseTagSource(tagConfigObject, "trackId"),
+            CatalogNumber = ParseTagSource(tagConfigObject, "catalogNumber"),
+            Key = ParseTagSource(tagConfigObject, "key"),
+            Remixer = ParseTagSource(tagConfigObject, "remixer"),
+            Version = ParseTagSource(tagConfigObject, "version"),
+            Mood = ParseTagSource(tagConfigObject, "mood"),
+            Url = ParseTagSource(tagConfigObject, "url"),
+            OtherTags = ParseTagSource(tagConfigObject, "otherTags"),
+            MetaTags = ParseTagSource(tagConfigObject, "metaTags")
+        };
+    }
+
+    private static TagSource ParseTagSource(JsonElement tagConfigObject, string key)
+    {
+        if (!TryGetPropertyCaseInsensitive(tagConfigObject, key, out var value))
+        {
+            return TagSource.DownloadSource;
+        }
+
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var numericValue))
+        {
+            return Enum.IsDefined(typeof(TagSource), numericValue)
+                ? (TagSource)numericValue
+                : TagSource.DownloadSource;
+        }
+
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            return TagSource.DownloadSource;
+        }
+
+        return ParseTagSourceText(value.GetString());
+    }
+
+    private static TagSource ParseTagSourceText(string? value)
+    {
+        var normalized = value?.Trim();
+        if (int.TryParse(normalized, out var enumValue) && Enum.IsDefined(typeof(TagSource), enumValue))
+        {
+            return (TagSource)enumValue;
+        }
+
+        return normalized?.ToLowerInvariant() switch
+        {
+            "download" => TagSource.DownloadSource,
+            "autotag" => TagSource.AutoTagPlatform,
+            "both" => TagSource.Both,
+            "none" => TagSource.None,
+            "downloadsource" => TagSource.DownloadSource,
+            "autotagplatform" => TagSource.AutoTagPlatform,
+            _ => TagSource.DownloadSource
         };
     }
 
@@ -739,16 +741,15 @@ public sealed class TaggingProfilesApiController : ControllerBase
 
     private static bool TryGetPropertyCaseInsensitive(JsonElement element, string key, out JsonElement value)
     {
-        foreach (var property in element.EnumerateObject())
+        var property = element.EnumerateObject()
+            .FirstOrDefault(property => string.Equals(property.Name, key, StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(property.Name))
         {
-            if (string.Equals(property.Name, key, StringComparison.OrdinalIgnoreCase))
-            {
-                value = property.Value;
-                return true;
-            }
+            value = default;
+            return false;
         }
 
-        value = default;
-        return false;
+        value = property.Value;
+        return true;
     }
 }

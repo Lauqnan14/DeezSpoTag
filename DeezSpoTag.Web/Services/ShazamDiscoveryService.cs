@@ -32,7 +32,7 @@ public sealed record ShazamTrackCard(
     List<string> ArtistAdamIds,
     Dictionary<string, List<string>> Tags);
 
-public sealed class ShazamDiscoveryService
+public sealed partial class ShazamDiscoveryService
 {
     private const string Language = "en-US";
     private const string Country = "US";
@@ -44,6 +44,12 @@ public sealed class ShazamDiscoveryService
     private readonly HttpClient _httpClient;
     private readonly ILogger<ShazamDiscoveryService> _logger;
     private static readonly ConcurrentDictionary<string, ShazamTrackCard> SessionCardCache = new(StringComparer.OrdinalIgnoreCase);
+
+    [GeneratedRegex(@"([?&]startFrom=)\d+", RegexOptions.IgnoreCase)]
+    private static partial Regex StartFromRegex();
+
+    [GeneratedRegex(@"([?&]pageSize=)\d+", RegexOptions.IgnoreCase)]
+    private static partial Regex PageSizeRegex();
 
     public ShazamDiscoveryService(HttpClient httpClient, ILogger<ShazamDiscoveryService> logger)
     {
@@ -172,16 +178,12 @@ public sealed class ShazamDiscoveryService
             return url;
         }
 
-        var updated = Regex.Replace(
+        var updated = StartFromRegex().Replace(
             url,
-            @"([?&]startFrom=)\d+",
-            match => $"{match.Groups[1].Value}{offset}",
-            RegexOptions.IgnoreCase);
-        updated = Regex.Replace(
+            match => $"{match.Groups[1].Value}{offset}");
+        updated = PageSizeRegex().Replace(
             updated,
-            @"([?&]pageSize=)\d+",
-            match => $"{match.Groups[1].Value}{limit}",
-            RegexOptions.IgnoreCase);
+            match => $"{match.Groups[1].Value}{limit}");
 
         var hasStart = updated.Contains("startFrom=", StringComparison.OrdinalIgnoreCase);
         var hasSize = updated.Contains("pageSize=", StringComparison.OrdinalIgnoreCase);

@@ -14,16 +14,21 @@ function setHomeGreeting() {
 }
 // Utility function to check if input is a valid URL (like deezspotag)
 function isValidURL(string) {
-    try {
-        const url = new URL(string);
-        return url.protocol === 'http:' || url.protocol === 'https:';
-    } catch (_) {
+    if (!string || typeof string !== 'string') {
         return false;
     }
+    if (typeof URL.canParse === 'function' && !URL.canParse(string)) {
+        return false;
+    }
+    if (!/^https?:\/\//i.test(string)) {
+        return false;
+    }
+    const url = new URL(string);
+    return url.protocol === 'http:' || url.protocol === 'https:';
 }
 
 
-const showToast = window.HomeViewHelpers.showToast;
+const showToast = globalThis.HomeViewHelpers.showToast;
 
 const HOME_TRENDING_SPOTIFY_SOURCE_ID = 'home-trending-songs';
 const homeSpotifyResolveCache = new Map();
@@ -51,10 +56,10 @@ const lazyImageObserver = new IntersectionObserver((entries) => {
     entries.forEach(entry => {
         if (entry.isIntersecting) {
             const el = entry.target;
-            const bgUrl = el.getAttribute('data-lazy-bg');
+            const bgUrl = el.dataset.lazyBg;
             if (bgUrl) {
                 el.style.backgroundImage = `url('${bgUrl}')`;
-                el.removeAttribute('data-lazy-bg');
+                delete el.dataset.lazyBg;
             }
             lazyImageObserver.unobserve(el);
         }
@@ -68,11 +73,8 @@ function observeLazyImages(container) {
 }
 
 function getBrowserTimeZone() {
-    try {
-        return Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York';
-    } catch (error) {
-        return 'America/New_York';
-    }
+    const timeZone = Intl.DateTimeFormat?.().resolvedOptions?.().timeZone;
+    return timeZone || 'America/New_York';
 }
 
 function buildSpotifyWebUrl(uri) {
@@ -112,7 +114,7 @@ async function openSpotifyItem(item) {
         return;
     }
     if (resolvedType && resolvedId) {
-        window.location.href = `/Tracklist?id=${encodeURIComponent(resolvedId)}&type=${encodeURIComponent(resolvedType || 'album')}&source=spotify`;
+        globalThis.location.href = `/Tracklist?id=${encodeURIComponent(resolvedId)}&type=${encodeURIComponent(resolvedType)}&source=spotify`;
         return;
     }
     showToast('Spotify item unavailable in-app (missing id/type).', 'warning');
@@ -130,7 +132,7 @@ async function openSpotifyBrowseCategory(item) {
     if (id) params.set('categoryId', id);
     if (uri) params.set('uri', uri);
     if (title) params.set('title', title);
-    window.location.href = `/Spotify/Browse?${params.toString()}`;
+    globalThis.location.href = `/Spotify/Browse?${params.toString()}`;
 }
 
 function parseSpotifyUrl(url) {
@@ -143,7 +145,7 @@ function parseSpotifyUrl(url) {
             return { type: uriParts[1].toLowerCase(), id: uriParts[2] };
         }
     }
-    const directMatch = url.match(/open\.spotify\.com\/(?:intl-[a-z-]+\/)?(album|playlist|track|show|episode|artist|station)\/([a-zA-Z0-9]+)/i);
+    const directMatch = /open\.spotify\.com\/(?:intl-[a-z]+\/)?(album|playlist|track|show|episode|artist|station)\/([a-z0-9]+)/i.exec(url);
     if (directMatch) {
         return { type: directMatch[1].toLowerCase(), id: directMatch[2] };
     }
@@ -160,12 +162,12 @@ function parseSpotifyUrl(url) {
     return null;
 }
 
-const setHomeTrendingPreviewButtonState = window.HomeViewHelpers.setHomeTrendingPreviewButtonState;
+const setHomeTrendingPreviewButtonState = globalThis.HomeViewHelpers.setHomeTrendingPreviewButtonState;
 
 function clearHomeTrendingPreviewButton() {
     if (!homeTrendingPreviewState.button) {
-        if (window.HomeViewHelpers && typeof window.HomeViewHelpers.clearHomeTrendingPlayingMarkers === 'function') {
-            window.HomeViewHelpers.clearHomeTrendingPlayingMarkers(null);
+        if (globalThis.HomeViewHelpers && typeof globalThis.HomeViewHelpers.clearHomeTrendingPlayingMarkers === 'function') {
+            globalThis.HomeViewHelpers.clearHomeTrendingPlayingMarkers(null);
         }
         return;
     }
@@ -221,7 +223,7 @@ function seedHomeTrendingQueue(startButton) {
     }
     homeTrendingPreviewState.queueButtons = queue;
     const index = queue.indexOf(startButton);
-    homeTrendingPreviewState.queueIndex = index >= 0 ? index : 0;
+    homeTrendingPreviewState.queueIndex = Math.max(index, 0);
 }
 
 function getNextHomeTrendingQueueButton() {
@@ -243,15 +245,15 @@ function getNextHomeTrendingQueueButton() {
 }
 
 function normalizeHomeDeezerPlaybackContext(payload) {
-    return window.HomeViewHelpers.normalizeHomeDeezerPlaybackContext(payload);
+    return globalThis.HomeViewHelpers.normalizeHomeDeezerPlaybackContext(payload);
 }
 
 function buildHomeDeezerStreamUrl(deezerId, context) {
-    return window.HomeViewHelpers.buildHomeDeezerStreamUrl(deezerId, context);
+    return globalThis.HomeViewHelpers.buildHomeDeezerStreamUrl(deezerId, context);
 }
 
 async function fetchHomeDeezerPlaybackContext(deezerId) {
-    return await window.HomeViewHelpers.fetchHomeDeezerPlaybackContext(
+    return await globalThis.HomeViewHelpers.fetchHomeDeezerPlaybackContext(
         deezerId,
         homeDeezerPlaybackContextCache,
         homeDeezerPlaybackContextRequests
@@ -318,13 +320,13 @@ async function primeHomeTrendingTrackMappings(options = {}) {
                 }
                 const deezerId = String(resolved.deezerId);
                 current.button.dataset.deezerId = deezerId;
-                if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.fetchContext === 'function') {
-                    const context = await window.DeezerPlaybackContext.fetchContext(deezerId, {
+                if (globalThis.DeezerPlaybackContext && typeof globalThis.DeezerPlaybackContext.fetchContext === 'function') {
+                    const context = await globalThis.DeezerPlaybackContext.fetchContext(deezerId, {
                         cache: homeDeezerPlaybackContextCache,
                         requests: homeDeezerPlaybackContextRequests
                     });
-                    if (context && typeof window.DeezerPlaybackContext.applyContextToElement === 'function') {
-                        window.DeezerPlaybackContext.applyContextToElement(current.button, context);
+                    if (context && typeof globalThis.DeezerPlaybackContext.applyContextToElement === 'function') {
+                        globalThis.DeezerPlaybackContext.applyContextToElement(current.button, context);
                     }
                 }
             } catch {
@@ -348,6 +350,70 @@ function scheduleHomeTrendingTrackMappingWarmup() {
     }, 900);
 }
 
+function buildHomeTrendingIntentKey(previewUrl, deezerId, spotifyUrl) {
+    if (previewUrl) {
+        return `preview:${previewUrl}`;
+    }
+    if (deezerId) {
+        return `deezer:${deezerId}`;
+    }
+    if (spotifyUrl) {
+        return `spotify:${spotifyUrl}`;
+    }
+    return '';
+}
+
+async function resolveHomeTrendingDeezerStreamUrl(deezerId, button) {
+    if (globalThis.DeezerPlaybackContext && typeof globalThis.DeezerPlaybackContext.resolveStreamUrl === 'function') {
+        return await globalThis.DeezerPlaybackContext.resolveStreamUrl(deezerId, {
+            element: button,
+            cache: homeDeezerPlaybackContextCache,
+            requests: homeDeezerPlaybackContextRequests
+        });
+    }
+    return `/api/deezer/stream/${encodeURIComponent(deezerId)}`;
+}
+
+async function resolveHomeTrendingStreamCandidate(button, deezerId, spotifyUrl, previewUrl, isStaleRequest) {
+    if (previewUrl) {
+        return { streamUrl: previewUrl, trackKey: previewUrl };
+    }
+
+    if (deezerId) {
+        const streamUrl = await resolveHomeTrendingDeezerStreamUrl(deezerId, button);
+        return { streamUrl, trackKey: `deezer:${deezerId}` };
+    }
+
+    if (!spotifyUrl) {
+        showToast('Preview unavailable.', 'warning');
+        return null;
+    }
+
+    const resolved = await resolveSpotifyUrlToDeezerHome(spotifyUrl);
+    if (isStaleRequest()) {
+        return null;
+    }
+    if (!resolved || resolved.available === false || resolved.type !== 'track' || !resolved.deezerId) {
+        showToast('Track not available for streaming.', 'warning');
+        return null;
+    }
+
+    const resolvedDeezerId = String(resolved.deezerId);
+    button.dataset.deezerId = resolvedDeezerId;
+    const streamUrl = await resolveHomeTrendingDeezerStreamUrl(resolvedDeezerId, button);
+    return { streamUrl, trackKey: `deezer:${resolvedDeezerId}` };
+}
+
+function tryPlayNextHomeTrendingQueueItem() {
+    const nextButton = getNextHomeTrendingQueueButton();
+    if (nextButton) {
+        void playHomeTrendingTrackInApp(nextButton, { fromQueue: true });
+        return true;
+    }
+    resetHomeTrendingQueue();
+    return false;
+}
+
 async function playHomeTrendingTrackInApp(target, options = {}) {
     const button = resolveHomeTrendingPlayButton(target);
     if (!button) {
@@ -361,9 +427,7 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
     const deezerId = (button.dataset.deezerId || '').trim();
     const spotifyUrl = (button.dataset.spotifyUrl || '').trim();
     const previewUrl = (button.dataset.previewUrl || '').trim();
-    const intentKey = previewUrl
-        ? `preview:${previewUrl}`
-        : (deezerId ? `deezer:${deezerId}` : (spotifyUrl ? `spotify:${spotifyUrl}` : ''));
+    const intentKey = buildHomeTrendingIntentKey(previewUrl, deezerId, spotifyUrl);
     if (intentKey && homeTrendingPreviewState.pendingKey === intentKey) {
         return;
     }
@@ -371,49 +435,18 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
     homeTrendingPreviewState.pendingKey = intentKey || null;
     const isStaleRequest = () => requestId !== homeTrendingPreviewState.requestId;
 
-    let streamUrl = '';
-    let trackKey = '';
-
     try {
-        if (previewUrl) {
-            streamUrl = previewUrl;
-            trackKey = previewUrl;
-        } else if (deezerId) {
-            if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
-                streamUrl = await window.DeezerPlaybackContext.resolveStreamUrl(deezerId, {
-                    element: button,
-                    cache: homeDeezerPlaybackContextCache,
-                    requests: homeDeezerPlaybackContextRequests
-                });
-            } else {
-                streamUrl = `/api/deezer/stream/${encodeURIComponent(deezerId)}`;
-            }
-            trackKey = `deezer:${deezerId}`;
-        } else if (spotifyUrl) {
-            const resolved = await resolveSpotifyUrlToDeezerHome(spotifyUrl);
-            if (isStaleRequest()) {
-                return;
-            }
-            if (!resolved || resolved.available === false || resolved.type !== 'track' || !resolved.deezerId) {
-                showToast('Track not available for streaming.', 'warning');
-                return;
-            }
-            const resolvedDeezerId = String(resolved.deezerId);
-            button.dataset.deezerId = resolvedDeezerId;
-            if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
-                streamUrl = await window.DeezerPlaybackContext.resolveStreamUrl(resolvedDeezerId, {
-                    element: button,
-                    cache: homeDeezerPlaybackContextCache,
-                    requests: homeDeezerPlaybackContextRequests
-                });
-            } else {
-                streamUrl = `/api/deezer/stream/${encodeURIComponent(resolvedDeezerId)}`;
-            }
-            trackKey = `deezer:${resolvedDeezerId}`;
-        } else {
-            showToast('Preview unavailable.', 'warning');
+        const candidate = await resolveHomeTrendingStreamCandidate(
+            button,
+            deezerId,
+            spotifyUrl,
+            previewUrl,
+            isStaleRequest
+        );
+        if (!candidate) {
             return;
         }
+        const { streamUrl, trackKey } = candidate;
 
         if (!streamUrl || !trackKey || isStaleRequest()) {
             return;
@@ -451,12 +484,7 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
             }
             clearHomeTrendingPreviewButton();
             homeTrendingPreviewState.trackKey = null;
-            const nextButton = getNextHomeTrendingQueueButton();
-            if (nextButton) {
-                void playHomeTrendingTrackInApp(nextButton, { fromQueue: true });
-                return;
-            }
-            resetHomeTrendingQueue();
+            tryPlayNextHomeTrendingQueueItem();
         };
         audio.onerror = () => {
             if (isStaleRequest()) {
@@ -465,12 +493,7 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
             clearHomeTrendingPreviewButton();
             homeTrendingPreviewState.trackKey = null;
             showToast('Playback interrupted.', 'warning');
-            const nextButton = getNextHomeTrendingQueueButton();
-            if (nextButton) {
-                void playHomeTrendingTrackInApp(nextButton, { fromQueue: true });
-                return;
-            }
-            resetHomeTrendingQueue();
+            tryPlayNextHomeTrendingQueueItem();
         };
 
         try {
@@ -488,12 +511,7 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
                 homeTrendingPreviewState.button = null;
             }
             showToast('Unable to start playback.', 'warning');
-            const nextButton = getNextHomeTrendingQueueButton();
-            if (nextButton) {
-                void playHomeTrendingTrackInApp(nextButton, { fromQueue: true });
-                return;
-            }
-            resetHomeTrendingQueue();
+            tryPlayNextHomeTrendingQueueItem();
         }
     } finally {
         if (requestId === homeTrendingPreviewState.requestId) {
@@ -655,63 +673,116 @@ function isPlaylistLikeExternalUrl(parsedUrl, source) {
     }
 }
 
+const SPOTIFY_PLAYLIST_PATH_REGEX = /\/(?:intl-[a-z]{2}\/)?playlist\/([a-z0-9]+)/i;
+const APPLE_PLAYLIST_WITH_SLUG_REGEX = /\/playlist\/[^/]+\/([^/?#]+)/i;
+const APPLE_PLAYLIST_DIRECT_REGEX = /\/playlist\/([^/?#]+)/i;
+const BOOMPLAY_PLAYLIST_REGEX = /\/playlists?\/([a-z0-9]+)/i;
+
+function extractRegexGroup(input, regex) {
+    return regex.exec(input)?.[1] ?? '';
+}
+
+function findPathSegmentAfter(pathSegments, segmentName) {
+    const index = pathSegments.indexOf(segmentName);
+    if (index < 0) {
+        return '';
+    }
+    return pathSegments[index + 1] || '';
+}
+
+function normalizePathSegments(parsedUrl) {
+    return (parsedUrl.pathname || '')
+        .split('/')
+        .filter(Boolean)
+        .map(segment => segment.trim().toLowerCase())
+        .filter(Boolean);
+}
+
 function extractExternalCollectionId(parsedUrl, source) {
     if (!parsedUrl || !(parsedUrl instanceof URL) || !source) {
         return '';
     }
 
-    const pathSegments = (parsedUrl.pathname || '')
-        .split('/')
-        .filter(Boolean)
-        .map(segment => segment.trim())
-        .filter(Boolean);
+    const pathSegments = normalizePathSegments(parsedUrl);
 
     if (source === 'youtube') {
         return (parsedUrl.searchParams.get('list') || '').trim();
     }
     if (source === 'spotify') {
-        const match = parsedUrl.pathname.match(/\/(?:intl-[a-z]{2}\/)?playlist\/([A-Za-z0-9]+)/i);
-        return (match && match[1]) ? match[1] : '';
+        return extractRegexGroup(parsedUrl.pathname, SPOTIFY_PLAYLIST_PATH_REGEX);
     }
     if (source === 'apple') {
-        const withSlug = parsedUrl.pathname.match(/\/playlist\/[^\/]+\/([^\/?#]+)/i);
-        const direct = parsedUrl.pathname.match(/\/playlist\/([^\/?#]+)/i);
-        return (withSlug && withSlug[1]) || (direct && direct[1]) || '';
+        return extractRegexGroup(parsedUrl.pathname, APPLE_PLAYLIST_WITH_SLUG_REGEX)
+            || extractRegexGroup(parsedUrl.pathname, APPLE_PLAYLIST_DIRECT_REGEX);
     }
     if (source === 'boomplay') {
-        const match = parsedUrl.pathname.match(/\/playlists?\/([A-Za-z0-9]+)/i);
-        return (match && match[1]) ? match[1] : '';
+        return extractRegexGroup(parsedUrl.pathname, BOOMPLAY_PLAYLIST_REGEX);
     }
     if (source === 'soundcloud') {
-        const setsIndex = pathSegments.findIndex(segment => segment.toLowerCase() === 'sets');
-        return setsIndex >= 0 && pathSegments[setsIndex + 1] ? pathSegments[setsIndex + 1] : '';
+        return findPathSegmentAfter(pathSegments, 'sets');
     }
     if (source === 'tidal') {
-        const playlistIndex = pathSegments.findIndex(segment => segment.toLowerCase() === 'playlist');
-        if (playlistIndex >= 0 && pathSegments[playlistIndex + 1]) {
-            return pathSegments[playlistIndex + 1];
-        }
-        const mixIndex = pathSegments.findIndex(segment => segment.toLowerCase() === 'mix');
-        return mixIndex >= 0 && pathSegments[mixIndex + 1] ? pathSegments[mixIndex + 1] : '';
+        return findPathSegmentAfter(pathSegments, 'playlist')
+            || findPathSegmentAfter(pathSegments, 'mix');
     }
     if (source === 'qobuz') {
-        const playlistIndex = pathSegments.findIndex(segment =>
-            segment.toLowerCase() === 'playlist' || segment.toLowerCase() === 'playlists');
-        return playlistIndex >= 0 && pathSegments[playlistIndex + 1] ? pathSegments[playlistIndex + 1] : '';
+        return findPathSegmentAfter(pathSegments, 'playlist')
+            || findPathSegmentAfter(pathSegments, 'playlists');
     }
     if (source === 'pandora') {
-        const playlistIndex = pathSegments.findIndex(segment => segment.toLowerCase() === 'playlist');
-        if (playlistIndex >= 0) {
-            return pathSegments[pathSegments.length - 1] || '';
+        if (pathSegments.includes('playlist')) {
+            return pathSegments.at(-1) || '';
         }
         return '';
     }
     if (source === 'bandcamp') {
-        const albumIndex = pathSegments.findIndex(segment => segment.toLowerCase() === 'album');
-        return albumIndex >= 0 && pathSegments[albumIndex + 1] ? pathSegments[albumIndex + 1] : '';
+        return findPathSegmentAfter(pathSegments, 'album');
     }
 
     return '';
+}
+
+function buildExternalPlaylistRouteBySource(source, parsedUrl, sourceUrl) {
+    if (source === 'youtube') {
+        const listId = (parsedUrl.searchParams.get('list') || '').trim();
+        if (!/^[A-Za-z0-9_-]{10,}$/.test(listId)) {
+            return '';
+        }
+        return `/Tracklist?id=${encodeURIComponent(listId)}&type=playlist&source=youtube`;
+    }
+
+    if (source === 'spotify') {
+        const playlistId = extractRegexGroup(parsedUrl.pathname, SPOTIFY_PLAYLIST_PATH_REGEX);
+        if (!playlistId) {
+            return '';
+        }
+        return `/Tracklist?id=${encodeURIComponent(playlistId)}&type=playlist&source=spotify`;
+    }
+
+    if (source === 'apple') {
+        const playlistId = extractRegexGroup(parsedUrl.pathname, APPLE_PLAYLIST_WITH_SLUG_REGEX)
+            || extractRegexGroup(parsedUrl.pathname, APPLE_PLAYLIST_DIRECT_REGEX);
+        if (!playlistId) {
+            return '';
+        }
+        return `/Tracklist?id=${encodeURIComponent(playlistId)}&type=playlist&source=apple&appleUrl=${encodeURIComponent(sourceUrl)}`;
+    }
+
+    if (source === 'boomplay') {
+        const playlistId = extractRegexGroup(parsedUrl.pathname, BOOMPLAY_PLAYLIST_REGEX);
+        if (!playlistId) {
+            return '';
+        }
+        return `/Tracklist?id=${encodeURIComponent(playlistId)}&type=playlist&source=boomplay`;
+    }
+
+    const genericPlaylistSources = new Set(['soundcloud', 'tidal', 'qobuz', 'bandcamp', 'pandora']);
+    if (!genericPlaylistSources.has(source)) {
+        return '';
+    }
+
+    const collectionId = extractExternalCollectionId(parsedUrl, source) || 'playlist';
+    return `/Tracklist?id=${encodeURIComponent(collectionId)}&type=playlist&source=${encodeURIComponent(source)}&externalUrl=${encodeURIComponent(sourceUrl)}`;
 }
 
 function tryBuildExternalPlaylistRoute(parsedUrl, originalInput) {
@@ -724,50 +795,7 @@ function tryBuildExternalPlaylistRoute(parsedUrl, originalInput) {
     if (!source || !sourceUrl || !isPlaylistLikeExternalUrl(parsedUrl, source)) {
         return '';
     }
-
-    if (source === 'youtube') {
-        const listId = (parsedUrl.searchParams.get('list') || '').trim();
-        if (/^[A-Za-z0-9_-]{10,}$/.test(listId)) {
-            return `/Tracklist?id=${encodeURIComponent(listId)}&type=playlist&source=youtube`;
-        }
-        return '';
-    }
-
-    if (source === 'spotify') {
-        const spotifyPlaylistMatch = parsedUrl.pathname.match(/\/(?:intl-[a-z]{2}\/)?playlist\/([A-Za-z0-9]+)/i);
-        if (spotifyPlaylistMatch && spotifyPlaylistMatch[1]) {
-            return `/Tracklist?id=${encodeURIComponent(spotifyPlaylistMatch[1])}&type=playlist&source=spotify`;
-        }
-        return '';
-    }
-
-    if (source === 'apple') {
-        const applePlaylistWithSlug = parsedUrl.pathname.match(/\/playlist\/[^\/]+\/([^\/?#]+)/i);
-        const applePlaylistDirect = parsedUrl.pathname.match(/\/playlist\/([^\/?#]+)/i);
-        const applePlaylistId = (applePlaylistWithSlug && applePlaylistWithSlug[1])
-            || (applePlaylistDirect && applePlaylistDirect[1])
-            || '';
-        if (applePlaylistId) {
-            return `/Tracklist?id=${encodeURIComponent(applePlaylistId)}&type=playlist&source=apple&appleUrl=${encodeURIComponent(sourceUrl)}`;
-        }
-        return '';
-    }
-
-    if (source === 'boomplay') {
-        const boomplayPlaylistMatch = parsedUrl.pathname.match(/\/playlists?\/([A-Za-z0-9]+)/i);
-        if (boomplayPlaylistMatch && boomplayPlaylistMatch[1]) {
-            return `/Tracklist?id=${encodeURIComponent(boomplayPlaylistMatch[1])}&type=playlist&source=boomplay`;
-        }
-        return '';
-    }
-
-    const genericPlaylistSources = new Set(['soundcloud', 'tidal', 'qobuz', 'bandcamp', 'pandora']);
-    if (!genericPlaylistSources.has(source)) {
-        return '';
-    }
-
-    const collectionId = extractExternalCollectionId(parsedUrl, source) || 'playlist';
-    return `/Tracklist?id=${encodeURIComponent(collectionId)}&type=playlist&source=${encodeURIComponent(source)}&externalUrl=${encodeURIComponent(sourceUrl)}`;
+    return buildExternalPlaylistRouteBySource(source, parsedUrl, sourceUrl);
 }
 
 function navigateToMappedDeezer(mapping) {
@@ -780,17 +808,64 @@ function navigateToMappedDeezer(mapping) {
     const hasNumericDeezerId = /^\d+$/.test(deezerId);
 
     if (deezerType === 'artist' && hasNumericDeezerId) {
-        window.location.href = `/Artist?id=${encodeURIComponent(deezerId)}&source=deezer`;
+        globalThis.location.href = `/Artist?id=${encodeURIComponent(deezerId)}&source=deezer`;
         return true;
     }
 
     if (hasNumericDeezerId) {
         const tracklistType = deezerType || 'track';
-        window.location.href = `/Tracklist?id=${encodeURIComponent(deezerId)}&type=${encodeURIComponent(tracklistType)}&source=deezer`;
+        globalThis.location.href = `/Tracklist?id=${encodeURIComponent(deezerId)}&type=${encodeURIComponent(tracklistType)}&source=deezer`;
         return true;
     }
 
     return false;
+}
+
+function setUnifiedSearchButtonState(isLoading) {
+    const searchBtn = document.getElementById('unified-search-btn');
+    if (!searchBtn) {
+        return;
+    }
+    searchBtn.textContent = isLoading ? 'Searching...' : 'Search';
+    searchBtn.disabled = isLoading;
+}
+
+async function handleUnifiedSearchUrlInput(input, parsedUrl) {
+    const externalPlaylistRoute = tryBuildExternalPlaylistRoute(parsedUrl, input);
+    if (externalPlaylistRoute) {
+        globalThis.location.href = externalPlaylistRoute;
+        return true;
+    }
+
+    const hostname = (parsedUrl.hostname || '').toLowerCase();
+    const isDeezerHost = hostname === 'deezer.com'
+        || hostname === 'www.deezer.com'
+        || hostname.endsWith('.deezer.com')
+        || hostname === 'deezer.page.link';
+
+    if (isDeezerHost) {
+        const parsed = await parseDeezerLink(input);
+        const deezerType = (parsed.type || '').toString().trim().toLowerCase();
+        if (deezerType === 'artist') {
+            globalThis.location.href = `/Artist?id=${encodeURIComponent(parsed.id)}&source=deezer`;
+        } else {
+            const typeValue = deezerType || 'track';
+            globalThis.location.href = `/Tracklist?id=${encodeURIComponent(parsed.id)}&type=${encodeURIComponent(typeValue)}&source=deezer`;
+        }
+        return true;
+    }
+
+    const mapping = await mapInputLinkToDeezer(input);
+    if (navigateToMappedDeezer(mapping)) {
+        return true;
+    }
+
+    const reason = (mapping?.reason || '').toString().trim();
+    const sourceLabel = (mapping?.source || 'provided').toString();
+    const message = reason
+        ? `${reason} Supported link sources: ${SUPPORTED_LINK_SOURCES}.`
+        : `No Deezer mapping found for ${sourceLabel} link. Supported link sources: ${SUPPORTED_LINK_SOURCES}.`;
+    throw new Error(message);
 }
 
 async function performUnifiedSearch() {
@@ -803,81 +878,36 @@ async function performUnifiedSearch() {
     }
     
     try {
-        // Show loading state
-        const searchBtn = document.getElementById('unified-search-btn');
-        searchBtn.textContent = 'Searching...';
-        searchBtn.disabled = true;
-        
+        setUnifiedSearchButtonState(true);
+
         // Check if input is a URL (like deezspotag)
         if (isValidURL(input)) {
             const parsedUrl = new URL(input);
-            const externalPlaylistRoute = tryBuildExternalPlaylistRoute(parsedUrl, input);
-            if (externalPlaylistRoute) {
-                window.location.href = externalPlaylistRoute;
+            const handled = await handleUnifiedSearchUrlInput(input, parsedUrl);
+            if (handled) {
                 return;
             }
-
-            const hostname = (parsedUrl.hostname || '').toLowerCase();
-            const isDeezerHost = hostname === 'deezer.com'
-                || hostname === 'www.deezer.com'
-                || hostname.endsWith('.deezer.com')
-                || hostname === 'deezer.page.link';
-
-            if (isDeezerHost) {
-                const parsed = await parseDeezerLink(input);
-                const deezerType = (parsed.type || '').toString().trim().toLowerCase();
-                if (deezerType === 'artist') {
-                    window.location.href = `/Artist?id=${encodeURIComponent(parsed.id)}&source=deezer`;
-                } else {
-                    const typeValue = deezerType || 'track';
-                    window.location.href = `/Tracklist?id=${encodeURIComponent(parsed.id)}&type=${encodeURIComponent(typeValue)}&source=deezer`;
-                }
-                return;
-            }
-
-            const mapping = await mapInputLinkToDeezer(input);
-            if (navigateToMappedDeezer(mapping)) {
-                return;
-            }
-
-            const reason = (mapping?.reason || '').toString().trim();
-            const sourceLabel = (mapping?.source || 'provided').toString();
-            const message = reason
-                ? `${reason} Supported link sources: ${SUPPORTED_LINK_SOURCES}.`
-                : `No Deezer mapping found for ${sourceLabel} link. Supported link sources: ${SUPPORTED_LINK_SOURCES}.`;
-            throw new Error(message);
-
             return;
-        } else {
-            console.log('Detected search term, redirecting to search results:', input);
-
-            // Navigate to search results page
-            const searchParams = new URLSearchParams({
-                term: input,
-                type: type
-            });
-            window.location.href = `/Search?${searchParams.toString()}`;
         }
-        
-        // Reset button state
-        searchBtn.textContent = 'Search';
-        searchBtn.disabled = false;
-        
+
+        console.log('Detected search term, redirecting to search results:', input);
+        const searchParams = new URLSearchParams({
+            term: input,
+            type: type
+        });
+        globalThis.location.href = `/Search?${searchParams.toString()}`;
     } catch (error) {
         console.error('Search/Download error:', error);
         DeezSpoTag.ui.alert(`Operation failed: ${error.message}`, { title: 'Search' });
-        
-        // Reset button state
-        const searchBtn = document.getElementById('unified-search-btn');
-        searchBtn.textContent = 'Search';
-        searchBtn.disabled = false;
+    } finally {
+        setUnifiedSearchButtonState(false);
     }
 }
 
 // Load popular content
 async function loadHomeData() {
     try {
-        const urlParams = new URLSearchParams(window.location.search);
+        const urlParams = new URLSearchParams(globalThis.location.search);
         const channel = urlParams.get('channel');
         const refresh = urlParams.get('refresh');
         const refreshEnabled = refresh === '1' || refresh === 'true' || refresh === 'yes';
@@ -901,10 +931,11 @@ async function loadHomeData() {
         }
 
         const baseUrl = channel ? `/api/home?channel=${encodeURIComponent(channel)}` : '/api/home';
-        const response = await fetch(
-            refreshEnabled ? `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}refresh=1` : baseUrl,
-            { cache: 'no-store' }
-        );
+        const requestUrl = new URL(baseUrl, globalThis.location.origin);
+        if (refreshEnabled) {
+            requestUrl.searchParams.set('refresh', '1');
+        }
+        const response = await fetch(requestUrl.toString(), { cache: 'no-store' });
         
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
@@ -914,7 +945,7 @@ async function loadHomeData() {
         console.log('Home data received:', data);
 
         let sections = data.sections || [];
-        if (spotifySectionsPromise) {
+        if (spotifySectionsPromise !== null) {
             const spotifySections = (await spotifySectionsPromise)
                 .map(section => ({ ...section, source: 'spotify' }));
             if (spotifySections.length > 0) {
@@ -951,12 +982,12 @@ function renderHomeSections(sections) {
         return;
     }
 
-    const urlParams = new URLSearchParams(window.location.search);
+    const urlParams = new URLSearchParams(globalThis.location.search);
     const isChannelPage = !!urlParams.get('channel');
     const maxItemsPerSection = isChannelPage ? 60 : 16;
     const popularRadioPreviewCount = 13;
     const normalizeTitle = (value) => (value || '').toString().trim().toLowerCase();
-    const normalizeSectionTitle = (value) => normalizeTitle(value).replace(/\s+/g, ' ');
+    const normalizeSectionTitle = (value) => normalizeTitle(value).replaceAll(/\s+/g, ' ');
     const isContinueStreamingSection = (section) => {
         const title = normalizeSectionTitle(section?.title);
         return title === 'continue streaming' || title === 'continue listening';
@@ -1018,10 +1049,10 @@ function renderHomeSections(sections) {
         return value
             .toString()
             .normalize('NFKD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .replace(/['`´’]/g, '')
-            .replace(/[._-]/g, ' ')
-            .replace(/\s+/g, ' ')
+            .replaceAll(/[\u0300-\u036f]/g, '')
+            .replaceAll(/['`´’]/g, '')
+            .replaceAll(/[._-]/g, ' ')
+            .replaceAll(/\s+/g, ' ')
             .trim()
             .toLowerCase();
     };
@@ -1247,7 +1278,6 @@ function renderHomeSections(sections) {
         const itemCount = Array.isArray(section?.items) ? section.items.length : 0;
         return itemCount >= 4;
     });
-    const hasUnifiedSpotifySections = sections.some(section => isSpotifyHomeSection(section));
     if (!isChannelPage) {
         const categoriesSection = sections.find(section => normalizeTitle(section?.title) === 'categories');
         const topGenresSection = sections.find(section => normalizeTitle(section?.title) === 'your top genres');
@@ -1261,7 +1291,7 @@ function renderHomeSections(sections) {
             if (insertIndex >= 0 && insertIndex <= trimmed.length) {
                 trimmed.splice(insertIndex, 0, alias);
             } else {
-                const categoriesIndex = sections.findIndex(section => section === categoriesSection);
+                const categoriesIndex = sections.indexOf(categoriesSection);
                 const targetIndex = categoriesIndex >= 0 && categoriesIndex <= trimmed.length ? categoriesIndex : trimmed.length;
                 trimmed.splice(targetIndex, 0, alias);
             }
@@ -1342,15 +1372,15 @@ function renderHomeSections(sections) {
                 pagePath: mergeSections
                     .map(section => (section?.pagePath || '').toString().trim())
                     .find(value => value.length > 0) || '',
-                related: mergeSections.map(section => section?.related).find(value => value) || null,
-                filter: mergeSections.map(section => section?.filter).find(value => value) || null,
+                related: mergeSections.map(section => section?.related).find(Boolean) || null,
+                filter: mergeSections.map(section => section?.filter).find(Boolean) || null,
                 layout: mergeSections
                     .map(section => (section?.layout || '').toString().trim())
                     .find(value => value.length > 0) || 'row'
             };
             const compactSections = sections.filter((_, index) => !mergeIndexes.has(index));
             const popularRadioIndex = compactSections.findIndex(section => isPopularRadioSection(section));
-            const fallbackInsertIndex = Math.min(...[...mergeIndexes]);
+            const fallbackInsertIndex = Math.min(...mergeIndexes);
             const insertIndex = popularRadioIndex >= 0
                 ? popularRadioIndex + 1
                 : Math.min(fallbackInsertIndex, compactSections.length);
@@ -1372,11 +1402,14 @@ function renderHomeSections(sections) {
             const refreshedPopularRadioIndex = sections.findIndex(
                 section => isPopularRadioSection(section)
             );
-            const insertAfterRecommendedIndex = refreshedRecommendedIndex >= 0
-                ? ((refreshedPopularRadioIndex > refreshedRecommendedIndex)
-                    ? refreshedPopularRadioIndex + 1
-                    : refreshedRecommendedIndex + 1)
-                : sections.length;
+            let insertAfterRecommendedIndex = sections.length;
+            if (refreshedRecommendedIndex >= 0) {
+                if (refreshedPopularRadioIndex > refreshedRecommendedIndex) {
+                    insertAfterRecommendedIndex = refreshedPopularRadioIndex + 1;
+                } else {
+                    insertAfterRecommendedIndex = refreshedRecommendedIndex + 1;
+                }
+            }
             sections.splice(insertAfterRecommendedIndex, 0, categoriesSection);
         }
     }
@@ -1431,9 +1464,15 @@ function renderHomeSections(sections) {
         const isTrendingSongs = normalizedTitle === 'trending songs';
         const isPopularRadio = isPopularRadioSection(section);
         const preserveAllItems = section?.__preserveAllItems === true || section?.preserveAllItems === true;
-        const sectionLimit = preserveAllItems
-            ? ((Array.isArray(section?.items) && section.items.length > 0) ? section.items.length : maxItemsPerSection)
-            : (isChannelPage ? 60 : (isTrendingSongs ? 20 : maxItemsPerSection));
+        const hasSectionItems = Array.isArray(section?.items) && section.items.length > 0;
+        let sectionLimit = maxItemsPerSection;
+        if (preserveAllItems && hasSectionItems) {
+            sectionLimit = section.items.length;
+        } else if (isChannelPage) {
+            sectionLimit = 60;
+        } else if (isTrendingSongs) {
+            sectionLimit = 20;
+        }
         const items = Array.isArray(section?.items) ? section.items.slice(0, sectionLimit) : [];
         const layoutRaw = (section?.layout || '').toString().toLowerCase();
         const filter = section?.filter || null;
@@ -1442,14 +1481,18 @@ function renderHomeSections(sections) {
         const isTopGenres = normalizedTitle === 'your top genres' || normalizedTitle === 'categories';
         const isChannelSection = items.length > 0 && items.every(item => (item?.type || '').toString().toLowerCase() === 'channel');
         const layoutClass = layoutRaw === 'grid' ? 'home-grid' : 'home-row';
-        const rowClass = isDiscover
-            ? 'discover-grid'
-            : isTrendingSongs
-            ? 'home-trending-grid'
-            : (isTopGenres || isChannelSection) ? 'top-genres-grid' : layoutClass;
-        let filteredItems = (isDiscover || isTopGenres || isTrendingSongs)
-            ? items
-            : items.filter(item => !isGhostHomeItem(item));
+        let rowClass = layoutClass;
+        if (isDiscover) {
+            rowClass = 'discover-grid';
+        } else if (isTrendingSongs) {
+            rowClass = 'home-trending-grid';
+        } else if (isTopGenres || isChannelSection) {
+            rowClass = 'top-genres-grid';
+        }
+        let filteredItems = items;
+        if (!isDiscover && !isTopGenres && !isTrendingSongs) {
+            filteredItems = items.filter(item => !isGhostHomeItem(item));
+        }
         if (!isChannelPage && isPopularRadio && filteredItems.length > popularRadioPreviewCount) {
             filteredItems = [
                 ...filteredItems.slice(0, popularRadioPreviewCount),
@@ -1509,10 +1552,13 @@ function renderHomeSections(sections) {
         const topGenresCards = meta.isTopGenres
             ? (() => {
                 const mergedItems = mergeSpotifyCategories(baseTopGenresItems, maxTopGenresSlots);
-                const sliced = mergedItems.map(renderTopGenresItem).join('');
-                const showMoreCard = !isChannelPage
-                    ? `<a class="top-genres-card top-genres-card--more" href="/Categories">View all</a>`
-                    : '';
+                const sliced = mergedItems.map((item) => renderTopGenresItem(item)).join('');
+                let showMoreCard = '';
+                if (isChannelPage) {
+                    showMoreCard = '';
+                } else {
+                    showMoreCard = `<a class="top-genres-card top-genres-card--more" href="/Categories">View all</a>`;
+                }
                 return `${sliced}${showMoreCard}`;
             })()
             : '';
@@ -1538,18 +1584,26 @@ function renderHomeSections(sections) {
             }
             const filterIds = (item?.filter_option_ids || []).map(String);
             const dataAttr = filterIds.length ? ` data-filter-ids="${filterIds.join(',')}"` : '';
-            const rendered = meta.isDiscover ? renderDiscoveryItem(item) : meta.isTopGenres ? renderTopGenresItem(item) : renderHomeItem(item);
+            let rendered = renderHomeItem(item);
+            if (meta.isDiscover) {
+                rendered = renderDiscoveryItem(item);
+            } else if (meta.isTopGenres) {
+                rendered = renderTopGenresItem(item);
+            }
             return `<div class="home-filtered-item"${dataAttr}>${rendered}</div>`;
         };
         const sectionItemsHtml = meta.isTopGenres
             ? topGenresCards
             : (meta.isTrendingSongs
                 ? meta.filteredItems.map(item => renderHomeTrendingSongItem(item)).join('')
-                : (meta.filteredItems.map(item => renderSectionCardItem(item)).join('')));
+                : meta.filteredItems.map(item => renderSectionCardItem(item)).join(''));
         const rowClass = meta.isSpaceAware ? `${meta.rowClass} home-space-aware-row` : meta.rowClass;
-        const rowSpaceAwareMin = meta.rowClass === 'home-grid'
-            ? 'var(--art-grid-min)'
-            : (meta.rowClass === 'home-row' ? 'var(--art-card-size)' : '0px');
+        let rowSpaceAwareMin = '0px';
+        if (meta.rowClass === 'home-grid') {
+            rowSpaceAwareMin = 'var(--art-grid-min)';
+        } else if (meta.rowClass === 'home-row') {
+            rowSpaceAwareMin = 'var(--art-card-size)';
+        }
         const rowStyle = meta.isSpaceAware
             ? `style="--home-space-aware-count:${meta.filteredItems.length}; --home-space-aware-min:${rowSpaceAwareMin};"`
             : '';
@@ -1641,12 +1695,12 @@ function extractHomeTrendingSectionImageUrl(items) {
 }
 
 function openHomeTrendingTracklist(button) {
-    const watchKey = button?.getAttribute('data-home-trending-tracklist') || '';
+    const watchKey = button?.dataset?.homeTrendingTracklist || '';
     const watchMeta = watchKey && homeTrendingWatchMetaCache.has(watchKey)
         ? homeTrendingWatchMetaCache.get(watchKey)
         : null;
     const sourceId = (watchMeta?.sourceId || HOME_TRENDING_SPOTIFY_SOURCE_ID).toString().trim() || HOME_TRENDING_SPOTIFY_SOURCE_ID;
-    window.location.href = `/Tracklist?id=${encodeURIComponent(sourceId)}&type=playlist&source=spotify`;
+    globalThis.location.href = `/Tracklist?id=${encodeURIComponent(sourceId)}&type=playlist&source=spotify`;
 }
 
 function setupHomeFilters(sections) {
@@ -1665,7 +1719,7 @@ function setupHomeFilters(sections) {
         const applyFilter = (id) => {
             buttons.forEach(btn => btn.classList.toggle('active', btn.dataset.filterId === id));
             items.forEach(el => {
-                const ids = (el.getAttribute('data-filter-ids') || '').split(',').filter(Boolean);
+                const ids = (el.dataset.filterIds || '').split(',').filter(Boolean);
                 const visible = !ids.length || ids.includes(id);
                 el.classList.toggle('is-visible', visible);
             });
@@ -1790,11 +1844,11 @@ function toHomeStatNumber(value) {
         if (!trimmed) {
             return null;
         }
-        const normalized = trimmed.replace(/[^\d-]/g, '');
+        const normalized = trimmed.replaceAll(/[^\d-]/g, '');
         if (!normalized || normalized === '-') {
             return null;
         }
-        const parsed = parseInt(normalized, 10);
+        const parsed = Number.parseInt(normalized, 10);
         return Number.isFinite(parsed) ? parsed : null;
     }
     return null;
@@ -1806,7 +1860,7 @@ function formatHomeStatNumber(value) {
         return '';
     }
     const abs = Math.abs(numeric);
-    const grouped = abs.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    const grouped = abs.toLocaleString('en-US').replaceAll(',', ' ');
     return numeric < 0 ? `-${grouped}` : grouped;
 }
 
@@ -1836,8 +1890,8 @@ function normalizeHomeSubtitle(item, subtitleValue) {
         return '';
     }
 
-    subtitle = subtitle.replace(/\bfollowers?\b/gi, 'fans');
-    subtitle = subtitle.replace(/(\d[\d\s,._-]*)\s*(tracks?|songs?|fans?|followers?)/gi, (_, numberPart, labelPart) => {
+    subtitle = subtitle.replaceAll(/\bfollowers?\b/gi, 'fans');
+    subtitle = subtitle.replaceAll(/(\d[\d\s,._-]*)\s*(tracks?|songs?|fans?|followers?)/gi, (_, numberPart, labelPart) => {
         const formatted = formatHomeStatNumber(numberPart);
         const label = normalizeHomeStatLabel(labelPart);
         if (!formatted) {
@@ -1958,15 +2012,23 @@ function renderHomeItem(item) {
                 className: 'playlist-badge--collab'
             });
         }
-        const statBadges = subtitleHasCounts
-            ? []
-            : [
+        let statBadges = [];
+        if (!subtitleHasCounts) {
+            statBadges = [
                 parsedPlaylistTracks !== null ? { label: `${formatHomeStatNumber(parsedPlaylistTracks)} tracks` } : null,
                 parsedPlaylistFans !== null ? { label: `${formatHomeStatNumber(parsedPlaylistFans)} fans` } : null
             ].filter(Boolean);
+        }
         badges = [...statBadges, ...playlistFlags];
     }
-    const fallbackIcon = item.type === 'artist' ? '👤' : item.type === 'playlist' ? '🎵' : item.type === 'album' ? '💿' : '✨';
+    let fallbackIcon = '✨';
+    if (item.type === 'artist') {
+        fallbackIcon = '👤';
+    } else if (item.type === 'playlist') {
+        fallbackIcon = '🎵';
+    } else if (item.type === 'album') {
+        fallbackIcon = '💿';
+    }
     const click = buildHomeClick(item);
 
     const needsSquare = item.type === 'artist' || item.type === 'channel';
@@ -1977,6 +2039,12 @@ function renderHomeItem(item) {
     const imageStyle = `style="${channelBg}background-image: url('${image}'); background-size: cover; background-position: center;"`;
     const spotifyAttr = isSpotifyItem ? ` data-spotify-item="${spotifyItemKey}"` : '';
     const clickAttr = isSpotifyItem ? '' : ` onclick="${click}"`;
+    let logoMarkup = '';
+    if (logoImage) {
+        logoMarkup = `<img class="channel-logo" src="${logoImage}" alt="">`;
+    } else if (!image) {
+        logoMarkup = fallbackIcon;
+    }
 
     if (item.type === 'channel') {
         const artStyle = image ? `style="background-image: url('${image}');"` : '';
@@ -2000,7 +2068,7 @@ function renderHomeItem(item) {
     return `
         <div class="${cardClass}"${spotifyAttr}${clickAttr}>
             <div class="${imageClass}" ${channelBgStyle} ${imageStyle}>
-                ${logoImage ? `<img class="channel-logo" src="${logoImage}" alt="">` : (!image ? fallbackIcon : '')}
+                ${logoMarkup}
             </div>
             <div class="playlist-title"><span class="home-marquee">${title}</span></div>
             ${subtitle ? `<div class="playlist-meta"><span class="home-marquee">${subtitle}</span></div>` : ''}
@@ -2059,9 +2127,12 @@ function renderHomeTrendingSongItem(item) {
     const itemType = (item.type || '').toString().toLowerCase();
     const itemTarget = (item.target || '').toString();
     const targetTrackMatch = itemTarget.match(/\/track\/(\d+)/i);
-    const deezerTrackId = (itemSource === 'deezer' && itemType === 'track' && item.id)
-        ? String(item.id)
-        : (targetTrackMatch ? targetTrackMatch[1] : '');
+    let deezerTrackId = '';
+    if (itemSource === 'deezer' && itemType === 'track' && item.id) {
+        deezerTrackId = String(item.id);
+    } else if (targetTrackMatch) {
+        deezerTrackId = targetTrackMatch[1];
+    }
     const previewUrl = (item.preview_url || item.previewUrl || item.preview || '').toString().trim();
     let spotifyTrackUrl = '';
     if (itemSource === 'spotify') {
@@ -2084,8 +2155,10 @@ function renderHomeTrendingSongItem(item) {
     if (deezerTrackId) {
         playAttrs.push(`data-deezer-id="${escapeHtml(deezerTrackId)}"`);
         if (deezerPlaybackContext) {
-            playAttrs.push(`data-stream-track-id="${escapeHtml(deezerPlaybackContext.streamTrackId)}"`);
-            playAttrs.push(`data-track-token="${escapeHtml(deezerPlaybackContext.trackToken)}"`);
+            playAttrs.push(
+                `data-stream-track-id="${escapeHtml(deezerPlaybackContext.streamTrackId)}"`,
+                `data-track-token="${escapeHtml(deezerPlaybackContext.trackToken)}"`
+            );
             if (deezerPlaybackContext.md5origin) {
                 playAttrs.push(`data-md5-origin="${escapeHtml(deezerPlaybackContext.md5origin)}"`);
             }
@@ -2195,9 +2268,9 @@ function renderDiscoveryItem(item) {
     `;
 }
 
-const renderTopGenresItem = window.HomeViewHelpers.renderTopGenresItem;
-const buildSpotifyBrowseClick = window.HomeViewHelpers.buildSpotifyBrowseClick;
-const buildHomeClick = window.HomeViewHelpers.buildHomeClick;
+const renderTopGenresItem = globalThis.HomeViewHelpers.renderTopGenresItem;
+const buildSpotifyBrowseClick = globalThis.HomeViewHelpers.buildSpotifyBrowseClick;
+const buildHomeClick = globalThis.HomeViewHelpers.buildHomeClick;
 
 function buildDiscoverClick(item, avatarImage, heroImage) {
     if (!item) {
@@ -2324,7 +2397,7 @@ function refreshCategoriesSection() {
     if (!row) {
         return;
     }
-    const rawDeezerItems = row.getAttribute('data-deezer-items');
+    const rawDeezerItems = row.dataset.deezerItems;
     const deezerItems = rawDeezerItems
         ? JSON.parse(decodeURIComponent(rawDeezerItems))
         : null;
@@ -2332,23 +2405,23 @@ function refreshCategoriesSection() {
         return;
     }
     const mergedItems = mergeSpotifyCategories(deezerItems, 14);
-    row.innerHTML = mergedItems.map(renderTopGenresItem).join('')
+    row.innerHTML = mergedItems.map((item) => renderTopGenresItem(item)).join('')
         + `<a class="top-genres-card top-genres-card--more" href="/Categories">View all</a>`;
 }
 
 function openTracklist(id, type) {
-    window.location.href = `/Tracklist?id=${id}&type=${encodeURIComponent(type)}`;
+    globalThis.location.href = `/Tracklist?id=${id}&type=${encodeURIComponent(type)}`;
 }
 
 function openSpotifyTracklist(id, type) {
-    window.location.href = `/Tracklist?id=${encodeURIComponent(id)}&type=${encodeURIComponent(type)}&source=spotify`;
+    globalThis.location.href = `/Tracklist?id=${encodeURIComponent(id)}&type=${encodeURIComponent(type)}&source=spotify`;
 }
 
-window.openSpotifyArtistFallback = window.HomeViewHelpers.openSpotifyArtistFallback;
-window.openSpotifyArtist = window.HomeViewHelpers.openSpotifyArtist;
+globalThis.openSpotifyArtistFallback = globalThis.HomeViewHelpers.openSpotifyArtistFallback;
+globalThis.openSpotifyArtist = globalThis.HomeViewHelpers.openSpotifyArtist;
 
 function openArtist(id) {
-    window.location.href = `/Artist?id=${id}&source=deezer`;
+    globalThis.location.href = `/Artist?id=${id}&source=deezer`;
 }
 
 function buildHomeChannelUrl(target, layout) {
@@ -2367,7 +2440,7 @@ function buildHomeChannelUrl(target, layout) {
 function openHomeChannel(target, layout) {
     const url = buildHomeChannelUrl(target, layout);
     if (url && url !== '#') {
-        window.location.href = url;
+        globalThis.location.href = url;
     }
 }
 
@@ -2391,7 +2464,7 @@ async function checkAutoLogin() {
         console.log('Connect response:', data);
         
         // EXACT PORT: Handle auto-login like deezspotag main.ts
-        if (data.autologin && data.singleUser && data.singleUser.hasStoredCredentials) {
+        if (data.autologin && data.singleUser?.hasStoredCredentials) {
             console.log('Auto-login required, attempting server-side auto-login...');
             await attemptAutoLogin();
         }
@@ -2440,7 +2513,7 @@ async function attemptAutoLogin() {
 
 // Load data when page loads
 document.addEventListener('DOMContentLoaded', async function() {
-    const urlParams = new URLSearchParams(window.location.search);
+    const urlParams = new URLSearchParams(globalThis.location.search);
     const isChannelPage = !!urlParams.get('channel');
     // EXACT PORT: Check auto-login first like deezspotag
     await checkAutoLogin();
@@ -2462,7 +2535,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (!card) {
             return;
         }
-        const key = card.getAttribute('data-spotify-item');
+        const key = card.dataset.spotifyItem;
         if (!key || !spotifyHomeItemCache.has(key)) {
             return;
         }
@@ -2482,7 +2555,7 @@ document.addEventListener('DOMContentLoaded', async function() {
 function scheduleSpotifyHomeFeedRefresh() {
     const homeSections = document.getElementById('home-sections');
     const autoEnabled = homeSections?.dataset.spotifyHomeAutorefresh === 'true';
-    const hours = parseInt(homeSections?.dataset.spotifyHomeRefreshHours || '2', 10);
+    const hours = Number.parseInt(homeSections?.dataset.spotifyHomeRefreshHours || '2', 10);
     if (!autoEnabled || Number.isNaN(hours) || hours < 2) {
         return;
     }

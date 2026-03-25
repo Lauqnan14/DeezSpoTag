@@ -4,15 +4,9 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.IO;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Library;
-
-[SuppressMessage(
-    "Security",
-    "S2077:SQL queries should not be vulnerable to injection attacks",
-    Justification = "Identifier interpolation here is restricted to internal table/column names in migrations; runtime values use SQL parameters.")]
 public sealed class LibraryDbService
 {
     private const string ArtistTable = "artist";

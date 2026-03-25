@@ -4,7 +4,6 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 
-#pragma warning disable CA1865
 namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class DeezerClient
@@ -471,7 +470,7 @@ public sealed class DeezerClient
         return false;
     }
 
-    private static List<string> ParseSyncedLyrics(JsonElement element) // NOSONAR
+    private static List<string> ParseSyncedLyrics(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Array)
         {
@@ -512,7 +511,7 @@ public sealed class DeezerClient
     {
         var lines = new List<string>();
         var trimmed = raw.Trim();
-        if (trimmed.StartsWith("[", StringComparison.Ordinal) && trimmed.Contains("lrc_timestamp", StringComparison.OrdinalIgnoreCase)) // NOSONAR
+        if (trimmed.StartsWith('[') && trimmed.Contains("lrc_timestamp", StringComparison.OrdinalIgnoreCase))
         {
             try
             {
@@ -529,7 +528,7 @@ public sealed class DeezerClient
 
         foreach (var rawLine in raw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            if (rawLine.StartsWith("[", StringComparison.Ordinal)) // NOSONAR
+            if (rawLine.StartsWith('['))
             {
                 lines.Add(rawLine);
                 continue;
@@ -589,7 +588,7 @@ public sealed class DeezerClient
         {
             timestamp = BuildLrcTimestamp(ms);
         }
-        else if (!timestamp.StartsWith("[", StringComparison.Ordinal)) // NOSONAR
+        else if (!timestamp.StartsWith('['))
         {
             timestamp = $"[{timestamp}]";
         }

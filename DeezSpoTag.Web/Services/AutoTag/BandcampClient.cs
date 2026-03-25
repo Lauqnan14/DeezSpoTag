@@ -37,11 +37,15 @@ public sealed class BandcampClient
         string searchFilter,
         CancellationToken cancellationToken)
     {
-        var normalizedFilter = string.Equals(searchFilter, "a", StringComparison.OrdinalIgnoreCase)
-            ? "a"
-            : string.Equals(searchFilter, "b", StringComparison.OrdinalIgnoreCase)
-                ? "b"
-                : "t";
+        var normalizedFilter = "t";
+        if (string.Equals(searchFilter, "a", StringComparison.OrdinalIgnoreCase))
+        {
+            normalizedFilter = "a";
+        }
+        else if (string.Equals(searchFilter, "b", StringComparison.OrdinalIgnoreCase))
+        {
+            normalizedFilter = "b";
+        }
 
         var payload = new
         {

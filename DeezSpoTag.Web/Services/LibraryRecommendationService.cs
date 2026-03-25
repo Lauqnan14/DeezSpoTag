@@ -1774,33 +1774,42 @@ public sealed class LibraryRecommendationService
             return string.Empty;
         }
 
-        if (Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri))
+        var trimmedValue = value.Trim();
+        if (Uri.TryCreate(trimmedValue, UriKind.Absolute, out var uri))
         {
-            var query = uri.Query.TrimStart('?');
-            foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            {
-                var parts = pair.Split('=', 2, StringSplitOptions.TrimEntries);
-                if (!string.Equals(parts[0], parameterName, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                return parts.Length == 2 ? parts[1] : string.Empty;
-            }
+            return TryGetQueryValueFromAbsoluteUri(uri, parameterName);
         }
-        else
+
+        return TryGetQueryValueFromRawText(trimmedValue, parameterName);
+    }
+
+    private static string TryGetQueryValueFromAbsoluteUri(Uri uri, string parameterName)
+    {
+        var query = uri.Query.TrimStart('?');
+        foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            var marker = $"{parameterName}=";
-            var markerIndex = value.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-            if (markerIndex >= 0)
+            var parts = pair.Split('=', 2, StringSplitOptions.TrimEntries);
+            if (string.Equals(parts[0], parameterName, StringComparison.OrdinalIgnoreCase))
             {
-                var start = markerIndex + marker.Length;
-                var end = value.IndexOf('&', start);
-                return end >= 0 ? value[start..end] : value[start..];
+                return parts.Length == 2 ? parts[1] : string.Empty;
             }
         }
 
         return string.Empty;
+    }
+
+    private static string TryGetQueryValueFromRawText(string value, string parameterName)
+    {
+        var marker = $"{parameterName}=";
+        var markerIndex = value.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (markerIndex < 0)
+        {
+            return string.Empty;
+        }
+
+        var start = markerIndex + marker.Length;
+        var end = value.IndexOf('&', start);
+        return end >= 0 ? value[start..end] : value[start..];
     }
 
     private static string DecodeQueryValue(string value)
@@ -1872,61 +1881,113 @@ public sealed class LibraryRecommendationService
         }
 
         var trimmed = value.Trim();
-        if (long.TryParse(trimmed, out _))
+        if (IsNumericIdentifier(trimmed))
         {
             return trimmed;
         }
 
-        const string deezerTrackPrefix = "deezer:track:";
-        if (trimmed.StartsWith(deezerTrackPrefix, StringComparison.OrdinalIgnoreCase))
+        if (TryExtractTrackIdFromDeezerTrackPrefix(trimmed, out var prefixedId))
         {
-            var raw = trimmed[deezerTrackPrefix.Length..];
-            var candidate = new string(raw.TakeWhile(char.IsDigit).ToArray());
-            if (long.TryParse(candidate, out _))
-            {
-                return candidate;
-            }
+            return prefixedId;
         }
 
-        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+        if (TryExtractTrackIdFromDeezerUri(trimmed, out var uriId))
         {
-            if (string.Equals(uri.Scheme, "deezer", StringComparison.OrdinalIgnoreCase)
-                && string.Equals(uri.Host, "track", StringComparison.OrdinalIgnoreCase))
-            {
-                var candidate = uri.AbsolutePath.Trim('/');
-                if (long.TryParse(candidate, out _))
-                {
-                    return candidate;
-                }
-            }
-
-            var segments = uri.AbsolutePath
-                .Split('/', StringSplitOptions.RemoveEmptyEntries);
-            for (var i = 0; i < segments.Length - 1; i++)
-            {
-                if (!segments[i].Equals("track", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                var candidate = segments[i + 1];
-                return long.TryParse(candidate, out _) ? candidate : string.Empty;
-            }
+            return uriId;
         }
 
-        const string deezerTrackMarker = "deezer.com/track/";
-        var markerIndex = trimmed.IndexOf(deezerTrackMarker, StringComparison.OrdinalIgnoreCase);
-        if (markerIndex >= 0)
+        if (TryExtractTrackIdFromTrackMarker(trimmed, out var markerId))
         {
-            var raw = trimmed[(markerIndex + deezerTrackMarker.Length)..];
-            var candidate = new string(raw.TakeWhile(char.IsDigit).ToArray());
-            if (long.TryParse(candidate, out _))
-            {
-                return candidate;
-            }
+            return markerId;
         }
 
         return string.Empty;
+    }
+
+    private static bool IsNumericIdentifier(string value)
+    {
+        return long.TryParse(value, out _);
+    }
+
+    private static bool TryExtractTrackIdFromDeezerTrackPrefix(string value, out string trackId)
+    {
+        trackId = string.Empty;
+        const string deezerTrackPrefix = "deezer:track:";
+        if (!value.StartsWith(deezerTrackPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var raw = value[deezerTrackPrefix.Length..];
+        var candidate = new string(raw.TakeWhile(char.IsDigit).ToArray());
+        if (!IsNumericIdentifier(candidate))
+        {
+            return false;
+        }
+
+        trackId = candidate;
+        return true;
+    }
+
+    private static bool TryExtractTrackIdFromDeezerUri(string value, out string trackId)
+    {
+        trackId = string.Empty;
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        if (string.Equals(uri.Scheme, "deezer", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(uri.Host, "track", StringComparison.OrdinalIgnoreCase))
+        {
+            var deezerPath = uri.AbsolutePath.Trim('/');
+            if (IsNumericIdentifier(deezerPath))
+            {
+                trackId = deezerPath;
+                return true;
+            }
+        }
+
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            if (!segments[i].Equals("track", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var candidate = segments[i + 1];
+            if (IsNumericIdentifier(candidate))
+            {
+                trackId = candidate;
+                return true;
+            }
+
+            return false;
+        }
+
+        return false;
+    }
+
+    private static bool TryExtractTrackIdFromTrackMarker(string value, out string trackId)
+    {
+        trackId = string.Empty;
+        const string deezerTrackMarker = "deezer.com/track/";
+        var markerIndex = value.IndexOf(deezerTrackMarker, StringComparison.OrdinalIgnoreCase);
+        if (markerIndex < 0)
+        {
+            return false;
+        }
+
+        var raw = value[(markerIndex + deezerTrackMarker.Length)..];
+        var candidate = new string(raw.TakeWhile(char.IsDigit).ToArray());
+        if (!IsNumericIdentifier(candidate))
+        {
+            return false;
+        }
+
+        trackId = candidate;
+        return true;
     }
 
     private async Task PersistRecognitionSourceLinksAsync(
@@ -2571,20 +2632,7 @@ public sealed class LibraryRecommendationService
 
     private static bool LooksLikeDeezerCoverHash(string value)
     {
-        if (value.Length != 32)
-        {
-            return false;
-        }
-
-        foreach (var ch in value)
-        {
-            if (!Uri.IsHexDigit(ch))
-            {
-                return false;
-            }
-        }
-
-        return true;
+        return value.Length == 32 && value.All(Uri.IsHexDigit);
     }
 
     private static string? FirstNonEmpty(params string?[] values)

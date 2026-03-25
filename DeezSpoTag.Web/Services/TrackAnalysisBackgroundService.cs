@@ -114,7 +114,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 var settings = await _settingsStore.LoadAsync();
                 if (settings.Enabled)
                 {
-                    await AnalyzeBatchAsync(settings.BatchSize, stoppingToken, stopWhenDisabled: true);
+                    await AnalyzeBatchAsync(settings.BatchSize, stopWhenDisabled: true, stoppingToken);
                 }
             }
             catch (Exception ex)
@@ -155,8 +155,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 var effectiveBatch = forceWhenDisabled ? batchSize : settings.BatchSize;
                 var processed = await AnalyzeBatchAsync(
                     Math.Clamp(effectiveBatch, 10, 500),
-                    cancellationToken,
-                    stopWhenDisabled: !forceWhenDisabled);
+                    stopWhenDisabled: !forceWhenDisabled,
+                    cancellationToken);
                 if (processed == 0)
                 {
                     break;
@@ -224,7 +224,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
     }
 
-    private async Task<int> AnalyzeBatchAsync(int batchSize, CancellationToken cancellationToken, bool stopWhenDisabled)
+    private async Task<int> AnalyzeBatchAsync(int batchSize, bool stopWhenDisabled, CancellationToken cancellationToken)
     {
         var tracks = await _repository.GetTracksForAnalysisAsync(batchSize, cancellationToken);
         if (tracks.Count == 0)
@@ -255,17 +255,9 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 break;
             }
 
-            if (stopWhenDisabled)
+            if (stopWhenDisabled && await ShouldStopForDisabledAnalysisAsync(cancellationToken))
             {
-                var settings = await _settingsStore.LoadAsync();
-                if (!settings.Enabled)
-                {
-                    _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                        DateTimeOffset.UtcNow,
-                        "info",
-                        "Vibe analysis halted (disabled)."));
-                    break;
-                }
+                break;
             }
 
             await _repository.MarkTrackAnalysisProcessingAsync(track.TrackId, track.LibraryId, cancellationToken);
@@ -307,6 +299,22 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
 
         return processedTracks;
+    }
+
+    private async Task<bool> ShouldStopForDisabledAnalysisAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var settings = await _settingsStore.LoadAsync();
+        if (settings.Enabled)
+        {
+            return false;
+        }
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            "Vibe analysis halted (disabled)."));
+        return true;
     }
 
     private static bool IsAnalysisCompleteStatus(string? status)

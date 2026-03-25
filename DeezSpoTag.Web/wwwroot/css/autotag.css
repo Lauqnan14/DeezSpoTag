@@ -840,7 +840,7 @@ body.autotag-col-resizing * {
     gap: 10px;
 }
 
-.checkbox-group label { /* NOSONAR */
+.checkbox-group label {
 }
 
 .checkbox-group input[type="checkbox"] {

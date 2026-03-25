@@ -424,97 +424,118 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             return new AppleMusicWrapperStatusSnapshot(StatusFailed, "Verification code is required.", _email, true, false);
         }
 
-        if (IsExternalModeEnabled())
+        if (!IsExternalModeEnabled())
         {
-            var currentStatus = GetStatus();
-            var wrapperAwaitingTwoFactor = currentStatus.NeedsTwoFactor ||
-                                           string.Equals(currentStatus.Status, StatusWaiting, StringComparison.OrdinalIgnoreCase);
-            if (!wrapperAwaitingTwoFactor && !IsHelperControlModeEnabled())
-            {
-                // In shared-control mode, wrapper can be waiting for 2FA before ports open.
-                // Probe the shared state file directly so 2FA submission remains valid.
-                wrapperAwaitingTwoFactor =
-                    ProbeSharedTwoFactorState(maxAttempts: 4, delayBetweenAttempts: TimeSpan.FromMilliseconds(75)) ==
-                    TwoFactorProbeState.Waiting;
-                if (wrapperAwaitingTwoFactor)
-                {
-                    lock (_sync)
-                    {
-                        _awaitingTwoFactor = true;
-                        _loginInProgress = true;
-                        _startedAt ??= DateTimeOffset.UtcNow;
-                    }
-                }
-            }
-            if (!wrapperAwaitingTwoFactor)
-            {
-                // Shared-control deployments can occasionally report a stale 2FA probe state
-                // right as the wrapper transitions into prompt mode. Accept 2FA while a login
-                // flow is still active instead of hard-failing the submission.
-                if (IsExternalLoginFlowActive())
-                {
-                    _logger.LogInformation(
-                        "Accepting Apple wrapper 2FA submission while probe reports not waiting. Status={Status}, LoginActive=true",
-                        currentStatus.Status);
-                }
-                else
-                {
-                    return new AppleMusicWrapperStatusSnapshot(
-                        StatusFailed,
-                        "Wrapper is not waiting for a two-factor code. Restart Apple Music login and try again.",
-                        _email,
-                        false,
-                        false);
-                }
-            }
-
-            var twoFactorResult = await WriteExternalTwoFactorAsync(code.Trim(), cancellationToken);
-            if (!twoFactorResult.Success)
-            {
-                var message = string.IsNullOrWhiteSpace(twoFactorResult.Error)
-                    ? "Failed to submit verification code to the wrapper."
-                    : twoFactorResult.Error;
-                lock (_sync)
-                {
-                    _status = new AppleMusicWrapperStatusSnapshot(
-                        StatusFailed,
-                        message,
-                        _email,
-                        true,
-                        false);
-                    _awaitingTwoFactor = false;
-                    _loginInProgress = false;
-                    _startedAt = null;
-                    _twoFactorSubmittedAt = null;
-                }
-                return _status;
-            }
-            lock (_sync)
-            {
-                _status = new AppleMusicWrapperStatusSnapshot(
-                    StatusWaiting,
-                    "Verification code submitted. Waiting for wrapper confirmation.",
-                    _email,
-                    true,
-                    false);
-                _awaitingTwoFactor = true;
-                _loginInProgress = true;
-                _startedAt = _startedAt ?? DateTimeOffset.UtcNow;
-                _twoFactorSubmittedAt = DateTimeOffset.UtcNow;
-                _lastTwoFactorProbeAt = null;
-                _lastTwoFactorProbeKnown = false;
-                _lastTwoFactorProbeResult = false;
-            }
-            // Wrapper confirmation can lag when container IO is busy; avoid timing out too aggressively.
-            return await WaitForTwoFactorCompletionAsync(TimeSpan.FromSeconds(75), cancellationToken);
+            return new AppleMusicWrapperStatusSnapshot(
+                StatusFailed,
+                "Internal Apple Music wrapper support has been removed. Use the external wrapper container.",
+                _email,
+                false,
+                false);
         }
 
-        return new AppleMusicWrapperStatusSnapshot(
-            StatusFailed,
-            "Internal Apple Music wrapper support has been removed. Use the external wrapper container.",
-            _email,
-            false,
-            false);
+        return await SubmitExternalTwoFactorAsync(code.Trim(), cancellationToken);
+    }
+
+    private async Task<AppleMusicWrapperStatusSnapshot> SubmitExternalTwoFactorAsync(string code, CancellationToken cancellationToken)
+    {
+        var currentStatus = GetStatus();
+        if (!TryEnsureWrapperAwaitingTwoFactor(currentStatus))
+        {
+            return new AppleMusicWrapperStatusSnapshot(
+                StatusFailed,
+                "Wrapper is not waiting for a two-factor code. Restart Apple Music login and try again.",
+                _email,
+                false,
+                false);
+        }
+
+        var twoFactorResult = await WriteExternalTwoFactorAsync(code, cancellationToken);
+        if (!twoFactorResult.Success)
+        {
+            return SetTwoFactorFailureState(twoFactorResult.Error);
+        }
+
+        SetTwoFactorSubmittedState();
+        // Wrapper confirmation can lag when container IO is busy; avoid timing out too aggressively.
+        return await WaitForTwoFactorCompletionAsync(TimeSpan.FromSeconds(75), cancellationToken);
+    }
+
+    private bool TryEnsureWrapperAwaitingTwoFactor(AppleMusicWrapperStatusSnapshot currentStatus)
+    {
+        var wrapperAwaitingTwoFactor = currentStatus.NeedsTwoFactor
+                                       || string.Equals(currentStatus.Status, StatusWaiting, StringComparison.OrdinalIgnoreCase);
+        if (!wrapperAwaitingTwoFactor && !IsHelperControlModeEnabled())
+        {
+            wrapperAwaitingTwoFactor = ProbeSharedTwoFactorState(maxAttempts: 4, delayBetweenAttempts: TimeSpan.FromMilliseconds(75))
+                                       == TwoFactorProbeState.Waiting;
+            if (wrapperAwaitingTwoFactor)
+            {
+                lock (_sync)
+                {
+                    _awaitingTwoFactor = true;
+                    _loginInProgress = true;
+                    _startedAt ??= DateTimeOffset.UtcNow;
+                }
+            }
+        }
+
+        if (wrapperAwaitingTwoFactor)
+        {
+            return true;
+        }
+
+        if (!IsExternalLoginFlowActive())
+        {
+            return false;
+        }
+
+        _logger.LogInformation(
+            "Accepting Apple wrapper 2FA submission while probe reports not waiting. Status={Status}, LoginActive=true",
+            currentStatus.Status);
+        return true;
+    }
+
+    private AppleMusicWrapperStatusSnapshot SetTwoFactorFailureState(string? error)
+    {
+        var message = string.IsNullOrWhiteSpace(error)
+            ? "Failed to submit verification code to the wrapper."
+            : error;
+        lock (_sync)
+        {
+            _status = new AppleMusicWrapperStatusSnapshot(
+                StatusFailed,
+                message,
+                _email,
+                true,
+                false);
+            _awaitingTwoFactor = false;
+            _loginInProgress = false;
+            _startedAt = null;
+            _twoFactorSubmittedAt = null;
+        }
+
+        return _status;
+    }
+
+    private void SetTwoFactorSubmittedState()
+    {
+        lock (_sync)
+        {
+            _status = new AppleMusicWrapperStatusSnapshot(
+                StatusWaiting,
+                "Verification code submitted. Waiting for wrapper confirmation.",
+                _email,
+                true,
+                false);
+            _awaitingTwoFactor = true;
+            _loginInProgress = true;
+            _startedAt = _startedAt ?? DateTimeOffset.UtcNow;
+            _twoFactorSubmittedAt = DateTimeOffset.UtcNow;
+            _lastTwoFactorProbeAt = null;
+            _lastTwoFactorProbeKnown = false;
+            _lastTwoFactorProbeResult = false;
+        }
     }
 
     private bool IsExternalLoginFlowActive()

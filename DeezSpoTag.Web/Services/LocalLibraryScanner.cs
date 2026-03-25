@@ -1206,9 +1206,7 @@ public sealed class LocalLibraryScanner
     private static long ComputeStableId(string input)
     {
         // Deterministic non-cryptographic identifier only; value is not used for security decisions.
-#pragma warning disable S4790
         var hash = SHA1.HashData(System.Text.Encoding.UTF8.GetBytes(input));
-#pragma warning restore S4790
         var raw = Math.Abs(BitConverter.ToInt64(hash, 0));
         // Keep IDs within JS safe integer range to avoid precision loss in the UI.
         return raw & ((1L << 53) - 1);

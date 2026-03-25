@@ -20,12 +20,6 @@ using TagLib;
 using IOFile = System.IO.File;
 using DownloadLyricsService = DeezSpoTag.Services.Download.Utils.LyricsService;
 
-#pragma warning disable CA1822
-#pragma warning disable CA1847
-#pragma warning disable CA1859
-#pragma warning disable CA1861
-#pragma warning disable CA1865
-#pragma warning disable CA1869
 namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class LocalAutoTagRunner : IAutoTagRunner
@@ -65,6 +59,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         RegexOptions.Compiled | RegexOptions.IgnoreCase,
         RegexTimeout);
     private static readonly TimeSpan MatchCacheTtl = TimeSpan.FromMinutes(15);
+    private static readonly JsonSerializerOptions CaseInsensitiveJsonOptions = new() { PropertyNameCaseInsensitive = true };
+    private static readonly char[] LyricsLineSeparators = ['\r', '\n'];
     private const int MaxCacheEntriesPerJob = 6000;
     private const string FlacExtension = ".flac";
     private const string TtmlExtension = ".ttml";
@@ -801,7 +797,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private async Task PopulatePlatformLyricsAsync( // NOSONAR
+    private async Task PopulatePlatformLyricsAsync(
         string platform,
         string filePath,
         AutoTagTrack track,
@@ -961,7 +957,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         };
     }
 
-    private async Task PopulateAppleLyricsAsync( // NOSONAR
+    private async Task PopulateAppleLyricsAsync(
         string filePath,
         AutoTagTrack track,
         AutoTagRunnerConfig config,
@@ -1075,7 +1071,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         var unsyncedLines = lyrics.UnsyncedLyrics
-            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Split(LyricsLineSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToList();
 
         if (unsyncedLines.Count == 0)
@@ -1235,7 +1231,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         };
     }
 
-    private static IEnumerable<string> EnumerateAudioFiles(string rootPath, bool includeSubfolders) // NOSONAR
+    private static IEnumerable<string> EnumerateAudioFiles(string rootPath, bool includeSubfolders)
     {
         var option = includeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
         return Directory.EnumerateFiles(rootPath, "*.*", option)
@@ -1256,7 +1252,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             || filename.EndsWith(" - tall_animated_artwork", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static IReadOnlyList<string> BuildEffectivePlatforms(AutoTagRunnerConfig config) // NOSONAR
+    private static List<string> BuildEffectivePlatforms(AutoTagRunnerConfig config)
     {
         return config.Platforms
             .Select(platform => platform?.Trim())
@@ -1266,7 +1262,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             .ToList();
     }
 
-    private async Task<AutoTagMatchResult?> MatchPlatformAsync( // NOSONAR
+    private async Task<AutoTagMatchResult?> MatchPlatformAsync(
         string platform,
         string filePath,
         AutoTagAudioInfo info,
@@ -1640,7 +1636,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         try
         {
-            var parsed = node.Deserialize<T>(new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); // NOSONAR
+            var parsed = node.Deserialize<T>(CaseInsensitiveJsonOptions);
             return parsed ?? fallback;
         }
         catch (Exception ex) when (ex is not OperationCanceledException) {
@@ -1653,7 +1649,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagAudioInfo info,
         bool enableShazamFallback,
         bool forceShazamMatch,
-        IDictionary<string, ShazamRecognitionInfo?> cache, // NOSONAR
+        Dictionary<string, ShazamRecognitionInfo?> cache,
         Action<string> logCallback,
         CancellationToken token)
     {
@@ -2703,7 +2699,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private Track BuildCoreTrack(AutoTagTrack track, string? separator, bool singleAlbumArtist) // NOSONAR
+    private static Track BuildCoreTrack(AutoTagTrack track, string? separator, bool singleAlbumArtist)
     {
         var artists = track.Artists.Count == 0 ? new List<string> { "Unknown Artist" } : track.Artists;
         var albumArtists = track.AlbumArtists.Count == 0 ? artists : track.AlbumArtists;
@@ -3534,7 +3530,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private Task ApplyCustomTagsAsync(string filePath, AutoTagTrack track, AutoTagRunnerConfig config, string platformId) // NOSONAR
+    private Task ApplyCustomTagsAsync(string filePath, AutoTagTrack track, AutoTagRunnerConfig config, string platformId)
     {
         if (config.Tags.Count == 0)
         {
@@ -3904,7 +3900,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         };
     }
 
-    private static bool HasMp4Tag(TagLib.File file, SupportedTag supportedTag, AutoTagRunnerConfig config, string platformId) // NOSONAR
+    private static bool HasMp4Tag(TagLib.File file, SupportedTag supportedTag, AutoTagRunnerConfig config, string platformId)
     {
         return supportedTag switch
         {
@@ -4564,7 +4560,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        if (!lyricsLines.Any(line => line.StartsWith("[", StringComparison.Ordinal)))
+        if (!lyricsLines.Any(line => line.StartsWith('[')))
         {
             return;
         }
@@ -4769,7 +4765,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             }
 
             return NormalizeLyricsLines(
-                lrcFromTtml.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+                lrcFromTtml.Split(LyricsLineSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
                 requireTimestamp: true);
         }
         catch
@@ -4832,7 +4828,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 continue;
             }
 
-            if (requireTimestamp && !trimmed.StartsWith("[", StringComparison.Ordinal)) // NOSONAR
+            if (requireTimestamp && !trimmed.StartsWith('['))
             {
                 continue;
             }
@@ -4913,7 +4909,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return $"{(int)ts.TotalHours:00}:{ts.Minutes:00}:{ts.Seconds:00}.{ts.Milliseconds:000}";
     }
 
-    private static void ApplyAlbumArt(TagLib.File file, string imagePath) // NOSONAR
+    private static void ApplyAlbumArt(TagLib.File file, string imagePath)
     {
         if (!IOFile.Exists(imagePath))
         {
@@ -4952,7 +4948,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             };
         }
 
-        public static void SetMp4Field(TagLib.File file, SupportedTag tag, List<string> values, AutoTagRunnerConfig config, string platformId) // NOSONAR
+        public static void SetMp4Field(TagLib.File file, SupportedTag tag, List<string> values, AutoTagRunnerConfig config, string platformId)
         {
             if (!ShouldOverwriteTag(config, tag) && HasTag(file, ".mp4", tag, config, platformId))
             {
@@ -5003,7 +4999,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             }
         }
 
-        public static void SetMp4Raw(TagLib.File file, string rawName, string[] values) // NOSONAR
+        public static void SetMp4Raw(TagLib.File file, string rawName, string[] values)
         {
             var apple = (TagLib.Mpeg4.AppleTag)file.GetTag(TagTypes.Apple, true);
             var normalized = Mp4RawTagNameNormalizer.Normalize(rawName);
@@ -5248,7 +5244,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private static void ApplyAppleCustomTags(TagLib.Mpeg4.AppleTag tag, List<CustomTagWrite> writes, AutoTagRunnerConfig config, string separator, HashSet<string> enabledTags) // NOSONAR
+    private static void ApplyAppleCustomTags(TagLib.Mpeg4.AppleTag tag, List<CustomTagWrite> writes, AutoTagRunnerConfig config, string separator, HashSet<string> enabledTags)
     {
         foreach (var write in writes)
         {
@@ -5423,7 +5419,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private static string ResolveArtistSeparator(AutoTagRunnerConfig config, string filePath) // NOSONAR
+    private static string ResolveArtistSeparator(AutoTagRunnerConfig config, string filePath)
     {
         if (config.Separators == null)
         {
@@ -5444,12 +5440,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return config.Separators.Id3 ?? "";
     }
 
-    private static List<string> ReadAppleDashBox(TagLib.Mpeg4.AppleTag tag, string name) // NOSONAR
+    private static List<string> ReadAppleDashBox(TagLib.Mpeg4.AppleTag tag, string name)
     {
         return AppleDashBoxReflectionHelper.ReadValues(tag, name);
     }
 
-    private static void TrySetAppleDashBox(TagLib.Mpeg4.AppleTag? tag, string name, string[] values) // NOSONAR
+    private static void TrySetAppleDashBox(TagLib.Mpeg4.AppleTag? tag, string name, string[] values)
     {
         AppleDashBoxReflectionHelper.TrySetValues(tag, name, values);
     }
@@ -5522,57 +5518,57 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private sealed class AutoTagRunnerConfig
     {
         public List<string> Platforms { get; set; } = new();
-        public string? DownloadTagSource { get; set; } // NOSONAR
-        public string? Path { get; set; } // NOSONAR
+        public string? DownloadTagSource { get; set; }
+        public string? Path { get; set; }
         public List<string> Tags { get; set; } = new();
         public List<string> OverwriteTags { get; set; } = new();
-        public AutoTagSeparators? Separators { get; set; } // NOSONAR
+        public AutoTagSeparators? Separators { get; set; }
         public bool Overwrite { get; set; } = false;
         public bool MergeGenres { get; set; } = true;
-        public bool AlbumArtFile { get; set; } // NOSONAR
-        public bool Camelot { get; set; } // NOSONAR
-        public bool ShortTitle { get; set; } // NOSONAR
+        public bool AlbumArtFile { get; set; }
+        public bool Camelot { get; set; }
+        public bool ShortTitle { get; set; }
         public double Strictness { get; set; } = 0.7;
-        public bool MatchDuration { get; set; } // NOSONAR
+        public bool MatchDuration { get; set; }
         public int MaxDurationDifference { get; set; } = 30;
-        public bool MatchById { get; set; } // NOSONAR
+        public bool MatchById { get; set; }
         public bool EnableShazam { get; set; } = true;
-        public bool ForceShazam { get; set; } // NOSONAR
+        public bool ForceShazam { get; set; }
         public string? ConflictResolution { get; set; } = ShazamPlatform;
-        public bool SkipTagged { get; set; } // NOSONAR
+        public bool SkipTagged { get; set; }
         public bool IncludeSubfolders { get; set; } = true;
-        public bool Multiplatform { get; set; } // NOSONAR
-        public bool ParseFilename { get; set; } // NOSONAR
+        public bool Multiplatform { get; set; }
+        public bool ParseFilename { get; set; }
         public string? FilenameTemplate { get; set; } = "%artists% - %title%";
-        public bool OnlyYear { get; set; } // NOSONAR
+        public bool OnlyYear { get; set; }
         public bool Id3v24 { get; set; } = true;
-        public int TrackNumberLeadingZeroes { get; set; } // NOSONAR
+        public int TrackNumberLeadingZeroes { get; set; }
         public string StylesOptions { get; set; } = "default";
         public MultipleMatchesSort MultipleMatches { get; set; } = MultipleMatchesSort.Default;
-        public string? TitleRegex { get; set; } // NOSONAR
-        public JsonObject? Custom { get; set; } // NOSONAR
-        public AutoTagStylesCustomTag? StylesCustomTag { get; set; } // NOSONAR
-        public string? Id3CommLang { get; set; } // NOSONAR
+        public string? TitleRegex { get; set; }
+        public JsonObject? Custom { get; set; }
+        public AutoTagStylesCustomTag? StylesCustomTag { get; set; }
+        public string? Id3CommLang { get; set; }
         public bool WriteLrc { get; set; } = true;
-        public bool CapitalizeGenres { get; set; } // NOSONAR
-        public TechnicalTagSettings? Technical { get; set; } // NOSONAR
-        public string? ProfileId { get; set; } // NOSONAR
-        public string? ProfileName { get; set; } // NOSONAR
+        public bool CapitalizeGenres { get; set; }
+        public TechnicalTagSettings? Technical { get; set; }
+        public string? ProfileId { get; set; }
+        public string? ProfileName { get; set; }
     }
 
     private sealed record ShazamEnrichmentResult(bool UsedShazam, string? Error, bool IsFatal);
 
     private sealed class AutoTagSeparators
     {
-        public string? Id3 { get; set; } // NOSONAR
-        public string? Vorbis { get; set; } // NOSONAR
-        public string? Mp4 { get; set; } // NOSONAR
+        public string? Id3 { get; set; }
+        public string? Vorbis { get; set; }
+        public string? Mp4 { get; set; }
     }
 
     private sealed class AutoTagStylesCustomTag
     {
-        public string? Id3 { get; set; } // NOSONAR
-        public string? Vorbis { get; set; } // NOSONAR
-        public string? Mp4 { get; set; } // NOSONAR
+        public string? Id3 { get; set; }
+        public string? Vorbis { get; set; }
+        public string? Mp4 { get; set; }
     }
 }

@@ -11,6 +11,13 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public sealed class BandcampSearchApiController : ControllerBase
 {
     private const string BandcampSource = "bandcamp";
+    private const string TrackType = "track";
+    private const string AlbumType = "album";
+    private const string ArtistType = "artist";
+    private const string PlaylistType = "playlist";
+    private const string TrackFilter = "t";
+    private const string AlbumFilter = "a";
+    private const string ArtistFilter = "b";
     private readonly BandcampClient _bandcampClient;
     private readonly ILogger<BandcampSearchApiController> _logger;
 
@@ -36,7 +43,7 @@ public sealed class BandcampSearchApiController : ControllerBase
 
         limit = Math.Clamp(limit, 1, 50);
         var normalizedType = NormalizeType(type);
-        if (normalizedType == "playlist")
+        if (normalizedType == PlaylistType)
         {
             return Ok(new
             {
@@ -50,9 +57,9 @@ public sealed class BandcampSearchApiController : ControllerBase
 
         var filter = normalizedType switch
         {
-            "album" => "a",
-            "artist" => "b",
-            _ => "t"
+            AlbumType => AlbumFilter,
+            ArtistType => ArtistFilter,
+            _ => TrackFilter
         };
 
         try
@@ -62,25 +69,25 @@ public sealed class BandcampSearchApiController : ControllerBase
                 .Take(limit)
                 .ToList();
 
-            if (normalizedType == "artist")
+            if (normalizedType == ArtistType)
             {
                 results = results
                     .Where(result => !result.IsLabel)
                     .ToList();
             }
 
-            var tracks = normalizedType is null or "track"
-                ? results.Where(result => string.Equals(result.Type, "t", StringComparison.OrdinalIgnoreCase))
+            var tracks = normalizedType is null or TrackType
+                ? results.Where(result => string.Equals(result.Type, TrackFilter, StringComparison.OrdinalIgnoreCase))
                     .Select(MapTrack)
                     .ToList()
                 : new List<object>();
-            var albums = normalizedType is null or "album"
-                ? results.Where(result => string.Equals(result.Type, "a", StringComparison.OrdinalIgnoreCase))
+            var albums = normalizedType is null or AlbumType
+                ? results.Where(result => string.Equals(result.Type, AlbumFilter, StringComparison.OrdinalIgnoreCase))
                     .Select(MapAlbum)
                     .ToList()
                 : new List<object>();
-            var artists = normalizedType is null or "artist"
-                ? results.Where(result => string.Equals(result.Type, "b", StringComparison.OrdinalIgnoreCase) && !result.IsLabel)
+            var artists = normalizedType is null or ArtistType
+                ? results.Where(result => string.Equals(result.Type, ArtistFilter, StringComparison.OrdinalIgnoreCase) && !result.IsLabel)
                     .Select(MapArtist)
                     .ToList()
                 : new List<object>();
@@ -118,13 +125,13 @@ public sealed class BandcampSearchApiController : ControllerBase
         return new
         {
             source = BandcampSource,
-            type = "track",
+            type = TrackType,
             name = result.Name ?? string.Empty,
             artist = result.BandName ?? string.Empty,
             album = result.AlbumName ?? string.Empty,
             image = result.ImageUrl ?? string.Empty,
             bandcampId = result.Id.ToString(CultureInfo.InvariantCulture),
-            bandcampType = "track",
+            bandcampType = TrackType,
             bandcampUrl = url,
             externalUrl = url
         };
@@ -136,12 +143,12 @@ public sealed class BandcampSearchApiController : ControllerBase
         return new
         {
             source = BandcampSource,
-            type = "album",
+            type = AlbumType,
             name = result.Name ?? string.Empty,
             artist = result.BandName ?? string.Empty,
             image = result.ImageUrl ?? string.Empty,
             bandcampId = result.Id.ToString(CultureInfo.InvariantCulture),
-            bandcampType = "album",
+            bandcampType = AlbumType,
             bandcampUrl = url,
             externalUrl = url
         };
@@ -153,11 +160,11 @@ public sealed class BandcampSearchApiController : ControllerBase
         return new
         {
             source = BandcampSource,
-            type = "artist",
+            type = ArtistType,
             name = result.Name ?? string.Empty,
             image = result.ImageUrl ?? string.Empty,
             bandcampId = result.BandId.ToString(CultureInfo.InvariantCulture),
-            bandcampType = "artist",
+            bandcampType = ArtistType,
             bandcampUrl = url,
             externalUrl = url
         };
@@ -177,7 +184,7 @@ public sealed class BandcampSearchApiController : ControllerBase
                 return absoluteRoot.ToString();
             }
 
-            var relative = result.ItemUrlPath.StartsWith("/", StringComparison.Ordinal)
+            var relative = result.ItemUrlPath.StartsWith('/')
                 ? result.ItemUrlPath
                 : $"/{result.ItemUrlPath}";
             if (Uri.TryCreate(absoluteRoot, relative, out var combined))
@@ -200,10 +207,10 @@ public sealed class BandcampSearchApiController : ControllerBase
 
         return type.Trim().ToLowerInvariant() switch
         {
-            "track" => "track",
-            "album" => "album",
-            "artist" => "artist",
-            "playlist" => "playlist",
+            TrackType => TrackType,
+            AlbumType => AlbumType,
+            ArtistType => ArtistType,
+            PlaylistType => PlaylistType,
             _ => null
         };
     }

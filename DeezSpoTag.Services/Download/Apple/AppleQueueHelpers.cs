@@ -510,56 +510,20 @@ public static class AppleQueueHelpers
                 cancellationToken);
             if (!string.IsNullOrWhiteSpace(albumArtwork))
             {
-                AppleArtworkCache.Set(cacheKey, albumArtwork, new MemoryCacheEntryOptions
-                {
-                    AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(1),
-                    Size = 1
-                });
+                CacheArtistArtwork(cacheKey, albumArtwork);
                 return albumArtwork;
             }
 
-            using var response = await client.GetAsync(url, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+            var pageArtwork = await TryResolveItunesArtistSearchPageArtworkAsync(
+                client,
+                url,
+                normalizedArtist,
+                size,
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(pageArtwork))
             {
-                return null;
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            if (!doc.RootElement.TryGetProperty(ResultsKey, out var results) || results.ValueKind != JsonValueKind.Array)
-            {
-                return null;
-            }
-
-            foreach (var entry in results.EnumerateArray())
-            {
-                var candidateArtist = TryReadItunesString(entry, ArtistNameKey);
-                if (string.IsNullOrWhiteSpace(candidateArtist)
-                    || !IsLikelySameArtist(normalizedArtist, NormalizeLookupToken(candidateArtist)))
-                {
-                    continue;
-                }
-
-                var artistLinkUrl = TryReadItunesString(entry, "artistLinkUrl");
-                if (string.IsNullOrWhiteSpace(artistLinkUrl))
-                {
-                    continue;
-                }
-
-                var pageArtwork = await TryResolveItunesArtistPageArtworkAsync(
-                    client,
-                    artistLinkUrl,
-                    size,
-                    cancellationToken);
-                if (!string.IsNullOrWhiteSpace(pageArtwork))
-                {
-                    AppleArtworkCache.Set(cacheKey, pageArtwork, new MemoryCacheEntryOptions
-                    {
-                        AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(1),
-                        Size = 1
-                    });
-                    return pageArtwork;
-                }
+                CacheArtistArtwork(cacheKey, pageArtwork);
+                return pageArtwork;
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -568,6 +532,73 @@ public static class AppleQueueHelpers
         }
 
         return null;
+    }
+
+    private static void CacheArtistArtwork(string cacheKey, string artworkUrl)
+    {
+        AppleArtworkCache.Set(cacheKey, artworkUrl, new MemoryCacheEntryOptions
+        {
+            AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(1),
+            Size = 1
+        });
+    }
+
+    private static async Task<string?> TryResolveItunesArtistSearchPageArtworkAsync(
+        HttpClient client,
+        string searchUrl,
+        string normalizedArtist,
+        int size,
+        CancellationToken cancellationToken)
+    {
+        using var response = await client.GetAsync(searchUrl, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (!doc.RootElement.TryGetProperty(ResultsKey, out var results) || results.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        foreach (var entry in results.EnumerateArray())
+        {
+            if (!TryResolveItunesArtistLink(entry, normalizedArtist, out var artistLinkUrl))
+            {
+                continue;
+            }
+
+            var pageArtwork = await TryResolveItunesArtistPageArtworkAsync(
+                client,
+                artistLinkUrl,
+                size,
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(pageArtwork))
+            {
+                return pageArtwork;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryResolveItunesArtistLink(
+        JsonElement entry,
+        string normalizedArtist,
+        out string artistLinkUrl)
+    {
+        artistLinkUrl = string.Empty;
+        var candidateArtist = TryReadItunesString(entry, ArtistNameKey);
+        if (string.IsNullOrWhiteSpace(candidateArtist)
+            || !IsLikelySameArtist(normalizedArtist, NormalizeLookupToken(candidateArtist)))
+        {
+            return false;
+        }
+
+        artistLinkUrl = TryReadItunesString(entry, "artistLinkUrl") ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(artistLinkUrl);
     }
 
     private static async Task<string?> TryResolveItunesArtistAlbumArtworkAsync(

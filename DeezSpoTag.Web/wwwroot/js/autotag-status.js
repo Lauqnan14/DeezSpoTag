@@ -8,7 +8,7 @@
     const STATUS_RUNNING = "running";
     const STATUS_COMPLETED = "completed";
     const STATUS_FAILED = "failed";
-    const STATUS_CANCELED = "canceled"; // NOSONAR
+    const STATUS_CANCELED = "canceled";
     const pollIntervalMs = 2000;
     const weekDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     let pollTimer = null;
@@ -230,7 +230,7 @@
         if (!Array.isArray(statusHistory) || !statusHistory.length) {
             return null;
         }
-        return statusHistory[statusHistory.length - 1] || null; // NOSONAR
+        return statusHistory[statusHistory.length - 1] || null;
     }
 
     function renderStatusPanelForArchive(summary, archive) {
@@ -276,7 +276,7 @@
 
         if (status === STATUS_RUNNING) {
             bar.classList.add("bg-info", "progress-bar-striped", "progress-bar-animated");
-            bar.style.width = progress !== null ? `${Math.round(progress * 100)}%` : "100%"; // NOSONAR
+            bar.style.width = progress !== null ? `${Math.round(progress * 100)}%` : "100%";
         } else if (status === STATUS_COMPLETED) {
             bar.classList.add("bg-success");
             bar.style.width = "100%";
@@ -662,7 +662,7 @@
         }
     }
 
-    async function pollJob() { // NOSONAR
+    async function pollJob() {
         try {
             let jobId = localStorage.getItem(JOB_KEY);
             try {
@@ -738,7 +738,7 @@
                 if (job.status === STATUS_RUNNING) {
                     await refreshHistoryIfSelectedLiveRun();
                 }
-            } catch (error) { // NOSONAR
+            } catch (error) {
                 updateStatus(jobId, STATUS_ERROR);
                 updateProgressBar({ status: STATUS_FAILED });
             }
@@ -969,7 +969,7 @@
                 handle.setAttribute("tabindex", "-1");
                 header.appendChild(handle);
 
-                const startResize = (event) => { // NOSONAR
+                const startResize = (event) => {
                     if (event.button !== 0) {
                         return;
                     }
@@ -1023,7 +1023,7 @@
                     globalThis.addEventListener("pointercancel", onPointerUp);
                 };
 
-                header.addEventListener("pointerdown", (event) => { // NOSONAR
+                header.addEventListener("pointerdown", (event) => {
                     if (event.button !== 0) {
                         return;
                     }
@@ -1034,7 +1034,7 @@
                     }
                 });
 
-                handle.addEventListener("pointerdown", (event) => { // NOSONAR
+                handle.addEventListener("pointerdown", (event) => {
                     startResize(event);
                 });
             });
@@ -1202,7 +1202,7 @@
         return container;
     }
 
-    async function showTagDiff(path, platform) { // NOSONAR
+    async function showTagDiff(path, platform) {
         const jobId = state.selectedRunId || state.liveJobId || localStorage.getItem(JOB_KEY);
         if (!jobId) {
             showToast("No AutoTag job available for diff.", "warning");
@@ -1217,7 +1217,7 @@
                 query.set("platform", platform);
             }
             const response = await fetch(`/api/autotag/jobs/${encodeURIComponent(jobId)}/tag-diff?${query.toString()}`);
-            if (!response.ok) { // NOSONAR
+            if (!response.ok) {
                 let payload = null;
                 try {
                     payload = await response.json();

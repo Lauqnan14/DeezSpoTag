@@ -14,8 +14,6 @@ using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Utils;
 using DeezSpoTag.Web.Services.CoverPort;
 
-#pragma warning disable CA1822
-#pragma warning disable CA1859
 namespace DeezSpoTag.Web.Services;
 
 internal static class AutoTagLiterals
@@ -47,6 +45,7 @@ internal static class AutoTagLiterals
     internal const string DiscogsPlatform = "discogs";
     internal const string LastFmPlatform = "lastfm";
     internal const string BpmSupremePlatform = "bpmsupreme";
+    internal const string MultiArtistSeparatorKey = "multiArtistSeparator";
 }
 
 public abstract class AutoTagRunState
@@ -151,6 +150,8 @@ public sealed class AutoTagPlatformDiffSnapshot
 
 public class AutoTagService
 {
+    private readonly record struct EnrichmentBuildContext(string RunIntent, string JobId);
+
     private readonly ConcurrentDictionary<string, AutoTagJob> _jobs = new();
     private readonly ConcurrentDictionary<string, byte> _activeJobIds = new();
     private readonly ConcurrentDictionary<string, string> _activeJobStages = new(StringComparer.OrdinalIgnoreCase);
@@ -734,7 +735,7 @@ public class AutoTagService
     }
 
     private static AutoTagTagDiff? TryResolveTagDiff(
-        IDictionary<string, AutoTagTagDiff>? tagDiffs, // NOSONAR
+        Dictionary<string, AutoTagTagDiff>? tagDiffs,
         string normalizedPath,
         string rawPath,
         string? platform)
@@ -850,7 +851,7 @@ public class AutoTagService
         };
     }
 
-    private static Dictionary<string, string> ComputeRetainedSources( // NOSONAR
+    private static Dictionary<string, string> ComputeRetainedSources(
         AutoTagTagSnapshot? baseline,
         AutoTagTagSnapshot finalSnapshot,
         IReadOnlyList<AutoTagPlatformDiffSnapshot> completed)
@@ -908,7 +909,7 @@ public class AutoTagService
         }
     }
 
-    private static string? ResolveValueSource<T>( // NOSONAR
+    private static string? ResolveValueSource<T>(
         T? finalValue,
         T? baselineValue,
         IReadOnlyList<AutoTagPlatformDiffSnapshot> completed,
@@ -1315,7 +1316,14 @@ public class AutoTagService
         var shouldRunEnrichment = ShouldRunEnrichmentForIntent(runIntent);
         var enrichmentSkipReason = string.Empty;
         if (shouldRunEnrichment
-            && TryBuildEnrichmentStage(root, platformCaps, eligiblePlatforms, runIntent, job.Id, out var enrichmentStage, out enrichmentSkipReason, out var enrichmentStrippedKeys))
+            && TryBuildEnrichmentStage(
+                root,
+                platformCaps,
+                eligiblePlatforms,
+                new EnrichmentBuildContext(runIntent, job.Id),
+                out var enrichmentStage,
+                out enrichmentSkipReason,
+                out var enrichmentStrippedKeys))
         {
             stages.Add(enrichmentStage);
             AppendStageSchemaLog(job, AutoTagLiterals.EnrichmentStage, enrichmentStrippedKeys);
@@ -1442,54 +1450,7 @@ public class AutoTagService
         }
 
         var settings = _settingsService.LoadSettings();
-        var options = new AutoTagOrganizerOptions
-        {
-            IncludeSubfolders = ReadBool(folderUniformity, "includeSubfolders") ?? true,
-            MoveMisplacedFiles = ReadBool(folderUniformity, "moveMisplacedFiles") ?? true,
-            MergeIntoExistingDestinationFolders = ReadBool(folderUniformity, "mergeIntoExistingDestinationFolders") != false,
-            RenameFilesToTemplate = ReadBool(folderUniformity, "renameFilesToTemplate") != false,
-            RemoveEmptyFolders = ReadBool(folderUniformity, "removeEmptyFolders") != false,
-            ResolveSameTrackQualityConflicts = ReadBool(folderUniformity, "resolveSameTrackQualityConflicts") != false,
-            KeepBothOnUnresolvedConflicts = ReadBool(folderUniformity, "keepBothOnUnresolvedConflicts") != false,
-            OnlyMoveWhenTagged = ReadBool(folderUniformity, "onlyMoveWhenTagged") == true,
-            OnlyReorganizeAlbumsWithFullTrackSets = ReadBool(folderUniformity, "onlyReorganizeAlbumsWithFullTrackSets") == true,
-            SkipCompilationFolders = ReadBool(folderUniformity, "skipCompilationFolders") == true,
-            SkipVariousArtistsFolders = ReadBool(folderUniformity, "skipVariousArtistsFolders") == true,
-            GenerateReconciliationReport = ReadBool(folderUniformity, "generateReconciliationReport") == true,
-            UseShazamForUntaggedFiles = ReadBool(folderUniformity, "useShazamForUntaggedFiles") == true,
-            DuplicateConflictPolicy = folderUniformity["duplicateConflictPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.DuplicateConflictKeepBest,
-            ArtworkPolicy = folderUniformity["artworkPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.ArtworkPolicyPreserveExisting,
-            LyricsPolicy = folderUniformity["lyricsPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.LyricsPolicyMerge,
-            UsePrimaryArtistFoldersOverride = ReadBool(folderUniformity, "usePrimaryArtistFolders")
-                ?? settings.Tags?.SingleAlbumArtist,
-            MultiArtistSeparatorOverride = string.IsNullOrWhiteSpace(folderUniformity["multiArtistSeparator"]?.GetValue<string>())
-                ? settings.Tags?.MultiArtistSeparator
-                : folderUniformity["multiArtistSeparator"]!.GetValue<string>().Trim(),
-            CreateArtistFolderOverride = ReadBool(folderUniformity, "createArtistFolder")
-                ?? settings.CreateArtistFolder,
-            ArtistNameTemplateOverride = string.IsNullOrWhiteSpace(folderUniformity["artistNameTemplate"]?.GetValue<string>())
-                ? settings.ArtistNameTemplate
-                : folderUniformity["artistNameTemplate"]!.GetValue<string>().Trim(),
-            CreateAlbumFolderOverride = ReadBool(folderUniformity, "createAlbumFolder")
-                ?? settings.CreateAlbumFolder,
-            AlbumNameTemplateOverride = string.IsNullOrWhiteSpace(folderUniformity["albumNameTemplate"]?.GetValue<string>())
-                ? settings.AlbumNameTemplate
-                : folderUniformity["albumNameTemplate"]!.GetValue<string>().Trim(),
-            CreateCDFolderOverride = ReadBool(folderUniformity, "createCDFolder")
-                ?? settings.CreateCDFolder,
-            CreateStructurePlaylistOverride = ReadBool(folderUniformity, "createStructurePlaylist")
-                ?? settings.CreateStructurePlaylist,
-            CreateSingleFolderOverride = ReadBool(folderUniformity, "createSingleFolder")
-                ?? settings.CreateSingleFolder,
-            CreatePlaylistFolderOverride = ReadBool(folderUniformity, "createPlaylistFolder")
-                ?? settings.CreatePlaylistFolder,
-            PlaylistNameTemplateOverride = string.IsNullOrWhiteSpace(folderUniformity["playlistNameTemplate"]?.GetValue<string>())
-                ? settings.PlaylistNameTemplate
-                : folderUniformity["playlistNameTemplate"]!.GetValue<string>().Trim(),
-            IllegalCharacterReplacerOverride = string.IsNullOrWhiteSpace(folderUniformity["illegalCharacterReplacer"]?.GetValue<string>())
-                ? settings.IllegalCharacterReplacer
-                : folderUniformity["illegalCharacterReplacer"]!.GetValue<string>().Trim()
-        };
+        var options = BuildFolderUniformityOptions(folderUniformity, settings);
 
         AppendLog(job, $"enhancement workflow: folder uniformity starting ({rootPaths.Count} path(s)).");
         foreach (var path in rootPaths)
@@ -2006,12 +1967,65 @@ public class AutoTagService
         }
     }
 
+    private static AutoTagOrganizerOptions BuildFolderUniformityOptions(
+        JsonObject folderUniformity,
+        DeezSpoTagSettings settings)
+    {
+        return new AutoTagOrganizerOptions
+        {
+            IncludeSubfolders = ReadBool(folderUniformity, "includeSubfolders") ?? true,
+            MoveMisplacedFiles = ReadBool(folderUniformity, "moveMisplacedFiles") ?? true,
+            MergeIntoExistingDestinationFolders = ReadBool(folderUniformity, "mergeIntoExistingDestinationFolders") != false,
+            RenameFilesToTemplate = ReadBool(folderUniformity, "renameFilesToTemplate") != false,
+            RemoveEmptyFolders = ReadBool(folderUniformity, "removeEmptyFolders") != false,
+            ResolveSameTrackQualityConflicts = ReadBool(folderUniformity, "resolveSameTrackQualityConflicts") != false,
+            KeepBothOnUnresolvedConflicts = ReadBool(folderUniformity, "keepBothOnUnresolvedConflicts") != false,
+            OnlyMoveWhenTagged = ReadBool(folderUniformity, "onlyMoveWhenTagged") == true,
+            OnlyReorganizeAlbumsWithFullTrackSets = ReadBool(folderUniformity, "onlyReorganizeAlbumsWithFullTrackSets") == true,
+            SkipCompilationFolders = ReadBool(folderUniformity, "skipCompilationFolders") == true,
+            SkipVariousArtistsFolders = ReadBool(folderUniformity, "skipVariousArtistsFolders") == true,
+            GenerateReconciliationReport = ReadBool(folderUniformity, "generateReconciliationReport") == true,
+            UseShazamForUntaggedFiles = ReadBool(folderUniformity, "useShazamForUntaggedFiles") == true,
+            DuplicateConflictPolicy = folderUniformity["duplicateConflictPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.DuplicateConflictKeepBest,
+            ArtworkPolicy = folderUniformity["artworkPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.ArtworkPolicyPreserveExisting,
+            LyricsPolicy = folderUniformity["lyricsPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.LyricsPolicyMerge,
+            UsePrimaryArtistFoldersOverride = ReadBool(folderUniformity, "usePrimaryArtistFolders")
+                ?? settings.Tags?.SingleAlbumArtist,
+            MultiArtistSeparatorOverride = string.IsNullOrWhiteSpace(folderUniformity[AutoTagLiterals.MultiArtistSeparatorKey]?.GetValue<string>())
+                ? settings.Tags?.MultiArtistSeparator
+                : folderUniformity[AutoTagLiterals.MultiArtistSeparatorKey]!.GetValue<string>().Trim(),
+            CreateArtistFolderOverride = ReadBool(folderUniformity, "createArtistFolder")
+                ?? settings.CreateArtistFolder,
+            ArtistNameTemplateOverride = string.IsNullOrWhiteSpace(folderUniformity["artistNameTemplate"]?.GetValue<string>())
+                ? settings.ArtistNameTemplate
+                : folderUniformity["artistNameTemplate"]!.GetValue<string>().Trim(),
+            CreateAlbumFolderOverride = ReadBool(folderUniformity, "createAlbumFolder")
+                ?? settings.CreateAlbumFolder,
+            AlbumNameTemplateOverride = string.IsNullOrWhiteSpace(folderUniformity["albumNameTemplate"]?.GetValue<string>())
+                ? settings.AlbumNameTemplate
+                : folderUniformity["albumNameTemplate"]!.GetValue<string>().Trim(),
+            CreateCDFolderOverride = ReadBool(folderUniformity, "createCDFolder")
+                ?? settings.CreateCDFolder,
+            CreateStructurePlaylistOverride = ReadBool(folderUniformity, "createStructurePlaylist")
+                ?? settings.CreateStructurePlaylist,
+            CreateSingleFolderOverride = ReadBool(folderUniformity, "createSingleFolder")
+                ?? settings.CreateSingleFolder,
+            CreatePlaylistFolderOverride = ReadBool(folderUniformity, "createPlaylistFolder")
+                ?? settings.CreatePlaylistFolder,
+            PlaylistNameTemplateOverride = string.IsNullOrWhiteSpace(folderUniformity["playlistNameTemplate"]?.GetValue<string>())
+                ? settings.PlaylistNameTemplate
+                : folderUniformity["playlistNameTemplate"]!.GetValue<string>().Trim(),
+            IllegalCharacterReplacerOverride = string.IsNullOrWhiteSpace(folderUniformity["illegalCharacterReplacer"]?.GetValue<string>())
+                ? settings.IllegalCharacterReplacer
+                : folderUniformity["illegalCharacterReplacer"]!.GetValue<string>().Trim()
+        };
+    }
+
     private bool TryBuildEnrichmentStage(
         JsonObject baseRoot,
         Dictionary<string, PlatformTagCapabilities> platformCaps,
         IReadOnlyList<string> eligiblePlatforms,
-        string runIntent,
-        string jobId,
+        EnrichmentBuildContext context,
         out AutoTagStageConfig stage,
         out string skipReason,
         out List<string> strippedKeys)
@@ -2034,7 +2048,7 @@ public class AutoTagService
         }
 
         var excludedPlatform = string.Equals(
-            NormalizeRunIntent(runIntent),
+            NormalizeRunIntent(context.RunIntent),
             AutoTagLiterals.RunIntentDownloadEnrichment,
             StringComparison.OrdinalIgnoreCase)
             ? ResolveDownloadSourcePlatform(baseRoot)
@@ -2072,7 +2086,7 @@ public class AutoTagService
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = true
         });
-        var configPath = WriteRuntimeConfigFile(jobId, AutoTagLiterals.EnrichmentStage, configJson);
+        var configPath = WriteRuntimeConfigFile(context.JobId, AutoTagLiterals.EnrichmentStage, configJson);
         stage = new AutoTagStageConfig(AutoTagLiterals.EnrichmentStage, configPath, filtered.Count);
         return true;
     }
@@ -2612,7 +2626,7 @@ public class AutoTagService
         }
     }
 
-    private AutoTagOrganizerOptions LoadOrganizerOptions(string configPath) // NOSONAR
+    private static AutoTagOrganizerOptions LoadOrganizerOptions(string configPath)
     {
         try
         {
@@ -2649,8 +2663,8 @@ public class AutoTagService
                     organizerNode?["usePrimaryArtistFolders"]?.GetValue<bool?>()
                     ?? tagsNode?["singleAlbumArtist"]?.GetValue<bool?>(),
                 MultiArtistSeparatorOverride =
-                    organizerNode?["multiArtistSeparator"]?.GetValue<string>()
-                    ?? tagsNode?["multiArtistSeparator"]?.GetValue<string>()
+                    organizerNode?[AutoTagLiterals.MultiArtistSeparatorKey]?.GetValue<string>()
+                    ?? tagsNode?[AutoTagLiterals.MultiArtistSeparatorKey]?.GetValue<string>()
             };
 
             if ((organizerNode?["moveTaggedPath"] == null || string.IsNullOrWhiteSpace(options.MoveTaggedPath))
@@ -3168,7 +3182,7 @@ public class AutoTagService
         }
     }
 
-    private async Task<string> InjectPlatformDefaultsAsync(string configJson) // NOSONAR
+    private async Task<string> InjectPlatformDefaultsAsync(string configJson)
     {
         try
         {
@@ -3390,7 +3404,7 @@ public class AutoTagService
         }
     }
 
-    private async Task<string> InjectPlatformAuthAsync(string configJson) // NOSONAR
+    private async Task<string> InjectPlatformAuthAsync(string configJson)
     {
         try
         {
@@ -3641,7 +3655,7 @@ public class AutoTagService
         SaveJob(job);
     }
 
-    private void TryCaptureTagDiff(AutoTagJob job, TaggingStatusWrap status) // NOSONAR
+    private void TryCaptureTagDiff(AutoTagJob job, TaggingStatusWrap status)
     {
         if (!TryResolveCaptureMode(status, out var normalizedStatus, out var captureBefore, out var captureAfter))
         {
@@ -4606,7 +4620,7 @@ public class AutoTagService
         return (entries, skippedMalformed);
     }
 
-    private IEnumerable<string> EnumerateHistoryRoots() // NOSONAR
+    private HashSet<string> EnumerateHistoryRoots()
     {
         var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 

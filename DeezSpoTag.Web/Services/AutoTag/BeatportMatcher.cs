@@ -13,7 +13,7 @@ public sealed class BeatportMatcher
         _logger = logger;
     }
 
-    public async Task<AutoTagMatchResult?> MatchAsync(AutoTagAudioInfo info, AutoTagMatchingConfig config, BeatportMatchConfig beatportConfig, bool includeReleaseMeta, bool matchById, CancellationToken cancellationToken) // NOSONAR
+    public async Task<AutoTagMatchResult?> MatchAsync(AutoTagAudioInfo info, AutoTagMatchingConfig config, BeatportMatchConfig beatportConfig, bool includeReleaseMeta, bool matchById, CancellationToken cancellationToken)
     {
         var byId = await MatchByEmbeddedIdAsync(info, beatportConfig, includeReleaseMeta, matchById, cancellationToken);
         if (byId != null)

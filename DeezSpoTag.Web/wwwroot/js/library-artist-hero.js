@@ -95,7 +95,7 @@ function initializeArtistBiographyToggle() {
         updateArtistBiographyToggle(false);
     });
 
-    window.addEventListener('resize', () => {
+    globalThis.addEventListener('resize', () => {
         if (artistBiographyResizeAnimationFrame) {
             cancelAnimationFrame(artistBiographyResizeAnimationFrame);
         }
@@ -258,7 +258,7 @@ function setSpotifyArtistBiography(biography) {
     updateArtistBiographyToggle(true);
 }
 
-window.refreshArtistBiographyClamp = function refreshArtistBiographyClamp(forceCollapse = false) {
+globalThis.refreshArtistBiographyClamp = function refreshArtistBiographyClamp(forceCollapse = false) {
     initializeArtistBiographyToggle();
     updateArtistBiographyToggle(forceCollapse);
 };

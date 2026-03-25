@@ -3,7 +3,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Data.Sqlite;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -14,11 +13,6 @@ using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Library;
-
-[SuppressMessage(
-    "Security",
-    "S2077:SQL queries should not be vulnerable to injection attacks",
-    Justification = "Dynamic SQL uses internally controlled schema identifiers and whitelisted clauses; data values are bound through parameters.")]
 public sealed class LibraryRepository
 {
     private sealed record ExistingTrackRecord(

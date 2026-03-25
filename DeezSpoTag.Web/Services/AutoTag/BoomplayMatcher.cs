@@ -3,7 +3,6 @@ using System.Text.RegularExpressions;
 using System.Text;
 using DeezSpoTag.Web.Services;
 
-#pragma warning disable CA1859
 namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class BoomplayMatcher
@@ -102,7 +101,7 @@ public sealed class BoomplayMatcher
         return await TryMatchByQueryAsync(info, config, queries, searchLimit, cancellationToken);
     }
 
-    private async Task<AutoTagMatchResult?> TryMatchByIdAsync(AutoTagAudioInfo info, CancellationToken cancellationToken) // NOSONAR
+    private async Task<AutoTagMatchResult?> TryMatchByIdAsync(AutoTagAudioInfo info, CancellationToken cancellationToken)
     {
         foreach (var id in CollectCandidateIds(info))
         {
@@ -157,7 +156,7 @@ public sealed class BoomplayMatcher
         return TrySelectBySimilarityWithFallback(info, config, tracks);
     }
 
-    private async Task<AutoTagMatchResult?> TryMatchByQueryAsync( // NOSONAR
+    private async Task<AutoTagMatchResult?> TryMatchByQueryAsync(
         AutoTagAudioInfo info,
         AutoTagMatchingConfig config,
         IReadOnlyList<string> queries,
@@ -179,7 +178,7 @@ public sealed class BoomplayMatcher
         return TrySelectBySimilarityWithFallback(info, config, allTracks);
     }
 
-    private static IReadOnlyList<string> CollectCandidateIds(AutoTagAudioInfo info)
+    private static List<string> CollectCandidateIds(AutoTagAudioInfo info)
     {
         var candidateIds = new List<string>();
         candidateIds.AddRange(ReadTagValues(info, TrackIdTagKeys)
@@ -426,7 +425,7 @@ public sealed class BoomplayMatcher
                || value.StartsWith("unknown ", StringComparison.Ordinal);
     }
 
-    private static IReadOnlyList<string> BuildQueries(AutoTagAudioInfo info) // NOSONAR
+    private static List<string> BuildQueries(AutoTagAudioInfo info)
     {
         var normalizedArtist = Normalize(info.Artist);
         if (string.IsNullOrWhiteSpace(normalizedArtist) && info.Artists.Count > 0)
@@ -460,7 +459,7 @@ public sealed class BoomplayMatcher
         return queries;
     }
 
-    private static IReadOnlyList<string> BuildTitleCandidates(string sourceTitle, string artist) // NOSONAR
+    private static List<string> BuildTitleCandidates(string sourceTitle, string artist)
     {
         var candidates = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

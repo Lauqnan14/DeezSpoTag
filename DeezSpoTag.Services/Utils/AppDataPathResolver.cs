@@ -60,23 +60,6 @@ public static class AppDataPathResolver
             string.Equals(candidate, normalized, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static bool HasSpotifyAuthState(string dataRoot)
-    {
-        var platformSpotifyPath = Path.Join(dataRoot, "autotag", "spotify.json");
-        if (File.Exists(platformSpotifyPath))
-        {
-            return true;
-        }
-
-        var usersRoot = Path.Join(dataRoot, "spotify", "users");
-        if (!Directory.Exists(usersRoot))
-        {
-            return false;
-        }
-
-        return Directory.EnumerateFiles(usersRoot, "spotify-auth.json", SearchOption.AllDirectories).Any();
-    }
-
     private static void TryMigrateLegacyWorkersData(string sourcePath, string targetPath)
     {
         try

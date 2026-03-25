@@ -48,7 +48,7 @@ public sealed class SpotifyClient
         return summaries.Select(ToTrackInfo).ToList();
     }
 
-    public async Task<SpotifyTrackInfo> EnrichTrackWithPathfinderAsync(SpotifyTrackInfo track, CancellationToken cancellationToken) // NOSONAR
+    public async Task<SpotifyTrackInfo> EnrichTrackWithPathfinderAsync(SpotifyTrackInfo track, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(track.TrackId))
         {

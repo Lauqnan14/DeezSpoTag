@@ -12,7 +12,7 @@ public sealed class ShazamMatcher
         _recognitionService = recognitionService;
     }
 
-    public Task<AutoTagMatchResult?> MatchAsync( // NOSONAR
+    public Task<AutoTagMatchResult?> MatchAsync(
         string filePath,
         AutoTagAudioInfo info,
         ShazamMatchConfig config,

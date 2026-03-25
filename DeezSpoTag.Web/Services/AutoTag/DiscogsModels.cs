@@ -1,7 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-#pragma warning disable CA1846
 namespace DeezSpoTag.Web.Services.AutoTag;
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
@@ -176,7 +175,7 @@ public sealed class DiscogsNullableIntConverter : JsonConverter<int?>
                 continue;
             }
 
-            if (int.TryParse(value.Substring(i, 4), out parsed)) // NOSONAR
+            if (int.TryParse(value.AsSpan(i, 4), out parsed))
             {
                 return parsed;
             }

@@ -494,8 +494,6 @@ static void ConfigureCsrfCookieMiddleware(WebApplication app)
             if (!string.IsNullOrWhiteSpace(tokens.RequestToken))
             {
                 // This request token cookie is intentionally readable by client JS so it can populate X-CSRF-TOKEN.
-#pragma warning disable S2092
-#pragma warning disable S3330
                 context.Response.Cookies.Append(
                     CsrfRequestTokenCookieName,
                     tokens.RequestToken,
@@ -506,16 +504,10 @@ static void ConfigureCsrfCookieMiddleware(WebApplication app)
                         Secure = context.Request.IsHttps,
                         Path = "/"
                     });
-#pragma warning restore S3330
-#pragma warning restore S2092
             }
             else
             {
-#pragma warning disable S2092
-#pragma warning disable S3330
                 context.Response.Cookies.Delete(CsrfRequestTokenCookieName, new CookieOptions { Path = "/" });
-#pragma warning restore S3330
-#pragma warning restore S2092
             }
         }
 
@@ -986,6 +978,10 @@ static void RegisterCoreApplicationServices(IServiceCollection services, IConfig
     services.AddSingleton<DeezSpoTag.Services.Library.AudioQualitySignalAnalyzer>();
     services.AddSingleton<DeezSpoTag.Web.Services.SpectrogramService>();
     services.AddSingleton<DeezSpoTag.Web.Services.LibraryConfigStore>();
+    services.AddSingleton<DeezSpoTag.Web.Services.AutoTagFolderScopeDependencies>(sp =>
+        new DeezSpoTag.Web.Services.AutoTagFolderScopeDependencies(
+            sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
+            sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryConfigStore>()));
     services.AddSingleton<DeezSpoTag.Web.Services.LocalLibraryScanner>();
     services.AddSingleton<DeezSpoTag.Web.Services.LibraryScanRunner>();
     services.AddSingleton<DeezSpoTag.Web.Services.DeezerArtistImageService>();

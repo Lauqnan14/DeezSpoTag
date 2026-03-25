@@ -1,6 +1,5 @@
 using System.Globalization;
 
-#pragma warning disable CA1861
 namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class DeezerMatcher
@@ -22,7 +21,7 @@ public sealed class DeezerMatcher
         _logger = logger;
     }
 
-    public async Task<AutoTagMatchResult?> MatchAsync(AutoTagAudioInfo info, AutoTagMatchingConfig config, DeezerConfig deezerConfig, CancellationToken cancellationToken) // NOSONAR
+    public async Task<AutoTagMatchResult?> MatchAsync(AutoTagAudioInfo info, AutoTagMatchingConfig config, DeezerConfig deezerConfig, CancellationToken cancellationToken)
     {
         _client.SetArl(deezerConfig.Arl);
         var effectiveInfo = BuildEffectiveInfo(info);
@@ -169,7 +168,7 @@ public sealed class DeezerMatcher
         return new AutoTagMatchResult { Accuracy = accuracy, Track = ToAutoTagTrack(track) };
     }
 
-    private async Task<AutoTagMatchResult?> TryMatchByMetadataAsync( // NOSONAR
+    private async Task<AutoTagMatchResult?> TryMatchByMetadataAsync(
         AutoTagAudioInfo info,
         AutoTagMatchingConfig config,
         DeezerConfig deezerConfig,
@@ -349,7 +348,7 @@ public sealed class DeezerMatcher
         return string.Join(' ', cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
     }
 
-    private async Task ExtendTrackAsync(DeezerTrackInfo track, CancellationToken cancellationToken) // NOSONAR
+    private async Task ExtendTrackAsync(DeezerTrackInfo track, CancellationToken cancellationToken)
     {
         await ExtendTrackMetadataAsync(track, cancellationToken);
         await ExtendLyricsAsync(track, cancellationToken);
@@ -539,10 +538,12 @@ public sealed class DeezerMatcher
             .Select(static value => value?.Trim())
             .FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value));
 
+    private static readonly char[] LyricsLineSeparators = ['\r', '\n'];
+
     private static List<string> SplitLyricsLines(string value)
     {
         return value
-            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) // NOSONAR
+            .Split(LyricsLineSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToList();
     }
 

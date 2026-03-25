@@ -48,7 +48,7 @@ public class DuplicateCleanerService
     private readonly record struct RunSummaryContext(
         DateTimeOffset StartedUtc,
         bool UseDuplicatesFolder,
-        string DuplicatesFolderName,
+        string ActiveDuplicatesFolderName,
         bool UseShazamForIdentity,
         int FolderCount);
 
@@ -217,7 +217,7 @@ public class DuplicateCleanerService
         var runContext = new RunSummaryContext(
             StartedUtc: DateTimeOffset.UtcNow,
             UseDuplicatesFolder: resolvedOptions.UseDuplicatesFolder,
-            DuplicatesFolderName: resolvedOptions.DuplicatesFolderName,
+            ActiveDuplicatesFolderName: resolvedOptions.DuplicatesFolderName,
             UseShazamForIdentity: effectiveUseShazam,
             FolderCount: folders.Count);
 
@@ -228,7 +228,7 @@ public class DuplicateCleanerService
             FinishedUtc: null,
             DurationMs: null,
             UseDuplicatesFolder: runContext.UseDuplicatesFolder,
-            DuplicatesFolderName: runContext.DuplicatesFolderName,
+            DuplicatesFolderName: runContext.ActiveDuplicatesFolderName,
             UseShazamForIdentity: runContext.UseShazamForIdentity,
             FolderCount: runContext.FolderCount,
             FilesScanned: 0,
@@ -239,7 +239,7 @@ public class DuplicateCleanerService
 
         var result = new DuplicateCleanResult
         {
-            DuplicatesFolderName = runContext.DuplicatesFolderName,
+            DuplicatesFolderName = runContext.ActiveDuplicatesFolderName,
             UsedShazamForIdentity = runContext.UseShazamForIdentity
         };
 
@@ -438,43 +438,15 @@ public class DuplicateCleanerService
             _logger.LogDebug(ex, "Duplicate cleaner failed to read metadata for {Path}.", path);
         }
 
-        var shazamTrackId = string.Empty;
-        var shazamIsrc = string.Empty;
-        var shazamTitle = string.Empty;
-        var shazamArtists = Array.Empty<string>();
-        var shouldUseShazam = useShazamForIdentity && ShouldUseShazamIdentity(isrc, title, artists, durationMs);
-        if (shouldUseShazam)
-        {
-            usedShazamLookup = true;
-            try
-            {
-                var recognition = _shazamRecognitionService.Recognize(path, cancellationToken);
-                if (recognition != null)
-                {
-                    shazamTrackId = Normalize(recognition.TrackId);
-                    shazamIsrc = Normalize(recognition.Isrc);
-                    shazamTitle = Normalize(recognition.Title);
-                    shazamArtists = recognition.Artists
-                        .Select(Normalize)
-                        .Where(static value => !string.IsNullOrWhiteSpace(value))
-                        .Distinct(StringComparer.Ordinal)
-                        .OrderBy(static value => value, StringComparer.Ordinal)
-                        .ToArray();
-                    if (shazamArtists.Length == 0 && !string.IsNullOrWhiteSpace(recognition.Artist))
-                    {
-                        shazamArtists = new[] { Normalize(recognition.Artist) };
-                    }
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Duplicate cleaner Shazam recognition failed for {Path}.", path);
-            }
-        }
+        var shazamData = ResolveShazamIdentity(
+            path,
+            isrc,
+            title,
+            artists,
+            durationMs,
+            useShazamForIdentity,
+            cancellationToken);
+        usedShazamLookup = shazamData.UsedLookup;
 
         return new DuplicateCandidate(
             FullPath: path,
@@ -490,13 +462,64 @@ public class DuplicateCleanerService
             TrackNumber: trackNumber,
             DiscNumber: discNumber,
             DurationMs: durationMs,
-            ShazamTrackId: shazamTrackId,
-            ShazamIsrc: shazamIsrc,
-            ShazamTitle: shazamTitle,
-            ShazamArtists: shazamArtists);
+            ShazamTrackId: shazamData.TrackId,
+            ShazamIsrc: shazamData.Isrc,
+            ShazamTitle: shazamData.Title,
+            ShazamArtists: shazamData.Artists);
     }
 
-    private static IReadOnlyList<List<int>> BuildCandidateComponents(IReadOnlyList<DuplicateCandidate> candidates)
+    private (string TrackId, string Isrc, string Title, string[] Artists, bool UsedLookup) ResolveShazamIdentity(
+        string path,
+        string isrc,
+        string title,
+        string[] artists,
+        int? durationMs,
+        bool useShazamForIdentity,
+        CancellationToken cancellationToken)
+    {
+        if (!useShazamForIdentity || !ShouldUseShazamIdentity(isrc, title, artists, durationMs))
+        {
+            return (string.Empty, string.Empty, string.Empty, Array.Empty<string>(), false);
+        }
+
+        try
+        {
+            var recognition = _shazamRecognitionService.Recognize(path, cancellationToken);
+            if (recognition is null)
+            {
+                return (string.Empty, string.Empty, string.Empty, Array.Empty<string>(), true);
+            }
+
+            var normalizedArtists = recognition.Artists
+                .Select(Normalize)
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(static value => value, StringComparer.Ordinal)
+                .ToArray();
+            if (normalizedArtists.Length == 0 && !string.IsNullOrWhiteSpace(recognition.Artist))
+            {
+                normalizedArtists = new[] { Normalize(recognition.Artist) };
+            }
+
+            return (
+                Normalize(recognition.TrackId),
+                Normalize(recognition.Isrc),
+                Normalize(recognition.Title),
+                normalizedArtists,
+                true);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Duplicate cleaner Shazam recognition failed for {Path}.", path);
+            return (string.Empty, string.Empty, string.Empty, Array.Empty<string>(), true);
+        }
+    }
+
+    private static List<List<int>> BuildCandidateComponents(IReadOnlyList<DuplicateCandidate> candidates)
     {
         var byKey = new Dictionary<string, List<int>>(StringComparer.Ordinal);
         for (var index = 0; index < candidates.Count; index++)
@@ -553,12 +576,28 @@ public class DuplicateCleanerService
             yield break;
         }
 
-        var adjacency = new Dictionary<int, List<int>>();
+        var adjacency = BuildComponentAdjacency(component, candidates);
+        var visited = new HashSet<int>();
         foreach (var index in component)
         {
-            adjacency[index] = new List<int>();
-        }
+            if (!visited.Add(index) || adjacency[index].Count == 0)
+            {
+                continue;
+            }
 
+            var cluster = CollectCluster(index, adjacency, visited);
+            if (cluster.Count > 1)
+            {
+                yield return cluster;
+            }
+        }
+    }
+
+    private static Dictionary<int, List<int>> BuildComponentAdjacency(
+        IReadOnlyList<int> component,
+        IReadOnlyList<DuplicateCandidate> candidates)
+    {
+        var adjacency = component.ToDictionary(index => index, _ => new List<int>());
         for (var i = 0; i < component.Count; i++)
         {
             var leftIndex = component[i];
@@ -575,35 +614,28 @@ public class DuplicateCleanerService
             }
         }
 
-        var visited = new HashSet<int>();
-        foreach (var index in component)
+        return adjacency;
+    }
+
+    private static List<int> CollectCluster(
+        int startIndex,
+        IReadOnlyDictionary<int, List<int>> adjacency,
+        HashSet<int> visited)
+    {
+        var cluster = new List<int>();
+        var queue = new Queue<int>();
+        queue.Enqueue(startIndex);
+        while (queue.Count > 0)
         {
-            if (!visited.Add(index) || adjacency[index].Count == 0)
+            var current = queue.Dequeue();
+            cluster.Add(current);
+            foreach (var next in adjacency[current].Where(visited.Add))
             {
-                continue;
-            }
-
-            var cluster = new List<int>();
-            var queue = new Queue<int>();
-            queue.Enqueue(index);
-            while (queue.Count > 0)
-            {
-                var current = queue.Dequeue();
-                cluster.Add(current);
-                foreach (var next in adjacency[current])
-                {
-                    if (visited.Add(next))
-                    {
-                        queue.Enqueue(next);
-                    }
-                }
-            }
-
-            if (cluster.Count > 1)
-            {
-                yield return cluster;
+                queue.Enqueue(next);
             }
         }
+
+        return cluster;
     }
 
     private static IEnumerable<string> BuildGroupingKeys(DuplicateCandidate candidate)
@@ -761,7 +793,7 @@ public class DuplicateCleanerService
             FinishedUtc: finishedUtc,
             DurationMs: durationMs,
             UseDuplicatesFolder: runContext.UseDuplicatesFolder,
-            DuplicatesFolderName: runContext.DuplicatesFolderName,
+            DuplicatesFolderName: runContext.ActiveDuplicatesFolderName,
             UseShazamForIdentity: runContext.UseShazamForIdentity,
             FolderCount: runContext.FolderCount,
             FilesScanned: result.FilesScanned,
@@ -771,7 +803,7 @@ public class DuplicateCleanerService
             ErrorMessage: errorMessage);
     }
 
-    private static IReadOnlyList<string> BuildExcludedRoots(string root, string duplicatesFolderName)
+    private static List<string> BuildExcludedRoots(string root, string duplicatesFolderName)
     {
         var results = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -867,7 +899,7 @@ public class DuplicateCleanerService
         return (int)Math.Round(durationMs / 2000d, MidpointRounding.AwayFromZero);
     }
 
-    private static IEnumerable<string> ResolveArtists(Tag tag)
+    private static string[] ResolveArtists(Tag tag)
     {
         var albumArtists = tag.AlbumArtists ?? Array.Empty<string>();
         if (albumArtists.Any(static value => !string.IsNullOrWhiteSpace(value)))

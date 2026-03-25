@@ -14,6 +14,9 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Authorize]
 public class AutoTagEnhancementController : ControllerBase
 {
+    private const string RunningStatus = "running";
+    private const string NoLibraryFoldersMessage = "No enabled music library folders are available for folder uniformity.";
+    private static readonly IReadOnlyList<string> NoLibraryFoldersErrors = new[] { NoLibraryFoldersMessage };
     private static readonly object FolderUniformityStateLock = new();
     private static FolderUniformityRunState? _folderUniformityRun;
 
@@ -31,8 +34,7 @@ public class AutoTagEnhancementController : ControllerBase
         RegexOptions.Compiled | RegexOptions.CultureInvariant,
         TimeSpan.FromMilliseconds(250));
 
-    private readonly LibraryRepository _libraryRepository;
-    private readonly LibraryConfigStore _libraryConfigStore;
+    private readonly AutoTagFolderScopeDependencies _folderScopeDependencies;
     private readonly AutoTagLibraryOrganizer _libraryOrganizer;
     private readonly QualityScannerService _qualityScannerService;
     private readonly DuplicateCleanerService _duplicateCleanerService;
@@ -41,8 +43,7 @@ public class AutoTagEnhancementController : ControllerBase
     private readonly AutoTagProfileResolutionService _profileResolutionService;
 
     public AutoTagEnhancementController(
-        LibraryRepository libraryRepository,
-        LibraryConfigStore libraryConfigStore,
+        AutoTagFolderScopeDependencies folderScopeDependencies,
         AutoTagLibraryOrganizer libraryOrganizer,
         QualityScannerService qualityScannerService,
         DuplicateCleanerService duplicateCleanerService,
@@ -50,8 +51,7 @@ public class AutoTagEnhancementController : ControllerBase
         LyricsRefreshQueueService lyricsRefreshQueueService,
         AutoTagProfileResolutionService profileResolutionService)
     {
-        _libraryRepository = libraryRepository;
-        _libraryConfigStore = libraryConfigStore;
+        _folderScopeDependencies = folderScopeDependencies;
         _libraryOrganizer = libraryOrganizer;
         _qualityScannerService = qualityScannerService;
         _duplicateCleanerService = duplicateCleanerService;
@@ -63,7 +63,7 @@ public class AutoTagEnhancementController : ControllerBase
     private sealed class FolderUniformityRunState
     {
         public required string JobId { get; init; }
-        public string Status { get; set; } = "running";
+        public string Status { get; set; } = RunningStatus;
         public string Phase { get; set; } = "Preparing scope";
         public bool RunOrganizer { get; set; }
         public bool RunDedupe { get; set; }
@@ -155,7 +155,7 @@ public class AutoTagEnhancementController : ControllerBase
         CancellationToken cancellationToken)
     {
         request ??= new EnhancementFolderUniformityRequest();
-        var payload = await ExecuteFolderUniformityAsync(request, cancellationToken, runState: null);
+        var payload = await ExecuteFolderUniformityAsync(request, runState: null, cancellationToken);
         if (!string.IsNullOrWhiteSpace(payload.ValidationError))
         {
             return BadRequest(payload.ValidationError);
@@ -173,7 +173,7 @@ public class AutoTagEnhancementController : ControllerBase
         lock (FolderUniformityStateLock)
         {
             if (_folderUniformityRun != null
-                && string.Equals(_folderUniformityRun.Status, "running", StringComparison.OrdinalIgnoreCase))
+                && string.Equals(_folderUniformityRun.Status, RunningStatus, StringComparison.OrdinalIgnoreCase))
             {
                 return Ok(new
                 {
@@ -186,11 +186,11 @@ public class AutoTagEnhancementController : ControllerBase
             runState = new FolderUniformityRunState
             {
                 JobId = Guid.NewGuid().ToString("N"),
-                Status = "running",
+                Status = RunningStatus,
                 Phase = "Preparing scope",
                 PercentComplete = 0
             };
-            _folderUniformityRun = runState;
+            SetFolderUniformityRun(runState);
         }
 
         _ = Task.Run(() => RunFolderUniformityBackgroundAsync(runState, request));
@@ -229,7 +229,7 @@ public class AutoTagEnhancementController : ControllerBase
     {
         try
         {
-            var payload = await ExecuteFolderUniformityAsync(request, CancellationToken.None, runState);
+            var payload = await ExecuteFolderUniformityAsync(request, runState, CancellationToken.None);
             UpdateFolderUniformityState(runState.JobId, state =>
             {
                 state.Status = payload.Success ? "completed" : "error";
@@ -283,15 +283,69 @@ public class AutoTagEnhancementController : ControllerBase
 
     private async Task<FolderUniformityResultPayload> ExecuteFolderUniformityAsync(
         EnhancementFolderUniformityRequest request,
-        CancellationToken cancellationToken,
-        FolderUniformityRunState? runState)
+        FolderUniformityRunState? runState,
+        CancellationToken cancellationToken)
     {
         request ??= new EnhancementFolderUniformityRequest();
         ApplyFolderUniformityDefaultsFromSettings(request, _settingsService.LoadSettings());
         var runOrganizer = request.EnforceFolderStructure != false;
         var runDedupe = request.RunDedupe != false;
+        var organizerOptions = BuildFolderUniformityOrganizerOptions(request);
+        var options = BuildFolderUniformityOptionsSnapshot(request, organizerOptions, runOrganizer, runDedupe);
+        if (!runOrganizer && !runDedupe)
+        {
+            return BuildFolderUniformityDisabledResult(runState?.JobId, options, runOrganizer, runDedupe);
+        }
 
-        var organizerOptions = new AutoTagOrganizerOptions
+        var enabledFolders = await ResolveEnabledMusicFoldersAsync(request, cancellationToken);
+        if (enabledFolders.Count == 0)
+        {
+            return BuildFolderUniformityNoFoldersResult(runState?.JobId, options, runOrganizer, runDedupe);
+        }
+
+        var execution = new FolderUniformityExecutionState();
+        var totalSteps = CalculateTotalSteps(runOrganizer, runDedupe, enabledFolders.Count);
+        InitializeFolderUniformityExecutionState(runState?.JobId, options, enabledFolders.Count, totalSteps, runOrganizer, runDedupe);
+
+        if (runOrganizer)
+        {
+            var profileState = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
+            await RunOrganizerStageAsync(request, runState?.JobId, organizerOptions, profileState, enabledFolders, execution, cancellationToken);
+        }
+
+        if (runDedupe)
+        {
+            await RunDedupeStageAsync(request, runState?.JobId, runOrganizer, enabledFolders, execution, cancellationToken);
+        }
+
+        return BuildFolderUniformityCompletedResult(options, execution);
+    }
+
+    private sealed class FolderUniformityExecutionState
+    {
+        public List<string> Logs { get; } = new();
+        public List<string> Errors { get; } = new();
+        public List<object> Reports { get; } = new();
+        public int Processed { get; set; }
+        public int Skipped { get; set; }
+        public object? Dedupe { get; set; }
+    }
+
+    private sealed record OrganizerFolderExecutionContext(
+        EnhancementFolderUniformityRequest Request,
+        string? JobId,
+        AutoTagOrganizerOptions OrganizerOptions,
+        AutoTagProfileResolutionService.ResolvedState ProfileState,
+        FolderDto Folder,
+        string FolderLabel,
+        int FolderIndex,
+        int TotalFolders,
+        FolderUniformityExecutionState Execution,
+        CancellationToken CancellationToken);
+
+    private static AutoTagOrganizerOptions BuildFolderUniformityOrganizerOptions(EnhancementFolderUniformityRequest request)
+    {
+        return new AutoTagOrganizerOptions
         {
             IncludeSubfolders = request.IncludeSubfolders ?? true,
             MoveMisplacedFiles = request.MoveMisplacedFiles ?? true,
@@ -317,8 +371,15 @@ public class AutoTagEnhancementController : ControllerBase
                 : request.LyricsPolicy.Trim(),
             DuplicatesFolderName = request.DuplicatesFolderName ?? DuplicateCleanerService.DuplicatesFolderName
         };
+    }
 
-        var options = new
+    private static object BuildFolderUniformityOptionsSnapshot(
+        EnhancementFolderUniformityRequest request,
+        AutoTagOrganizerOptions organizerOptions,
+        bool runOrganizer,
+        bool runDedupe)
+    {
+        return new
         {
             RunOrganizer = runOrganizer,
             OrganizerRunsBeforeDedupe = runOrganizer && runDedupe,
@@ -367,96 +428,117 @@ public class AutoTagEnhancementController : ControllerBase
                 ? DuplicateCleanerService.DuplicatesFolderName
                 : request.DuplicatesFolderName.Trim()
         };
+    }
 
-        if (!runOrganizer && !runDedupe)
+    private static FolderUniformityResultPayload BuildFolderUniformityDisabledResult(
+        string? jobId,
+        object options,
+        bool runOrganizer,
+        bool runDedupe)
+    {
+        UpdateFolderUniformityState(jobId, state =>
         {
-            UpdateFolderUniformityState(runState?.JobId, state =>
-            {
-                state.RunOrganizer = runOrganizer;
-                state.RunDedupe = runDedupe;
-                state.Options = options;
-                state.TotalFolders = 0;
-                state.TotalSteps = 0;
-                state.CompletedSteps = 0;
-                state.PercentComplete = 100;
-                state.Phase = "Skipped";
-            });
-            return new FolderUniformityResultPayload(
-                Success: true,
-                Skipped: true,
-                Message: "Folder uniformity and dedupe are disabled by configuration.",
-                FoldersProcessed: 0,
-                FoldersSkipped: 0,
-                Options: options,
-                Dedupe: null,
-                ReconciliationReports: Array.Empty<object>(),
-                Logs: Array.Empty<string>(),
-                Errors: Array.Empty<string>(),
-                ValidationError: null);
-        }
+            state.RunOrganizer = runOrganizer;
+            state.RunDedupe = runDedupe;
+            state.Options = options;
+            state.TotalFolders = 0;
+            state.TotalSteps = 0;
+            state.CompletedSteps = 0;
+            state.PercentComplete = 100;
+            state.Phase = "Skipped";
+        });
 
-        var folders = await AutoTagFolderScopeHelper.ResolveLibraryFoldersAsync(_libraryRepository, _libraryConfigStore, cancellationToken);
+        return new FolderUniformityResultPayload(
+            Success: true,
+            Skipped: true,
+            Message: "Folder uniformity and dedupe are disabled by configuration.",
+            FoldersProcessed: 0,
+            FoldersSkipped: 0,
+            Options: options,
+            Dedupe: null,
+            ReconciliationReports: Array.Empty<object>(),
+            Logs: Array.Empty<string>(),
+            Errors: Array.Empty<string>(),
+            ValidationError: null);
+    }
+
+    private static FolderUniformityResultPayload BuildFolderUniformityNoFoldersResult(
+        string? jobId,
+        object options,
+        bool runOrganizer,
+        bool runDedupe)
+    {
+        UpdateFolderUniformityState(jobId, state =>
+        {
+            state.RunOrganizer = runOrganizer;
+            state.RunDedupe = runDedupe;
+            state.Options = options;
+            state.TotalFolders = 0;
+            state.TotalSteps = 0;
+            state.CompletedSteps = 0;
+            state.Phase = "No folders available";
+            state.Errors.Add(NoLibraryFoldersMessage);
+        });
+
+        return new FolderUniformityResultPayload(
+            Success: false,
+            Skipped: false,
+            Message: NoLibraryFoldersMessage,
+            FoldersProcessed: 0,
+            FoldersSkipped: 0,
+            Options: options,
+            Dedupe: null,
+            ReconciliationReports: Array.Empty<object>(),
+            Logs: Array.Empty<string>(),
+            Errors: NoLibraryFoldersErrors,
+            ValidationError: NoLibraryFoldersMessage);
+    }
+
+    private async Task<List<FolderDto>> ResolveEnabledMusicFoldersAsync(
+        EnhancementFolderUniformityRequest request,
+        CancellationToken cancellationToken)
+    {
+        var folders = await AutoTagFolderScopeHelper.ResolveLibraryFoldersAsync(
+            _folderScopeDependencies.LibraryRepository,
+            _folderScopeDependencies.LibraryConfigStore,
+            cancellationToken);
         var enabledFolders = folders
             .Where(folder => folder.Enabled
                 && !string.IsNullOrWhiteSpace(folder.RootPath)
                 && IsMusicFolder(folder))
             .ToList();
         var scopedFolderIds = AutoTagFolderScopeHelper.NormalizeFolderIds(request.FolderIds, request.FolderId, enabledFolders);
-        if (scopedFolderIds.Count > 0)
+        if (scopedFolderIds.Count == 0)
         {
-            enabledFolders = enabledFolders
-                .Where(folder => scopedFolderIds.Contains(folder.Id))
-                .ToList();
+            return enabledFolders;
         }
 
-        if (enabledFolders.Count == 0)
-        {
-            UpdateFolderUniformityState(runState?.JobId, state =>
-            {
-                state.RunOrganizer = runOrganizer;
-                state.RunDedupe = runDedupe;
-                state.Options = options;
-                state.TotalFolders = 0;
-                state.TotalSteps = 0;
-                state.CompletedSteps = 0;
-                state.Phase = "No folders available";
-                state.Errors.Add("No enabled music library folders are available for folder uniformity.");
-            });
-            return new FolderUniformityResultPayload(
-                Success: false,
-                Skipped: false,
-                Message: "No enabled music library folders are available for folder uniformity.",
-                FoldersProcessed: 0,
-                FoldersSkipped: 0,
-                Options: options,
-                Dedupe: null,
-                ReconciliationReports: Array.Empty<object>(),
-                Logs: Array.Empty<string>(),
-                Errors: new[] { "No enabled music library folders are available for folder uniformity." },
-                ValidationError: "No enabled music library folders are available for folder uniformity.");
-        }
+        return enabledFolders
+            .Where(folder => scopedFolderIds.Contains(folder.Id))
+            .ToList();
+    }
 
-        var profileState = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
-
-        var logs = new List<string>();
-        var errors = new List<string>();
-        var reports = new List<object>();
-        var processed = 0;
-        var skipped = 0;
-        object? dedupe = null;
-        var organizerFolderCount = runOrganizer ? enabledFolders.Count : 0;
+    private static int CalculateTotalSteps(bool runOrganizer, bool runDedupe, int folderCount)
+    {
+        var organizerFolderCount = runOrganizer ? folderCount : 0;
         var totalSteps = organizerFolderCount + (runDedupe ? 1 : 0);
-        if (totalSteps <= 0)
-        {
-            totalSteps = 1;
-        }
+        return totalSteps <= 0 ? 1 : totalSteps;
+    }
 
-        UpdateFolderUniformityState(runState?.JobId, state =>
+    private static void InitializeFolderUniformityExecutionState(
+        string? jobId,
+        object options,
+        int enabledFolderCount,
+        int totalSteps,
+        bool runOrganizer,
+        bool runDedupe)
+    {
+        UpdateFolderUniformityState(jobId, state =>
         {
             state.RunOrganizer = runOrganizer;
             state.RunDedupe = runDedupe;
             state.Options = options;
-            state.TotalFolders = enabledFolders.Count;
+            state.TotalFolders = enabledFolderCount;
             state.TotalSteps = totalSteps;
             state.CompletedSteps = 0;
             state.FoldersProcessed = 0;
@@ -466,309 +548,380 @@ public class AutoTagEnhancementController : ControllerBase
             state.ArtistFoldersProcessed = 0;
             state.ArtistFoldersTotal = 0;
             state.Phase = runOrganizer
-                ? $"Running folder uniformity (0/{enabledFolders.Count})"
+                ? $"Running folder uniformity (0/{enabledFolderCount})"
                 : "Running dedupe";
             state.Logs.Clear();
             state.Errors.Clear();
             state.ReconciliationReports.Clear();
         });
+    }
 
-        if (runOrganizer)
+    private async Task RunOrganizerStageAsync(
+        EnhancementFolderUniformityRequest request,
+        string? jobId,
+        AutoTagOrganizerOptions organizerOptions,
+        AutoTagProfileResolutionService.ResolvedState profileState,
+        IReadOnlyList<FolderDto> enabledFolders,
+        FolderUniformityExecutionState execution,
+        CancellationToken cancellationToken)
+    {
+        var folderIndex = 0;
+        foreach (var folder in enabledFolders)
         {
-            var folderIndex = 0;
-            foreach (var folder in enabledFolders)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                folderIndex++;
-                var folderLabel = string.IsNullOrWhiteSpace(folder.DisplayName) ? $"Folder {folder.Id}" : folder.DisplayName!;
-                UpdateFolderUniformityState(runState?.JobId, state =>
-                {
-                    state.CurrentLibraryFolder = folderLabel;
-                    state.CurrentArtistFolder = null;
-                    state.ArtistFoldersProcessed = 0;
-                    state.ArtistFoldersTotal = 0;
-                    state.Phase = $"Processing {folderLabel} ({folderIndex}/{enabledFolders.Count})";
-                });
-
-                if (!TryBuildFolderOrganizerOptions(organizerOptions, profileState, folder, request, out var folderOrganizerOptions, out var profileError))
-                {
-                    skipped++;
-                    if (!string.IsNullOrWhiteSpace(profileError))
-                    {
-                        errors.Add(profileError);
-                    }
-
-                    var skippedMessage = $"[{folderLabel}] skipped: {profileError}";
-                    if (logs.Count < MaxFolderUniformityLogs)
-                    {
-                        logs.Add(skippedMessage);
-                    }
-
-                    AppendFolderUniformityLog(runState?.JobId, skippedMessage);
-                    UpdateFolderUniformityState(runState?.JobId, state =>
-                    {
-                        if (!string.IsNullOrWhiteSpace(profileError) && state.Errors.Count < MaxFolderUniformityLogs)
-                        {
-                            state.Errors.Add(profileError);
-                        }
-
-                        state.FoldersProcessed = processed;
-                        state.FoldersSkipped = skipped;
-                        state.CompletedSteps++;
-                        state.Phase = $"Processed {processed + skipped}/{enabledFolders.Count} folders";
-                    });
-                    continue;
-                }
-
-                var rootPath = folder.RootPath?.Trim();
-                if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
-                {
-                    skipped++;
-                    var skippedMessage = $"[{folderLabel}] skipped: folder path is missing or does not exist.";
-                    if (logs.Count < MaxFolderUniformityLogs)
-                    {
-                        logs.Add(skippedMessage);
-                    }
-
-                    AppendFolderUniformityLog(runState?.JobId, skippedMessage);
-                    UpdateFolderUniformityState(runState?.JobId, state =>
-                    {
-                        state.FoldersProcessed = processed;
-                        state.FoldersSkipped = skipped;
-                        state.CompletedSteps++;
-                        state.Phase = $"Processed {processed + skipped}/{enabledFolders.Count} folders";
-                    });
-                    continue;
-                }
-
-                try
-                {
-                    processed++;
-                    var report = folderOrganizerOptions.GenerateReconciliationReport
-                        ? new AutoTagLibraryOrganizer.AutoTagOrganizerReport()
-                        : null;
-                    await _libraryOrganizer.OrganizePathAsync(rootPath, folderOrganizerOptions, report, message =>
-                    {
-                        var line = $"[{folderLabel}] {message}";
-                        if (logs.Count < MaxFolderUniformityLogs)
-                        {
-                            logs.Add(line);
-                        }
-
-                        AppendFolderUniformityLog(runState?.JobId, line);
-                        if (TryParseSourceFolderProgress(message, out var sourceFolderIndex, out var sourceFolderTotal, out var sourceFolderPath))
-                        {
-                            UpdateFolderUniformityState(runState?.JobId, state =>
-                            {
-                                state.CurrentLibraryFolder = folderLabel;
-                                state.CurrentArtistFolder = sourceFolderPath;
-                                state.ArtistFoldersProcessed = sourceFolderIndex;
-                                state.ArtistFoldersTotal = sourceFolderTotal;
-                                state.Phase = $"Processing {folderLabel} ({folderIndex}/{enabledFolders.Count}) • {sourceFolderIndex}/{sourceFolderTotal} source folders";
-                            });
-                            return;
-                        }
-
-                        if (TryParseOrganizerScanPrepared(message, out var candidateFiles, out var includeSubfolders))
-                        {
-                            UpdateFolderUniformityState(runState?.JobId, state =>
-                            {
-                                state.CurrentLibraryFolder = folderLabel;
-                                state.CurrentArtistFolder = null;
-                                state.ArtistFoldersProcessed = 0;
-                                state.ArtistFoldersTotal = 0;
-                                state.Phase = $"Scanning {folderLabel} ({folderIndex}/{enabledFolders.Count}) • {candidateFiles} candidate files • includeSubfolders={includeSubfolders.ToString().ToLowerInvariant()}";
-                            });
-                            return;
-                        }
-
-                        if (TryParseOrganizerPlanPrepared(message, out var plannedMoveActions))
-                        {
-                            UpdateFolderUniformityState(runState?.JobId, state =>
-                            {
-                                state.CurrentLibraryFolder = folderLabel;
-                                state.CurrentArtistFolder = null;
-                                state.ArtistFoldersProcessed = 0;
-                                state.ArtistFoldersTotal = 0;
-                                state.Phase = $"Planning {folderLabel} ({folderIndex}/{enabledFolders.Count}) • {plannedMoveActions} move actions";
-                            });
-                            return;
-                        }
-
-                        if (IsOrganizerNoMoveActionsMessage(message))
-                        {
-                            UpdateFolderUniformityState(runState?.JobId, state =>
-                            {
-                                state.CurrentLibraryFolder = folderLabel;
-                                state.CurrentArtistFolder = null;
-                                state.ArtistFoldersProcessed = 0;
-                                state.ArtistFoldersTotal = 0;
-                                state.Phase = $"No folder changes needed for {folderLabel} ({folderIndex}/{enabledFolders.Count})";
-                            });
-                        }
-                    });
-
-                    if (report != null)
-                    {
-                        var reportEntry = new
-                        {
-                            folderId = folder.Id,
-                            folderName = folderLabel,
-                            report.CandidateFiles,
-                            report.PlannedMoves,
-                            report.MovedFolders,
-                            report.MovedFiles,
-                            report.MovedSidecars,
-                            report.MovedLeftovers,
-                            report.ReplacedDuplicates,
-                            report.QuarantinedDuplicates,
-                            report.KeptLowerQualityDuplicates,
-                            report.PreservedExistingArtwork,
-                            report.MergedLyricsSidecars,
-                            report.SkippedUntagged,
-                            report.SkippedCompilationFolders,
-                            report.SkippedVariousArtistsFolders,
-                            report.SkippedIncompleteAlbums,
-                            report.SkippedExistingFolderMerges,
-                            report.SkippedConflicts,
-                            entries = report.Entries
-                        };
-                        reports.Add(reportEntry);
-                        UpdateFolderUniformityState(runState?.JobId, state =>
-                        {
-                            state.ReconciliationReports.Add(reportEntry);
-                        });
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    var errorMessage = $"[{folderLabel}] {ex.Message}";
-                    errors.Add(errorMessage);
-                    var logMessage = $"[{folderLabel}] organizer failed: {ex.Message}";
-                    if (logs.Count < MaxFolderUniformityLogs)
-                    {
-                        logs.Add(logMessage);
-                    }
-
-                    UpdateFolderUniformityState(runState?.JobId, state =>
-                    {
-                        if (state.Errors.Count < MaxFolderUniformityLogs)
-                        {
-                            state.Errors.Add(errorMessage);
-                        }
-
-                        AppendLogInternal(state, logMessage);
-                    });
-                }
-                finally
-                {
-                    UpdateFolderUniformityState(runState?.JobId, state =>
-                    {
-                        state.CurrentLibraryFolder = folderLabel;
-                        state.CurrentArtistFolder = null;
-                        state.ArtistFoldersProcessed = 0;
-                        state.ArtistFoldersTotal = 0;
-                        state.FoldersProcessed = processed;
-                        state.FoldersSkipped = skipped;
-                        state.CompletedSteps++;
-                        state.Phase = $"Processed {processed + skipped}/{enabledFolders.Count} folders";
-                    });
-                }
-            }
-        }
-
-        if (runDedupe)
-        {
-            UpdateFolderUniformityState(runState?.JobId, state =>
-            {
-                state.CurrentArtistFolder = null;
-                state.ArtistFoldersProcessed = 0;
-                state.ArtistFoldersTotal = 0;
-                state.Phase = runOrganizer ? "Running dedupe after organizer" : "Running dedupe";
-            });
-
+            cancellationToken.ThrowIfCancellationRequested();
+            folderIndex++;
+            var folderLabel = string.IsNullOrWhiteSpace(folder.DisplayName) ? $"Folder {folder.Id}" : folder.DisplayName!;
+            BeginOrganizerFolderStep(jobId, folderLabel, folderIndex, enabledFolders.Count);
             try
             {
-                var dedupeResult = await _duplicateCleanerService.ScanAsync(
-                    enabledFolders.ToList(),
-                    new DuplicateCleanerOptions
-                    {
-                        UseDuplicatesFolder = true,
-                        DuplicatesFolderName = request.DuplicatesFolderName ?? DuplicateCleanerService.DuplicatesFolderName,
-                        UseShazamForIdentity = request.UseShazamForDedupe == true,
-                        ConflictPolicy = string.IsNullOrWhiteSpace(request.DuplicateConflictPolicy)
-                            ? AutoTagOrganizerOptions.DuplicateConflictKeepBest
-                            : request.DuplicateConflictPolicy.Trim()
-                    },
-                    cancellationToken);
-                dedupe = new
-                {
-                    filesScanned = dedupeResult.FilesScanned,
-                    duplicatesFound = dedupeResult.DuplicatesFound,
-                    deleted = dedupeResult.Deleted,
-                    spaceFreedBytes = dedupeResult.SpaceFreedBytes,
-                    duplicatesFolderName = dedupeResult.DuplicatesFolderName,
-                    usedShazamForIdentity = dedupeResult.UsedShazamForIdentity
-                };
-
-                UpdateFolderUniformityState(runState?.JobId, state =>
-                {
-                    state.Dedupe = dedupe;
-                });
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                var errorMessage = $"[dedupe] {ex.Message}";
-                errors.Add(errorMessage);
-                var logMessage = $"[dedupe] failed: {ex.Message}";
-                if (logs.Count < MaxFolderUniformityLogs)
-                {
-                    logs.Add(logMessage);
-                }
-
-                UpdateFolderUniformityState(runState?.JobId, state =>
-                {
-                    if (state.Errors.Count < MaxFolderUniformityLogs)
-                    {
-                        state.Errors.Add(errorMessage);
-                    }
-
-                    AppendLogInternal(state, logMessage);
-                });
+                await ProcessOrganizerFolderAsync(
+                    new OrganizerFolderExecutionContext(
+                        request,
+                        jobId,
+                        organizerOptions,
+                        profileState,
+                        folder,
+                        folderLabel,
+                        folderIndex,
+                        enabledFolders.Count,
+                        execution,
+                        cancellationToken));
             }
             finally
             {
-                UpdateFolderUniformityState(runState?.JobId, state =>
-                {
-                    state.CompletedSteps++;
-                    state.CurrentArtistFolder = null;
-                    state.ArtistFoldersProcessed = 0;
-                    state.ArtistFoldersTotal = 0;
-                    state.Phase = "Dedupe stage completed";
-                });
+                CompleteOrganizerFolderStep(jobId, folderLabel, enabledFolders.Count, execution);
             }
         }
+    }
 
-        var summary = $"Folder uniformity finished: {processed} processed, {skipped} skipped.";
+    private static void BeginOrganizerFolderStep(string? jobId, string folderLabel, int folderIndex, int totalFolders)
+    {
+        UpdateFolderUniformityState(jobId, state =>
+        {
+            state.CurrentLibraryFolder = folderLabel;
+            state.CurrentArtistFolder = null;
+            state.ArtistFoldersProcessed = 0;
+            state.ArtistFoldersTotal = 0;
+            state.Phase = $"Processing {folderLabel} ({folderIndex}/{totalFolders})";
+        });
+    }
+
+    private async Task ProcessOrganizerFolderAsync(OrganizerFolderExecutionContext context)
+    {
+        if (!TryBuildFolderOrganizerOptions(
+                context.OrganizerOptions,
+                context.ProfileState,
+                context.Folder,
+                context.Request,
+                out var folderOrganizerOptions,
+                out var profileError))
+        {
+            RegisterOrganizerSkip(context.JobId, context.Execution, $"[{context.FolderLabel}] skipped: {profileError}", profileError);
+            return;
+        }
+
+        var rootPath = context.Folder.RootPath?.Trim();
+        if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
+        {
+            RegisterOrganizerSkip(context.JobId, context.Execution, $"[{context.FolderLabel}] skipped: folder path is missing or does not exist.", null);
+            return;
+        }
+
+        context.Execution.Processed++;
+        try
+        {
+            await ExecuteOrganizerFolderAsync(context, rootPath, folderOrganizerOptions);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            RegisterOrganizerFailure(context.JobId, context.Execution, context.FolderLabel, ex);
+        }
+    }
+
+    private static void RegisterOrganizerSkip(
+        string? jobId,
+        FolderUniformityExecutionState execution,
+        string message,
+        string? error)
+    {
+        execution.Skipped++;
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            execution.Errors.Add(error);
+        }
+
+        AddFolderUniformityLog(execution.Logs, message);
+        AppendFolderUniformityLog(jobId, message);
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            UpdateFolderUniformityState(jobId, state =>
+            {
+                if (state.Errors.Count < MaxFolderUniformityLogs)
+                {
+                    state.Errors.Add(error);
+                }
+            });
+        }
+    }
+
+    private async Task ExecuteOrganizerFolderAsync(
+        OrganizerFolderExecutionContext context,
+        string rootPath,
+        AutoTagOrganizerOptions folderOrganizerOptions)
+    {
+        var report = folderOrganizerOptions.GenerateReconciliationReport
+            ? new AutoTagLibraryOrganizer.AutoTagOrganizerReport()
+            : null;
+        await _libraryOrganizer.OrganizePathAsync(rootPath, folderOrganizerOptions, report, message =>
+        {
+            var line = $"[{context.FolderLabel}] {message}";
+            AddFolderUniformityLog(context.Execution.Logs, line);
+            AppendFolderUniformityLog(context.JobId, line);
+            UpdateOrganizerProgressState(context.JobId, message, context.FolderLabel, context.FolderIndex, context.TotalFolders);
+        });
+        context.CancellationToken.ThrowIfCancellationRequested();
+        if (report == null)
+        {
+            return;
+        }
+
+        var reportEntry = new
+        {
+            folderId = context.Folder.Id,
+            folderName = context.FolderLabel,
+            report.CandidateFiles,
+            report.PlannedMoves,
+            report.MovedFolders,
+            report.MovedFiles,
+            report.MovedSidecars,
+            report.MovedLeftovers,
+            report.ReplacedDuplicates,
+            report.QuarantinedDuplicates,
+            report.KeptLowerQualityDuplicates,
+            report.PreservedExistingArtwork,
+            report.MergedLyricsSidecars,
+            report.SkippedUntagged,
+            report.SkippedCompilationFolders,
+            report.SkippedVariousArtistsFolders,
+            report.SkippedIncompleteAlbums,
+            report.SkippedExistingFolderMerges,
+            report.SkippedConflicts,
+            entries = report.Entries
+        };
+        context.Execution.Reports.Add(reportEntry);
+        UpdateFolderUniformityState(context.JobId, state =>
+        {
+            state.ReconciliationReports.Add(reportEntry);
+        });
+    }
+
+    private static void UpdateOrganizerProgressState(
+        string? jobId,
+        string message,
+        string folderLabel,
+        int folderIndex,
+        int totalFolders)
+    {
+        if (TryParseSourceFolderProgress(message, out var sourceFolderIndex, out var sourceFolderTotal, out var sourceFolderPath))
+        {
+            UpdateFolderUniformityState(jobId, state =>
+            {
+                state.CurrentLibraryFolder = folderLabel;
+                state.CurrentArtistFolder = sourceFolderPath;
+                state.ArtistFoldersProcessed = sourceFolderIndex;
+                state.ArtistFoldersTotal = sourceFolderTotal;
+                state.Phase = $"Processing {folderLabel} ({folderIndex}/{totalFolders}) • {sourceFolderIndex}/{sourceFolderTotal} source folders";
+            });
+            return;
+        }
+
+        if (TryParseOrganizerScanPrepared(message, out var candidateFiles, out var includeSubfolders))
+        {
+            UpdateFolderUniformityState(jobId, state =>
+            {
+                state.CurrentLibraryFolder = folderLabel;
+                state.CurrentArtistFolder = null;
+                state.ArtistFoldersProcessed = 0;
+                state.ArtistFoldersTotal = 0;
+                state.Phase = $"Scanning {folderLabel} ({folderIndex}/{totalFolders}) • {candidateFiles} candidate files • includeSubfolders={includeSubfolders.ToString().ToLowerInvariant()}";
+            });
+            return;
+        }
+
+        if (TryParseOrganizerPlanPrepared(message, out var plannedMoveActions))
+        {
+            UpdateFolderUniformityState(jobId, state =>
+            {
+                state.CurrentLibraryFolder = folderLabel;
+                state.CurrentArtistFolder = null;
+                state.ArtistFoldersProcessed = 0;
+                state.ArtistFoldersTotal = 0;
+                state.Phase = $"Planning {folderLabel} ({folderIndex}/{totalFolders}) • {plannedMoveActions} move actions";
+            });
+            return;
+        }
+
+        if (!IsOrganizerNoMoveActionsMessage(message))
+        {
+            return;
+        }
+
+        UpdateFolderUniformityState(jobId, state =>
+        {
+            state.CurrentLibraryFolder = folderLabel;
+            state.CurrentArtistFolder = null;
+            state.ArtistFoldersProcessed = 0;
+            state.ArtistFoldersTotal = 0;
+            state.Phase = $"No folder changes needed for {folderLabel} ({folderIndex}/{totalFolders})";
+        });
+    }
+
+    private static void RegisterOrganizerFailure(
+        string? jobId,
+        FolderUniformityExecutionState execution,
+        string folderLabel,
+        Exception ex)
+    {
+        var errorMessage = $"[{folderLabel}] {ex.Message}";
+        var logMessage = $"[{folderLabel}] organizer failed: {ex.Message}";
+        execution.Errors.Add(errorMessage);
+        AddFolderUniformityLog(execution.Logs, logMessage);
+        UpdateFolderUniformityState(jobId, state =>
+        {
+            if (state.Errors.Count < MaxFolderUniformityLogs)
+            {
+                state.Errors.Add(errorMessage);
+            }
+
+            AppendLogInternal(state, logMessage);
+        });
+    }
+
+    private static void CompleteOrganizerFolderStep(
+        string? jobId,
+        string folderLabel,
+        int totalFolders,
+        FolderUniformityExecutionState execution)
+    {
+        UpdateFolderUniformityState(jobId, state =>
+        {
+            state.CurrentLibraryFolder = folderLabel;
+            state.CurrentArtistFolder = null;
+            state.ArtistFoldersProcessed = 0;
+            state.ArtistFoldersTotal = 0;
+            state.FoldersProcessed = execution.Processed;
+            state.FoldersSkipped = execution.Skipped;
+            state.CompletedSteps++;
+            state.Phase = $"Processed {execution.Processed + execution.Skipped}/{totalFolders} folders";
+        });
+    }
+
+    private async Task RunDedupeStageAsync(
+        EnhancementFolderUniformityRequest request,
+        string? jobId,
+        bool ranOrganizer,
+        IReadOnlyList<FolderDto> enabledFolders,
+        FolderUniformityExecutionState execution,
+        CancellationToken cancellationToken)
+    {
+        UpdateFolderUniformityState(jobId, state =>
+        {
+            state.CurrentArtistFolder = null;
+            state.ArtistFoldersProcessed = 0;
+            state.ArtistFoldersTotal = 0;
+            state.Phase = ranOrganizer ? "Running dedupe after organizer" : "Running dedupe";
+        });
+
+        try
+        {
+            var dedupeResult = await _duplicateCleanerService.ScanAsync(
+                enabledFolders.ToList(),
+                new DuplicateCleanerOptions
+                {
+                    UseDuplicatesFolder = true,
+                    DuplicatesFolderName = request.DuplicatesFolderName ?? DuplicateCleanerService.DuplicatesFolderName,
+                    UseShazamForIdentity = request.UseShazamForDedupe == true,
+                    ConflictPolicy = string.IsNullOrWhiteSpace(request.DuplicateConflictPolicy)
+                        ? AutoTagOrganizerOptions.DuplicateConflictKeepBest
+                        : request.DuplicateConflictPolicy.Trim()
+                },
+                cancellationToken);
+            execution.Dedupe = new
+            {
+                filesScanned = dedupeResult.FilesScanned,
+                duplicatesFound = dedupeResult.DuplicatesFound,
+                deleted = dedupeResult.Deleted,
+                spaceFreedBytes = dedupeResult.SpaceFreedBytes,
+                duplicatesFolderName = dedupeResult.DuplicatesFolderName,
+                usedShazamForIdentity = dedupeResult.UsedShazamForIdentity
+            };
+
+            UpdateFolderUniformityState(jobId, state =>
+            {
+                state.Dedupe = execution.Dedupe;
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            var errorMessage = $"[dedupe] {ex.Message}";
+            var logMessage = $"[dedupe] failed: {ex.Message}";
+            execution.Errors.Add(errorMessage);
+            AddFolderUniformityLog(execution.Logs, logMessage);
+            UpdateFolderUniformityState(jobId, state =>
+            {
+                if (state.Errors.Count < MaxFolderUniformityLogs)
+                {
+                    state.Errors.Add(errorMessage);
+                }
+
+                AppendLogInternal(state, logMessage);
+            });
+        }
+        finally
+        {
+            UpdateFolderUniformityState(jobId, state =>
+            {
+                state.CompletedSteps++;
+                state.CurrentArtistFolder = null;
+                state.ArtistFoldersProcessed = 0;
+                state.ArtistFoldersTotal = 0;
+                state.Phase = "Dedupe stage completed";
+            });
+        }
+    }
+
+    private static void AddFolderUniformityLog(List<string> logs, string message)
+    {
+        if (logs.Count < MaxFolderUniformityLogs)
+        {
+            logs.Add(message);
+        }
+    }
+
+    private static FolderUniformityResultPayload BuildFolderUniformityCompletedResult(
+        object options,
+        FolderUniformityExecutionState execution)
+    {
+        var summary = $"Folder uniformity finished: {execution.Processed} processed, {execution.Skipped} skipped.";
         return new FolderUniformityResultPayload(
-            Success: errors.Count == 0,
+            Success: execution.Errors.Count == 0,
             Skipped: false,
             Message: summary,
-            FoldersProcessed: processed,
-            FoldersSkipped: skipped,
+            FoldersProcessed: execution.Processed,
+            FoldersSkipped: execution.Skipped,
             Options: options,
-            Dedupe: dedupe,
-            ReconciliationReports: reports,
-            Logs: logs,
-            Errors: errors,
+            Dedupe: execution.Dedupe,
+            ReconciliationReports: execution.Reports,
+            Logs: execution.Logs,
+            Errors: execution.Errors,
             ValidationError: null);
     }
 
@@ -810,7 +963,7 @@ public class AutoTagEnhancementController : ControllerBase
             }
 
             update(_folderUniformityRun);
-            if (string.Equals(_folderUniformityRun.Status, "running", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(_folderUniformityRun.Status, RunningStatus, StringComparison.OrdinalIgnoreCase))
             {
                 var totalSteps = Math.Max(1, _folderUniformityRun.TotalSteps);
                 var completed = Math.Clamp(_folderUniformityRun.CompletedSteps, 0, totalSteps);
@@ -832,6 +985,11 @@ public class AutoTagEnhancementController : ControllerBase
 
             _folderUniformityRun.PercentComplete = 100;
         }
+    }
+
+    private static void SetFolderUniformityRun(FolderUniformityRunState runState)
+    {
+        _folderUniformityRun = runState;
     }
 
     private static bool IsMusicFolder(FolderDto folder)
@@ -1179,7 +1337,10 @@ public class AutoTagEnhancementController : ControllerBase
         [FromQuery] string? scope,
         CancellationToken cancellationToken)
     {
-        var folders = await AutoTagFolderScopeHelper.ResolveLibraryFoldersAsync(_libraryRepository, _libraryConfigStore, cancellationToken);
+        var folders = await AutoTagFolderScopeHelper.ResolveLibraryFoldersAsync(
+            _folderScopeDependencies.LibraryRepository,
+            _folderScopeDependencies.LibraryConfigStore,
+            cancellationToken);
         var enabledFolders = folders
             .Where(folder => folder.Enabled && !string.IsNullOrWhiteSpace(folder.RootPath))
             .ToList();
@@ -1194,7 +1355,7 @@ public class AutoTagEnhancementController : ControllerBase
         var resolvedScope = string.Equals(scope, "watchlist", StringComparison.OrdinalIgnoreCase)
             ? "watchlist"
             : "all";
-        var tracks = await _libraryRepository.GetQualityScanTracksAsync(
+        var tracks = await _folderScopeDependencies.LibraryRepository.GetQualityScanTracksAsync(
             resolvedScope,
             selectedFolderIds.Count == 1 ? selectedFolderIds[0] : null,
             minFormat: null,
@@ -1235,7 +1396,10 @@ public class AutoTagEnhancementController : ControllerBase
         EnhancementQualityChecksRequest request,
         CancellationToken cancellationToken)
     {
-        var folders = await AutoTagFolderScopeHelper.ResolveLibraryFoldersAsync(_libraryRepository, _libraryConfigStore, cancellationToken);
+        var folders = await AutoTagFolderScopeHelper.ResolveLibraryFoldersAsync(
+            _folderScopeDependencies.LibraryRepository,
+            _folderScopeDependencies.LibraryConfigStore,
+            cancellationToken);
         var enabledFolders = folders
             .Where(folder => folder.Enabled && !string.IsNullOrWhiteSpace(folder.RootPath))
             .ToList();
@@ -1345,7 +1509,7 @@ public class AutoTagEnhancementController : ControllerBase
             };
         }
 
-        var tracks = await _libraryRepository.GetQualityScanTracksAsync(
+        var tracks = await _folderScopeDependencies.LibraryRepository.GetQualityScanTracksAsync(
             request.Scope,
             scopedFolderIds.Count == 1 ? scopedFolderIds[0] : null,
             minFormat: null,

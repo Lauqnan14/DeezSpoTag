@@ -1,5 +1,4 @@
 using System.Linq;
-using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
@@ -7,11 +6,6 @@ using Microsoft.Extensions.Logging;
 using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Download.Queue;
-
-[SuppressMessage(
-    "Security",
-    "S2077:SQL queries should not be vulnerable to injection attacks",
-    Justification = "Dynamic SQL segments are limited to internal schema identifiers and fixed sort tokens; user-provided values remain parameterized.")]
 public sealed class DownloadQueueRepository
 {
     private static readonly SemaphoreSlim DequeueGate = new(1, 1);

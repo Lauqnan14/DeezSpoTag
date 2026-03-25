@@ -25,10 +25,8 @@ public sealed class AppleWidevineCdm
         using var rsa = RSA.Create();
         rsa.ImportFromPem(DefaultPrivateKeyPem);
         // Widevine legacy contract requires SHA-1 for request signing and OAEP mode.
-#pragma warning disable S4790
         var hash = SHA1.HashData(licenseRequestMsg);
         var signature = rsa.SignHash(hash, HashAlgorithmName.SHA1, RSASignaturePadding.Pss);
-#pragma warning restore S4790
 
         var signedRequest = AppleWidevineProto.BuildSignedLicenseRequest(licenseRequestMsg, signature);
         return new AppleWidevineRequest(licenseRequestMsg, signedRequest);
@@ -44,9 +42,7 @@ public sealed class AppleWidevineCdm
 
         using var rsa = RSA.Create();
         rsa.ImportFromPem(DefaultPrivateKeyPem);
-#pragma warning disable S4790
         var sessionKey = rsa.Decrypt(signed.SessionKey, RSAEncryptionPadding.OaepSHA1);
-#pragma warning restore S4790
 
         var encryptionKey = BuildEncryptionKey(sessionKey, licenseRequestMsg);
         if (encryptionKey.Length == 0)

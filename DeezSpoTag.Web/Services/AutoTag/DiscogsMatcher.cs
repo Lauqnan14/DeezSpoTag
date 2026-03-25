@@ -17,7 +17,7 @@ public sealed class DiscogsMatcher
         _logger = logger;
     }
 
-    public async Task<AutoTagMatchResult?> MatchAsync(AutoTagAudioInfo info, AutoTagMatchingConfig config, DiscogsConfig discogsConfig, bool matchById, bool needsLabelOrCatalog, CancellationToken cancellationToken) // NOSONAR
+    public async Task<AutoTagMatchResult?> MatchAsync(AutoTagAudioInfo info, AutoTagMatchingConfig config, DiscogsConfig discogsConfig, bool matchById, bool needsLabelOrCatalog, CancellationToken cancellationToken)
     {
         ApplyDiscogsConfig(discogsConfig);
         if (!await ValidateDiscogsTokenAsync(discogsConfig, cancellationToken))
@@ -222,7 +222,7 @@ public sealed class DiscogsMatcher
         return match == null ? null : new MatchCandidate(match.Accuracy, match.Track);
     }
 
-    private static DiscogsTrackInfo ToTrack(DiscogsRelease release, int trackIndex, DiscogsConfig config) // NOSONAR
+    private static DiscogsTrackInfo ToTrack(DiscogsRelease release, int trackIndex, DiscogsConfig config)
     {
         var track = release.Tracks[trackIndex];
         var releaseDate = ParseDate(release.Released);

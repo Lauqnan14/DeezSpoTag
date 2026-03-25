@@ -195,7 +195,7 @@
         releaseId: "Release ID (source)",
         rating: "Rating"
     };
-    const HIDDEN_SPOTIFY_AUDIO_FEATURE_TAGS = [ // NOSONAR
+    const HIDDEN_SPOTIFY_AUDIO_FEATURE_TAGS = [
         "danceability",
         "energy",
         "valence",
@@ -852,7 +852,7 @@
     }
 
     function isMusicEnhancementEligibleFolder(folder) {
-        if (!folder || !isFolderEnabledFlag(folder.enabled)) { // NOSONAR
+        if (!folder || !isFolderEnabledFlag(folder.enabled)) {
             return false;
         }
 
@@ -949,8 +949,8 @@
                     checkbox.checked = selectedIds.includes(folder.id);
                     checkbox.addEventListener("change", () => {
                         const ids = Array.from(folderUniformityOptions.querySelectorAll("input[data-uniformity-folder-id]:checked"))
-                            .map((input) => parseOptionalFolderId(input.dataset.uniformityFolderId)) // NOSONAR
-                            .filter((value, index, array) => value != null && array.indexOf(value) === index); // NOSONAR
+                            .map((input) => parseOptionalFolderId(input.dataset.uniformityFolderId))
+                            .filter((value, index, array) => value != null && array.indexOf(value) === index);
                         updateFolderUniformityFolderSummary(ids);
                     });
 
@@ -979,8 +979,8 @@
                     checkbox.checked = selectedIds.includes(folder.id);
                     checkbox.addEventListener("change", () => {
                         const ids = Array.from(coverOptions.querySelectorAll("input[data-folder-id]:checked"))
-                            .map((input) => parseOptionalFolderId(input.dataset.folderId)) // NOSONAR
-                            .filter((value, index, array) => value != null && array.indexOf(value) === index); // NOSONAR
+                            .map((input) => parseOptionalFolderId(input.dataset.folderId))
+                            .filter((value, index, array) => value != null && array.indexOf(value) === index);
                         updateCoverMaintenanceFolderSummary(ids);
                     });
 
@@ -1009,8 +1009,8 @@
                     checkbox.checked = selectedIds.includes(folder.id);
                     checkbox.addEventListener("change", () => {
                         const ids = Array.from(qualityFolderOptions.querySelectorAll("input[data-quality-folder-id]:checked"))
-                            .map((input) => parseOptionalFolderId(input.dataset.qualityFolderId)) // NOSONAR
-                            .filter((value, index, array) => value != null && array.indexOf(value) === index); // NOSONAR
+                            .map((input) => parseOptionalFolderId(input.dataset.qualityFolderId))
+                            .filter((value, index, array) => value != null && array.indexOf(value) === index);
                         updateQualityChecksFolderSummary(ids);
                         state.config.enhancement.qualityChecks.folderIds = parseFolderIdList(ids);
                         void refreshEnhancementTechnicalProfiles();
@@ -1202,7 +1202,7 @@
             const data = await response.json();
             const source = Array.isArray(data) ? data : [];
             const filtered = source
-                .filter((item) => item && item.rootPath) // NOSONAR
+                .filter((item) => item && item.rootPath)
                 .filter((item) => isFolderEnabledFlag(item?.enabled))
                 .map((item) => {
                     const id = Number.parseInt(String(item.id ?? ""), 10);
@@ -1488,7 +1488,7 @@
         return Math.max(min, Math.min(max, parsed));
     }
 
-    function parseOptionalBoundedFloat(value, min, max) { // NOSONAR
+    function parseOptionalBoundedFloat(value, min, max) {
         const text = String(value ?? "").trim();
         if (!text) {
             return null;
@@ -1565,7 +1565,7 @@
 
     function resolveCoverMaintenanceTargetResolution(artworkSettings = null) {
         const settings = artworkSettings || readArtworkSettingsFromUI(state.settingsCache || {});
-        const providerOrder = settings.artworkFallbackEnabled !== false // NOSONAR
+        const providerOrder = settings.artworkFallbackEnabled !== false
             ? normalizeProviderOrder(settings.artworkFallbackOrder || ARTWORK_SOURCE_ORDER.join(","), ARTWORK_SOURCE_ORDER)
             : buildPreferredProviderOrder(
                 settings.artworkDefaultSource || el("artworkDefaultSource")?.value || ARTWORK_SOURCE_ORDER[0],
@@ -1604,7 +1604,7 @@
 
     function resolveCoverMaintenancePolicyFromTechnical(artworkSettings = null) {
         const settings = artworkSettings || readArtworkSettingsFromUI(state.settingsCache || {});
-        const providerOrder = settings.artworkFallbackEnabled !== false // NOSONAR
+        const providerOrder = settings.artworkFallbackEnabled !== false
             ? normalizeProviderOrder(settings.artworkFallbackOrder || ARTWORK_SOURCE_ORDER.join(","), ARTWORK_SOURCE_ORDER)
             : buildPreferredProviderOrder(
                 settings.artworkDefaultSource || el("artworkDefaultSource")?.value || ARTWORK_SOURCE_ORDER[0],
@@ -1765,7 +1765,7 @@
             return safeA - safeB;
         });
 
-        platforms.forEach((platform) => { // NOSONAR
+        platforms.forEach((platform) => {
             const isSelected = state.config.platforms.includes(platform.id);
             const row = document.createElement("div");
             row.className = "platform-row";
@@ -2184,7 +2184,7 @@
                 optionsFields.appendChild(conflictField);
             }
 
-            platform.options.forEach((option) => { // NOSONAR
+            platform.options.forEach((option) => {
                 const field = document.createElement("div");
                 field.className = "form-group";
 
@@ -2196,7 +2196,7 @@
                     input = document.createElement("input");
                     input.type = "checkbox";
                     input.checked = Boolean(state.config.custom[platform.id][option.id]);
-                    input.addEventListener("change", () => { // NOSONAR
+                    input.addEventListener("change", () => {
                         state.config.custom[platform.id][option.id] = input.checked;
                     });
                     wrapper.appendChild(input);
@@ -2248,7 +2248,7 @@
                         value.className = "autotag-slider-value";
                         value.textContent = `${initial}`;
 
-                        const update = (nextRaw) => { // NOSONAR
+                        const update = (nextRaw) => {
                             const parsed = Number(nextRaw);
                             if (!Number.isFinite(parsed)) {
                                 return;
@@ -2263,8 +2263,8 @@
                             }
                         };
 
-                        slider.addEventListener("input", () => update(slider.value)); // NOSONAR
-                        numberInput.addEventListener("input", () => update(numberInput.value)); // NOSONAR
+                        slider.addEventListener("input", () => update(slider.value));
+                        numberInput.addEventListener("input", () => update(numberInput.value));
 
                         row.appendChild(slider);
                         row.appendChild(numberInput);
@@ -2283,7 +2283,7 @@
                     if (platform.normalizedId === "itunes" && option.id === "art_resolution") {
                         input.id = "autotag-itunes-art-resolution";
                     }
-                    input.addEventListener("input", () => { // NOSONAR
+                    input.addEventListener("input", () => {
                         const parsed = Number.parseFloat(input.value);
                         state.config.custom[platform.id][option.id] = Number.isNaN(parsed) ? fallback : parsed;
                         if (option.id === "art_resolution") {
@@ -2298,14 +2298,14 @@
                     }
                     field.appendChild(label);
                     input = document.createElement("select");
-                    (option.value?.values || []).forEach((value) => { // NOSONAR
+                    (option.value?.values || []).forEach((value) => {
                         const opt = document.createElement("option");
                         opt.value = value;
                         opt.textContent = value;
                         input.appendChild(opt);
                     });
                     input.value = state.config.custom[platform.id][option.id];
-                    input.addEventListener("change", () => { // NOSONAR
+                    input.addEventListener("change", () => {
                         state.config.custom[platform.id][option.id] = input.value;
                     });
                 } else {
@@ -2318,7 +2318,7 @@
                     input = document.createElement("input");
                     input.type = option.value?.hidden ? "password" : "text";
                     input.value = state.config.custom[platform.id][option.id] ?? "";
-                    input.addEventListener("input", () => { // NOSONAR
+                    input.addEventListener("input", () => {
                         state.config.custom[platform.id][option.id] = input.value;
                     });
                 }
@@ -2342,7 +2342,7 @@
         updateCoverMaintenanceTargetResolutionPolicyUI();
     }
 
-    function loadConfigToUI() { // NOSONAR
+    function loadConfigToUI() {
         ensureCustomDefaults();
         ensureEnhancementDefaults();
         renderSuccessLibraryOptions();
@@ -2422,7 +2422,7 @@
         }
         setValue(
             "autotag-move-success-library",
-            state.config.moveSuccessLibraryFolderId != null ? String(state.config.moveSuccessLibraryFolderId) : "" // NOSONAR
+            state.config.moveSuccessLibraryFolderId != null ? String(state.config.moveSuccessLibraryFolderId) : ""
         );
         setChecked("autotag-move-failed", state.config.moveFailed);
         setValue("autotag-move-failed-path", state.config.moveFailedPath || "");
@@ -2858,7 +2858,7 @@
                 console.warn("Failed to persist AutoTag preference cache", storageError);
             }
             showToast(`Preferences saved for profile "${activeProfileName}".`, "success");
-        } catch (error) { // NOSONAR
+        } catch (error) {
             showToast(`Failed to save preferences for profile "${activeProfileName}".`, "error");
         }
     }
@@ -3224,7 +3224,7 @@
 
     function normalizeSpotifyConfig(config) {
         const spotify = config.spotify;
-        if (!spotify || !spotify.clientId || !spotify.clientSecret) { // NOSONAR
+        if (!spotify || !spotify.clientId || !spotify.clientSecret) {
             config.spotify = null;
         }
     }
@@ -3824,7 +3824,7 @@
             }
 
             const qualityStarted = payload?.qualityScanner?.requested
-                ? (payload?.qualityScanner?.started ? "Quality Scanner started" : "Quality Scanner already running") // NOSONAR
+                ? (payload?.qualityScanner?.started ? "Quality Scanner started" : "Quality Scanner already running")
                 : "Quality Scanner skipped";
             const duplicateSummary = payload?.duplicateCheck
                 ? `Duplicates: ${Number(payload.duplicateCheck.duplicatesFound ?? 0)} found, ${Number(payload.duplicateCheck.deleted ?? 0)} moved to ${String(payload.duplicateCheck.duplicatesFolderName || "%duplicates%")}`
@@ -3985,7 +3985,7 @@
     function renderTemplatePreview(template, fallback) {
         const rawTemplate = String(template || fallback || "").trim() || String(fallback || "");
         const illegalCharacterReplacer = (el("illegalCharacterReplacer")?.value || "_").charAt(0) || "_";
-        const interpolated = rawTemplate.replaceAll(/%([a-zA-Z0-9_]+)%/g, (_, token) => { // NOSONAR
+        const interpolated = rawTemplate.replaceAll(/%([a-zA-Z0-9_]+)%/g, (_, token) => {
             const key = String(token || "").toLowerCase();
             return FOLDER_PREVIEW_SAMPLES[key] ?? token;
         });
@@ -4012,7 +4012,7 @@
         tree.appendChild(line);
     }
 
-    function renderFolderStructurePreview() { // NOSONAR
+    function renderFolderStructurePreview() {
         const tree = el("folderPreviewTree");
         if (!tree) {
             return;
@@ -4126,7 +4126,7 @@
         }
     }
 
-    function updateConditionalSections() { // NOSONAR
+    function updateConditionalSections() {
         const overwriteTags = el("autotag-overwrite-tags-group");
         const overwrite = el("autotag-overwrite");
         if (overwriteTags && overwrite) {
@@ -4740,7 +4740,7 @@
         };
 
         document.querySelectorAll("[data-template-variables]").forEach((container) => {
-            const type = container.getAttribute("data-variables") || "track"; // NOSONAR
+            const type = container.getAttribute("data-variables") || "track";
             const list = container.querySelector(".template-variables-list");
             if (!list) {
                 return;
@@ -4751,7 +4751,7 @@
                 .join("");
         });
 
-        function insertTemplateVariable(input, value) { // NOSONAR
+        function insertTemplateVariable(input, value) {
             if (!input || !value) {
                 return;
             }
@@ -4767,12 +4767,12 @@
 
         document.querySelectorAll(".template-variable").forEach((item) => {
             item.addEventListener("click", () => {
-                const value = item.getAttribute("data-variable") || ""; // NOSONAR
+                const value = item.getAttribute("data-variable") || "";
                 if (!value) {
                     return;
                 }
                 const container = item.closest("[data-template-variables]");
-                const inputId = container?.getAttribute("data-input"); // NOSONAR
+                const inputId = container?.getAttribute("data-input");
                 if (!inputId) {
                     return;
                 }
@@ -4915,13 +4915,13 @@
             return;
         }
 
-        const applyValue = (id, value) => { // NOSONAR
+        const applyValue = (id, value) => {
             const field = document.getElementById(id);
             if (field) {
                 field.value = value ?? field.value;
             }
         };
-        const applyChecked = (id, value) => { // NOSONAR
+        const applyChecked = (id, value) => {
             const field = document.getElementById(id);
             if (field) {
                 field.checked = value === true;
@@ -5024,13 +5024,13 @@
             return;
         }
 
-        const applyCheckbox = (id, value) => { // NOSONAR
+        const applyCheckbox = (id, value) => {
             const field = document.getElementById(id);
             if (field) {
                 field.checked = value === true;
             }
         };
-        const applyValue = (id, value) => { // NOSONAR
+        const applyValue = (id, value) => {
             const field = document.getElementById(id);
             if (field) {
                 field.value = value ?? field.value;
@@ -5450,7 +5450,7 @@
                 return null;
             }
             return await response.json();
-        } catch (error) { // NOSONAR
+        } catch (error) {
             return null;
         }
     }
@@ -5462,7 +5462,7 @@
                 return null;
             }
             return await response.json();
-        } catch (error) { // NOSONAR
+        } catch (error) {
             return null;
         }
     }
@@ -5575,7 +5575,7 @@
             } else {
                 localStorage.removeItem("autotagJobId");
             }
-        } catch (error) { // NOSONAR
+        } catch (error) {
             updateStatus(state.jobId || "unknown", "error");
         }
     }

@@ -3,7 +3,6 @@ using System.Globalization;
 using System.Net;
 using System.Text.RegularExpressions;
 
-#pragma warning disable CA1822
 namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class JunoDownloadClient
@@ -75,7 +74,7 @@ public sealed class JunoDownloadClient
         return results;
     }
 
-    private static List<JunoDownloadTrackInfo>? ParseRelease(HtmlNode release) // NOSONAR
+    private static List<JunoDownloadTrackInfo>? ParseRelease(HtmlNode release)
     {
         if (!TryParseReleaseContext(release, out var context))
         {
