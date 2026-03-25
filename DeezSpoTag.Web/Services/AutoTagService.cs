@@ -169,6 +169,7 @@ public class AutoTagService
     private readonly SpotifyBlobService _spotifyBlobService;
     private readonly DeezSpoTag.Services.Settings.DeezSpoTagSettingsService _settingsService;
     private readonly LibraryRepository _libraryRepository;
+    private readonly LibraryScanRunner _libraryScanRunner;
     private readonly QualityScannerService _qualityScannerService;
     private readonly DuplicateCleanerService _duplicateCleanerService;
     private readonly LyricsRefreshQueueService _lyricsRefreshQueueService;
@@ -310,6 +311,7 @@ public class AutoTagService
         public required SpotifyBlobService SpotifyBlobService { get; init; }
         public required DeezSpoTag.Services.Settings.DeezSpoTagSettingsService SettingsService { get; init; }
         public required LibraryRepository LibraryRepository { get; init; }
+        public required LibraryScanRunner LibraryScanRunner { get; init; }
         public required QualityScannerService QualityScannerService { get; init; }
         public required DuplicateCleanerService DuplicateCleanerService { get; init; }
         public required LyricsRefreshQueueService LyricsRefreshQueueService { get; init; }
@@ -337,6 +339,7 @@ public class AutoTagService
         _spotifyBlobService = collaborators.SpotifyBlobService;
         _settingsService = collaborators.SettingsService;
         _libraryRepository = collaborators.LibraryRepository;
+        _libraryScanRunner = collaborators.LibraryScanRunner;
         _qualityScannerService = collaborators.QualityScannerService;
         _duplicateCleanerService = collaborators.DuplicateCleanerService;
         _lyricsRefreshQueueService = collaborators.LyricsRefreshQueueService;
@@ -1261,6 +1264,7 @@ public class AutoTagService
             configPath,
             includesEnhancementStage,
             CancellationToken.None);
+        await TriggerLibraryScanAfterEnhancementAsync(job, includesEnhancementStage, CancellationToken.None);
         if (autoMoveCompleted)
         {
             await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
@@ -1367,6 +1371,43 @@ public class AutoTagService
         await RunConfiguredFolderUniformityAsync(job, rootPath, enhancementRoot, enabledFolders, cancellationToken);
         await RunConfiguredCoverMaintenanceAsync(job, rootPath, enhancementRoot, enabledFolders, cancellationToken);
         await RunConfiguredQualityChecksAsync(job, rootPath, enhancementRoot, enabledFolders, cancellationToken);
+    }
+
+    private async Task TriggerLibraryScanAfterEnhancementAsync(
+        AutoTagJob job,
+        bool includesEnhancementStage,
+        CancellationToken cancellationToken)
+    {
+        if (!includesEnhancementStage
+            || !ShouldRunEnhancementForIntent(job.RunIntent)
+            || !string.Equals(job.Status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase)
+            || !IsEnhancementWorkflowTrigger(job.Trigger))
+        {
+            return;
+        }
+
+        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+        {
+            AppendLog(job, "enhancement workflow: library scan skipped (downloads active).");
+            _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                "Enhancement library scan skipped because downloads became active."));
+            return;
+        }
+
+        _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            "Enhancement library scan enqueued after enhancement run."));
+        AppendLog(job, "enhancement workflow: library scan enqueued.");
+
+        _ = _libraryScanRunner.EnqueueAsync(
+            refreshImages: false,
+            reset: false,
+            folderId: null,
+            skipSpotifyFetch: false,
+            cacheSpotifyImages: false);
     }
 
     private static bool IsEnhancementWorkflowTrigger(string? trigger)

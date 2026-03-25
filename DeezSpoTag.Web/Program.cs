@@ -745,6 +745,7 @@ static void RegisterAutoTagServices(IServiceCollection services)
             SpotifyBlobService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyBlobService>(),
             SettingsService = sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(),
             LibraryRepository = sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
+            LibraryScanRunner = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryScanRunner>(),
             QualityScannerService = sp.GetRequiredService<DeezSpoTag.Web.Services.QualityScannerService>(),
             DuplicateCleanerService = sp.GetRequiredService<DeezSpoTag.Web.Services.DuplicateCleanerService>(),
             LyricsRefreshQueueService = sp.GetRequiredService<DeezSpoTag.Web.Services.LyricsRefreshQueueService>(),
@@ -987,13 +988,6 @@ static void RegisterCoreApplicationServices(IServiceCollection services, IConfig
     services.AddSingleton<DeezSpoTag.Web.Services.LibraryConfigStore>();
     services.AddSingleton<DeezSpoTag.Web.Services.LocalLibraryScanner>();
     services.AddSingleton<DeezSpoTag.Web.Services.LibraryScanRunner>();
-    var realtimeLibraryScanEnabledRaw = Environment.GetEnvironmentVariable("DEEZSPOTAG_LIBRARY_REALTIME_SCAN_ENABLED");
-    var realtimeLibraryScanEnabled = string.IsNullOrWhiteSpace(realtimeLibraryScanEnabledRaw) || IsTrue(realtimeLibraryScanEnabledRaw);
-    if (realtimeLibraryScanEnabled)
-    {
-        services.AddSingleton<DeezSpoTag.Web.Services.LibraryRealtimeScanService>();
-        services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>());
-    }
     services.AddSingleton<DeezSpoTag.Web.Services.DeezerArtistImageService>();
     services.AddSingleton<DeezSpoTag.Web.Services.LibraryArtistImageQueueService>();
     services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryArtistImageQueueService>());

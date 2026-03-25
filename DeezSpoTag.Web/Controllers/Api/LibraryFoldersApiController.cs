@@ -44,24 +44,15 @@ public class LibraryFoldersApiController : ControllerBase
     private readonly LibraryRepository _repository;
     private readonly TaggingProfileService _profileService;
     private readonly DeezSpoTag.Web.Services.LibraryConfigStore _configStore;
-    private readonly DeezSpoTag.Web.Services.LocalLibraryScanner _scanner;
-    private readonly DeezSpoTag.Web.Services.LibraryRealtimeScanService _realtimeScanService;
-    private readonly ILogger<LibraryFoldersApiController> _logger;
 
     public LibraryFoldersApiController(
         LibraryRepository repository,
         TaggingProfileService profileService,
-        DeezSpoTag.Web.Services.LibraryConfigStore configStore,
-        DeezSpoTag.Web.Services.LocalLibraryScanner scanner,
-        DeezSpoTag.Web.Services.LibraryRealtimeScanService realtimeScanService,
-        ILogger<LibraryFoldersApiController> logger)
+        DeezSpoTag.Web.Services.LibraryConfigStore configStore)
     {
         _repository = repository;
         _profileService = profileService;
         _configStore = configStore;
-        _scanner = scanner;
-        _realtimeScanService = realtimeScanService;
-        _logger = logger;
     }
 
     [HttpGet]
@@ -202,10 +193,6 @@ public class LibraryFoldersApiController : ControllerBase
             DateTimeOffset.UtcNow,
             "info",
             $"Folder added (db): {folder.DisplayName} -> {folder.RootPath}"));
-        if (folder.Enabled)
-        {
-            _ = Task.Run(() => ScanAfterFolderChangeAsync(folder.Id, CancellationToken.None), CancellationToken.None);
-        }
         return Ok(folder);
     }
 
@@ -270,19 +257,9 @@ public class LibraryFoldersApiController : ControllerBase
 
         var wasEnabled = existingFolder.Enabled;
         var isEnabled = folder.Enabled;
-        var rootPathChanged = !string.Equals(
-            NormalizePathForFolderComparison(existingFolder.RootPath),
-            NormalizePathForFolderComparison(folder.RootPath),
-            StringComparison.OrdinalIgnoreCase);
-
         if (wasEnabled && !isEnabled)
         {
             await _repository.DisableFolderAsync(id, cancellationToken);
-        }
-
-        if (isEnabled && ((!wasEnabled && isEnabled) || rootPathChanged))
-        {
-            _ = Task.Run(() => ScanAfterFolderChangeAsync(folder.Id, CancellationToken.None), CancellationToken.None);
         }
 
         _configStore.AddLog(new DeezSpoTag.Web.Services.LibraryConfigStore.LibraryLogEntry(
@@ -740,77 +717,6 @@ public class LibraryFoldersApiController : ControllerBase
         return FolderContentMusic;
     }
 
-    private async Task ScanAfterFolderChangeAsync(long folderId, CancellationToken cancellationToken)
-    {
-        var bootstrapStarted = false;
-
-        try
-        {
-            if (!_repository.IsConfigured)
-            {
-                _logger.LogWarning("Skipped auto-scan after folder change because library DB is not configured.");
-                return;
-            }
-
-            var folder = await ResolveExistingFolderAsync(folderId, cancellationToken);
-            if (folder is null)
-            {
-                _logger.LogWarning("Skipped auto-scan after folder change because folder id={FolderId} no longer exists.", folderId);
-                return;
-            }
-
-            if (!folder.Enabled)
-            {
-                _logger.LogInformation("Skipped auto-scan after folder change because folder id={FolderId} is disabled.", folderId);
-                return;
-            }
-
-            _realtimeScanService.BeginFolderBootstrap(folderId);
-            bootstrapStarted = true;
-
-            _configStore.AddLog(new DeezSpoTag.Web.Services.LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "info",
-                $"Auto-scan started after folder change for {folder.DisplayName}."));
-
-            var snapshot = _scanner.Scan([folder]);
-
-            var ingestPayload = LocalLibrarySnapshotMapper.BuildIngestPayload(snapshot);
-            await _repository.IngestLocalScanAsync(
-                [folder],
-                ingestPayload.Artists,
-                ingestPayload.Albums,
-                ingestPayload.Tracks,
-                pruneMissingArtists: false,
-                cancellationToken: cancellationToken);
-            _configStore.AddLog(new DeezSpoTag.Web.Services.LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "info",
-                $"Auto-scan SQLite ingest completed ({ingestPayload.Artists.Count} artists, {ingestPayload.Albums.Count} albums, {ingestPayload.Tracks.Count} tracks)."));
-
-            _configStore.AddLog(new DeezSpoTag.Web.Services.LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "info",
-                $"Auto-scan completed for {folder.DisplayName} ({snapshot.Artists.Count} artists, {snapshot.Albums.Count} albums, {snapshot.Tracks.Count} tracks)."));
-
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _configStore.AddLog(new DeezSpoTag.Web.Services.LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "error",
-                $"Auto-scan failed: {ex.Message}"));
-            _logger.LogWarning(ex, "Auto-scan failed after folder change.");
-        }
-        finally
-        {
-            if (bootstrapStarted)
-            {
-                _realtimeScanService.CompleteFolderBootstrap(folderId);
-            }
-        }
-    }
-
     private static string[] SafeEnumerateDirectories(string path)
     {
         try
@@ -872,25 +778,6 @@ public class LibraryFoldersApiController : ControllerBase
         catch
         {
             return null;
-        }
-    }
-
-    private static string NormalizePathForFolderComparison(string? path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return string.Empty;
-        }
-
-        try
-        {
-            return Path.GetFullPath(path.Trim())
-                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        }
-        catch
-        {
-            return path.Trim()
-                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         }
     }
 
