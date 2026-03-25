@@ -1,7 +1,7 @@
-using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using DeezSpoTag.Web.Services;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -16,22 +16,18 @@ public sealed class TidalSearchApiController : ControllerBase
     private const string ArtistType = "artist";
     private const string PlaylistType = "playlist";
     private const string TitleProperty = "title";
-    private const string AuthHost = "auth.tidal.com";
-    private const string AuthPath = "v1/oauth2/token";
-    private const string EncodedClientId = "NkJEU1JkcEs5aHFFQlRnVQ==";
-    private const string EncodedClientSecret = "eGV1UG1ZN25icFo5SUliTEFjUTkzc2hrYTFWTmhlVUFxTjZJY3N6alRHOD0=";
-    private readonly SemaphoreSlim _tokenLock = new(1, 1);
-    private string _cachedToken = string.Empty;
-    private DateTimeOffset _cachedTokenExpiresUtc = DateTimeOffset.MinValue;
 
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
     private readonly ILogger<TidalSearchApiController> _logger;
 
     public TidalSearchApiController(
         IHttpClientFactory httpClientFactory,
+        ITidalAccessTokenProvider tidalAccessTokenProvider,
         ILogger<TidalSearchApiController> logger)
     {
         _httpClientFactory = httpClientFactory;
+        _tidalAccessTokenProvider = tidalAccessTokenProvider;
         _logger = logger;
     }
 
@@ -52,7 +48,7 @@ public sealed class TidalSearchApiController : ControllerBase
 
         try
         {
-            var token = await GetAccessTokenAsync(cancellationToken);
+            var token = await _tidalAccessTokenProvider.GetAccessTokenAsync(cancellationToken);
             var tracks = normalizedType is null or TrackType
                 ? await SearchTypedAsync("tracks", query, limit, token, MapTrack, cancellationToken)
                 : new List<object>();
@@ -128,8 +124,8 @@ public sealed class TidalSearchApiController : ControllerBase
             var response = await SendSearchRequestAsync(endpointType, query, limit, currentToken, cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && attempt == 0)
             {
-                InvalidateCachedToken();
-                currentToken = await GetAccessTokenAsync(cancellationToken);
+                _tidalAccessTokenProvider.Invalidate();
+                currentToken = await _tidalAccessTokenProvider.GetAccessTokenAsync(cancellationToken);
                 continue;
             }
 
@@ -164,67 +160,6 @@ public sealed class TidalSearchApiController : ControllerBase
         using var request = new HttpRequestMessage(HttpMethod.Get, requestUrl);
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
         return await client.SendAsync(request, cancellationToken);
-    }
-
-    private async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
-    {
-        if (!string.IsNullOrWhiteSpace(_cachedToken) && _cachedTokenExpiresUtc > DateTimeOffset.UtcNow.AddSeconds(30))
-        {
-            return _cachedToken;
-        }
-
-        await _tokenLock.WaitAsync(cancellationToken);
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(_cachedToken) && _cachedTokenExpiresUtc > DateTimeOffset.UtcNow.AddSeconds(30))
-            {
-                return _cachedToken;
-            }
-
-            var client = _httpClientFactory.CreateClient();
-            var clientId = Encoding.UTF8.GetString(Convert.FromBase64String(EncodedClientId));
-            var clientSecret = Encoding.UTF8.GetString(Convert.FromBase64String(EncodedClientSecret));
-            var authValue = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{clientId}:{clientSecret}"));
-            var authUrl = new UriBuilder(Uri.UriSchemeHttps, AuthHost) { Path = AuthPath }.Uri;
-            using var request = new HttpRequestMessage(HttpMethod.Post, authUrl)
-            {
-                Content = new FormUrlEncodedContent(new Dictionary<string, string>
-                {
-                    ["client_id"] = clientId,
-                    ["grant_type"] = "client_credentials"
-                })
-            };
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", authValue);
-
-            using var response = await client.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                throw new InvalidOperationException($"Tidal auth failed with status {(int)response.StatusCode}.");
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            var token = GetString(doc.RootElement, "access_token");
-            if (string.IsNullOrWhiteSpace(token))
-            {
-                throw new InvalidOperationException("Tidal auth did not return an access token.");
-            }
-
-            var expiresIn = GetInt(doc.RootElement, "expires_in");
-            _cachedToken = token;
-            _cachedTokenExpiresUtc = DateTimeOffset.UtcNow.AddSeconds(expiresIn > 0 ? expiresIn : 300);
-            return _cachedToken;
-        }
-        finally
-        {
-            _tokenLock.Release();
-        }
-    }
-
-    private void InvalidateCachedToken()
-    {
-        _cachedToken = string.Empty;
-        _cachedTokenExpiresUtc = DateTimeOffset.MinValue;
     }
 
     private static object MapTrack(JsonElement item)

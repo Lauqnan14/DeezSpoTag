@@ -1,10 +1,10 @@
-using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Globalization;
 using HtmlAgilityPack;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using DeezSpoTag.Web.Services;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -16,27 +16,22 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
     private const string TidalSource = "tidal";
     private const string QobuzSource = "qobuz";
     private const string BandcampSource = "bandcamp";
-    private const string TidalAuthHost = "auth.tidal.com";
-    private const string TidalAuthTokenPath = "/v1/oauth2/token";
     private const string MetadataTitleKey = "title";
     private const string MetadataDescriptionKey = "description";
     private const string MetadataImageKey = "image";
-    private const string EncodedClientId = "NkJEU1JkcEs5aHFFQlRnVQ==";
-    private const string EncodedClientSecret = "eGV1UG1ZN25icFo5SUliTEFjUTkzc2hrYTFWTmhlVUFxTjZJY3N6alRHOD0=";
     private const int DefaultPageSize = 100;
-    private static readonly SemaphoreSlim TokenLock = new(1, 1);
-
-    private static string _cachedToken = string.Empty;
-    private static DateTimeOffset _cachedTokenExpiresUtc = DateTimeOffset.MinValue;
 
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
     private readonly ILogger<ExternalPlaylistTracklistApiController> _logger;
 
     public ExternalPlaylistTracklistApiController(
         IHttpClientFactory httpClientFactory,
+        ITidalAccessTokenProvider tidalAccessTokenProvider,
         ILogger<ExternalPlaylistTracklistApiController> logger)
     {
         _httpClientFactory = httpClientFactory;
+        _tidalAccessTokenProvider = tidalAccessTokenProvider;
         _logger = logger;
     }
 
@@ -127,7 +122,7 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         string playlistUrl,
         CancellationToken cancellationToken)
     {
-        var token = await GetAccessTokenAsync(cancellationToken);
+        var token = await _tidalAccessTokenProvider.GetAccessTokenAsync(cancellationToken);
         var metadata = await FetchTidalPlaylistMetadataAsync(playlistId, token, cancellationToken);
         if (metadata is null)
         {
@@ -788,71 +783,6 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
 
         normalized = normalized.Replace('-', '/');
         return $"https://resources.tidal.com/images/{normalized}/750x750.jpg";
-    }
-
-    private async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
-    {
-        if (!string.IsNullOrWhiteSpace(_cachedToken) && _cachedTokenExpiresUtc > DateTimeOffset.UtcNow.AddSeconds(30))
-        {
-            return _cachedToken;
-        }
-
-        await TokenLock.WaitAsync(cancellationToken);
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(_cachedToken) && _cachedTokenExpiresUtc > DateTimeOffset.UtcNow.AddSeconds(30))
-            {
-                return _cachedToken;
-            }
-
-            var clientId = Encoding.UTF8.GetString(Convert.FromBase64String(EncodedClientId));
-            var clientSecret = Encoding.UTF8.GetString(Convert.FromBase64String(EncodedClientSecret));
-            var authValue = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{clientId}:{clientSecret}"));
-
-            var authUri = new UriBuilder(Uri.UriSchemeHttps, TidalAuthHost)
-            {
-                Path = TidalAuthTokenPath
-            }.Uri;
-            using var request = new HttpRequestMessage(HttpMethod.Post, authUri)
-            {
-                Content = new FormUrlEncodedContent(new Dictionary<string, string>
-                {
-                    ["client_id"] = clientId,
-                    ["grant_type"] = "client_credentials"
-                })
-            };
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", authValue);
-
-            var client = _httpClientFactory.CreateClient();
-            using var response = await client.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                throw new InvalidOperationException($"Tidal auth failed with status {(int)response.StatusCode}.");
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-
-            var token = GetString(doc.RootElement, "access_token");
-            if (string.IsNullOrWhiteSpace(token))
-            {
-                throw new InvalidOperationException("Tidal auth did not return an access token.");
-            }
-
-            var expiresIn = GetInt(doc.RootElement, "expires_in");
-            SetCachedToken(token, DateTimeOffset.UtcNow.AddSeconds(expiresIn > 0 ? expiresIn : 300));
-            return _cachedToken;
-        }
-        finally
-        {
-            TokenLock.Release();
-        }
-    }
-
-    private static void SetCachedToken(string token, DateTimeOffset expiresUtc)
-    {
-        _cachedToken = token;
-        _cachedTokenExpiresUtc = expiresUtc;
     }
 
     private static string ResolveTidalPlaylistId(string? id, string? url)

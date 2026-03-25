@@ -853,6 +853,7 @@ static void RegisterCoreApplicationServices(IServiceCollection services, IConfig
     services.AddSingleton<DeezSpoTag.Services.Download.ISpotifyArtworkResolver, DeezSpoTag.Web.Services.SpotifyArtworkResolver>();
     services.AddSingleton<DeezSpoTag.Web.Services.SpotifyTracklistService>();
     services.AddSingleton<DeezSpoTag.Web.Services.SpotifyRecommendationService>();
+    services.AddSingleton<DeezSpoTag.Web.Services.ITidalAccessTokenProvider, DeezSpoTag.Web.Services.TidalAccessTokenProvider>();
     services.AddSingleton<DeezSpoTag.Web.Services.ISpotifyTracklistMatchQueue, DeezSpoTag.Web.Services.SpotifyTracklistMatchQueue>();
     services.AddSingleton<DeezSpoTag.Web.Services.ISpotifyTracklistMatchStore, DeezSpoTag.Web.Services.SpotifyTracklistMatchStore>();
     services.AddHostedService<DeezSpoTag.Web.Services.SpotifyTracklistMatchBackgroundService>();
