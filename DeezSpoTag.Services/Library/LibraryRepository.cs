@@ -135,6 +135,13 @@ public sealed class LibraryRepository
     private const string SourceIdField = "sourceId";
     private const string LibraryIdField = "libraryId";
     private const string DurationMsField = "durationMs";
+    private const string TrackIdsJsonParameter = "trackIdsJson";
+    private const string EntityIdParameter = "entityId";
+    private const string TrackGenreTable = "track_genre";
+    private const string TrackStyleTable = "track_style";
+    private const string TrackMoodTable = "track_mood";
+    private const string TrackRemixerTable = "track_remixer";
+    private const string TrackOtherTagTable = "track_other_tag";
     private static readonly HashSet<string> SupportedFolderConvertFormats = new(StringComparer.OrdinalIgnoreCase)
     {
         "mp3",
@@ -782,7 +789,13 @@ WHERE folder_id = @folderId;";
         string tableName,
         CancellationToken cancellationToken)
     {
-        var sql = $"SELECT COUNT(*) FROM {tableName};";
+        var sql = tableName switch
+        {
+            ArtistType => "SELECT COUNT(*) FROM artist;",
+            AlbumType => "SELECT COUNT(*) FROM album;",
+            TrackType => "SELECT COUNT(*) FROM track;",
+            _ => throw new InvalidOperationException($"Unsupported table count request for '{tableName}'.")
+        };
         await using var command = new SqliteCommand(sql, connection, transaction);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is null || result == DBNull.Value ? 0 : Convert.ToInt32(result);
@@ -2027,22 +2040,21 @@ LIMIT @limit;";
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var conditions = BuildTrackAnalysisConditions(
-            filter.MinEnergy,
-            filter.MaxEnergy,
-            filter.MinBpm,
-            filter.MaxBpm,
-            filter.MinSpectralCentroid,
-            filter.MaxSpectralCentroid);
-
-        var sql = $@"
+        const string sql = @"
 SELECT DISTINCT t.id
 FROM track_analysis ta
 JOIN track t ON t.id = ta.track_id
 JOIN track_local tl ON tl.track_id = t.id
 JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
-WHERE {string.Join(" AND ", conditions)}
+WHERE f.library_id = @libraryId
+  AND ta.status IN ('complete', 'completed')
+  AND (@minEnergy IS NULL OR ta.energy >= @minEnergy)
+  AND (@maxEnergy IS NULL OR ta.energy <= @maxEnergy)
+  AND (@minBpm IS NULL OR ta.bpm >= @minBpm)
+  AND (@maxBpm IS NULL OR ta.bpm <= @maxBpm)
+  AND (@minSpectralCentroid IS NULL OR ta.spectral_centroid >= @minSpectralCentroid)
+  AND (@maxSpectralCentroid IS NULL OR ta.spectral_centroid <= @maxSpectralCentroid)
 ORDER BY RANDOM()
 LIMIT @limit;";
         await using var command = new SqliteCommand(sql, connection);
@@ -2056,36 +2068,6 @@ LIMIT @limit;";
             ids.Add(reader.GetInt64(0));
         }
         return ids;
-    }
-
-    private static List<string> BuildTrackAnalysisConditions(
-        double? minEnergy,
-        double? maxEnergy,
-        double? minBpm,
-        double? maxBpm,
-        double? minSpectralCentroid,
-        double? maxSpectralCentroid)
-    {
-        var conditions = new List<string>
-        {
-            "f.library_id = @libraryId",
-            "ta.status IN ('complete', 'completed')"
-        };
-        AddTrackAnalysisCondition(conditions, minEnergy.HasValue, "ta.energy >= @minEnergy");
-        AddTrackAnalysisCondition(conditions, maxEnergy.HasValue, "ta.energy <= @maxEnergy");
-        AddTrackAnalysisCondition(conditions, minBpm.HasValue, "ta.bpm >= @minBpm");
-        AddTrackAnalysisCondition(conditions, maxBpm.HasValue, "ta.bpm <= @maxBpm");
-        AddTrackAnalysisCondition(conditions, minSpectralCentroid.HasValue, "ta.spectral_centroid >= @minSpectralCentroid");
-        AddTrackAnalysisCondition(conditions, maxSpectralCentroid.HasValue, "ta.spectral_centroid <= @maxSpectralCentroid");
-        return conditions;
-    }
-
-    private static void AddTrackAnalysisCondition(List<string> conditions, bool enabled, string condition)
-    {
-        if (enabled)
-        {
-            conditions.Add(condition);
-        }
     }
 
     private static void BindTrackAnalysisParameters(SqliteCommand command, TrackAnalysisFilter filter)
@@ -2102,10 +2084,7 @@ LIMIT @limit;";
 
     private static void AddNullableParameter(SqliteCommand command, string name, double? value)
     {
-        if (value.HasValue)
-        {
-            command.Parameters.AddWithValue(name, value.Value);
-        }
+        command.Parameters.AddWithValue(name, (object?)value ?? DBNull.Value);
     }
 
     public async Task<IReadOnlyList<PlayHistoryEntryDto>> GetPlayHistoryEntriesAsync(
@@ -2122,8 +2101,7 @@ LIMIT @limit;";
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var hourPlaceholders = string.Join(", ", allowedHours.Select((_, index) => $"@h{index}"));
-        var sql = $@"
+        const string sql = @"
 SELECT ph.track_id,
        ph.played_at_utc
 FROM play_history ph
@@ -2132,17 +2110,17 @@ WHERE ph.plex_user_id = @plexUserId
   AND ph.track_id IS NOT NULL
   AND ph.played_at_utc >= @lookbackStart
   AND ph.played_at_utc < @excludeAfter
-  AND CAST(strftime('%H', ph.played_at_utc) AS INTEGER) IN ({hourPlaceholders})
+  AND CAST(strftime('%H', ph.played_at_utc) AS INTEGER) IN (
+      SELECT CAST(value AS INTEGER)
+      FROM json_each(@allowedHoursJson)
+  )
 ORDER BY ph.played_at_utc DESC;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("plexUserId", plexUserId);
         command.Parameters.AddWithValue(LibraryIdField, libraryId);
         command.Parameters.AddWithValue("lookbackStart", lookbackStartUtc.ToString("O"));
         command.Parameters.AddWithValue("excludeAfter", excludeAfterUtc.ToString("O"));
-        for (var i = 0; i < allowedHours.Count; i++)
-        {
-            command.Parameters.AddWithValue($"h{i}", allowedHours[i]);
-        }
+        command.Parameters.AddWithValue("allowedHoursJson", SerializeJsonArray(allowedHours));
 
         var results = new List<PlayHistoryEntryDto>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -2194,17 +2172,16 @@ WHERE ph.plex_user_id = @plexUserId
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var placeholders = string.Join(", ", trackIds.Select((_, index) => $"@id{index}"));
-        var sql = $@"
+        const string sql = @"
 SELECT track_id, mood_tags
 FROM track_analysis
-WHERE track_id IN ({placeholders})
+WHERE track_id IN (
+    SELECT CAST(value AS INTEGER)
+    FROM json_each(@trackIdsJson)
+)
   AND mood_tags IS NOT NULL;";
         await using var command = new SqliteCommand(sql, connection);
-        for (var i = 0; i < trackIds.Count; i++)
-        {
-            command.Parameters.AddWithValue($"id{i}", trackIds[i]);
-        }
+        command.Parameters.AddWithValue(TrackIdsJsonParameter, SerializeJsonArray(trackIds));
 
         var results = new Dictionary<long, IReadOnlyList<string>>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -2255,8 +2232,7 @@ ORDER BY decade DESC;";
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var placeholders = BuildIndexedParameterPlaceholders(trackIds.Count);
-        var sql = $@"
+        const string sql = @"
 SELECT t.id,
        t.title,
        ar.name,
@@ -2266,9 +2242,12 @@ SELECT t.id,
 FROM track t
 JOIN album a ON a.id = t.album_id
 JOIN artist ar ON ar.id = a.artist_id
-WHERE t.id IN ({placeholders});";
+WHERE t.id IN (
+    SELECT CAST(value AS INTEGER)
+    FROM json_each(@trackIdsJson)
+);";
         await using var command = new SqliteCommand(sql, connection);
-        AddIndexedLongParameters(command, trackIds);
+        command.Parameters.AddWithValue(TrackIdsJsonParameter, SerializeJsonArray(trackIds));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var results = new List<MixTrackDto>();
         while (await reader.ReadAsync(cancellationToken))
@@ -2305,14 +2284,16 @@ WHERE t.id IN ({placeholders});";
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var placeholders = BuildIndexedParameterPlaceholders(trackIds.Count);
-        var sql = $@"
+        const string sql = @"
 SELECT DISTINCT ph.plex_rating_key
 FROM play_history ph
-WHERE ph.track_id IN ({placeholders})
+WHERE ph.track_id IN (
+    SELECT CAST(value AS INTEGER)
+    FROM json_each(@trackIdsJson)
+)
   AND ph.plex_rating_key IS NOT NULL;";
         await using var command = new SqliteCommand(sql, connection);
-        AddIndexedLongParameters(command, trackIds);
+        command.Parameters.AddWithValue(TrackIdsJsonParameter, SerializeJsonArray(trackIds));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var keys = new List<string>();
         while (await reader.ReadAsync(cancellationToken))
@@ -2332,16 +2313,18 @@ WHERE ph.track_id IN ({placeholders})
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var placeholders = BuildIndexedParameterPlaceholders(trackIds.Count);
-        var sql = $@"
+        const string sql = @"
 SELECT track_id,
        plex_rating_key
 FROM play_history
-WHERE track_id IN ({placeholders})
+WHERE track_id IN (
+    SELECT CAST(value AS INTEGER)
+    FROM json_each(@trackIdsJson)
+)
   AND plex_rating_key IS NOT NULL
 ORDER BY played_at_utc DESC;";
         await using var command = new SqliteCommand(sql, connection);
-        AddIndexedLongParameters(command, trackIds);
+        command.Parameters.AddWithValue(TrackIdsJsonParameter, SerializeJsonArray(trackIds));
 
         var mapping = new Dictionary<long, string>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -2395,13 +2378,15 @@ ON CONFLICT(track_id) DO UPDATE SET
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var placeholders = BuildIndexedParameterPlaceholders(trackIds.Count);
-        var sql = $@"
+        const string sql = @"
 SELECT track_id, plex_rating_key, user_rating, genres_json, moods_json, updated_at_utc
 FROM track_plex_metadata
-WHERE track_id IN ({placeholders});";
+WHERE track_id IN (
+    SELECT CAST(value AS INTEGER)
+    FROM json_each(@trackIdsJson)
+);";
         await using var command = new SqliteCommand(sql, connection);
-        AddIndexedLongParameters(command, trackIds);
+        command.Parameters.AddWithValue(TrackIdsJsonParameter, SerializeJsonArray(trackIds));
 
         var results = new List<PlexTrackMetadataDto>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -2432,21 +2417,18 @@ WHERE track_id IN ({placeholders});";
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var placeholders = string.Join(", ", sourceIds.Select((_, index) => $"@id{index}"));
-        var sql = $@"
+        const string sql = @"
 SELECT source_id,
        track_id
 FROM track_source
 WHERE source = @source
-  AND source_id IN ({placeholders});";
+  AND source_id IN (
+      SELECT value
+      FROM json_each(@sourceIdsJson)
+  );";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, source);
-        var index = 0;
-        foreach (var sourceId in sourceIds)
-        {
-            command.Parameters.AddWithValue($"id{index}", sourceId);
-            index++;
-        }
+        command.Parameters.AddWithValue("sourceIdsJson", SerializeJsonArray(sourceIds));
 
         var mapping = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -2551,19 +2533,18 @@ LIMIT 1;";
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var placeholders = string.Join(", ", ratingKeys.Select((_, index) => $"@rk{index}"));
-        var sql = $@"
+        const string sql = @"
 SELECT plex_rating_key,
        track_id
 FROM play_history
-WHERE plex_rating_key IN ({placeholders})
+WHERE plex_rating_key IN (
+    SELECT value
+    FROM json_each(@ratingKeysJson)
+)
   AND track_id IS NOT NULL
 ORDER BY played_at_utc DESC;";
         await using var command = new SqliteCommand(sql, connection);
-        for (var i = 0; i < ratingKeys.Count; i++)
-        {
-            command.Parameters.AddWithValue($"rk{i}", ratingKeys[i]);
-        }
+        command.Parameters.AddWithValue("ratingKeysJson", SerializeJsonArray(ratingKeys));
 
         var mapping = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -3188,14 +3169,16 @@ WHERE status IN ('complete', 'completed')
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var placeholders = BuildIndexedParameterPlaceholders(trackIds.Count);
-        var sql = $@"
+        const string sql = @"
 SELECT track_id, library_id, status, energy, rms, zero_crossing, spectral_centroid, bpm, beats_count, key, key_scale, key_strength, loudness, dynamic_range, danceability, instrumentalness, acousticness, speechiness, danceability_ml, valence, arousal, analyzed_at_utc, error, analysis_mode, analysis_version, mood_tags, mood_happy, mood_sad, mood_relaxed, mood_aggressive, mood_party, mood_acoustic, mood_electronic, essentia_genres, lastfm_tags
 FROM track_analysis
-WHERE track_id IN ({placeholders});";
+WHERE track_id IN (
+    SELECT CAST(value AS INTEGER)
+    FROM json_each(@trackIdsJson)
+);";
 
         await using var command = new SqliteCommand(sql, connection);
-        AddIndexedLongParameters(command, trackIds);
+        command.Parameters.AddWithValue(TrackIdsJsonParameter, SerializeJsonArray(trackIds));
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var results = new Dictionary<long, TrackAnalysisResultDto>();
@@ -3275,19 +3258,18 @@ WHERE track_id = @trackId;";
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var genreClauses = string.Join(" OR ", genres.Select((_, index) => $"genres_json LIKE @genre{index}"));
-        var sql = $@"
+        const string sql = @"
 SELECT track_id
 FROM track_plex_metadata
 WHERE track_id <> @sourceTrackId
-  AND ({genreClauses})
+  AND EXISTS (
+      SELECT 1
+      FROM json_each(@genresJson)
+      WHERE track_plex_metadata.genres_json LIKE '%' || '""' || LOWER(TRIM(value)) || '""' || '%'
+  )
 LIMIT @limit;";
         await using var command = new SqliteCommand(sql, connection);
-        for (var i = 0; i < genres.Count; i++)
-        {
-            var token = genres[i].Trim().ToLowerInvariant();
-            command.Parameters.AddWithValue($"genre{i}", $"%\"{token}\"%");
-        }
+        command.Parameters.AddWithValue("genresJson", SerializeJsonArray(genres));
         command.Parameters.AddWithValue("sourceTrackId", sourceTrackId);
         command.Parameters.AddWithValue("limit", limit);
 
@@ -3491,16 +3473,8 @@ LIMIT @limit;";
         await transaction.CommitAsync(cancellationToken);
     }
 
-    private static string BuildIndexedParameterPlaceholders(int count, string prefix = "id")
-        => string.Join(", ", Enumerable.Range(0, count).Select(index => $"@{prefix}{index}"));
-
-    private static void AddIndexedLongParameters(SqliteCommand command, IReadOnlyList<long> values, string prefix = "id")
-    {
-        for (var i = 0; i < values.Count; i++)
-        {
-            command.Parameters.AddWithValue($"{prefix}{i}", values[i]);
-        }
-    }
+    private static string SerializeJsonArray<T>(IEnumerable<T> values)
+        => JsonSerializer.Serialize(values);
 
     private static IReadOnlyList<string>? DeserializeStringList(string json)
     {
@@ -3555,16 +3529,18 @@ LIMIT @limit;";
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var placeholders = BuildIndexedParameterPlaceholders(trackIds.Count);
-        var sql = $@"
+        const string sql = @"
 SELECT DISTINCT a.preferred_cover_path
 FROM track t
 JOIN album a ON a.id = t.album_id
-WHERE t.id IN ({placeholders})
+WHERE t.id IN (
+    SELECT CAST(value AS INTEGER)
+    FROM json_each(@trackIdsJson)
+)
   AND a.preferred_cover_path IS NOT NULL
 LIMIT @limit;";
         await using var command = new SqliteCommand(sql, connection);
-        AddIndexedLongParameters(command, trackIds);
+        command.Parameters.AddWithValue(TrackIdsJsonParameter, SerializeJsonArray(trackIds));
         command.Parameters.AddWithValue("limit", limit);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var covers = new List<string>();
@@ -7736,8 +7712,6 @@ WHERE id IN (SELECT track_id FROM best_duration)
             transaction,
             input,
             table: "track_source",
-            entityIdColumn: "track_id",
-            entityIdParameter: TrackIdField,
             cancellationToken);
     }
 
@@ -7751,8 +7725,6 @@ WHERE id IN (SELECT track_id FROM best_duration)
             transaction,
             input,
             table: "artist_source",
-            entityIdColumn: "artist_id",
-            entityIdParameter: "artistId",
             cancellationToken);
 
     private static async Task EnsureAlbumSourceAsync(
@@ -7765,8 +7737,6 @@ WHERE id IN (SELECT track_id FROM best_duration)
             transaction,
             input,
             table: "album_source",
-            entityIdColumn: "album_id",
-            entityIdParameter: "albumId",
             cancellationToken);
 
     private static async Task EnsureEntitySourceAsync(
@@ -7774,16 +7744,12 @@ WHERE id IN (SELECT track_id FROM best_duration)
         SqliteTransaction transaction,
         SourceUpsertInput input,
         string table,
-        string entityIdColumn,
-        string entityIdParameter,
         CancellationToken cancellationToken)
         => await UpsertEntitySourceRecordAsync(
             connection,
             transaction,
             input,
             table,
-            entityIdColumn,
-            entityIdParameter,
             cancellationToken);
 
     public async Task UpsertTrackSourceLinkAsync(
@@ -7800,8 +7766,6 @@ WHERE id IN (SELECT track_id FROM best_duration)
             transaction: null,
             new SourceUpsertInput(trackId, source, sourceId, url, data),
             table: "track_source",
-            entityIdColumn: "track_id",
-            entityIdParameter: TrackIdField,
             cancellationToken);
     }
 
@@ -7819,8 +7783,6 @@ WHERE id IN (SELECT track_id FROM best_duration)
             transaction: null,
             new SourceUpsertInput(albumId, source, sourceId, url, data),
             table: "album_source",
-            entityIdColumn: "album_id",
-            entityIdParameter: "albumId",
             cancellationToken);
     }
 
@@ -7838,8 +7800,6 @@ WHERE id IN (SELECT track_id FROM best_duration)
             transaction: null,
             new SourceUpsertInput(artistId, source, sourceId, url, data),
             table: "artist_source",
-            entityIdColumn: "artist_id",
-            entityIdParameter: "artistId",
             cancellationToken);
     }
 
@@ -7848,36 +7808,23 @@ WHERE id IN (SELECT track_id FROM best_duration)
         SqliteTransaction? transaction,
         SourceUpsertInput input,
         string table,
-        string entityIdColumn,
-        string entityIdParameter,
         CancellationToken cancellationToken)
     {
+        var sql = ResolveEntitySourceSql(table);
         var normalizedSource = input.Source.Trim().ToLowerInvariant();
         var normalizedSourceId = input.SourceId.Trim();
 
-        var deleteCurrentSql = $@"
-DELETE FROM {table}
-WHERE {entityIdColumn} = @{entityIdParameter}
-  AND source = @source
-  AND source_id <> @sourceId;";
-        await using (var deleteCurrent = new SqliteCommand(deleteCurrentSql, connection, transaction))
+        await using (var deleteCurrent = new SqliteCommand(sql.DeleteCurrentSql, connection, transaction))
         {
-            deleteCurrent.Parameters.AddWithValue(entityIdParameter, input.EntityId);
+            deleteCurrent.Parameters.AddWithValue(EntityIdParameter, input.EntityId);
             deleteCurrent.Parameters.AddWithValue(SourceField, normalizedSource);
             deleteCurrent.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
             await deleteCurrent.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        var updateBySourceIdSql = $@"
-UPDATE {table}
-SET {entityIdColumn} = @{entityIdParameter},
-    url = COALESCE(NULLIF(@url, ''), {table}.url),
-    data = COALESCE(NULLIF(@data, ''), {table}.data)
-WHERE source = @source
-  AND source_id = @sourceId;";
-        await using (var updateBySourceId = new SqliteCommand(updateBySourceIdSql, connection, transaction))
+        await using (var updateBySourceId = new SqliteCommand(sql.UpdateBySourceIdSql, connection, transaction))
         {
-            updateBySourceId.Parameters.AddWithValue(entityIdParameter, input.EntityId);
+            updateBySourceId.Parameters.AddWithValue(EntityIdParameter, input.EntityId);
             updateBySourceId.Parameters.AddWithValue(SourceField, normalizedSource);
             updateBySourceId.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
             updateBySourceId.Parameters.AddWithValue("url", (object?)input.Url ?? DBNull.Value);
@@ -7889,16 +7836,9 @@ WHERE source = @source
             }
         }
 
-        var updateByEntitySql = $@"
-UPDATE {table}
-SET source_id = @sourceId,
-    url = COALESCE(NULLIF(@url, ''), {table}.url),
-    data = COALESCE(NULLIF(@data, ''), {table}.data)
-WHERE {entityIdColumn} = @{entityIdParameter}
-  AND source = @source;";
-        await using (var updateByEntity = new SqliteCommand(updateByEntitySql, connection, transaction))
+        await using (var updateByEntity = new SqliteCommand(sql.UpdateByEntitySql, connection, transaction))
         {
-            updateByEntity.Parameters.AddWithValue(entityIdParameter, input.EntityId);
+            updateByEntity.Parameters.AddWithValue(EntityIdParameter, input.EntityId);
             updateByEntity.Parameters.AddWithValue(SourceField, normalizedSource);
             updateByEntity.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
             updateByEntity.Parameters.AddWithValue("url", (object?)input.Url ?? DBNull.Value);
@@ -7910,17 +7850,89 @@ WHERE {entityIdColumn} = @{entityIdParameter}
             }
         }
 
-        var insertSql = $@"
-INSERT INTO {table} ({entityIdColumn}, source, source_id, url, data)
-VALUES (@{entityIdParameter}, @source, @sourceId, @url, @data);";
-        await using var insert = new SqliteCommand(insertSql, connection, transaction);
-        insert.Parameters.AddWithValue(entityIdParameter, input.EntityId);
+        await using var insert = new SqliteCommand(sql.InsertSql, connection, transaction);
+        insert.Parameters.AddWithValue(EntityIdParameter, input.EntityId);
         insert.Parameters.AddWithValue(SourceField, normalizedSource);
         insert.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         insert.Parameters.AddWithValue("url", (object?)input.Url ?? DBNull.Value);
         insert.Parameters.AddWithValue("data", (object?)input.Data ?? DBNull.Value);
         await insert.ExecuteNonQueryAsync(cancellationToken);
     }
+
+    private static (string DeleteCurrentSql, string UpdateBySourceIdSql, string UpdateByEntitySql, string InsertSql) ResolveEntitySourceSql(string table)
+        => table switch
+        {
+            "track_source" => (
+                DeleteCurrentSql: @"
+DELETE FROM track_source
+WHERE track_id = @entityId
+  AND source = @source
+  AND source_id <> @sourceId;",
+                UpdateBySourceIdSql: @"
+UPDATE track_source
+SET track_id = @entityId,
+    url = COALESCE(NULLIF(@url, ''), track_source.url),
+    data = COALESCE(NULLIF(@data, ''), track_source.data)
+WHERE source = @source
+  AND source_id = @sourceId;",
+                UpdateByEntitySql: @"
+UPDATE track_source
+SET source_id = @sourceId,
+    url = COALESCE(NULLIF(@url, ''), track_source.url),
+    data = COALESCE(NULLIF(@data, ''), track_source.data)
+WHERE track_id = @entityId
+  AND source = @source;",
+                InsertSql: @"
+INSERT INTO track_source (track_id, source, source_id, url, data)
+VALUES (@entityId, @source, @sourceId, @url, @data);"),
+            "album_source" => (
+                DeleteCurrentSql: @"
+DELETE FROM album_source
+WHERE album_id = @entityId
+  AND source = @source
+  AND source_id <> @sourceId;",
+                UpdateBySourceIdSql: @"
+UPDATE album_source
+SET album_id = @entityId,
+    url = COALESCE(NULLIF(@url, ''), album_source.url),
+    data = COALESCE(NULLIF(@data, ''), album_source.data)
+WHERE source = @source
+  AND source_id = @sourceId;",
+                UpdateByEntitySql: @"
+UPDATE album_source
+SET source_id = @sourceId,
+    url = COALESCE(NULLIF(@url, ''), album_source.url),
+    data = COALESCE(NULLIF(@data, ''), album_source.data)
+WHERE album_id = @entityId
+  AND source = @source;",
+                InsertSql: @"
+INSERT INTO album_source (album_id, source, source_id, url, data)
+VALUES (@entityId, @source, @sourceId, @url, @data);"),
+            "artist_source" => (
+                DeleteCurrentSql: @"
+DELETE FROM artist_source
+WHERE artist_id = @entityId
+  AND source = @source
+  AND source_id <> @sourceId;",
+                UpdateBySourceIdSql: @"
+UPDATE artist_source
+SET artist_id = @entityId,
+    url = COALESCE(NULLIF(@url, ''), artist_source.url),
+    data = COALESCE(NULLIF(@data, ''), artist_source.data)
+WHERE source = @source
+  AND source_id = @sourceId;",
+                UpdateByEntitySql: @"
+UPDATE artist_source
+SET source_id = @sourceId,
+    url = COALESCE(NULLIF(@url, ''), artist_source.url),
+    data = COALESCE(NULLIF(@data, ''), artist_source.data)
+WHERE artist_id = @entityId
+  AND source = @source;",
+                InsertSql: @"
+INSERT INTO artist_source (artist_id, source, source_id, url, data)
+VALUES (@entityId, @source, @sourceId, @url, @data);"),
+            _ => throw new InvalidOperationException($"Unsupported source mapping table '{table}'.")
+        };
 
     private static string? BuildTrackUrl(string source, string? sourceId)
     {
@@ -8040,16 +8052,16 @@ VALUES (@{entityIdParameter}, @source, @sourceId, @url, @data);";
         LocalTrackScanDto track,
         CancellationToken cancellationToken)
     {
-        await DeleteTrackTagsAsync(connection, transaction, "track_genre", trackId, cancellationToken);
-        await DeleteTrackTagsAsync(connection, transaction, "track_style", trackId, cancellationToken);
-        await DeleteTrackTagsAsync(connection, transaction, "track_mood", trackId, cancellationToken);
-        await DeleteTrackTagsAsync(connection, transaction, "track_remixer", trackId, cancellationToken);
-        await DeleteTrackTagsAsync(connection, transaction, "track_other_tag", trackId, cancellationToken);
+        await DeleteTrackTagsAsync(connection, transaction, TrackGenreTable, trackId, cancellationToken);
+        await DeleteTrackTagsAsync(connection, transaction, TrackStyleTable, trackId, cancellationToken);
+        await DeleteTrackTagsAsync(connection, transaction, TrackMoodTable, trackId, cancellationToken);
+        await DeleteTrackTagsAsync(connection, transaction, TrackRemixerTable, trackId, cancellationToken);
+        await DeleteTrackTagsAsync(connection, transaction, TrackOtherTagTable, trackId, cancellationToken);
 
-        await InsertTrackTagValuesAsync(connection, transaction, "track_genre", trackId, track.TagGenres, cancellationToken);
-        await InsertTrackTagValuesAsync(connection, transaction, "track_style", trackId, track.TagStyles, cancellationToken);
-        await InsertTrackTagValuesAsync(connection, transaction, "track_mood", trackId, track.TagMoods, cancellationToken);
-        await InsertTrackTagValuesAsync(connection, transaction, "track_remixer", trackId, track.TagRemixers, cancellationToken);
+        await InsertTrackTagValuesAsync(connection, transaction, TrackGenreTable, trackId, track.TagGenres, cancellationToken);
+        await InsertTrackTagValuesAsync(connection, transaction, TrackStyleTable, trackId, track.TagStyles, cancellationToken);
+        await InsertTrackTagValuesAsync(connection, transaction, TrackMoodTable, trackId, track.TagMoods, cancellationToken);
+        await InsertTrackTagValuesAsync(connection, transaction, TrackRemixerTable, trackId, track.TagRemixers, cancellationToken);
         await InsertTrackOtherTagsAsync(connection, transaction, trackId, track.TagOtherTags, cancellationToken);
     }
 
@@ -8060,7 +8072,7 @@ VALUES (@{entityIdParameter}, @source, @sourceId, @url, @data);";
         long trackId,
         CancellationToken cancellationToken)
     {
-        var sql = $"DELETE FROM {table} WHERE track_id = @trackId;";
+        var sql = ResolveDeleteTrackTagsSql(table);
         await using var command = new SqliteCommand(sql, connection, transaction);
         command.Parameters.AddWithValue(TrackIdField, trackId);
         await command.ExecuteNonQueryAsync(cancellationToken);
@@ -8079,7 +8091,7 @@ VALUES (@{entityIdParameter}, @source, @sourceId, @url, @data);";
             return;
         }
 
-        var sql = $"INSERT INTO {table} (track_id, value) VALUES (@trackId, @value) ON CONFLICT DO NOTHING;";
+        var sql = ResolveInsertTrackTagValuesSql(table);
         foreach (var value in values.Where(value => !string.IsNullOrWhiteSpace(value)))
         {
             await using var command = new SqliteCommand(sql, connection, transaction);
@@ -8088,6 +8100,27 @@ VALUES (@{entityIdParameter}, @source, @sourceId, @url, @data);";
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
     }
+
+    private static string ResolveDeleteTrackTagsSql(string table)
+        => table switch
+        {
+            TrackGenreTable => "DELETE FROM track_genre WHERE track_id = @trackId;",
+            TrackStyleTable => "DELETE FROM track_style WHERE track_id = @trackId;",
+            TrackMoodTable => "DELETE FROM track_mood WHERE track_id = @trackId;",
+            TrackRemixerTable => "DELETE FROM track_remixer WHERE track_id = @trackId;",
+            TrackOtherTagTable => "DELETE FROM track_other_tag WHERE track_id = @trackId;",
+            _ => throw new InvalidOperationException($"Unsupported track tag table '{table}'.")
+        };
+
+    private static string ResolveInsertTrackTagValuesSql(string table)
+        => table switch
+        {
+            TrackGenreTable => "INSERT INTO track_genre (track_id, value) VALUES (@trackId, @value) ON CONFLICT DO NOTHING;",
+            TrackStyleTable => "INSERT INTO track_style (track_id, value) VALUES (@trackId, @value) ON CONFLICT DO NOTHING;",
+            TrackMoodTable => "INSERT INTO track_mood (track_id, value) VALUES (@trackId, @value) ON CONFLICT DO NOTHING;",
+            TrackRemixerTable => "INSERT INTO track_remixer (track_id, value) VALUES (@trackId, @value) ON CONFLICT DO NOTHING;",
+            _ => throw new InvalidOperationException($"Unsupported track tag table '{table}'.")
+        };
 
     private static async Task InsertTrackOtherTagsAsync(
         SqliteConnection connection,
@@ -8382,20 +8415,20 @@ LIMIT @limit;";
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var placeholders = string.Join(", ", artistNames.Select((_, i) => $"@name{i}"));
-        var sql = $@"
+        const string sql = @"
 SELECT t.id
 FROM track t
 JOIN album a ON a.id = t.album_id
 JOIN artist ar ON ar.id = a.artist_id
-WHERE ar.name COLLATE NOCASE IN ({placeholders})
+WHERE EXISTS (
+    SELECT 1
+    FROM json_each(@artistNamesJson)
+    WHERE ar.name = value COLLATE NOCASE
+)
   AND t.id <> @excludeTrackId
 LIMIT @limit;";
         await using var command = new SqliteCommand(sql, connection);
-        for (var i = 0; i < artistNames.Count; i++)
-        {
-            command.Parameters.AddWithValue($"name{i}", artistNames[i]);
-        }
+        command.Parameters.AddWithValue("artistNamesJson", SerializeJsonArray(artistNames));
         command.Parameters.AddWithValue("excludeTrackId", excludeTrackId);
         command.Parameters.AddWithValue("limit", limit);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);

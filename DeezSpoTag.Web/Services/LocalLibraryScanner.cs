@@ -1206,8 +1206,10 @@ public sealed class LocalLibraryScanner
     private static long ComputeStableId(string input)
     {
         // Deterministic non-cryptographic identifier only; value is not used for security decisions.
-        var hash = SHA1.HashData(System.Text.Encoding.UTF8.GetBytes(input));
-        var raw = Math.Abs(BitConverter.ToInt64(hash, 0));
+        var bytes = System.Text.Encoding.UTF8.GetBytes(input);
+        var hash = SHA256.HashData(bytes);
+        var raw = (long)(BitConverter.ToUInt64(hash, 0) & long.MaxValue);
+
         // Keep IDs within JS safe integer range to avoid precision loss in the UI.
         return raw & ((1L << 53) - 1);
     }

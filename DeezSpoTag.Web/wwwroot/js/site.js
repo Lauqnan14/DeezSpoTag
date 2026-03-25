@@ -12,16 +12,10 @@
     const originalFetch = globalThis.fetch.bind(globalThis);
     const unsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
-    function readCookie(name) {
-        const encodedName = `${encodeURIComponent(name)}=`;
-        const parts = document.cookie ? document.cookie.split(';') : [];
-        for (const part of parts) {
-            const trimmed = part.trim();
-            if (trimmed.startsWith(encodedName)) {
-                return decodeURIComponent(trimmed.slice(encodedName.length));
-            }
-        }
-        return '';
+    function readCsrfToken() {
+        const tokenMeta = document.querySelector('meta[name="deezspotag-csrf-token"]');
+        const token = tokenMeta?.getAttribute('content');
+        return typeof token === 'string' ? token.trim() : '';
     }
 
     function resolveUrl(resource) {
@@ -49,7 +43,7 @@
             return originalFetch(resource, init);
         }
 
-        const csrfToken = readCookie('deezspotag.csrf.request');
+        const csrfToken = readCsrfToken();
         if (!csrfToken) {
             return originalFetch(resource, init);
         }

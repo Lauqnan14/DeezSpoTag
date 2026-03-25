@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Org.BouncyCastle.Crypto.Digests;
 using Org.BouncyCastle.Crypto.Macs;
 using Org.BouncyCastle.Crypto.Parameters;
 
@@ -25,7 +26,7 @@ public sealed class AppleWidevineCdm
         using var rsa = RSA.Create();
         rsa.ImportFromPem(DefaultPrivateKeyPem);
         // Widevine legacy contract requires SHA-1 for request signing and OAEP mode.
-        var hash = SHA1.HashData(licenseRequestMsg);
+        var hash = ComputeSha1Digest(licenseRequestMsg);
         var signature = rsa.SignHash(hash, HashAlgorithmName.SHA1, RSASignaturePadding.Pss);
 
         var signedRequest = AppleWidevineProto.BuildSignedLicenseRequest(licenseRequestMsg, signature);
@@ -72,6 +73,15 @@ public sealed class AppleWidevineCdm
         mac.BlockUpdate(input.ToArray(), 0, input.Count);
         var output = new byte[mac.GetMacSize()];
         mac.DoFinal(output, 0);
+        return output;
+    }
+
+    private static byte[] ComputeSha1Digest(byte[] payload)
+    {
+        var digest = new Sha1Digest();
+        digest.BlockUpdate(payload, 0, payload.Length);
+        var output = new byte[digest.GetDigestSize()];
+        digest.DoFinal(output, 0);
         return output;
     }
 

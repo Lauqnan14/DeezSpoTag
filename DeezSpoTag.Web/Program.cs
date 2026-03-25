@@ -40,7 +40,6 @@ protected Program()
 {
 }
 
-private const string CsrfRequestTokenCookieName = "deezspotag.csrf.request";
 private const string UnknownValue = "unknown";
 private const string MissingValue = "missing";
 public static async Task Main(string[] args)
@@ -490,25 +489,7 @@ static void ConfigureCsrfCookieMiddleware(WebApplication app)
             && !context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
         {
             var antiforgery = context.RequestServices.GetRequiredService<IAntiforgery>();
-            var tokens = antiforgery.GetAndStoreTokens(context);
-            if (!string.IsNullOrWhiteSpace(tokens.RequestToken))
-            {
-                // This request token cookie is intentionally readable by client JS so it can populate X-CSRF-TOKEN.
-                context.Response.Cookies.Append(
-                    CsrfRequestTokenCookieName,
-                    tokens.RequestToken,
-                    new CookieOptions
-                    {
-                        HttpOnly = false,
-                        SameSite = Microsoft.AspNetCore.Http.SameSiteMode.Strict,
-                        Secure = context.Request.IsHttps,
-                        Path = "/"
-                    });
-            }
-            else
-            {
-                context.Response.Cookies.Delete(CsrfRequestTokenCookieName, new CookieOptions { Path = "/" });
-            }
+            antiforgery.GetAndStoreTokens(context);
         }
 
         await next();

@@ -3102,10 +3102,13 @@ function renderSpotifyRecommendationItem(item) {
     const sourceId = (item.id || '').toString();
     const sourceUrl = (item.url || item.sourceUrl || '').toString();
     const title = escapeHtml(item.name || '');
-    const subtitle = escapeHtml(item.artists || item.description || '');
+    const rawSubtitle = (item.artists || item.description || '').toString().trim();
+    const subtitleIsGeneric = ['spotify', 'playlist'].includes(rawSubtitle.toLowerCase());
+    const subtitle = subtitleIsGeneric ? '' : escapeHtml(rawSubtitle);
     const cover = item.coverUrl || item.imageUrl || item.image_url || '';
     const type = escapeHtml(item.type || '');
-    const meta = type ? `${type}` : '';
+    const hideGenericPlaylistMeta = source === 'spotify' && sourceType === 'playlist';
+    const meta = hideGenericPlaylistMeta ? '' : (type ? `${type}` : '');
     const artStyle = cover ? `style="background-image: url('${cover}');"` : '';
     return `
         <div class="spotify-card"

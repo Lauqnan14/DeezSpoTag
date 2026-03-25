@@ -1,4 +1,6 @@
+@using Microsoft.AspNetCore.Antiforgery
 @inject DeezSpoTag.Web.Services.UserPreferencesStore _userPrefsStore
+@inject IAntiforgery _antiforgery
 @{
     var _serverPrefs = await _userPrefsStore.LoadAsync();
     var _serverPrefsJson = System.Text.Json.JsonSerializer.Serialize(_serverPrefs, new System.Text.Json.JsonSerializerOptions
@@ -6,12 +8,14 @@
         PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
     });
+    var _csrfRequestToken = _antiforgery.GetAndStoreTokens(Context).RequestToken ?? string.Empty;
     var _isLoginPage = Context.Request.Path.StartsWithSegments("/Login", StringComparison.OrdinalIgnoreCase);
 }
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <title>@ViewData["Title"] - DeezSpoTag</title>
+    <meta name="deezspotag-csrf-token" content="@_csrfRequestToken" />
     <partial name="_CommonHeadAssets" />
     <script>
         (function () {

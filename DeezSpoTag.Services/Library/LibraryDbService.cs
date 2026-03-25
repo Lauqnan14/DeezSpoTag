@@ -23,8 +23,12 @@ public sealed class LibraryDbService
     private const string WatchlistHistoryTable = "watchlist_history";
     private const string TrackAnalysisTable = "track_analysis";
     private const string LibraryTable = "library";
+    private const string DownloadBlocklistTable = "download_blocklist";
+    private const string TrackShazamCacheTable = "track_shazam_cache";
     private const string TextType = "TEXT";
     private const string IntegerType = "INTEGER";
+    private const string BigIntType = "BIGINT";
+    private const string LibraryIdColumn = "library_id";
     private const string RealType = "REAL";
     private const string SourceIdColumn = "source_id";
     private const string ExternalIdColumn = "external_id";
@@ -144,8 +148,8 @@ public sealed class LibraryDbService
         await EnsureIndexAsync(connection, "idx_download_task_apple_artist", DownloadTaskTable, "apple_artist_id", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_download_task_destination_folder", DownloadTaskTable, "destination_folder_id", unique: false, cancellationToken);
 
-        await EnsureColumnAsync(connection, FolderTable, "library_id", "BIGINT", cancellationToken);
-        await EnsureIndexAsync(connection, "idx_folder_library_id", FolderTable, "library_id", unique: false, cancellationToken);
+        await EnsureColumnAsync(connection, FolderTable, LibraryIdColumn, BigIntType, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_folder_library_id", FolderTable, LibraryIdColumn, unique: false, cancellationToken);
         await EnsureColumnAsync(connection, FolderTable, "auto_tag_profile_id", TextType, cancellationToken);
         await EnsureColumnAsync(connection, FolderTable, "auto_tag_enabled", $"{IntegerType} DEFAULT 1", cancellationToken);
         await EnsureColumnAsync(connection, FolderTable, "desired_quality", $"{IntegerType} DEFAULT 27", cancellationToken);
@@ -197,8 +201,8 @@ CREATE TABLE IF NOT EXISTS download_blocklist (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (field, normalized_value)
 );", cancellationToken);
-        await EnsureIndexAsync(connection, "idx_download_blocklist_field", "download_blocklist", "field, is_enabled", unique: false, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_download_blocklist_normalized", "download_blocklist", "normalized_value, is_enabled", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_download_blocklist_field", DownloadBlocklistTable, "field, is_enabled", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_download_blocklist_normalized", DownloadBlocklistTable, "normalized_value, is_enabled", unique: false, cancellationToken);
 
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS track_shazam_cache (
@@ -213,8 +217,8 @@ CREATE TABLE IF NOT EXISTS track_shazam_cache (
     error TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );", cancellationToken);
-        await EnsureIndexAsync(connection, "idx_track_shazam_cache_status", "track_shazam_cache", "status", unique: false, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_track_shazam_cache_scanned", "track_shazam_cache", "scanned_at_utc", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_track_shazam_cache_status", TrackShazamCacheTable, "status", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_track_shazam_cache_scanned", TrackShazamCacheTable, "scanned_at_utc", unique: false, cancellationToken);
 
         await MigrateSourceMappingTablesAsync(connection, cancellationToken);
 
@@ -320,8 +324,7 @@ CREATE TABLE IF NOT EXISTS track_other_tag (
         bool unique,
         CancellationToken cancellationToken)
     {
-        var prefix = unique ? "CREATE UNIQUE INDEX" : "CREATE INDEX";
-        var sql = $"{prefix} IF NOT EXISTS {indexName} ON {table} ({column});";
+        var sql = ResolveCreateIndexSql(indexName, table, column, unique);
         await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -347,12 +350,7 @@ CREATE TABLE IF NOT EXISTS track_other_tag (
             return;
         }
 
-        var sql = $@"
-UPDATE {table}
-SET {column} = {legacyColumn}
-WHERE ({column} IS NULL OR {column} = '')
-  AND {legacyColumn} IS NOT NULL
-  AND {legacyColumn} <> '';";
+        var sql = ResolveBackfillLegacySql(table, column, legacyColumn);
         await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -363,7 +361,7 @@ WHERE ({column} IS NULL OR {column} = '')
     {
         if (!await TableExistsAsync(connection, FolderTable, cancellationToken)
             || !await TableExistsAsync(connection, LibraryTable, cancellationToken)
-            || !await ColumnExistsAsync(connection, FolderTable, "library_id", cancellationToken))
+            || !await ColumnExistsAsync(connection, FolderTable, LibraryIdColumn, cancellationToken))
         {
             return;
         }
@@ -427,15 +425,131 @@ WHERE library_id IS NULL;";
         }
 
         var legacyHasSourceId = await ColumnExistsAsync(connection, legacyTable, SourceIdColumn, cancellationToken);
-        var legacyIdColumn = legacyHasSourceId ? SourceIdColumn : ExternalIdColumn;
-        var sql = $@"
-INSERT OR IGNORE INTO {newTable} ({idColumn}, source, source_id)
-SELECT {idColumn}, source, {legacyIdColumn}
-FROM {legacyTable}
-WHERE {legacyIdColumn} IS NOT NULL AND {legacyIdColumn} <> '';";
+        var sql = ResolveCopySourceMappingSql(legacyTable, newTable, idColumn, legacyHasSourceId);
         await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
+
+    private static string ResolveCreateIndexSql(string indexName, string table, string column, bool unique)
+        => (indexName, table, column, unique) switch
+        {
+            ("idx_audio_file_folder_relative", AudioFileTable, "folder_id, relative_path", true) =>
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_audio_file_folder_relative ON audio_file (folder_id, relative_path);",
+            ("idx_download_task_isrc", DownloadTaskTable, "isrc", false) =>
+                "CREATE INDEX IF NOT EXISTS idx_download_task_isrc ON download_task (isrc);",
+            ("idx_download_task_deezer_track", DownloadTaskTable, "deezer_track_id", false) =>
+                "CREATE INDEX IF NOT EXISTS idx_download_task_deezer_track ON download_task (deezer_track_id);",
+            ("idx_download_task_deezer_album", DownloadTaskTable, "deezer_album_id", false) =>
+                "CREATE INDEX IF NOT EXISTS idx_download_task_deezer_album ON download_task (deezer_album_id);",
+            ("idx_download_task_deezer_artist", DownloadTaskTable, "deezer_artist_id", false) =>
+                "CREATE INDEX IF NOT EXISTS idx_download_task_deezer_artist ON download_task (deezer_artist_id);",
+            ("idx_download_task_spotify_track", DownloadTaskTable, "spotify_track_id", false) =>
+                "CREATE INDEX IF NOT EXISTS idx_download_task_spotify_track ON download_task (spotify_track_id);",
+            ("idx_download_task_spotify_album", DownloadTaskTable, "spotify_album_id", false) =>
+                "CREATE INDEX IF NOT EXISTS idx_download_task_spotify_album ON download_task (spotify_album_id);",
+            ("idx_download_task_spotify_artist", DownloadTaskTable, "spotify_artist_id", false) =>
+                "CREATE INDEX IF NOT EXISTS idx_download_task_spotify_artist ON download_task (spotify_artist_id);",
+            ("idx_download_task_apple_track", DownloadTaskTable, "apple_track_id", false) =>
+                "CREATE INDEX IF NOT EXISTS idx_download_task_apple_track ON download_task (apple_track_id);",
+            ("idx_download_task_apple_album", DownloadTaskTable, "apple_album_id", false) =>
+                "CREATE INDEX IF NOT EXISTS idx_download_task_apple_album ON download_task (apple_album_id);",
+            ("idx_download_task_apple_artist", DownloadTaskTable, "apple_artist_id", false) =>
+                "CREATE INDEX IF NOT EXISTS idx_download_task_apple_artist ON download_task (apple_artist_id);",
+            ("idx_download_task_destination_folder", DownloadTaskTable, "destination_folder_id", false) =>
+                "CREATE INDEX IF NOT EXISTS idx_download_task_destination_folder ON download_task (destination_folder_id);",
+            ("idx_folder_library_id", FolderTable, LibraryIdColumn, false) =>
+                "CREATE INDEX IF NOT EXISTS idx_folder_library_id ON folder (library_id);",
+            ("idx_download_blocklist_field", DownloadBlocklistTable, "field, is_enabled", false) =>
+                "CREATE INDEX IF NOT EXISTS idx_download_blocklist_field ON download_blocklist (field, is_enabled);",
+            ("idx_download_blocklist_normalized", DownloadBlocklistTable, "normalized_value, is_enabled", false) =>
+                "CREATE INDEX IF NOT EXISTS idx_download_blocklist_normalized ON download_blocklist (normalized_value, is_enabled);",
+            ("idx_track_shazam_cache_status", TrackShazamCacheTable, "status", false) =>
+                "CREATE INDEX IF NOT EXISTS idx_track_shazam_cache_status ON track_shazam_cache (status);",
+            ("idx_track_shazam_cache_scanned", TrackShazamCacheTable, "scanned_at_utc", false) =>
+                "CREATE INDEX IF NOT EXISTS idx_track_shazam_cache_scanned ON track_shazam_cache (scanned_at_utc);",
+            _ => throw new InvalidOperationException(
+                $"Unsupported index migration: name='{indexName}' table='{table}' column='{column}' unique={unique}.")
+        };
+
+    private static string ResolveBackfillLegacySql(string table, string column, string legacyColumn)
+        => (table, column, legacyColumn) switch
+        {
+            (PlaylistWatchlistTable, SourceIdColumn, ExternalIdColumn) => @"
+UPDATE playlist_watchlist
+SET source_id = external_id
+WHERE (source_id IS NULL OR source_id = '')
+  AND external_id IS NOT NULL
+  AND external_id <> '';",
+            (PlaylistWatchPreferencesTable, SourceIdColumn, ExternalIdColumn) => @"
+UPDATE playlist_watch_preferences
+SET source_id = external_id
+WHERE (source_id IS NULL OR source_id = '')
+  AND external_id IS NOT NULL
+  AND external_id <> '';",
+            (PlaylistWatchStateTable, SourceIdColumn, ExternalIdColumn) => @"
+UPDATE playlist_watch_state
+SET source_id = external_id
+WHERE (source_id IS NULL OR source_id = '')
+  AND external_id IS NOT NULL
+  AND external_id <> '';",
+            (PlaylistWatchTrackTable, SourceIdColumn, ExternalIdColumn) => @"
+UPDATE playlist_watch_track
+SET source_id = external_id
+WHERE (source_id IS NULL OR source_id = '')
+  AND external_id IS NOT NULL
+  AND external_id <> '';",
+            (PlaylistWatchIgnoreTable, SourceIdColumn, ExternalIdColumn) => @"
+UPDATE playlist_watch_ignore
+SET source_id = external_id
+WHERE (source_id IS NULL OR source_id = '')
+  AND external_id IS NOT NULL
+  AND external_id <> '';",
+            (WatchlistHistoryTable, SourceIdColumn, ExternalIdColumn) => @"
+UPDATE watchlist_history
+SET source_id = external_id
+WHERE (source_id IS NULL OR source_id = '')
+  AND external_id IS NOT NULL
+  AND external_id <> '';",
+            _ => throw new InvalidOperationException(
+                $"Unsupported legacy backfill migration: table='{table}', column='{column}', legacy='{legacyColumn}'.")
+        };
+
+    private static string ResolveCopySourceMappingSql(string legacyTable, string newTable, string idColumn, bool legacyHasSourceId)
+        => (legacyTable, newTable, idColumn, legacyHasSourceId) switch
+        {
+            ("artist_external", "artist_source", "artist_id", true) => @"
+INSERT OR IGNORE INTO artist_source (artist_id, source, source_id)
+SELECT artist_id, source, source_id
+FROM artist_external
+WHERE source_id IS NOT NULL AND source_id <> '';",
+            ("artist_external", "artist_source", "artist_id", false) => @"
+INSERT OR IGNORE INTO artist_source (artist_id, source, source_id)
+SELECT artist_id, source, external_id
+FROM artist_external
+WHERE external_id IS NOT NULL AND external_id <> '';",
+            ("album_external", "album_source", "album_id", true) => @"
+INSERT OR IGNORE INTO album_source (album_id, source, source_id)
+SELECT album_id, source, source_id
+FROM album_external
+WHERE source_id IS NOT NULL AND source_id <> '';",
+            ("album_external", "album_source", "album_id", false) => @"
+INSERT OR IGNORE INTO album_source (album_id, source, source_id)
+SELECT album_id, source, external_id
+FROM album_external
+WHERE external_id IS NOT NULL AND external_id <> '';",
+            ("track_external", "track_source", "track_id", true) => @"
+INSERT OR IGNORE INTO track_source (track_id, source, source_id)
+SELECT track_id, source, source_id
+FROM track_external
+WHERE source_id IS NOT NULL AND source_id <> '';",
+            ("track_external", "track_source", "track_id", false) => @"
+INSERT OR IGNORE INTO track_source (track_id, source, source_id)
+SELECT track_id, source, external_id
+FROM track_external
+WHERE external_id IS NOT NULL AND external_id <> '';",
+            _ => throw new InvalidOperationException(
+                $"Unsupported source mapping migration: legacy='{legacyTable}', new='{newTable}', id='{idColumn}', hasSourceId={legacyHasSourceId}.")
+        };
 
     private static async Task<bool> ColumnExistsAsync(
         SqliteConnection connection,

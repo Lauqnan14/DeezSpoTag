@@ -1,7 +1,13 @@
+@using Microsoft.AspNetCore.Antiforgery
+@inject IAntiforgery _antiforgery
+@{
+    var _csrfRequestToken = _antiforgery.GetAndStoreTokens(Context).RequestToken ?? string.Empty;
+}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <title>@ViewData["Title"] - DeezSpoTag</title>
+    <meta name="deezspotag-csrf-token" content="@_csrfRequestToken" />
     <partial name="_CommonHeadAssets" />
 </head>
 <body>
