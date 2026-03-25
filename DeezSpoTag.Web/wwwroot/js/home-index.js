@@ -44,6 +44,7 @@ const homeTrendingPreviewState = {
 };
 const homeDeezerPlaybackContextCache = new Map();
 const homeDeezerPlaybackContextRequests = new Map();
+let homeTrendingMatchWarmupTimer = 0;
 
 // Lazy image loading with IntersectionObserver for faster initial render
 const lazyImageObserver = new IntersectionObserver((entries) => {
@@ -163,6 +164,9 @@ const setHomeTrendingPreviewButtonState = window.HomeViewHelpers.setHomeTrending
 
 function clearHomeTrendingPreviewButton() {
     if (!homeTrendingPreviewState.button) {
+        if (window.HomeViewHelpers && typeof window.HomeViewHelpers.clearHomeTrendingPlayingMarkers === 'function') {
+            window.HomeViewHelpers.clearHomeTrendingPlayingMarkers(null);
+        }
         return;
     }
     setHomeTrendingPreviewButtonState(homeTrendingPreviewState.button, false);
@@ -277,6 +281,71 @@ async function resolveSpotifyUrlToDeezerHome(url) {
     } catch {
         return null;
     }
+}
+
+async function primeHomeTrendingTrackMappings(options = {}) {
+    const limit = Number(options?.limit || 0);
+    const requestedConcurrency = Number(options?.concurrency || 4);
+    const concurrency = Number.isFinite(requestedConcurrency)
+        ? Math.max(1, Math.min(8, Math.trunc(requestedConcurrency)))
+        : 4;
+
+    const buttons = Array.from(document.querySelectorAll('#home-sections .home-top-song-item__play[data-spotify-url]'));
+    if (buttons.length === 0) {
+        return;
+    }
+
+    const queue = buttons
+        .map((button) => ({
+            button,
+            url: String(button.dataset.spotifyUrl || '').trim()
+        }))
+        .filter((entry) => entry.url && !entry.button.dataset.deezerId);
+
+    if (queue.length === 0) {
+        return;
+    }
+
+    const pending = (limit > 0 ? queue.slice(0, limit) : queue);
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(concurrency, pending.length) }, async () => {
+        while (cursor < pending.length) {
+            const current = pending[cursor++];
+            try {
+                const resolved = await resolveSpotifyUrlToDeezerHome(current.url);
+                if (resolved?.type !== 'track' || !resolved?.deezerId) {
+                    continue;
+                }
+                const deezerId = String(resolved.deezerId);
+                current.button.dataset.deezerId = deezerId;
+                if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.fetchContext === 'function') {
+                    const context = await window.DeezerPlaybackContext.fetchContext(deezerId, {
+                        cache: homeDeezerPlaybackContextCache,
+                        requests: homeDeezerPlaybackContextRequests
+                    });
+                    if (context && typeof window.DeezerPlaybackContext.applyContextToElement === 'function') {
+                        window.DeezerPlaybackContext.applyContextToElement(current.button, context);
+                    }
+                }
+            } catch {
+                // Best-effort warmup; playback still resolves on demand.
+            }
+        }
+    });
+
+    await Promise.all(workers);
+}
+
+function scheduleHomeTrendingTrackMappingWarmup() {
+    if (homeTrendingMatchWarmupTimer) {
+        clearTimeout(homeTrendingMatchWarmupTimer);
+    }
+
+    void primeHomeTrendingTrackMappings({ limit: 8, concurrency: 4 });
+    homeTrendingMatchWarmupTimer = setTimeout(() => {
+        homeTrendingMatchWarmupTimer = 0;
+        void primeHomeTrendingTrackMappings({ concurrency: 2 });
+    }, 900);
 }
 
 async function playHomeTrendingTrackInApp(target, options = {}) {
@@ -1497,6 +1566,7 @@ function renderHomeSections(sections) {
     }).join('');
 
     setupHomeFilters(sectionsToRender.map(entry => entry.section));
+    scheduleHomeTrendingTrackMappingWarmup();
 }
 
 function renderPopularRadioSeeMoreCard() {

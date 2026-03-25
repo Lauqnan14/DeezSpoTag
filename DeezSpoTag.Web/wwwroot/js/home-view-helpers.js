@@ -34,9 +34,28 @@
         }, 5000);
     }
 
+    function clearHomeTrendingPlayingMarkers(exceptButton) {
+        global.document.querySelectorAll('.home-top-song-item__play.is-playing').forEach((activeButton) => {
+            if (exceptButton && activeButton === exceptButton) {
+                return;
+            }
+            activeButton.classList.remove('is-playing');
+            const row = activeButton.closest('.home-top-song-item');
+            if (row) {
+                row.classList.remove('is-playing');
+            }
+        });
+    }
+
     function setHomeTrendingPreviewButtonState(button, isPlaying) {
         if (!button) {
+            if (!isPlaying) {
+                clearHomeTrendingPlayingMarkers(null);
+            }
             return;
+        }
+        if (isPlaying) {
+            clearHomeTrendingPlayingMarkers(button);
         }
         button.classList.toggle('is-playing', isPlaying);
         const row = button.closest('.home-top-song-item');
@@ -199,6 +218,7 @@
     global.HomeViewHelpers = {
         showToast: showToast,
         setHomeTrendingPreviewButtonState: setHomeTrendingPreviewButtonState,
+        clearHomeTrendingPlayingMarkers: clearHomeTrendingPlayingMarkers,
         normalizeHomeDeezerPlaybackContext: normalizeHomeDeezerPlaybackContext,
         buildHomeDeezerStreamUrl: buildHomeDeezerStreamUrl,
         fetchHomeDeezerPlaybackContext: fetchHomeDeezerPlaybackContext,

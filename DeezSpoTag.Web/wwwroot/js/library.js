@@ -1545,9 +1545,37 @@ async function handleSpotifyRedirect(url, metadata = {}) {
     globalThis.location.href = `/Tracklist?id=${encodeURIComponent(parsed.id)}&type=${encodeURIComponent(parsed.type || 'track')}&source=spotify`;
 }
 
+function clearPreviewPlayingMarkers(exceptButton = null) {
+    document.querySelectorAll('.track-action.track-play.is-playing').forEach((activeButton) => {
+        if (exceptButton && activeButton === exceptButton) {
+            return;
+        }
+
+        activeButton.classList.remove('is-playing');
+        const row = activeButton.closest('.top-song-item, .home-top-song-item');
+        if (row) {
+            row.classList.remove('is-playing');
+        }
+        const numberCell = activeButton.closest('.track-number');
+        if (numberCell) {
+            numberCell.classList.remove('is-playing');
+        }
+        const materialIcon = activeButton.querySelector('.material-icons');
+        if (materialIcon) {
+            materialIcon.textContent = 'play_arrow';
+        }
+    });
+}
+
 function setPreviewButtonState(button, isPlaying) {
     if (!button) {
+        if (!isPlaying) {
+            clearPreviewPlayingMarkers(null);
+        }
         return;
+    }
+    if (isPlaying) {
+        clearPreviewPlayingMarkers(button);
     }
 
     button.classList.toggle('is-playing', isPlaying);
@@ -1583,7 +1611,7 @@ function resetPreviewState(button) {
     }
 }
 
-function configurePreviewAudio(audio, previewKey, button, sourceUrl, onEnded) {
+function configurePreviewAudio(audio, previewKey, button, sourceUrl, onEnded, onError = null) {
     if (libraryState.previewButton !== button) {
         clearActivePreviewButton();
     }
@@ -1596,6 +1624,7 @@ function configurePreviewAudio(audio, previewKey, button, sourceUrl, onEnded) {
     audio.src = sourceUrl;
     audio.currentTime = 0;
     audio.onended = onEnded;
+    audio.onerror = typeof onError === 'function' ? onError : null;
 }
 
 async function startPreviewPlayback(audio, button, message) {
@@ -1678,12 +1707,30 @@ async function playSpotifyTrackInApp(url, button) {
 
     configurePreviewAudio(audio, previewKey, button, streamUrl, () => {
         const nextButton = getNextSpotifyTopTrackButton();
+        const currentButton = libraryState.previewButton;
+        if (currentButton) {
+            setPreviewButtonState(currentButton, false);
+        }
+        libraryState.previewTrackId = null;
+        libraryState.previewButton = null;
         if (nextButton?.dataset?.spotifyUrl) {
             playSpotifyTrackInApp(nextButton.dataset.spotifyUrl, nextButton);
             return;
         }
-        clearActivePreviewButton();
+        clearPreviewPlayingMarkers(null);
+    }, () => {
+        const nextButton = getNextSpotifyTopTrackButton();
+        const currentButton = libraryState.previewButton;
+        if (currentButton) {
+            setPreviewButtonState(currentButton, false);
+        }
         libraryState.previewTrackId = null;
+        libraryState.previewButton = null;
+        if (nextButton?.dataset?.spotifyUrl) {
+            playSpotifyTrackInApp(nextButton.dataset.spotifyUrl, nextButton);
+            return;
+        }
+        showToast('Playback interrupted.', true);
     });
     await startPreviewPlayback(audio, button, 'Unable to start playback.');
 }
@@ -3179,9 +3226,11 @@ function scheduleSpotifyTopTrackPreviewWarmup() {
         globalThis.clearTimeout(spotifyTopTrackPreviewWarmupTimer);
     }
 
+    void primeSpotifyTrackPreviews({ limit: 8, concurrency: 4 });
+
     const runWarmup = () => {
         spotifyTopTrackPreviewWarmupTimer = 0;
-        void primeSpotifyTrackPreviews();
+        void primeSpotifyTrackPreviews({ concurrency: 2 });
     };
 
     if (typeof globalThis.requestIdleCallback === 'function') {
@@ -3383,11 +3432,16 @@ function getReleaseTagLabel(albumGroup, releaseType, totalTracks) {
     return '';
 }
 
-async function primeSpotifyTrackPreviews() {
+async function primeSpotifyTrackPreviews(options = {}) {
     const list = document.getElementById('spotifyTopTracksList');
     if (!list) {
         return;
     }
+    const limit = Number(options?.limit || 0);
+    const requestedConcurrency = Number(options?.concurrency || 2);
+    const concurrency = Number.isFinite(requestedConcurrency)
+        ? Math.max(1, Math.min(8, Math.trunc(requestedConcurrency)))
+        : 2;
     const playButtons = Array.from(list.querySelectorAll('button.track-play[data-spotify-url]'));
     const elements = playButtons.length > 0
         ? playButtons
@@ -3404,11 +3458,15 @@ async function primeSpotifyTrackPreviews() {
         return;
     }
 
-    const concurrency = 2;
+    const pendingQueue = limit > 0 ? queue.slice(0, limit) : queue;
+    if (pendingQueue.length === 0) {
+        return;
+    }
+
     let cursor = 0;
-    const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
-        while (cursor < queue.length) {
-            const current = queue[cursor++];
+    const workers = Array.from({ length: Math.min(concurrency, pendingQueue.length) }, async () => {
+        while (cursor < pendingQueue.length) {
+            const current = pendingQueue[cursor++];
             try {
                 const resolved = await resolveSpotifyUrlToDeezer(current.url);
                 if (resolved?.type === 'track' && resolved?.deezerId) {
