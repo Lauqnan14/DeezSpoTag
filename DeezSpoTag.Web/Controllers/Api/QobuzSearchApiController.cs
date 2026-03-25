@@ -30,51 +30,41 @@ public sealed class QobuzSearchApiController : ControllerBase
         [FromQuery] int limit = 25,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            return BadRequest(new { available = false, error = "Query is required." });
-        }
-
-        var normalizedType = NormalizeType(type);
-        limit = Math.Clamp(limit, 1, 50);
-
-        try
-        {
-            var tracks = normalizedType is null or "track"
-                ? (await _metadataService.SearchTracks(query, cancellationToken)).Take(limit).ToList()
-                : new List<QobuzTrack>();
-            var albums = normalizedType is null or "album"
-                ? (await _metadataService.SearchAlbums(query, cancellationToken)).Take(limit).ToList()
-                : new List<QobuzAlbum>();
-            var artists = normalizedType is null or "artist"
-                ? (await _metadataService.SearchArtists(query, cancellationToken)).Take(limit).ToList()
-                : new List<QobuzArtist>();
-
-            return Ok(new
+        return await ExternalSearchControllerHelpers.RunSearchAsync(
+            query,
+            type,
+            limit,
+            _logger,
+            failureMessage: "Qobuz search failed.",
+            async (normalizedType, normalizedLimit, ct) =>
             {
-                available = true,
-                tracks = tracks.Select(MapTrack),
-                albums = albums.Select(MapAlbum),
-                artists = artists.Select(MapArtist),
-                playlists = Array.Empty<object>(),
-                totals = new Dictionary<string, int>
+                var tracks = normalizedType is null or "track"
+                    ? (await _metadataService.SearchTracks(query, ct)).Take(normalizedLimit).ToList()
+                    : new List<QobuzTrack>();
+                var albums = normalizedType is null or "album"
+                    ? (await _metadataService.SearchAlbums(query, ct)).Take(normalizedLimit).ToList()
+                    : new List<QobuzAlbum>();
+                var artists = normalizedType is null or "artist"
+                    ? (await _metadataService.SearchArtists(query, ct)).Take(normalizedLimit).ToList()
+                    : new List<QobuzArtist>();
+
+                return new
                 {
-                    ["tracks"] = tracks.Count,
-                    ["albums"] = albums.Count,
-                    ["artists"] = artists.Count,
-                    ["playlists"] = 0
-                }
-            });
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Qobuz search failed for query {Query}", query);
-            return StatusCode(500, new { available = false, error = "Qobuz search failed." });
-        }
+                    available = true,
+                    tracks = tracks.Select(MapTrack),
+                    albums = albums.Select(MapAlbum),
+                    artists = artists.Select(MapArtist),
+                    playlists = Array.Empty<object>(),
+                    totals = new Dictionary<string, int>
+                    {
+                        ["tracks"] = tracks.Count,
+                        ["albums"] = albums.Count,
+                        ["artists"] = artists.Count,
+                        ["playlists"] = 0
+                    }
+                };
+            },
+            cancellationToken);
     }
 
     private static object MapTrack(QobuzTrack track)
@@ -166,27 +156,7 @@ public sealed class QobuzSearchApiController : ControllerBase
         };
     }
 
-    private static string ComposeTitle(string? title, string? version)
-    {
-        var first = (title ?? string.Empty).Trim();
-        var second = (version ?? string.Empty).Trim();
-        return string.IsNullOrWhiteSpace(second) ? first : $"{first} {second}".Trim();
-    }
+    private static string ComposeTitle(string? title, string? version) =>
+        ExternalSearchControllerHelpers.ComposeTitle(title, version);
 
-    private static string? NormalizeType(string? type)
-    {
-        if (string.IsNullOrWhiteSpace(type))
-        {
-            return null;
-        }
-
-        return type.Trim().ToLowerInvariant() switch
-        {
-            "track" => "track",
-            "album" => "album",
-            "artist" => "artist",
-            "playlist" => "playlist",
-            _ => null
-        };
-    }
 }

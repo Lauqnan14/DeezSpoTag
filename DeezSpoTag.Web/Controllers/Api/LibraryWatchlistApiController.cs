@@ -143,18 +143,7 @@ public class LibraryWatchlistApiController : ControllerBase
             spotifyId,
             deezerId,
             cancellationToken);
-
-        if (added is null)
-        {
-            return StatusCode(500, AddWatchlistFailedMessage);
-        }
-
-        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-            DateTimeOffset.UtcNow,
-            "info",
-            $"Watchlist added: {request.ArtistName}."));
-
-        return Ok(added);
+        return CreateAddedResponse(request.ArtistName, added);
     }
 
     [HttpPost("spotify")]
@@ -177,18 +166,7 @@ public class LibraryWatchlistApiController : ControllerBase
             request.SpotifyId,
             string.IsNullOrWhiteSpace(request.DeezerId) ? null : request.DeezerId,
             cancellationToken);
-
-        if (added is null)
-        {
-            return StatusCode(500, AddWatchlistFailedMessage);
-        }
-
-        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-            DateTimeOffset.UtcNow,
-            "info",
-            $"Watchlist added: {request.ArtistName}."));
-
-        return Ok(added);
+        return CreateAddedResponse(request.ArtistName, added);
     }
 
     [HttpPost("apple")]
@@ -230,18 +208,7 @@ public class LibraryWatchlistApiController : ControllerBase
             spotifyId,
             deezerId,
             cancellationToken);
-
-        if (added is null)
-        {
-            return StatusCode(500, AddWatchlistFailedMessage);
-        }
-
-        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-            DateTimeOffset.UtcNow,
-            "info",
-            $"Watchlist added: {request.ArtistName}."));
-
-        return Ok(added);
+        return CreateAddedResponse(request.ArtistName, added);
     }
 
     [HttpPost("deezer")]
@@ -275,18 +242,7 @@ public class LibraryWatchlistApiController : ControllerBase
             spotifyId,
             request.DeezerId,
             cancellationToken);
-
-        if (added is null)
-        {
-            return StatusCode(500, AddWatchlistFailedMessage);
-        }
-
-        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-            DateTimeOffset.UtcNow,
-            "info",
-            $"Watchlist added: {request.ArtistName}."));
-
-        return Ok(added);
+        return CreateAddedResponse(request.ArtistName, added);
     }
 
     [HttpDelete("{artistId:long}")]
@@ -403,6 +359,21 @@ public class LibraryWatchlistApiController : ControllerBase
     private ObjectResult DatabaseNotConfigured()
     {
         return StatusCode(503, new { error = "Library DB not configured." });
+    }
+
+    private IActionResult CreateAddedResponse(string artistName, object? addedEntry)
+    {
+        if (addedEntry is null)
+        {
+            return StatusCode(500, AddWatchlistFailedMessage);
+        }
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"Watchlist added: {artistName}."));
+
+        return Ok(addedEntry);
     }
 
     private async Task<long> ResolveArtistIdForSpotifyAsync(string spotifyId, string? deezerId, CancellationToken cancellationToken)

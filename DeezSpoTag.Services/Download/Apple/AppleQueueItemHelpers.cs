@@ -10,18 +10,7 @@ internal static class AppleQueueItemHelpers
 {
     public static AppleQueueItem? DeserializeQueueItem(string? payloadJson)
     {
-        if (string.IsNullOrWhiteSpace(payloadJson))
-        {
-            return null;
-        }
-
-        try
-        {
-            return JsonSerializer.Deserialize<AppleQueueItem>(payloadJson);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
-            return null;
-        }
+        return QueueHelperUtils.DeserializeQueueItem<AppleQueueItem>(payloadJson);
     }
 
     public static async Task UpdateQueuePayloadAsync(
@@ -32,49 +21,34 @@ internal static class AppleQueueItemHelpers
         double fileSizeMb,
         CancellationToken cancellationToken)
     {
-        payload.FilePath = DownloadPathResolver.NormalizeDisplayPath(filePath);
-        payload.FinalDestinations = FinalDestinationTracker.EnsureMap(payload.FinalDestinations);
-        FinalDestinationTracker.SeedIdentityEntries(payload.FinalDestinations, payload.FilePath, payload.Files);
-        payload.TotalSize = fileSizeMb;
-        payload.Progress = 100;
-        payload.Downloaded = Math.Max(payload.Size, 1);
-        var json = JsonSerializer.Serialize(payload);
-        var finalDestinationsJson = FinalDestinationTracker.Serialize(payload.FinalDestinations);
-        await queueRepository.UpdateFinalDestinationsAsync(queueUuid, finalDestinationsJson, json, cancellationToken);
+        var request = new QueueHelperUtils.UpdateFinalDestinationPayloadRequest<AppleQueueItem>(
+            QueueRepository: queueRepository,
+            QueueUuid: queueUuid,
+            Payload: payload,
+            FilePath: filePath,
+            FileSizeMb: fileSizeMb,
+            ItemSize: payload.Size,
+            Files: payload.Files,
+            Mutators: new QueueHelperUtils.FinalDestinationMutators<AppleQueueItem>(
+                GetFinalDestinations: static item => item.FinalDestinations,
+                SetFinalDestinations: static (item, value) => item.FinalDestinations = value,
+                PayloadMutators: new QueueHelperUtils.PayloadUpdateMutators<AppleQueueItem>(
+                    SetFilePath: static (item, value) => item.FilePath = value,
+                    SetTotalSize: static (item, value) => item.TotalSize = value,
+                    SetProgress: static (item, value) => item.Progress = value,
+                    SetDownloaded: static (item, value) => item.Downloaded = value)));
+
+        await QueueHelperUtils.UpdateFinalDestinationPayloadAsync(request, cancellationToken);
     }
 
     public static double TryGetFileSizeMb(string filePath)
     {
-        if (string.IsNullOrWhiteSpace(filePath))
-        {
-            return 0;
-        }
-
-        var ioPath = DownloadPathResolver.ResolveIoPath(filePath);
-        if (!File.Exists(ioPath))
-        {
-            return 0;
-        }
-
-        try
-        {
-            var info = new FileInfo(ioPath);
-            return info.Length / 1024d / 1024d;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
-            return 0;
-        }
+        return QueueHelperUtils.TryGetFileSizeMb(filePath);
     }
 
     public static bool OutputExists(string filePath)
     {
-        if (string.IsNullOrWhiteSpace(filePath))
-        {
-            return false;
-        }
-
-        var ioPath = DownloadPathResolver.ResolveIoPath(filePath);
-        return File.Exists(ioPath);
+        return QueueHelperUtils.OutputExists(filePath);
     }
 
     public static Func<double, double, Task> CreateProgressReporter(

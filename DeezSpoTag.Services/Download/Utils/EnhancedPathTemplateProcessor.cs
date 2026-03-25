@@ -433,16 +433,7 @@ public class EnhancedPathTemplateProcessor
     /// </summary>
     private static string FixLongName(string name, int limitMax)
     {
-        if (name.Contains('/'))
-        {
-            var parts = name.Split('/');
-            return string.Join("/", parts.Select(part => FixLongName(part, limitMax)));
-        }
-        else
-        {
-            var maxLen = limitMax > 0 ? limitMax : 200;
-            return CjkFilenameSanitizer.TruncateByRuneCount(name, maxLen);
-        }
+        return DownloadUtils.FixLongName(name, limitMax);
     }
 
     /// <summary>
@@ -450,24 +441,20 @@ public class EnhancedPathTemplateProcessor
     /// </summary>
     private string AntiDot(string str)
     {
-                if (string.IsNullOrEmpty(str))
+        if (string.IsNullOrEmpty(str))
         {
             _logger.LogWarning("AntiDot received empty string, returning 'Unknown'");
             return UnknownValue;
         }
 
-        while (str.Length > 0 && (str[str.Length - 1] == '.' || str[str.Length - 1] == ' ' || str[str.Length - 1] == '\n'))
-        {
-            str = str.Substring(0, str.Length - 1);
-        }
-
-                if (str.Length < 1)
+        var normalized = DownloadUtils.AntiDot(str);
+        if (string.Equals(normalized, "dot", StringComparison.Ordinal))
         {
             _logger.LogWarning("AntiDot resulted in empty string after cleanup, returning 'Unknown'");
             return UnknownValue;
         }
 
-        return str;
+        return normalized;
     }
 
     /// <summary>
@@ -475,16 +462,7 @@ public class EnhancedPathTemplateProcessor
     /// </summary>
     private static string Pad(int num, int maxVal, DeezSpoTagSettings settings)
     {
-        if (!settings.PadTracks) return num.ToString();
-
-        var paddingSize = settings.PaddingSize == 0 ? maxVal.ToString().Length : settings.PaddingSize;
-
-        if (settings.PadSingleDigit && paddingSize == 1)
-        {
-            paddingSize = 2;
-        }
-
-        return num.ToString().PadLeft(paddingSize, '0');
+        return DownloadUtils.Pad(num, maxVal, settings);
     }
 
     /// <summary>

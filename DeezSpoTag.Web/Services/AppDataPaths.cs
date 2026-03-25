@@ -1,3 +1,5 @@
+using DeezSpoTag.Services.Utils;
+
 namespace DeezSpoTag.Web.Services;
 
 public static class AppDataPaths
@@ -21,21 +23,7 @@ public static class AppDataPaths
 
     private static string NormalizeDataRoot(string path)
     {
-        var normalized = Path.GetFullPath(path.Trim());
-        while (string.Equals(
-            Path.GetFileName(Path.TrimEndingDirectorySeparator(normalized)),
-            "deezspotag",
-            StringComparison.OrdinalIgnoreCase))
-        {
-            var parent = Directory.GetParent(Path.TrimEndingDirectorySeparator(normalized))?.FullName;
-            if (string.IsNullOrWhiteSpace(parent))
-            {
-                break;
-            }
-
-            normalized = parent;
-        }
-
-        return normalized;
+        return AppDataPathResolver.NormalizeConfiguredDataRoot(path)
+            ?? Path.GetFullPath(path.Trim());
     }
 }

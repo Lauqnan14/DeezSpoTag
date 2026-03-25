@@ -36,23 +36,33 @@ public sealed class BandcampSearchApiController : ControllerBase
         [FromQuery] int limit = 25,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            return BadRequest(new { available = false, error = "Query is required." });
-        }
+        return await ExternalSearchControllerHelpers.RunSearchAsync(
+            query,
+            type,
+            limit,
+            _logger,
+            failureMessage: "Bandcamp search failed.",
+            (normalizedType, normalizedLimit, ct) =>
+                BuildSearchPayloadAsync(query, normalizedType, normalizedLimit, ct),
+            cancellationToken);
+    }
 
-        limit = Math.Clamp(limit, 1, 50);
-        var normalizedType = NormalizeType(type);
+    private async Task<object> BuildSearchPayloadAsync(
+        string query,
+        string? normalizedType,
+        int normalizedLimit,
+        CancellationToken cancellationToken)
+    {
         if (normalizedType == PlaylistType)
         {
-            return Ok(new
+            return new
             {
                 available = true,
                 tracks = Array.Empty<object>(),
                 albums = Array.Empty<object>(),
                 artists = Array.Empty<object>(),
                 playlists = Array.Empty<object>()
-            });
+            };
         }
 
         var filter = normalizedType switch
@@ -62,61 +72,49 @@ public sealed class BandcampSearchApiController : ControllerBase
             _ => TrackFilter
         };
 
-        try
+        var results = (await _bandcampClient.SearchAsync(query, filter, cancellationToken))
+            .Where(item => item != null)
+            .Take(normalizedLimit)
+            .ToList();
+
+        if (normalizedType == ArtistType)
         {
-            var results = (await _bandcampClient.SearchAsync(query, filter, cancellationToken))
-                .Where(item => item != null)
-                .Take(limit)
+            results = results
+                .Where(result => !result.IsLabel)
                 .ToList();
+        }
 
-            if (normalizedType == ArtistType)
+        var tracks = normalizedType is null or TrackType
+            ? results.Where(result => string.Equals(result.Type, TrackFilter, StringComparison.OrdinalIgnoreCase))
+                .Select(MapTrack)
+                .ToList()
+            : new List<object>();
+        var albums = normalizedType is null or AlbumType
+            ? results.Where(result => string.Equals(result.Type, AlbumFilter, StringComparison.OrdinalIgnoreCase))
+                .Select(MapAlbum)
+                .ToList()
+            : new List<object>();
+        var artists = normalizedType is null or ArtistType
+            ? results.Where(result => string.Equals(result.Type, ArtistFilter, StringComparison.OrdinalIgnoreCase) && !result.IsLabel)
+                .Select(MapArtist)
+                .ToList()
+            : new List<object>();
+
+        return new
+        {
+            available = true,
+            tracks,
+            albums,
+            artists,
+            playlists = Array.Empty<object>(),
+            totals = new Dictionary<string, int>
             {
-                results = results
-                    .Where(result => !result.IsLabel)
-                    .ToList();
+                ["tracks"] = tracks.Count,
+                ["albums"] = albums.Count,
+                ["artists"] = artists.Count,
+                ["playlists"] = 0
             }
-
-            var tracks = normalizedType is null or TrackType
-                ? results.Where(result => string.Equals(result.Type, TrackFilter, StringComparison.OrdinalIgnoreCase))
-                    .Select(MapTrack)
-                    .ToList()
-                : new List<object>();
-            var albums = normalizedType is null or AlbumType
-                ? results.Where(result => string.Equals(result.Type, AlbumFilter, StringComparison.OrdinalIgnoreCase))
-                    .Select(MapAlbum)
-                    .ToList()
-                : new List<object>();
-            var artists = normalizedType is null or ArtistType
-                ? results.Where(result => string.Equals(result.Type, ArtistFilter, StringComparison.OrdinalIgnoreCase) && !result.IsLabel)
-                    .Select(MapArtist)
-                    .ToList()
-                : new List<object>();
-
-            return Ok(new
-            {
-                available = true,
-                tracks,
-                albums,
-                artists,
-                playlists = Array.Empty<object>(),
-                totals = new Dictionary<string, int>
-                {
-                    ["tracks"] = tracks.Count,
-                    ["albums"] = albums.Count,
-                    ["artists"] = artists.Count,
-                    ["playlists"] = 0
-                }
-            });
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Bandcamp search failed for query {Query}", query);
-            return StatusCode(500, new { available = false, error = "Bandcamp search failed." });
-        }
+        };
     }
 
     private static object MapTrack(BandcampSearchResult result)
@@ -198,20 +196,4 @@ public sealed class BandcampSearchApiController : ControllerBase
         return string.Empty;
     }
 
-    private static string? NormalizeType(string? type)
-    {
-        if (string.IsNullOrWhiteSpace(type))
-        {
-            return null;
-        }
-
-        return type.Trim().ToLowerInvariant() switch
-        {
-            TrackType => TrackType,
-            AlbumType => AlbumType,
-            ArtistType => ArtistType,
-            PlaylistType => PlaylistType,
-            _ => null
-        };
-    }
 }

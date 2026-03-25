@@ -38,55 +38,45 @@ public sealed class TidalSearchApiController : ControllerBase
         [FromQuery] int limit = 25,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            return BadRequest(new { available = false, error = "Query is required." });
-        }
-
-        limit = Math.Clamp(limit, 1, 50);
-        var normalizedType = NormalizeType(type);
-
-        try
-        {
-            var token = await _tidalAccessTokenProvider.GetAccessTokenAsync(cancellationToken);
-            var tracks = normalizedType is null or TrackType
-                ? await SearchTypedAsync("tracks", query, limit, token, MapTrack, cancellationToken)
-                : new List<object>();
-            var albums = normalizedType is null or AlbumType
-                ? await SearchTypedAsync("albums", query, limit, token, MapAlbum, cancellationToken)
-                : new List<object>();
-            var artists = normalizedType is null or ArtistType
-                ? await SearchTypedAsync("artists", query, limit, token, MapArtist, cancellationToken)
-                : new List<object>();
-            var playlists = normalizedType is null or PlaylistType
-                ? await SearchTypedAsync("playlists", query, limit, token, MapPlaylist, cancellationToken)
-                : new List<object>();
-
-            return Ok(new
+        return await ExternalSearchControllerHelpers.RunSearchAsync(
+            query,
+            type,
+            limit,
+            _logger,
+            failureMessage: "Tidal search failed.",
+            async (normalizedType, normalizedLimit, ct) =>
             {
-                available = true,
-                tracks,
-                albums,
-                artists,
-                playlists,
-                totals = new Dictionary<string, int>
+                var token = await _tidalAccessTokenProvider.GetAccessTokenAsync(ct);
+                var tracks = normalizedType is null or TrackType
+                    ? await SearchTypedAsync("tracks", query, normalizedLimit, token, MapTrack, ct)
+                    : new List<object>();
+                var albums = normalizedType is null or AlbumType
+                    ? await SearchTypedAsync("albums", query, normalizedLimit, token, MapAlbum, ct)
+                    : new List<object>();
+                var artists = normalizedType is null or ArtistType
+                    ? await SearchTypedAsync("artists", query, normalizedLimit, token, MapArtist, ct)
+                    : new List<object>();
+                var playlists = normalizedType is null or PlaylistType
+                    ? await SearchTypedAsync("playlists", query, normalizedLimit, token, MapPlaylist, ct)
+                    : new List<object>();
+
+                return new
                 {
-                    ["tracks"] = tracks.Count,
-                    ["albums"] = albums.Count,
-                    ["artists"] = artists.Count,
-                    ["playlists"] = playlists.Count
-                }
-            });
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Tidal search failed for query {Query}", query);
-            return StatusCode(500, new { available = false, error = "Tidal search failed." });
-        }
+                    available = true,
+                    tracks,
+                    albums,
+                    artists,
+                    playlists,
+                    totals = new Dictionary<string, int>
+                    {
+                        ["tracks"] = tracks.Count,
+                        ["albums"] = albums.Count,
+                        ["artists"] = artists.Count,
+                        ["playlists"] = playlists.Count
+                    }
+                };
+            },
+            cancellationToken);
     }
 
     private async Task<List<object>> SearchTypedAsync(
@@ -297,29 +287,8 @@ public sealed class TidalSearchApiController : ControllerBase
         return $"https://resources.tidal.com/images/{normalized}/750x750.jpg";
     }
 
-    private static string ComposeTitle(string? title, string? version)
-    {
-        var first = (title ?? string.Empty).Trim();
-        var second = (version ?? string.Empty).Trim();
-        return string.IsNullOrWhiteSpace(second) ? first : $"{first} {second}".Trim();
-    }
-
-    private static string? NormalizeType(string? type)
-    {
-        if (string.IsNullOrWhiteSpace(type))
-        {
-            return null;
-        }
-
-        return type.Trim().ToLowerInvariant() switch
-        {
-            TrackType => TrackType,
-            AlbumType => AlbumType,
-            ArtistType => ArtistType,
-            PlaylistType => PlaylistType,
-            _ => null
-        };
-    }
+    private static string ComposeTitle(string? title, string? version) =>
+        ExternalSearchControllerHelpers.ComposeTitle(title, version);
 
     private static string GetString(JsonElement element, string propertyName)
     {

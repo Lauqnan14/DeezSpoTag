@@ -155,18 +155,26 @@ public static class DownloadUtils
     /// </summary>
     public static string FixLongName(string name)
     {
+        return FixLongName(name, 200);
+    }
+
+    /// <summary>
+    /// Fix long filenames by truncating them to the provided rune limit.
+    /// </summary>
+    public static string FixLongName(string name, int maxRuneCount)
+    {
         if (string.IsNullOrEmpty(name))
             return string.Empty;
 
         if (name.Contains('/'))
         {
             var parts = name.Split('/');
-            var fixedParts = parts.Select(FixLongName);
+            var fixedParts = parts.Select(part => FixLongName(part, maxRuneCount));
             return string.Join("/", fixedParts);
         }
 
-        // Limit to 200 Unicode scalar values to avoid filesystem issues.
-        return CjkFilenameSanitizer.TruncateByRuneCount(name, 200);
+        var limit = maxRuneCount > 0 ? maxRuneCount : 200;
+        return CjkFilenameSanitizer.TruncateByRuneCount(name, limit);
     }
 
     /// <summary>

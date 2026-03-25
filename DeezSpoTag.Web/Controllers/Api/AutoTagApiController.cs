@@ -238,27 +238,7 @@ public class AutoTagJobsController : ControllerBase
             return NotFound();
         }
 
-        return Ok(new
-        {
-            job.Id,
-            job.Status,
-            job.StartedAt,
-            job.FinishedAt,
-            job.ExitCode,
-            job.Error,
-            job.Progress,
-            job.OkCount,
-            job.ErrorCount,
-            job.SkippedCount,
-            job.RootPath,
-            job.Trigger,
-            job.ProfileId,
-            job.ProfileName,
-            job.CurrentPlatform,
-            job.LastStatus,
-            logs = job.Logs,
-            statusHistory = job.StatusHistory
-        });
+        return Ok(ToJobResponse(job));
     }
 
     [HttpGet("jobs/{id}/tag-diff")]
@@ -316,30 +296,15 @@ public class AutoTagJobsController : ControllerBase
         var job = _autoTagService.GetLatestJob();
         if (job == null)
         {
-            return Ok(new
-            {
-                id = (string?)null,
-                status = "idle",
-                startedAt = (DateTimeOffset?)null,
-                finishedAt = (DateTimeOffset?)null,
-                exitCode = (int?)null,
-                error = (string?)null,
-                progress = 0d,
-                okCount = 0,
-                errorCount = 0,
-                skippedCount = 0,
-                rootPath = (string?)null,
-                trigger = "manual",
-                profileId = (string?)null,
-                profileName = (string?)null,
-                currentPlatform = (string?)null,
-                lastStatus = (object?)null,
-                logs = Array.Empty<string>(),
-                statusHistory = Array.Empty<object>()
-            });
+            return Ok(CreateIdleJobResponse());
         }
 
-        return Ok(new
+        return Ok(ToJobResponse(job));
+    }
+
+    private static object ToJobResponse(AutoTagJob job)
+    {
+        return new
         {
             job.Id,
             job.Status,
@@ -359,7 +324,32 @@ public class AutoTagJobsController : ControllerBase
             job.LastStatus,
             logs = job.Logs,
             statusHistory = job.StatusHistory
-        });
+        };
+    }
+
+    private static object CreateIdleJobResponse()
+    {
+        return new
+        {
+            id = (string?)null,
+            status = "idle",
+            startedAt = (DateTimeOffset?)null,
+            finishedAt = (DateTimeOffset?)null,
+            exitCode = (int?)null,
+            error = (string?)null,
+            progress = 0d,
+            okCount = 0,
+            errorCount = 0,
+            skippedCount = 0,
+            rootPath = (string?)null,
+            trigger = "manual",
+            profileId = (string?)null,
+            profileName = (string?)null,
+            currentPlatform = (string?)null,
+            lastStatus = (object?)null,
+            logs = Array.Empty<string>(),
+            statusHistory = Array.Empty<object>()
+        };
     }
 
     [HttpGet("history/calendar")]

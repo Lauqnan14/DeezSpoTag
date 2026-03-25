@@ -188,15 +188,11 @@ public sealed class LrcEditorApiController : ControllerBase
             return BadRequest(new { error = PathOutsideLibraryRootsMessage });
         }
 
-        var lrcPath = Path.ChangeExtension(resolved.FullPath, ".lrc");
-        if (!System.IO.File.Exists(lrcPath))
-        {
-            return NotFound(new { error = "LRC file not found." });
-        }
-
-        var content = await System.IO.File.ReadAllTextAsync(lrcPath, cancellationToken);
-        var lastWrite = System.IO.File.GetLastWriteTimeUtc(lrcPath);
-        return Ok(new { content, updatedAtUtc = lastWrite });
+        return await ReadSidecarTextAsync(
+            resolved.FullPath,
+            ".lrc",
+            "LRC file not found.",
+            cancellationToken);
     }
 
     [HttpGet("file/txt")]
@@ -213,15 +209,11 @@ public sealed class LrcEditorApiController : ControllerBase
             return BadRequest(new { error = PathOutsideLibraryRootsMessage });
         }
 
-        var txtPath = Path.ChangeExtension(resolved.FullPath, ".txt");
-        if (!System.IO.File.Exists(txtPath))
-        {
-            return NotFound(new { error = "TXT file not found." });
-        }
-
-        var content = await System.IO.File.ReadAllTextAsync(txtPath, cancellationToken);
-        var lastWrite = System.IO.File.GetLastWriteTimeUtc(txtPath);
-        return Ok(new { content, updatedAtUtc = lastWrite });
+        return await ReadSidecarTextAsync(
+            resolved.FullPath,
+            ".txt",
+            "TXT file not found.",
+            cancellationToken);
     }
 
     [HttpPost("file/lrc")]
@@ -243,19 +235,7 @@ public sealed class LrcEditorApiController : ControllerBase
             return BadRequest(new { error = PathOutsideLibraryRootsMessage });
         }
 
-        var lrcPath = Path.ChangeExtension(resolved.FullPath, ".lrc");
-        try
-        {
-            await System.IO.File.WriteAllTextAsync(lrcPath, request.Content, new UTF8Encoding(false), cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to write LRC file at Path");
-            return StatusCode(StatusCodes.Status500InternalServerError, new { error = "Failed to save LRC file." });
-        }
-
-        var lastWrite = System.IO.File.GetLastWriteTimeUtc(lrcPath);
-        return Ok(new { updatedAtUtc = lastWrite });
+        return await SaveLrcContentAsync(resolved.FullPath, request.Content, cancellationToken);
     }
 
     [HttpGet("track/{id:long}")]
@@ -300,25 +280,19 @@ public sealed class LrcEditorApiController : ControllerBase
     [HttpGet("track/{id:long}/audio")]
     public async Task<IActionResult> GetAudio(long id, CancellationToken cancellationToken)
     {
-        if (!_repository.IsConfigured)
+        var trackAudioPath = await ResolveTrackAudioPathAsync(id, cancellationToken);
+        if (trackAudioPath.ErrorResult != null)
         {
-            return BadRequest(new { error = LibraryDbNotConfiguredMessage });
+            return trackAudioPath.ErrorResult;
         }
 
-        var info = await _repository.GetTrackAudioInfoAsync(id, cancellationToken);
-        if (info is null || string.IsNullOrWhiteSpace(info.FilePath))
-        {
-            return NotFound(new { error = TrackFileUnavailableMessage });
-        }
-
-        var resolved = await ResolveTrackLibraryPathAsync(info.FilePath, cancellationToken);
-        if (resolved == null || !System.IO.File.Exists(resolved.FullPath))
+        if (!System.IO.File.Exists(trackAudioPath.FullPath))
         {
             return NotFound(new { error = "Track file missing." });
         }
 
-        var contentType = GetContentType(resolved.FullPath);
-        var stream = System.IO.File.OpenRead(resolved.FullPath);
+        var contentType = GetContentType(trackAudioPath.FullPath);
+        var stream = System.IO.File.OpenRead(trackAudioPath.FullPath);
         return new FileStreamResult(stream, contentType)
         {
             EnableRangeProcessing = true
@@ -328,94 +302,102 @@ public sealed class LrcEditorApiController : ControllerBase
     [HttpGet("track/{id:long}/lrc")]
     public async Task<IActionResult> GetLrc(long id, CancellationToken cancellationToken)
     {
-        if (!_repository.IsConfigured)
+        var trackAudioPath = await ResolveTrackAudioPathAsync(id, cancellationToken);
+        if (trackAudioPath.ErrorResult != null)
         {
-            return BadRequest(new { error = LibraryDbNotConfiguredMessage });
+            return trackAudioPath.ErrorResult;
         }
 
-        var info = await _repository.GetTrackAudioInfoAsync(id, cancellationToken);
-        if (info is null || string.IsNullOrWhiteSpace(info.FilePath))
-        {
-            return NotFound(new { error = TrackFileUnavailableMessage });
-        }
-
-        var resolved = await ResolveTrackLibraryPathAsync(info.FilePath, cancellationToken);
-        if (resolved == null)
-        {
-            return NotFound(new { error = TrackFileUnavailableOnSystemMessage });
-        }
-
-        var lrcPath = Path.ChangeExtension(resolved.FullPath, ".lrc");
-        if (!System.IO.File.Exists(lrcPath))
-        {
-            return NotFound(new { error = "LRC file not found." });
-        }
-
-        var content = await System.IO.File.ReadAllTextAsync(lrcPath, cancellationToken);
-        var lastWrite = System.IO.File.GetLastWriteTimeUtc(lrcPath);
-        return Ok(new { content, updatedAtUtc = lastWrite });
+        return await ReadSidecarTextAsync(
+            trackAudioPath.FullPath,
+            ".lrc",
+            "LRC file not found.",
+            cancellationToken);
     }
 
     [HttpGet("track/{id:long}/txt")]
     public async Task<IActionResult> GetTxt(long id, CancellationToken cancellationToken)
     {
-        if (!_repository.IsConfigured)
+        var trackAudioPath = await ResolveTrackAudioPathAsync(id, cancellationToken);
+        if (trackAudioPath.ErrorResult != null)
         {
-            return BadRequest(new { error = LibraryDbNotConfiguredMessage });
+            return trackAudioPath.ErrorResult;
         }
 
-        var info = await _repository.GetTrackAudioInfoAsync(id, cancellationToken);
-        if (info is null || string.IsNullOrWhiteSpace(info.FilePath))
-        {
-            return NotFound(new { error = TrackFileUnavailableMessage });
-        }
-
-        var resolved = await ResolveTrackLibraryPathAsync(info.FilePath, cancellationToken);
-        if (resolved == null)
-        {
-            return NotFound(new { error = TrackFileUnavailableOnSystemMessage });
-        }
-
-        var txtPath = Path.ChangeExtension(resolved.FullPath, ".txt");
-        if (!System.IO.File.Exists(txtPath))
-        {
-            return NotFound(new { error = "TXT file not found." });
-        }
-
-        var content = await System.IO.File.ReadAllTextAsync(txtPath, cancellationToken);
-        var lastWrite = System.IO.File.GetLastWriteTimeUtc(txtPath);
-        return Ok(new { content, updatedAtUtc = lastWrite });
+        return await ReadSidecarTextAsync(
+            trackAudioPath.FullPath,
+            ".txt",
+            "TXT file not found.",
+            cancellationToken);
     }
 
     [HttpPost("track/{id:long}/lrc")]
     public async Task<IActionResult> SaveLrc(long id, [FromBody] LrcSaveRequest request, CancellationToken cancellationToken)
     {
-        if (!_repository.IsConfigured)
-        {
-            return BadRequest(new { error = LibraryDbNotConfiguredMessage });
-        }
-
         if (request == null || request.Content == null)
         {
             return BadRequest(new { error = "Content is required." });
         }
 
+        var trackAudioPath = await ResolveTrackAudioPathAsync(id, cancellationToken);
+        if (trackAudioPath.ErrorResult != null)
+        {
+            return trackAudioPath.ErrorResult;
+        }
+
+        return await SaveLrcContentAsync(trackAudioPath.FullPath, request.Content, cancellationToken);
+    }
+
+    private async Task<(string FullPath, IActionResult? ErrorResult)> ResolveTrackAudioPathAsync(
+        long id,
+        CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return (string.Empty, BadRequest(new { error = LibraryDbNotConfiguredMessage }));
+        }
+
         var info = await _repository.GetTrackAudioInfoAsync(id, cancellationToken);
         if (info is null || string.IsNullOrWhiteSpace(info.FilePath))
         {
-            return NotFound(new { error = TrackFileUnavailableMessage });
+            return (string.Empty, NotFound(new { error = TrackFileUnavailableMessage }));
         }
 
         var resolved = await ResolveTrackLibraryPathAsync(info.FilePath, cancellationToken);
         if (resolved == null)
         {
-            return NotFound(new { error = TrackFileUnavailableOnSystemMessage });
+            return (string.Empty, NotFound(new { error = TrackFileUnavailableOnSystemMessage }));
         }
 
-        var lrcPath = Path.ChangeExtension(resolved.FullPath, ".lrc");
+        return (resolved.FullPath, null);
+    }
+
+    private async Task<IActionResult> ReadSidecarTextAsync(
+        string audioFilePath,
+        string extension,
+        string notFoundMessage,
+        CancellationToken cancellationToken)
+    {
+        var sidecarPath = Path.ChangeExtension(audioFilePath, extension);
+        if (!System.IO.File.Exists(sidecarPath))
+        {
+            return NotFound(new { error = notFoundMessage });
+        }
+
+        var content = await System.IO.File.ReadAllTextAsync(sidecarPath, cancellationToken);
+        var lastWrite = System.IO.File.GetLastWriteTimeUtc(sidecarPath);
+        return Ok(new { content, updatedAtUtc = lastWrite });
+    }
+
+    private async Task<IActionResult> SaveLrcContentAsync(
+        string audioFilePath,
+        string content,
+        CancellationToken cancellationToken)
+    {
+        var lrcPath = Path.ChangeExtension(audioFilePath, ".lrc");
         try
         {
-            await System.IO.File.WriteAllTextAsync(lrcPath, request.Content, new UTF8Encoding(false), cancellationToken);
+            await System.IO.File.WriteAllTextAsync(lrcPath, content, new UTF8Encoding(false), cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

@@ -4,7 +4,6 @@ using DeezSpoTag.Services.Download.Objects;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Utils;
 using Microsoft.Extensions.Logging;
-using System.Text;
 
 namespace DeezSpoTag.Services.Download.Shared.Utils;
 
@@ -430,28 +429,7 @@ public class PathTemplateGenerator
     /// </summary>
     private static string FixLongName(string name, int limitMax)
     {
-        if (string.IsNullOrEmpty(name)) return "";
-
-        if (name.Contains('/'))
-        {
-            var parts = name.Split('/');
-            var result = new StringBuilder();
-            
-            for (int i = 0; i < parts.Length; i++)
-            {
-                var part = FixLongName(parts[i], limitMax);
-                result.Append(part);
-                if (i < parts.Length - 1)
-                    result.Append('/');
-            }
-            
-            return result.ToString();
-        }
-        else
-        {
-            var maxLen = limitMax > 0 ? limitMax : 200;
-            return CjkFilenameSanitizer.TruncateByRuneCount(name, maxLen);
-        }
+        return DownloadUtils.FixLongName(name, limitMax);
     }
 
     /// <summary>
@@ -460,14 +438,7 @@ public class PathTemplateGenerator
     /// </summary>
     private static string AntiDot(string str)
     {
-        if (string.IsNullOrEmpty(str)) return "dot";
-
-        while (str.Length > 0 && (str[str.Length - 1] == '.' || str[str.Length - 1] == ' ' || str[str.Length - 1] == '\n'))
-        {
-            str = str.Substring(0, str.Length - 1);
-        }
-
-        return str.Length < 1 ? "dot" : str;
+        return DownloadUtils.AntiDot(str);
     }
 
     /// <summary>
@@ -476,14 +447,7 @@ public class PathTemplateGenerator
     /// </summary>
     private static string Pad(int num, int maxVal, DeezSpoTagSettings settings)
     {
-        if (!settings.PadTracks) return num.ToString();
-
-        var paddingSize = settings.PaddingSize == 0 ? maxVal.ToString().Length : settings.PaddingSize;
-
-        if (settings.PadSingleDigit && paddingSize == 1)
-            paddingSize = 2;
-
-        return num.ToString().PadLeft(paddingSize, '0');
+        return DownloadUtils.Pad(num, maxVal, settings);
     }
 
     /// <summary>

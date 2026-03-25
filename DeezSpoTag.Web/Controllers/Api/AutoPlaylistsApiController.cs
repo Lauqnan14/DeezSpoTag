@@ -132,22 +132,14 @@ public class AutoPlaylistsApiController : ControllerBase
     [HttpGet("image")]
     public async Task<IActionResult> GetPlexImage([FromQuery] string? path, CancellationToken cancellationToken)
     {
-        var normalizedPath = NormalizePlexImagePath(path);
-        if (string.IsNullOrWhiteSpace(normalizedPath))
+        var proxyContext = await ResolvePlexProxyContextAsync(path);
+        if (proxyContext.ErrorResult != null)
         {
-            return BadRequest("Invalid path");
+            return proxyContext.ErrorResult;
         }
 
-        var state = await _authService.LoadAsync();
-        var plex = state.Plex;
-        if (string.IsNullOrWhiteSpace(plex?.Url) || string.IsNullOrWhiteSpace(plex.Token))
-        {
-            return NotFound();
-        }
-
-        var targetUrl = BuildPlexImageUrl(plex.Url, plex.Token, normalizedPath);
         var client = _httpClientFactory.CreateClient();
-        using var response = await client.GetAsync(targetUrl, cancellationToken);
+        using var response = await client.GetAsync(proxyContext.TargetUrl, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             return StatusCode((int)response.StatusCode);
@@ -171,22 +163,14 @@ public class AutoPlaylistsApiController : ControllerBase
         [FromHeader(Name = "Range")] string? rangeHeader,
         CancellationToken cancellationToken)
     {
-        var normalizedPath = NormalizePlexImagePath(path);
-        if (string.IsNullOrWhiteSpace(normalizedPath))
+        var proxyContext = await ResolvePlexProxyContextAsync(path);
+        if (proxyContext.ErrorResult != null)
         {
-            return BadRequest("Invalid path");
+            return proxyContext.ErrorResult;
         }
 
-        var state = await _authService.LoadAsync();
-        var plex = state.Plex;
-        if (string.IsNullOrWhiteSpace(plex?.Url) || string.IsNullOrWhiteSpace(plex.Token))
-        {
-            return NotFound();
-        }
-
-        var targetUrl = BuildPlexImageUrl(plex.Url, plex.Token, normalizedPath);
         var client = _httpClientFactory.CreateClient();
-        using var request = new HttpRequestMessage(HttpMethod.Get, targetUrl);
+        using var request = new HttpRequestMessage(HttpMethod.Get, proxyContext.TargetUrl);
         if (!string.IsNullOrWhiteSpace(rangeHeader))
         {
             request.Headers.TryAddWithoutValidation("Range", rangeHeader);
@@ -213,6 +197,24 @@ public class AutoPlaylistsApiController : ControllerBase
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         await stream.CopyToAsync(Response.Body, cancellationToken);
         return new EmptyResult();
+    }
+
+    private async Task<(string TargetUrl, IActionResult? ErrorResult)> ResolvePlexProxyContextAsync(string? path)
+    {
+        var normalizedPath = NormalizePlexImagePath(path);
+        if (string.IsNullOrWhiteSpace(normalizedPath))
+        {
+            return (string.Empty, BadRequest("Invalid path"));
+        }
+
+        var state = await _authService.LoadAsync();
+        var plex = state.Plex;
+        if (string.IsNullOrWhiteSpace(plex?.Url) || string.IsNullOrWhiteSpace(plex.Token))
+        {
+            return (string.Empty, NotFound());
+        }
+
+        return (BuildPlexImageUrl(plex.Url, plex.Token, normalizedPath), null);
     }
 
     private async Task<HashSet<string>> GetAllowedMusicSectionIdsAsync(string serverUrl, string token, CancellationToken cancellationToken)

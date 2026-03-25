@@ -74,24 +74,7 @@ public static class ServiceCollectionExtensions
         {
             client.Timeout = TimeSpan.FromSeconds(30);
             client.DefaultRequestHeaders.Add(UserAgentHeader, WindowsChrome91UserAgent);
-        }).ConfigurePrimaryHttpMessageHandler(sp =>
-        {
-            var configuration = sp.GetRequiredService<IConfiguration>();
-            var handler = new HttpClientHandler
-            {
-                UseCookies = false,
-                AllowAutoRedirect = true,
-                MaxAutomaticRedirections = 10,
-                UseProxy = false,
-                PreAuthenticate = false,
-                UseDefaultCredentials = false,
-                // CRITICAL FIX: Use SslProtocols.None to let system negotiate best protocol (DeezSpot approach)
-                SslProtocols = System.Security.Authentication.SslProtocols.None,
-                AutomaticDecompression = System.Net.DecompressionMethods.None
-            };
-            TlsPolicy.ApplyIfAllowed(handler, configuration);
-            return handler;
-        });
+        }).ConfigurePrimaryHttpMessageHandler(CreateRedirectingHandler);
         
         // EXACT deezspotag implementation: got.stream with https: { rejectUnauthorized: false }
         // Don't set User-Agent for ImageDownload here - ImageDownloader sets it per request.
@@ -108,24 +91,7 @@ public static class ServiceCollectionExtensions
             client.DefaultRequestHeaders.Add("Accept", "*/*");
             client.DefaultRequestHeaders.Add("Accept-Encoding", "gzip, deflate, br");
             client.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.9");
-        }).ConfigurePrimaryHttpMessageHandler(sp =>
-        {
-            var configuration = sp.GetRequiredService<IConfiguration>();
-            var handler = new HttpClientHandler
-            {
-                UseCookies = false,
-                AllowAutoRedirect = true,
-                MaxAutomaticRedirections = 10,
-                UseProxy = false,
-                PreAuthenticate = false,
-                UseDefaultCredentials = false,
-                // CRITICAL FIX: Use SslProtocols.None to let system negotiate best protocol (DeezSpot approach)
-                SslProtocols = System.Security.Authentication.SslProtocols.None,
-                AutomaticDecompression = System.Net.DecompressionMethods.None
-            };
-            TlsPolicy.ApplyIfAllowed(handler, configuration);
-            return handler;
-        });
+        }).ConfigurePrimaryHttpMessageHandler(CreateRedirectingHandler);
 
         services.AddHttpClient<DeezerAuthUtils>(client =>
         {
@@ -157,5 +123,23 @@ public static class ServiceCollectionExtensions
                 var allowInsecureTls = TlsPolicy.AllowInsecure(configuration);
                 return DeezSpoTag.Services.Crypto.DeezSpoTagHttpClientHandler.Create(allowInsecureTls);
             });
+    }
+
+    private static HttpClientHandler CreateRedirectingHandler(IServiceProvider serviceProvider)
+    {
+        var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+        var handler = new HttpClientHandler
+        {
+            UseCookies = false,
+            AllowAutoRedirect = true,
+            MaxAutomaticRedirections = 10,
+            UseProxy = false,
+            PreAuthenticate = false,
+            UseDefaultCredentials = false,
+            SslProtocols = System.Security.Authentication.SslProtocols.None,
+            AutomaticDecompression = System.Net.DecompressionMethods.None
+        };
+        TlsPolicy.ApplyIfAllowed(handler, configuration);
+        return handler;
     }
 }

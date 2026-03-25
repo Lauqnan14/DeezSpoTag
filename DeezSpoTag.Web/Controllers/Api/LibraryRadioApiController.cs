@@ -32,7 +32,7 @@ public class LibraryRadioApiController : ControllerBase
             return BadRequest("libraryId is required.");
         }
 
-        var plexUserId = await ResolvePlexUserIdAsync(cancellationToken);
+        var plexUserId = await PlexUserIdResolver.ResolveAsync(_authService, _libraryRepository, cancellationToken);
         if (plexUserId is null)
         {
             return BadRequest("Plex user not configured.");
@@ -59,7 +59,7 @@ public class LibraryRadioApiController : ControllerBase
             return BadRequest("type is required.");
         }
 
-        var plexUserId = await ResolvePlexUserIdAsync(cancellationToken);
+        var plexUserId = await PlexUserIdResolver.ResolveAsync(_authService, _libraryRepository, cancellationToken);
         if (plexUserId is null)
         {
             return BadRequest("Plex user not configured.");
@@ -72,23 +72,5 @@ public class LibraryRadioApiController : ControllerBase
         }
 
         return Ok(detail);
-    }
-
-    private async Task<long?> ResolvePlexUserIdAsync(CancellationToken cancellationToken)
-    {
-        var state = await _authService.LoadAsync();
-        var plex = state.Plex;
-        if (plex is null)
-        {
-            return null;
-        }
-
-        var username = !string.IsNullOrWhiteSpace(plex.Username) ? plex.Username : plex.ServerName;
-        return await _libraryRepository.EnsurePlexUserAsync(
-            username,
-            plex.Username,
-            plex.Url,
-            plex.MachineIdentifier,
-            cancellationToken);
     }
 }

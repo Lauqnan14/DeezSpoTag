@@ -9,7 +9,6 @@ public static class DecryptionService
 {
     private const string BinaryEncodingName = "binary";
     private const string Latin1EncodingName = "ISO-8859-1";
-    private const string SeedMaterial = "g4el58wc0zvf9na1";
     private const string EcbTransformKey = "jo6aey6haid2Teih";
 
     /// <summary>
@@ -58,21 +57,7 @@ public static class DecryptionService
     /// </summary>
     public static string GenerateBlowfishKey(string trackId)
     {
-        // CRITICAL: Use _md5 function exactly like deezspotag (with ASCII encoding)
-        var idMd5 = GenerateMd5(trackId, "ascii");
-        
-        var bfKey = new StringBuilder();
-
-        for (int i = 0; i < 16; i++)
-        {
-            var char1 = (byte)idMd5[i];
-            var char2 = (byte)idMd5[i + 16];
-            var secretChar = (byte)SeedMaterial[i];
-            
-            bfKey.Append((char)(char1 ^ char2 ^ secretChar));
-        }
-
-        return bfKey.ToString();
+        return CryptoService.GenerateBlowfishKeyString(trackId);
     }
 
     /// <summary>
@@ -80,8 +65,7 @@ public static class DecryptionService
     /// </summary>
     public static byte[] GenerateBlowfishKeyBytes(string trackId)
     {
-        var keyString = GenerateBlowfishKey(trackId);
-        return Encoding.GetEncoding(Latin1EncodingName).GetBytes(keyString);
+        return CryptoService.GenerateBlowfishKey(trackId);
     }
 
     /// <summary>
