@@ -63,13 +63,7 @@
 
         <!-- Watchlist Tab -->
         <div class="tab-pane fade" id="watchlist-content" role="tabpanel">
-            <div class="media-tab-header">
-                <div>
-                    <h2>Watchlist</h2>
-                    <p>Manage playlists, artists, and blocked rules in one place.</p>
-                </div>
-            </div>
-            <ul class="nav nav-pills watchlist-subtabs mb-3" id="watchlistSubTabs" role="tablist">
+            <ul class="nav nav-tabs nav-fill mb-3" id="watchlistSubTabs" role="tablist">
                 <li class="nav-item" role="presentation">
                     <button class="nav-link active" id="watchlist-playlists-tab" data-bs-toggle="tab" data-bs-target="#watchlist-playlists-content" type="button" role="tab" aria-selected="true">
                         Playlists
@@ -111,8 +105,8 @@
                 <div class="tab-pane fade" id="watchlist-blocked-content" role="tabpanel" aria-labelledby="watchlist-blocked-tab">
                     <div class="media-tab-header">
                         <div>
-                            <h2>Blocked Rules</h2>
-                            <p>Review blocked track rules across monitored playlists.</p>
+                            <h2>Blocked Items</h2>
+                            <p>Review blocked tracks, artists, and albums.</p>
                         </div>
                     </div>
                     <div id="blockedWatchlistContainer" class="watchlist-blocked-grid"></div>
@@ -405,18 +399,21 @@ document.addEventListener('DOMContentLoaded', function() {
     color: var(--primary-color);
 }
 
-#mediaManagementTabs {
+#mediaManagementTabs,
+#watchlistSubTabs {
     border-bottom: 2px solid var(--border-primary);
     margin-bottom: 2rem;
     gap: 8px;
     align-items: stretch;
 }
 
-#mediaManagementTabs .nav-item {
+#mediaManagementTabs .nav-item,
+#watchlistSubTabs .nav-item {
     min-width: 0;
 }
 
-#mediaManagementTabs .nav-link {
+#mediaManagementTabs .nav-link,
+#watchlistSubTabs .nav-link {
     background: transparent;
     border: none;
     color: var(--text-muted);
@@ -433,51 +430,30 @@ document.addEventListener('DOMContentLoaded', function() {
     white-space: nowrap;
 }
 
-#mediaManagementTabs .nav-link:hover {
+#mediaManagementTabs .nav-link:hover,
+#watchlistSubTabs .nav-link:hover {
     background: color-mix(in srgb, var(--primary-color) 12%, transparent);
     color: var(--primary-color);
     border-bottom: 2px solid var(--primary-color);
 }
 
-#mediaManagementTabs .nav-link.active {
+#mediaManagementTabs .nav-link.active,
+#watchlistSubTabs .nav-link.active {
     background: color-mix(in srgb, var(--primary-color) 12%, transparent) !important;
     color: var(--primary-color) !important;
     border-bottom: 2px solid var(--primary-color) !important;
     box-shadow: 0 4px 12px color-mix(in srgb, var(--primary-color) 20%, transparent);
 }
-#mediaManagementTabs .nav-link.active i {
+#mediaManagementTabs .nav-link.active i,
+#watchlistSubTabs .nav-link.active i {
     color: var(--primary-color) !important;
 }
 
-#mediaManagementTabs .nav-link i {
+#mediaManagementTabs .nav-link i,
+#watchlistSubTabs .nav-link i {
     margin-right: 0.5rem;
     font-size: 1.1rem;
     color: inherit;
-}
-
-.watchlist-subtabs {
-    gap: 8px;
-    border-bottom: 1px solid var(--border-primary);
-    padding-bottom: 10px;
-}
-
-.watchlist-subtabs .nav-link {
-    border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--primary-color) 30%, transparent);
-    color: var(--text-muted);
-    padding: 8px 16px;
-    background: color-mix(in srgb, var(--bg-secondary) 85%, transparent);
-}
-
-.watchlist-subtabs .nav-link:hover {
-    color: var(--primary-color);
-    border-color: color-mix(in srgb, var(--primary-color) 70%, transparent);
-}
-
-.watchlist-subtabs .nav-link.active {
-    color: var(--primary-color);
-    background: color-mix(in srgb, var(--primary-color) 15%, transparent);
-    border-color: color-mix(in srgb, var(--primary-color) 80%, transparent);
 }
 
 .bg-darker {
@@ -757,7 +733,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
 /* Responsive adjustments */
 @@media (max-width: 992px) {
-    #mediaManagementTabs {
+    #mediaManagementTabs,
+    #watchlistSubTabs {
         flex-wrap: nowrap;
         overflow-x: auto;
         overflow-y: hidden;
@@ -769,16 +746,19 @@ document.addEventListener('DOMContentLoaded', function() {
         scroll-snap-type: x proximity;
     }
 
-    #mediaManagementTabs::-webkit-scrollbar {
+    #mediaManagementTabs::-webkit-scrollbar,
+    #watchlistSubTabs::-webkit-scrollbar {
         display: none;
     }
 
-    #mediaManagementTabs .nav-item {
+    #mediaManagementTabs .nav-item,
+    #watchlistSubTabs .nav-item {
         flex: 0 0 auto;
         scroll-snap-align: start;
     }
 
-    #mediaManagementTabs .nav-link {
+    #mediaManagementTabs .nav-link,
+    #watchlistSubTabs .nav-link {
         width: auto;
         min-width: max-content;
         border-radius: 999px;
@@ -789,16 +769,19 @@ document.addEventListener('DOMContentLoaded', function() {
         box-shadow: none;
     }
 
-    #mediaManagementTabs .nav-link:hover {
+    #mediaManagementTabs .nav-link:hover,
+    #watchlistSubTabs .nav-link:hover {
         border: 1px solid var(--primary-color);
         border-bottom: 1px solid var(--primary-color);
     }
 
-    #mediaManagementTabs .nav-link.active {
+    #mediaManagementTabs .nav-link.active,
+    #watchlistSubTabs .nav-link.active {
         border: 1px solid var(--primary-color) !important;
         border-bottom: 1px solid var(--primary-color) !important;
         box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-color) 20%, transparent) !important;
     }
+
 }
 
 @@media (max-width: 900px) {
@@ -812,28 +795,33 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 
 @@media (max-width: 768px) {
-    #mediaManagementTabs .nav-link {
+    #mediaManagementTabs .nav-link,
+    #watchlistSubTabs .nav-link {
         padding: 0.75rem 1rem;
         font-size: 0.875rem;
     }
     
-    #mediaManagementTabs .nav-link i {
+    #mediaManagementTabs .nav-link i,
+    #watchlistSubTabs .nav-link i {
         font-size: 1rem;
     }
-    
+
     .welcome-title {
         font-size: 28px;
     }
 }
 
 @@media (max-width: 640px) {
-    #mediaManagementTabs .nav-link {
+    #mediaManagementTabs .nav-link,
+    #watchlistSubTabs .nav-link {
         font-size: 0.8125rem;
         padding: 0.55rem 0.85rem;
     }
 
-    #mediaManagementTabs .nav-link i {
+    #mediaManagementTabs .nav-link i,
+    #watchlistSubTabs .nav-link i {
         font-size: 0.95rem;
     }
+
 }
 </style>

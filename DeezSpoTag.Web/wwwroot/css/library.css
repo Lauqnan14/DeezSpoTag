@@ -1047,51 +1047,67 @@
 }
 
 .watchlist-blocked-grid {
+    display: block;
+}
+
+.watchlist-blocked-sections {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
     gap: 16px;
 }
 
-.watchlist-blocked-card {
+.watchlist-blocked-section {
     background: var(--bg-tertiary);
     border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
     border-radius: 14px;
     padding: 12px;
 }
 
-.watchlist-blocked-card-header {
+.watchlist-blocked-section h3 {
+    margin: 0 0 10px;
+    font-size: 15px;
+    color: var(--text-primary);
+}
+
+.watchlist-blocked-list {
     display: grid;
-    grid-template-columns: var(--art-card-size) 1fr auto;
-    gap: 12px;
-    align-items: center;
+    gap: 10px;
 }
 
-.watchlist-blocked-card-header .watchlist-card-art {
-    width: var(--art-card-size);
-    height: var(--art-card-size);
+.watchlist-blocked-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-secondary);
+    border-radius: 10px;
+    padding: 10px;
 }
 
-.watchlist-blocked-card-meta {
+.watchlist-blocked-item-main {
     display: grid;
-    gap: 8px;
+    gap: 4px;
+    min-width: 0;
 }
 
-.watchlist-blocked-badges {
+.watchlist-blocked-item-title {
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+    word-break: break-word;
+}
+
+.watchlist-blocked-item-meta {
+    color: var(--text-muted);
+    font-size: 13px;
+    word-break: break-word;
+}
+
+.watchlist-blocked-actions {
     display: flex;
     gap: 8px;
+    align-items: center;
     flex-wrap: wrap;
-}
-
-.watchlist-blocked-rule-list {
-    margin: 12px 0 0;
-    padding: 0 0 0 18px;
-    display: grid;
-    gap: 6px;
-}
-
-.watchlist-blocked-rule-list li {
-    color: var(--text-primary);
-    font-size: 13px;
 }
 
 .playlist-avatar {

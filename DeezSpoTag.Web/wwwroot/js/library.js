@@ -8300,32 +8300,12 @@ function navigateToPlaylistTracklist(source, sourceId) {
     globalThis.location.href = `/Tracklist?${query.toString()}`;
 }
 
-function formatBlockedRuleLabel(rule) {
-    const field = String(rule?.conditionField || '').trim().toLowerCase();
-    const operator = String(rule?.conditionOperator || '').trim().toLowerCase();
-    const value = String(rule?.conditionValue || '').trim();
-    if (field === 'explicit') {
-        if (operator === 'is_false') {
-            return 'Explicit: clean tracks only';
-        }
-        return 'Explicit: explicit tracks only';
+function normalizeBlocklistField(field) {
+    const normalized = String(field || '').trim().toLowerCase();
+    if (normalized === 'track' || normalized === 'artist' || normalized === 'album') {
+        return normalized;
     }
-    const fieldLabel = {
-        artist: 'Artist',
-        title: 'Title',
-        album: 'Album',
-        genre: 'Genre',
-        year: 'Year'
-    }[field] || 'Field';
-    const operatorLabel = {
-        contains: 'contains',
-        equals: 'equals',
-        starts_with: 'starts with',
-        gte: 'at least',
-        lte: 'at most'
-    }[operator] || operator || 'matches';
-    const normalizedValue = value || '(empty)';
-    return `${fieldLabel} ${operatorLabel} ${normalizedValue}`;
+    return '';
 }
 
 async function loadPlaylistBlockedRules() {
@@ -8334,63 +8314,186 @@ async function loadPlaylistBlockedRules() {
         return;
     }
     try {
-        const items = await fetchJson('/api/library/playlists');
-        if (!Array.isArray(items) || items.length === 0) {
-            container.innerHTML = '<div class="watchlist-empty-state">No monitored playlists yet.</div>';
-            return;
+        const [itemsRaw, blocklistRaw, playlistPrefs] = await Promise.all([
+            fetchJson('/api/library/playlists').catch(() => []),
+            fetchJson('/api/library/blocklist').catch(() => []),
+            hydratePlaylistPreferences().catch(() => ({}))
+        ]);
+
+        const items = Array.isArray(itemsRaw) ? itemsRaw : [];
+        const trackRows = [];
+        if (items.length > 0) {
+            const blockedTrackResults = await Promise.all(items.map(async item => {
+                const [ignoredRaw, candidatesRaw] = await Promise.all([
+                    fetchJson(`/api/library/playlists/${encodeURIComponent(item.source)}/${encodeURIComponent(item.sourceId)}/ignore`).catch(() => []),
+                    fetchJson(`/api/library/playlists/${encodeURIComponent(item.source)}/${encodeURIComponent(item.sourceId)}/tracks`).catch(() => [])
+                ]);
+
+                const ignoredTrackIds = Array.isArray(ignoredRaw)
+                    ? ignoredRaw
+                        .map(trackSourceId => String(trackSourceId || '').trim())
+                        .filter(Boolean)
+                    : [];
+
+                const candidateMap = new Map();
+                if (Array.isArray(candidatesRaw)) {
+                    candidatesRaw.forEach(candidate => {
+                        const trackSourceId = String(candidate?.trackSourceId || '').trim();
+                        if (trackSourceId) {
+                            candidateMap.set(trackSourceId, candidate);
+                        }
+                    });
+                }
+
+                return ignoredTrackIds.map(trackSourceId => {
+                    const candidate = candidateMap.get(trackSourceId);
+                    return {
+                        source: item.source,
+                        sourceId: item.sourceId,
+                        playlistName: item.name || 'Playlist',
+                        trackSourceId,
+                        title: String(candidate?.title || trackSourceId).trim(),
+                        artist: String(candidate?.artist || '').trim(),
+                        album: String(candidate?.album || '').trim(),
+                        isrc: String(candidate?.isrc || '').trim()
+                    };
+                });
+            }));
+
+            blockedTrackResults.forEach(rows => {
+                rows.forEach(row => {
+                    trackRows.push(row);
+                });
+            });
         }
 
-        const playlistPrefs = await hydratePlaylistPreferences();
-        const blockedRuleResults = await Promise.all(items.map(async item => {
-            try {
-                const rules = await fetchJson(`/api/library/playlists/${encodeURIComponent(item.source)}/${encodeURIComponent(item.sourceId)}/ignore-rules`);
-                return {
-                    item,
-                    rules: Array.isArray(rules) ? rules : []
-                };
-            } catch {
-                return { item, rules: [] };
+        const blocklistEntries = Array.isArray(blocklistRaw) ? blocklistRaw : [];
+        const uniqueByField = {
+            artist: new Set(),
+            album: new Set(),
+            track: new Set()
+        };
+        const globalArtists = [];
+        const globalAlbums = [];
+        const globalTracks = [];
+
+        blocklistEntries.forEach(entry => {
+            if (!entry || entry.enabled === false) {
+                return;
             }
-        }));
 
-        const blockedPlaylists = blockedRuleResults.filter(entry => entry.rules.length > 0);
-        if (blockedPlaylists.length === 0) {
-            container.innerHTML = '<div class="watchlist-empty-state">No blocked rules configured. Open a playlist settings panel to add block rules.</div>';
+            const field = normalizeBlocklistField(entry.field);
+            const value = String(entry.value || '').trim();
+            if (!field || !value) {
+                return;
+            }
+
+            const key = value.toLowerCase();
+            if (uniqueByField[field].has(key)) {
+                return;
+            }
+            uniqueByField[field].add(key);
+
+            if (field === 'artist') {
+                globalArtists.push(value);
+                return;
+            }
+            if (field === 'album') {
+                globalAlbums.push(value);
+                return;
+            }
+            globalTracks.push(value);
+        });
+
+        if (trackRows.length === 0 && globalArtists.length === 0 && globalAlbums.length === 0 && globalTracks.length === 0) {
+            container.innerHTML = '<div class="watchlist-empty-state">No blocked items configured yet.</div>';
             return;
         }
 
-        container.innerHTML = blockedPlaylists.map(entry => {
-            const playlist = entry.item;
-            const rules = entry.rules;
-            const artContent = playlist.imageUrl
-                ? `<img src="${playlist.imageUrl}" alt="${escapeHtml(playlist.name)}" />`
-                : `<div class="watchlist-card-art-placeholder"><i class="fa-solid fa-list-music"></i></div>`;
-            const sourceLabel = String(playlist.source || '').trim().toLowerCase() || 'playlist';
-            const ruleItems = rules.map(rule => `<li>${escapeHtml(formatBlockedRuleLabel(rule))}</li>`).join('');
-            return `<div class="watchlist-blocked-card">
-                <div class="watchlist-blocked-card-header">
-                    <button class="watchlist-card-art" type="button"
-                        data-blocked-open="${escapeHtml(playlist.sourceId)}"
-                        data-blocked-source="${escapeHtml(playlist.source)}">
-                        ${artContent}
-                    </button>
-                    <div class="watchlist-blocked-card-meta">
-                        <div class="watchlist-card-name">${escapeHtml(playlist.name)}</div>
-                        <div class="watchlist-blocked-badges">
-                            <span class="watchlist-card-stat">${escapeHtml(sourceLabel)}</span>
-                            <span class="watchlist-card-stat">${escapeHtml(String(rules.length))} blocked rules</span>
-                        </div>
+        const trackItems = [
+            ...trackRows.map(row => ({
+                kind: 'playlist',
+                label: row.title,
+                detail: [row.artist, row.album].filter(Boolean).join(' • '),
+                context: `Playlist: ${row.playlistName} (${row.source})`,
+                source: row.source,
+                sourceId: row.sourceId,
+                playlistName: row.playlistName,
+                trackSourceId: row.trackSourceId,
+                isrc: row.isrc
+            })),
+            ...globalTracks.map(value => ({
+                kind: 'global',
+                label: value,
+                detail: '',
+                context: 'Source: global blocklist'
+            }))
+        ];
+
+        const dedupedTrackItems = [];
+        const seenTrackItems = new Set();
+        trackItems.forEach(item => {
+            const dedupeKey = [
+                String(item.kind || '').trim().toLowerCase(),
+                String(item.trackSourceId || '').trim().toLowerCase(),
+                String(item.isrc || '').trim().toLowerCase(),
+                String(item.label || '').trim().toLowerCase(),
+                String(item.detail || '').trim().toLowerCase(),
+                String(item.context || '').trim().toLowerCase()
+            ].join('\u001F');
+            if (seenTrackItems.has(dedupeKey)) {
+                return;
+            }
+            seenTrackItems.add(dedupeKey);
+            dedupedTrackItems.push(item);
+        });
+
+        const renderTrackItems = dedupedTrackItems.length
+            ? dedupedTrackItems.map(item => {
+                const identity = [item.trackSourceId ? `Track ID: ${item.trackSourceId}` : '', item.isrc ? `ISRC: ${item.isrc}` : '']
+                    .filter(Boolean)
+                    .join(' • ');
+                const manageButtons = item.kind === 'playlist'
+                    ? `<div class="watchlist-blocked-actions">
+                            <button class="btn btn-secondary action-btn btn-sm" type="button"
+                                data-blocked-open="${escapeHtml(item.sourceId)}"
+                                data-blocked-source="${escapeHtml(item.source)}">Open Playlist</button>
+                            <button class="btn btn-secondary action-btn btn-sm" type="button"
+                                data-blocked-manage="${escapeHtml(item.sourceId)}"
+                                data-blocked-source="${escapeHtml(item.source)}"
+                                data-blocked-name="${escapeHtml(item.playlistName)}">Manage</button>
+                        </div>`
+                    : '';
+                return `<div class="watchlist-blocked-item">
+                    <div class="watchlist-blocked-item-main">
+                        <div class="watchlist-blocked-item-title">${escapeHtml(item.label)}</div>
+                        ${item.detail ? `<div class="watchlist-blocked-item-meta">${escapeHtml(item.detail)}</div>` : ''}
+                        <div class="watchlist-blocked-item-meta">${escapeHtml(item.context)}</div>
+                        ${identity ? `<div class="watchlist-blocked-item-meta">${escapeHtml(identity)}</div>` : ''}
                     </div>
-                    <button class="btn btn-secondary action-btn btn-sm" type="button"
-                        data-blocked-manage="${escapeHtml(playlist.sourceId)}"
-                        data-blocked-source="${escapeHtml(playlist.source)}"
-                        data-blocked-name="${escapeHtml(playlist.name)}">
-                        Manage
-                    </button>
-                </div>
-                <ul class="watchlist-blocked-rule-list">${ruleItems}</ul>
-            </div>`;
-        }).join('');
+                    ${manageButtons}
+                </div>`;
+            }).join('')
+            : '<div class="watchlist-empty-state">No blocked tracks.</div>';
+
+        const renderValues = values => values.length
+            ? values.map(value => `<div class="watchlist-blocked-item"><div class="watchlist-blocked-item-main"><div class="watchlist-blocked-item-title">${escapeHtml(value)}</div></div></div>`).join('')
+            : '<div class="watchlist-empty-state">None.</div>';
+
+        container.innerHTML = `<div class="watchlist-blocked-sections">
+            <section class="watchlist-blocked-section">
+                <h3>Tracks</h3>
+                <div class="watchlist-blocked-list">${renderTrackItems}</div>
+            </section>
+            <section class="watchlist-blocked-section">
+                <h3>Artists</h3>
+                <div class="watchlist-blocked-list">${renderValues(globalArtists)}</div>
+            </section>
+            <section class="watchlist-blocked-section">
+                <h3>Albums</h3>
+                <div class="watchlist-blocked-list">${renderValues(globalAlbums)}</div>
+            </section>
+        </div>`;
 
         container.querySelectorAll('[data-blocked-open]').forEach(button => {
             button.addEventListener('click', () => {
@@ -8409,10 +8512,11 @@ async function loadPlaylistBlockedRules() {
                     return;
                 }
                 await openPlaylistSettingsPanel(source, sourceId, playlistName, playlistPrefs);
+                await loadPlaylistBlockedRules();
             });
         });
     } catch (error) {
-        container.innerHTML = `<div class="watchlist-empty-state">Failed to load blocked rules: ${escapeHtml(error?.message || 'Unknown error')}</div>`;
+        container.innerHTML = `<div class="watchlist-empty-state">Failed to load blocked items: ${escapeHtml(error?.message || 'Unknown error')}</div>`;
     }
 }
 

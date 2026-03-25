@@ -2852,6 +2852,11 @@ public sealed class PlaylistWatchService
                     track.TrackId,
                     intent.Title,
                     intent.Artist);
+                await TryPersistWatchTrackIgnoreAsync(
+                    options.WatchlistSource,
+                    options.WatchlistPlaylistId,
+                    track,
+                    cancellationToken);
                 await TryMarkWatchTrackCompletedAsync(
                     options.WatchlistSource,
                     options.WatchlistPlaylistId,
@@ -2903,6 +2908,14 @@ public sealed class PlaylistWatchService
 
             if (ShouldMarkWatchTrackAsCompleted(result))
             {
+                if (ShouldPersistBlockedTrackIgnore(result))
+                {
+                    await TryPersistWatchTrackIgnoreAsync(
+                        options.WatchlistSource,
+                        options.WatchlistPlaylistId,
+                        track,
+                        cancellationToken);
+                }
                 queuedCount += await TryQueueAtmosIntentAsync(
                     intentService,
                     normalizedDownloadVariantMode,
@@ -3006,6 +3019,37 @@ public sealed class PlaylistWatchService
         }
     }
 
+    private async Task TryPersistWatchTrackIgnoreAsync(
+        string? watchlistSource,
+        string? watchlistPlaylistId,
+        WatchIntentTrack track,
+        CancellationToken cancellationToken)
+    {
+        if (!HasWatchlistContext(watchlistSource, watchlistPlaylistId)
+            || string.IsNullOrWhiteSpace(track.TrackId))
+        {
+            return;
+        }
+
+        try
+        {
+            await _libraryRepository.AddPlaylistWatchIgnoredTracksAsync(
+                watchlistSource!,
+                watchlistPlaylistId!,
+                new List<PlaylistWatchIgnoreInsert> { new(track.TrackId, track.Isrc) },
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(
+                ex,
+                "Failed to persist watch ignore entry: {Source}:{PlaylistId}:{TrackId}",
+                watchlistSource,
+                watchlistPlaylistId,
+                track.TrackId);
+        }
+    }
+
     private static bool ShouldMarkWatchTrackAsCompleted(DownloadIntentResult result)
     {
         if (result?.SkipReasonCodes == null || result.SkipReasonCodes.Count == 0)
@@ -3025,6 +3069,24 @@ public sealed class PlaylistWatchService
                 case "queue_upgrade_in_progress":
                 case "blocklist_match":
                     return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ShouldPersistBlockedTrackIgnore(DownloadIntentResult result)
+    {
+        if (result?.SkipReasonCodes == null || result.SkipReasonCodes.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var reasonCode in result.SkipReasonCodes)
+        {
+            if (string.Equals(reasonCode?.Trim(), "blocklist_match", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
             }
         }
 
