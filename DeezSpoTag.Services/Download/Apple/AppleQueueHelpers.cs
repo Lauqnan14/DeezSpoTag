@@ -502,6 +502,22 @@ public static class AppleQueueHelpers
         try
         {
             var client = httpClientFactory.CreateClient();
+            var albumArtwork = await TryResolveItunesArtistAlbumArtworkAsync(
+                client,
+                artist,
+                normalizedArtist,
+                size,
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(albumArtwork))
+            {
+                AppleArtworkCache.Set(cacheKey, albumArtwork, new MemoryCacheEntryOptions
+                {
+                    AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(1),
+                    Size = 1
+                });
+                return albumArtwork;
+            }
+
             using var response = await client.GetAsync(url, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
@@ -533,6 +549,7 @@ public static class AppleQueueHelpers
                 var pageArtwork = await TryResolveItunesArtistPageArtworkAsync(
                     client,
                     artistLinkUrl,
+                    size,
                     cancellationToken);
                 if (!string.IsNullOrWhiteSpace(pageArtwork))
                 {
@@ -553,9 +570,55 @@ public static class AppleQueueHelpers
         return null;
     }
 
+    private static async Task<string?> TryResolveItunesArtistAlbumArtworkAsync(
+        HttpClient client,
+        string artist,
+        string normalizedArtist,
+        int size,
+        CancellationToken cancellationToken)
+    {
+        var url = $"https://itunes.apple.com/search?term={Uri.EscapeDataString(artist)}&entity=album&attribute=artistTerm&limit=25";
+        using var response = await client.GetAsync(url, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (!doc.RootElement.TryGetProperty(ResultsKey, out var results) || results.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        string? fallbackRaw = null;
+        foreach (var entry in results.EnumerateArray().Where(HasItunesArtwork))
+        {
+            var raw = entry.GetProperty("artworkUrl100").GetString();
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            fallbackRaw ??= raw;
+            var candidateArtist = TryReadItunesString(entry, ArtistNameKey)
+                ?? TryReadItunesString(entry, "collectionArtistName");
+            if (string.IsNullOrWhiteSpace(candidateArtist)
+                || !IsLikelySameArtist(normalizedArtist, NormalizeLookupToken(candidateArtist)))
+            {
+                continue;
+            }
+
+            return NormalizeArtworkUrl(raw, size);
+        }
+
+        return string.IsNullOrWhiteSpace(fallbackRaw) ? null : NormalizeArtworkUrl(fallbackRaw, size);
+    }
+
     private static async Task<string?> TryResolveItunesArtistPageArtworkAsync(
         HttpClient client,
         string artistLinkUrl,
+        int size,
         CancellationToken cancellationToken)
     {
         using var response = await client.GetAsync(artistLinkUrl, cancellationToken);
@@ -580,8 +643,19 @@ public static class AppleQueueHelpers
         }
 
         var raw = WebUtility.HtmlDecode(ogImage.Groups["url"].Value);
-        // iTunes og:image already points to a concrete asset URL; keep it unchanged.
-        return string.IsNullOrWhiteSpace(raw) ? null : raw;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        if (raw.Contains("mzstatic.com", StringComparison.OrdinalIgnoreCase)
+            || raw.Contains("{w}", StringComparison.OrdinalIgnoreCase)
+            || raw.Contains("{h}", StringComparison.OrdinalIgnoreCase))
+        {
+            return NormalizeArtworkUrl(raw, size);
+        }
+
+        return raw;
     }
 
     public static async Task<string?> ResolveAppleArtistImageFromSongAsync(

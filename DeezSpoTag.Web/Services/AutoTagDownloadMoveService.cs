@@ -1059,6 +1059,11 @@ public sealed class AutoTagDownloadMoveService
             return ResidualBucket.Skip;
         }
 
+        if (folderBuckets.TryGetValue(artistDirectory, out var directBucket))
+        {
+            return directBucket;
+        }
+
         var hasTaggedDescendant = false;
         var hasFailedDescendant = false;
         var prefix = artistDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
@@ -1092,7 +1097,18 @@ public sealed class AutoTagDownloadMoveService
             return ResidualBucket.Failed;
         }
 
-        return ResidualBucket.Skip;
+        if (folderBuckets.Values.Any(bucket => bucket == ResidualBucket.Tagged))
+        {
+            return ResidualBucket.Tagged;
+        }
+
+        if (folderBuckets.Values.Any(bucket => bucket == ResidualBucket.Failed))
+        {
+            return ResidualBucket.Failed;
+        }
+
+        // Do not strand artist artwork in staging when there is no local bucket evidence left.
+        return ResidualBucket.Tagged;
     }
 
     private static bool IsDirectorySharedSidecar(string file)
@@ -1140,24 +1156,7 @@ public sealed class AutoTagDownloadMoveService
             return false;
         }
 
-        if (HasTopLevelAudioFiles(artistDirectory))
-        {
-            return false;
-        }
-
         return true;
-    }
-
-    private static bool HasTopLevelAudioFiles(string directoryPath)
-    {
-        try
-        {
-            return Directory.EnumerateFiles(directoryPath).Any(IsAudioExtension);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return false;
-        }
     }
 
     private static bool TryResolveArtistArtworkConflict(
