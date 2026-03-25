@@ -1046,6 +1046,54 @@
     padding: 12px 0;
 }
 
+.watchlist-blocked-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
+    gap: 16px;
+}
+
+.watchlist-blocked-card {
+    background: var(--bg-tertiary);
+    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
+    border-radius: 14px;
+    padding: 12px;
+}
+
+.watchlist-blocked-card-header {
+    display: grid;
+    grid-template-columns: var(--art-card-size) 1fr auto;
+    gap: 12px;
+    align-items: center;
+}
+
+.watchlist-blocked-card-header .watchlist-card-art {
+    width: var(--art-card-size);
+    height: var(--art-card-size);
+}
+
+.watchlist-blocked-card-meta {
+    display: grid;
+    gap: 8px;
+}
+
+.watchlist-blocked-badges {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.watchlist-blocked-rule-list {
+    margin: 12px 0 0;
+    padding: 0 0 0 18px;
+    display: grid;
+    gap: 6px;
+}
+
+.watchlist-blocked-rule-list li {
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
 .playlist-avatar {
     width: var(--art-card-size);
     height: var(--art-card-size);

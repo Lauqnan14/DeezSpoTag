@@ -8273,6 +8273,149 @@ async function loadWatchlist() {
     }
 }
 
+function navigateToPlaylistTracklist(source, sourceId) {
+    if (!sourceId) {
+        return;
+    }
+    const normalizedSource = String(source || '').toLowerCase();
+    let type = 'playlist';
+    if (normalizedSource === 'smarttracklist') {
+        type = 'smarttracklist';
+    } else if (normalizedSource === 'recommendations') {
+        type = 'recommendation';
+    }
+    const query = new URLSearchParams({
+        id: String(sourceId),
+        type
+    });
+    if (normalizedSource && normalizedSource !== 'deezer') {
+        query.set('source', normalizedSource);
+    }
+    if (normalizedSource === 'recommendations') {
+        const stationMatch = /^daily-rotation:l(\d+):f\d+$/i.exec(String(sourceId));
+        if (stationMatch?.[1]) {
+            query.set('libraryId', stationMatch[1]);
+        }
+    }
+    globalThis.location.href = `/Tracklist?${query.toString()}`;
+}
+
+function formatBlockedRuleLabel(rule) {
+    const field = String(rule?.conditionField || '').trim().toLowerCase();
+    const operator = String(rule?.conditionOperator || '').trim().toLowerCase();
+    const value = String(rule?.conditionValue || '').trim();
+    if (field === 'explicit') {
+        if (operator === 'is_false') {
+            return 'Explicit: clean tracks only';
+        }
+        return 'Explicit: explicit tracks only';
+    }
+    const fieldLabel = {
+        artist: 'Artist',
+        title: 'Title',
+        album: 'Album',
+        genre: 'Genre',
+        year: 'Year'
+    }[field] || 'Field';
+    const operatorLabel = {
+        contains: 'contains',
+        equals: 'equals',
+        starts_with: 'starts with',
+        gte: 'at least',
+        lte: 'at most'
+    }[operator] || operator || 'matches';
+    const normalizedValue = value || '(empty)';
+    return `${fieldLabel} ${operatorLabel} ${normalizedValue}`;
+}
+
+async function loadPlaylistBlockedRules() {
+    const container = document.getElementById('blockedWatchlistContainer');
+    if (!container) {
+        return;
+    }
+    try {
+        const items = await fetchJson('/api/library/playlists');
+        if (!Array.isArray(items) || items.length === 0) {
+            container.innerHTML = '<div class="watchlist-empty-state">No monitored playlists yet.</div>';
+            return;
+        }
+
+        const playlistPrefs = await hydratePlaylistPreferences();
+        const blockedRuleResults = await Promise.all(items.map(async item => {
+            try {
+                const rules = await fetchJson(`/api/library/playlists/${encodeURIComponent(item.source)}/${encodeURIComponent(item.sourceId)}/ignore-rules`);
+                return {
+                    item,
+                    rules: Array.isArray(rules) ? rules : []
+                };
+            } catch {
+                return { item, rules: [] };
+            }
+        }));
+
+        const blockedPlaylists = blockedRuleResults.filter(entry => entry.rules.length > 0);
+        if (blockedPlaylists.length === 0) {
+            container.innerHTML = '<div class="watchlist-empty-state">No blocked rules configured. Open a playlist settings panel to add block rules.</div>';
+            return;
+        }
+
+        container.innerHTML = blockedPlaylists.map(entry => {
+            const playlist = entry.item;
+            const rules = entry.rules;
+            const artContent = playlist.imageUrl
+                ? `<img src="${playlist.imageUrl}" alt="${escapeHtml(playlist.name)}" />`
+                : `<div class="watchlist-card-art-placeholder"><i class="fa-solid fa-list-music"></i></div>`;
+            const sourceLabel = String(playlist.source || '').trim().toLowerCase() || 'playlist';
+            const ruleItems = rules.map(rule => `<li>${escapeHtml(formatBlockedRuleLabel(rule))}</li>`).join('');
+            return `<div class="watchlist-blocked-card">
+                <div class="watchlist-blocked-card-header">
+                    <button class="watchlist-card-art" type="button"
+                        data-blocked-open="${escapeHtml(playlist.sourceId)}"
+                        data-blocked-source="${escapeHtml(playlist.source)}">
+                        ${artContent}
+                    </button>
+                    <div class="watchlist-blocked-card-meta">
+                        <div class="watchlist-card-name">${escapeHtml(playlist.name)}</div>
+                        <div class="watchlist-blocked-badges">
+                            <span class="watchlist-card-stat">${escapeHtml(sourceLabel)}</span>
+                            <span class="watchlist-card-stat">${escapeHtml(String(rules.length))} blocked rules</span>
+                        </div>
+                    </div>
+                    <button class="btn btn-secondary action-btn btn-sm" type="button"
+                        data-blocked-manage="${escapeHtml(playlist.sourceId)}"
+                        data-blocked-source="${escapeHtml(playlist.source)}"
+                        data-blocked-name="${escapeHtml(playlist.name)}">
+                        Manage
+                    </button>
+                </div>
+                <ul class="watchlist-blocked-rule-list">${ruleItems}</ul>
+            </div>`;
+        }).join('');
+
+        container.querySelectorAll('[data-blocked-open]').forEach(button => {
+            button.addEventListener('click', () => {
+                const sourceId = button.dataset.blockedOpen;
+                const source = button.dataset.blockedSource || 'deezer';
+                navigateToPlaylistTracklist(source, sourceId);
+            });
+        });
+
+        container.querySelectorAll('[data-blocked-manage]').forEach(button => {
+            button.addEventListener('click', async () => {
+                const source = button.dataset.blockedSource;
+                const sourceId = button.dataset.blockedManage;
+                const playlistName = button.dataset.blockedName || 'Playlist';
+                if (!source || !sourceId) {
+                    return;
+                }
+                await openPlaylistSettingsPanel(source, sourceId, playlistName, playlistPrefs);
+            });
+        });
+    } catch (error) {
+        container.innerHTML = `<div class="watchlist-empty-state">Failed to load blocked rules: ${escapeHtml(error?.message || 'Unknown error')}</div>`;
+    }
+}
+
 async function loadPlaylistWatchlist() {
     const container = document.getElementById('playlistWatchlistContainer');
     if (!container) return;
@@ -8340,29 +8483,7 @@ async function loadPlaylistWatchlist() {
             button.addEventListener('click', () => {
                 const sourceId = button.dataset.playlistOpen;
                 const source = button.dataset.playlistSource || 'deezer';
-                if (sourceId) {
-                    const normalizedSource = String(source || '').toLowerCase();
-                    let type = 'playlist';
-                    if (normalizedSource === 'smarttracklist') {
-                        type = 'smarttracklist';
-                    } else if (normalizedSource === 'recommendations') {
-                        type = 'recommendation';
-                    }
-                    const query = new URLSearchParams({
-                        id: String(sourceId),
-                        type
-                    });
-                    if (normalizedSource && normalizedSource !== 'deezer') {
-                        query.set('source', normalizedSource);
-                    }
-                    if (normalizedSource === 'recommendations') {
-                        const stationMatch = /^daily-rotation:l(\d+):f\d+$/i.exec(String(sourceId));
-                        if (stationMatch?.[1]) {
-                            query.set('libraryId', stationMatch[1]);
-                        }
-                    }
-                    globalThis.location.href = `/Tracklist?${query.toString()}`;
-                }
+                navigateToPlaylistTracklist(source, sourceId);
             });
         });
 
@@ -8407,6 +8528,7 @@ async function loadPlaylistWatchlist() {
                 try {
                     await fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}`, { method: 'DELETE' });
                     await loadPlaylistWatchlist();
+                    await loadPlaylistBlockedRules();
                 } catch (error) {
                     showToast(`Playlist remove failed: ${error.message}`, true);
                 }
@@ -8435,6 +8557,7 @@ async function loadPlaylistWatchlist() {
                 try {
                     await fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/refresh-artwork`, { method: 'POST' });
                     await loadPlaylistWatchlist();
+                    await loadPlaylistBlockedRules();
                     showToast('Playlist artwork refreshed.');
                 } catch (error) {
                     showToast(`Artwork refresh failed: ${error.message}`, true);
@@ -9158,6 +9281,7 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
             };
         }
         showToast('Playlist settings saved.');
+        await loadPlaylistBlockedRules();
     } catch (error) {
         showToast(`Save failed: ${error.message}`, true);
     }
@@ -10493,6 +10617,7 @@ function getLibraryLoadTargets() {
         sortSelect: document.getElementById('librarySortSelect'),
         shouldLoadWatchlist: document.getElementById('watchlistContainer'),
         shouldLoadPlaylistWatchlist: document.getElementById('playlistWatchlistContainer'),
+        shouldLoadPlaylistBlockedRules: document.getElementById('blockedWatchlistContainer'),
         shouldLoadAnalysis: document.getElementById('analysisStatus'),
         analysisButton: document.getElementById('runAnalysis'),
         shouldLoadFavorites: document.getElementById('favoritesContainer'),
@@ -10535,6 +10660,9 @@ function queueStandardInitialLoadTasks(targets, tasks) {
     }
     if (targets.shouldLoadPlaylistWatchlist) {
         tasks.push(loadPlaylistWatchlist());
+    }
+    if (targets.shouldLoadPlaylistBlockedRules) {
+        tasks.push(loadPlaylistBlockedRules());
     }
     if (targets.shouldLoadAlbumTracks) {
         tasks.push(loadAlbum());

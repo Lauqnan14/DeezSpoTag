@@ -23,13 +23,8 @@
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link" id="playlists-watchlist-tab" data-bs-toggle="tab" data-bs-target="#playlists-watchlist-content" type="button" role="tab">
-                <i class="fas fa-list-check me-2"></i>Playlists Watchlist
-            </button>
-        </li>
-        <li class="nav-item">
-            <button class="nav-link" id="artists-watchlist-tab" data-bs-toggle="tab" data-bs-target="#artists-watchlist-content" type="button" role="tab">
-                <i class="fas fa-eye me-2"></i>Artists Watchlist
+            <button class="nav-link" id="watchlist-tab" data-bs-toggle="tab" data-bs-target="#watchlist-content" type="button" role="tab">
+                <i class="fas fa-eye me-2"></i>Watchlist
             </button>
         </li>
         <li class="nav-item">
@@ -66,29 +61,63 @@
             </section>
         </div>
 
-        <!-- Playlists Watchlist Tab -->
-        <div class="tab-pane fade" id="playlists-watchlist-content" role="tabpanel">
+        <!-- Watchlist Tab -->
+        <div class="tab-pane fade" id="watchlist-content" role="tabpanel">
             <div class="media-tab-header">
                 <div>
-                    <h2>Playlists Watchlist</h2>
-                    <p>Manage monitored playlists. Click <i class="fa-solid fa-gear"></i> on a card to configure folder, autotag, routing rules and blocked tracks.</p>
+                    <h2>Watchlist</h2>
+                    <p>Manage playlists, artists, and blocked rules in one place.</p>
                 </div>
             </div>
-            <div id="playlistWatchlistContainer" class="watchlist-playlist-grid"></div>
-        </div>
-
-        <!-- Artists Watchlist Tab -->
-        <div class="tab-pane fade" id="artists-watchlist-content" role="tabpanel">
-            <div class="media-tab-header">
-                <div>
-                    <h2>Artists Watchlist</h2>
-                    <p>Choose where each watched artist's new releases should be saved.</p>
+            <ul class="nav nav-pills watchlist-subtabs mb-3" id="watchlistSubTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="watchlist-playlists-tab" data-bs-toggle="tab" data-bs-target="#watchlist-playlists-content" type="button" role="tab" aria-selected="true">
+                        Playlists
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="watchlist-artists-tab" data-bs-toggle="tab" data-bs-target="#watchlist-artists-content" type="button" role="tab" aria-selected="false">
+                        Artists
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="watchlist-blocked-tab" data-bs-toggle="tab" data-bs-target="#watchlist-blocked-content" type="button" role="tab" aria-selected="false">
+                        Blocked
+                    </button>
+                </li>
+            </ul>
+            <div class="tab-content" id="watchlistSubTabsContent">
+                <div class="tab-pane fade show active" id="watchlist-playlists-content" role="tabpanel" aria-labelledby="watchlist-playlists-tab">
+                    <div class="media-tab-header">
+                        <div>
+                            <h2>Playlists Watchlist</h2>
+                            <p>Manage monitored playlists. Click <i class="fa-solid fa-gear"></i> on a card to configure folder, autotag, routing rules and blocked tracks.</p>
+                        </div>
+                    </div>
+                    <div id="playlistWatchlistContainer" class="watchlist-playlist-grid"></div>
                 </div>
-                <div>
-                    <button id="saveArtistPreferences" class="btn btn-primary action-btn btn-sm">Save Preferences</button>
+                <div class="tab-pane fade" id="watchlist-artists-content" role="tabpanel" aria-labelledby="watchlist-artists-tab">
+                    <div class="media-tab-header">
+                        <div>
+                            <h2>Artists Watchlist</h2>
+                            <p>Choose where each watched artist's new releases should be saved.</p>
+                        </div>
+                        <div>
+                            <button id="saveArtistPreferences" class="btn btn-primary action-btn btn-sm">Save Preferences</button>
+                        </div>
+                    </div>
+                    <div id="watchlistContainer" class="watchlist-artist-grid"></div>
+                </div>
+                <div class="tab-pane fade" id="watchlist-blocked-content" role="tabpanel" aria-labelledby="watchlist-blocked-tab">
+                    <div class="media-tab-header">
+                        <div>
+                            <h2>Blocked Rules</h2>
+                            <p>Review blocked track rules across monitored playlists.</p>
+                        </div>
+                    </div>
+                    <div id="blockedWatchlistContainer" class="watchlist-blocked-grid"></div>
                 </div>
             </div>
-            <div id="watchlistContainer" class="watchlist-artist-grid"></div>
         </div>
 
         <!-- Auto Playlists Tab -->
@@ -424,6 +453,31 @@ document.addEventListener('DOMContentLoaded', function() {
     margin-right: 0.5rem;
     font-size: 1.1rem;
     color: inherit;
+}
+
+.watchlist-subtabs {
+    gap: 8px;
+    border-bottom: 1px solid var(--border-primary);
+    padding-bottom: 10px;
+}
+
+.watchlist-subtabs .nav-link {
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 30%, transparent);
+    color: var(--text-muted);
+    padding: 8px 16px;
+    background: color-mix(in srgb, var(--bg-secondary) 85%, transparent);
+}
+
+.watchlist-subtabs .nav-link:hover {
+    color: var(--primary-color);
+    border-color: color-mix(in srgb, var(--primary-color) 70%, transparent);
+}
+
+.watchlist-subtabs .nav-link.active {
+    color: var(--primary-color);
+    background: color-mix(in srgb, var(--primary-color) 15%, transparent);
+    border-color: color-mix(in srgb, var(--primary-color) 80%, transparent);
 }
 
 .bg-darker {
