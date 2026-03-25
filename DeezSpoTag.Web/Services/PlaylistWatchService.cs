@@ -656,26 +656,28 @@ public sealed class PlaylistWatchService
         }
 
         var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(source, playlist.SourceId, cancellationToken);
+        var globalBlockRules = await GetGlobalPlaylistBlockRulesAsync(cancellationToken);
+        var effectiveBlockRules = MergeBlockRules(preference?.IgnoreRules, globalBlockRules);
 
         switch (source)
         {
             case SpotifySource:
-                await CheckSpotifyPlaylistAsync(playlist, preference, cancellationToken);
+                await CheckSpotifyPlaylistAsync(playlist, preference, effectiveBlockRules, cancellationToken);
                 break;
             case DeezerSource:
-                await CheckDeezerPlaylistAsync(playlist, preference, cancellationToken);
+                await CheckDeezerPlaylistAsync(playlist, preference, effectiveBlockRules, cancellationToken);
                 break;
             case SmartTracklistSource:
-                await CheckSmartTracklistAsync(playlist, preference, cancellationToken);
+                await CheckSmartTracklistAsync(playlist, preference, effectiveBlockRules, cancellationToken);
                 break;
             case AppleSource:
-                await CheckApplePlaylistAsync(playlist, preference, cancellationToken);
+                await CheckApplePlaylistAsync(playlist, preference, effectiveBlockRules, cancellationToken);
                 break;
             case BoomplaySource:
-                await CheckBoomplayPlaylistAsync(playlist, preference, cancellationToken);
+                await CheckBoomplayPlaylistAsync(playlist, preference, effectiveBlockRules, cancellationToken);
                 break;
             case RecommendationsSource:
-                await CheckRecommendationsPlaylistAsync(playlist, preference, cancellationToken);
+                await CheckRecommendationsPlaylistAsync(playlist, preference, effectiveBlockRules, cancellationToken);
                 break;
             default:
                 _logger.LogDebug("Playlist watch skipped for unsupported source: {Source}", source);
@@ -683,20 +685,127 @@ public sealed class PlaylistWatchService
         }
     }
 
+    private async Task<HashSet<string>> GetIgnoredTrackIdsForSourceAsync(
+        string source,
+        CancellationToken cancellationToken)
+    {
+        return await _libraryRepository.GetPlaylistWatchIgnoredTrackIdsBySourceAsync(source, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<PlaylistTrackBlockRule>> GetGlobalPlaylistBlockRulesAsync(CancellationToken cancellationToken)
+    {
+        var preferences = await _libraryRepository.GetPlaylistWatchPreferencesAsync(cancellationToken);
+        if (preferences.Count == 0)
+        {
+            return Array.Empty<PlaylistTrackBlockRule>();
+        }
+
+        var rules = new List<PlaylistTrackBlockRule>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var preference in preferences)
+        {
+            if (preference.IgnoreRules is null || preference.IgnoreRules.Count == 0)
+            {
+                continue;
+            }
+
+            foreach (var rule in preference.IgnoreRules)
+            {
+                var field = (rule.ConditionField ?? string.Empty).Trim();
+                var op = (rule.ConditionOperator ?? string.Empty).Trim();
+                var value = (rule.ConditionValue ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(field)
+                    || string.IsNullOrWhiteSpace(op)
+                    || string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                var dedupeKey = $"{field}\u001F{op}\u001F{value}";
+                if (!seen.Add(dedupeKey))
+                {
+                    continue;
+                }
+
+                rules.Add(new PlaylistTrackBlockRule(field, op, value, rules.Count));
+            }
+        }
+
+        return rules;
+    }
+
+    private static IReadOnlyList<PlaylistTrackBlockRule>? MergeBlockRules(
+        IReadOnlyList<PlaylistTrackBlockRule>? playlistRules,
+        IReadOnlyList<PlaylistTrackBlockRule> globalRules)
+    {
+        var hasPlaylistRules = playlistRules is { Count: > 0 };
+        var hasGlobalRules = globalRules.Count > 0;
+        if (!hasPlaylistRules && !hasGlobalRules)
+        {
+            return null;
+        }
+
+        var merged = new List<PlaylistTrackBlockRule>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (hasPlaylistRules)
+        {
+            foreach (var rule in playlistRules!)
+            {
+                AppendRuleIfUnique(rule, merged, seen);
+            }
+        }
+
+        if (hasGlobalRules)
+        {
+            foreach (var rule in globalRules)
+            {
+                AppendRuleIfUnique(rule, merged, seen);
+            }
+        }
+
+        return merged;
+    }
+
+    private static void AppendRuleIfUnique(
+        PlaylistTrackBlockRule rule,
+        List<PlaylistTrackBlockRule> merged,
+        HashSet<string> seen)
+    {
+        var field = (rule.ConditionField ?? string.Empty).Trim();
+        var op = (rule.ConditionOperator ?? string.Empty).Trim();
+        var value = (rule.ConditionValue ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(field)
+            || string.IsNullOrWhiteSpace(op)
+            || string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        var dedupeKey = $"{field}\u001F{op}\u001F{value}";
+        if (!seen.Add(dedupeKey))
+        {
+            return;
+        }
+
+        merged.Add(new PlaylistTrackBlockRule(field, op, value, merged.Count));
+    }
+
     private async Task CheckSpotifyPlaylistAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
         CancellationToken cancellationToken)
     {
         if (IsSpotifyHomeTrendingSourceId(playlist.SourceId))
         {
-            await CheckSpotifyHomeTrendingSongsAsync(playlist, preference, cancellationToken);
+            await CheckSpotifyHomeTrendingSongsAsync(playlist, preference, effectiveBlockRules, cancellationToken);
             return;
         }
 
         if (TryGetSpotifyArtistTopTracksSourceId(playlist.SourceId, out var artistId))
         {
-            await CheckSpotifyArtistTopTracksAsync(playlist, preference, artistId, cancellationToken);
+            await CheckSpotifyArtistTopTracksAsync(playlist, preference, effectiveBlockRules, artistId, cancellationToken);
             return;
         }
 
@@ -770,7 +879,7 @@ public sealed class PlaylistWatchService
                     preference?.PreferredEngine,
                     preference?.DownloadVariantMode,
                     preference?.RoutingRules,
-                    preference?.IgnoreRules),
+                    effectiveBlockRules),
                 cancellationToken);
 
             if (queuedCount > 0)
@@ -918,7 +1027,7 @@ public sealed class PlaylistWatchService
         CancellationToken cancellationToken)
     {
         var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(SpotifySource, sourceId, cancellationToken);
-        var ignored = await _libraryRepository.GetPlaylistWatchIgnoredTrackIdsAsync(SpotifySource, sourceId, cancellationToken);
+        var ignored = await GetIgnoredTrackIdsForSourceAsync(SpotifySource, cancellationToken);
         return page.Tracks
             .Where(track => !string.IsNullOrWhiteSpace(track.Id)
                             && !existing.Contains(track.Id)
@@ -940,10 +1049,12 @@ public sealed class PlaylistWatchService
     private async Task CheckSpotifyArtistTopTracksAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
         string artistId,
         CancellationToken cancellationToken)
     {
         _ = preference;
+        _ = effectiveBlockRules;
         var artistPage = await _spotifyArtistService.GetArtistPageBySpotifyIdAsync(
             artistId,
             artistId,
@@ -1025,7 +1136,7 @@ public sealed class PlaylistWatchService
         }
 
         var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(SpotifySource, playlist.SourceId, cancellationToken);
-        var ignored = await _libraryRepository.GetPlaylistWatchIgnoredTrackIdsAsync(SpotifySource, playlist.SourceId, cancellationToken);
+        var ignored = await GetIgnoredTrackIdsForSourceAsync(SpotifySource, cancellationToken);
         var newTracks = topTracks
             .Where(track => !existing.Contains(track.Id) && !ignored.Contains(track.Id))
             .ToList();
@@ -1066,6 +1177,7 @@ public sealed class PlaylistWatchService
     private async Task CheckSpotifyHomeTrendingSongsAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
         CancellationToken cancellationToken)
     {
         var settings = _settingsService.LoadSettings();
@@ -1150,7 +1262,7 @@ public sealed class PlaylistWatchService
         }
 
         var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(SpotifySource, playlist.SourceId, cancellationToken);
-        var ignored = await _libraryRepository.GetPlaylistWatchIgnoredTrackIdsAsync(SpotifySource, playlist.SourceId, cancellationToken);
+        var ignored = await GetIgnoredTrackIdsForSourceAsync(SpotifySource, cancellationToken);
         var newTracks = tracks
             .Where(track => !existing.Contains(track.Id) && !ignored.Contains(track.Id))
             .ToList();
@@ -1176,7 +1288,7 @@ public sealed class PlaylistWatchService
                     preference?.PreferredEngine,
                     preference?.DownloadVariantMode,
                     preference?.RoutingRules,
-                    preference?.IgnoreRules),
+                    effectiveBlockRules),
                 cancellationToken);
 
             await AddPlaylistWatchHistoryAsync(
@@ -1203,6 +1315,7 @@ public sealed class PlaylistWatchService
     private async Task CheckDeezerPlaylistAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
         CancellationToken cancellationToken)
     {
         if (!_deezerClient.LoggedIn)
@@ -1219,7 +1332,7 @@ public sealed class PlaylistWatchService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Deezer playlist watch failed for {SourceId}; attempting smarttracklist mode.", playlist.SourceId);
-            await CheckSmartTracklistAsync(playlist, preference, DeezerSource, cancellationToken);
+            await CheckSmartTracklistAsync(playlist, preference, effectiveBlockRules, DeezerSource, cancellationToken);
             return;
         }
 
@@ -1280,7 +1393,7 @@ public sealed class PlaylistWatchService
         }
 
         var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(DeezerSource, playlist.SourceId, cancellationToken);
-        var ignored = await _libraryRepository.GetPlaylistWatchIgnoredTrackIdsAsync(DeezerSource, playlist.SourceId, cancellationToken);
+        var ignored = await GetIgnoredTrackIdsForSourceAsync(DeezerSource, cancellationToken);
         var newTracks = tracks
             .Where(track => track.SngId > 0
                             && !existing.Contains(track.SngId.ToString())
@@ -1322,7 +1435,7 @@ public sealed class PlaylistWatchService
                 preference?.PreferredEngine,
                 preference?.DownloadVariantMode,
                 preference?.RoutingRules,
-                preference?.IgnoreRules),
+                effectiveBlockRules),
             cancellationToken);
 
         if (queuedCount > 0)
@@ -1351,6 +1464,7 @@ public sealed class PlaylistWatchService
     private async Task CheckApplePlaylistAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
         CancellationToken cancellationToken)
     {
         var state = await _libraryRepository.GetPlaylistWatchStateAsync(AppleSource, playlist.SourceId, cancellationToken);
@@ -1426,7 +1540,7 @@ public sealed class PlaylistWatchService
         }
 
         var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(AppleSource, playlist.SourceId, cancellationToken);
-        var ignored = await _libraryRepository.GetPlaylistWatchIgnoredTrackIdsAsync(AppleSource, playlist.SourceId, cancellationToken);
+        var ignored = await GetIgnoredTrackIdsForSourceAsync(AppleSource, cancellationToken);
         var newTracks = playlistData.Tracks
             .Where(track => !existing.Contains(track.TrackId)
                             && !ignored.Contains(track.TrackId))
@@ -1453,7 +1567,7 @@ public sealed class PlaylistWatchService
                     preference?.PreferredEngine,
                     preference?.DownloadVariantMode,
                     preference?.RoutingRules,
-                    preference?.IgnoreRules),
+                    effectiveBlockRules),
                 cancellationToken);
 
             if (queuedCount > 0)
@@ -1483,6 +1597,7 @@ public sealed class PlaylistWatchService
     private async Task CheckBoomplayPlaylistAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
         CancellationToken cancellationToken)
     {
         var state = await _libraryRepository.GetPlaylistWatchStateAsync(BoomplaySource, playlist.SourceId, cancellationToken);
@@ -1558,7 +1673,7 @@ public sealed class PlaylistWatchService
         }
 
         var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(BoomplaySource, playlist.SourceId, cancellationToken);
-        var ignored = await _libraryRepository.GetPlaylistWatchIgnoredTrackIdsAsync(BoomplaySource, playlist.SourceId, cancellationToken);
+        var ignored = await GetIgnoredTrackIdsForSourceAsync(BoomplaySource, cancellationToken);
         var newTracks = playlistData.Tracks
             .Where(track => !existing.Contains(track.TrackId)
                             && !ignored.Contains(track.TrackId))
@@ -1585,7 +1700,7 @@ public sealed class PlaylistWatchService
                     preference?.PreferredEngine,
                     preference?.DownloadVariantMode,
                     preference?.RoutingRules,
-                    preference?.IgnoreRules),
+                    effectiveBlockRules),
                 cancellationToken);
 
             await AddPlaylistWatchHistoryAsync(
@@ -1612,14 +1727,16 @@ public sealed class PlaylistWatchService
     private Task CheckSmartTracklistAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
         CancellationToken cancellationToken)
     {
-        return CheckSmartTracklistAsync(playlist, preference, SmartTracklistSource, cancellationToken);
+        return CheckSmartTracklistAsync(playlist, preference, effectiveBlockRules, SmartTracklistSource, cancellationToken);
     }
 
     private async Task CheckSmartTracklistAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
         string persistedSource,
         CancellationToken cancellationToken)
     {
@@ -1702,7 +1819,7 @@ public sealed class PlaylistWatchService
         }
 
         var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(persistedSource, playlist.SourceId, cancellationToken);
-        var ignored = await _libraryRepository.GetPlaylistWatchIgnoredTrackIdsAsync(persistedSource, playlist.SourceId, cancellationToken);
+        var ignored = await GetIgnoredTrackIdsForSourceAsync(persistedSource, cancellationToken);
         var newTracks = playlistData.Tracks
             .Where(track => !existing.Contains(track.TrackId)
                             && !ignored.Contains(track.TrackId))
@@ -1729,7 +1846,7 @@ public sealed class PlaylistWatchService
                     preference?.PreferredEngine,
                     preference?.DownloadVariantMode,
                     preference?.RoutingRules,
-                    preference?.IgnoreRules),
+                    effectiveBlockRules),
                 cancellationToken);
 
             await AddPlaylistWatchHistoryAsync(
@@ -1855,6 +1972,7 @@ public sealed class PlaylistWatchService
     private async Task CheckRecommendationsPlaylistAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
         CancellationToken cancellationToken)
     {
         var persistedSource = RecommendationsSource;
@@ -1952,7 +2070,7 @@ public sealed class PlaylistWatchService
         }
 
         var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(persistedSource, playlist.SourceId, cancellationToken);
-        var ignored = await _libraryRepository.GetPlaylistWatchIgnoredTrackIdsAsync(persistedSource, playlist.SourceId, cancellationToken);
+        var ignored = await GetIgnoredTrackIdsForSourceAsync(persistedSource, cancellationToken);
         var newTracks = detail.Tracks
             .Where(track => !string.IsNullOrWhiteSpace(track.Id)
                             && !existing.Contains(track.Id)
@@ -1980,7 +2098,7 @@ public sealed class PlaylistWatchService
                     preference?.PreferredEngine,
                     preference?.DownloadVariantMode,
                     preference?.RoutingRules,
-                    preference?.IgnoreRules),
+                    effectiveBlockRules),
                 cancellationToken);
 
             await AddPlaylistWatchHistoryAsync(

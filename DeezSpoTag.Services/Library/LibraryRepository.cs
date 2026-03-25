@@ -3444,6 +3444,31 @@ LIMIT @limit;";
         return ids;
     }
 
+    private async Task<HashSet<string>> QueryPlaylistWatchTrackSourceIdsBySourceAsync(
+        string sql,
+        string source,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceField, source);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (!await reader.IsDBNullAsync(0, cancellationToken))
+            {
+                var value = reader.GetString(0);
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    ids.Add(value);
+                }
+            }
+        }
+
+        return ids;
+    }
+
     private async Task InsertPlaylistWatchRowsAsync<TTrack>(
         string sql,
         string source,
@@ -4872,6 +4897,17 @@ SELECT track_source_id
 FROM playlist_watch_ignore
 WHERE source = @source AND source_id = @sourceId;";
         return await QueryPlaylistWatchTrackSourceIdsAsync(sql, source, sourceId, cancellationToken);
+    }
+
+    public async Task<HashSet<string>> GetPlaylistWatchIgnoredTrackIdsBySourceAsync(
+        string source,
+        CancellationToken cancellationToken = default)
+    {
+        const string sql = @"
+SELECT track_source_id
+FROM playlist_watch_ignore
+WHERE source = @source;";
+        return await QueryPlaylistWatchTrackSourceIdsBySourceAsync(sql, source, cancellationToken);
     }
 
     public async Task AddPlaylistWatchIgnoredTracksAsync(
