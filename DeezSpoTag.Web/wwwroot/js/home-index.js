@@ -471,8 +471,8 @@ document.getElementById('unified-search').addEventListener('keypress', function(
 
 const searchInput = document.getElementById('unified-search');
 
-const SEARCH_LINK_PLACEHOLDER = 'Search Deezer tracks, albums, artists, playlists... or paste Spotify/Apple Music/YouTube/SoundCloud/Tidal/Boomplay/Qobuz/Bandcamp/Pandora links to map to Deezer';
-const SUPPORTED_LINK_SOURCES = 'Spotify, Apple Music, YouTube, SoundCloud, Tidal, Boomplay, Deezer, Qobuz, Bandcamp, Pandora';
+const SEARCH_LINK_PLACEHOLDER = 'Search Deezer tracks, albums, artists, playlists... or paste Spotify/Apple Music/Boomplay/Tidal/Qobuz/Bandcamp links to map to Deezer';
+const SUPPORTED_LINK_SOURCES = 'Spotify, Apple Music, Boomplay, Tidal, Qobuz, Bandcamp, Deezer';
 
 function applySearchSourceState() {
     if (searchInput) {
@@ -574,7 +574,7 @@ function isPlaylistLikeExternalUrl(parsedUrl, source) {
         case 'tidal':
             return path.includes('/playlist/') || path.includes('/mix/');
         case 'qobuz':
-            return path.includes('/playlist/');
+            return path.includes('/playlist/') || path.includes('/playlists/');
         case 'bandcamp':
             return path.includes('/album/');
         case 'pandora':
@@ -626,7 +626,8 @@ function extractExternalCollectionId(parsedUrl, source) {
         return mixIndex >= 0 && pathSegments[mixIndex + 1] ? pathSegments[mixIndex + 1] : '';
     }
     if (source === 'qobuz') {
-        const playlistIndex = pathSegments.findIndex(segment => segment.toLowerCase() === 'playlist');
+        const playlistIndex = pathSegments.findIndex(segment =>
+            segment.toLowerCase() === 'playlist' || segment.toLowerCase() === 'playlists');
         return playlistIndex >= 0 && pathSegments[playlistIndex + 1] ? pathSegments[playlistIndex + 1] : '';
     }
     if (source === 'pandora') {

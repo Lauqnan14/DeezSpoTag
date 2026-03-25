@@ -678,6 +678,107 @@ async function parseDeezerLink(input) {
     return data;
 }
 
+const deezerMappedPlaylistSources = new Set(['tidal', 'qobuz', 'bandcamp']);
+
+function classifyExternalSource(url) {
+    if (!url) return '';
+    try {
+        const parsed = new URL(url);
+        const host = (parsed.hostname || '').toLowerCase();
+        if (host.includes('soundcloud.com')) return 'soundcloud';
+        if (host.includes('tidal.com')) return 'tidal';
+        if (host.includes('qobuz.com')) return 'qobuz';
+        if (host.includes('bandcamp.com')) return 'bandcamp';
+        if (host.includes('pandora.com')) return 'pandora';
+        if (host.includes('boomplay.com')) return 'boomplay';
+        if (host.includes('deezer.com') || host.includes('deezer.page.link')) return 'deezer';
+    } catch {
+    }
+    return '';
+}
+
+function shouldUseLinkMap(parsedUrl) {
+    if (!parsedUrl) return false;
+    const host = (parsedUrl.hostname || '').toLowerCase();
+    return host.includes('deezer.com')
+        || host.includes('deezer.page.link')
+        || host.includes('soundcloud.com')
+        || host.includes('tidal.com')
+        || host.includes('qobuz.com')
+        || host.includes('bandcamp.com')
+        || host.includes('pandora.com');
+}
+
+function isPlaylistLikeExternalLink(parsedUrl, source) {
+    if (!parsedUrl) return false;
+    const path = (parsedUrl.pathname || '').toLowerCase();
+    const query = parsedUrl.searchParams;
+
+    if (query.has('list') || path.includes('/playlist')) {
+        return true;
+    }
+
+    if (source === 'soundcloud') {
+        return path.includes('/sets/');
+    }
+
+    if (source === 'tidal') {
+        return path.includes('/mix/');
+    }
+
+    if (source === 'qobuz') {
+        return path.includes('/playlist/') || path.includes('/playlists/');
+    }
+
+    if (source === 'bandcamp') {
+        return path.includes('/album/');
+    }
+
+    return false;
+}
+
+function redirectToDeezerEntity(type, id) {
+    const normalizedType = String(type || '').trim().toLowerCase();
+    const normalizedId = String(id || '').trim();
+    if (!normalizedType || !normalizedId) {
+        return false;
+    }
+
+    if (normalizedType === 'artist') {
+        window.location.href = `/Artist?id=${encodeURIComponent(normalizedId)}&source=deezer`;
+        return true;
+    }
+
+    window.location.href = `/Tracklist?id=${encodeURIComponent(normalizedId)}&type=${encodeURIComponent(normalizedType)}&source=deezer`;
+    return true;
+}
+
+function redirectToExternalPlaylistFlow(source, url) {
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    const normalizedUrl = String(url || '').trim();
+    if (!normalizedSource || !normalizedUrl) {
+        return false;
+    }
+
+    window.location.href = `/Tracklist?id=${encodeURIComponent(normalizedUrl)}&type=playlist&source=${encodeURIComponent(normalizedSource)}&externalUrl=${encodeURIComponent(normalizedUrl)}`;
+    return true;
+}
+
+function fallbackToDeezerLinkParseOrSearch(input, type) {
+    parseDeezerLink(input)
+        .then((parsed) => {
+            if (parsed.type === 'artist') {
+                window.location.href = `/Artist?id=${encodeURIComponent(parsed.id)}&source=deezer`;
+            } else {
+                window.location.href = `/Tracklist?id=${encodeURIComponent(parsed.id)}&type=${encodeURIComponent(parsed.type)}&source=deezer`;
+            }
+        })
+        .catch((error) => {
+            console.error('Link parse failed:', error);
+            performSearch(input, type);
+        });
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     // Set active filter
     updateActiveFilter(currentSearchType);
@@ -746,18 +847,33 @@ document.addEventListener('DOMContentLoaded', function() {
                     return;
                 }
             }
-            parseDeezerLink(currentSearchTerm)
-                .then((parsed) => {
-                    if (parsed.type === 'artist') {
-                        window.location.href = `/Artist?id=${encodeURIComponent(parsed.id)}&source=deezer`;
-                    } else {
-                        window.location.href = `/Tracklist?id=${encodeURIComponent(parsed.id)}&type=${encodeURIComponent(parsed.type)}&source=deezer`;
-                    }
-                })
-                .catch((error) => {
-                    console.error('Link parse failed:', error);
-                    performSearch(currentSearchTerm, currentSearchType);
-                });
+            if (shouldUseLinkMap(parsedUrl)) {
+                fetch(`/api/link-map/deezer?url=${encodeURIComponent(currentSearchTerm)}`)
+                    .then((resp) => resp.ok ? resp.json() : null)
+                    .then((mapping) => {
+                        if (mapping?.available && mapping?.deezerType && mapping?.deezerId) {
+                            if (redirectToDeezerEntity(mapping.deezerType, mapping.deezerId)) {
+                                return;
+                            }
+                        }
+
+                        const inferredSource = String(mapping?.source || classifyExternalSource(currentSearchTerm)).toLowerCase();
+                        if (deezerMappedPlaylistSources.has(inferredSource)
+                            && isPlaylistLikeExternalLink(parsedUrl, inferredSource)
+                            && redirectToExternalPlaylistFlow(inferredSource, currentSearchTerm)) {
+                            return;
+                        }
+
+                        fallbackToDeezerLinkParseOrSearch(currentSearchTerm, currentSearchType);
+                    })
+                    .catch((error) => {
+                        console.error('Link-map routing failed:', error);
+                        fallbackToDeezerLinkParseOrSearch(currentSearchTerm, currentSearchType);
+                    });
+                return;
+            }
+
+            fallbackToDeezerLinkParseOrSearch(currentSearchTerm, currentSearchType);
         } else {
             performSearch(currentSearchTerm, currentSearchType);
         }

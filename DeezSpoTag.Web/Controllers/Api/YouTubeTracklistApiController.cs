@@ -1,7 +1,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Services.Download.Shared.Utils;
-using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -45,7 +44,7 @@ public sealed class YouTubeTracklistApiController : ControllerBase
         var playlistUrl = $"https://music.youtube.com/playlist?list={playlistId}";
         try
         {
-            var rawJson = await FetchYtDlpPlaylistJsonAsync(playlistUrl, cancellationToken);
+            var rawJson = await FetchPlaylistJsonAsync(playlistUrl, cancellationToken);
             if (string.IsNullOrWhiteSpace(rawJson))
             {
                 return NotFound(new { available = false, error = "YouTube playlist unavailable." });
@@ -73,9 +72,13 @@ public sealed class YouTubeTracklistApiController : ControllerBase
         }
     }
 
-    private async Task<string?> FetchYtDlpPlaylistJsonAsync(string playlistUrl, CancellationToken cancellationToken)
+    private Task<string?> FetchPlaylistJsonAsync(string playlistUrl, CancellationToken cancellationToken)
     {
-        return await YtDlpPlaylistJsonFetcher.FetchAsync(playlistUrl, "YouTube", _logger, cancellationToken);
+        _logger.LogWarning(
+            "YouTube playlist ingestion is unavailable in the current build. url={PlaylistUrl}",
+            playlistUrl);
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult<string?>(null);
     }
 
     private static bool TryBuildTracklistPayload(string playlistId, string rawJson, out object tracklist)

@@ -29,11 +29,25 @@ public sealed class BandcampClient
 
     public async Task<List<BandcampSearchResult>> SearchTracksAsync(string query, CancellationToken cancellationToken)
     {
+        return await SearchAsync(query, "t", cancellationToken);
+    }
+
+    public async Task<List<BandcampSearchResult>> SearchAsync(
+        string query,
+        string searchFilter,
+        CancellationToken cancellationToken)
+    {
+        var normalizedFilter = string.Equals(searchFilter, "a", StringComparison.OrdinalIgnoreCase)
+            ? "a"
+            : string.Equals(searchFilter, "b", StringComparison.OrdinalIgnoreCase)
+                ? "b"
+                : "t";
+
         var payload = new
         {
             fan_id = default(string),
             full_page = false,
-            search_filter = "t",
+            search_filter = normalizedFilter,
             search_text = query
         };
 

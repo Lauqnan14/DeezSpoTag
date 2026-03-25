@@ -5,6 +5,9 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class BandcampSearchResult
 {
+    [JsonPropertyName("type")]
+    public string Type { get; set; } = "";
+
     [JsonPropertyName("id")]
     public long Id { get; set; }
 
@@ -25,6 +28,15 @@ public sealed class BandcampSearchResult
 
     [JsonPropertyName("item_url_path")]
     public string ItemUrlPath { get; set; } = "";
+
+    [JsonPropertyName("item_url_root")]
+    public string ItemUrlRoot { get; set; } = "";
+
+    [JsonPropertyName("img")]
+    public string ImageUrl { get; set; } = "";
+
+    [JsonPropertyName("is_label")]
+    public bool IsLabel { get; set; }
 
     public BandcampTrackInfo ToTrackInfo()
     {

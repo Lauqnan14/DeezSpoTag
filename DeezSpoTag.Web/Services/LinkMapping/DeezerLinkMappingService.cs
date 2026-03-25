@@ -302,12 +302,10 @@ public sealed class DeezerLinkMappingService
         }
 
         var path = uri.AbsolutePath.ToLowerInvariant();
-        var host = uri.Host.ToLowerInvariant();
         return path.Contains("/playlist", StringComparison.Ordinal)
                || uri.Query.Contains("list=", StringComparison.OrdinalIgnoreCase)
                || path.Contains("/sets/", StringComparison.Ordinal) // SoundCloud
-               || path.Contains("/mix/", StringComparison.Ordinal) // Tidal mix
-               || (host.Contains("bandcamp.com", StringComparison.Ordinal) && path.Contains("/album/", StringComparison.Ordinal)); // Bandcamp album behaves as collection
+               || path.Contains("/mix/", StringComparison.Ordinal); // Tidal mix
     }
 
     private static bool TryNormalizeHttpUrl(string value, out string normalized)
