@@ -126,6 +126,25 @@ public sealed class MediaServerSoundtrackItemDto
     public MediaServerSoundtrackMatchDto? Soundtrack { get; set; }
 }
 
+public sealed class MediaServerSoundtrackResolveRequest
+{
+    public string? ServerType { get; set; }
+
+    public string? LibraryId { get; set; }
+
+    public string? LibraryName { get; set; }
+
+    public string? Category { get; set; }
+
+    public string? ItemId { get; set; }
+
+    public string? Title { get; set; }
+
+    public int? Year { get; set; }
+
+    public string? ImageUrl { get; set; }
+}
+
 public sealed class MediaServerSoundtrackMatchDto
 {
     public string Kind { get; set; } = "search";

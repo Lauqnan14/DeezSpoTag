@@ -1375,6 +1375,7 @@ let spotifyLazyState = null;
 let boomplayLazyState = null;
 let spotifyMatchState = null;
 let spotifyMatchCompletion = null;
+let spotifyMatchFailureToastShown = false;
 let externalMatchState = null;
 const spotifyMatchCache = new Map();
 let spotifyMatchTimer = null;
@@ -1416,6 +1417,11 @@ function isSpotifyHomeTrendingSourceId(value) {
 function isSpotifyHomeTrendingTracklistView() {
     const source = (requestSource || tracklistSource || '').toLowerCase();
     return source === 'spotify' && isSpotifyHomeTrendingSourceId(tracklistId);
+}
+
+function isSpotifyPlaylistDeezerMatchContext() {
+    const source = (requestSource || tracklistSource || '').toLowerCase();
+    return source === 'spotify' && tracklistType === 'playlist';
 }
 
 function isRecommendationTracklistContext() {
@@ -1762,6 +1768,7 @@ function resetSpotifyState() {
     boomplayLazyState = null;
     spotifyMatchState = null;
     spotifyMatchCompletion = null;
+    spotifyMatchFailureToastShown = false;
     externalMatchState = null;
     spotifyMatchCache.clear();
     spotifyRecommendationState = null;
@@ -3496,6 +3503,13 @@ async function startSpotifyMatchPolling(token, pendingCount) {
                 spotifyMatchState = null;
                 if (matched !== null && failed !== null) {
                     spotifyMatchCompletion = `Matching complete: ${matched} matched, ${failed} failed.`;
+                    if (failed > 0
+                        && isSpotifyPlaylistDeezerMatchContext()
+                        && !spotifyMatchFailureToastShown
+                        && window.DeezSpoTag?.ui?.showToast) {
+                        spotifyMatchFailureToastShown = true;
+                        DeezSpoTag.ui.showToast(`Deezer matching failed for ${failed} playlist track(s).`, { type: 'warning' });
+                    }
                 } else {
                     spotifyMatchCompletion = 'All Deezer matches are ready.';
                 }
@@ -5664,9 +5678,7 @@ async function playPausePreview(control) {
     }
 
     if (!previewUrl) {
-        const isSpotifySource = (tracklistSource || '').toLowerCase() === 'spotify'
-            || (requestSource || '').toLowerCase() === 'spotify';
-        if (isSpotifySource && window.DeezSpoTag?.ui?.showToast) {
+        if (isSpotifyPlaylistDeezerMatchContext() && window.DeezSpoTag?.ui?.showToast) {
             DeezSpoTag.ui.showToast('No Deezer match available for this track.', { type: 'warning' });
             return;
         }

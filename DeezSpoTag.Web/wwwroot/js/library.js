@@ -8439,17 +8439,161 @@ function buildSoundtrackMatchMarkup(soundtrack) {
     const matchTitle = String(soundtrack?.title || 'Search on Deezer').trim();
     const matchUrl = String(soundtrack?.url || '').trim();
     const matchKind = String(soundtrack?.kind || 'search').trim().toLowerCase();
-    const matchLabel = matchKind === 'album'
-        ? 'Open album'
-        : matchKind === 'playlist'
-            ? 'Open playlist'
-            : 'Search on Deezer';
+    const tracklistTarget = resolveSoundtrackTracklistTarget(soundtrack);
+    const matchLabel = tracklistTarget
+        ? (tracklistTarget.type === 'playlist' ? 'Open playlist' : 'Open soundtrack')
+        : (matchKind === 'album'
+            ? 'Open album'
+            : matchKind === 'playlist'
+                ? 'Open playlist'
+                : matchKind.startsWith('spotify_')
+                    ? 'Open soundtrack'
+                    : 'Search on Deezer');
 
     if (!matchUrl) {
         return `<p class="soundtrack-card-meta">${escapeHtml(matchTitle)}</p>`;
     }
 
+    if (matchKind === 'search') {
+        return '<p class="soundtrack-card-meta">Matching soundtrack...</p>';
+    }
+
+    if (tracklistTarget) {
+        const query = new URLSearchParams();
+        query.set('id', tracklistTarget.id);
+        query.set('type', tracklistTarget.type);
+        query.set('source', tracklistTarget.source || 'deezer');
+        if (tracklistTarget.externalUrl) {
+            query.set('externalUrl', tracklistTarget.externalUrl);
+        }
+        const href = `/Tracklist?${query.toString()}`;
+        return `<a class="soundtrack-card-match" href="${escapeHtml(href)}">${escapeHtml(matchLabel)}: ${escapeHtml(matchTitle)}</a>`;
+    }
+
     return `<a class="soundtrack-card-match" href="${escapeHtml(matchUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(matchLabel)}: ${escapeHtml(matchTitle)}</a>`;
+}
+
+function resolveSoundtrackTracklistTarget(soundtrack) {
+    const kind = String(soundtrack?.kind || '').trim().toLowerCase();
+    const deezerId = String(soundtrack?.deezerId || '').trim();
+    if (!deezerId) {
+        const url = String(soundtrack?.url || '').trim();
+        const spotifyTarget = parseSpotifyTracklistTargetFromUrl(url);
+        if (!spotifyTarget) {
+            return null;
+        }
+
+        return spotifyTarget;
+    }
+
+    if (kind === 'album' || kind === 'playlist' || kind === 'track') {
+        return { source: 'deezer', type: kind, id: deezerId, externalUrl: '' };
+    }
+
+    return null;
+}
+
+function parseSpotifyTracklistTargetFromUrl(url) {
+    const value = String(url || '').trim();
+    if (!value) {
+        return null;
+    }
+
+    const webMatch = value.match(/open\.spotify\.com\/(album|playlist|track)\/([A-Za-z0-9]+)/i);
+    if (webMatch) {
+        return {
+            source: 'spotify',
+            type: webMatch[1].toLowerCase(),
+            id: webMatch[2],
+            externalUrl: value
+        };
+    }
+
+    const uriMatch = value.match(/^spotify:(album|playlist|track):([A-Za-z0-9]+)$/i);
+    if (uriMatch) {
+        const type = uriMatch[1].toLowerCase();
+        const id = uriMatch[2];
+        return {
+            source: 'spotify',
+            type,
+            id,
+            externalUrl: `https://open.spotify.com/${type}/${id}`
+        };
+    }
+
+    return null;
+}
+
+function navigateToSoundtrackTracklist(target) {
+    const normalizedSource = String(target?.source || 'deezer').trim().toLowerCase();
+    const normalizedType = String(target?.type || '').trim().toLowerCase();
+    const normalizedId = String(target?.id || '').trim();
+    const normalizedExternalUrl = String(target?.externalUrl || '').trim();
+    if (!normalizedId || !normalizedType) {
+        return;
+    }
+
+    const query = new URLSearchParams();
+    query.set('id', normalizedId);
+    query.set('type', normalizedType);
+    query.set('source', normalizedSource);
+    if (normalizedExternalUrl) {
+        query.set('externalUrl', normalizedExternalUrl);
+    }
+    globalThis.location.href = `/Tracklist?${query.toString()}`;
+}
+
+async function resolveMovieSoundtrackOnDemand(button) {
+    const itemId = String(button?.dataset?.soundtrackItemId || '').trim();
+    const title = String(button?.dataset?.soundtrackTitle || '').trim();
+    const serverType = String(button?.dataset?.soundtrackServer || '').trim().toLowerCase();
+    const libraryId = String(button?.dataset?.soundtrackLibrary || '').trim();
+    const libraryName = String(button?.dataset?.soundtrackLibraryName || '').trim();
+    const category = String(button?.dataset?.soundtrackCategory || 'movie').trim().toLowerCase();
+    const imageUrl = String(button?.dataset?.soundtrackImage || '').trim();
+    const yearRaw = String(button?.dataset?.soundtrackYear || '').trim();
+    const year = Number.isFinite(Number(yearRaw)) ? Number(yearRaw) : null;
+    if (!itemId || !title || !serverType || !libraryId) {
+        return null;
+    }
+
+    button.disabled = true;
+    button.dataset.soundtrackResolving = 'true';
+
+    try {
+        const payload = await fetchJson('/api/media-server/soundtracks/resolve', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                serverType,
+                libraryId,
+                libraryName,
+                category,
+                itemId,
+                title,
+                year,
+                imageUrl
+            })
+        });
+
+        const target = resolveSoundtrackTracklistTarget(payload?.soundtrack);
+        if (!target) {
+            return null;
+        }
+
+        button.dataset.soundtrackOpenTracklist = 'true';
+        button.dataset.soundtrackTracklistSource = String(target.source || 'deezer');
+        button.dataset.soundtrackTracklistType = target.type;
+        button.dataset.soundtrackTracklistId = target.id;
+        button.dataset.soundtrackTracklistExternalUrl = String(target.externalUrl || '');
+        button.setAttribute('aria-label', `Open soundtrack tracklist for ${title}`);
+        return target;
+    } finally {
+        button.dataset.soundtrackResolving = 'false';
+        button.disabled = false;
+    }
 }
 
 function renderSoundtrackItems(items, category) {
@@ -8482,11 +8626,21 @@ function renderSoundtrackItems(items, category) {
             const serverLabel = String(item?.serverLabel || item?.serverType || '').trim();
             const context = [libraryName, serverLabel].filter(Boolean).join(' • ');
             const image = String(item?.imageUrl || '').trim();
+            const tracklistTarget = resolveSoundtrackTracklistTarget(item?.soundtrack);
+            const openTracklistAttributes = tracklistTarget
+                ? ` data-soundtrack-open-tracklist="true" data-soundtrack-tracklist-source="${escapeHtml(String(tracklistTarget.source || 'deezer'))}" data-soundtrack-tracklist-type="${escapeHtml(tracklistTarget.type)}" data-soundtrack-tracklist-id="${escapeHtml(tracklistTarget.id)}" data-soundtrack-tracklist-external-url="${escapeHtml(String(tracklistTarget.externalUrl || ''))}"`
+                : '';
+            const posterAriaLabel = tracklistTarget
+                ? `Open soundtrack tracklist for ${title}`
+                : `Resolve soundtrack for ${title}`;
+            const movieDataAttributes = ` data-soundtrack-item-id="${escapeHtml(String(item?.itemId || '').trim())}" data-soundtrack-title="${escapeHtml(title)}" data-soundtrack-year="${escapeHtml(Number.isFinite(item?.year) ? String(item.year) : '')}" data-soundtrack-image="${escapeHtml(image)}" data-soundtrack-server="${escapeHtml(String(item?.serverType || '').trim())}" data-soundtrack-library="${escapeHtml(String(item?.libraryId || '').trim())}" data-soundtrack-library-name="${escapeHtml(libraryName)}" data-soundtrack-category="movie"`;
 
             return `<article class="soundtrack-card soundtrack-card--movie">
-                ${image
-                    ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
-                    : `<div class="soundtrack-card-art soundtrack-card-art--poster watchlist-card-art-placeholder"><i class="fa-solid fa-compact-disc"></i></div>`}
+                <button type="button" class="soundtrack-card-poster-btn"${openTracklistAttributes}${movieDataAttributes} aria-label="${escapeHtml(posterAriaLabel)}">
+                    ${image
+                        ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
+                        : `<div class="soundtrack-card-art soundtrack-card-art--poster watchlist-card-art-placeholder"><i class="fa-solid fa-compact-disc"></i></div>`}
+                </button>
                 <div class="soundtrack-card-body">
                     <h3 class="soundtrack-card-title">${escapeHtml(title)}${escapeHtml(year)}</h3>
                     ${context ? `<p class="soundtrack-card-meta">${escapeHtml(context)}</p>` : ''}
@@ -8707,7 +8861,7 @@ function resolveSoundtrackLibraryTargets(configuration, category) {
         && String(library?.serverType || '').trim().toLowerCase() === String(serverType || library?.serverType || '').trim().toLowerCase());
 }
 
-async function loadSoundtrackItemsLazy(configuration, category, requestId) {
+async function loadSoundtrackItemsLazy(configuration, category, requestId, forceServerRefresh = false) {
     const elements = getSoundtrackElements();
     const targets = resolveSoundtrackLibraryTargets(configuration, category);
     if (targets.length === 0) {
@@ -8715,9 +8869,8 @@ async function loadSoundtrackItemsLazy(configuration, category, requestId) {
         return;
     }
 
-    const selectedLibraryId = String(soundtrackState.selectedLibraryId || '').trim();
-    const perLibraryCap = selectedLibraryId ? 180 : 60;
-    const batchSize = 20;
+    const perLibraryCap = Number.MAX_SAFE_INTEGER;
+    const batchSize = 100;
     const merged = new Map();
     let completedLibraries = 0;
 
@@ -8737,6 +8890,9 @@ async function loadSoundtrackItemsLazy(configuration, category, requestId) {
             params.set('libraryId', String(target.libraryId || '').trim());
             params.set('offset', String(offset));
             params.set('limit', String(requestLimit));
+            if (forceServerRefresh) {
+                params.set('refresh', 'true');
+            }
 
             const payload = await fetchJson(`/api/media-server/soundtracks/items?${params.toString()}`);
             if (requestId !== soundtrackState.lastItemsRequestId) {
@@ -8779,7 +8935,7 @@ async function loadSoundtrackItemsLazy(configuration, category, requestId) {
 }
 
 async function loadSoundtrackItems(options = {}) {
-    const { refreshConfiguration = false, showLoadingSkeleton = true } = options;
+    const { refreshConfiguration = false, showLoadingSkeleton = true, forceServerRefresh = false } = options;
     const elements = getSoundtrackElements();
     if (!elements.grid) {
         return;
@@ -8811,7 +8967,7 @@ async function loadSoundtrackItems(options = {}) {
             return;
         }
 
-        const finalRows = await loadSoundtrackItemsLazy(configuration, category, requestId);
+        const finalRows = await loadSoundtrackItemsLazy(configuration, category, requestId, forceServerRefresh);
         scheduleSoundtrackBackgroundRefresh(finalRows);
         renderSoundtrackTvNavigation();
     } catch (error) {
@@ -8886,6 +9042,39 @@ function bindSoundtrackTabHandlers() {
 
     if (elements.grid) {
         elements.grid.addEventListener('click', async event => {
+            const moviePosterButton = event.target.closest('.soundtrack-card-poster-btn');
+            if (moviePosterButton) {
+                let source = String(moviePosterButton.dataset.soundtrackTracklistSource || 'deezer').trim().toLowerCase();
+                let type = String(moviePosterButton.dataset.soundtrackTracklistType || '').trim().toLowerCase();
+                let id = String(moviePosterButton.dataset.soundtrackTracklistId || '').trim();
+                let externalUrl = String(moviePosterButton.dataset.soundtrackTracklistExternalUrl || '').trim();
+                if (!type || !id) {
+                    const resolvedTarget = await resolveMovieSoundtrackOnDemand(moviePosterButton);
+                    if (!resolvedTarget) {
+                        const title = String(moviePosterButton.dataset.soundtrackTitle || 'this movie').trim();
+                        showToast(`No soundtrack match found yet for ${title}.`, true);
+                        return;
+                    }
+
+                    source = String(resolvedTarget.source || 'deezer').trim().toLowerCase();
+                    type = resolvedTarget.type;
+                    id = resolvedTarget.id;
+                    externalUrl = String(resolvedTarget.externalUrl || '').trim();
+                }
+
+                if (!type || !id) {
+                    return;
+                }
+
+                navigateToSoundtrackTracklist({
+                    source,
+                    type,
+                    id,
+                    externalUrl
+                });
+                return;
+            }
+
             const seasonButton = event.target.closest('[data-soundtrack-open-season]');
             if (seasonButton) {
                 const seasonId = String(seasonButton.dataset.soundtrackOpenSeason || '').trim();
@@ -8963,7 +9152,7 @@ function bindSoundtrackTabHandlers() {
 
     if (elements.refreshButton) {
         elements.refreshButton.addEventListener('click', async () => {
-            await loadSoundtrackItems();
+            await loadSoundtrackItems({ forceServerRefresh: true });
         });
     }
 
@@ -8978,7 +9167,7 @@ function bindSoundtrackTabHandlers() {
                 renderSoundtrackFilters(configuration);
                 resetSoundtrackTvSelection();
                 renderSoundtrackTvNavigation();
-                await loadSoundtrackItems();
+                await loadSoundtrackItems({ forceServerRefresh: true });
                 showToast('Media server soundtrack libraries synced.');
             } catch (error) {
                 showToast(`Soundtrack sync failed: ${error?.message || 'Unknown error'}`, true);
@@ -8998,12 +9187,12 @@ async function initializeSoundtracksTab() {
     bindSoundtrackTabHandlers();
     renderSoundtrackTvNavigation();
     if (soundtrackState.initialized) {
-        await loadSoundtrackItems({ refreshConfiguration: true });
+        await loadSoundtrackItems();
         return;
     }
 
     soundtrackState.initialized = true;
-    await loadSoundtrackItems({ refreshConfiguration: true });
+    await loadSoundtrackItems();
 }
 
 function formatRelativeTime(dateStr) {
@@ -11642,9 +11831,6 @@ function queueStandardInitialLoadTasks(targets, tasks) {
     if (targets.shouldLoadPlaylistBlockedRules) {
         tasks.push(loadPlaylistBlockedRules());
     }
-    if (targets.shouldLoadSoundtracks) {
-        tasks.push(initializeSoundtracksTab());
-    }
     if (targets.shouldLoadAlbumTracks) {
         tasks.push(loadAlbum());
     }
@@ -11657,6 +11843,41 @@ function queueStandardInitialLoadTasks(targets, tasks) {
     if (targets.shouldLoadFavorites) {
         tasks.push(loadFavorites());
     }
+}
+
+function bindDeferredSoundtrackInitialization(shouldLoadSoundtracks) {
+    if (!shouldLoadSoundtracks) {
+        return;
+    }
+
+    const soundtrackTabButton = document.getElementById('soundtracks-tab');
+    const soundtrackTabPane = document.getElementById('soundtracks-content');
+    if (!soundtrackTabPane || soundtrackTabPane.dataset.soundtracksDeferredBound === 'true') {
+        return;
+    }
+
+    let initializationTask = null;
+    const ensureInitialized = () => {
+        if (!initializationTask) {
+            initializationTask = initializeSoundtracksTab();
+        }
+        return initializationTask;
+    };
+
+    if (soundtrackTabButton) {
+        soundtrackTabButton.addEventListener('shown.bs.tab', () => {
+            void ensureInitialized();
+        });
+    }
+
+    const soundtrackTabActive = soundtrackTabPane.classList.contains('active')
+        || soundtrackTabPane.classList.contains('show')
+        || soundtrackTabButton?.classList.contains('active') === true;
+    if (soundtrackTabActive) {
+        void ensureInitialized();
+    }
+
+    soundtrackTabPane.dataset.soundtracksDeferredBound = 'true';
 }
 
 function queueFolderAndDownloadLoadTasks(targets, tasks) {
@@ -11819,6 +12040,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         syncFolderConversionFieldsState();
 
         const targets = getLibraryLoadTargets();
+        bindDeferredSoundtrackInitialization(targets.shouldLoadSoundtracks);
         if (targets.shouldLoadArtistAlbums) {
             initializeDiscographyFilterState();
         }

@@ -16,17 +16,17 @@ public sealed class MediaServerSoundtrackMonitorService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        try
-        {
-            await Task.Delay(TimeSpan.FromSeconds(8), stoppingToken);
-        }
-        catch (OperationCanceledException)
-        {
-            return;
-        }
-
         while (!stoppingToken.IsCancellationRequested)
         {
+            try
+            {
+                await Task.Delay(RefreshInterval, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
             try
             {
                 await _service.RefreshDiscoveredLibrariesAsync(stoppingToken);
@@ -38,15 +38,6 @@ public sealed class MediaServerSoundtrackMonitorService : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "Soundtrack monitor refresh failed.");
-            }
-
-            try
-            {
-                await Task.Delay(RefreshInterval, stoppingToken);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
             }
         }
     }

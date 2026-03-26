@@ -5,23 +5,48 @@ public static class AppDataPathResolver
     public const string ConfigDirEnvVar = "DEEZSPOTAG_CONFIG_DIR";
     public const string DataDirEnvVar = "DEEZSPOTAG_DATA_DIR";
     private const string WorkersProjectDirectoryName = "DeezSpoTag.Workers";
+    private const string WebProjectDirectoryName = "DeezSpoTag.Web";
+    private const string StableWorkersDataSuffix = "Data";
+    private const string DebugWorkersDataSuffix = "bin/Debug/net8.0/Data";
+    private static readonly string WorkspaceRoot = ResolveWorkspaceRoot();
     private static readonly string[] CanonicalWorkersDataCandidates =
     [
-        Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), WorkersProjectDirectoryName, "bin", "Debug", "net8.0", "Data")),
-        Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "..", "..", "..", "..", WorkersProjectDirectoryName, "bin", "Debug", "net8.0", "Data"))
+        Path.GetFullPath(Path.Join(WorkspaceRoot, WorkersProjectDirectoryName, StableWorkersDataSuffix))
     ];
     private static readonly string[] LegacyWorkersDataCandidates =
     [
-        Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), WorkersProjectDirectoryName, "Data")),
-        Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "..", "..", "..", "..", WorkersProjectDirectoryName, "Data"))
+        Path.GetFullPath(Path.Join(WorkspaceRoot, WorkersProjectDirectoryName, DebugWorkersDataSuffix))
+    ];
+    private static readonly string[] MisplacedWorkersDataCandidates =
+    [
+        Path.GetFullPath(Path.Join(WorkspaceRoot, WebProjectDirectoryName, WorkersProjectDirectoryName, StableWorkersDataSuffix)),
+        Path.GetFullPath(Path.Join(WorkspaceRoot, WebProjectDirectoryName, WorkersProjectDirectoryName, DebugWorkersDataSuffix)),
+        Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), WorkersProjectDirectoryName, StableWorkersDataSuffix)),
+        Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), WorkersProjectDirectoryName, DebugWorkersDataSuffix))
     ];
 
     public static string GetDefaultWorkersDataDir()
     {
-        var existingCanonicalCandidate = Array.Find(CanonicalWorkersDataCandidates, Directory.Exists);
+        var canonicalPrimary = CanonicalWorkersDataCandidates[0];
+        Directory.CreateDirectory(canonicalPrimary);
+
+        foreach (var misplacedCandidate in MisplacedWorkersDataCandidates.Where(Directory.Exists))
+        {
+            if (string.Equals(misplacedCandidate, canonicalPrimary, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            TryMigrateLegacyWorkersData(misplacedCandidate, canonicalPrimary);
+        }
+
+        var existingCanonicalCandidate = Array.Find(
+            CanonicalWorkersDataCandidates,
+            candidate => Directory.Exists(candidate) && !string.Equals(candidate, canonicalPrimary, StringComparison.OrdinalIgnoreCase));
         if (!string.IsNullOrWhiteSpace(existingCanonicalCandidate))
         {
-            return existingCanonicalCandidate;
+            TryMigrateLegacyWorkersData(existingCanonicalCandidate, canonicalPrimary);
+            return canonicalPrimary;
         }
 
         foreach (var legacyCandidate in LegacyWorkersDataCandidates.Where(Directory.Exists))
@@ -37,7 +62,9 @@ public static class AppDataPathResolver
         var existingLegacyCandidate = Array.Find(LegacyWorkersDataCandidates, Directory.Exists);
         if (!string.IsNullOrWhiteSpace(existingLegacyCandidate))
         {
-            return existingLegacyCandidate;
+            var migrateTarget = CanonicalWorkersDataCandidates[0];
+            TryMigrateLegacyWorkersData(existingLegacyCandidate, migrateTarget);
+            return migrateTarget;
         }
 
         return CanonicalWorkersDataCandidates[0];
@@ -57,6 +84,8 @@ public static class AppDataPathResolver
         }
 
         return LegacyWorkersDataCandidates.Any(candidate =>
+                   string.Equals(candidate, normalized, StringComparison.OrdinalIgnoreCase))
+               || MisplacedWorkersDataCandidates.Any(candidate =>
             string.Equals(candidate, normalized, StringComparison.OrdinalIgnoreCase));
     }
 
@@ -64,11 +93,6 @@ public static class AppDataPathResolver
     {
         try
         {
-            if (Directory.Exists(targetPath))
-            {
-                return;
-            }
-
             Directory.CreateDirectory(Path.GetDirectoryName(targetPath) ?? targetPath);
             CopyDirectoryRecursive(sourcePath, targetPath);
         }
@@ -76,6 +100,45 @@ public static class AppDataPathResolver
         {
             // Best effort migration; fallback selection continues if migration fails.
         }
+    }
+
+    private static string ResolveWorkspaceRoot()
+    {
+        var fromCwd = TryResolveWorkspaceRootFrom(Directory.GetCurrentDirectory());
+        if (!string.IsNullOrWhiteSpace(fromCwd))
+        {
+            return fromCwd;
+        }
+
+        var fromAppBase = TryResolveWorkspaceRootFrom(AppContext.BaseDirectory);
+        if (!string.IsNullOrWhiteSpace(fromAppBase))
+        {
+            return fromAppBase;
+        }
+
+        return Path.GetFullPath(Directory.GetCurrentDirectory());
+    }
+
+    private static string? TryResolveWorkspaceRootFrom(string? startPath)
+    {
+        if (string.IsNullOrWhiteSpace(startPath))
+        {
+            return null;
+        }
+
+        var current = new DirectoryInfo(Path.GetFullPath(startPath));
+        for (var depth = 0; depth < 12 && current != null; depth++)
+        {
+            if (Directory.Exists(Path.Join(current.FullName, WorkersProjectDirectoryName))
+                && Directory.Exists(Path.Join(current.FullName, WebProjectDirectoryName)))
+            {
+                return current.FullName;
+            }
+
+            current = current.Parent;
+        }
+
+        return null;
     }
 
     private static void CopyDirectoryRecursive(string sourcePath, string targetPath)
@@ -91,7 +154,10 @@ public static class AppDataPathResolver
             }
 
             var destinationPath = Path.Combine(targetPath, fileName);
-            File.Copy(filePath, destinationPath, overwrite: true);
+            if (!File.Exists(destinationPath))
+            {
+                File.Copy(filePath, destinationPath);
+            }
         }
 
         foreach (var directoryPath in Directory.GetDirectories(sourcePath))

@@ -558,7 +558,7 @@ document.getElementById('unified-search').addEventListener('keypress', function(
 
 const searchInput = document.getElementById('unified-search');
 
-const SEARCH_LINK_PLACEHOLDER = 'Search Deezer tracks, albums, artists, playlists... or paste Spotify/Apple Music/Boomplay/Tidal/Qobuz/Bandcamp links to map to Deezer';
+const SEARCH_LINK_PLACEHOLDER = 'Search Spotify tracks, albums, artists, playlists first... or paste Spotify/Apple Music/Boomplay/Tidal/Qobuz/Bandcamp links';
 const SUPPORTED_LINK_SOURCES = 'Spotify, Apple Music, Boomplay, Tidal, Qobuz, Bandcamp, Deezer';
 
 function applySearchSourceState() {
@@ -831,6 +831,17 @@ function setUnifiedSearchButtonState(isLoading) {
 }
 
 async function handleUnifiedSearchUrlInput(input, parsedUrl) {
+    const source = classifyExternalSource(parsedUrl);
+
+    if (source === 'spotify') {
+        const parsedSpotify = parseSpotifyUrl(input) || parseSpotifyUrl(parsedUrl.toString());
+        if (!parsedSpotify?.type || !parsedSpotify?.id) {
+            throw new Error('Invalid Spotify link.');
+        }
+        globalThis.location.href = `/Tracklist?id=${encodeURIComponent(parsedSpotify.id)}&type=${encodeURIComponent(parsedSpotify.type)}&source=spotify`;
+        return true;
+    }
+
     const externalPlaylistRoute = tryBuildExternalPlaylistRoute(parsedUrl, input);
     if (externalPlaylistRoute) {
         globalThis.location.href = externalPlaylistRoute;
@@ -860,11 +871,8 @@ async function handleUnifiedSearchUrlInput(input, parsedUrl) {
         return true;
     }
 
-    const reason = (mapping?.reason || '').toString().trim();
-    const sourceLabel = (mapping?.source || 'provided').toString();
-    const message = reason
-        ? `${reason} Supported link sources: ${SUPPORTED_LINK_SOURCES}.`
-        : `No Deezer mapping found for ${sourceLabel} link. Supported link sources: ${SUPPORTED_LINK_SOURCES}.`;
+    const sourceLabel = source || (mapping?.source || 'provided').toString();
+    const message = `No in-app route found for ${sourceLabel} link. Supported link sources: ${SUPPORTED_LINK_SOURCES}.`;
     throw new Error(message);
 }
 
@@ -893,7 +901,8 @@ async function performUnifiedSearch() {
         console.log('Detected search term, redirecting to search results:', input);
         const searchParams = new URLSearchParams({
             term: input,
-            type: type
+            type: type,
+            source: 'spotify'
         });
         globalThis.location.href = `/Search?${searchParams.toString()}`;
     } catch (error) {

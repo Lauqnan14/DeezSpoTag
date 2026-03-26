@@ -517,10 +517,10 @@
 
 <ul class="nav nav-tabs nav-fill mb-3" id="searchSourceTabs" aria-label="Search Platforms">
     <li class="nav-item">
-        <button class="nav-link source-btn active" type="button" role="tab" aria-selected="true" data-source="deezer" id="tab-deezer" data-bs-toggle="tab" data-bs-target="#search-source-deezer">Deezer</button>
+        <button class="nav-link source-btn" type="button" role="tab" aria-selected="false" data-source="deezer" id="tab-deezer" data-bs-toggle="tab" data-bs-target="#search-source-deezer">Deezer</button>
     </li>
     <li class="nav-item">
-        <button class="nav-link source-btn" type="button" role="tab" aria-selected="false" data-source="spotify" id="tab-spotify" data-bs-toggle="tab" data-bs-target="#search-source-spotify">Spotify</button>
+        <button class="nav-link source-btn active" type="button" role="tab" aria-selected="true" data-source="spotify" id="tab-spotify" data-bs-toggle="tab" data-bs-target="#search-source-spotify">Spotify</button>
     </li>
     <li class="nav-item">
         <button class="nav-link source-btn" type="button" role="tab" aria-selected="false" data-source="apple" id="tab-apple" data-bs-toggle="tab" data-bs-target="#search-source-apple">Apple Music</button>
@@ -528,7 +528,7 @@
 </ul>
 
 <div class="tab-content" id="searchSourceTabContent">
-    <div class="tab-pane fade show active" id="search-source-deezer" role="tabpanel" aria-labelledby="tab-deezer">
+    <div class="tab-pane fade" id="search-source-deezer" role="tabpanel" aria-labelledby="tab-deezer">
         <div class="search-filters">
             <a href="#" class="filter-btn action-btn action-btn-sm active" data-type="track" data-source="deezer">Tracks</a>
             <a href="#" class="filter-btn action-btn action-btn-sm" data-type="album" data-source="deezer">Albums</a>
@@ -547,7 +547,7 @@
         </div>
     </div>
 
-    <div class="tab-pane fade" id="search-source-spotify" role="tabpanel" aria-labelledby="tab-spotify">
+    <div class="tab-pane fade show active" id="search-source-spotify" role="tabpanel" aria-labelledby="tab-spotify">
         <div class="search-filters">
             <a href="#" class="filter-btn action-btn action-btn-sm active" data-type="track" data-source="spotify">Tracks</a>
             <a href="#" class="filter-btn action-btn action-btn-sm" data-type="album" data-source="spotify">Albums</a>
@@ -602,7 +602,7 @@
 <script>
 let currentSearchTerm = '@ViewData["SearchTerm"]';
 let currentSearchType = '@ViewData["SearchType"]';
-let currentSearchSource = 'deezer';
+let currentSearchSource = 'spotify';
 let activeSearchRequestId = 0;
 let appleVideoOffset = 0;
 let appleHasMoreVideos = false;
@@ -611,7 +611,7 @@ const selectedVideoKeys = new Set();
 let showSelectedOnly = false;
 const searchPreviewCache = new Map();
 const libraryExistenceCache = new Map();
-const searchSources = ['deezer', 'spotify', 'apple'];
+const searchSources = ['spotify', 'deezer', 'apple'];
 const cachedSearchTerms = {};
 
 const validSearchTypes = new Set(['track', 'album', 'artist', 'playlist', 'station', 'atmos', 'video']);

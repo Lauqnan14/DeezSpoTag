@@ -44,6 +44,7 @@ public sealed class MediaServerSoundtracksApiController : ControllerBase
     public async Task<IActionResult> SyncLibraries(CancellationToken cancellationToken)
     {
         var configuration = await _service.RefreshDiscoveredLibrariesAsync(cancellationToken);
+        _service.TriggerPersistentMediaCacheSync();
         return Ok(configuration);
     }
 
@@ -54,13 +55,29 @@ public sealed class MediaServerSoundtracksApiController : ControllerBase
         [FromQuery] string? libraryId,
         [FromQuery] int? offset,
         [FromQuery] int? limit,
-        CancellationToken cancellationToken)
+        [FromQuery] bool refresh = false,
+        CancellationToken cancellationToken = default)
     {
-        var payload = await _service.GetItemsAsync(category, serverType, libraryId, offset, limit, cancellationToken);
+        var payload = await _service.GetItemsAsync(category, serverType, libraryId, offset, limit, refresh, cancellationToken);
         foreach (var item in payload.Items)
         {
             item.ImageUrl = BuildImageProxyUrl(item.ServerType, item.ImageUrl);
         }
+        return Ok(payload);
+    }
+
+    [HttpPost("resolve")]
+    public async Task<IActionResult> ResolveItem(
+        [FromBody] MediaServerSoundtrackResolveRequest request,
+        CancellationToken cancellationToken)
+    {
+        var payload = await _service.ResolveItemSoundtrackAsync(request, cancellationToken);
+        if (payload == null)
+        {
+            return BadRequest(new { error = "Invalid media item payload." });
+        }
+
+        payload.ImageUrl = BuildImageProxyUrl(payload.ServerType, payload.ImageUrl);
         return Ok(payload);
     }
 
