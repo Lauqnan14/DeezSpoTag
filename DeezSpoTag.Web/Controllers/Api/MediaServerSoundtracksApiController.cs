@@ -185,6 +185,7 @@ public sealed class MediaServerSoundtracksApiController : ControllerBase
         }
 
         var text = sourceUrl.Trim();
+        text = UnwrapImageProxyPath(text);
         if (Uri.TryCreate(text, UriKind.Absolute, out var absolute))
         {
             text = absolute.PathAndQuery;
@@ -201,6 +202,95 @@ public sealed class MediaServerSoundtracksApiController : ControllerBase
         }
 
         return text;
+    }
+
+    private static string UnwrapImageProxyPath(string sourceUrl)
+    {
+        const int maxDepth = 4;
+        var current = sourceUrl;
+        for (var depth = 0; depth < maxDepth; depth++)
+        {
+            if (!TryExtractProxyPath(current, out var extracted))
+            {
+                break;
+            }
+
+            current = extracted!;
+        }
+
+        return current;
+    }
+
+    private static bool TryExtractProxyPath(string value, out string? extractedPath)
+    {
+        extractedPath = null;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var text = DecodePercentEncoded(value.Trim());
+        if (Uri.TryCreate(text, UriKind.Absolute, out var absolute))
+        {
+            text = DecodePercentEncoded(absolute.PathAndQuery);
+        }
+
+        if (!text.StartsWith("/api/media-server/soundtracks/image", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var queryIndex = text.IndexOf('?', StringComparison.Ordinal);
+        if (queryIndex < 0 || queryIndex >= text.Length - 1)
+        {
+            return false;
+        }
+
+        var query = DecodePercentEncoded(text[(queryIndex + 1)..]);
+        var parts = query.Split('&', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var part in parts)
+        {
+            var equalsIndex = part.IndexOf('=', StringComparison.Ordinal);
+            var key = DecodePercentEncoded(equalsIndex >= 0 ? part[..equalsIndex] : part);
+            if (!string.Equals(key, "path", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var encoded = equalsIndex >= 0 ? part[(equalsIndex + 1)..] : string.Empty;
+            var decoded = DecodePercentEncoded(encoded);
+            if (string.IsNullOrWhiteSpace(decoded))
+            {
+                return false;
+            }
+
+            extractedPath = decoded;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string DecodePercentEncoded(string value)
+    {
+        var current = value;
+        for (var i = 0; i < 4; i++)
+        {
+            if (!current.Contains('%', StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            var decoded = Uri.UnescapeDataString(current);
+            if (string.Equals(decoded, current, StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            current = decoded;
+        }
+
+        return current;
     }
 
     private static string NormalizeServerType(string? serverType)
