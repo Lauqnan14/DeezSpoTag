@@ -4,6 +4,7 @@ using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Core.Enums;
 using DeezSpoTag.Services.Download.Shared.Models;
+using DeezSpoTag.Services.Download.Shared.Utils;
 using Microsoft.Extensions.Logging;
 
 namespace DeezSpoTag.Services.Download.Utils;
@@ -59,7 +60,7 @@ public class EnhancedPathTemplateProcessor
         string? extrasPath = null;
 
         // EXACT PORT: Create playlist folder if needed
-        if (ShouldCreatePlaylistFolder(track, settings))
+        if (PathTemplateCommon.ShouldCreatePlaylistFolder(track, settings))
         {
             filepath += $"/{GeneratePlaylistName(track, settings)}";
         }
@@ -71,7 +72,7 @@ public class EnhancedPathTemplateProcessor
         }
 
         // EXACT PORT: Create artist folder if needed
-        if (ShouldCreateArtistFolder(track, settings))
+        if (PathTemplateCommon.ShouldCreateArtistFolder(track, settings))
         {
             var artistToUse = ResolveArtistForFolder(track);
             _logger.LogDebug("Creating artist folder - Track: {TrackTitle}, Album Artist: {AlbumArtist}, Track Artist: {TrackArtist}, Using: {UsingArtist}", 
@@ -190,24 +191,12 @@ public class EnhancedPathTemplateProcessor
             ? filename.Replace(" %explicit%", "").Replace(ExplicitPlaceholder, "")
             : filename.Replace(ExplicitPlaceholder, explicitValue);
 
-        // EXACT PORT: IDs
-        filename = filename.Replace("%track_id%", track.Id ?? "");
-        filename = filename.Replace("%artist_id%", track.MainArtist?.Id ?? "");
-
-        // EXACT PORT: Playlist/position handling
-        if (track.Playlist != null)
-        {
-            filename = filename.Replace("%playlist_id%", track.Playlist.Id ?? "");
-            filename = filename.Replace("%position%", Pad(track.Position ?? 0, track.Playlist.TrackTotal, settings));
-        }
-        else
-        {
-            filename = filename.Replace("%playlist_id%", "");
-            if (track.Album != null)
-            {
-                filename = filename.Replace("%position%", Pad(track.TrackNumber, track.Album.TrackTotal, settings));
-            }
-        }
+        filename = PathTemplateCommon.ApplyTrackIdTokens(filename, track);
+        filename = PathTemplateCommon.ApplyPlaylistPositionTokens(
+            filename,
+            track,
+            settings,
+            clearPlaylistIdWhenAlbumMissing: true);
 
         // EXACT PORT: Normalize path separators and clean up
         filename = filename.Replace("\\", "/");
@@ -487,21 +476,6 @@ public class EnhancedPathTemplateProcessor
 
     // EXACT PORT: Folder creation logic from deezspotag pathtemplates.ts
 
-    private static bool ShouldCreatePlaylistFolder(Track track, DeezSpoTagSettings settings)
-    {
-        return settings.CreatePlaylistFolder &&
-               track.Playlist != null &&
-               !settings.Tags.SavePlaylistAsCompilation;
-    }
-
-    private static bool ShouldCreateArtistFolder(Track track, DeezSpoTagSettings settings)
-    {
-        return settings.CreateArtistFolder &&
-               (track.Playlist == null ||
-                settings.Tags.SavePlaylistAsCompilation ||
-                settings.CreateStructurePlaylist);
-    }
-
     private static bool ShouldCreateAlbumFolder(Track track, DeezSpoTagSettings settings)
     {
         return settings.CreateAlbumFolder &&
@@ -562,11 +536,8 @@ public class EnhancedPathTemplateProcessor
         return (updatedFilePath, updatedFilename);
     }
 
-    #region Download Utilities (from DownloadUtils)
+    #region Download Utilities
 
-    /// <summary>
-    /// Check if a track should be downloaded based on overwrite settings (port of checkShouldDownload)
-    /// </summary>
     public static bool CheckShouldDownload(
         string filename,
         string filepath,
@@ -576,75 +547,34 @@ public class EnhancedPathTemplateProcessor
         Track track)
         => DownloadUtils.CheckShouldDownload(filename, filepath, extension, writepath, overwriteFile, track);
 
-    /// <summary>
-    /// Tag a track file (port of tagTrack function)
-    /// </summary>
-    public static async Task TagTrackAsync(
+    public static Task TagTrackAsync(
         string extension,
         string writepath,
         Track track,
         TagSettings tags,
-        AudioTagger tagger)
-    {
-        // Both MP3 and FLAC are handled by TagLib in AudioTagger
-        await tagger.TagTrackAsync(extension, writepath, track, tags);
-    }
+        AudioTagger tagger) =>
+        DownloadUtils.TagTrackAsync(extension, writepath, track, tags, tagger);
 
-    /// <summary>
-    /// Get file extension for track format
-    /// </summary>
-    public static string GetExtensionForFormat(TrackFormat format)
-    {
-        return DownloadUtils.GetExtensionForFormat(format);
-    }
+    public static string GetExtensionForFormat(TrackFormat format) =>
+        DownloadUtils.GetExtensionForFormat(format);
 
-    /// <summary>
-    /// Generate unique filename if file already exists
-    /// </summary>
-    public static string GenerateUniqueFilename(string basePath, string filename, string extension)
-    {
-        return DownloadUtils.GenerateUniqueFilename(basePath, filename, extension);
-    }
+    public static string GenerateUniqueFilename(string basePath, string filename, string extension) =>
+        DownloadUtils.GenerateUniqueFilename(basePath, filename, extension);
 
-    /// <summary>
-    /// Validate and sanitize download path
-    /// </summary>
-    public static string ValidateDownloadPath(string path)
-    {
-        return DownloadUtils.ValidateDownloadPath(path);
-    }
+    public static string ValidateDownloadPath(string path) =>
+        DownloadUtils.ValidateDownloadPath(path);
 
-    /// <summary>
-    /// Create directory if it doesn't exist
-    /// </summary>
-    public static void EnsureDirectoryExists(string path)
-    {
+    public static void EnsureDirectoryExists(string path) =>
         DownloadUtils.EnsureDirectoryExists(path);
-    }
 
-    /// <summary>
-    /// Get bitrate label for display
-    /// </summary>
-    public static string GetBitrateLabel(TrackFormat format)
-    {
-        return DownloadUtils.GetBitrateLabel(format);
-    }
+    public static string GetBitrateLabel(TrackFormat format) =>
+        DownloadUtils.GetBitrateLabel(format);
 
-    /// <summary>
-    /// Check if a format is lossless
-    /// </summary>
-    public static bool IsLosslessFormat(TrackFormat format)
-    {
-        return DownloadUtils.IsLosslessFormat(format);
-    }
+    public static bool IsLosslessFormat(TrackFormat format) =>
+        DownloadUtils.IsLosslessFormat(format);
 
-    /// <summary>
-    /// Check if a format is 360 Reality Audio
-    /// </summary>
-    public static bool Is360Format(TrackFormat format)
-    {
-        return DownloadUtils.Is360Format(format);
-    }
+    public static bool Is360Format(TrackFormat format) =>
+        DownloadUtils.Is360Format(format);
 
     #endregion
 }

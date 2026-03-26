@@ -258,15 +258,7 @@ namespace DeezSpoTag.API.Controllers
             {
                 AccessToken = null,
                 Arl = arl,
-                User = user != null ? new UserData
-                {
-                    Id = user.Id?.ToString() ?? "0",
-                    Name = user.Name ?? "",
-                    Picture = user.Picture ?? "",
-                    Country = user.Country ?? "",
-                    CanStreamLossless = user.CanStreamLossless,
-                    CanStreamHq = user.CanStreamHq
-                } : null
+                User = DeezerUserDataMapper.ToLoginUserData(user)
             };
         }
 

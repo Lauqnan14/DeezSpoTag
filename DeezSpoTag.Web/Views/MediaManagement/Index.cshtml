@@ -68,18 +68,18 @@
 
         <!-- Watchlist Tab -->
         <div class="tab-pane fade" id="watchlist-content" role="tabpanel">
-            <ul class="nav nav-tabs nav-fill mb-3" id="watchlistSubTabs" role="tablist">
-                <li class="nav-item" role="presentation">
+            <ul class="nav nav-tabs nav-fill mb-3" id="watchlistSubTabs">
+                <li class="nav-item">
                     <button class="nav-link active" id="watchlist-playlists-tab" data-bs-toggle="tab" data-bs-target="#watchlist-playlists-content" type="button" role="tab" aria-selected="true">
                         Playlists
                     </button>
                 </li>
-                <li class="nav-item" role="presentation">
+                <li class="nav-item">
                     <button class="nav-link" id="watchlist-artists-tab" data-bs-toggle="tab" data-bs-target="#watchlist-artists-content" type="button" role="tab" aria-selected="false">
                         Artists
                     </button>
                 </li>
-                <li class="nav-item" role="presentation">
+                <li class="nav-item">
                     <button class="nav-link" id="watchlist-blocked-tab" data-bs-toggle="tab" data-bs-target="#watchlist-blocked-content" type="button" role="tab" aria-selected="false">
                         Blocked
                     </button>
@@ -121,14 +121,14 @@
 
         <!-- Soundtracks Tab -->
         <div class="tab-pane fade" id="soundtracks-content" role="tabpanel">
-            <ul class="nav nav-tabs nav-fill mb-3" id="soundtrackSubTabs" role="tablist">
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link active" id="soundtrack-movies-tab" type="button" data-soundtrack-category="movie" aria-selected="true">
+            <ul class="nav nav-tabs nav-fill mb-3" id="soundtrackSubTabs">
+                <li class="nav-item">
+                    <button class="nav-link active" id="soundtrack-movies-tab" type="button" role="tab" data-soundtrack-category="movie" aria-selected="true">
                         Movies
                     </button>
                 </li>
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="soundtrack-tv-tab" type="button" data-soundtrack-category="tv_show" aria-selected="false">
+                <li class="nav-item">
+                    <button class="nav-link" id="soundtrack-tv-tab" type="button" role="tab" data-soundtrack-category="tv_show" aria-selected="false">
                         TV Shows
                     </button>
                 </li>
@@ -904,6 +904,7 @@ document.addEventListener('DOMContentLoaded', function() {
     overflow: hidden;
     display: flex;
     flex-direction: column;
+    position: relative;
 }
 
 .soundtrack-card-art {
@@ -923,7 +924,22 @@ document.addEventListener('DOMContentLoaded', function() {
     text-align: left;
 }
 
+.soundtrack-card-media-btn {
+    display: block;
+    border: 0;
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+}
+
 .soundtrack-card-poster-btn:disabled {
+    cursor: default;
+}
+
+.soundtrack-card-media-btn:disabled {
     cursor: default;
 }
 
@@ -1029,6 +1045,94 @@ document.addEventListener('DOMContentLoaded', function() {
 .soundtrack-card-browse:hover {
     border-color: var(--primary-color);
     color: var(--primary-color);
+}
+
+.soundtrack-card-actions {
+    position: relative;
+    display: inline-flex;
+    align-self: flex-start;
+}
+
+.soundtrack-card-actions--corner {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 10;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 120ms ease;
+}
+
+.soundtrack-card-poster-btn:hover + .soundtrack-card-actions--corner,
+.soundtrack-card-poster-btn:focus-visible + .soundtrack-card-actions--corner,
+.soundtrack-card-media-btn:hover + .soundtrack-card-actions--corner,
+.soundtrack-card-media-btn:focus-visible + .soundtrack-card-actions--corner,
+.soundtrack-card-actions--corner:hover,
+.soundtrack-card-actions--corner:focus-within {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+
+.soundtrack-card-actions-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    cursor: pointer;
+    line-height: 1;
+    font-size: 16px;
+    padding: 0;
+}
+
+.soundtrack-card-actions:hover .soundtrack-card-actions-toggle,
+.soundtrack-card-actions:focus-within .soundtrack-card-actions-toggle {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+}
+
+.soundtrack-card-actions-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    min-width: 140px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-tertiary) 95%, black 5%);
+    box-shadow: 0 8px 24px color-mix(in srgb, black 32%, transparent);
+    padding: 6px;
+    z-index: 8;
+}
+
+.soundtrack-card-actions:hover .soundtrack-card-actions-menu,
+.soundtrack-card-actions:focus-within .soundtrack-card-actions-menu {
+    display: block;
+}
+
+.soundtrack-card-actions-item {
+    display: block;
+    width: 100%;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 12px;
+    text-align: left;
+    padding: 7px 9px;
+    cursor: pointer;
+}
+
+.soundtrack-card-actions-item:hover {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+    background: color-mix(in srgb, var(--bg-secondary) 90%, transparent);
 }
 
 /* Responsive adjustments */

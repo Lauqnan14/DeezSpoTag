@@ -1,0 +1,292 @@
+{
+  "statistics": {
+    "detectionDate": "2026-03-26T13:56:27.639Z",
+    "formats": {
+      "javascript": {
+        "sources": {
+          "DeezSpoTag.Web/wwwroot/js/watchlist-history.js": {
+            "lines": 87,
+            "tokens": 865,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/js/user-preferences.js": {
+            "lines": 184,
+            "tokens": 1285,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/js/themes.js": {
+            "lines": 194,
+            "tokens": 1686,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/js/meloday.js": {
+            "lines": 264,
+            "tokens": 2743,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/js/library-artist-hero.js": {
+            "lines": 443,
+            "tokens": 4117,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/js/home-view-helpers.js": {
+            "lines": 230,
+            "tokens": 2580,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/js/download-logger.js": {
+            "lines": 174,
+            "tokens": 1534,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/js/deezer-queue-enhanced.js": {
+            "lines": 784,
+            "tokens": 5780,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/js/deezer-playback-context.js": {
+            "lines": 204,
+            "tokens": 1907,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/js/auto-playlists.js": {
+            "lines": 304,
+            "tokens": 3208,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/sw.js": {
+            "lines": 101,
+            "tokens": 862,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          }
+        },
+        "total": {
+          "lines": 2969,
+          "tokens": 26567,
+          "sources": 11,
+          "clones": 0,
+          "duplicatedLines": 0,
+          "duplicatedTokens": 0,
+          "percentage": 0,
+          "percentageTokens": 0,
+          "newDuplicatedLines": 0,
+          "newClones": 0
+        }
+      },
+      "css": {
+        "sources": {
+          "DeezSpoTag.Web/wwwroot/css/spotify-card-shared.css": {
+            "lines": 38,
+            "tokens": 237,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/css/shazam.css": {
+            "lines": 258,
+            "tokens": 1440,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/css/lrc-editor.css": {
+            "lines": 721,
+            "tokens": 3690,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/css/loading-state-shared.css": {
+            "lines": 25,
+            "tokens": 183,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/css/library-artist-hero.css": {
+            "lines": 380,
+            "tokens": 2111,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/css/home-top-genres.css": {
+            "lines": 124,
+            "tokens": 836,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/css/home-index.css": {
+            "lines": 715,
+            "tokens": 4607,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/css/deezspotag-queue-enhanced.css": {
+            "lines": 637,
+            "tokens": 3407,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "DeezSpoTag.Web/wwwroot/css/auto-playlists.css": {
+            "lines": 715,
+            "tokens": 4034,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          }
+        },
+        "total": {
+          "lines": 3613,
+          "tokens": 20545,
+          "sources": 9,
+          "clones": 0,
+          "duplicatedLines": 0,
+          "duplicatedTokens": 0,
+          "percentage": 0,
+          "percentageTokens": 0,
+          "newDuplicatedLines": 0,
+          "newClones": 0
+        }
+      }
+    },
+    "total": {
+      "lines": 6582,
+      "tokens": 47112,
+      "sources": 20,
+      "clones": 0,
+      "duplicatedLines": 0,
+      "duplicatedTokens": 0,
+      "percentage": 0,
+      "percentageTokens": 0,
+      "newDuplicatedLines": 0,
+      "newClones": 0
+    }
+  },
+  "duplicates": []
+}

@@ -17,6 +17,8 @@ public class PlexApiClient
     private const string TitleAttributeName = "title";
     private const string TrackElementName = "Track";
     private const string DurationAttributeName = "duration";
+    private const string ThumbAttributeName = "thumb";
+    private const string ParentThumbAttributeName = "parentThumb";
     private readonly ILogger<PlexApiClient> _logger;
     private readonly HttpClient _httpClient;
 
@@ -114,7 +116,7 @@ public class PlexApiClient
             {
                 Username = user.Attribute("username")?.Value ?? string.Empty,
                 Email = user.Attribute("email")?.Value ?? string.Empty,
-                Thumb = user.Attribute("thumb")?.Value ?? string.Empty
+                Thumb = user.Attribute(ThumbAttributeName)?.Value ?? string.Empty
             };
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -988,9 +990,9 @@ public class PlexApiClient
                     continue;
                 }
 
-                var thumb = node.Attribute("thumb")?.Value
+                var thumb = node.Attribute(ThumbAttributeName)?.Value
                             ?? node.Attribute("art")?.Value
-                            ?? node.Attribute("parentThumb")?.Value
+                            ?? node.Attribute(ParentThumbAttributeName)?.Value
                             ?? string.Empty;
 
                 seasons.Add(new PlexSeasonItem
@@ -1058,9 +1060,9 @@ public class PlexApiClient
                     continue;
                 }
 
-                var thumb = node.Attribute("thumb")?.Value
+                var thumb = node.Attribute(ThumbAttributeName)?.Value
                             ?? node.Attribute("art")?.Value
-                            ?? node.Attribute("parentThumb")?.Value
+                            ?? node.Attribute(ParentThumbAttributeName)?.Value
                             ?? node.Attribute("grandparentThumb")?.Value
                             ?? string.Empty;
 
@@ -1097,9 +1099,9 @@ public class PlexApiClient
         var ratingKey = node.Attribute(RatingKeyAttributeName)?.Value ?? string.Empty;
         var title = node.Attribute(TitleAttributeName)?.Value ?? string.Empty;
         var year = ParseInt(node.Attribute("year")?.Value);
-        var thumb = node.Attribute("thumb")?.Value
+        var thumb = node.Attribute(ThumbAttributeName)?.Value
                     ?? node.Attribute("art")?.Value
-                    ?? node.Attribute("parentThumb")?.Value
+                    ?? node.Attribute(ParentThumbAttributeName)?.Value
                     ?? node.Attribute("grandparentThumb")?.Value
                     ?? string.Empty;
         var imageUrl = ToAbsoluteUrl(serverUrl, token, thumb);
@@ -1173,8 +1175,8 @@ public class PlexApiClient
                     Album = track.Attribute("parentTitle")?.Value ?? string.Empty,
                     DurationMs = ParseLong(track.Attribute(DurationAttributeName)?.Value),
                     CoverUrl = ToAbsoluteUrl(serverUrl, token,
-                        track.Attribute("thumb")?.Value ??
-                        track.Attribute("parentThumb")?.Value ??
+                        track.Attribute(ThumbAttributeName)?.Value ??
+                        track.Attribute(ParentThumbAttributeName)?.Value ??
                         track.Attribute("grandparentThumb")?.Value),
                     StreamUrl = streamUrl,
                     FilePath = filePath
@@ -1572,7 +1574,7 @@ public class PlexApiClient
                                ?? element.Attribute("librarySectionId")?.Value
                                ?? string.Empty,
             CoverUrl = ToAbsoluteUrl(serverUrl, token,
-                element.Attribute("thumb")?.Value ??
+                element.Attribute(ThumbAttributeName)?.Value ??
                 element.Attribute("composite")?.Value)
         };
     }

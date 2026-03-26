@@ -11,7 +11,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Authorize]
 public sealed class AppleStationApiController : ControllerBase
 {
-    private static readonly bool AppleDisabled = ReadAppleDisabled();
+    private static readonly bool AppleDisabled = AppleCatalogJsonHelper.IsAppleDisabledByEnvironment();
     private readonly AppleMusicCatalogService _catalog;
     private readonly ILogger<AppleStationApiController> _logger;
     public AppleStationApiController(
@@ -20,19 +20,6 @@ public sealed class AppleStationApiController : ControllerBase
     {
         _catalog = catalog;
         _logger = logger;
-    }
-
-    private static bool ReadAppleDisabled()
-    {
-        var value = Environment.GetEnvironmentVariable("DEEZSPOTAG_APPLE_DISABLED");
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-
-        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
-            || value.Equals("true", StringComparison.OrdinalIgnoreCase)
-            || value.Equals("yes", StringComparison.OrdinalIgnoreCase);
     }
 
     [HttpGet("{id}")]
@@ -63,24 +50,15 @@ public sealed class AppleStationApiController : ControllerBase
     [HttpGet("{id}/next-tracks")]
     public async Task<IActionResult> GetStationNextTracks(string id, [FromQuery] string? mediaUserToken, CancellationToken cancellationToken)
     {
-        if (AppleDisabled)
+        var validationResult = ValidateStationRequest(id, mediaUserToken, requireMediaUserToken: true);
+        if (validationResult is not null)
         {
-            return StatusCode(503, new { error = "Apple Music is disabled." });
-        }
-
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            return BadRequest("id is required");
-        }
-
-        if (string.IsNullOrWhiteSpace(mediaUserToken))
-        {
-            return BadRequest("mediaUserToken is required");
+            return validationResult;
         }
 
         try
         {
-            using var doc = await _catalog.GetStationNextTracksAsync(id, mediaUserToken, "en-US", cancellationToken);
+            using var doc = await _catalog.GetStationNextTracksAsync(id, mediaUserToken!, "en-US", cancellationToken);
             return Ok(MapStationTracks(doc.RootElement));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -93,6 +71,26 @@ public sealed class AppleStationApiController : ControllerBase
     [HttpGet("{id}/assets")]
     public async Task<IActionResult> GetStationAssets(string id, [FromQuery] string? mediaUserToken, CancellationToken cancellationToken)
     {
+        var validationResult = ValidateStationRequest(id, mediaUserToken, requireMediaUserToken: true);
+        if (validationResult is not null)
+        {
+            return validationResult;
+        }
+
+        try
+        {
+            using var doc = await _catalog.GetStationAssetsAsync(id, mediaUserToken!, cancellationToken);
+            return Ok(doc.RootElement.Clone());
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Apple station assets fetch failed");
+            return StatusCode(500, new { error = "Apple station assets fetch failed." });
+        }
+    }
+
+    private IActionResult? ValidateStationRequest(string id, string? mediaUserToken, bool requireMediaUserToken)
+    {
         if (AppleDisabled)
         {
             return StatusCode(503, new { error = "Apple Music is disabled." });
@@ -103,21 +101,12 @@ public sealed class AppleStationApiController : ControllerBase
             return BadRequest("id is required");
         }
 
-        if (string.IsNullOrWhiteSpace(mediaUserToken))
+        if (requireMediaUserToken && string.IsNullOrWhiteSpace(mediaUserToken))
         {
             return BadRequest("mediaUserToken is required");
         }
 
-        try
-        {
-            using var doc = await _catalog.GetStationAssetsAsync(id, mediaUserToken, cancellationToken);
-            return Ok(doc.RootElement.Clone());
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Apple station assets fetch failed");
-            return StatusCode(500, new { error = "Apple station assets fetch failed." });
-        }
+        return null;
     }
 
     private static object MapStation(JsonElement root)
@@ -137,7 +126,7 @@ public sealed class AppleStationApiController : ControllerBase
                 appleId = data.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "",
                 name = attrs.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "",
                 appleUrl = attrs.TryGetProperty("url", out var urlEl) ? urlEl.GetString() ?? "" : "",
-                image = ResolveArtwork(attrs)
+                image = AppleCatalogJsonHelper.ResolveArtwork(attrs)
             }
         };
     }
@@ -160,62 +149,12 @@ public sealed class AppleStationApiController : ControllerBase
                 name = attrs.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "",
                 artist = attrs.TryGetProperty("artistName", out var artistEl) ? artistEl.GetString() ?? "" : "",
                 album = attrs.TryGetProperty("albumName", out var albumEl) ? albumEl.GetString() ?? "" : "",
-                image = ResolveArtwork(attrs),
-                hasAtmos = HasAtmos(attrs),
-                hasAppleDigitalMaster = HasAppleDigitalMaster(attrs)
+                image = AppleCatalogJsonHelper.ResolveArtwork(attrs),
+                hasAtmos = AppleCatalogJsonHelper.HasAtmos(attrs),
+                hasAppleDigitalMaster = AppleCatalogJsonHelper.HasAppleDigitalMaster(attrs)
             });
         }
 
         return new { tracks };
-    }
-
-    private static string ResolveArtwork(JsonElement attributes)
-    {
-        if (!attributes.TryGetProperty("artwork", out var art) || art.ValueKind != JsonValueKind.Object)
-        {
-            return string.Empty;
-        }
-
-        if (!art.TryGetProperty("url", out var urlEl) || urlEl.ValueKind != JsonValueKind.String)
-        {
-            return string.Empty;
-        }
-
-        var raw = urlEl.GetString() ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return string.Empty;
-        }
-
-        var width = art.TryGetProperty("width", out var w) ? w.GetInt32() : 0;
-        var height = art.TryGetProperty("height", out var h) ? h.GetInt32() : 0;
-        return AppleArtworkRenderHelper.BuildArtworkUrl(raw, width, height);
-    }
-
-    private static bool HasAtmos(JsonElement attributes)
-    {
-        if (!attributes.TryGetProperty("audioTraits", out var traits) || traits.ValueKind != JsonValueKind.Array)
-        {
-            return false;
-        }
-
-        return traits.EnumerateArray().Any(static trait =>
-            trait.ValueKind == JsonValueKind.String
-            && trait.GetString()?.IndexOf("atmos", StringComparison.OrdinalIgnoreCase) >= 0);
-    }
-
-    private static bool HasAppleDigitalMaster(JsonElement attributes)
-    {
-        if (attributes.TryGetProperty("isAppleDigitalMaster", out var admEl) && admEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
-        {
-            return admEl.GetBoolean();
-        }
-
-        if (attributes.TryGetProperty("isMasteredForItunes", out var mfiEl) && mfiEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
-        {
-            return mfiEl.GetBoolean();
-        }
-
-        return false;
     }
 }

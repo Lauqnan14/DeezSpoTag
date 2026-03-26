@@ -56,7 +56,7 @@ public static class DeezerEpisodeStreamResolver
         return null;
     }
 
-    private static bool IsDeezerEpisodePage(string url)
+    public static bool IsDeezerEpisodePage(string url)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
         {

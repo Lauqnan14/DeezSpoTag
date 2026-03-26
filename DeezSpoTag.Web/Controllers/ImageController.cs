@@ -47,47 +47,43 @@ public class ImageController : Controller
             return BadRequest(ModelState);
         }
 
-        try
-        {
-            if (!TryValidateRequest(type, md5, size, out var validationError, out var normalizedType, out var normalizedSize))
+        return await ExecuteResolvedRequestAsync(
+            type,
+            md5,
+            size,
+            async (normalizedType, normalizedSize) =>
             {
-                return BadRequest(validationError);
-            }
+                var deezerUrl = BuildDeezerUrl(normalizedType, md5, normalizedSize);
 
-            var deezerUrl = BuildDeezerUrl(normalizedType, md5, normalizedSize);
+                _logger.LogDebug("Proxying image request: DeezerUrl");
 
-            _logger.LogDebug("Proxying image request: DeezerUrl");
+                // Fetch image from Deezer CDN
+                var response = await _httpClient.GetAsync(deezerUrl);
 
-            // Fetch image from Deezer CDN
-            var response = await _httpClient.GetAsync(deezerUrl);
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("Failed to fetch image from Deezer CDN: StatusCode for URL: DeezerUrl");
+                    
+                    // Return a placeholder or 404
+                    return NotFound("Image not found");
+                }
 
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogWarning("Failed to fetch image from Deezer CDN: StatusCode for URL: DeezerUrl");
-                
-                // Return a placeholder or 404
-                return NotFound("Image not found");
-            }
+                var imageBytes = await response.Content.ReadAsByteArrayAsync();
+                var contentType = response.Content.Headers.ContentType?.ToString() ?? "image/jpeg";
 
-            var imageBytes = await response.Content.ReadAsByteArrayAsync();
-            var contentType = response.Content.Headers.ContentType?.ToString() ?? "image/jpeg";
+                // Cache headers (images rarely change)
+                var typedHeaders = Response.GetTypedHeaders();
+                typedHeaders.CacheControl = new CacheControlHeaderValue
+                {
+                    Public = true,
+                    MaxAge = TimeSpan.FromHours(24)
+                };
+                typedHeaders.ETag = new EntityTagHeaderValue($"\"{md5}_{normalizedSize}\"");
 
-            // Cache headers (images rarely change)
-            var typedHeaders = Response.GetTypedHeaders();
-            typedHeaders.CacheControl = new CacheControlHeaderValue
-            {
-                Public = true,
-                MaxAge = TimeSpan.FromHours(24)
-            };
-            typedHeaders.ETag = new EntityTagHeaderValue($"\"{md5}_{normalizedSize}\"");
-
-            return File(imageBytes, contentType);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogError(ex, "Error proxying image request for Type/MD5/Size");
-            return StatusCode(500, "Error fetching image");
-        }
+                return File(imageBytes, contentType);
+            },
+            "Error proxying image request for Type/MD5/Size",
+            "Error fetching image");
     }
 
     /// <summary>
@@ -96,34 +92,55 @@ public class ImageController : Controller
     /// Returns JSON with the image URL
     /// </summary>
     [HttpGet("url/{type}/{md5}/{size?}")]
-    public IActionResult GetImageUrl(string type, string md5, int size = 75)
+    public async Task<IActionResult> GetImageUrl(string type, string md5, int size = 75)
     {
         if (!ModelState.IsValid)
         {
             return BadRequest(ModelState);
         }
 
+        return await ExecuteResolvedRequestAsync(
+            type,
+            md5,
+            size,
+            (normalizedType, normalizedSize) =>
+            {
+                var proxyUrl = $"/api/image/{normalizedType}/{md5}/{normalizedSize}";
+                var deezerUrl = BuildDeezerUrl(normalizedType, md5, normalizedSize);
+                IActionResult result = Json(new
+                {
+                    success = true,
+                    url = proxyUrl,
+                    deezerUrl
+                });
+
+                return Task.FromResult(result);
+            },
+            "Error generating image URL for Type/MD5/Size",
+            "Error generating image URL");
+    }
+
+    private async Task<IActionResult> ExecuteResolvedRequestAsync(
+        string type,
+        string md5,
+        int size,
+        Func<string, int, Task<IActionResult>> onSuccess,
+        string logMessage,
+        string errorMessage)
+    {
+        if (!TryValidateRequest(type, md5, size, out var validationError, out var normalizedType, out var normalizedSize))
+        {
+            return BadRequest(validationError);
+        }
+
         try
         {
-            if (!TryValidateRequest(type, md5, size, out var validationError, out var normalizedType, out var normalizedSize))
-            {
-                return BadRequest(validationError);
-            }
-
-            var proxyUrl = $"/api/image/{normalizedType}/{md5}/{normalizedSize}";
-            var deezerUrl = BuildDeezerUrl(normalizedType, md5, normalizedSize);
-
-            return Json(new
-            {
-                success = true,
-                url = proxyUrl,
-                deezerUrl
-            });
+            return await onSuccess(normalizedType, normalizedSize);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "Error generating image URL for Type/MD5/Size");
-            return StatusCode(500, "Error generating image URL");
+            _logger.LogError(ex, "{LogMessage}", logMessage);
+            return StatusCode(500, errorMessage);
         }
     }
 

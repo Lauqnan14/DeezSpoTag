@@ -713,8 +713,8 @@
         return null;
     };
 
-    const performRecognitionRequest = async (audioBlob, filename) => {
-        const resolvedName = filename || 'capture.wav';
+    const performRecognitionRequest = async (audioBlob, filename = 'capture.wav') => {
+        const resolvedName = filename;
         const form = new FormData();
         form.append('audio', audioBlob, resolvedName);
         console.info('Shazam mic upload', {
@@ -751,7 +751,7 @@
                     notify(detail || 'Shazam recognizer is unavailable on the server.', 'error');
                 } else if (reason === 'recognizer_error') {
                     notify(detail || 'Shazam recognizer failed while processing this sample.', 'error');
-                } else if (detail && detail.toLowerCase().includes('request body too large')) {
+                } else if (detail?.toLowerCase().includes('request body too large')) {
                     notify('Selected audio file is too large for upload. Choose a smaller clip or use microphone capture.', 'error');
                 } else {
                     notify(detail || `Shazam lookup failed (${response.status}).`, 'error');
@@ -876,58 +876,12 @@
         }
 
         if (!liveMicSupported()) {
-            if (config.allowHttpFileFallback) {
-                ensureFallbackInput();
-                setState('fallback', {
-                    reason: globalThis.isSecureContext
-                        ? 'Live microphone capture is unavailable in this browser. Choose or record an audio file.'
-                        : 'This HTTP session does not expose live microphone APIs. Choose or record an audio file instead.'
-                });
-                return;
-            }
-
-            notify('Microphone capture is not available in this browser/session. Enable Shazam HTTP fallback in Settings.', 'warning');
+            handleUnsupportedLiveCapture(ensureFallbackInput, config.allowHttpFileFallback);
             return;
         }
 
         try {
-            buffers = [];
-            stream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    channelCount: 1,
-                    // Disable voice-call DSP features; they degrade music fingerprint accuracy.
-                    noiseSuppression: false,
-                    echoCancellation: false,
-                    autoGainControl: false
-                }
-            });
-
-            audioContext = new AudioContextCtor();
-            if (typeof audioContext.resume === 'function' && audioContext.state !== 'running') {
-                await audioContext.resume();
-            }
-            sampleRate = audioContext.sampleRate || 44100;
-            sourceNode = audioContext.createMediaStreamSource(stream);
-            processor = audioContext.createScriptProcessor(4096, 1, 1);
-
-            processor.onaudioprocess = (event) => {
-                if (state !== 'listening') {
-                    return;
-                }
-
-                const data = event.inputBuffer.getChannelData(0);
-                buffers.push(new Float32Array(data));
-            };
-
-            sourceNode.connect(processor);
-            processor.connect(audioContext.destination);
-
-            if (typeof audioContext.resume === 'function' && audioContext.state !== 'running') {
-                await audioContext.resume();
-            }
-            if (audioContext.state !== 'running') {
-                throw new Error(`AudioContext is ${audioContext.state}.`);
-            }
+            await initializeLiveCapture();
 
             setState('listening');
             scheduleQuickProbe(QUICK_PROBE_FIRST_DELAY_MS);
@@ -939,13 +893,7 @@
             console.error('Shazam capture start failed', error);
             await releaseAudio();
 
-            if (config.allowHttpFileFallback) {
-                ensureFallbackInput();
-                setState('fallback', {
-                    reason: globalThis.isSecureContext
-                        ? 'Live microphone capture was blocked. Choose or record an audio file.'
-                        : 'This HTTP session does not allow microphone capture. Choose or record an audio file instead.'
-                });
+            if (handleCaptureStartFailure(ensureFallbackInput, config.allowHttpFileFallback)) {
                 return;
             }
 
@@ -954,6 +902,75 @@
             globalThis.setTimeout(() => setState('idle'), 1500);
         }
     };
+
+    function handleUnsupportedLiveCapture(ensureFallbackInputFn, allowFallback) {
+        if (allowFallback) {
+            ensureFallbackInputFn();
+            setState('fallback', {
+                reason: globalThis.isSecureContext
+                    ? 'Live microphone capture is unavailable in this browser. Choose or record an audio file.'
+                    : 'This HTTP session does not expose live microphone APIs. Choose or record an audio file instead.'
+            });
+            return;
+        }
+
+        notify('Microphone capture is not available in this browser/session. Enable Shazam HTTP fallback in Settings.', 'warning');
+    }
+
+    function handleCaptureStartFailure(ensureFallbackInputFn, allowFallback) {
+        if (!allowFallback) {
+            return false;
+        }
+
+        ensureFallbackInputFn();
+        setState('fallback', {
+            reason: globalThis.isSecureContext
+                ? 'Live microphone capture was blocked. Choose or record an audio file.'
+                : 'This HTTP session does not allow microphone capture. Choose or record an audio file instead.'
+        });
+        return true;
+    }
+
+    async function initializeLiveCapture() {
+        buffers = [];
+        stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                channelCount: 1,
+                // Disable voice-call DSP features; they degrade music fingerprint accuracy.
+                noiseSuppression: false,
+                echoCancellation: false,
+                autoGainControl: false
+            }
+        });
+
+        audioContext = new AudioContextCtor();
+        await ensureAudioContextRunning(audioContext);
+        sampleRate = audioContext.sampleRate || 44100;
+        sourceNode = audioContext.createMediaStreamSource(stream);
+        processor = audioContext.createScriptProcessor(4096, 1, 1);
+        processor.onaudioprocess = onAudioProcessCapture;
+        sourceNode.connect(processor);
+        processor.connect(audioContext.destination);
+        await ensureAudioContextRunning(audioContext);
+        if (audioContext.state !== 'running') {
+            throw new Error(`AudioContext is ${audioContext.state}.`);
+        }
+    }
+
+    async function ensureAudioContextRunning(context) {
+        if (typeof context.resume === 'function' && context.state !== 'running') {
+            await context.resume();
+        }
+    }
+
+    function onAudioProcessCapture(event) {
+        if (state !== 'listening') {
+            return;
+        }
+
+        const data = event.inputBuffer.getChannelData(0);
+        buffers.push(new Float32Array(data));
+    }
 
     const stopAndSearch = async () => {
         if (state !== 'listening') {

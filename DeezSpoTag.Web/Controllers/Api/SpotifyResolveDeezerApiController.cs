@@ -311,8 +311,8 @@ public class SpotifyResolveDeezerApiController : ControllerBase
                 continue;
             }
 
-            var id = GetString(element, "id");
-            var name = GetString(element, "name");
+            var id = JsonElementReader.GetString(element, "id");
+            var name = JsonElementReader.GetString(element, "name");
             if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(name))
             {
                 continue;
@@ -353,7 +353,7 @@ public class SpotifyResolveDeezerApiController : ControllerBase
                      .Select(static item => item switch
                      {
                          Dictionary<string, object> dict => GetDictionaryString(dict, TitleKey) ?? GetDictionaryString(dict, NameKey),
-                         JsonElement element => GetString(element, TitleKey) ?? GetString(element, NameKey),
+                         JsonElement element => JsonElementReader.GetString(element, TitleKey) ?? JsonElementReader.GetString(element, NameKey),
                          _ => null
                      })
                      .Select(SpotifyTextNormalizer.NormalizeTrackToken)
@@ -380,42 +380,8 @@ public class SpotifyResolveDeezerApiController : ControllerBase
         };
     }
 
-    private static string? GetString(JsonElement element, string name)
-    {
-        if (!element.TryGetProperty(name, out var value))
-        {
-            return null;
-        }
-
-        if (value.ValueKind == JsonValueKind.String)
-        {
-            return value.GetString();
-        }
-
-        return value.ValueKind == JsonValueKind.Number
-            ? value.ToString()
-            : null;
-    }
-
     private static int? GetInt(JsonElement element, string name)
-    {
-        if (!element.TryGetProperty(name, out var value))
-        {
-            return null;
-        }
-
-        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number))
-        {
-            return number;
-        }
-
-        if (value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out number))
-        {
-            return number;
-        }
-
-        return null;
-    }
+        => JsonElementReader.GetInt32(element, name);
 
     private sealed record ArtistCandidate(string Id, double NameScore, int Fans);
     private sealed record ArtistMatchResult(

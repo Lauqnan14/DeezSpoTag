@@ -107,13 +107,11 @@ public sealed class BandcampSearchApiController : ControllerBase
             albums,
             artists,
             playlists = Array.Empty<object>(),
-            totals = new Dictionary<string, int>
-            {
-                ["tracks"] = tracks.Count,
-                ["albums"] = albums.Count,
-                ["artists"] = artists.Count,
-                ["playlists"] = 0
-            }
+            totals = ExternalSearchControllerHelpers.BuildTotals(
+                tracks.Count,
+                albums.Count,
+                artists.Count,
+                playlists: 0)
         };
     }
 

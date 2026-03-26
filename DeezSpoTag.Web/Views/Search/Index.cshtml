@@ -141,9 +141,9 @@
     display: none;
 }
 
-.result-card--apple-audio .audio-preview-btn {
+.result-card--apple-audio .audio-preview-btn,
+.results-grid.artist-video-style .video-overlay-btn {
     position: absolute;
-    left: 10px;
     bottom: 10px;
     width: 40px;
     height: 40px;
@@ -161,19 +161,28 @@
     z-index: 2;
 }
 
+.result-card--apple-audio .audio-preview-btn,
+.results-grid.artist-video-style .video-overlay-btn--play {
+    left: 10px;
+}
+
 .result-card--apple-audio .result-image:hover .audio-preview-btn,
+.results-grid.artist-video-style .result-card.video.apple-card .apple-thumb:hover .video-overlay-btn,
+.results-grid.artist-video-style .result-card.video.apple-card .apple-thumb:focus-within .video-overlay-btn,
 .result-card--apple-audio .result-image:focus-within .audio-preview-btn {
     opacity: 1;
     transform: translateY(0);
 }
 
-.result-card--apple-audio .audio-preview-btn:hover {
+.result-card--apple-audio .audio-preview-btn:hover,
+.results-grid.artist-video-style .video-overlay-btn:hover {
     background: var(--primary-color);
     border-color: var(--primary-color);
     color: var(--bg-primary);
 }
 
-.result-card--apple-audio .audio-preview-btn:active {
+.result-card--apple-audio .audio-preview-btn:active,
+.results-grid.artist-video-style .video-overlay-btn:active {
     transform: translateY(0) scale(0.92);
 }
 
@@ -353,46 +362,8 @@
     background: rgba(106, 70, 24, 0.4);
 }
 
-.results-grid.artist-video-style .video-overlay-btn {
-    position: absolute;
-    bottom: 10px;
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    border: 1px solid var(--border-secondary);
-    background: rgba(30, 30, 30, 0.85);
-    color: var(--primary-color);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    opacity: 0;
-    transform: translateY(8px);
-    transition: opacity 0.2s ease, transform 0.2s ease;
-    z-index: 2;
-}
-
-.results-grid.artist-video-style .video-overlay-btn--play {
-    left: 10px;
-}
-
 .results-grid.artist-video-style .video-overlay-btn--download {
     right: 10px;
-}
-
-.results-grid.artist-video-style .result-card.video.apple-card .apple-thumb:hover .video-overlay-btn {
-    opacity: 1;
-    transform: translateY(0);
-}
-
-.results-grid.artist-video-style .video-overlay-btn:hover {
-    background: var(--primary-color);
-    border-color: var(--primary-color);
-    color: var(--bg-primary);
-}
-
-.results-grid.artist-video-style .video-overlay-btn:active {
-    transform: translateY(0) scale(0.92);
 }
 
 .selection-bar {

@@ -392,22 +392,7 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
             _logger.LogInformation("Successfully logged in with ARL. User: {UserName} (ID: {UserId})", 
                 userData.Name, userData.Id);
 
-            return new AuthenticationResult
-            {
-                Success = true,
-                User = new DeezerUser
-                {
-                    Id = userData.Id,
-                    Name = userData.Name,
-                    Picture = userData.Picture ?? "",
-                    Country = userData.Country ?? "",
-                    CanStreamLossless = userData.CanStreamLossless,
-                    CanStreamHq = userData.CanStreamHq,
-                    LicenseToken = userData.LicenseToken ?? "",
-                    Language = userData.Language ?? ""
-                },
-                Arl = normalizedArl
-            };
+            return BuildSuccessfulAuthenticationResult(userData, normalizedArl);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -457,22 +442,7 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
             var userData = _deezerClient.CurrentUser;
             var loginCredentials = await GetLoginCredentialsAsync();
 
-            return new AuthenticationResult
-            {
-                Success = true,
-                User = new DeezerUser
-                {
-                    Id = userData.Id,
-                    Name = userData.Name,
-                    Picture = userData.Picture ?? "",
-                    Country = userData.Country ?? "",
-                    CanStreamLossless = userData.CanStreamLossless,
-                    CanStreamHq = userData.CanStreamHq,
-                    LicenseToken = userData.LicenseToken ?? "",
-                    Language = userData.Language ?? ""
-                },
-                Arl = loginCredentials.Arl
-            };
+            return BuildSuccessfulAuthenticationResult(userData, loginCredentials.Arl);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -734,6 +704,26 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
     {
         // Protocol compatibility: Deezer auth handshake expects the legacy MD5 digest.
         return LegacyMd5.ComputeHexLower(input, Encoding.UTF8);
+    }
+
+    private static AuthenticationResult BuildSuccessfulAuthenticationResult(DeezerUser userData, string? arl)
+    {
+        return new AuthenticationResult
+        {
+            Success = true,
+            User = new DeezerUser
+            {
+                Id = userData.Id,
+                Name = userData.Name,
+                Picture = userData.Picture ?? string.Empty,
+                Country = userData.Country ?? string.Empty,
+                CanStreamLossless = userData.CanStreamLossless,
+                CanStreamHq = userData.CanStreamHq,
+                LicenseToken = userData.LicenseToken ?? string.Empty,
+                Language = userData.Language ?? string.Empty
+            },
+            Arl = arl
+        };
     }
 
     #endregion

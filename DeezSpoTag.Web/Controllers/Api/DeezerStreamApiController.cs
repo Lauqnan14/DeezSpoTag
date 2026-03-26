@@ -513,7 +513,7 @@ public class DeezerStreamApiController : ControllerBase
                                 ?? GetJsonString(root, "direct_url")
                                 ?? GetJsonString(root, "url");
 
-                if (!IsDeezerEpisodePage(directUrl ?? string.Empty))
+                if (!DeezerEpisodeStreamResolver.IsDeezerEpisodePage(directUrl ?? string.Empty))
                 {
                     return directUrl;
                 }
@@ -537,7 +537,7 @@ public class DeezerStreamApiController : ControllerBase
                             ?? GetDictString(pageMetadata, "direct_stream_url")
                             ?? GetDictString(pageMetadata, "EPISODE_URL")
                             ?? GetDictString(pageMetadata, "url");
-        if (!string.IsNullOrWhiteSpace(pageDirectUrl) && !IsDeezerEpisodePage(pageDirectUrl))
+        if (!string.IsNullOrWhiteSpace(pageDirectUrl) && !DeezerEpisodeStreamResolver.IsDeezerEpisodePage(pageDirectUrl))
         {
             return pageDirectUrl;
         }
@@ -561,7 +561,7 @@ public class DeezerStreamApiController : ControllerBase
             var streamUrl = episode?.Value<string>("EPISODE_DIRECT_STREAM_URL")
                             ?? episode?.Value<string>("EPISODE_URL");
 
-            return IsDeezerEpisodePage(streamUrl ?? string.Empty) ? null : streamUrl;
+            return DeezerEpisodeStreamResolver.IsDeezerEpisodePage(streamUrl ?? string.Empty) ? null : streamUrl;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -665,17 +665,6 @@ public class DeezerStreamApiController : ControllerBase
             JsonElement element when element.ValueKind == JsonValueKind.Number => element.GetRawText(),
             _ => value.ToString()
         };
-    }
-
-    private static bool IsDeezerEpisodePage(string url)
-    {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-        {
-            return false;
-        }
-
-        return uri.Host.Contains("deezer.com", StringComparison.OrdinalIgnoreCase)
-               && uri.AbsolutePath.Contains("/episode", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task EnsureLoggedInAsync()

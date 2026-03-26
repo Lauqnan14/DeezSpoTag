@@ -17,7 +17,7 @@ public class CryptoService
     private const string BinaryEncodingName = "binary";
     private const string Latin1EncodingName = "ISO-8859-1";
     private const string SeedMaterial = "g4el58wc0zvf9na1";
-    private const string EcbTransformKey = "jo6aey6haid2Teih";
+    internal const string EcbTransformKey = "jo6aey6haid2Teih";
 
     public CryptoService(ILogger<CryptoService>? logger)
     {
@@ -31,16 +31,7 @@ public class CryptoService
     /// </summary>
     public static string GenerateMd5(string data, string encoding = BinaryEncodingName)
     {
-        // Use the same encoding as deezspotag
-        var dataBytes = encoding switch
-        {
-            "ascii" => Encoding.ASCII.GetBytes(data),
-            "utf8" => Encoding.UTF8.GetBytes(data),
-            BinaryEncodingName => Encoding.GetEncoding(Latin1EncodingName).GetBytes(data),
-            _ => Encoding.GetEncoding(Latin1EncodingName).GetBytes(data)
-        };
-
-        return LegacyMd5.ComputeHexLower(dataBytes);
+        return LegacyMd5.ComputeHexLower(GetEncodedBytes(data, encoding));
     }
 
     /// <summary>
@@ -62,10 +53,7 @@ public class CryptoService
     {
         try
         {
-            // Use binary encoding like deezspotag (Latin1/ISO-8859-1)
-            var dataBytes = Encoding.GetEncoding(Latin1EncodingName).GetBytes(data);
-            var encrypted = TransformAesBlocks(key, dataBytes, encrypt: true);
-            return Convert.ToHexString(encrypted).ToLower();
+            return EcbEncryptCore(key, data);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -81,10 +69,7 @@ public class CryptoService
     {
         try
         {
-            var dataBytes = Convert.FromHexString(data);
-            var decrypted = TransformAesBlocks(key, dataBytes, encrypt: false);
-            // Use binary encoding like deezspotag (Latin1/ISO-8859-1)
-            return Encoding.GetEncoding(Latin1EncodingName).GetString(decrypted);
+            return EcbDecryptCore(key, data);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -135,17 +120,9 @@ public class CryptoService
     /// <summary>
     /// Generate stream path (port of generateStreamPath from deezspotag)
     /// </summary>
-    public string GenerateStreamPath(string sngId, string md5, string mediaVersion, string format)
+    public static string GenerateStreamPath(string sngId, string md5, string mediaVersion, string format)
     {
-        var urlPart = $"{md5}¤{format}¤{sngId}¤{mediaVersion}";
-        var md5Val = GenerateMd5(urlPart);
-        var step2 = $"{md5Val}¤{urlPart}¤";
-        
-        // Pad to 16-byte boundary
-        var padding = 16 - (step2.Length % 16);
-        step2 += new string('.', padding);
-        
-        return EcbEncrypt(EcbTransformKey, step2);
+        return GenerateStreamPathCore(sngId, md5, mediaVersion, format);
     }
 
     /// <summary>
@@ -153,8 +130,7 @@ public class CryptoService
     /// </summary>
     public static string GenerateCryptedStreamUrl(string sngId, string md5, string mediaVersion, string format)
     {
-        var service = new CryptoService(NullLogger<CryptoService>.Instance);
-        var urlPart = service.GenerateStreamPath(sngId, md5, mediaVersion, format);
+        var urlPart = GenerateStreamPathCore(sngId, md5, mediaVersion, format);
         return $"https://e-cdns-proxy-{md5[0]}.dzcdn.net/mobile/1/{urlPart}";
     }
 
@@ -163,9 +139,43 @@ public class CryptoService
     /// </summary>
     public static string GenerateStreamUrl(string sngId, string md5, string mediaVersion, string format)
     {
-        var service = new CryptoService(NullLogger<CryptoService>.Instance);
-        var urlPart = service.GenerateStreamPath(sngId, md5, mediaVersion, format);
+        var urlPart = GenerateStreamPathCore(sngId, md5, mediaVersion, format);
         return $"https://cdns-proxy-{md5[0]}.dzcdn.net/api/1/{urlPart}";
+    }
+
+    internal static string EcbEncryptCore(string key, string data)
+    {
+        var dataBytes = Encoding.GetEncoding(Latin1EncodingName).GetBytes(data);
+        var encrypted = TransformAesBlocks(key, dataBytes, encrypt: true);
+        return Convert.ToHexString(encrypted).ToLower();
+    }
+
+    internal static string EcbDecryptCore(string key, string data)
+    {
+        var dataBytes = Convert.FromHexString(data);
+        var decrypted = TransformAesBlocks(key, dataBytes, encrypt: false);
+        return Encoding.GetEncoding(Latin1EncodingName).GetString(decrypted);
+    }
+
+    internal static string GenerateStreamPathCore(string sngId, string md5, string mediaVersion, string format)
+    {
+        var urlPart = $"{md5}¤{format}¤{sngId}¤{mediaVersion}";
+        var md5Val = GenerateMd5(urlPart);
+        var step2 = $"{md5Val}¤{urlPart}¤";
+        var padding = 16 - (step2.Length % 16);
+        step2 += new string('.', padding);
+        return EcbEncryptCore(EcbTransformKey, step2);
+    }
+
+    private static byte[] GetEncodedBytes(string data, string encoding)
+    {
+        return encoding switch
+        {
+            "ascii" => Encoding.ASCII.GetBytes(data),
+            "utf8" => Encoding.UTF8.GetBytes(data),
+            BinaryEncodingName => Encoding.GetEncoding(Latin1EncodingName).GetBytes(data),
+            _ => Encoding.GetEncoding(Latin1EncodingName).GetBytes(data)
+        };
     }
 
     internal static byte[] TransformAesBlocks(string key, byte[] data, bool encrypt)
@@ -327,8 +337,7 @@ public class CryptoService
 
     public static string GenerateStreamPathStatic(string sngId, string md5, string mediaVersion, string format)
     {
-        var service = new CryptoService(NullLogger<CryptoService>.Instance);
-        return service.GenerateStreamPath(sngId, md5, mediaVersion, format);
+        return GenerateStreamPath(sngId, md5, mediaVersion, format);
     }
 
     public static byte[] DecryptChunkStatic(byte[] chunk, string blowfishKey)

@@ -5706,9 +5706,9 @@ SELECT t.title,
 FROM track t
 JOIN album al ON al.id = t.album_id
 JOIN artist ar ON ar.id = al.artist_id
-WHERE LOWER(t.title) LIKE LOWER(@like) ESCAPE '\\'
-   OR LOWER(ar.name) LIKE LOWER(@like) ESCAPE '\\'
-   OR LOWER(al.title) LIKE LOWER(@like) ESCAPE '\\'
+WHERE LOWER(t.title) LIKE LOWER(@like) ESCAPE '\'
+   OR LOWER(ar.name) LIKE LOWER(@like) ESCAPE '\'
+   OR LOWER(al.title) LIKE LOWER(@like) ESCAPE '\'
 LIMIT 200;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("like", likeQuery);
@@ -5745,9 +5745,9 @@ JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
 WHERE f.enabled = 1
   AND (
-       LOWER(t.title) LIKE LOWER(@like) ESCAPE '\\'
-    OR LOWER(ar.name) LIKE LOWER(@like) ESCAPE '\\'
-    OR LOWER(al.title) LIKE LOWER(@like) ESCAPE '\\'
+       LOWER(t.title) LIKE LOWER(@like) ESCAPE '\'
+    OR LOWER(ar.name) LIKE LOWER(@like) ESCAPE '\'
+    OR LOWER(al.title) LIKE LOWER(@like) ESCAPE '\'
   )
 LIMIT 200;";
         await using var command = new SqliteCommand(sql, connection);
@@ -5802,8 +5802,8 @@ SELECT al.title,
        al.deezer_id
 FROM album al
 JOIN artist ar ON ar.id = al.artist_id
-WHERE LOWER(al.title) LIKE LOWER(@like) ESCAPE '\\'
-   OR LOWER(ar.name) LIKE LOWER(@like) ESCAPE '\\'
+WHERE LOWER(al.title) LIKE LOWER(@like) ESCAPE '\'
+   OR LOWER(ar.name) LIKE LOWER(@like) ESCAPE '\'
 LIMIT 200;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("like", likeQuery);
@@ -5829,7 +5829,7 @@ SELECT name,
        preferred_image_path,
        deezer_id
 FROM artist
-WHERE LOWER(name) LIKE LOWER(@like) ESCAPE '\\'
+WHERE LOWER(name) LIKE LOWER(@like) ESCAPE '\'
 LIMIT 200;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("like", likeQuery);

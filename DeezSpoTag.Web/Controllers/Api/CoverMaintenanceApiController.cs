@@ -97,7 +97,7 @@ public sealed class CoverMaintenanceApiController : ControllerBase
                     : Array.Empty<string>();
             }
 
-            return enabledFolders.Any(folder => IsPathUnderRoot(candidate, folder.RootPath))
+            return enabledFolders.Any(folder => AutoTagFolderScopeHelper.IsPathUnderRoot(candidate, folder.RootPath))
                 ? new[] { candidate }
                 : Array.Empty<string>();
         }
@@ -141,19 +141,6 @@ public sealed class CoverMaintenanceApiController : ControllerBase
         }
 
         return Math.Clamp(request.InheritedTargetResolution.Value, 300, 5000);
-    }
-
-    private static bool IsPathUnderRoot(string path, string root)
-    {
-        var normalizedPath = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var normalizedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (string.Equals(normalizedPath, normalizedRoot, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        var rootWithSlash = normalizedRoot + Path.DirectorySeparatorChar;
-        return normalizedPath.StartsWith(rootWithSlash, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsMusicCapableFolder(FolderDto folder)

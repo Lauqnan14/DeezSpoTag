@@ -82,17 +82,7 @@ public sealed class CoverSourceHttpService
             try
             {
                 await ApplySourceRateLimitAsync(source, cancellationToken);
-                using var request = new HttpRequestMessage(HttpMethod.Head, url);
-                request.Headers.TryAddWithoutValidation("User-Agent", "DeezSpoTag/1.0");
-                if (headers != null)
-                {
-                    foreach (var pair in headers)
-                    {
-                        request.Headers.Remove(pair.Key);
-                        request.Headers.TryAddWithoutValidation(pair.Key, pair.Value);
-                    }
-                }
-
+                using var request = CreateRequest(HttpMethod.Head, url, headers);
                 using var response = await _httpClientFactory.CreateClient().SendAsync(request, cancellationToken);
                 var ok = response.IsSuccessStatusCode;
                 await WriteCacheAsync(path, new[] { ok ? (byte)'1' : (byte)'0' }, cancellationToken);
@@ -140,16 +130,7 @@ public sealed class CoverSourceHttpService
             try
             {
                 await ApplySourceRateLimitAsync(source, cancellationToken);
-                using var request = new HttpRequestMessage(HttpMethod.Get, url);
-                request.Headers.TryAddWithoutValidation("User-Agent", "DeezSpoTag/1.0");
-                if (headers != null)
-                {
-                    foreach (var pair in headers)
-                    {
-                        request.Headers.Remove(pair.Key);
-                        request.Headers.TryAddWithoutValidation(pair.Key, pair.Value);
-                    }
-                }
+                using var request = CreateRequest(HttpMethod.Get, url, headers);
                 using var response = await _httpClientFactory.CreateClient().SendAsync(request, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
@@ -175,6 +156,24 @@ public sealed class CoverSourceHttpService
         {
             pathLock.Release();
         }
+    }
+
+    private static HttpRequestMessage CreateRequest(HttpMethod method, string url, IReadOnlyDictionary<string, string>? headers)
+    {
+        var request = new HttpRequestMessage(method, url);
+        request.Headers.TryAddWithoutValidation("User-Agent", "DeezSpoTag/1.0");
+        if (headers == null)
+        {
+            return request;
+        }
+
+        foreach (var pair in headers)
+        {
+            request.Headers.Remove(pair.Key);
+            request.Headers.TryAddWithoutValidation(pair.Key, pair.Value);
+        }
+
+        return request;
     }
 
     private static async Task<byte[]?> TryReadFreshCacheAsync(string path, TimeSpan ttl, CancellationToken cancellationToken)

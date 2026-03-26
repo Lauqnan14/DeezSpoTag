@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using DeezSpoTag.Core.Models.Settings;
 
 namespace DeezSpoTag.Web.Services;
@@ -8,7 +7,6 @@ public sealed class TaggingProfileService
 {
     private const string ProfilesFileName = "tagging-profiles.json";
     private const string AutoTagFolderName = "autotag";
-    private const string DeezerPlatform = "deezer";
     private readonly ILogger<TaggingProfileService> _logger;
     private readonly string _profilesPath;
     private readonly string _legacyProfilesPath;
@@ -269,14 +267,14 @@ public sealed class TaggingProfileService
             string.Equals(entry, "downloadTagSource", StringComparison.OrdinalIgnoreCase));
         if (string.IsNullOrWhiteSpace(key))
         {
-            data["downloadTagSource"] = JsonSerializer.SerializeToElement(DeezerPlatform);
+            data["downloadTagSource"] = JsonSerializer.SerializeToElement("deezer");
             return true;
         }
 
         var current = data[key];
         var normalized = current.ValueKind == JsonValueKind.String
-            ? NormalizeDownloadTagSource(current.GetString())
-            : DeezerPlatform;
+            ? TaggingProfileDataHelper.NormalizeDownloadTagSource(current.GetString(), defaultSource: "deezer")
+            : "deezer";
         if (current.ValueKind == JsonValueKind.String
             && string.Equals(current.GetString(), normalized, StringComparison.OrdinalIgnoreCase))
         {
@@ -288,59 +286,7 @@ public sealed class TaggingProfileService
     }
 
     private static bool StripAuthSecrets(Dictionary<string, JsonElement> data)
-    {
-        if (!data.TryGetValue("custom", out var customElement) || customElement.ValueKind != JsonValueKind.Object)
-        {
-            return false;
-        }
-
-        try
-        {
-            var customNode = JsonNode.Parse(customElement.GetRawText()) as JsonObject;
-            if (customNode == null)
-            {
-                return false;
-            }
-
-            var customChanged = false;
-
-            customChanged |= RemoveCustomField(customNode, "discogs", "token");
-            customChanged |= RemoveCustomField(customNode, "lastfm", "apiKey");
-            customChanged |= RemoveCustomField(customNode, "bpmsupreme", "email");
-            customChanged |= RemoveCustomField(customNode, "bpmsupreme", "password");
-
-            if (!customChanged)
-            {
-                return false;
-            }
-
-            data["custom"] = JsonSerializer.SerializeToElement(customNode);
-            return true;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
-            return false;
-        }
-    }
-
-    private static bool RemoveCustomField(JsonObject customNode, string platformId, string field)
-    {
-        if (customNode[platformId] is not JsonObject platformNode)
-        {
-            return false;
-        }
-
-        return platformNode.Remove(field);
-    }
-
-    private static string NormalizeDownloadTagSource(string? downloadTagSource)
-    {
-        return downloadTagSource?.Trim().ToLowerInvariant() switch
-        {
-            "spotify" => "spotify",
-            DeezerPlatform => DeezerPlatform,
-            _ => DeezerPlatform
-        };
-    }
+        => TaggingProfileDataHelper.StripAuthSecrets(data);
 
     private async Task<bool> ImportLegacyProfilesIntoSingleStoreAsync(List<TaggingProfile> profiles)
     {
@@ -505,38 +451,7 @@ public sealed class TaggingProfileService
     }
 
     private IEnumerable<string> GetLegacyProfileCandidates()
-    {
-        var candidates = new[]
-        {
-            Path.Join(_contentRoot, "Data", AutoTagFolderName, ProfilesFileName),
-            Path.Join(AppContext.BaseDirectory, "Data", AutoTagFolderName, ProfilesFileName),
-            Path.Join(Directory.GetCurrentDirectory(), "Data", AutoTagFolderName, ProfilesFileName),
-            Path.Join(Directory.GetCurrentDirectory(), "DeezSpoTag.Web", "Data", AutoTagFolderName, ProfilesFileName)
-        };
-
-        foreach (var candidate in candidates)
-        {
-            if (string.IsNullOrWhiteSpace(candidate))
-            {
-                continue;
-            }
-
-            var fullPath = Path.GetFullPath(candidate);
-            if (string.Equals(fullPath, _profilesPath, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var fullDirectory = Path.GetDirectoryName(fullPath);
-            if (!string.IsNullOrWhiteSpace(fullDirectory) &&
-                string.Equals(fullDirectory, Path.GetFullPath(Path.Join(_dataRoot, AutoTagFolderName)), StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            yield return fullPath;
-        }
-    }
+        => AutoTagLegacyPathCandidates.Enumerate(_contentRoot, _dataRoot, _profilesPath, ProfilesFileName, AutoTagFolderName);
 
     private sealed class LegacyAutoTagProfile
     {

@@ -604,17 +604,11 @@ namespace DeezSpoTag.Web.Controllers
                 }
 
                 var queued = await _deezSpoTagApp.AddToQueueAsync(new[] { url }, resolvedBitrate);
-                if (queued.Count == 0)
-                {
-                    return Json(new { success = false, message = "Nothing queued." });
-                }
-
-                return Json(new { success = true, queued = queued });
+                return DeezerQueueActionResultHelper.FromQueued(this, queued);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogError(ex, "Error initiating Deezer download for Type:Id");
-                return Json(new { success = false, message = ex.Message });
+                return DeezerQueueActionResultHelper.FromError(this, _logger, ex, "Error initiating Deezer download for Type:Id");
             }
         }
 

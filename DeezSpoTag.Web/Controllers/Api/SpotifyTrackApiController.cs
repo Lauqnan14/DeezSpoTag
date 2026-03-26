@@ -22,27 +22,15 @@ public sealed class SpotifyTrackApiController : ControllerBase
 
     [HttpGet("{trackId}/metadata")]
     public async Task<IActionResult> GetMetadata(string trackId, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(trackId))
-        {
-            return BadRequest("trackId is required");
-        }
-
-        try
-        {
-            var url = $"https://open.spotify.com/track/{trackId}";
-            var metadata = await _pathfinder.FetchByUrlAsync(url, cancellationToken);
-            if (metadata is null)
-            {
-                return Ok(new { available = false });
-            }
-
-            return Ok(new { available = true, metadata });
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Spotify track metadata fetch failed");
-            return StatusCode(502, new { error = "Spotify track metadata failed." });
-        }
-    }
+        => await SpotifyMetadataActionHelper.FetchByUrlAsync(
+            this,
+            _pathfinder,
+            _logger,
+            new SpotifyMetadataActionHelper.SpotifyMetadataFetchRequest(
+                Id: trackId,
+                IdParameterName: "trackId",
+                SpotifyType: "track",
+                FailureLogMessage: "Spotify track metadata fetch failed",
+                FailureResponseMessage: "Spotify track metadata failed."),
+            cancellationToken);
 }

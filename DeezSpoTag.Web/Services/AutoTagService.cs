@@ -1723,9 +1723,9 @@ public class AutoTagService
 
         var allowedProfiles = technicalProfiles.ToHashSet(StringComparer.OrdinalIgnoreCase);
         return tracks
-            .Where(track => allowedProfiles.Contains(FormatTechnicalProfile(track)))
-            .ToList();
-    }
+                .Where(track => allowedProfiles.Contains(QualityScanTrackFormatter.FormatTechnicalProfile(track)))
+                .ToList();
+        }
 
     private sealed record QualityCheckOptions(
         bool FlagDuplicates,
@@ -1927,20 +1927,6 @@ public class AutoTagService
         }
 
         return null;
-    }
-
-    private static string FormatTechnicalProfile(QualityScanTrackDto track)
-    {
-        var extension = string.IsNullOrWhiteSpace(track.BestExtension)
-            ? "UNKNOWN"
-            : track.BestExtension.Trim().ToUpperInvariant();
-        var bitDepth = track.BestBitsPerSample.HasValue && track.BestBitsPerSample.Value > 0
-            ? $"{track.BestBitsPerSample.Value}-bit"
-            : "unknown";
-        var sampleRate = track.BestSampleRateHz.HasValue && track.BestSampleRateHz.Value > 0
-            ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{track.BestSampleRateHz.Value / 1000d:0.0} kHz")
-            : "unknown";
-        return $"{extension} • {bitDepth} • {sampleRate}";
     }
 
     private JsonObject? LoadConfigRoot(string configPath)

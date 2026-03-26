@@ -663,27 +663,7 @@ public sealed class SpotifyFavoritesService
     }
 
     private static int? TryGetInt(JsonElement element, string propertyName)
-    {
-        if (element.ValueKind != JsonValueKind.Object
-            || !element.TryGetProperty(propertyName, out var value)
-            || value.ValueKind == JsonValueKind.Null
-            || value.ValueKind == JsonValueKind.Undefined)
-        {
-            return null;
-        }
-
-        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number))
-        {
-            return number;
-        }
-
-        if (value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out number))
-        {
-            return number;
-        }
-
-        return null;
-    }
+        => element.ValueKind == JsonValueKind.Object ? JsonElementReader.GetInt32(element, propertyName) : null;
 
     private static int? TryGetIntAt(JsonElement element, params object[] path)
     {

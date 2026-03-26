@@ -4,7 +4,6 @@ using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -14,7 +13,6 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public sealed class TaggingProfilesApiController : ControllerBase
 {
     private const string DownloadTagSourceKey = "downloadTagSource";
-    private const string SpotifySource = "spotify";
     private const string DeezerSource = "deezer";
 
     private readonly TaggingProfileService _profiles;
@@ -234,62 +232,12 @@ public sealed class TaggingProfilesApiController : ControllerBase
             return;
         }
 
-        var normalized = NormalizeDownloadTagSource(value.GetString());
+        var normalized = TaggingProfileDataHelper.NormalizeDownloadTagSource(value.GetString(), DeezerSource);
         data[key] = JsonSerializer.SerializeToElement(normalized);
     }
 
     private static void StripAuthSecrets(Dictionary<string, JsonElement> data)
-    {
-        if (!data.TryGetValue("custom", out var customElement) || customElement.ValueKind != JsonValueKind.Object)
-        {
-            return;
-        }
-
-        try
-        {
-            var customNode = JsonNode.Parse(customElement.GetRawText()) as JsonObject;
-            if (customNode == null)
-            {
-                return;
-            }
-
-            var changed = false;
-            changed |= RemoveCustomField(customNode, "discogs", "token");
-            changed |= RemoveCustomField(customNode, "lastfm", "apiKey");
-            changed |= RemoveCustomField(customNode, "bpmsupreme", "email");
-            changed |= RemoveCustomField(customNode, "bpmsupreme", "password");
-
-            if (!changed)
-            {
-                return;
-            }
-
-            data["custom"] = JsonSerializer.SerializeToElement(customNode);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
-            // Best-effort: keep profile save resilient even if custom payload is malformed.
-        }
-    }
-
-    private static bool RemoveCustomField(JsonObject customNode, string platformId, string field)
-    {
-        if (customNode[platformId] is not JsonObject platformNode)
-        {
-            return false;
-        }
-
-        return platformNode.Remove(field);
-    }
-
-    private static string NormalizeDownloadTagSource(string? downloadTagSource)
-    {
-        return downloadTagSource?.Trim().ToLowerInvariant() switch
-        {
-            SpotifySource => SpotifySource,
-            DeezerSource => DeezerSource,
-            _ => DeezerSource
-        };
-    }
+        => _ = TaggingProfileDataHelper.StripAuthSecrets(data);
 
     [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(string id, CancellationToken cancellationToken)

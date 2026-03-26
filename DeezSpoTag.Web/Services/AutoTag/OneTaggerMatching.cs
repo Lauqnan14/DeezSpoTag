@@ -363,18 +363,7 @@ internal static class OneTaggerMatching
 
     private static int LevenshteinDistance(string a, string b)
     {
-        var dp = new int[a.Length + 1, b.Length + 1];
-        for (var i = 0; i <= a.Length; i++) dp[i, 0] = i;
-        for (var j = 0; j <= b.Length; j++) dp[0, j] = j;
-        for (var i = 1; i <= a.Length; i++)
-        {
-            for (var j = 1; j <= b.Length; j++)
-            {
-                var cost = a[i - 1] == b[j - 1] ? 0 : 1;
-                dp[i, j] = Math.Min(Math.Min(dp[i - 1, j] + 1, dp[i, j - 1] + 1), dp[i - 1, j - 1] + cost);
-            }
-        }
-        return dp[a.Length, b.Length];
+        return ShazamSharedParsing.LevenshteinDistance(a, b);
     }
 
     internal sealed record MatchSelection<T>(double Accuracy, T Track);

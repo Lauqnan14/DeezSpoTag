@@ -75,13 +75,13 @@ public class PathTemplateGenerator
         var extrasPath = filepath;
 
         // Create playlist folder if needed
-        if (ShouldCreatePlaylistFolder(track, settings))
+        if (PathTemplateCommon.ShouldCreatePlaylistFolder(track, settings))
         {
             filepath = Path.Join(filepath, GeneratePlaylistName(track, settings));
         }
 
         // Create artist folder if needed
-        if (ShouldCreateArtistFolder(track, settings))
+        if (PathTemplateCommon.ShouldCreateArtistFolder(track, settings))
         {
             var artistName = GenerateArtistName(
                 settings.ArtistNameTemplate,
@@ -204,21 +204,12 @@ public class PathTemplateGenerator
             filename = filename.Replace(ExplicitPlaceholder, "");
         }
 
-        // IDs
-        filename = filename.Replace("%track_id%", track.Id ?? "");
-        filename = filename.Replace("%artist_id%", track.MainArtist?.Id ?? "");
-
-        // Playlist specific
-        if (track.Playlist != null)
-        {
-            filename = filename.Replace("%playlist_id%", track.Playlist.Id ?? "");
-            filename = filename.Replace("%position%", Pad(track.Position ?? 0, track.Playlist.TrackTotal, settings));
-        }
-        else if (track.Album != null)
-        {
-            filename = filename.Replace("%playlist_id%", "");
-            filename = filename.Replace("%position%", Pad(track.TrackNumber, track.Album.TrackTotal, settings));
-        }
+        filename = PathTemplateCommon.ApplyTrackIdTokens(filename, track);
+        filename = PathTemplateCommon.ApplyPlaylistPositionTokens(
+            filename,
+            track,
+            settings,
+            clearPlaylistIdWhenAlbumMissing: false);
 
         // Normalize path separators
         filename = filename.Replace("\\", "/");
@@ -457,29 +448,6 @@ public class PathTemplateGenerator
     {
         if (string.IsNullOrEmpty(input)) return input;
         return char.ToUpper(input[0]) + input.Substring(1).ToLower();
-    }
-
-    /// <summary>
-    /// Check if playlist folder should be created
-    /// Ported from: shouldCreatePlaylistFolder function in deezspotag pathtemplates.ts
-    /// </summary>
-    private static bool ShouldCreatePlaylistFolder(Track track, DeezSpoTagSettings settings)
-    {
-        return settings.CreatePlaylistFolder && 
-               track.Playlist != null && 
-               !settings.Tags.SavePlaylistAsCompilation;
-    }
-
-    /// <summary>
-    /// Check if artist folder should be created
-    /// Ported from: shouldCreateArtistFolder function in deezspotag pathtemplates.ts
-    /// </summary>
-    private static bool ShouldCreateArtistFolder(Track track, DeezSpoTagSettings settings)
-    {
-        return settings.CreateArtistFolder &&
-               (track.Playlist == null ||
-                settings.Tags.SavePlaylistAsCompilation ||
-                settings.CreateStructurePlaylist);
     }
 
     /// <summary>

@@ -53,15 +53,10 @@ public sealed class MusicBrainzMatcher
                 .Take(resolvedConfig.SearchLimit)
                 .Select(r => ToTrack(r, preferences))
                 .ToList();
-            var match = MatchTracks(info, tracks, matchingConfig);
-            if (match != null)
+            var result = await TryBuildMatchResultAsync(info, tracks, matchingConfig, preferences, cancellationToken);
+            if (result != null)
             {
-                await ExtendTrackAsync(match.Track, preferences, cancellationToken);
-                return new AutoTagMatchResult
-                {
-                    Accuracy = match.Accuracy,
-                    Track = ToAutoTagTrack(match.Track)
-                };
+                return result;
             }
         }
 
@@ -123,17 +118,28 @@ public sealed class MusicBrainzMatcher
             .Take(config.SearchLimit)
             .Select(r => ToTrack(r, preferences))
             .ToList();
+        return await TryBuildMatchResultAsync(info, tracks, matchingConfig, preferences, cancellationToken);
+    }
+
+    private async Task<AutoTagMatchResult?> TryBuildMatchResultAsync(
+        AutoTagAudioInfo info,
+        List<MusicBrainzTrack> tracks,
+        AutoTagMatchingConfig matchingConfig,
+        MusicBrainzPreferences preferences,
+        CancellationToken cancellationToken)
+    {
         var match = MatchTracks(info, tracks, matchingConfig);
-        if (match != null)
+        if (match == null)
         {
-            await ExtendTrackAsync(match.Track, preferences, cancellationToken);
-            return new AutoTagMatchResult
-            {
-                Accuracy = match.Accuracy,
-                Track = ToAutoTagTrack(match.Track)
-            };
+            return null;
         }
-        return null;
+
+        await ExtendTrackAsync(match.Track, preferences, cancellationToken);
+        return new AutoTagMatchResult
+        {
+            Accuracy = match.Accuracy,
+            Track = ToAutoTagTrack(match.Track)
+        };
     }
 
     private static List<string> BuildQueries(AutoTagAudioInfo info)

@@ -48,6 +48,10 @@ public sealed class AmazonDownloadApiController : ControllerBase
     {
         var destinationFolderId = request?.DestinationFolderId;
         const string quality = "FLAC";
+        var enqueue = DownloadQueueEnqueueHelper.CreateDedupEnqueueDelegate<AmazonQueueItem>(_queueRepository, _deezspotagListener, _logger);
+        var onQueued = DownloadQueueEnqueueHelper.CreateQueueAddedNotifier<AmazonQueueItem>(
+            _deezspotagListener,
+            static payload => payload.ToQueuePayload());
         return await EngineDownloadControllerCommon.HandleBatchEnqueueAsync(
             this,
             request?.Tracks,
@@ -70,14 +74,8 @@ public sealed class AmazonDownloadApiController : ControllerBase
                     return null;
                 },
                 PreparePayloadAsync = (track, settings, cancellationToken) => PreparePayloadAsync(track, quality, destinationFolderId, settings, cancellationToken),
-                EnqueueAsync = (payload, redownloadCooldownMinutes, cancellationToken) => DownloadQueueEnqueueHelper.EnqueueWithDedupAsync(
-                    payload,
-                    redownloadCooldownMinutes,
-                    _queueRepository,
-                    _deezspotagListener,
-                    _logger,
-                    cancellationToken),
-                OnQueued = payload => _deezspotagListener.SendAddedToQueue(payload.ToQueuePayload())
+                EnqueueAsync = enqueue,
+                OnQueued = onQueued
             });
     }
 

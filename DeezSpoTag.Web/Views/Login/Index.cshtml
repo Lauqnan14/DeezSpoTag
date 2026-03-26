@@ -4,6 +4,10 @@
     ViewData["Title"] = "Login";
 }
 
+@section Styles {
+<link rel="stylesheet" href="~/css/dropdown-select.css" />
+}
+
 <div class="fixed-footer platform-login-shell">
     <h1 class="platform-login-title mb-8 text-5xl">Login</h1>
 
@@ -297,8 +301,8 @@
                                 <input type="hidden" id="bpmLibrary" value="Supreme" />
                                 <button type="button" class="dropdown-trigger" id="bpmLibraryTrigger">Supreme</button>
                                 <div class="dropdown-menu" id="bpmLibraryMenu">
-                                    <button type="button" class="dropdown-option" data-value="Supreme" aria-selected="true">Supreme</button>
-                                    <button type="button" class="dropdown-option" data-value="Latino" aria-selected="false">Latino</button>
+                                    <button type="button" class="dropdown-option" data-value="Supreme">Supreme</button>
+                                    <button type="button" class="dropdown-option" data-value="Latino">Latino</button>
                                 </div>
                             </div>
                         </label>
@@ -379,6 +383,11 @@ body {
     padding: clamp(14px, 3vw, 24px);
     background: var(--bg-primary);
     color: var(--text-primary);
+    --dropdown-trigger-bg: var(--bg-tertiary);
+    --dropdown-menu-bg: var(--bg-secondary);
+    --dropdown-trigger-padding: 12px;
+    --dropdown-trigger-radius: 4px;
+    --dropdown-trigger-font-size: 14px;
 }
 
 .platform-login-title {
@@ -896,68 +905,6 @@ select.w-full,
     color: var(--text-primary);
 }
 
-.dropdown-select {
-    position: relative;
-    display: inline-flex;
-    width: 100%;
-}
-
-.dropdown-trigger {
-    width: 100%;
-    text-align: left;
-    background: var(--bg-tertiary);
-    color: var(--text-primary);
-    border: 1px solid var(--border-secondary);
-    padding: 12px;
-    border-radius: 4px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    font-size: 14px;
-}
-
-.dropdown-trigger::after {
-    content: "▾";
-    color: var(--text-muted);
-    font-size: 12px;
-}
-
-.dropdown-menu {
-    position: absolute;
-    top: calc(100% + 6px);
-    left: 0;
-    right: 0;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-secondary);
-    border-radius: 8px;
-    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
-    padding: 6px;
-    display: none;
-    z-index: 20;
-}
-
-.dropdown-menu.open {
-    display: block;
-}
-
-.dropdown-option {
-    width: 100%;
-    background: transparent;
-    border: 0;
-    color: var(--text-primary);
-    text-align: left;
-    padding: 8px 10px;
-    border-radius: 6px;
-    cursor: pointer;
-}
-
-.dropdown-option:hover,
-.dropdown-option[aria-selected="true"] {
-    background: var(--bg-tertiary);
-}
-
 .fixed-footer input::placeholder {
     color: var(--text-primary);
     opacity: 0.7;
@@ -1135,6 +1082,10 @@ function isTabPreferenceEnabled() {
         console.warn('Failed to read tab preference setting', error);
         return true;
     }
+}
+
+function getLoginTabPreferenceKey() {
+    return `tabs:last:${window.location.pathname}:platformLoginTabs`;
 }
 
 // Toast notification system
@@ -1508,6 +1459,12 @@ function getPreferredLoginTabId() {
     }
 
     try {
+        const localStored = localStorage.getItem(getLoginTabPreferenceKey()) || '';
+        if (isValidLoginTabId(localStored)) {
+            return localStored;
+        }
+
+        // Backward compatibility for older session-scoped key.
         const stored = sessionStorage.getItem(LOGIN_TAB_STORAGE_KEY) || '';
         if (isValidLoginTabId(stored)) {
             return stored;
@@ -1526,11 +1483,19 @@ function persistLoginTabId(tabId) {
 
     try {
         if (!isTabPreferenceEnabled()) {
+            localStorage.removeItem(getLoginTabPreferenceKey());
             sessionStorage.removeItem(LOGIN_TAB_STORAGE_KEY);
+            if (window.UserPrefs?.setTabSelection) {
+                window.UserPrefs.setTabSelection(getLoginTabPreferenceKey(), '');
+            }
             return;
         }
 
+        localStorage.setItem(getLoginTabPreferenceKey(), tabId);
         sessionStorage.setItem(LOGIN_TAB_STORAGE_KEY, tabId);
+        if (window.UserPrefs?.setTabSelection) {
+            window.UserPrefs.setTabSelection(getLoginTabPreferenceKey(), tabId);
+        }
     } catch (error) {
         console.warn('Failed to persist login tab preference', error);
     }

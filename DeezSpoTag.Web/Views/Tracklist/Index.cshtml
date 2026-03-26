@@ -1554,6 +1554,35 @@ async function fetchJson(url, options) {
     return JSON.parse(trimmed);
 }
 
+function delayAsync(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldRetryTransientResponse(status) {
+    return status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
+async function fetchWithTransientRetry(url, options = {}, retryOptions = {}) {
+    const maxRetries = Number.isFinite(retryOptions.maxRetries) ? Math.max(0, retryOptions.maxRetries) : 2;
+    const baseDelayMs = Number.isFinite(retryOptions.baseDelayMs) ? Math.max(0, retryOptions.baseDelayMs) : 250;
+    let attempt = 0;
+    while (true) {
+        try {
+            const response = await fetch(url, options);
+            if (response.ok || !shouldRetryTransientResponse(response.status) || attempt >= maxRetries) {
+                return response;
+            }
+        } catch (error) {
+            if (attempt >= maxRetries) {
+                throw error;
+            }
+        }
+
+        attempt += 1;
+        await delayAsync(baseDelayMs * attempt);
+    }
+}
+
 function shouldUseUnifiedTracklistView(tracks) {
     if (tracklistType === 'show') {
         return false;
@@ -2460,7 +2489,10 @@ async function loadSpotifyTracklist() {
         await loadSpotifyTrendingTracklist();
         return;
     }
-    const response = await fetch(`/api/spotify/tracklist?url=${encodeURIComponent(spotifyUrl)}`);
+    const response = await fetchWithTransientRetry(
+        `/api/spotify/tracklist?url=${encodeURIComponent(spotifyUrl)}`,
+        {},
+        { maxRetries: 3, baseDelayMs: 300 });
     if (!response.ok) {
         throw new Error(`Failed to load Spotify tracklist (HTTP ${response.status})`);
     }
@@ -2481,7 +2513,10 @@ async function loadSpotifyTrendingTracklist() {
     const qs = new URLSearchParams();
     qs.set('id', tracklistId || '');
     qs.set('limit', '50');
-    const response = await fetch(`/api/spotify/tracklist/trending?${qs.toString()}`);
+    const response = await fetchWithTransientRetry(
+        `/api/spotify/tracklist/trending?${qs.toString()}`,
+        {},
+        { maxRetries: 3, baseDelayMs: 300 });
     if (!response.ok) {
         throw new Error(`Failed to load Spotify trending tracklist (HTTP ${response.status})`);
     }
@@ -2497,7 +2532,10 @@ async function loadSpotifyTrendingTracklist() {
 }
 
 async function loadSpotifyPlaylistTracklist(spotifyUrl) {
-    const response = await fetch(`/api/spotify/tracklist/playlist/metadata?url=${encodeURIComponent(spotifyUrl)}`);
+    const response = await fetchWithTransientRetry(
+        `/api/spotify/tracklist/playlist/metadata?url=${encodeURIComponent(spotifyUrl)}`,
+        {},
+        { maxRetries: 3, baseDelayMs: 300 });
     if (!response.ok) {
         throw new Error(`Failed to load Spotify playlist metadata (HTTP ${response.status})`);
     }
@@ -2545,7 +2583,10 @@ async function loadSpotifyPlaylistTracksPage() {
         qs.set('limit', spotifyLazyState.limit);
         qs.set('hydrate', spotifyLazyState.trackSource !== 'librespot');
 
-        const response = await fetch(`/api/spotify/tracklist/playlist/tracks?${qs.toString()}`);
+        const response = await fetchWithTransientRetry(
+            `/api/spotify/tracklist/playlist/tracks?${qs.toString()}`,
+            {},
+            { maxRetries: 3, baseDelayMs: 300 });
         if (!response.ok) {
             throw new Error(`Failed to load Spotify playlist tracks (HTTP ${response.status})`);
         }
@@ -4172,6 +4213,25 @@ async function updateMonitorButtonState() {
                 ? 'Monitor Recommendations'
                 : (isPodcastShow ? 'Monitor Podcast' : 'Monitor Playlist')));
     const headerActions = document.getElementById('tracklist-header-actions');
+    const hideMonitorAndHeaderActions = () => {
+        if (monitorMenu) {
+            monitorMenu.style.display = 'none';
+            closeMonitorMenu();
+        }
+        if (headerActions) {
+            headerActions.style.display = 'none';
+            closeTracklistHeaderActionsMenu();
+        }
+    };
+    const applyDefaultMonitorState = (disabled) => {
+        if (monitorLabel) {
+            monitorLabel.textContent = monitorDefaultLabel;
+        }
+        monitorButton.disabled = disabled;
+        hideMonitorAndHeaderActions();
+        setIgnoreVisibility(false);
+    };
+
     if (!monitorButton || !currentTracklistMeta) {
         if (monitorButton) {
             if (monitorLabel) {
@@ -4179,32 +4239,13 @@ async function updateMonitorButtonState() {
             }
             monitorButton.disabled = true;
         }
-        if (monitorMenu) {
-            monitorMenu.style.display = 'none';
-            closeMonitorMenu();
-        }
-        if (headerActions) {
-            headerActions.style.display = 'none';
-            closeTracklistHeaderActionsMenu();
-        }
+        hideMonitorAndHeaderActions();
         setIgnoreVisibility(false);
         return;
     }
 
     if (!isMonitorable) {
-        if (monitorLabel) {
-            monitorLabel.textContent = monitorDefaultLabel;
-        }
-        monitorButton.disabled = true;
-        if (monitorMenu) {
-            monitorMenu.style.display = 'none';
-            closeMonitorMenu();
-        }
-        if (headerActions) {
-            headerActions.style.display = 'none';
-            closeTracklistHeaderActionsMenu();
-        }
-        setIgnoreVisibility(false);
+        applyDefaultMonitorState(true);
         return;
     }
 
@@ -4223,34 +4264,10 @@ async function updateMonitorButtonState() {
             }
             setIgnoreVisibility(true);
         } else {
-            if (monitorLabel) {
-                monitorLabel.textContent = monitorDefaultLabel;
-            }
-            monitorButton.disabled = false;
-            if (monitorMenu) {
-                monitorMenu.style.display = 'none';
-                closeMonitorMenu();
-            }
-            if (headerActions) {
-                headerActions.style.display = 'none';
-                closeTracklistHeaderActionsMenu();
-            }
-            setIgnoreVisibility(false);
+            applyDefaultMonitorState(false);
         }
     } catch {
-        if (monitorLabel) {
-            monitorLabel.textContent = monitorDefaultLabel;
-        }
-        monitorButton.disabled = false;
-        if (monitorMenu) {
-            monitorMenu.style.display = 'none';
-            closeMonitorMenu();
-        }
-        if (headerActions) {
-            headerActions.style.display = 'none';
-            closeTracklistHeaderActionsMenu();
-        }
-        setIgnoreVisibility(false);
+        applyDefaultMonitorState(false);
     }
 }
 
@@ -6581,89 +6598,59 @@ async function downloadTracks(trackElements) {
             });
 
             let filtered = tracksPayload;
+            const buildExternalIntent = (track, sourceService, sourceUrl, overrides = {}) => ({
+                sourceService: sourceService,
+                sourceUrl: sourceUrl,
+                isrc: track.isrc,
+                title: track.title,
+                artist: track.artist,
+                album: track.album,
+                albumArtist: track.albumArtist,
+                cover: track.cover,
+                durationMs: track.durationSeconds * 1000,
+                position: track.position,
+                ...overrides
+            });
 
             if (downloadSource === 'tidal') {
                 filtered = tracksPayload
                     .filter(t => t.sourceUrl)
-                    .map(t => ({
-                        sourceService: 'tidal',
-                        sourceUrl: t.sourceUrl,
-                        isrc: t.isrc,
-                        title: t.title,
-                        artist: t.artist,
-                        album: t.album,
-                        albumArtist: t.albumArtist,
-                        cover: t.cover,
-                        durationMs: t.durationSeconds * 1000,
-                        position: t.position
-                    }));
+                    .map(t => buildExternalIntent(t, 'tidal', t.sourceUrl));
             } else if (downloadSource === 'amazon') {
                 filtered = tracksPayload
                     .filter(t => t.sourceUrl)
-                    .map(t => ({
-                        sourceService: 'amazon',
-                        sourceUrl: t.sourceUrl,
-                        isrc: t.isrc,
-                        title: t.title,
-                        artist: t.artist,
-                        album: t.album,
-                        albumArtist: t.albumArtist,
-                        cover: t.cover,
-                        durationMs: t.durationSeconds * 1000,
-                        position: t.position
-                    }));
+                    .map(t => buildExternalIntent(t, 'amazon', t.sourceUrl));
             } else if (downloadSource === 'qobuz') {
                 filtered = tracksPayload
                     .filter(t => t.sourceUrl || t.isrc)
-                    .map(t => ({
-                        sourceService: 'qobuz',
-                        sourceUrl: t.sourceUrl || undefined,
-                        isrc: t.isrc || undefined,
-                        title: t.title,
-                        artist: t.artist,
-                        album: t.album,
-                        albumArtist: t.albumArtist,
-                        cover: t.cover,
-                        durationMs: t.durationSeconds * 1000,
-                        position: t.position
-                    }));
+                    .map(t => buildExternalIntent(
+                        t,
+                        'qobuz',
+                        t.sourceUrl || undefined,
+                        { isrc: t.isrc || undefined }));
             } else if (downloadSource === 'spotify') {
                 filtered = tracksPayload.map(t => {
                     const spotifyId = t.spotifyId || (t.sourceUrl ? (t.sourceUrl.match(/(?:spotify:track:|open\.spotify\.com\/track\/)([A-Za-z0-9]+)/i) || [])[1] || '' : '');
                     const sourceUrl = t.sourceUrl || (spotifyId ? `https://open.spotify.com/track/${spotifyId}` : '');
-                    return {
-                        sourceService: 'spotify',
-                        sourceUrl: sourceUrl,
-                        spotifyId: spotifyId,
-                        deezerId: t.deezerId || '',
-                        isrc: t.isrc,
-                        title: t.title,
-                        artist: t.artist,
-                        album: t.album,
-                        albumArtist: t.albumArtist,
-                        cover: t.cover,
-                        durationMs: t.durationSeconds * 1000,
-                        position: t.position
-                    };
+                    return buildExternalIntent(
+                        t,
+                        'spotify',
+                        sourceUrl,
+                        {
+                            spotifyId: spotifyId,
+                            deezerId: t.deezerId || ''
+                        });
                 });
             } else if (downloadSource === 'deezer') {
                 filtered = tracksPayload
                     .map(t => {
                         const deezerId = String(t.deezerId || '').trim();
                         const sourceUrl = t.sourceUrl || (/^\d+$/.test(deezerId) ? `https://www.deezer.com/track/${deezerId}` : '');
-                        return {
-                            sourceService: 'deezer',
-                            sourceUrl: sourceUrl,
-                            deezerId: deezerId || '',
-                            isrc: t.isrc,
-                            title: t.title,
-                            artist: t.artist,
-                            album: t.album,
-                            albumArtist: t.albumArtist,
-                            cover: t.cover,
-                            durationMs: t.durationSeconds * 1000,
-                            position: t.position
-                        };
+                        return buildExternalIntent(
+                            t,
+                            'deezer',
+                            sourceUrl,
+                            { deezerId: deezerId || '' });
                     })
                     .filter(t => t.sourceUrl);
             } else {

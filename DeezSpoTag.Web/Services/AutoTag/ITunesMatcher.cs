@@ -62,20 +62,9 @@ public sealed class ItunesMatcher
             }
         }
 
-        var match = MatchTracks(info, candidates, config);
-        if (match == null)
-        {
-            return null;
-        }
-
-        return new AutoTagMatchResult { Accuracy = match.Accuracy, Track = ToAutoTagTrack(match.Track) };
-    }
-
-    private static MatchCandidate? MatchTracks(AutoTagAudioInfo info, List<ItunesTrackInfo> tracks, AutoTagMatchingConfig config)
-    {
-        var match = OneTaggerMatching.MatchTrack(
+        return AutoTagMatchSelection.BuildMatchResult(
             info,
-            tracks,
+            candidates,
             config,
             new OneTaggerMatching.TrackSelectors<ItunesTrackInfo>(
                 track => track.Title,
@@ -83,14 +72,9 @@ public sealed class ItunesMatcher
                 track => track.Artists,
                 track => track.Duration,
                 track => track.ReleaseDate),
+            ToAutoTagTrack,
             matchArtist: true);
-
-        return match == null
-            ? null
-            : new MatchCandidate(match.Accuracy, match.Track);
     }
-
-    private sealed record MatchCandidate(double Accuracy, ItunesTrackInfo Track);
 
     private static AutoTagTrack ToAutoTagTrack(ItunesTrackInfo track)
     {

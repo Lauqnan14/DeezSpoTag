@@ -889,7 +889,9 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
         }
 
         var finalErrorId = error.ErrorId + "NoAlternative";
-        var finalMessage = ErrorMessages.Messages.GetValueOrDefault(finalErrorId, error.Message);
+        var finalMessage = DeezSpoTag.Core.Exceptions.ErrorMessages.HasMessage(finalErrorId)
+            ? DeezSpoTag.Core.Exceptions.ErrorMessages.GetMessage(finalErrorId)
+            : error.Message;
         return BuildTrackErrorResult(finalMessage, finalErrorId, itemData);
     }
 

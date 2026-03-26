@@ -2,7 +2,6 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using DeezSpoTag.Services.Utils;
-using System.Globalization;
 
 namespace DeezSpoTag.Services.Library;
 
@@ -45,24 +44,13 @@ LIMIT 1;";
             await using var command = new SqliteCommand(sql, connection);
             command.Parameters.AddWithValue(TypeParameter, type);
             command.Parameters.AddWithValue("$source_id", sourceId);
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            if (!await reader.ReadAsync(cancellationToken))
+            var cacheRow = await SqlitePayloadCacheReader.TryReadAsync(command, cancellationToken);
+            if (!cacheRow.Found)
             {
                 return null;
             }
 
-            var payload = reader.GetString(0);
-            var fetchedText = reader.GetString(1);
-            if (!DateTimeOffset.TryParse(
-                    fetchedText,
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.RoundtripKind,
-                    out var fetchedUtc))
-            {
-                fetchedUtc = DateTimeOffset.MinValue;
-            }
-
-            return new SpotifyMetadataCacheEntry(payload, fetchedUtc);
+            return new SpotifyMetadataCacheEntry(cacheRow.PayloadJson, cacheRow.FetchedUtc);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

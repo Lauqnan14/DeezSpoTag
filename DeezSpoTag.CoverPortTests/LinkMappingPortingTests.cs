@@ -5,9 +5,6 @@ namespace DeezSpoTag.CoverPortTests;
 
 public sealed class LinkMappingPortingTests
 {
-    private readonly ExternalLinkClassifier _classifier = new();
-    private readonly DeezerLinkParser _deezerParser = new();
-
     [Theory]
     [InlineData("https://open.spotify.com/track/3AhXZa8sUQht0UEdBJgpGc", ExternalLinkSource.Spotify)]
     [InlineData("https://music.youtube.com/watch?v=dQw4w9WgXcQ", ExternalLinkSource.YouTube)]
@@ -21,7 +18,7 @@ public sealed class LinkMappingPortingTests
     [InlineData("https://www.boomplay.com/songs/123456", ExternalLinkSource.Boomplay)]
     public void Classifier_DetectsKnownSources(string url, ExternalLinkSource expected)
     {
-        var actual = _classifier.Classify(url);
+        var actual = ExternalLinkClassifier.Classify(url);
         Assert.Equal(expected, actual);
     }
 
@@ -33,7 +30,7 @@ public sealed class LinkMappingPortingTests
     [InlineData("https://www.deezer.com/show/143", "show", "143")]
     public void DeezerParser_ParsesTypeAndId(string url, string expectedType, string expectedId)
     {
-        var parsed = _deezerParser.TryParse(url, out var descriptor);
+        var parsed = DeezerLinkParser.TryParse(url, out var descriptor);
 
         Assert.True(parsed);
         Assert.Equal(expectedType, descriptor.Type);
@@ -43,14 +40,14 @@ public sealed class LinkMappingPortingTests
     [Fact]
     public void DeezerParser_RejectsNonDeezerHost()
     {
-        var parsed = _deezerParser.TryParse("https://open.spotify.com/track/3AhXZa8sUQht0UEdBJgpGc", out _);
+        var parsed = DeezerLinkParser.TryParse("https://open.spotify.com/track/3AhXZa8sUQht0UEdBJgpGc", out _);
         Assert.False(parsed);
     }
 
     [Fact]
     public void DeezerParser_RejectsNonNumericIds()
     {
-        var parsed = _deezerParser.TryParse("https://www.deezer.com/track/pl.d25f5d1181894928af76c85c967f8f31", out _);
+        var parsed = DeezerLinkParser.TryParse("https://www.deezer.com/track/pl.d25f5d1181894928af76c85c967f8f31", out _);
         Assert.False(parsed);
     }
 }

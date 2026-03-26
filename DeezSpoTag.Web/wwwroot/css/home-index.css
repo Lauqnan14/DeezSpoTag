@@ -415,16 +415,16 @@
     letter-spacing: 0.01em;
 }
 .playlist-badge--public {
-    background: rgba(28, 163, 74, 0.12);
-    color: #1c7e46;
+    background: rgba(22, 112, 57, 0.5);
+    color: #dcffea;
 }
 .playlist-badge--private {
-    background: rgba(222, 84, 84, 0.12);
-    color: #b44949;
+    background: rgba(146, 39, 39, 0.5);
+    color: #ffe2e2;
 }
 .playlist-badge--collab {
-    background: rgba(46, 104, 208, 0.12);
-    color: #2b5bb8;
+    background: rgba(34, 82, 168, 0.5);
+    color: #e0ecff;
 }
 .discover-card {
     width: 100%;

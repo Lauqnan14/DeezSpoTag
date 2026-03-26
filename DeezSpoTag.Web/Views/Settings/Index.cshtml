@@ -6,6 +6,7 @@
 @section Styles {
 <link rel="stylesheet" href="~/css/settings.css" />
 <link rel="stylesheet" href="~/css/library.css" />
+<link rel="stylesheet" href="~/css/dropdown-select.css" />
 <style>
 .settings-page {
     padding: 20px;
@@ -582,67 +583,6 @@
 
 .server-library-include-cell {
     text-align: center;
-}
-
-.dropdown-select {
-    position: relative;
-    display: inline-flex;
-    width: 100%;
-}
-
-.dropdown-trigger {
-    width: 100%;
-    text-align: left;
-    background: var(--bg-secondary);
-    color: var(--text-primary);
-    border: 1px solid var(--border-secondary);
-    padding: 10px 12px;
-    border-radius: 6px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-}
-
-.dropdown-trigger::after {
-    content: "▾";
-    color: var(--text-muted);
-    font-size: 12px;
-}
-
-.dropdown-menu {
-    position: absolute;
-    top: calc(100% + 6px);
-    left: 0;
-    right: 0;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-secondary);
-    border-radius: 8px;
-    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
-    padding: 6px;
-    display: none;
-    z-index: 20;
-}
-
-.dropdown-menu.open {
-    display: block;
-}
-
-.dropdown-option {
-    width: 100%;
-    background: transparent;
-    border: 0;
-    color: var(--text-primary);
-    text-align: left;
-    padding: 8px 10px;
-    border-radius: 6px;
-    cursor: pointer;
-}
-
-.dropdown-option:hover,
-.dropdown-option[aria-selected="true"] {
-    background: var(--bg-tertiary);
 }
 
 .lyrics-order-hint,
@@ -1422,35 +1362,7 @@ const engineQualityOptions = @Html.Raw(System.Text.Json.JsonSerializer.Serialize
             kvp => kvp.Value.Select(option => new { value = option.Value, label = option.Label }).ToList(),
             StringComparer.OrdinalIgnoreCase)));
 
-function revealMaterialIconsWhenReady() {
-    const settingsPage = document.querySelector('.settings-page.material-icons-pending');
-    if (!settingsPage) {
-        return;
-    }
-
-    const reveal = () => settingsPage.classList.remove('material-icons-pending');
-    if (!document.fonts || typeof document.fonts.load !== 'function') {
-        reveal();
-        return;
-    }
-
-    if (document.fonts.check('1em "Material Icons"')) {
-        reveal();
-        return;
-    }
-
-    document.fonts.load('1em "Material Icons"')
-        .then(() => {
-            if (document.fonts.check('1em "Material Icons"')) {
-                reveal();
-            }
-        })
-        .catch(() => {
-            // Keep hidden rather than showing icon-name fallback text.
-        });
-}
-
-revealMaterialIconsWhenReady();
+window.DeezSpoTagRevealMaterialIconsWhenReady('.settings-page.material-icons-pending');
 
 document.addEventListener('DOMContentLoaded', function() {
     initSettings();

@@ -15,7 +15,7 @@ public sealed class AppleDownloadApiController : ControllerBase
 {
     private const string AppleSource = "apple";
     private const string AtmosQuality = "atmos";
-    private static readonly bool AppleDisabled = ReadAppleDisabled();
+    private static readonly bool AppleDisabled = AppleCatalogJsonHelper.IsAppleDisabledByEnvironment();
     private readonly ILogger<AppleDownloadApiController> _logger;
     private readonly DownloadIntentService _intentService;
     private readonly DownloadOrchestrationService _orchestrationService;
@@ -28,19 +28,6 @@ public sealed class AppleDownloadApiController : ControllerBase
         _logger = logger;
         _intentService = intentService;
         _orchestrationService = orchestrationService;
-    }
-
-    private static bool ReadAppleDisabled()
-    {
-        var value = Environment.GetEnvironmentVariable("DEEZSPOTAG_APPLE_DISABLED");
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-
-        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
-            || value.Equals("true", StringComparison.OrdinalIgnoreCase)
-            || value.Equals("yes", StringComparison.OrdinalIgnoreCase);
     }
 
     [HttpPost("download")]

@@ -18,18 +18,7 @@ public sealed class JunoDownloadMatcher
             return null;
         }
 
-        var match = MatchTracks(info, tracks, config);
-        if (match == null)
-        {
-            return null;
-        }
-
-        return new AutoTagMatchResult { Accuracy = match.Accuracy, Track = ToAutoTagTrack(match.Track) };
-    }
-
-    private static MatchCandidate? MatchTracks(AutoTagAudioInfo info, List<JunoDownloadTrackInfo> tracks, AutoTagMatchingConfig config)
-    {
-        var match = OneTaggerMatching.MatchTrack(
+        return AutoTagMatchSelection.BuildMatchResult(
             info,
             tracks,
             config,
@@ -39,9 +28,8 @@ public sealed class JunoDownloadMatcher
                 track => track.Artists,
                 track => track.Duration,
                 track => track.ReleaseDate),
+            ToAutoTagTrack,
             matchArtist: true);
-
-        return match == null ? null : new MatchCandidate(match.Accuracy, match.Track);
     }
 
     private static AutoTagTrack ToAutoTagTrack(JunoDownloadTrackInfo track)
@@ -66,5 +54,4 @@ public sealed class JunoDownloadMatcher
         };
     }
 
-    private sealed record MatchCandidate(double Accuracy, JunoDownloadTrackInfo Track);
 }

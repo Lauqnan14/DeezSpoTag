@@ -75,7 +75,8 @@ const libraryState = {
     },
     localTopSongTrackIndex: null,
     localTopSongTrackArtistId: null,
-    localTopSongTrackIndexPromise: null
+    localTopSongTrackIndexPromise: null,
+    folderSaveInProgress: false
 };
 
 const libraryTrackSummaryCache = new Map();
@@ -1839,11 +1840,14 @@ function applyLibraryScanStatusSuccess(elements, status, stats) {
         if (status?.running) {
             const processed = status?.progress?.processedFiles ?? 0;
             const total = status?.progress?.totalFiles ?? 0;
-            lastScanEl.textContent = total > 0
-                ? `Running ${processed.toLocaleString()}/${total.toLocaleString()}`
-                : (processed > 0
-                    ? `Running ${processed.toLocaleString()} files`
-                    : 'Running...');
+            let runningLabel = 'Running...';
+            if (total > 0) {
+                runningLabel = `Running ${processed.toLocaleString()}/${total.toLocaleString()}`;
+            } else if (processed > 0) {
+                runningLabel = `Running ${processed.toLocaleString()} files`;
+            }
+
+            lastScanEl.textContent = runningLabel;
         } else {
             lastScanEl.textContent = formatTimestamp(status?.lastRunUtc);
         }
@@ -2375,39 +2379,50 @@ function getSelectedLibraryViewFolder() {
 
 async function runLocalScan(refreshImages = false, reset = false) {
     try {
-        const params = new URLSearchParams();
         const selectedFolderId = getSelectedLibraryViewFolderId();
-        if (refreshImages) {
-            params.set('refreshImages', 'true');
-        }
-        if (reset) {
-            params.set('reset', 'true');
-        }
-        if (selectedFolderId !== null) {
-            params.set('folderId', String(selectedFolderId));
-        }
-        const suffix = params.toString();
-        const url = suffix ? `/api/library/scan?${suffix}` : '/api/library/scan';
+        const url = buildLibraryScanUrl(selectedFolderId, refreshImages, reset);
         const scanStartedAt = Date.now();
-        showToast(selectedFolderId !== null ? 'Folder scan started.' : 'Library scan started.');
+        showToast(selectedFolderId === null ? 'Library scan started.' : 'Folder scan started.');
         await fetchJson(url, { method: 'POST', keepalive: true });
         waitForScanCompletion(scanStartedAt);
-        if (reset && refreshImages) {
-            showToast(selectedFolderId !== null
-                ? 'Folder data reset and images refreshed.'
-                : 'Library data reset and images refreshed.');
-        } else if (reset) {
-            showToast(selectedFolderId !== null
-                ? 'Folder data reset and refreshed.'
-                : 'Library data reset and refreshed.');
-        } else {
-            showToast(refreshImages
-                ? (selectedFolderId !== null ? 'Folder images refreshed.' : 'Images refreshed.')
-                : (selectedFolderId !== null ? 'Folder refreshed.' : 'Library refreshed.'));
-        }
+        showToast(resolveLibraryScanSuccessMessage(selectedFolderId, refreshImages, reset));
     } catch (error) {
         showToast(`Refresh failed: ${error.message}`, true);
     }
+}
+
+function buildLibraryScanUrl(selectedFolderId, refreshImages, reset) {
+    const params = new URLSearchParams();
+    if (refreshImages) {
+        params.set('refreshImages', 'true');
+    }
+    if (reset) {
+        params.set('reset', 'true');
+    }
+    if (selectedFolderId !== null) {
+        params.set('folderId', String(selectedFolderId));
+    }
+
+    const suffix = params.toString();
+    return suffix ? `/api/library/scan?${suffix}` : '/api/library/scan';
+}
+
+function resolveLibraryScanSuccessMessage(selectedFolderId, refreshImages, reset) {
+    if (reset && refreshImages) {
+        return selectedFolderId === null
+            ? 'Library data reset and images refreshed.'
+            : 'Folder data reset and images refreshed.';
+    }
+    if (reset) {
+        return selectedFolderId === null
+            ? 'Library data reset and refreshed.'
+            : 'Folder data reset and refreshed.';
+    }
+    if (selectedFolderId !== null) {
+        return refreshImages ? 'Folder images refreshed.' : 'Folder refreshed.';
+    }
+
+    return refreshImages ? 'Images refreshed.' : 'Library refreshed.';
 }
 
 async function waitForScanCompletion(startedAtMs) {
@@ -3914,22 +3929,27 @@ function getSpotifySyncSelectionState(artistId) {
     const backgroundImagePath = requestedBackground
         ? resolveManagedArtistVisualPath(artistId, prefs.backgroundPath, serverBackgroundPath)
         : null;
-    const avatarVisualUrl = requestedAvatar
-        ? normalizeArtistVisualUrl(
+    let avatarVisualUrl = null;
+    if (requestedAvatar) {
+        const avatarPathUrl = avatarImagePath ? buildLibraryImageUrl(avatarImagePath, 320) : '';
+        avatarVisualUrl = normalizeArtistVisualUrl(
             prefs.avatarUrl
-            || (avatarImagePath ? buildLibraryImageUrl(avatarImagePath, 320) : '')
+            || avatarPathUrl
             || selectImage(libraryState.currentSpotifyArtist?.images, 'medium')
             || selectImage(libraryState.currentSpotifyArtist?.images, 'small')
-        )
-        : null;
-    const backgroundVisualUrl = requestedBackground
-        ? normalizeArtistVisualUrl(
+        );
+    }
+
+    let backgroundVisualUrl = null;
+    if (requestedBackground) {
+        const backgroundPathUrl = backgroundImagePath ? buildLibraryImageUrl(backgroundImagePath) : '';
+        backgroundVisualUrl = normalizeArtistVisualUrl(
             prefs.backgroundUrl
-            || (backgroundImagePath ? buildLibraryImageUrl(backgroundImagePath) : '')
+            || backgroundPathUrl
             || libraryState.artistVisuals.headerImageUrl
             || selectImage(libraryState.currentSpotifyArtist?.images, 'large')
-        )
-        : null;
+        );
+    }
 
     return {
         requestedAvatar,
@@ -6359,6 +6379,10 @@ function wireExclusiveFolderDestinationRoles() {
 }
 
 async function saveFolder() {
+    if (libraryState.folderSaveInProgress) {
+        return;
+    }
+
     const folderInput = readFolderModalInput();
     if (!folderInput.rootPath) {
         showToast('Folder path is required.', true);
@@ -6370,6 +6394,8 @@ async function saveFolder() {
         return;
     }
 
+    libraryState.folderSaveInProgress = true;
+    updateSaveFolderState();
     try {
         const finalQuality = resolveFolderDestinationQuality(folderInput);
         const folder = await fetchJson(folderInput.isEdit ? `/api/library/folders/${folderInput.editId}` : '/api/library/folders', {
@@ -6395,6 +6421,9 @@ async function saveFolder() {
         showToast(folderInput.isEdit ? 'Folder updated.' : 'Folder saved.');
     } catch (error) {
         showToast(`Failed to save folder: ${error.message}`, true);
+    } finally {
+        libraryState.folderSaveInProgress = false;
+        updateSaveFolderState();
     }
 }
 
@@ -6416,7 +6445,7 @@ function readFolderModalInput() {
         isEdit,
         existingFolder,
         rootPath,
-        displayName: document.getElementById('folderName').value.trim() || rootPath.split('/').pop(),
+        displayName: document.getElementById('folderName').value.trim() || deriveFolderDisplayName(rootPath),
         enabled,
         desiredQuality: document.getElementById('folderQuality')?.value || '27',
         useAtmosDestination: document.getElementById('folderAtmosDestination')?.checked === true,
@@ -6426,6 +6455,35 @@ function readFolderModalInput() {
         convertFormat: convertEnabled ? normalizeFolderConvertFormatValue(document.getElementById('folderConvertFormat')?.value || '') : null,
         convertBitrate: convertEnabled ? normalizeFolderConvertBitrateValue(document.getElementById('folderConvertBitrate')?.value || '') : null
     };
+}
+
+function deriveFolderDisplayName(rootPath) {
+    const normalized = trimTrailingPathSeparators(String(rootPath || '').trim());
+    if (!normalized) {
+        return '';
+    }
+
+    const normalizedWithForwardSlashes = normalized.replaceAll('\\', '/');
+    const lastSeparatorIndex = normalizedWithForwardSlashes.lastIndexOf('/');
+    if (lastSeparatorIndex < 0) {
+        return normalizedWithForwardSlashes;
+    }
+
+    return normalizedWithForwardSlashes.slice(lastSeparatorIndex + 1) || normalized;
+}
+
+function trimTrailingPathSeparators(path) {
+    let end = path.length;
+    while (end > 0) {
+        const char = path.charAt(end - 1);
+        if (char === '/' || char === '\\') {
+            end -= 1;
+            continue;
+        }
+        break;
+    }
+
+    return end === path.length ? path : path.slice(0, end);
 }
 
 function getFolderPathConflictMessage(rootPath) {
@@ -6471,15 +6529,24 @@ function updateSaveFolderState() {
     }
 
     const rootPath = pathInput.value.trim();
-    let isBlocked = false;
+    const hasPath = rootPath.length > 0;
+    const conflictMessage = getFolderPathConflictMessage(rootPath);
+    const isBusy = libraryState.folderSaveInProgress === true;
 
-    if (libraryState.downloadLocation && rootPath.length > 0) {
-        const normalizedRoot = normalizePath(rootPath);
-        const normalizedDownload = normalizePath(libraryState.downloadLocation);
-        isBlocked = normalizedRoot === normalizedDownload;
+    saveButton.disabled = !hasPath || isBusy;
+    saveButton.setAttribute('aria-disabled', saveButton.disabled ? 'true' : 'false');
+
+    if (isBusy) {
+        saveButton.title = 'Saving folder...';
+        return;
     }
 
-    saveButton.disabled = rootPath.length === 0 || isBlocked;
+    if (conflictMessage) {
+        saveButton.title = `${conflictMessage} Click Save to view details.`;
+        return;
+    }
+
+    saveButton.removeAttribute('title');
 }
 
 async function loadDownloadLocation() {
@@ -6521,6 +6588,10 @@ function bindFolderPathInput(input, action) {
         return;
     }
     input.addEventListener('input', action);
+    input.addEventListener('change', action);
+    input.addEventListener('paste', () => {
+        globalThis.setTimeout(action, 0);
+    });
 }
 
 function bindFolderChangeInput(input, action) {
@@ -6582,8 +6653,7 @@ function bindFolderPathBrowser(elements) {
         elements.folderPathInput.value = selected;
         const folderNameInput = document.getElementById('folderName');
         if (folderNameInput && !folderNameInput.value.trim()) {
-            const parts = selected.split(/[\\/]+/).filter(Boolean);
-            folderNameInput.value = parts[parts.length - 1] || selected;
+            folderNameInput.value = deriveFolderDisplayName(selected) || selected;
         }
         updateSaveFolderState();
     });
@@ -6930,46 +7000,7 @@ function bindFolderCombinedToggle(wrapper, folder, canEnableAutoTag) {
 
         enabledToggle.disabled = true;
         try {
-            if (enabled) {
-                if (!previousLibraryEnabled) {
-                    await setFolderEnabled(folder.id, true, {
-                        reload: false,
-                        refreshArtists: false,
-                        refreshScanStatus: false
-                    });
-                }
-
-                try {
-                    const updatedAutoTag = await setFolderAutoTagEnabled(folder.id, true);
-                    folder.autoTagEnabled = typeof updatedAutoTag?.autoTagEnabled === 'boolean'
-                        ? updatedAutoTag.autoTagEnabled
-                        : true;
-                } catch (error) {
-                    if (!previousLibraryEnabled) {
-                        await setFolderEnabled(folder.id, false, {
-                            reload: false,
-                            refreshArtists: false,
-                            refreshScanStatus: false
-                        });
-                    }
-                    throw error;
-                }
-
-                folder.enabled = true;
-                showToast('Folder enabled for Library + AutoTag.');
-            } else {
-                await setFolderAutoTagEnabled(folder.id, false);
-                if (previousLibraryEnabled) {
-                    await setFolderEnabled(folder.id, false, {
-                        reload: false,
-                        refreshArtists: false,
-                        refreshScanStatus: false
-                    });
-                }
-                folder.enabled = false;
-                folder.autoTagEnabled = false;
-                showToast('Folder disabled for Library + AutoTag.');
-            }
+            await applyCombinedFolderToggleState(folder, enabled, previousLibraryEnabled);
 
             await Promise.all([loadFolders(), loadArtists(), loadLibraryScanStatus()]);
         } catch (error) {
@@ -6982,6 +7013,58 @@ function bindFolderCombinedToggle(wrapper, folder, canEnableAutoTag) {
             enabledToggle.disabled = false;
         }
     });
+}
+
+async function applyCombinedFolderToggleState(folder, enabled, previousLibraryEnabled) {
+    if (enabled) {
+        await enableCombinedFolderToggleState(folder, previousLibraryEnabled);
+        showToast('Folder enabled for Library + AutoTag.');
+        return;
+    }
+
+    await disableCombinedFolderToggleState(folder, previousLibraryEnabled);
+    showToast('Folder disabled for Library + AutoTag.');
+}
+
+async function enableCombinedFolderToggleState(folder, previousLibraryEnabled) {
+    if (!previousLibraryEnabled) {
+        await setFolderEnabled(folder.id, true, {
+            reload: false,
+            refreshArtists: false,
+            refreshScanStatus: false
+        });
+    }
+
+    try {
+        const updatedAutoTag = await setFolderAutoTagEnabled(folder.id, true);
+        folder.autoTagEnabled = typeof updatedAutoTag?.autoTagEnabled === 'boolean'
+            ? updatedAutoTag.autoTagEnabled
+            : true;
+    } catch (error) {
+        if (!previousLibraryEnabled) {
+            await setFolderEnabled(folder.id, false, {
+                reload: false,
+                refreshArtists: false,
+                refreshScanStatus: false
+            });
+        }
+        throw error;
+    }
+
+    folder.enabled = true;
+}
+
+async function disableCombinedFolderToggleState(folder, previousLibraryEnabled) {
+    await setFolderAutoTagEnabled(folder.id, false);
+    if (previousLibraryEnabled) {
+        await setFolderEnabled(folder.id, false, {
+            reload: false,
+            refreshArtists: false,
+            refreshScanStatus: false
+        });
+    }
+    folder.enabled = false;
+    folder.autoTagEnabled = false;
 }
 
 function bindFolderProfileSelection(wrapper, folder, getCurrentProfile, setCurrentProfile, currentSchedule) {
@@ -7112,11 +7195,12 @@ function computeFolderRowViewModel(folder, context) {
     const canEnableAutoTag = !requiresProfileForAutoTag || hasAssignedProfile;
     const currentAutoTagEnabled = folder.autoTagEnabled !== false;
     const currentCombinedEnabled = currentLibraryEnabled && currentAutoTagEnabled;
-    const combinedToggleTitle = currentCombinedEnabled
-        ? 'Disable this folder for Library indexing and AutoTag.'
-        : canEnableAutoTag
-        ? 'Enable this folder for Library indexing and AutoTag.'
-        : 'Assign an AutoTag profile first (music folders only).';
+    let combinedToggleTitle = 'Assign an AutoTag profile first (music folders only).';
+    if (currentCombinedEnabled) {
+        combinedToggleTitle = 'Disable this folder for Library indexing and AutoTag.';
+    } else if (canEnableAutoTag) {
+        combinedToggleTitle = 'Enable this folder for Library indexing and AutoTag.';
+    }
     const convertEnabled = folder.convertEnabled === true;
     const convertFormat = convertEnabled ? normalizeFolderConvertFormatValue(folder.convertFormat) : null;
     const convertBitrate = convertEnabled ? normalizeFolderConvertBitrateValue(folder.convertBitrate) : null;
@@ -8153,6 +8237,59 @@ function normalizeSoundtrackCategory(category) {
     return String(category || '').trim().toLowerCase() === 'tv_show' ? 'tv_show' : 'movie';
 }
 
+function isTabPreferenceEnabled() {
+    const stored = localStorage.getItem('tabs-preference-enabled');
+    if (stored === null || stored === '') {
+        return true;
+    }
+
+    return stored === 'true';
+}
+
+function getSoundtrackTabPreferenceKey() {
+    return `tabs:last:${globalThis.location.pathname}:soundtrackSubTabs`;
+}
+
+function mapSoundtrackCategoryToTabTarget(category) {
+    return normalizeSoundtrackCategory(category) === 'tv_show'
+        ? '#soundtrack-tv-tab'
+        : '#soundtrack-movies-tab';
+}
+
+function mapSoundtrackTabTargetToCategory(tabTarget) {
+    if (String(tabTarget || '').trim() === '#soundtrack-tv-tab') {
+        return 'tv_show';
+    }
+
+    return 'movie';
+}
+
+function restoreSoundtrackCategoryPreference() {
+    if (!isTabPreferenceEnabled()) {
+        return null;
+    }
+
+    const storedTarget = localStorage.getItem(getSoundtrackTabPreferenceKey());
+    if (!storedTarget) {
+        return null;
+    }
+
+    return mapSoundtrackTabTargetToCategory(storedTarget);
+}
+
+function persistSoundtrackCategoryPreference(category) {
+    if (!isTabPreferenceEnabled()) {
+        return;
+    }
+
+    const storageKey = getSoundtrackTabPreferenceKey();
+    const tabTarget = mapSoundtrackCategoryToTabTarget(category);
+    localStorage.setItem(storageKey, tabTarget);
+    if (globalThis.UserPrefs?.setTabSelection) {
+        globalThis.UserPrefs.setTabSelection(storageKey, tabTarget);
+    }
+}
+
 function getSoundtrackCategoryLabel(category) {
     return normalizeSoundtrackCategory(category) === 'tv_show' ? 'TV Shows' : 'Movies';
 }
@@ -8245,48 +8382,12 @@ function renderSoundtrackFilters(configuration) {
     }
 
     const category = soundtrackState.category;
-    const servers = Array.isArray(configuration?.servers) ? configuration.servers : [];
-    const serverOptions = [];
-
-    servers.forEach(server => {
-        const serverType = String(server?.serverType || '').trim().toLowerCase();
-        if (!serverType) {
-            return;
-        }
-
-        const hasLibraries = getSoundtrackLibraries(configuration, category, serverType).length > 0;
-        if (!hasLibraries) {
-            return;
-        }
-
-        const label = String(server?.displayName || serverType).trim();
-        serverOptions.push({ serverType, label: label || serverType });
-    });
-
-    const validServerTypes = new Set(serverOptions.map(option => option.serverType));
-    if (!validServerTypes.has(soundtrackState.selectedServerType)) {
-        soundtrackState.selectedServerType = '';
-    }
-    if (serverOptions.length === 1) {
-        soundtrackState.selectedServerType = serverOptions[0].serverType;
-    }
-
+    const serverOptions = buildSoundtrackServerOptions(configuration, category);
+    normalizeSelectedSoundtrackServer(serverOptions);
     const selectedServer = soundtrackState.selectedServerType;
-    const selectedServerLabel = serverOptions.find(option => option.serverType === selectedServer)?.label || '';
-    const libraries = getSoundtrackLibraries(configuration, category, selectedServer);
-    const libraryOptions = [];
-    libraries.forEach(library => {
-        const serverHint = selectedServer ? '' : ` (${library.serverLabel})`;
-        libraryOptions.push({
-            libraryId: library.libraryId,
-            label: library.libraryName + serverHint
-        });
-    });
-
-    const validLibraryIds = new Set(libraryOptions.map(option => option.libraryId));
-    if (!validLibraryIds.has(soundtrackState.selectedLibraryId)) {
-        soundtrackState.selectedLibraryId = '';
-    }
+    const selectedServerLabel = resolveSelectedSoundtrackServerLabel(serverOptions, selectedServer);
+    const libraryOptions = buildSoundtrackLibraryOptions(configuration, category, selectedServer);
+    normalizeSelectedSoundtrackLibrary(libraryOptions);
 
     if (elements.serverFilterLabel) {
         elements.serverFilterLabel.textContent = 'Servers';
@@ -8295,17 +8396,7 @@ function renderSoundtrackFilters(configuration) {
         elements.serverFilterGroup.style.display = serverOptions.length >= 2 ? '' : 'none';
     }
 
-    if (serverOptions.length >= 2) {
-        const serverPills = [
-            `<button type="button" class="soundtrack-pill ${soundtrackState.selectedServerType ? '' : 'is-active'}" data-soundtrack-server="">All servers</button>`,
-            ...serverOptions.map(option => `<button type="button" class="soundtrack-pill ${soundtrackState.selectedServerType === option.serverType ? 'is-active' : ''}" data-soundtrack-server="${escapeHtml(option.serverType)}">${escapeHtml(option.label)}</button>`)
-        ];
-        elements.serverPills.innerHTML = serverPills.join('');
-    } else if (serverOptions.length === 0) {
-        elements.serverPills.innerHTML = '<span class="soundtrack-pill is-empty">No servers available</span>';
-    } else {
-        elements.serverPills.innerHTML = '';
-    }
+    elements.serverPills.innerHTML = renderSoundtrackServerPills(serverOptions);
 
     if (elements.libraryFilterLabel) {
         elements.libraryFilterLabel.textContent = selectedServerLabel
@@ -8316,17 +8407,85 @@ function renderSoundtrackFilters(configuration) {
         elements.libraryFilterGroup.style.display = libraryOptions.length >= 2 ? '' : 'none';
     }
 
+    elements.libraryPills.innerHTML = renderSoundtrackLibraryPills(libraryOptions);
+}
+
+function buildSoundtrackServerOptions(configuration, category) {
+    const servers = Array.isArray(configuration?.servers) ? configuration.servers : [];
+    const options = [];
+    servers.forEach(server => {
+        const serverType = String(server?.serverType || '').trim().toLowerCase();
+        if (!serverType) {
+            return;
+        }
+        if (getSoundtrackLibraries(configuration, category, serverType).length === 0) {
+            return;
+        }
+
+        const label = String(server?.displayName || serverType).trim();
+        options.push({ serverType, label: label || serverType });
+    });
+    return options;
+}
+
+function normalizeSelectedSoundtrackServer(serverOptions) {
+    const validServerTypes = new Set(serverOptions.map(option => option.serverType));
+    if (!validServerTypes.has(soundtrackState.selectedServerType)) {
+        soundtrackState.selectedServerType = '';
+    }
+    if (serverOptions.length === 1) {
+        soundtrackState.selectedServerType = serverOptions[0].serverType;
+    }
+}
+
+function resolveSelectedSoundtrackServerLabel(serverOptions, selectedServer) {
+    return serverOptions.find(option => option.serverType === selectedServer)?.label || '';
+}
+
+function buildSoundtrackLibraryOptions(configuration, category, selectedServer) {
+    const libraries = getSoundtrackLibraries(configuration, category, selectedServer);
+    return libraries.map(library => {
+        const serverHint = selectedServer ? '' : ` (${library.serverLabel})`;
+        return {
+            libraryId: library.libraryId,
+            label: library.libraryName + serverHint
+        };
+    });
+}
+
+function normalizeSelectedSoundtrackLibrary(libraryOptions) {
+    const validLibraryIds = new Set(libraryOptions.map(option => option.libraryId));
+    if (!validLibraryIds.has(soundtrackState.selectedLibraryId)) {
+        soundtrackState.selectedLibraryId = '';
+    }
+}
+
+function renderSoundtrackServerPills(serverOptions) {
+    if (serverOptions.length >= 2) {
+        const pills = [
+            `<button type="button" class="soundtrack-pill ${soundtrackState.selectedServerType ? '' : 'is-active'}" data-soundtrack-server="">All servers</button>`,
+            ...serverOptions.map(option => `<button type="button" class="soundtrack-pill ${soundtrackState.selectedServerType === option.serverType ? 'is-active' : ''}" data-soundtrack-server="${escapeHtml(option.serverType)}">${escapeHtml(option.label)}</button>`)
+        ];
+        return pills.join('');
+    }
+    if (serverOptions.length === 0) {
+        return '<span class="soundtrack-pill is-empty">No servers available</span>';
+    }
+    return '';
+}
+
+function renderSoundtrackLibraryPills(libraryOptions) {
     if (libraryOptions.length >= 2) {
-        const libraryPills = [
+        const pills = [
             `<button type="button" class="soundtrack-pill ${soundtrackState.selectedLibraryId ? '' : 'is-active'}" data-soundtrack-library="">All libraries</button>`,
             ...libraryOptions.map(option => `<button type="button" class="soundtrack-pill ${soundtrackState.selectedLibraryId === option.libraryId ? 'is-active' : ''}" data-soundtrack-library="${escapeHtml(option.libraryId)}">${escapeHtml(option.label)}</button>`)
         ];
-        elements.libraryPills.innerHTML = libraryPills.join('');
-    } else if (libraryOptions.length === 0) {
-        elements.libraryPills.innerHTML = '<span class="soundtrack-pill is-empty">No libraries available</span>';
-    } else {
-        elements.libraryPills.innerHTML = '';
+        return pills.join('');
     }
+    if (libraryOptions.length === 0) {
+        return '<span class="soundtrack-pill is-empty">No libraries available</span>';
+    }
+    return '';
 }
 
 function resetSoundtrackTvSelection() {
@@ -8336,14 +8495,14 @@ function resetSoundtrackTvSelection() {
 
 function clearSoundtrackBackgroundRefreshTimer() {
     if (soundtrackState.backgroundRefreshTimer) {
-        window.clearTimeout(soundtrackState.backgroundRefreshTimer);
+        globalThis.clearTimeout(soundtrackState.backgroundRefreshTimer);
         soundtrackState.backgroundRefreshTimer = 0;
     }
 }
 
 function clearSoundtrackSyncStatusTimer() {
     if (soundtrackState.syncStatusTimer) {
-        window.clearInterval(soundtrackState.syncStatusTimer);
+        globalThis.clearInterval(soundtrackState.syncStatusTimer);
         soundtrackState.syncStatusTimer = 0;
     }
 }
@@ -8376,7 +8535,8 @@ function renderSoundtrackSyncStatus(payload) {
         const libraryId = String(erroredLibrary.libraryId || '').trim();
         const label = [serverType || 'server', libraryId].filter(Boolean).join('/');
         const lastError = String(erroredLibrary.lastError || '').trim();
-        elements.syncStatus.textContent = `Sync error: ${label}${lastError ? ` (${lastError})` : ''}`;
+        const errorSuffix = lastError ? ` (${lastError})` : '';
+        elements.syncStatus.textContent = `Sync error: ${label}${errorSuffix}`;
         return;
     }
 
@@ -8420,9 +8580,13 @@ function startSoundtrackSyncStatusPolling() {
         return;
     }
 
-    void pollSoundtrackSyncStatusOnce();
-    soundtrackState.syncStatusTimer = window.setInterval(() => {
-        void pollSoundtrackSyncStatusOnce();
+    pollSoundtrackSyncStatusOnce().catch(() => {
+        // Non-blocking status telemetry; ignore poll failures.
+    });
+    soundtrackState.syncStatusTimer = globalThis.setInterval(() => {
+        pollSoundtrackSyncStatusOnce().catch(() => {
+            // Non-blocking status telemetry; ignore poll failures.
+        });
     }, 3000);
 }
 
@@ -8482,15 +8646,7 @@ function renderSoundtrackTvNavigation() {
     }
 
     if (!hasSelectedShow) {
-        if (elements.tvShowTitle) {
-            elements.tvShowTitle.textContent = '';
-        }
-        if (elements.tvSeasonPills) {
-            elements.tvSeasonPills.innerHTML = '';
-        }
-        if (elements.tvSeasonFilterGroup) {
-            elements.tvSeasonFilterGroup.style.display = 'none';
-        }
+        resetSoundtrackTvNavigation(elements);
         return;
     }
 
@@ -8498,68 +8654,42 @@ function renderSoundtrackTvNavigation() {
         elements.tvShowTitle.textContent = String(selectedShow.showTitle || 'TV Show');
     }
 
-    const seasons = Array.isArray(selectedShow.seasons) ? selectedShow.seasons : [];
-    if (!elements.tvSeasonFilterGroup || !elements.tvSeasonPills) {
-        return;
-    }
-
-    if (seasons.length < 2) {
-        elements.tvSeasonFilterGroup.style.display = 'none';
-        elements.tvSeasonPills.innerHTML = '';
-        return;
-    }
-
-    elements.tvSeasonFilterGroup.style.display = '';
-    const pills = [
-        `<button type="button" class="soundtrack-pill ${soundtrackState.selectedTvSeasonId ? '' : 'is-active'}" data-soundtrack-season="">All seasons</button>`,
-        ...seasons.map(season => {
-            const seasonId = String(season?.seasonId || '').trim();
-            const seasonNumber = Number.isFinite(season?.seasonNumber) ? `S${season.seasonNumber}` : '';
-            const seasonTitle = String(season?.title || '').trim();
-            const label = seasonNumber || seasonTitle || 'Season';
-            const active = soundtrackState.selectedTvSeasonId === seasonId;
-            return `<button type="button" class="soundtrack-pill ${active ? 'is-active' : ''}" data-soundtrack-season="${escapeHtml(seasonId)}">${escapeHtml(label)}</button>`;
-        })
-    ];
-    elements.tvSeasonPills.innerHTML = pills.join('');
+    // Keep legacy season-pill controls hidden. TV navigation is card-based:
+    // Shows -> Seasons -> Episodes.
+    hideSoundtrackSeasonPills(elements);
 }
 
-function buildSoundtrackMatchMarkup(soundtrack) {
-    const matchTitle = String(soundtrack?.title || 'Search on Deezer').trim();
-    const matchUrl = String(soundtrack?.url || '').trim();
-    const matchKind = String(soundtrack?.kind || 'search').trim().toLowerCase();
-    const tracklistTarget = resolveSoundtrackTracklistTarget(soundtrack);
-    const matchLabel = tracklistTarget
-        ? (tracklistTarget.type === 'playlist' ? 'Open playlist' : 'Open soundtrack')
-        : (matchKind === 'album'
-            ? 'Open album'
-            : matchKind === 'playlist'
-                ? 'Open playlist'
-                : matchKind.startsWith('spotify_')
-                    ? 'Open soundtrack'
-                    : 'Search on Deezer');
-
-    if (!matchUrl) {
-        return `<p class="soundtrack-card-meta">${escapeHtml(matchTitle)}</p>`;
+function resetSoundtrackTvNavigation(elements) {
+    if (elements.tvShowTitle) {
+        elements.tvShowTitle.textContent = '';
     }
-
-    if (matchKind === 'search') {
-        return '<p class="soundtrack-card-meta">Matching soundtrack...</p>';
+    if (elements.tvSeasonPills) {
+        elements.tvSeasonPills.innerHTML = '';
     }
-
-    if (tracklistTarget) {
-        const query = new URLSearchParams();
-        query.set('id', tracklistTarget.id);
-        query.set('type', tracklistTarget.type);
-        query.set('source', tracklistTarget.source || 'deezer');
-        if (tracklistTarget.externalUrl) {
-            query.set('externalUrl', tracklistTarget.externalUrl);
-        }
-        const href = `/Tracklist?${query.toString()}`;
-        return `<a class="soundtrack-card-match" href="${escapeHtml(href)}">${escapeHtml(matchLabel)}: ${escapeHtml(matchTitle)}</a>`;
+    if (elements.tvSeasonFilterGroup) {
+        elements.tvSeasonFilterGroup.style.display = 'none';
     }
+}
 
-    return `<a class="soundtrack-card-match" href="${escapeHtml(matchUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(matchLabel)}: ${escapeHtml(matchTitle)}</a>`;
+function hideSoundtrackSeasonPills(elements) {
+    elements.tvSeasonFilterGroup.style.display = 'none';
+    elements.tvSeasonPills.innerHTML = '';
+}
+
+function buildSoundtrackSeasonPills(seasons) {
+    const pills = [
+        `<button type="button" class="soundtrack-pill ${soundtrackState.selectedTvSeasonId ? '' : 'is-active'}" data-soundtrack-season="">All seasons</button>`
+    ];
+    seasons.forEach(season => {
+        const seasonId = String(season?.seasonId || '').trim();
+        const seasonNumber = Number.isFinite(season?.seasonNumber) ? `S${season.seasonNumber}` : '';
+        const seasonTitle = String(season?.title || '').trim();
+        const label = seasonNumber || seasonTitle || 'Season';
+        const active = soundtrackState.selectedTvSeasonId === seasonId;
+        pills.push(`<button type="button" class="soundtrack-pill ${active ? 'is-active' : ''}" data-soundtrack-season="${escapeHtml(seasonId)}">${escapeHtml(label)}</button>`);
+    });
+
+    return pills.join('');
 }
 
 function resolveSoundtrackTracklistTarget(soundtrack) {
@@ -8588,7 +8718,7 @@ function parseSpotifyTracklistTargetFromUrl(url) {
         return null;
     }
 
-    const webMatch = value.match(/open\.spotify\.com\/(album|playlist|track)\/([A-Za-z0-9]+)/i);
+    const webMatch = /open\.spotify\.com\/(album|playlist|track)\/([a-z0-9]+)/i.exec(value);
     if (webMatch) {
         return {
             source: 'spotify',
@@ -8598,7 +8728,7 @@ function parseSpotifyTracklistTargetFromUrl(url) {
         };
     }
 
-    const uriMatch = value.match(/^spotify:(album|playlist|track):([A-Za-z0-9]+)$/i);
+    const uriMatch = /^spotify:(album|playlist|track):([a-z0-9]+)$/i.exec(value);
     if (uriMatch) {
         const type = uriMatch[1].toLowerCase();
         const id = uriMatch[2];
@@ -8633,6 +8763,22 @@ function navigateToSoundtrackTracklist(target) {
 }
 
 async function resolveMovieSoundtrackOnDemand(button) {
+    const requestPayload = buildSoundtrackResolveRequestPayload(button);
+    if (!requestPayload) {
+        return null;
+    }
+
+    const payload = await resolveSoundtrackForCard(requestPayload, button);
+    const target = resolveSoundtrackTracklistTarget(payload?.soundtrack);
+    if (!target) {
+        return null;
+    }
+
+    applySoundtrackTracklistTargetToButton(button, requestPayload.title, target);
+    return target;
+}
+
+function buildSoundtrackResolveRequestPayload(button) {
     const itemId = String(button?.dataset?.soundtrackItemId || '').trim();
     const title = String(button?.dataset?.soundtrackTitle || '').trim();
     const serverType = String(button?.dataset?.soundtrackServer || '').trim().toLowerCase();
@@ -8646,43 +8792,362 @@ async function resolveMovieSoundtrackOnDemand(button) {
         return null;
     }
 
+    return {
+        serverType,
+        libraryId,
+        libraryName,
+        category,
+        itemId,
+        title,
+        year,
+        imageUrl
+    };
+}
+
+async function resolveSoundtrackForCard(requestPayload, button) {
     button.disabled = true;
     button.dataset.soundtrackResolving = 'true';
 
     try {
-        const payload = await fetchJson('/api/media-server/soundtracks/resolve', {
+        return await fetchJson('/api/media-server/soundtracks/resolve', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-                serverType,
-                libraryId,
-                libraryName,
-                category,
-                itemId,
-                title,
-                year,
-                imageUrl
-            })
+            body: JSON.stringify(requestPayload)
         });
-
-        const target = resolveSoundtrackTracklistTarget(payload?.soundtrack);
-        if (!target) {
-            return null;
-        }
-
-        button.dataset.soundtrackOpenTracklist = 'true';
-        button.dataset.soundtrackTracklistSource = String(target.source || 'deezer');
-        button.dataset.soundtrackTracklistType = target.type;
-        button.dataset.soundtrackTracklistId = target.id;
-        button.dataset.soundtrackTracklistExternalUrl = String(target.externalUrl || '');
-        button.setAttribute('aria-label', `Open soundtrack tracklist for ${title}`);
-        return target;
     } finally {
         button.dataset.soundtrackResolving = 'false';
         button.disabled = false;
     }
+}
+
+function applySoundtrackTracklistTargetToButton(button, title, target) {
+    button.dataset.soundtrackOpenTracklist = 'true';
+    button.dataset.soundtrackTracklistSource = String(target.source || 'deezer');
+    button.dataset.soundtrackTracklistType = target.type;
+    button.dataset.soundtrackTracklistId = target.id;
+    button.dataset.soundtrackTracklistExternalUrl = String(target.externalUrl || '');
+    button.setAttribute('aria-label', `Open soundtrack tracklist for ${title}`);
+}
+
+async function resolveManualSoundtrackSearch(button) {
+    const requestPayload = buildSoundtrackResolveRequestPayload(button);
+    if (!requestPayload) {
+        showToast('Manual soundtrack search needs a valid media item.', true);
+        return;
+    }
+
+    const suggestedQuery = String(requestPayload.title || '').trim();
+    const promptMessage = `Search soundtrack for ${suggestedQuery}\n\nPaste a Spotify/Deezer album/playlist URL or type a search query.`;
+    const manualQueryInput = globalThis.prompt(promptMessage, suggestedQuery);
+    if (manualQueryInput === null) {
+        return;
+    }
+
+    const manualQuery = String(manualQueryInput || '').trim();
+    if (!manualQuery) {
+        showToast('Manual soundtrack search was empty.', true);
+        return;
+    }
+
+    try {
+        const payload = await resolveSoundtrackForCard(
+            {
+                ...requestPayload,
+                manualQuery
+            },
+            button
+        );
+        const target = resolveSoundtrackTracklistTarget(payload?.soundtrack);
+        if (!target) {
+            showToast(`No soundtrack match found for ${requestPayload.title}.`, true);
+            return;
+        }
+
+        showToast(`Manual soundtrack match saved for ${requestPayload.title}.`);
+        await loadSoundtrackItems({ showLoadingSkeleton: false });
+    } catch (error) {
+        showToast(`Manual soundtrack search failed: ${error?.message || 'Unknown error'}`, true);
+    }
+}
+
+function setSoundtrackStatus(elements, text) {
+    if (elements.status) {
+        elements.status.textContent = text;
+    }
+}
+
+function renderSoundtrackEmptyState(elements, normalizedCategory, category) {
+    elements.grid.innerHTML = '';
+    elements.empty.hidden = false;
+    if (normalizedCategory === 'tv_show' && soundtrackState.selectedTvShow) {
+        setSoundtrackStatus(elements, 'TV Shows: 0 episodes');
+        return;
+    }
+
+    setSoundtrackStatus(elements, `${getSoundtrackCategoryLabel(category)}: 0 items`);
+}
+
+function sortSoundtrackSeasons(seasons) {
+    return seasons
+        .slice()
+        .sort((left, right) => {
+            const leftNum = Number.isFinite(left?.seasonNumber) ? left.seasonNumber : Number.MAX_SAFE_INTEGER;
+            const rightNum = Number.isFinite(right?.seasonNumber) ? right.seasonNumber : Number.MAX_SAFE_INTEGER;
+            if (leftNum !== rightNum) {
+                return leftNum - rightNum;
+            }
+            return String(left?.title || '').localeCompare(String(right?.title || ''), undefined, { sensitivity: 'base' });
+        });
+}
+
+function buildSoundtrackActionMenu(actionDataAttributes, options = {}) {
+    if (!actionDataAttributes) {
+        return '';
+    }
+
+    const cornerClass = options.corner === true ? ' soundtrack-card-actions--corner' : '';
+    return `<div class="soundtrack-card-actions${cornerClass}">
+        <button type="button" class="soundtrack-card-actions-toggle" aria-label="Soundtrack actions" title="Soundtrack actions">⋯</button>
+        <div class="soundtrack-card-actions-menu" role="menu">
+            <button type="button" class="soundtrack-card-actions-item" data-soundtrack-manual-search="true"${actionDataAttributes}>Manual Search</button>
+        </div>
+    </div>`;
+}
+
+function buildSoundtrackMovieCardMarkup(item) {
+    const title = String(item?.title || '').trim() || 'Untitled';
+    const year = Number.isFinite(item?.year) ? ` (${item.year})` : '';
+    const libraryName = String(item?.libraryName || '').trim();
+    const serverLabel = String(item?.serverLabel || item?.serverType || '').trim();
+    const context = [libraryName, serverLabel].filter(Boolean).join(' • ');
+    const image = String(item?.imageUrl || '').trim();
+    const tracklistTarget = resolveSoundtrackTracklistTarget(item?.soundtrack);
+    const openTracklistAttributes = tracklistTarget
+        ? ` data-soundtrack-open-tracklist="true" data-soundtrack-tracklist-source="${escapeHtml(String(tracklistTarget.source || 'deezer'))}" data-soundtrack-tracklist-type="${escapeHtml(tracklistTarget.type)}" data-soundtrack-tracklist-id="${escapeHtml(tracklistTarget.id)}" data-soundtrack-tracklist-external-url="${escapeHtml(String(tracklistTarget.externalUrl || ''))}"`
+        : '';
+    const posterAriaLabel = tracklistTarget
+        ? `Open soundtrack tracklist for ${title}`
+        : `Resolve soundtrack for ${title}`;
+    const movieDataAttributes = ` data-soundtrack-item-id="${escapeHtml(String(item?.itemId || '').trim())}" data-soundtrack-title="${escapeHtml(title)}" data-soundtrack-year="${escapeHtml(Number.isFinite(item?.year) ? String(item.year) : '')}" data-soundtrack-image="${escapeHtml(image)}" data-soundtrack-server="${escapeHtml(String(item?.serverType || '').trim())}" data-soundtrack-library="${escapeHtml(String(item?.libraryId || '').trim())}" data-soundtrack-library-name="${escapeHtml(libraryName)}" data-soundtrack-category="movie"`;
+
+    return `<article class="soundtrack-card soundtrack-card--movie">
+        <button type="button" class="soundtrack-card-poster-btn soundtrack-card-open-tracklist-btn"${openTracklistAttributes}${movieDataAttributes} aria-label="${escapeHtml(posterAriaLabel)}">
+            ${image
+        ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
+        : `<div class="soundtrack-card-art soundtrack-card-art--poster watchlist-card-art-placeholder"><i class="fa-solid fa-compact-disc"></i></div>`}
+        </button>
+        ${buildSoundtrackActionMenu(movieDataAttributes, { corner: true })}
+        <div class="soundtrack-card-body">
+            <h3 class="soundtrack-card-title">${escapeHtml(title)}${escapeHtml(year)}</h3>
+            ${context ? `<p class="soundtrack-card-meta">${escapeHtml(context)}</p>` : ''}
+        </div>
+    </article>`;
+}
+
+function buildSoundtrackTvSeasonCardMarkup(season) {
+    const title = String(season?.title || '').trim() || 'Season';
+    const seasonId = String(season?.seasonId || '').trim();
+    const seasonNumber = Number.isFinite(season?.seasonNumber) ? `Season ${season.seasonNumber}` : '';
+    let episodeCount = '';
+    if (Number.isFinite(season?.episodeCount)) {
+        const suffix = season.episodeCount === 1 ? '' : 's';
+        episodeCount = `${season.episodeCount} episode${suffix}`;
+    }
+    const context = [seasonNumber, episodeCount].filter(Boolean).join(' • ');
+    const image = String(season?.imageUrl || '').trim();
+    const openSeasonLabel = seasonId
+        ? `Open episodes for ${title}`
+        : `Season ${title}`;
+
+    return `<article class="soundtrack-card soundtrack-card--tv-season">
+        ${seasonId
+        ? `<button type="button" class="soundtrack-card-media-btn" data-soundtrack-open-season="${escapeHtml(seasonId)}" aria-label="${escapeHtml(openSeasonLabel)}">`
+        : '<div>'}
+        ${image
+        ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
+        : `<div class="soundtrack-card-art soundtrack-card-art--poster watchlist-card-art-placeholder"><i class="fa-solid fa-photo-film"></i></div>`}
+        ${seasonId ? '</button>' : '</div>'}
+        <div class="soundtrack-card-body">
+            <h3 class="soundtrack-card-title">${escapeHtml(title)}</h3>
+            ${context ? `<p class="soundtrack-card-meta">${escapeHtml(context)}</p>` : ''}
+        </div>
+    </article>`;
+}
+
+function buildSoundtrackTvEpisodeCardMarkup(item) {
+    const title = String(item?.title || '').trim() || 'Untitled';
+    const seasonNumber = Number.isFinite(item?.seasonNumber) ? `S${item.seasonNumber}` : '';
+    const episodeNumber = Number.isFinite(item?.episodeNumber) ? `E${item.episodeNumber}` : '';
+    const seasonLabel = [seasonNumber, episodeNumber].filter(Boolean).join(' • ');
+    const seasonTitle = String(item?.seasonTitle || '').trim();
+    const context = [seasonTitle, seasonLabel].filter(Boolean).join(' • ');
+    const image = String(item?.imageUrl || '').trim();
+    const selectedShow = soundtrackState.selectedTvShow || {};
+    const resolveServerType = String(selectedShow.serverType || soundtrackState.selectedServerType || '').trim().toLowerCase();
+    const resolveLibraryId = String(selectedShow.libraryId || soundtrackState.selectedLibraryId || '').trim();
+    const resolveLibraryName = String(selectedShow.libraryName || '').trim();
+    const resolveItemId = String(selectedShow.showId || '').trim();
+    const resolveTitle = String(selectedShow.showTitle || title).trim();
+    const resolveImage = String(selectedShow.showImageUrl || image).trim();
+    const resolveYear = Number.isFinite(selectedShow.year) ? String(selectedShow.year) : '';
+    const episodeManualAttributes = resolveServerType && resolveLibraryId && resolveItemId
+        ? ` data-soundtrack-item-id="${escapeHtml(resolveItemId)}" data-soundtrack-title="${escapeHtml(resolveTitle)}" data-soundtrack-year="${escapeHtml(resolveYear)}" data-soundtrack-image="${escapeHtml(resolveImage)}" data-soundtrack-server="${escapeHtml(resolveServerType)}" data-soundtrack-library="${escapeHtml(resolveLibraryId)}" data-soundtrack-library-name="${escapeHtml(resolveLibraryName)}" data-soundtrack-category="tv_show"`
+        : '';
+    const tracklistTarget = resolveSoundtrackTracklistTarget(item?.soundtrack);
+    const openTracklistAttributes = tracklistTarget
+        ? ` data-soundtrack-open-tracklist="true" data-soundtrack-tracklist-source="${escapeHtml(String(tracklistTarget.source || 'deezer'))}" data-soundtrack-tracklist-type="${escapeHtml(tracklistTarget.type)}" data-soundtrack-tracklist-id="${escapeHtml(tracklistTarget.id)}" data-soundtrack-tracklist-external-url="${escapeHtml(String(tracklistTarget.externalUrl || ''))}"`
+        : '';
+    const episodeAriaLabel = tracklistTarget
+        ? `Open soundtrack tracklist for ${title}`
+        : `Resolve soundtrack for ${title}`;
+
+    return `<article class="soundtrack-card soundtrack-card--tv-episode">
+        <button type="button" class="soundtrack-card-media-btn soundtrack-card-open-tracklist-btn"${openTracklistAttributes}${episodeManualAttributes} aria-label="${escapeHtml(episodeAriaLabel)}">
+        ${image
+        ? `<img class="soundtrack-card-art soundtrack-card-art--landscape" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
+        : `<div class="soundtrack-card-art soundtrack-card-art--landscape watchlist-card-art-placeholder"><i class="fa-solid fa-tv"></i></div>`}
+        </button>
+        ${buildSoundtrackActionMenu(episodeManualAttributes, { corner: true })}
+        <div class="soundtrack-card-body">
+            <h3 class="soundtrack-card-title">${escapeHtml(title)}</h3>
+            ${context ? `<p class="soundtrack-card-meta">${escapeHtml(context)}</p>` : ''}
+        </div>
+    </article>`;
+}
+
+function buildSoundtrackTvShowCardMarkup(item) {
+    const title = String(item?.title || '').trim() || 'Untitled';
+    const year = Number.isFinite(item?.year) ? ` (${item.year})` : '';
+    const libraryName = String(item?.libraryName || '').trim();
+    const serverLabel = String(item?.serverLabel || item?.serverType || '').trim();
+    const context = [libraryName, serverLabel].filter(Boolean).join(' • ');
+    const image = String(item?.imageUrl || '').trim();
+    const showId = String(item?.itemId || '').trim();
+    const itemServerType = String(item?.serverType || '').trim().toLowerCase();
+    const itemLibraryId = String(item?.libraryId || '').trim();
+    const tvShowManualAttributes = ` data-soundtrack-item-id="${escapeHtml(showId)}" data-soundtrack-title="${escapeHtml(title)}" data-soundtrack-year="${escapeHtml(Number.isFinite(item?.year) ? String(item.year) : '')}" data-soundtrack-image="${escapeHtml(image)}" data-soundtrack-server="${escapeHtml(itemServerType)}" data-soundtrack-library="${escapeHtml(itemLibraryId)}" data-soundtrack-library-name="${escapeHtml(libraryName)}" data-soundtrack-category="tv_show"`;
+    const showOpenAttributes = showId
+        ? ` data-soundtrack-open-show="${escapeHtml(showId)}" data-soundtrack-show-title="${escapeHtml(title)}" data-soundtrack-server="${escapeHtml(itemServerType)}" data-soundtrack-library="${escapeHtml(itemLibraryId)}" data-soundtrack-show-library-name="${escapeHtml(libraryName)}" data-soundtrack-show-image="${escapeHtml(image)}" data-soundtrack-year="${escapeHtml(Number.isFinite(item?.year) ? String(item.year) : '')}"`
+        : '';
+    const showAriaLabel = showId
+        ? `Browse seasons for ${title}`
+        : `TV show ${title}`;
+
+    return `<article class="soundtrack-card soundtrack-card--tv-show">
+        ${showId
+        ? `<button type="button" class="soundtrack-card-media-btn"${showOpenAttributes} aria-label="${escapeHtml(showAriaLabel)}">`
+        : '<div>'}
+        ${image
+        ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
+        : `<div class="soundtrack-card-art soundtrack-card-art--poster watchlist-card-art-placeholder"><i class="fa-solid fa-tv"></i></div>`}
+        ${showId ? '</button>' : '</div>'}
+        <div class="soundtrack-card-body">
+            <h3 class="soundtrack-card-title">${escapeHtml(title)}${escapeHtml(year)}</h3>
+            ${context ? `<p class="soundtrack-card-meta">${escapeHtml(context)}</p>` : ''}
+        </div>
+    </article>`;
+}
+
+function getPluralSuffix(count) {
+    return count === 1 ? '' : 's';
+}
+
+function getSoundtrackSeasonsForSelectedShow() {
+    const selectedShow = soundtrackState.selectedTvShow;
+    if (!selectedShow) {
+        return [];
+    }
+
+    if (Array.isArray(selectedShow.seasons) && selectedShow.seasons.length > 0) {
+        return sortSoundtrackSeasons(selectedShow.seasons);
+    }
+
+    return sortSoundtrackSeasons(buildSeasonsFromEpisodes(selectedShow.episodes));
+}
+
+function buildSeasonsFromEpisodes(episodes) {
+    const rows = Array.isArray(episodes) ? episodes : [];
+    const bySeason = new Map();
+    rows.forEach(episode => {
+        const seasonId = String(episode?.seasonId || '').trim();
+        if (!seasonId) {
+            return;
+        }
+
+        if (!bySeason.has(seasonId)) {
+            bySeason.set(seasonId, {
+                seasonId,
+                title: String(episode?.seasonTitle || '').trim(),
+                seasonNumber: Number.isFinite(episode?.seasonNumber) ? episode.seasonNumber : null,
+                imageUrl: String(episode?.imageUrl || '').trim(),
+                episodeCount: 0
+            });
+        }
+
+        const season = bySeason.get(seasonId);
+        season.episodeCount += 1;
+        if (!season.title) {
+            season.title = String(episode?.seasonTitle || '').trim();
+        }
+        if (!season.imageUrl) {
+            season.imageUrl = String(episode?.imageUrl || '').trim();
+        }
+    });
+
+    return Array.from(bySeason.values());
+}
+
+function setMovieSoundtrackStatus(elements, count) {
+    setSoundtrackStatus(elements, `Movies: ${count} item${getPluralSuffix(count)}`);
+}
+
+function setTvSoundtrackStatus(elements, label, count) {
+    setSoundtrackStatus(elements, `TV Shows: ${count} ${label}${getPluralSuffix(count)}`);
+}
+
+function renderMovieSoundtrackRows(elements, rows) {
+    elements.grid.innerHTML = rows.map(item => buildSoundtrackMovieCardMarkup(item)).join('');
+    setMovieSoundtrackStatus(elements, rows.length);
+}
+
+function shouldRenderSelectedTvShowSeasons() {
+    return String(soundtrackState.selectedTvSeasonId || '').trim().length === 0;
+}
+
+function renderSelectedTvShowSeasons(elements) {
+    const seasons = getSoundtrackSeasonsForSelectedShow();
+    if (seasons.length === 0) {
+        return false;
+    }
+
+    elements.grid.innerHTML = seasons.map(season => buildSoundtrackTvSeasonCardMarkup(season)).join('');
+    setTvSoundtrackStatus(elements, 'season', seasons.length);
+    return true;
+}
+
+function renderSelectedTvShowEpisodes(elements, rows) {
+    elements.grid.innerHTML = rows.map(item => buildSoundtrackTvEpisodeCardMarkup(item)).join('');
+    setTvSoundtrackStatus(elements, 'episode', rows.length);
+}
+
+function renderTvShowSoundtrackRows(elements, rows) {
+    elements.grid.innerHTML = rows.map(item => buildSoundtrackTvShowCardMarkup(item)).join('');
+    setTvSoundtrackStatus(elements, 'show', rows.length);
+}
+
+function renderSelectedTvShowSoundtrackRows(elements, rows) {
+    if (!soundtrackState.selectedTvShow) {
+        return false;
+    }
+
+    if (shouldRenderSelectedTvShowSeasons() && renderSelectedTvShowSeasons(elements)) {
+        return true;
+    }
+
+    renderSelectedTvShowEpisodes(elements, rows);
+    return true;
 }
 
 function renderSoundtrackItems(items, category) {
@@ -8694,161 +9159,21 @@ function renderSoundtrackItems(items, category) {
     const rows = Array.isArray(items) ? items : [];
     const normalizedCategory = normalizeSoundtrackCategory(category);
     if (rows.length === 0) {
-        elements.grid.innerHTML = '';
-        elements.empty.hidden = false;
-        if (elements.status) {
-            if (normalizedCategory === 'tv_show' && soundtrackState.selectedTvShow) {
-                elements.status.textContent = 'TV Shows: 0 episodes';
-            } else {
-                elements.status.textContent = `${getSoundtrackCategoryLabel(category)}: 0 items`;
-            }
-        }
+        renderSoundtrackEmptyState(elements, normalizedCategory, category);
         return;
     }
 
     elements.empty.hidden = true;
     if (normalizedCategory === 'movie') {
-        elements.grid.innerHTML = rows.map(item => {
-            const title = String(item?.title || '').trim() || 'Untitled';
-            const year = Number.isFinite(item?.year) ? ` (${item.year})` : '';
-            const libraryName = String(item?.libraryName || '').trim();
-            const serverLabel = String(item?.serverLabel || item?.serverType || '').trim();
-            const context = [libraryName, serverLabel].filter(Boolean).join(' • ');
-            const image = String(item?.imageUrl || '').trim();
-            const tracklistTarget = resolveSoundtrackTracklistTarget(item?.soundtrack);
-            const openTracklistAttributes = tracklistTarget
-                ? ` data-soundtrack-open-tracklist="true" data-soundtrack-tracklist-source="${escapeHtml(String(tracklistTarget.source || 'deezer'))}" data-soundtrack-tracklist-type="${escapeHtml(tracklistTarget.type)}" data-soundtrack-tracklist-id="${escapeHtml(tracklistTarget.id)}" data-soundtrack-tracklist-external-url="${escapeHtml(String(tracklistTarget.externalUrl || ''))}"`
-                : '';
-            const posterAriaLabel = tracklistTarget
-                ? `Open soundtrack tracklist for ${title}`
-                : `Resolve soundtrack for ${title}`;
-            const movieDataAttributes = ` data-soundtrack-item-id="${escapeHtml(String(item?.itemId || '').trim())}" data-soundtrack-title="${escapeHtml(title)}" data-soundtrack-year="${escapeHtml(Number.isFinite(item?.year) ? String(item.year) : '')}" data-soundtrack-image="${escapeHtml(image)}" data-soundtrack-server="${escapeHtml(String(item?.serverType || '').trim())}" data-soundtrack-library="${escapeHtml(String(item?.libraryId || '').trim())}" data-soundtrack-library-name="${escapeHtml(libraryName)}" data-soundtrack-category="movie"`;
-
-            return `<article class="soundtrack-card soundtrack-card--movie">
-                <button type="button" class="soundtrack-card-poster-btn"${openTracklistAttributes}${movieDataAttributes} aria-label="${escapeHtml(posterAriaLabel)}">
-                    ${image
-                        ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
-                        : `<div class="soundtrack-card-art soundtrack-card-art--poster watchlist-card-art-placeholder"><i class="fa-solid fa-compact-disc"></i></div>`}
-                </button>
-                <div class="soundtrack-card-body">
-                    <h3 class="soundtrack-card-title">${escapeHtml(title)}${escapeHtml(year)}</h3>
-                    ${context ? `<p class="soundtrack-card-meta">${escapeHtml(context)}</p>` : ''}
-                    ${buildSoundtrackMatchMarkup(item?.soundtrack)}
-                </div>
-            </article>`;
-        }).join('');
-
-        if (elements.status) {
-            elements.status.textContent = `Movies: ${rows.length} item${rows.length === 1 ? '' : 's'}`;
-        }
+        renderMovieSoundtrackRows(elements, rows);
         return;
     }
 
-    if (soundtrackState.selectedTvShow) {
-        const selectedSeasonId = String(soundtrackState.selectedTvSeasonId || '').trim();
-        if (!selectedSeasonId) {
-            const seasons = Array.isArray(soundtrackState.selectedTvShow?.seasons)
-                ? soundtrackState.selectedTvShow.seasons
-                    .slice()
-                    .sort((left, right) => {
-                        const leftNum = Number.isFinite(left?.seasonNumber) ? left.seasonNumber : Number.MAX_SAFE_INTEGER;
-                        const rightNum = Number.isFinite(right?.seasonNumber) ? right.seasonNumber : Number.MAX_SAFE_INTEGER;
-                        if (leftNum !== rightNum) {
-                            return leftNum - rightNum;
-                        }
-                        return String(left?.title || '').localeCompare(String(right?.title || ''), undefined, { sensitivity: 'base' });
-                    })
-                : [];
-
-            if (seasons.length > 0) {
-                elements.grid.innerHTML = seasons.map(season => {
-                    const title = String(season?.title || '').trim() || 'Season';
-                    const seasonId = String(season?.seasonId || '').trim();
-                    const seasonNumber = Number.isFinite(season?.seasonNumber) ? `Season ${season.seasonNumber}` : '';
-                    const episodeCount = Number.isFinite(season?.episodeCount)
-                        ? `${season.episodeCount} episode${season.episodeCount === 1 ? '' : 's'}`
-                        : '';
-                    const context = [seasonNumber, episodeCount].filter(Boolean).join(' • ');
-                    const image = String(season?.imageUrl || '').trim();
-
-                    return `<article class="soundtrack-card soundtrack-card--tv-season">
-                        ${image
-                            ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
-                            : `<div class="soundtrack-card-art soundtrack-card-art--poster watchlist-card-art-placeholder"><i class="fa-solid fa-photo-film"></i></div>`}
-                        <div class="soundtrack-card-body">
-                            <h3 class="soundtrack-card-title">${escapeHtml(title)}</h3>
-                            ${context ? `<p class="soundtrack-card-meta">${escapeHtml(context)}</p>` : ''}
-                            ${seasonId
-                                ? `<button type="button" class="soundtrack-card-browse" data-soundtrack-open-season="${escapeHtml(seasonId)}">Open Episodes</button>`
-                                : ''}
-                        </div>
-                    </article>`;
-                }).join('');
-
-                if (elements.status) {
-                    elements.status.textContent = `TV Shows: ${seasons.length} season${seasons.length === 1 ? '' : 's'}`;
-                }
-                return;
-            }
-        }
-
-        elements.grid.innerHTML = rows.map(item => {
-            const title = String(item?.title || '').trim() || 'Untitled';
-            const seasonNumber = Number.isFinite(item?.seasonNumber) ? `S${item.seasonNumber}` : '';
-            const episodeNumber = Number.isFinite(item?.episodeNumber) ? `E${item.episodeNumber}` : '';
-            const seasonLabel = [seasonNumber, episodeNumber].filter(Boolean).join(' • ');
-            const seasonTitle = String(item?.seasonTitle || '').trim();
-            const context = [seasonTitle, seasonLabel].filter(Boolean).join(' • ');
-            const image = String(item?.imageUrl || '').trim();
-
-            return `<article class="soundtrack-card soundtrack-card--tv-episode">
-                ${image
-                    ? `<img class="soundtrack-card-art soundtrack-card-art--landscape" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
-                    : `<div class="soundtrack-card-art soundtrack-card-art--landscape watchlist-card-art-placeholder"><i class="fa-solid fa-tv"></i></div>`}
-                <div class="soundtrack-card-body">
-                    <h3 class="soundtrack-card-title">${escapeHtml(title)}</h3>
-                    ${context ? `<p class="soundtrack-card-meta">${escapeHtml(context)}</p>` : ''}
-                    ${buildSoundtrackMatchMarkup(item?.soundtrack)}
-                </div>
-            </article>`;
-        }).join('');
-
-        if (elements.status) {
-            elements.status.textContent = `TV Shows: ${rows.length} episode${rows.length === 1 ? '' : 's'}`;
-        }
+    if (renderSelectedTvShowSoundtrackRows(elements, rows)) {
         return;
     }
 
-    elements.grid.innerHTML = rows.map(item => {
-        const title = String(item?.title || '').trim() || 'Untitled';
-        const year = Number.isFinite(item?.year) ? ` (${item.year})` : '';
-        const libraryName = String(item?.libraryName || '').trim();
-        const serverLabel = String(item?.serverLabel || item?.serverType || '').trim();
-        const context = [libraryName, serverLabel].filter(Boolean).join(' • ');
-        const image = String(item?.imageUrl || '').trim();
-        const showId = String(item?.itemId || '').trim();
-        const itemServerType = String(item?.serverType || '').trim().toLowerCase();
-        const itemLibraryId = String(item?.libraryId || '').trim();
-        const showTitle = title;
-
-        return `<article class="soundtrack-card soundtrack-card--tv-show">
-            ${image
-                ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
-                : `<div class="soundtrack-card-art soundtrack-card-art--poster watchlist-card-art-placeholder"><i class="fa-solid fa-tv"></i></div>`}
-            <div class="soundtrack-card-body">
-                <h3 class="soundtrack-card-title">${escapeHtml(title)}${escapeHtml(year)}</h3>
-                ${context ? `<p class="soundtrack-card-meta">${escapeHtml(context)}</p>` : ''}
-                ${showId
-                    ? `<button type="button" class="soundtrack-card-browse" data-soundtrack-open-show="${escapeHtml(showId)}" data-soundtrack-show-title="${escapeHtml(showTitle)}" data-soundtrack-server="${escapeHtml(itemServerType)}" data-soundtrack-library="${escapeHtml(itemLibraryId)}" data-soundtrack-show-image="${escapeHtml(image)}">Browse Episodes</button>`
-                    : ''}
-                ${buildSoundtrackMatchMarkup(item?.soundtrack)}
-            </div>
-        </article>`;
-    }).join('');
-
-    if (elements.status) {
-        elements.status.textContent = `TV Shows: ${rows.length} show${rows.length === 1 ? '' : 's'}`;
-    }
+    renderTvShowSoundtrackRows(elements, rows);
 }
 
 function hasPendingSoundtrackMatches(rows) {
@@ -8866,7 +9191,9 @@ function hasPendingSoundtrackMatches(rows) {
 function scheduleSoundtrackBackgroundRefresh(rows) {
     // Background matching warmup is handled server-side. Avoid client-side repaint polling,
     // which causes visible poster flicker from repeated full-grid rerenders.
-    void rows;
+    if (!Array.isArray(rows)) {
+        return;
+    }
 }
 
 async function loadSoundtrackEpisodes(options = {}) {
@@ -8883,7 +9210,8 @@ async function loadSoundtrackEpisodes(options = {}) {
     }
 
     if (elements.status) {
-        elements.status.textContent = `Loading episodes for ${selectedShow.showTitle || 'TV Show'}...`;
+        const stageLabel = soundtrackState.selectedTvSeasonId ? 'episodes' : 'seasons';
+        elements.status.textContent = `Loading ${stageLabel} for ${selectedShow.showTitle || 'TV Show'}...`;
     }
 
     const params = new URLSearchParams();
@@ -8903,6 +9231,8 @@ async function loadSoundtrackEpisodes(options = {}) {
             showImageUrl: String(payload?.showImageUrl || selectedShow.showImageUrl || '').trim(),
             serverType: String(payload?.serverType || selectedShow.serverType || '').trim().toLowerCase(),
             libraryId: String(payload?.libraryId || selectedShow.libraryId || '').trim(),
+            libraryName: String(payload?.libraryName || selectedShow.libraryName || '').trim(),
+            year: Number.isFinite(selectedShow.year) ? selectedShow.year : null,
             seasons: Array.isArray(payload?.seasons) ? payload.seasons : [],
             episodes: Array.isArray(payload?.episodes) ? payload.episodes : []
         };
@@ -8950,6 +9280,118 @@ function resolveSoundtrackLibraryTargets(configuration, category) {
         && String(library?.serverType || '').trim().toLowerCase() === String(serverType || library?.serverType || '').trim().toLowerCase());
 }
 
+function buildSoundtrackItemsRequestParams(category, target, offset, requestLimit, forceServerRefresh) {
+    const params = new URLSearchParams();
+    params.set('category', category);
+    params.set('serverType', String(target?.serverType || '').trim());
+    params.set('libraryId', String(target?.libraryId || '').trim());
+    params.set('offset', String(offset));
+    params.set('limit', String(requestLimit));
+    if (forceServerRefresh) {
+        params.set('refresh', 'true');
+    }
+    return params;
+}
+
+function mergeSoundtrackRows(merged, rows) {
+    rows.forEach(row => {
+        const key = buildSoundtrackItemKey(row);
+        if (key !== '::') {
+            merged.set(key, row);
+        }
+    });
+}
+
+async function loadSoundtrackLibraryItemsLazy(target, options) {
+    let offset = 0;
+    let loadedForLibrary = 0;
+
+    while (loadedForLibrary < options.perLibraryCap) {
+        if (options.isStale()) {
+            return true;
+        }
+
+        const requestLimit = Math.min(options.batchSize, options.perLibraryCap - loadedForLibrary);
+        const params = buildSoundtrackItemsRequestParams(
+            options.category,
+            target,
+            offset,
+            requestLimit,
+            options.forceServerRefresh
+        );
+        const payload = await fetchJson(`/api/media-server/soundtracks/items?${params.toString()}`);
+        if (options.isStale()) {
+            return true;
+        }
+
+        const rows = Array.isArray(payload?.items) ? payload.items : [];
+        if (rows.length === 0) {
+            break;
+        }
+
+        mergeSoundtrackRows(options.merged, rows);
+        offset += rows.length;
+        loadedForLibrary += rows.length;
+        options.onProgress();
+
+        if (rows.length < requestLimit) {
+            break;
+        }
+    }
+
+    return false;
+}
+
+function buildSoundtrackLazyLoadState(elements, category, requestId, targets) {
+    return {
+        elements,
+        category,
+        requestId,
+        targets,
+        merged: new Map(),
+        completedLibraries: 0,
+        batchSize: 100,
+        perLibraryCap: Number.MAX_SAFE_INTEGER
+    };
+}
+
+function isSoundtrackLazyLoadStale(state) {
+    return state.requestId !== soundtrackState.lastItemsRequestId;
+}
+
+function updateSoundtrackLazyLoadStatus(state) {
+    if (!state.elements.status) {
+        return;
+    }
+
+    const itemCount = state.merged.size;
+    state.elements.status.textContent = `${getSoundtrackCategoryLabel(state.category)}: ${itemCount} item${getPluralSuffix(itemCount)} • ${state.completedLibraries}/${state.targets.length} libraries loaded`;
+}
+
+function renderSoundtrackLazyLoadProgress(state) {
+    renderSoundtrackItems(Array.from(state.merged.values()), state.category);
+    updateSoundtrackLazyLoadStatus(state);
+}
+
+async function loadSoundtrackTargetItemsLazy(target, state, forceServerRefresh) {
+    const stale = await loadSoundtrackLibraryItemsLazy(target, {
+        category: state.category,
+        batchSize: state.batchSize,
+        perLibraryCap: state.perLibraryCap,
+        forceServerRefresh,
+        merged: state.merged,
+        isStale: () => isSoundtrackLazyLoadStale(state),
+        onProgress: () => renderSoundtrackLazyLoadProgress(state)
+    });
+    if (stale) {
+        return true;
+    }
+
+    state.completedLibraries += 1;
+    updateSoundtrackLazyLoadStatus(state);
+    return false;
+}
+
 async function loadSoundtrackItemsLazy(configuration, category, requestId, forceServerRefresh = false) {
     const elements = getSoundtrackElements();
     const targets = resolveSoundtrackLibraryTargets(configuration, category);
@@ -8958,67 +9400,17 @@ async function loadSoundtrackItemsLazy(configuration, category, requestId, force
         return;
     }
 
-    const perLibraryCap = Number.MAX_SAFE_INTEGER;
-    const batchSize = 100;
-    const merged = new Map();
-    let completedLibraries = 0;
+    const state = buildSoundtrackLazyLoadState(elements, category, requestId, targets);
+    updateSoundtrackLazyLoadStatus(state);
 
     for (const target of targets) {
-        let offset = 0;
-        let loadedForLibrary = 0;
-
-        while (loadedForLibrary < perLibraryCap) {
-            if (requestId !== soundtrackState.lastItemsRequestId) {
-                return;
-            }
-
-            const requestLimit = Math.min(batchSize, perLibraryCap - loadedForLibrary);
-            const params = new URLSearchParams();
-            params.set('category', category);
-            params.set('serverType', String(target.serverType || '').trim());
-            params.set('libraryId', String(target.libraryId || '').trim());
-            params.set('offset', String(offset));
-            params.set('limit', String(requestLimit));
-            if (forceServerRefresh) {
-                params.set('refresh', 'true');
-            }
-
-            const payload = await fetchJson(`/api/media-server/soundtracks/items?${params.toString()}`);
-            if (requestId !== soundtrackState.lastItemsRequestId) {
-                return;
-            }
-
-            const rows = Array.isArray(payload?.items) ? payload.items : [];
-            if (rows.length === 0) {
-                break;
-            }
-
-            rows.forEach(row => {
-                const key = buildSoundtrackItemKey(row);
-                if (key !== '::') {
-                    merged.set(key, row);
-                }
-            });
-
-            offset += rows.length;
-            loadedForLibrary += rows.length;
-            renderSoundtrackItems(Array.from(merged.values()), category);
-            if (elements.status) {
-                elements.status.textContent = `${getSoundtrackCategoryLabel(category)}: ${merged.size} item${merged.size === 1 ? '' : 's'} • ${completedLibraries}/${targets.length} libraries loaded`;
-            }
-
-            if (rows.length < requestLimit) {
-                break;
-            }
-        }
-
-        completedLibraries += 1;
-        if (elements.status) {
-            elements.status.textContent = `${getSoundtrackCategoryLabel(category)}: ${merged.size} item${merged.size === 1 ? '' : 's'} • ${completedLibraries}/${targets.length} libraries loaded`;
+        const stale = await loadSoundtrackTargetItemsLazy(target, state, forceServerRefresh);
+        if (stale) {
+            return;
         }
     }
 
-    const finalRows = Array.from(merged.values());
+    const finalRows = Array.from(state.merged.values());
     renderSoundtrackItems(finalRows, category);
     return finalRows;
 }
@@ -9081,12 +9473,21 @@ function bindSoundtrackTabHandlers() {
         return;
     }
 
+    const rememberedCategory = restoreSoundtrackCategoryPreference();
+    if (rememberedCategory) {
+        soundtrackState.category = rememberedCategory;
+    }
+
     setActiveSoundtrackCategory(soundtrackState.category);
 
     elements.categoryTabs.forEach(button => {
         button.addEventListener('click', async () => {
             const category = normalizeSoundtrackCategory(button.dataset.soundtrackCategory);
+            if (category === soundtrackState.category) {
+                return;
+            }
             setActiveSoundtrackCategory(category);
+            persistSoundtrackCategoryPreference(category);
             resetSoundtrackTvSelection();
             renderSoundtrackTvNavigation();
             renderSoundtrackLoadingState(category);
@@ -9131,16 +9532,22 @@ function bindSoundtrackTabHandlers() {
 
     if (elements.grid) {
         elements.grid.addEventListener('click', async event => {
-            const moviePosterButton = event.target.closest('.soundtrack-card-poster-btn');
-            if (moviePosterButton) {
-                let source = String(moviePosterButton.dataset.soundtrackTracklistSource || 'deezer').trim().toLowerCase();
-                let type = String(moviePosterButton.dataset.soundtrackTracklistType || '').trim().toLowerCase();
-                let id = String(moviePosterButton.dataset.soundtrackTracklistId || '').trim();
-                let externalUrl = String(moviePosterButton.dataset.soundtrackTracklistExternalUrl || '').trim();
+            const manualSearchButton = event.target.closest('[data-soundtrack-manual-search]');
+            if (manualSearchButton) {
+                await resolveManualSoundtrackSearch(manualSearchButton);
+                return;
+            }
+
+            const openTracklistButton = event.target.closest('.soundtrack-card-open-tracklist-btn');
+            if (openTracklistButton) {
+                let source = String(openTracklistButton.dataset.soundtrackTracklistSource || 'deezer').trim().toLowerCase();
+                let type = String(openTracklistButton.dataset.soundtrackTracklistType || '').trim().toLowerCase();
+                let id = String(openTracklistButton.dataset.soundtrackTracklistId || '').trim();
+                let externalUrl = String(openTracklistButton.dataset.soundtrackTracklistExternalUrl || '').trim();
                 if (!type || !id) {
-                    const resolvedTarget = await resolveMovieSoundtrackOnDemand(moviePosterButton);
+                    const resolvedTarget = await resolveMovieSoundtrackOnDemand(openTracklistButton);
                     if (!resolvedTarget) {
-                        const title = String(moviePosterButton.dataset.soundtrackTitle || 'this movie').trim();
+                        const title = String(openTracklistButton.dataset.soundtrackTitle || 'this title').trim();
                         showToast(`No soundtrack match found yet for ${title}.`, true);
                         return;
                     }
@@ -9195,6 +9602,10 @@ function bindSoundtrackTabHandlers() {
                 showImageUrl: String(button.dataset.soundtrackShowImage || '').trim(),
                 serverType,
                 libraryId,
+                libraryName: String(button.dataset.soundtrackShowLibraryName || '').trim(),
+                year: Number.isFinite(Number(button.dataset.soundtrackYear))
+                    ? Number(button.dataset.soundtrackYear)
+                    : null,
                 seasons: [],
                 episodes: []
             };
@@ -9219,25 +9630,7 @@ function bindSoundtrackTabHandlers() {
         });
     }
 
-    if (elements.tvSeasonPills) {
-        elements.tvSeasonPills.addEventListener('click', async event => {
-            const button = event.target.closest('[data-soundtrack-season]');
-            if (!button) {
-                return;
-            }
-            const seasonId = String(button.dataset.soundtrackSeason || '').trim();
-            if (seasonId === soundtrackState.selectedTvSeasonId) {
-                return;
-            }
-            soundtrackState.selectedTvSeasonId = seasonId;
-            renderSoundtrackTvNavigation();
-            if (!seasonId) {
-                renderSoundtrackItems(soundtrackState.selectedTvShow?.episodes || [], 'tv_show');
-                return;
-            }
-            await loadSoundtrackEpisodes();
-        });
-    }
+    // Legacy season pill filtering intentionally disabled.
 
     if (elements.refreshButton) {
         elements.refreshButton.addEventListener('click', async () => {
@@ -11238,7 +11631,7 @@ function renderAppleCard(item, isAlbum, localAlbumIndex = null, localTrackVarian
     const idVal = item.appleId || extractAppleIdFromUrl(item.appleUrl || '');
     const inLibrary = isAppleAtmosItemInLibrary(item, isAlbum, localAlbumIndex, localTrackVariantIndex);
     const localAlbumId = getLocalAlbumIdForAppleAtmosItem(item, isAlbum, localAlbumIndex, localTrackVariantIndex);
-    const previewUrl = !isAlbum ? String(item.previewUrl || item.preview || '').trim() : '';
+    const previewUrl = isAlbum ? '' : String(item.previewUrl || item.preview || '').trim();
     const libraryBadge = inLibrary
         ? '<div class="library-badge"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg></div>'
         : '';
@@ -11737,32 +12130,7 @@ async function clearLibraryData() {
     const selectedFolderId = selectedFolder ? Number(selectedFolder.id) : null;
     const scopeLabel = selectedFolder?.displayName || 'Library';
     try {
-        let confirmed = false;
-        try {
-            if (globalThis.DeezSpoTag?.ui?.confirm) {
-                confirmed = await DeezSpoTag.ui.confirm(
-                    selectedFolder
-                        ? `Clear indexed metadata only for ${scopeLabel}? Your music files will not be deleted.`
-                        : 'Clear all library metadata? Your music files will not be deleted.',
-                    {
-                        title: selectedFolder ? `Clear ${scopeLabel}` : 'Clear Library',
-                        okText: selectedFolder ? `Clear ${scopeLabel}` : 'Clear Library',
-                        cancelText: 'Cancel'
-                    }
-                );
-            } else {
-                confirmed = globalThis.confirm(
-                    selectedFolder
-                        ? `Clear indexed metadata only for ${scopeLabel}? Your music files will not be deleted.`
-                        : 'Clear all library metadata? Your music files will not be deleted.');
-            }
-        } catch (dialogError) {
-            console.error('Clear library confirm dialog failed:', dialogError);
-            confirmed = globalThis.confirm(
-                selectedFolder
-                    ? `Clear indexed metadata only for ${scopeLabel}? Your music files will not be deleted.`
-                    : 'Clear all library metadata? Your music files will not be deleted.');
-        }
+        const confirmed = await confirmClearLibraryData(selectedFolder, scopeLabel);
         if (!confirmed) {
             return;
         }
@@ -11784,19 +12152,11 @@ async function clearLibraryData() {
             showToast('Library DB not configured.', true);
             return;
         }
-        const artistsRemoved = Number(result?.artistsRemoved || 0);
-        const albumsRemoved = Number(result?.albumsRemoved || 0);
-        const tracksRemoved = Number(result?.tracksRemoved || 0);
-        showToast(
-            selectedFolder
-                ? `${scopeLabel} cleared: ${artistsRemoved.toLocaleString()} artists, ${albumsRemoved.toLocaleString()} albums, ${tracksRemoved.toLocaleString()} tracks removed.`
-                : `Library cleared: ${artistsRemoved.toLocaleString()} artists, ${albumsRemoved.toLocaleString()} albums, ${tracksRemoved.toLocaleString()} tracks removed.`
-        );
+        const counts = getClearLibraryCounts(result);
+        showToast(buildClearLibrarySummaryMessage(selectedFolder, scopeLabel, counts));
         if (globalThis.DeezSpoTag?.ui?.alert) {
             await DeezSpoTag.ui.alert(
-                selectedFolder
-                    ? `Removed ${artistsRemoved.toLocaleString()} artists, ${albumsRemoved.toLocaleString()} albums, and ${tracksRemoved.toLocaleString()} tracks from ${scopeLabel}.`
-                    : `Removed ${artistsRemoved.toLocaleString()} artists, ${albumsRemoved.toLocaleString()} albums, and ${tracksRemoved.toLocaleString()} tracks.`,
+                buildClearLibraryAlertMessage(selectedFolder, scopeLabel, counts),
                 { title: selectedFolder ? `${scopeLabel} Cleared` : 'Library Cleared' }
             );
         }
@@ -11813,6 +12173,51 @@ async function clearLibraryData() {
             clearButton.disabled = false;
         }
     }
+}
+
+function getClearLibraryConfirmMessage(selectedFolder, scopeLabel) {
+    return selectedFolder
+        ? `Clear indexed metadata only for ${scopeLabel}? Your music files will not be deleted.`
+        : 'Clear all library metadata? Your music files will not be deleted.';
+}
+
+async function confirmClearLibraryData(selectedFolder, scopeLabel) {
+    const message = getClearLibraryConfirmMessage(selectedFolder, scopeLabel);
+    try {
+        if (globalThis.DeezSpoTag?.ui?.confirm) {
+            return await DeezSpoTag.ui.confirm(message, {
+                title: selectedFolder ? `Clear ${scopeLabel}` : 'Clear Library',
+                okText: selectedFolder ? `Clear ${scopeLabel}` : 'Clear Library',
+                cancelText: 'Cancel'
+            });
+        }
+        return globalThis.confirm(message);
+    } catch (dialogError) {
+        console.error('Clear library confirm dialog failed:', dialogError);
+        return globalThis.confirm(message);
+    }
+}
+
+function getClearLibraryCounts(result) {
+    return {
+        artistsRemoved: Number(result?.artistsRemoved || 0),
+        albumsRemoved: Number(result?.albumsRemoved || 0),
+        tracksRemoved: Number(result?.tracksRemoved || 0)
+    };
+}
+
+function buildClearLibrarySummaryMessage(selectedFolder, scopeLabel, counts) {
+    if (selectedFolder) {
+        return `${scopeLabel} cleared: ${counts.artistsRemoved.toLocaleString()} artists, ${counts.albumsRemoved.toLocaleString()} albums, ${counts.tracksRemoved.toLocaleString()} tracks removed.`;
+    }
+    return `Library cleared: ${counts.artistsRemoved.toLocaleString()} artists, ${counts.albumsRemoved.toLocaleString()} albums, ${counts.tracksRemoved.toLocaleString()} tracks removed.`;
+}
+
+function buildClearLibraryAlertMessage(selectedFolder, scopeLabel, counts) {
+    if (selectedFolder) {
+        return `Removed ${counts.artistsRemoved.toLocaleString()} artists, ${counts.albumsRemoved.toLocaleString()} albums, and ${counts.tracksRemoved.toLocaleString()} tracks from ${scopeLabel}.`;
+    }
+    return `Removed ${counts.artistsRemoved.toLocaleString()} artists, ${counts.albumsRemoved.toLocaleString()} albums, and ${counts.tracksRemoved.toLocaleString()} tracks.`;
 }
 
 // clearLibraryData is called via inline onclick on the button in Index.cshtml
@@ -11957,7 +12362,9 @@ function bindDeferredSoundtrackInitialization(shouldLoadSoundtracks) {
 
     if (soundtrackTabButton) {
         soundtrackTabButton.addEventListener('shown.bs.tab', () => {
-            void ensureInitialized();
+            ensureInitialized().catch(() => {
+                // Initializer failures are handled by the tab loader UI.
+            });
         });
     }
 
@@ -11965,7 +12372,9 @@ function bindDeferredSoundtrackInitialization(shouldLoadSoundtracks) {
         || soundtrackTabPane.classList.contains('show')
         || soundtrackTabButton?.classList.contains('active') === true;
     if (soundtrackTabActive) {
-        void ensureInitialized();
+        ensureInitialized().catch(() => {
+            // Initializer failures are handled by the tab loader UI.
+        });
     }
 
     soundtrackTabPane.dataset.soundtracksDeferredBound = 'true';

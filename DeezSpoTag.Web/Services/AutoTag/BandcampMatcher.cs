@@ -21,34 +21,9 @@ public sealed class BandcampMatcher
         }
 
         var candidates = results.Select(r => r.ToTrackInfo()).ToList();
-        var match = MatchTracks(info, candidates, config);
-        if (match == null)
-        {
-            return null;
-        }
-
-        try
-        {
-            var full = await _client.GetTrackAsync(match.Track.Url, cancellationToken);
-            if (full != null)
-            {
-                var detailed = full.ToTrackInfo();
-                return new AutoTagMatchResult { Accuracy = match.Accuracy, Track = ToAutoTagTrack(detailed) };
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to extend Bandcamp track.");
-        }
-
-        return new AutoTagMatchResult { Accuracy = match.Accuracy, Track = ToAutoTagTrack(match.Track) };
-    }
-
-    private static MatchCandidate? MatchTracks(AutoTagAudioInfo info, List<BandcampTrackInfo> tracks, AutoTagMatchingConfig config)
-    {
-        var match = OneTaggerMatching.MatchTrack(
+        var match = AutoTagMatchSelection.SelectBestTrack(
             info,
-            tracks,
+            candidates,
             config,
             new OneTaggerMatching.TrackSelectors<BandcampTrackInfo>(
                 track => track.Title,
@@ -57,11 +32,27 @@ public sealed class BandcampMatcher
                 _ => null,
                 track => track.ReleaseDate),
             matchArtist: true);
+        if (match == null)
+        {
+            return null;
+        }
 
-        return match == null ? null : new MatchCandidate(match.Accuracy, match.Track);
+        try
+        {
+            var full = await _client.GetTrackAsync(match.Value.Track.Url, cancellationToken);
+            if (full != null)
+            {
+                var detailed = full.ToTrackInfo();
+                return new AutoTagMatchResult { Accuracy = match.Value.Accuracy, Track = ToAutoTagTrack(detailed) };
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to extend Bandcamp track.");
+        }
+
+        return new AutoTagMatchResult { Accuracy = match.Value.Accuracy, Track = ToAutoTagTrack(match.Value.Track) };
     }
-
-    private sealed record MatchCandidate(double Accuracy, BandcampTrackInfo Track);
 
     private static AutoTagTrack ToAutoTagTrack(BandcampTrackInfo track)
     {

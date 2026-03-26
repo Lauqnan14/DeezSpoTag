@@ -148,33 +148,7 @@ public class JellyfinApiClient
         string showId,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(serverUrl)
-            || string.IsNullOrWhiteSpace(apiKey)
-            || string.IsNullOrWhiteSpace(userId)
-            || string.IsNullOrWhiteSpace(showId))
-        {
-            return new List<JellyfinMediaItem>();
-        }
-
-        var query = new StringBuilder();
-        query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
-        query.Append($"?ParentId={Uri.EscapeDataString(showId)}");
-        query.Append("&Recursive=false");
-        query.Append("&SortBy=SortName");
-        query.Append("&SortOrder=Ascending");
-        query.Append("&IncludeItemTypes=Season");
-        query.Append("&Fields=IndexNumber,ParentIndexNumber,ProductionYear,ImageTags");
-
-        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return new List<JellyfinMediaItem>();
-        }
-
-        var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
-        return payload?.Items ?? new List<JellyfinMediaItem>();
+        return await GetUserChildItemsAsync(serverUrl, apiKey, userId, showId, "Season", cancellationToken);
     }
 
     public async Task<List<JellyfinMediaItem>> GetSeasonEpisodesAsync(
@@ -184,33 +158,7 @@ public class JellyfinApiClient
         string seasonId,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(serverUrl)
-            || string.IsNullOrWhiteSpace(apiKey)
-            || string.IsNullOrWhiteSpace(userId)
-            || string.IsNullOrWhiteSpace(seasonId))
-        {
-            return new List<JellyfinMediaItem>();
-        }
-
-        var query = new StringBuilder();
-        query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
-        query.Append($"?ParentId={Uri.EscapeDataString(seasonId)}");
-        query.Append("&Recursive=false");
-        query.Append("&SortBy=SortName");
-        query.Append("&SortOrder=Ascending");
-        query.Append("&IncludeItemTypes=Episode");
-        query.Append("&Fields=IndexNumber,ParentIndexNumber,ProductionYear,ImageTags");
-
-        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return new List<JellyfinMediaItem>();
-        }
-
-        var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
-        return payload?.Items ?? new List<JellyfinMediaItem>();
+        return await GetUserChildItemsAsync(serverUrl, apiKey, userId, seasonId, "Episode", cancellationToken);
     }
 
     public async Task<string?> FindArtistIdAsync(string serverUrl, string apiKey, string artistName, CancellationToken cancellationToken = default)
@@ -235,39 +183,18 @@ public class JellyfinApiClient
 
     public async Task<bool> UpdateArtistImageAsync(string serverUrl, string apiKey, string artistId, string imagePath, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(artistId))
-        {
-            return false;
-        }
-
-        if (!File.Exists(imagePath))
+        if (!CanUploadArtistAsset(serverUrl, apiKey, artistId, imagePath))
         {
             return false;
         }
 
         var url = BuildUrl(serverUrl, $"/Items/{artistId}/Images/Primary");
-        await using var stream = File.OpenRead(imagePath);
-        using var content = new StreamContent(stream);
-        content.Headers.ContentType = new MediaTypeHeaderValue(GetImageContentType(imagePath));
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, url)
-        {
-            Content = content
-        };
-        request.Headers.Add(EmbyTokenHeader, apiKey);
-
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
-        return response.IsSuccessStatusCode;
+        return await UploadImageAsync(url, apiKey, imagePath, cancellationToken);
     }
 
     public async Task<bool> UpdateArtistBackdropAsync(string serverUrl, string apiKey, string artistId, string imagePath, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(artistId))
-        {
-            return false;
-        }
-
-        if (!File.Exists(imagePath))
+        if (!CanUploadArtistAsset(serverUrl, apiKey, artistId, imagePath))
         {
             return false;
         }
@@ -353,6 +280,44 @@ public class JellyfinApiClient
         return response.IsSuccessStatusCode;
     }
 
+    private async Task<List<JellyfinMediaItem>> GetUserChildItemsAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string parentId,
+        string itemType,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(userId)
+            || string.IsNullOrWhiteSpace(parentId)
+            || string.IsNullOrWhiteSpace(itemType))
+        {
+            return new List<JellyfinMediaItem>();
+        }
+
+        var query = new StringBuilder();
+        query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
+        query.Append($"?ParentId={Uri.EscapeDataString(parentId)}");
+        query.Append("&Recursive=false");
+        query.Append("&SortBy=SortName");
+        query.Append("&SortOrder=Ascending");
+        query.Append($"&IncludeItemTypes={Uri.EscapeDataString(itemType)}");
+        query.Append("&Fields=IndexNumber,ParentIndexNumber,ProductionYear,ImageTags");
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new List<JellyfinMediaItem>();
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
+        return payload?.Items ?? new List<JellyfinMediaItem>();
+    }
+
     private static string BuildUrl(string baseUrl, string path)
     {
         return $"{baseUrl.TrimEnd('/')}{path}";
@@ -367,6 +332,16 @@ public class JellyfinApiClient
             ".webp" => "image/webp",
             _ => "image/jpeg"
         };
+    }
+
+    private static bool CanUploadArtistAsset(string serverUrl, string apiKey, string artistId, string imagePath)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(artistId))
+        {
+            return false;
+        }
+
+        return File.Exists(imagePath);
     }
 }
 

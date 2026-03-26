@@ -7,6 +7,29 @@ namespace DeezSpoTag.Web.Controllers.Api;
 
 internal static class DownloadQueueEnqueueHelper
 {
+    public static Func<TPayload, int, CancellationToken, Task<bool>> CreateDedupEnqueueDelegate<TPayload>(
+        DownloadQueueRepository queueRepository,
+        IDeezSpoTagListener listener,
+        ILogger logger)
+        where TPayload : EngineQueueItemBase
+    {
+        return (payload, redownloadCooldownMinutes, cancellationToken) => EnqueueWithDedupAsync(
+            payload,
+            redownloadCooldownMinutes,
+            queueRepository,
+            listener,
+            logger,
+            cancellationToken);
+    }
+
+    public static Action<TPayload> CreateQueueAddedNotifier<TPayload>(
+        IDeezSpoTagListener listener,
+        Func<TPayload, object> payloadMapper)
+        where TPayload : class
+    {
+        return payload => listener.SendAddedToQueue(payloadMapper(payload));
+    }
+
     public static async Task<bool> EnqueueWithDedupAsync<TPayload>(
         TPayload payload,
         int redownloadCooldownMinutes,

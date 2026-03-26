@@ -30,41 +30,49 @@ public sealed class QobuzSearchApiController : ControllerBase
         [FromQuery] int limit = 25,
         CancellationToken cancellationToken = default)
     {
+        const string failureMessage = "Qobuz search failed.";
+        Task<object> SearchCore(string? normalizedType, int normalizedLimit, CancellationToken cancellationToken)
+            => BuildSearchPayloadAsync(query, normalizedType, normalizedLimit, cancellationToken);
+
         return await ExternalSearchControllerHelpers.RunSearchAsync(
             query,
             type,
             limit,
             _logger,
-            failureMessage: "Qobuz search failed.",
-            async (normalizedType, normalizedLimit, ct) =>
-            {
-                var tracks = normalizedType is null or "track"
-                    ? (await _metadataService.SearchTracks(query, ct)).Take(normalizedLimit).ToList()
-                    : new List<QobuzTrack>();
-                var albums = normalizedType is null or "album"
-                    ? (await _metadataService.SearchAlbums(query, ct)).Take(normalizedLimit).ToList()
-                    : new List<QobuzAlbum>();
-                var artists = normalizedType is null or "artist"
-                    ? (await _metadataService.SearchArtists(query, ct)).Take(normalizedLimit).ToList()
-                    : new List<QobuzArtist>();
-
-                return new
-                {
-                    available = true,
-                    tracks = tracks.Select(MapTrack),
-                    albums = albums.Select(MapAlbum),
-                    artists = artists.Select(MapArtist),
-                    playlists = Array.Empty<object>(),
-                    totals = new Dictionary<string, int>
-                    {
-                        ["tracks"] = tracks.Count,
-                        ["albums"] = albums.Count,
-                        ["artists"] = artists.Count,
-                        ["playlists"] = 0
-                    }
-                };
-            },
+            failureMessage,
+            SearchCore,
             cancellationToken);
+    }
+
+    private async Task<object> BuildSearchPayloadAsync(
+        string query,
+        string? normalizedType,
+        int normalizedLimit,
+        CancellationToken cancellationToken)
+    {
+        var tracks = normalizedType is null or "track"
+            ? (await _metadataService.SearchTracks(query, cancellationToken)).Take(normalizedLimit).ToList()
+            : new List<QobuzTrack>();
+        var albums = normalizedType is null or "album"
+            ? (await _metadataService.SearchAlbums(query, cancellationToken)).Take(normalizedLimit).ToList()
+            : new List<QobuzAlbum>();
+        var artists = normalizedType is null or "artist"
+            ? (await _metadataService.SearchArtists(query, cancellationToken)).Take(normalizedLimit).ToList()
+            : new List<QobuzArtist>();
+
+        return new
+        {
+            available = true,
+            tracks = tracks.Select(MapTrack),
+            albums = albums.Select(MapAlbum),
+            artists = artists.Select(MapArtist),
+            playlists = Array.Empty<object>(),
+            totals = ExternalSearchControllerHelpers.BuildTotals(
+                tracks.Count,
+                albums.Count,
+                artists.Count,
+                playlists: 0)
+        };
     }
 
     private static object MapTrack(QobuzTrack track)

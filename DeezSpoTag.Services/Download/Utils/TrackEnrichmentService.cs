@@ -53,26 +53,15 @@ public class TrackEnrichmentService
             // Map essential data from Gateway track (port of parseEssentialData from deezspotag)
             MapEssentialData(track, gwTrack);
 
-            // Get lyrics if available
-            if (!string.IsNullOrEmpty(gwTrack.LyricsId))
+            var lyricsPayload = await TryGetLyricsPayloadAsync(gwTrack, track.Id, cancellationToken);
+            if (lyricsPayload != null)
             {
-                try
+                track.Lyrics = new Lyrics
                 {
-                    var lyricsData = await _gatewayService.GetLyricsAsync(gwTrack.SngId.ToString(), cancellationToken);
-                    if (lyricsData != null)
-                    {
-                        track.Lyrics = new Lyrics
-                        {
-                            Id = gwTrack.LyricsId,
-                            Sync = lyricsData.GetValueOrDefault("LYRICS_SYNC_JSON", "")?.ToString() ?? "",
-                            Unsync = lyricsData.GetValueOrDefault("LYRICS_TEXT", "")?.ToString() ?? ""
-                        };
-                    }
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    _logger.LogWarning(ex, "Failed to get lyrics for track {TrackId}", track.Id);
-                }
+                    Id = gwTrack.LyricsId ?? string.Empty,
+                    Sync = lyricsPayload.Value.Sync,
+                    Unsync = lyricsPayload.Value.Unsync
+                };
             }
 
             _logger.LogDebug("Successfully enriched track {TrackId}", track.Id);
@@ -309,26 +298,15 @@ public class TrackEnrichmentService
             // Map essential data from Gateway track to Core Track
             MapEssentialDataToCore(track, gwTrack);
 
-            // Get lyrics if available
-            if (!string.IsNullOrEmpty(gwTrack.LyricsId))
+            var lyricsPayload = await TryGetLyricsPayloadAsync(gwTrack, track.Id, cancellationToken);
+            if (lyricsPayload != null)
             {
-                try
+                track.Lyrics = new DeezSpoTag.Core.Models.Lyrics
                 {
-                    var lyricsData = await _gatewayService.GetLyricsAsync(gwTrack.SngId.ToString(), cancellationToken);
-                    if (lyricsData != null)
-                    {
-                        track.Lyrics = new DeezSpoTag.Core.Models.Lyrics
-                        {
-                            Id = gwTrack.LyricsId,
-                            Sync = lyricsData.GetValueOrDefault("LYRICS_SYNC_JSON", "")?.ToString() ?? "",
-                            Unsync = lyricsData.GetValueOrDefault("LYRICS_TEXT", "")?.ToString() ?? ""
-                        };
-                    }
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    _logger.LogWarning(ex, "Failed to get lyrics for track {TrackId}", track.Id);
-                }
+                    Id = gwTrack.LyricsId ?? string.Empty,
+                    Sync = lyricsPayload.Value.Sync,
+                    Unsync = lyricsPayload.Value.Unsync
+                };
             }
 
             _logger.LogDebug("Successfully enriched Core track {TrackId}", track.Id);
@@ -380,6 +358,35 @@ public class TrackEnrichmentService
             gwTrack.FilesizeMp3128,
             gwTrack.FilesizeMp3320,
             gwTrack.FilesizeFlac);
+    }
+
+    private async Task<(string Sync, string Unsync)?> TryGetLyricsPayloadAsync(
+        DeezSpoTag.Core.Models.Deezer.GwTrack gwTrack,
+        string? trackId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(gwTrack.LyricsId))
+        {
+            return null;
+        }
+
+        try
+        {
+            var lyricsData = await _gatewayService.GetLyricsAsync(gwTrack.SngId.ToString(), cancellationToken);
+            if (lyricsData == null)
+            {
+                return null;
+            }
+
+            return (
+                lyricsData.GetValueOrDefault("LYRICS_SYNC_JSON", "")?.ToString() ?? "",
+                lyricsData.GetValueOrDefault("LYRICS_TEXT", "")?.ToString() ?? "");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to get lyrics for track {TrackId}", trackId);
+            return null;
+        }
     }
 }
 

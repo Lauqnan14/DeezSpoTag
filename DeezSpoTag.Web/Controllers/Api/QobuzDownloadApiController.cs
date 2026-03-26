@@ -46,6 +46,10 @@ public sealed class QobuzDownloadApiController : ControllerBase
     public async Task<IActionResult> Enqueue([FromBody] QobuzDownloadBatchRequest request)
     {
         var destinationFolderId = request?.DestinationFolderId;
+        var enqueue = DownloadQueueEnqueueHelper.CreateDedupEnqueueDelegate<QobuzQueueItem>(_queueRepository, _deezspotagListener, _logger);
+        var onQueued = DownloadQueueEnqueueHelper.CreateQueueAddedNotifier<QobuzQueueItem>(
+            _deezspotagListener,
+            static payload => payload.ToQueuePayload());
         return await EngineDownloadControllerCommon.HandleBatchEnqueueAsync(
             this,
             request?.Tracks,
@@ -65,14 +69,8 @@ public sealed class QobuzDownloadApiController : ControllerBase
                     destinationFolderId,
                     settings,
                     cancellationToken),
-                EnqueueAsync = (payload, redownloadCooldownMinutes, cancellationToken) => DownloadQueueEnqueueHelper.EnqueueWithDedupAsync(
-                    payload,
-                    redownloadCooldownMinutes,
-                    _queueRepository,
-                    _deezspotagListener,
-                    _logger,
-                    cancellationToken),
-                OnQueued = payload => _deezspotagListener.SendAddedToQueue(payload.ToQueuePayload())
+                EnqueueAsync = enqueue,
+                OnQueued = onQueued
             });
     }
 

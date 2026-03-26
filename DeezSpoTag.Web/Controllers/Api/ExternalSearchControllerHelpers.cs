@@ -44,6 +44,17 @@ internal static class ExternalSearchControllerHelpers
         return Math.Clamp(limit, min, max);
     }
 
+    public static Dictionary<string, int> BuildTotals(int tracks, int albums, int artists, int playlists)
+    {
+        return new Dictionary<string, int>
+        {
+            ["tracks"] = tracks,
+            ["albums"] = albums,
+            ["artists"] = artists,
+            ["playlists"] = playlists
+        };
+    }
+
     public static bool TryPrepareSearchRequest(
         string query,
         string? type,

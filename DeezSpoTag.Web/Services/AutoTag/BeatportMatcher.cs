@@ -283,32 +283,5 @@ public sealed class BeatportMatcher
     }
 
     private static AutoTagTrack ToAutoTagTrack(BeatportTrackInfo track)
-    {
-        return new AutoTagTrack
-        {
-            Title = track.Title,
-            Version = track.Version,
-            Artists = track.Artists.ToList(),
-            AlbumArtists = track.AlbumArtists.ToList(),
-            Album = track.Album,
-            Key = track.Key,
-            Bpm = track.Bpm,
-            Genres = track.Genres.ToList(),
-            Styles = track.Styles.ToList(),
-            Art = track.Art,
-            Url = track.Url,
-            Label = track.Label,
-            CatalogNumber = track.CatalogNumber,
-            TrackId = track.TrackId,
-            ReleaseId = track.ReleaseId,
-            Duration = track.Duration,
-            Remixers = track.Remixers.ToList(),
-            TrackNumber = track.TrackNumber,
-            TrackTotal = track.TrackTotal,
-            Isrc = track.Isrc,
-            ReleaseDate = track.ReleaseDate,
-            PublishDate = track.PublishDate,
-            Other = track.Other.ToDictionary(k => k.Key, v => v.Values)
-        };
-    }
+        => AutoTagTrackFactory.FromBeatport(track);
 }

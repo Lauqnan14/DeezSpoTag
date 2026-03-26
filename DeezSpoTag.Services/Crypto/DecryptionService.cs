@@ -9,25 +9,13 @@ public static class DecryptionService
 {
     private const string BinaryEncodingName = "binary";
     private const string Latin1EncodingName = "ISO-8859-1";
-    private const string EcbTransformKey = "jo6aey6haid2Teih";
 
     /// <summary>
     /// Generate MD5 hash with specific encoding (exact port of _md5 from deezspotag)
     /// </summary>
     public static string GenerateMd5(string data, string encoding = BinaryEncodingName)
     {
-        // Protocol compatibility with upstream deezspotag crypto flow.
-
-        // Use the same encoding as deezspotag
-        var dataBytes = encoding switch
-        {
-            "ascii" => Encoding.ASCII.GetBytes(data),
-            "utf8" => Encoding.UTF8.GetBytes(data),
-            BinaryEncodingName => Encoding.GetEncoding(Latin1EncodingName).GetBytes(data),
-            _ => Encoding.GetEncoding(Latin1EncodingName).GetBytes(data)
-        };
-
-        return LegacyMd5.ComputeHexLower(dataBytes);
+        return CryptoService.GenerateMd5(data, encoding);
     }
 
     /// <summary>
@@ -35,10 +23,7 @@ public static class DecryptionService
     /// </summary>
     public static string EcbEncrypt(string key, string data)
     {
-        // Use binary encoding like deezspotag (Latin1/ISO-8859-1)
-        var dataBytes = Encoding.GetEncoding(Latin1EncodingName).GetBytes(data);
-        var encrypted = CryptoService.TransformAesBlocks(key, dataBytes, encrypt: true);
-        return Convert.ToHexString(encrypted).ToLower();
+        return CryptoService.EcbEncryptCore(key, data);
     }
 
     /// <summary>
@@ -46,10 +31,7 @@ public static class DecryptionService
     /// </summary>
     public static string EcbDecrypt(string key, string data)
     {
-        var dataBytes = Convert.FromHexString(data);
-        var decrypted = CryptoService.TransformAesBlocks(key, dataBytes, encrypt: false);
-        // Use binary encoding like deezspotag (Latin1/ISO-8859-1)
-        return Encoding.GetEncoding(Latin1EncodingName).GetString(decrypted);
+        return CryptoService.EcbDecryptCore(key, data);
     }
 
     /// <summary>
@@ -73,15 +55,7 @@ public static class DecryptionService
     /// </summary>
     public static string GenerateStreamPath(string sngId, string md5, string mediaVersion, string format)
     {
-        var urlPart = $"{md5}¤{format}¤{sngId}¤{mediaVersion}";
-        var md5Val = GenerateMd5(urlPart);
-        var step2 = $"{md5Val}¤{urlPart}¤";
-        
-        // Pad to 16-byte boundary
-        var padding = 16 - (step2.Length % 16);
-        step2 += new string('.', padding);
-        
-        return EcbEncrypt(EcbTransformKey, step2);
+        return CryptoService.GenerateStreamPathCore(sngId, md5, mediaVersion, format);
     }
 
     /// <summary>
@@ -128,18 +102,7 @@ public static class DecryptionService
             var blowfish = new BlowfishService(keyBytes);
             var decrypted = blowfish.DecryptCBC(toDecrypt, iv);
             
-            // Handle result exactly like deezspotag
-            if (chunk.Length == 2048)
-            {
-                return decrypted;
-            }
-            
-            // Combine decrypted part with remaining unencrypted data
-            var result = new byte[chunk.Length];
-            Array.Copy(decrypted, 0, result, 0, decrypted.Length);
-            Array.Copy(chunk, 2048, result, decrypted.Length, chunk.Length - 2048);
-            
-            return result;
+            return DecryptionChunkHelper.MergeDecryptedPrefix(chunk, decrypted, 2048);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

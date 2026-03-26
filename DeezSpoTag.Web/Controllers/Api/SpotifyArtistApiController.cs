@@ -62,27 +62,15 @@ public sealed class SpotifyArtistApiController : ControllerBase
 
     [HttpGet("{spotifyId}/metadata")]
     public async Task<IActionResult> GetMetadata(string spotifyId, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(spotifyId))
-        {
-            return BadRequest("spotifyId is required");
-        }
-
-        try
-        {
-            var url = $"https://open.spotify.com/artist/{spotifyId}";
-            var metadata = await _pathfinder.FetchByUrlAsync(url, cancellationToken);
-            if (metadata is null)
-            {
-                return Ok(new { available = false });
-            }
-
-            return Ok(new { available = true, metadata });
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Spotify artist metadata fetch failed");
-            return StatusCode(502, new { error = "Spotify artist metadata failed." });
-        }
-    }
+        => await SpotifyMetadataActionHelper.FetchByUrlAsync(
+            this,
+            _pathfinder,
+            _logger,
+            new SpotifyMetadataActionHelper.SpotifyMetadataFetchRequest(
+                Id: spotifyId,
+                IdParameterName: "spotifyId",
+                SpotifyType: "artist",
+                FailureLogMessage: "Spotify artist metadata fetch failed",
+                FailureResponseMessage: "Spotify artist metadata failed."),
+            cancellationToken);
 }

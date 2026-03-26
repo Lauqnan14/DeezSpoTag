@@ -925,6 +925,18 @@ static void RegisterCoreApplicationServices(IServiceCollection services, IConfig
     services.AddHostedService<DeezSpoTag.Web.Services.PlaylistWatchHostedService>();
     services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackStore>();
     services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackCacheRepository>();
+    services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackService.Dependencies>(sp =>
+        new DeezSpoTag.Web.Services.MediaServerSoundtrackService.Dependencies
+        {
+            PlatformAuthService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformAuthService>(),
+            PlexApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Plex.PlexApiClient>(),
+            JellyfinApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Jellyfin.JellyfinApiClient>(),
+            SpotifySearchService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifySearchService>(),
+            MusicBrainzClient = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.MusicBrainzClient>(),
+            Store = sp.GetRequiredService<DeezSpoTag.Web.Services.MediaServerSoundtrackStore>(),
+            CacheRepository = sp.GetRequiredService<DeezSpoTag.Web.Services.MediaServerSoundtrackCacheRepository>(),
+            HttpClientFactory = sp.GetRequiredService<IHttpClientFactory>()
+        });
     services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackService>();
     services.AddHostedService<DeezSpoTag.Web.Services.MediaServerSoundtrackMonitorService>();
     services.AddSingleton<DeezSpoTag.Services.Matching.TrackMatchService>();

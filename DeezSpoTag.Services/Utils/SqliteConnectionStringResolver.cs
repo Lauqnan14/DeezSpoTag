@@ -81,33 +81,16 @@ public static class SqliteConnectionStringResolver
             fileName = defaultFileName;
         }
 
-        var dataRoot = ResolveDataRoot();
+        var dataRoot = DeezSpoTagDataRootResolver.Resolve();
         Directory.CreateDirectory(dataRoot);
         return Path.GetFullPath(Path.Join(dataRoot, fileName));
     }
 
     private static string BuildFallback(string defaultFileName)
     {
-        var dataRoot = ResolveDataRoot();
+        var dataRoot = DeezSpoTagDataRootResolver.Resolve();
         Directory.CreateDirectory(dataRoot);
         var dbPath = Path.Join(dataRoot, defaultFileName);
         return $"Data Source={Path.GetFullPath(dbPath)}";
-    }
-
-    private static string ResolveDataRoot()
-    {
-        var configDir = Environment.GetEnvironmentVariable("DEEZSPOTAG_CONFIG_DIR");
-        if (!string.IsNullOrWhiteSpace(configDir))
-        {
-            return configDir.Trim();
-        }
-
-        var dataDir = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_DIR");
-        if (!string.IsNullOrWhiteSpace(dataDir))
-        {
-            return dataDir.Trim();
-        }
-
-        return Path.Join(AppContext.BaseDirectory, "Data");
     }
 }

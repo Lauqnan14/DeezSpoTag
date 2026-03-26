@@ -103,11 +103,9 @@ public sealed class MediaServerSoundtrackConfigurationUpdateRequest
     public List<MediaServerSoundtrackServerPreferenceUpdateDto> Servers { get; set; } = new();
 }
 
-public sealed class MediaServerSoundtrackItemDto
+public abstract class MediaServerLibraryContentBase
 {
     public string ServerType { get; set; } = string.Empty;
-
-    public string ServerLabel { get; set; } = string.Empty;
 
     public string LibraryId { get; set; } = string.Empty;
 
@@ -122,6 +120,11 @@ public sealed class MediaServerSoundtrackItemDto
     public int? Year { get; set; }
 
     public string? ImageUrl { get; set; }
+}
+
+public sealed class MediaServerSoundtrackItemDto : MediaServerLibraryContentBase
+{
+    public string ServerLabel { get; set; } = string.Empty;
 
     public string ContentHash { get; set; } = string.Empty;
 
@@ -151,6 +154,8 @@ public sealed class MediaServerSoundtrackResolveRequest
     public int? Year { get; set; }
 
     public string? ImageUrl { get; set; }
+
+    public string? ManualQuery { get; set; }
 }
 
 public sealed class MediaServerSoundtrackMatchDto
@@ -240,7 +245,7 @@ public sealed class MediaServerTvShowSeasonDto
     public int EpisodeCount { get; set; }
 }
 
-public sealed class MediaServerTvShowEpisodeDto
+public abstract class MediaServerTvShowEpisodeBase
 {
     public string EpisodeId { get; set; } = string.Empty;
 
@@ -257,7 +262,10 @@ public sealed class MediaServerTvShowEpisodeDto
     public int? Year { get; set; }
 
     public string? ImageUrl { get; set; }
+}
 
+public sealed class MediaServerTvShowEpisodeDto : MediaServerTvShowEpisodeBase
+{
     public MediaServerSoundtrackMatchDto? Soundtrack { get; set; }
 }
 
@@ -299,24 +307,7 @@ public sealed class MediaServerLibraryDescriptor
     public bool Connected { get; set; }
 }
 
-public sealed class MediaServerContentItem
-{
-    public string ServerType { get; set; } = string.Empty;
-
-    public string LibraryId { get; set; } = string.Empty;
-
-    public string LibraryName { get; set; } = string.Empty;
-
-    public string Category { get; set; } = MediaServerSoundtrackConstants.MovieCategory;
-
-    public string ItemId { get; set; } = string.Empty;
-
-    public string Title { get; set; } = string.Empty;
-
-    public int? Year { get; set; }
-
-    public string? ImageUrl { get; set; }
-}
+public sealed class MediaServerContentItem : MediaServerLibraryContentBase;
 
 public sealed class MediaServerTvShowSeasonItem
 {
@@ -329,21 +320,4 @@ public sealed class MediaServerTvShowSeasonItem
     public string? ImageUrl { get; set; }
 }
 
-public sealed class MediaServerTvShowEpisodeItem
-{
-    public string EpisodeId { get; set; } = string.Empty;
-
-    public string SeasonId { get; set; } = string.Empty;
-
-    public string SeasonTitle { get; set; } = string.Empty;
-
-    public int? SeasonNumber { get; set; }
-
-    public int? EpisodeNumber { get; set; }
-
-    public string Title { get; set; } = string.Empty;
-
-    public int? Year { get; set; }
-
-    public string? ImageUrl { get; set; }
-}
+public sealed class MediaServerTvShowEpisodeItem : MediaServerTvShowEpisodeBase;

@@ -8,7 +8,6 @@
     const STATUS_RUNNING = "running";
     const STATUS_COMPLETED = "completed";
     const STATUS_FAILED = "failed";
-    const STATUS_CANCELED = "canceled";
     const pollIntervalMs = 2000;
     const weekDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     let pollTimer = null;
@@ -217,7 +216,7 @@
 
         const lastLogEl = el("autotag-last-log");
         if (lastLogEl) {
-            const lastLine = logLines.length ? logLines[logLines.length - 1] : "No recent log lines.";
+            const lastLine = logLines.length ? logLines.at(-1) : "No recent log lines.";
             lastLogEl.textContent = stripAnsi(lastLine);
         }
 
@@ -230,7 +229,7 @@
         if (!Array.isArray(statusHistory) || !statusHistory.length) {
             return null;
         }
-        return statusHistory[statusHistory.length - 1] || null;
+        return statusHistory.at(-1) || null;
     }
 
     function renderStatusPanelForArchive(summary, archive) {
@@ -276,7 +275,7 @@
 
         if (status === STATUS_RUNNING) {
             bar.classList.add("bg-info", "progress-bar-striped", "progress-bar-animated");
-            bar.style.width = progress !== null ? `${Math.round(progress * 100)}%` : "100%";
+            bar.style.width = progress === null ? "100%" : `${Math.round(progress * 100)}%`;
         } else if (status === STATUS_COMPLETED) {
             bar.classList.add("bg-success");
             bar.style.width = "100%";
@@ -665,80 +664,25 @@
     async function pollJob() {
         try {
             let jobId = localStorage.getItem(JOB_KEY);
-            try {
-                const latestJob = await fetchJson("/api/autotag/jobs/latest");
-                if (latestJob?.id) {
-                    if (jobId !== latestJob.id) {
-                        jobId = latestJob.id;
-                        localStorage.setItem(JOB_KEY, jobId);
-                    }
-
-                    const latestLogs = normalizeLogLines(latestJob.logs);
-                    state.liveJobId = latestJob.id;
-                    updateStatus(latestJob.id, latestJob.status);
-                    updateLogs(latestLogs);
-                    updateLiveMetadata({ ...latestJob, logs: latestLogs });
-                    updateProgressBar(latestJob);
-                    if (state.selectedRunId && state.selectedRunId === latestJob.id) {
-                        state.historyStatus = Array.isArray(latestJob.statusHistory)
-                            ? latestJob.statusHistory.slice().reverse()
-                            : [];
-                        const liveSummary = buildSummaryFromLiveJob(latestJob);
-                        renderRunSummary(liveSummary, {
-                            summary: liveSummary,
-                            statusHistory: latestJob.statusHistory || [],
-                            logs: latestLogs
-                        });
-                        updateFilterCountsFromHistory();
-                        renderFilteredHistory();
-                    }
-
-                    if (latestJob.status === STATUS_RUNNING) {
-                        await refreshHistoryIfSelectedLiveRun();
-                    }
-                    schedulePoll();
-                    return;
-                }
-            } catch {
-                // ignore and fall back to cached job
+            const latestJob = await tryFetchLatestJob();
+            if (latestJob?.id) {
+                jobId = syncPolledJobId(jobId, latestJob.id);
+                await applyPolledJob(latestJob, normalizeLogLines(latestJob.logs));
+                schedulePoll();
+                return;
             }
 
             if (!jobId) {
-                state.liveJobId = null;
-                updateStatus("Idle", "waiting");
-                updateLogs([]);
-                updateLiveMetadata(null);
-                updateProgressBar(null);
+                resetLivePollingState();
                 schedulePoll();
                 return;
             }
 
             try {
                 const job = await fetchJson(`/api/autotag/jobs/${encodeURIComponent(jobId)}`);
-                const jobLogs = normalizeLogLines(job.logs);
-                state.liveJobId = job?.id || jobId;
-                updateStatus(job.id, job.status);
-                updateLogs(jobLogs);
-                updateLiveMetadata({ ...job, logs: jobLogs });
-                updateProgressBar(job);
-                if (state.selectedRunId && state.selectedRunId === job.id) {
-                    state.historyStatus = Array.isArray(job.statusHistory)
-                        ? job.statusHistory.slice().reverse()
-                        : [];
-                    const liveSummary = buildSummaryFromLiveJob(job);
-                    renderRunSummary(liveSummary, {
-                        summary: liveSummary,
-                        statusHistory: job.statusHistory || [],
-                        logs: jobLogs
-                    });
-                    updateFilterCountsFromHistory();
-                    renderFilteredHistory();
-                }
-
-                if (job.status === STATUS_RUNNING) {
-                    await refreshHistoryIfSelectedLiveRun();
-                }
+                await applyPolledJob({ ...job, id: job?.id || jobId }, normalizeLogLines(job.logs));
             } catch (error) {
+                console.warn("Failed to refresh live AutoTag status.", error);
                 updateStatus(jobId, STATUS_ERROR);
                 updateProgressBar({ status: STATUS_FAILED });
             }
@@ -748,6 +692,62 @@
             console.warn("AutoTag polling loop failed; retrying.", error);
             schedulePoll();
         }
+    }
+
+    async function tryFetchLatestJob() {
+        try {
+            return await fetchJson("/api/autotag/jobs/latest");
+        } catch {
+            // ignore and fall back to cached job
+            return null;
+        }
+    }
+
+    function syncPolledJobId(currentJobId, nextJobId) {
+        if (!nextJobId || currentJobId === nextJobId) {
+            return currentJobId;
+        }
+
+        localStorage.setItem(JOB_KEY, nextJobId);
+        return nextJobId;
+    }
+
+    function resetLivePollingState() {
+        state.liveJobId = null;
+        updateStatus("Idle", "waiting");
+        updateLogs([]);
+        updateLiveMetadata(null);
+        updateProgressBar(null);
+    }
+
+    async function applyPolledJob(job, logs) {
+        state.liveJobId = job?.id || null;
+        updateStatus(job.id, job.status);
+        updateLogs(logs);
+        updateLiveMetadata({ ...job, logs });
+        updateProgressBar(job);
+        syncSelectedRunWithLiveJob(job, logs);
+        if (job.status === STATUS_RUNNING) {
+            await refreshHistoryIfSelectedLiveRun();
+        }
+    }
+
+    function syncSelectedRunWithLiveJob(job, logs) {
+        if (!state.selectedRunId || state.selectedRunId !== job.id) {
+            return;
+        }
+
+        state.historyStatus = Array.isArray(job.statusHistory)
+            ? job.statusHistory.slice().reverse()
+            : [];
+        const liveSummary = buildSummaryFromLiveJob(job);
+        renderRunSummary(liveSummary, {
+            summary: liveSummary,
+            statusHistory: job.statusHistory || [],
+            logs
+        });
+        updateFilterCountsFromHistory();
+        renderFilteredHistory();
     }
 
     function schedulePoll() {
@@ -931,122 +931,15 @@
             return;
         }
 
-        const initialize = () => {
-            const tableRect = table.getBoundingClientRect();
-            if (tableRect.width <= 0) {
-                return false;
-            }
+        queueDiffTableResizeInitialization(table, headerCells, cols);
+    }
 
-            const measured = headerCells.map((cell) => Math.max(80, Math.round(cell.getBoundingClientRect().width)));
-            const totalWidth = measured.reduce((sum, value) => sum + value, 0);
-            cols.forEach((col, index) => {
-                col.style.width = `${measured[index]}px`;
-            });
-            table.style.width = `${Math.max(640, totalWidth)}px`;
-            table.style.tableLayout = "fixed";
-
-            const minWidths = measured.map((value, index) => {
-                if (index === 0) {
-                    return 140;
-                }
-                if (index === measured.length - 1) {
-                    return 100;
-                }
-                return 90;
-            });
-
-            headerCells.forEach((header, index) => {
-                if (index >= headerCells.length - 1 || header.dataset.colResizableBound === "1") {
-                    return;
-                }
-                header.dataset.colResizableBound = "1";
-                header.classList.add("autotag-col-resizable");
-
-                const handle = document.createElement("button");
-                handle.type = "button";
-                handle.className = "autotag-col-resize-handle";
-                handle.setAttribute("aria-hidden", "true");
-                handle.setAttribute("tabindex", "-1");
-                header.appendChild(handle);
-
-                const startResize = (event) => {
-                    if (event.button !== 0) {
-                        return;
-                    }
-
-                    event.preventDefault();
-                    const currentWidths = cols.map((col, colIndex) => {
-                        const explicit = Number.parseFloat(col.style.width);
-                        return Number.isFinite(explicit) && explicit > 0
-                            ? explicit
-                            : Math.max(80, headerCells[colIndex]?.getBoundingClientRect().width || 80);
-                    });
-                    const startX = event.clientX;
-                    const leftStart = currentWidths[index];
-                    const rightStart = currentWidths[index + 1];
-                    const leftMin = minWidths[index];
-                    const rightMin = minWidths[index + 1];
-                    document.body.classList.add("autotag-col-resizing");
-
-                    const onPointerMove = (moveEvent) => {
-                        const delta = moveEvent.clientX - startX;
-                        let leftWidth = leftStart + delta;
-                        let rightWidth = rightStart - delta;
-
-                        if (leftWidth < leftMin) {
-                            const deficit = leftMin - leftWidth;
-                            leftWidth += deficit;
-                            rightWidth -= deficit;
-                        }
-                        if (rightWidth < rightMin) {
-                            const deficit = rightMin - rightWidth;
-                            rightWidth += deficit;
-                            leftWidth -= deficit;
-                        }
-
-                        leftWidth = Math.max(leftMin, leftWidth);
-                        rightWidth = Math.max(rightMin, rightWidth);
-
-                        cols[index].style.width = `${Math.round(leftWidth)}px`;
-                        cols[index + 1].style.width = `${Math.round(rightWidth)}px`;
-                    };
-
-                    const onPointerUp = () => {
-                        document.body.classList.remove("autotag-col-resizing");
-                        globalThis.removeEventListener("pointermove", onPointerMove);
-                        globalThis.removeEventListener("pointerup", onPointerUp);
-                        globalThis.removeEventListener("pointercancel", onPointerUp);
-                    };
-
-                    globalThis.addEventListener("pointermove", onPointerMove);
-                    globalThis.addEventListener("pointerup", onPointerUp);
-                    globalThis.addEventListener("pointercancel", onPointerUp);
-                };
-
-                header.addEventListener("pointerdown", (event) => {
-                    if (event.button !== 0) {
-                        return;
-                    }
-                    const rect = header.getBoundingClientRect();
-                    const edgeHotZone = 18;
-                    if ((rect.right - event.clientX) <= edgeHotZone) {
-                        startResize(event);
-                    }
-                });
-
-                handle.addEventListener("pointerdown", (event) => {
-                    startResize(event);
-                });
-            });
-
-            return true;
-        };
-
+    function queueDiffTableResizeInitialization(table, headerCells, cols) {
         let attempts = 0;
         const maxAttempts = 20;
         const waitForLayout = () => {
             attempts += 1;
-            if (initialize()) {
+            if (initializeDiffTableResizing(table, headerCells, cols)) {
                 return;
             }
             if (attempts < maxAttempts) {
@@ -1054,6 +947,142 @@
             }
         };
         globalThis.requestAnimationFrame(waitForLayout);
+    }
+
+    function initializeDiffTableResizing(table, headerCells, cols) {
+        const tableRect = table.getBoundingClientRect();
+        if (tableRect.width <= 0) {
+            return false;
+        }
+
+        const measured = headerCells.map((cell) => Math.max(80, Math.round(cell.getBoundingClientRect().width)));
+        const totalWidth = measured.reduce((sum, value) => sum + value, 0);
+        cols.forEach((col, index) => {
+            col.style.width = `${measured[index]}px`;
+        });
+        table.style.width = `${Math.max(640, totalWidth)}px`;
+        table.style.tableLayout = "fixed";
+
+        const minWidths = measured.map((value, index) => {
+            if (index === 0) {
+                return 140;
+            }
+            if (index === measured.length - 1) {
+                return 100;
+            }
+            return 90;
+        });
+
+        headerCells.forEach((header, index) => {
+            bindDiffHeaderResizeHandle(header, index, headerCells, cols, minWidths);
+        });
+
+        return true;
+    }
+
+    function bindDiffHeaderResizeHandle(header, index, headerCells, cols, minWidths) {
+        if (index >= headerCells.length - 1 || header.dataset.colResizableBound === "1") {
+            return;
+        }
+
+        header.dataset.colResizableBound = "1";
+        header.classList.add("autotag-col-resizable");
+
+        const handle = createDiffResizeHandle();
+        header.appendChild(handle);
+
+        const startResize = (event) => beginDiffColumnResize(event, index, header, headerCells, cols, minWidths);
+        header.addEventListener("pointerdown", (event) => {
+            if (!isDiffHeaderEdgePointerDown(event, header)) {
+                return;
+            }
+            startResize(event);
+        });
+        handle.addEventListener("pointerdown", startResize);
+    }
+
+    function createDiffResizeHandle() {
+        const handle = document.createElement("button");
+        handle.type = "button";
+        handle.className = "autotag-col-resize-handle";
+        handle.setAttribute("aria-hidden", "true");
+        handle.setAttribute("tabindex", "-1");
+        return handle;
+    }
+
+    function isDiffHeaderEdgePointerDown(event, header) {
+        if (event.button !== 0) {
+            return false;
+        }
+        const rect = header.getBoundingClientRect();
+        const edgeHotZone = 18;
+        return (rect.right - event.clientX) <= edgeHotZone;
+    }
+
+    function beginDiffColumnResize(event, index, header, headerCells, cols, minWidths) {
+        if (event.button !== 0) {
+            return;
+        }
+
+        event.preventDefault();
+        const currentWidths = cols.map((col, colIndex) => {
+            const explicit = Number.parseFloat(col.style.width);
+            return Number.isFinite(explicit) && explicit > 0
+                ? explicit
+                : Math.max(80, headerCells[colIndex]?.getBoundingClientRect().width || 80);
+        });
+        const startX = event.clientX;
+        const leftStart = currentWidths[index];
+        const rightStart = currentWidths[index + 1];
+        const leftMin = minWidths[index];
+        const rightMin = minWidths[index + 1];
+        document.body.classList.add("autotag-col-resizing");
+
+        const resizeState = {
+            startX,
+            leftStart,
+            rightStart,
+            leftMin,
+            rightMin,
+            cols,
+            index
+        };
+        const onPointerMove = (moveEvent) => applyDiffColumnResize(moveEvent, resizeState);
+        const onPointerUp = () => endDiffColumnResize(onPointerMove, onPointerUp);
+        globalThis.addEventListener("pointermove", onPointerMove);
+        globalThis.addEventListener("pointerup", onPointerUp);
+        globalThis.addEventListener("pointercancel", onPointerUp);
+    }
+
+    function applyDiffColumnResize(moveEvent, resizeState) {
+        const { startX, leftStart, rightStart, leftMin, rightMin, cols, index } = resizeState;
+        const delta = moveEvent.clientX - startX;
+        let leftWidth = leftStart + delta;
+        let rightWidth = rightStart - delta;
+
+        if (leftWidth < leftMin) {
+            const deficit = leftMin - leftWidth;
+            leftWidth += deficit;
+            rightWidth -= deficit;
+        }
+        if (rightWidth < rightMin) {
+            const deficit = rightMin - rightWidth;
+            rightWidth += deficit;
+            leftWidth -= deficit;
+        }
+
+        leftWidth = Math.max(leftMin, leftWidth);
+        rightWidth = Math.max(rightMin, rightWidth);
+
+        cols[index].style.width = `${Math.round(leftWidth)}px`;
+        cols[index + 1].style.width = `${Math.round(rightWidth)}px`;
+    }
+
+    function endDiffColumnResize(onPointerMove, onPointerUp) {
+        document.body.classList.remove("autotag-col-resizing");
+        globalThis.removeEventListener("pointermove", onPointerMove);
+        globalThis.removeEventListener("pointerup", onPointerUp);
+        globalThis.removeEventListener("pointercancel", onPointerUp);
     }
 
     function buildDiffRows(before, after, diff) {
@@ -1217,30 +1246,11 @@
                 query.set("platform", platform);
             }
             const response = await fetch(`/api/autotag/jobs/${encodeURIComponent(jobId)}/tag-diff?${query.toString()}`);
-            if (!response.ok) {
-                let payload = null;
-                try {
-                    payload = await response.json();
-                } catch {
-                    payload = null;
-                }
-
-                if (response.status === 404) {
-                    diffErrorMessage = payload?.message
-                        || "No before/after tag snapshot was captured for this track in the selected run.";
-                } else if (response.status === 400) {
-                    diffErrorMessage = payload?.message
-                        || payload?.error
-                        || "Track path is outside configured AutoTag roots.";
-                } else if (response.status === 401 || response.status === 403) {
-                    diffErrorMessage = "You are not authorized to load tag diff data.";
-                } else {
-                    diffErrorMessage = payload?.message
-                        || payload?.error
-                        || `Failed to load tag diff (HTTP ${response.status}).`;
-                }
-            } else {
+            if (response.ok) {
                 diff = await response.json();
+            } else {
+                const payload = await tryReadTagDiffPayload(response);
+                diffErrorMessage = buildTagDiffErrorMessage(response.status, payload);
             }
         } catch (error) {
             console.warn("Failed to load AutoTag diff", error);
@@ -1270,6 +1280,33 @@
                 buttons: [{ label: "Close", value: true, primary: true }]
             });
         }
+    }
+
+    async function tryReadTagDiffPayload(response) {
+        try {
+            return await response.json();
+        } catch {
+            return null;
+        }
+    }
+
+    function buildTagDiffErrorMessage(statusCode, payload) {
+        if (statusCode === 404) {
+            return payload?.message
+                || "No before/after tag snapshot was captured for this track in the selected run.";
+        }
+        if (statusCode === 400) {
+            return payload?.message
+                || payload?.error
+                || "Track path is outside configured AutoTag roots.";
+        }
+        if (statusCode === 401 || statusCode === 403) {
+            return "You are not authorized to load tag diff data.";
+        }
+
+        return payload?.message
+            || payload?.error
+            || `Failed to load tag diff (HTTP ${statusCode}).`;
     }
 
     document.addEventListener("DOMContentLoaded", async () => {

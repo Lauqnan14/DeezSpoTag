@@ -1,0 +1,61 @@
+.dropdown-select {
+    position: relative;
+    display: inline-flex;
+    width: 100%;
+}
+
+.dropdown-trigger {
+    width: 100%;
+    text-align: left;
+    background: var(--dropdown-trigger-bg, var(--bg-secondary));
+    color: var(--text-primary);
+    border: 1px solid var(--border-secondary);
+    padding: var(--dropdown-trigger-padding, 10px 12px);
+    border-radius: var(--dropdown-trigger-radius, 6px);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: var(--dropdown-trigger-font-size, inherit);
+}
+
+.dropdown-trigger::after {
+    content: "▾";
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.dropdown-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    background: var(--dropdown-menu-bg, var(--bg-secondary));
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
+    padding: 6px;
+    display: none;
+    z-index: 20;
+}
+
+.dropdown-menu.open {
+    display: block;
+}
+
+.dropdown-option {
+    width: 100%;
+    background: transparent;
+    border: 0;
+    color: var(--text-primary);
+    text-align: left;
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.dropdown-option:hover,
+.dropdown-option[aria-selected="true"] {
+    background: var(--bg-tertiary);
+}

@@ -58,17 +58,7 @@ public sealed class AutoTagProfileResolutionService
         string? profileName,
         CancellationToken cancellationToken = default)
     {
-        var references = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (!string.IsNullOrWhiteSpace(profileId))
-        {
-            references.Add(profileId.Trim());
-        }
-
-        if (!string.IsNullOrWhiteSpace(profileName))
-        {
-            references.Add(profileName.Trim());
-        }
-
+        var references = AutoTagProfileReferenceSet.Build(profileId, profileName);
         if (references.Count == 0)
         {
             return;

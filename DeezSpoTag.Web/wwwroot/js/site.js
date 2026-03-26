@@ -61,6 +61,38 @@
     };
 })();
 
+globalThis.DeezSpoTagRevealMaterialIconsWhenReady = function (selector) {
+    if (!selector || typeof selector !== 'string') {
+        return;
+    }
+
+    const page = document.querySelector(selector);
+    if (!page) {
+        return;
+    }
+
+    const reveal = () => page.classList.remove('material-icons-pending');
+    if (!document.fonts || typeof document.fonts.load !== 'function') {
+        reveal();
+        return;
+    }
+
+    if (document.fonts.check('1em "Material Icons"')) {
+        reveal();
+        return;
+    }
+
+    document.fonts.load('1em "Material Icons"')
+        .then(() => {
+            if (document.fonts.check('1em "Material Icons"')) {
+                reveal();
+            }
+        })
+        .catch(() => {
+            // Keep hidden rather than flashing icon-name fallback text.
+        });
+};
+
 // Global DeezSpoTag namespace
 globalThis.DeezSpoTag = {
     // Notification management
@@ -832,7 +864,7 @@ globalThis.DeezSpoTag = {
             }
 
             const targetSelector = trigger.dataset.bsTarget;
-            if (!targetSelector || !targetSelector.startsWith('#')) {
+            if (targetSelector?.startsWith('#') !== true) {
                 return;
             }
 

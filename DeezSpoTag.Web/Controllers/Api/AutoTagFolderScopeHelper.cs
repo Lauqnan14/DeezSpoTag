@@ -110,7 +110,7 @@ internal static class AutoTagFolderScopeHelper
         return selected.Where(enabledIds.Contains).ToList();
     }
 
-    private static bool IsPathUnderRoot(string path, string root)
+    public static bool IsPathUnderRoot(string path, string root)
     {
         var normalizedPath = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         var normalizedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);

@@ -192,7 +192,9 @@ public sealed class JunoDownloadClient
         }
 
         var durationMatch = Regex.Match(text, " - \\((\\d+:\\d\\d)\\) ?$", RegexOptions.None, RegexTimeout);
-        var duration = durationMatch.Success ? ParseDuration(durationMatch.Groups[1].Value) : TimeSpan.Zero;
+        var duration = durationMatch.Success
+            ? DurationParser.ParseMinutesSeconds(durationMatch.Groups[1].Value)
+            : TimeSpan.Zero;
         var noDuration = durationMatch.Success
             ? Regex.Replace(text, " - \\((\\d+:\\d\\d)\\) ?$", string.Empty, RegexOptions.None, RegexTimeout)
             : text;
@@ -245,13 +247,4 @@ public sealed class JunoDownloadClient
         return null;
     }
 
-    private static TimeSpan ParseDuration(string text)
-    {
-        var parts = text.Split(':');
-        if (parts.Length == 2 && int.TryParse(parts[0], out var minutes) && int.TryParse(parts[1], out var seconds))
-        {
-            return TimeSpan.FromSeconds((minutes * 60d) + seconds);
-        }
-        return TimeSpan.Zero;
-    }
 }

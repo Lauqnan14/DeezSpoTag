@@ -1784,33 +1784,7 @@
 </div>
 
 <script>
-(function revealAutoTagMaterialIconsWhenReady() {
-    const page = document.querySelector('.autotag-page.material-icons-pending');
-    if (!page) {
-        return;
-    }
-
-    const reveal = () => page.classList.remove('material-icons-pending');
-    if (!document.fonts || typeof document.fonts.load !== 'function') {
-        reveal();
-        return;
-    }
-
-    if (document.fonts.check('1em "Material Icons"')) {
-        reveal();
-        return;
-    }
-
-    document.fonts.load('1em "Material Icons"')
-        .then(() => {
-            if (document.fonts.check('1em "Material Icons"')) {
-                reveal();
-            }
-        })
-        .catch(() => {
-            // Keep hidden rather than flashing icon-name fallback text.
-        });
-})();
+window.DeezSpoTagRevealMaterialIconsWhenReady('.autotag-page.material-icons-pending');
 
 // Pipeline tab activation helper
 function activatePipelineTab(tabId) {

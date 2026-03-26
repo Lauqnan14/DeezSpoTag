@@ -167,37 +167,26 @@ public sealed class AccountApiController : ControllerBase
             return BadRequest(new { message = "All fields are required." });
         }
 
-        var user = await _userManager.GetUserAsync(User);
-        if (user == null)
-        {
-            return Unauthorized();
-        }
-
-        var passwordResult = await _userManager.ChangePasswordAsync(user, request.CurrentPassword, request.NewPassword);
-        if (!passwordResult.Succeeded)
-        {
-            return BadRequest(new { message = string.Join("; ", passwordResult.Errors.Select(e => e.Description)) });
-        }
-
-        if (!string.Equals(user.UserName, request.NewUsername, StringComparison.Ordinal))
-        {
-            var setUserNameResult = await _userManager.SetUserNameAsync(user, request.NewUsername);
-            if (!setUserNameResult.Succeeded)
+        return await ExecuteWithUpdatedPasswordAsync(
+            request.CurrentPassword,
+            request.NewPassword,
+            async user =>
             {
-                return BadRequest(new { message = string.Join("; ", setUserNameResult.Errors.Select(e => e.Description)) });
-            }
-        }
+                var usernameUpdateError = await TryUpdateUserNameAsync(user, request.NewUsername);
+                if (usernameUpdateError != null)
+                {
+                    return usernameUpdateError;
+                }
 
-        var claims = await _userManager.GetClaimsAsync(user);
-        var mustChangeClaims = claims.Where(c => c.Type == MustChangePasswordClaim).ToList();
-        foreach (var mustChange in mustChangeClaims)
-        {
-            await _userManager.RemoveClaimAsync(user, mustChange);
-        }
+                var claims = await _userManager.GetClaimsAsync(user);
+                var mustChangeClaims = claims.Where(c => c.Type == MustChangePasswordClaim).ToList();
+                foreach (var mustChange in mustChangeClaims)
+                {
+                    await _userManager.RemoveClaimAsync(user, mustChange);
+                }
 
-        await DeleteNonCanonicalAccountsAsync(user.Id);
-        await _signInManager.RefreshSignInAsync(user);
-        return Ok(new { message = "Credentials updated." });
+                return await CompleteCredentialsUpdateAsync(user, "Credentials updated.");
+            });
     }
 
     [HttpPost("change-password")]
@@ -209,21 +198,10 @@ public sealed class AccountApiController : ControllerBase
             return BadRequest(new { message = "All fields are required." });
         }
 
-        var user = await _userManager.GetUserAsync(User);
-        if (user == null)
-        {
-            return Unauthorized();
-        }
-
-        var passwordResult = await _userManager.ChangePasswordAsync(user, request.CurrentPassword, request.NewPassword);
-        if (!passwordResult.Succeeded)
-        {
-            return BadRequest(new { message = string.Join("; ", passwordResult.Errors.Select(e => e.Description)) });
-        }
-
-        await DeleteNonCanonicalAccountsAsync(user.Id);
-        await _signInManager.RefreshSignInAsync(user);
-        return Ok(new { message = "Password updated." });
+        return await ExecuteWithUpdatedPasswordAsync(
+            request.CurrentPassword,
+            request.NewPassword,
+            user => CompleteCredentialsUpdateAsync(user, "Password updated."));
     }
 
     [HttpPost("change-username")]
@@ -247,13 +225,10 @@ public sealed class AccountApiController : ControllerBase
             return BadRequest(new { message = "Current password is incorrect." });
         }
 
-        if (!string.Equals(user.UserName, request.NewUsername, StringComparison.Ordinal))
+        var usernameUpdateError = await TryUpdateUserNameAsync(user, request.NewUsername);
+        if (usernameUpdateError != null)
         {
-            var setUserNameResult = await _userManager.SetUserNameAsync(user, request.NewUsername);
-            if (!setUserNameResult.Succeeded)
-            {
-                return BadRequest(new { message = string.Join("; ", setUserNameResult.Errors.Select(e => e.Description)) });
-            }
+            return usernameUpdateError;
         }
 
         await DeleteNonCanonicalAccountsAsync(user.Id);
@@ -275,6 +250,73 @@ public sealed class AccountApiController : ControllerBase
         {
             await _userManager.DeleteAsync(other);
         }
+    }
+
+    private async Task<IActionResult?> TryChangePasswordAsync(AppUser user, string currentPassword, string newPassword)
+    {
+        var passwordResult = await _userManager.ChangePasswordAsync(user, currentPassword, newPassword);
+        if (passwordResult.Succeeded)
+        {
+            return null;
+        }
+
+        return BadRequest(new { message = string.Join("; ", passwordResult.Errors.Select(e => e.Description)) });
+    }
+
+    private async Task<IActionResult?> TryUpdateUserNameAsync(AppUser user, string newUsername)
+    {
+        if (string.Equals(user.UserName, newUsername, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var setUserNameResult = await _userManager.SetUserNameAsync(user, newUsername);
+        if (setUserNameResult.Succeeded)
+        {
+            return null;
+        }
+
+        return BadRequest(new { message = string.Join("; ", setUserNameResult.Errors.Select(e => e.Description)) });
+    }
+
+    private async Task<(AppUser? User, IActionResult? Error)> TryGetUserWithUpdatedPasswordAsync(string currentPassword, string newPassword)
+    {
+        var user = await _userManager.GetUserAsync(User);
+        if (user == null)
+        {
+            return (null, Unauthorized());
+        }
+
+        var passwordUpdateError = await TryChangePasswordAsync(user, currentPassword, newPassword);
+        return passwordUpdateError is null
+            ? (user, null)
+            : (null, passwordUpdateError);
+    }
+
+    private async Task<IActionResult> ExecuteWithUpdatedPasswordAsync(
+        string currentPassword,
+        string newPassword,
+        Func<AppUser, Task<IActionResult>> onSuccess)
+    {
+        var (user, passwordUpdateError) = await TryGetUserWithUpdatedPasswordAsync(currentPassword, newPassword);
+        if (passwordUpdateError is not null)
+        {
+            return passwordUpdateError;
+        }
+
+        if (user is null)
+        {
+            return Unauthorized();
+        }
+
+        return await onSuccess(user);
+    }
+
+    private async Task<IActionResult> CompleteCredentialsUpdateAsync(AppUser user, string message)
+    {
+        await DeleteNonCanonicalAccountsAsync(user.Id);
+        await _signInManager.RefreshSignInAsync(user);
+        return Ok(new { message });
     }
 
     public sealed class ChangeCredentialsRequest
