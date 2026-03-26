@@ -32,13 +32,13 @@ public class SpotifyPlaylistTracklistApiController : ControllerBase
     [HttpGet("playlist/metadata")]
     public async Task<IActionResult> PlaylistMetadata([FromQuery] string url, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(url))
+        var playlistId = ParsePlaylistId(url, out var validationError);
+        if (validationError != null)
         {
-            return BadRequest(new { error = UrlRequiredMessage });
+            return validationError;
         }
 
-        if (!SpotifyMetadataService.TryParseSpotifyUrl(url, out var type, out var playlistId)
-            || !string.Equals(type, PlaylistType, StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(playlistId))
         {
             return Ok(new { available = false });
         }
@@ -83,13 +83,13 @@ public class SpotifyPlaylistTracklistApiController : ControllerBase
         [FromQuery] bool hydrate = true,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(url))
+        var playlistId = ParsePlaylistId(url, out var validationError);
+        if (validationError != null)
         {
-            return BadRequest(new { error = UrlRequiredMessage });
+            return validationError;
         }
 
-        if (!SpotifyMetadataService.TryParseSpotifyUrl(url, out var type, out var playlistId)
-            || !string.Equals(type, PlaylistType, StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(playlistId))
         {
             return Ok(new { available = false });
         }
@@ -176,13 +176,13 @@ public class SpotifyPlaylistTracklistApiController : ControllerBase
     [HttpPost("playlist/match")]
     public async Task<IActionResult> PlaylistMatch([FromQuery] string url, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(url))
+        var playlistId = ParsePlaylistId(url, out var validationError);
+        if (validationError != null)
         {
-            return BadRequest(new { error = UrlRequiredMessage });
+            return validationError;
         }
 
-        if (!SpotifyMetadataService.TryParseSpotifyUrl(url, out var type, out _)
-            || !string.Equals(type, PlaylistType, StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(playlistId))
         {
             return Ok(new { available = false });
         }
@@ -216,5 +216,23 @@ public class SpotifyPlaylistTracklistApiController : ControllerBase
         }
 
         return IsPathfinderTrackSource(value) ? PathfinderTrackSource : value.Trim().ToLowerInvariant();
+    }
+
+    private static string? ParsePlaylistId(string? url, out IActionResult? validationError)
+    {
+        validationError = null;
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            validationError = new BadRequestObjectResult(new { error = UrlRequiredMessage });
+            return null;
+        }
+
+        if (!SpotifyMetadataService.TryParseSpotifyUrl(url, out var type, out var playlistId)
+            || !string.Equals(type, PlaylistType, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return playlistId;
     }
 }

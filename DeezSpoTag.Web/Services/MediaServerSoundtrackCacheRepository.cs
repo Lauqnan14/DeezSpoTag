@@ -6,6 +6,64 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class MediaServerSoundtrackCacheRepository
 {
+    private const string SoundtrackMediaCacheTableName = "soundtrack_media_cache";
+    private const string ServerTypeParameterName = "$server_type";
+    private const string LibraryIdParameterName = "$library_id";
+    private const string CacheItemSelectColumnsSql = """
+server_type,
+server_label,
+library_id,
+library_name,
+category,
+item_id,
+title,
+year,
+image_url,
+content_hash,
+is_active,
+first_seen_utc,
+last_seen_utc,
+soundtrack_kind,
+soundtrack_deezer_id,
+soundtrack_title,
+soundtrack_subtitle,
+soundtrack_url,
+soundtrack_cover_url,
+soundtrack_score,
+match_provider,
+match_reason,
+match_locked,
+match_retry_count,
+match_resolved_utc
+""";
+    private const string CacheItemUpsertColumnsSql = """
+server_type,
+server_label,
+library_id,
+library_name,
+category,
+item_id,
+title,
+year,
+image_url,
+content_hash,
+is_active,
+first_seen_utc,
+last_seen_utc,
+soundtrack_kind,
+soundtrack_deezer_id,
+soundtrack_title,
+soundtrack_subtitle,
+soundtrack_url,
+soundtrack_cover_url,
+soundtrack_score,
+match_provider,
+match_reason,
+match_locked,
+match_retry_count,
+match_resolved_utc,
+updated_at_utc
+""";
     private readonly string _connectionString;
     private readonly ILogger<MediaServerSoundtrackCacheRepository> _logger;
     private readonly SemaphoreSlim _initLock = new(1, 1);
@@ -33,38 +91,13 @@ public sealed class MediaServerSoundtrackCacheRepository
 
         await EnsureInitializedAsync(cancellationToken);
 
-        const string sql = """
-INSERT INTO soundtrack_media_cache (
-    server_type,
-    server_label,
-    library_id,
-    library_name,
-    category,
-    item_id,
-    title,
-    year,
-    image_url,
-    content_hash,
-    is_active,
-    first_seen_utc,
-    last_seen_utc,
-    soundtrack_kind,
-    soundtrack_deezer_id,
-    soundtrack_title,
-    soundtrack_subtitle,
-    soundtrack_url,
-    soundtrack_cover_url,
-    soundtrack_score,
-    match_provider,
-    match_reason,
-    match_locked,
-    match_retry_count,
-    match_resolved_utc,
-    updated_at_utc
+        var sql = $"""
+INSERT INTO {SoundtrackMediaCacheTableName} (
+    {CacheItemUpsertColumnsSql}
 ) VALUES (
-    $server_type,
+    {ServerTypeParameterName},
     $server_label,
-    $library_id,
+    {LibraryIdParameterName},
     $library_name,
     $category,
     $item_id,
@@ -98,7 +131,7 @@ ON CONFLICT(server_type, library_id, item_id) DO UPDATE SET
     image_url = excluded.image_url,
     content_hash = excluded.content_hash,
     is_active = excluded.is_active,
-    first_seen_utc = COALESCE(soundtrack_media_cache.first_seen_utc, excluded.first_seen_utc),
+    first_seen_utc = COALESCE({SoundtrackMediaCacheTableName}.first_seen_utc, excluded.first_seen_utc),
     last_seen_utc = excluded.last_seen_utc,
     soundtrack_kind = excluded.soundtrack_kind,
     soundtrack_deezer_id = excluded.soundtrack_deezer_id,
@@ -126,55 +159,10 @@ ON CONFLICT(server_type, library_id, item_id) DO UPDATE SET
             var nowUtcText = nowUtc.ToString("O", CultureInfo.InvariantCulture);
             foreach (var item in items)
             {
-                if (string.IsNullOrWhiteSpace(item?.ServerType)
-                    || string.IsNullOrWhiteSpace(item.LibraryId)
-                    || string.IsNullOrWhiteSpace(item.ItemId)
-                    || string.IsNullOrWhiteSpace(item.Title))
+                if (!TryBindUpsertCommand(command, item, nowUtc, nowUtcText))
                 {
                     continue;
                 }
-
-                var normalizedContentHash = Normalize(item.ContentHash);
-                if (string.IsNullOrWhiteSpace(normalizedContentHash))
-                {
-                    normalizedContentHash = BuildFallbackContentHash(item);
-                }
-
-                var match = item.Soundtrack;
-                var matchProvider = NormalizeMatchProvider(match?.Provider, match?.Kind, match?.Url);
-                var matchResolvedUtc = match?.ResolvedAtUtc;
-                if (matchResolvedUtc == null && HasResolvedSoundtrack(match))
-                {
-                    matchResolvedUtc = nowUtc;
-                }
-
-                command.Parameters.Clear();
-                command.Parameters.AddWithValue("$server_type", Normalize(item.ServerType));
-                command.Parameters.AddWithValue("$server_label", Normalize(item.ServerLabel));
-                command.Parameters.AddWithValue("$library_id", Normalize(item.LibraryId));
-                command.Parameters.AddWithValue("$library_name", Normalize(item.LibraryName));
-                command.Parameters.AddWithValue("$category", NormalizeCategory(item.Category));
-                command.Parameters.AddWithValue("$item_id", Normalize(item.ItemId));
-                command.Parameters.AddWithValue("$title", Normalize(item.Title));
-                command.Parameters.AddWithValue("$year", item.Year.HasValue ? item.Year.Value : DBNull.Value);
-                command.Parameters.AddWithValue("$image_url", NullOrText(item.ImageUrl));
-                command.Parameters.AddWithValue("$content_hash", normalizedContentHash);
-                command.Parameters.AddWithValue("$is_active", item.IsActive ? 1 : 0);
-                command.Parameters.AddWithValue("$first_seen_utc", (item.FirstSeenUtc ?? nowUtc).ToString("O", CultureInfo.InvariantCulture));
-                command.Parameters.AddWithValue("$last_seen_utc", (item.LastSeenUtc ?? nowUtc).ToString("O", CultureInfo.InvariantCulture));
-                command.Parameters.AddWithValue("$soundtrack_kind", NullOrText(match?.Kind));
-                command.Parameters.AddWithValue("$soundtrack_deezer_id", NullOrText(match?.DeezerId));
-                command.Parameters.AddWithValue("$soundtrack_title", NullOrText(match?.Title));
-                command.Parameters.AddWithValue("$soundtrack_subtitle", NullOrText(match?.Subtitle));
-                command.Parameters.AddWithValue("$soundtrack_url", NullOrText(match?.Url));
-                command.Parameters.AddWithValue("$soundtrack_cover_url", NullOrText(match?.CoverUrl));
-                command.Parameters.AddWithValue("$soundtrack_score", match != null ? match.Score : DBNull.Value);
-                command.Parameters.AddWithValue("$match_provider", NullOrText(matchProvider));
-                command.Parameters.AddWithValue("$match_reason", NullOrText(match?.Reason));
-                command.Parameters.AddWithValue("$match_locked", match?.Locked == true ? 1 : 0);
-                command.Parameters.AddWithValue("$match_retry_count", Math.Max(match?.RetryCount ?? 0, 0));
-                command.Parameters.AddWithValue("$match_resolved_utc", matchResolvedUtc?.ToString("O", CultureInfo.InvariantCulture) ?? (object)DBNull.Value);
-                command.Parameters.AddWithValue("$updated_at_utc", nowUtcText);
 
                 await command.ExecuteNonQueryAsync(cancellationToken);
             }
@@ -203,46 +191,22 @@ ON CONFLICT(server_type, library_id, item_id) DO UPDATE SET
         var safeOffset = Math.Max(0, offset);
         var safeLimit = Math.Clamp(limit <= 0 ? 120 : limit, 1, 500);
 
-        var sql = """
+        var sql = $"""
 SELECT
-    server_type,
-    server_label,
-    library_id,
-    library_name,
-    category,
-    item_id,
-    title,
-    year,
-    image_url,
-    content_hash,
-    is_active,
-    first_seen_utc,
-    last_seen_utc,
-    soundtrack_kind,
-    soundtrack_deezer_id,
-    soundtrack_title,
-    soundtrack_subtitle,
-    soundtrack_url,
-    soundtrack_cover_url,
-    soundtrack_score,
-    match_provider,
-    match_reason,
-    match_locked,
-    match_retry_count,
-    match_resolved_utc
-FROM soundtrack_media_cache
+    {CacheItemSelectColumnsSql}
+FROM {SoundtrackMediaCacheTableName}
 WHERE category = $category
   AND is_active = 1
 """;
 
         if (!string.IsNullOrWhiteSpace(normalizedServerType))
         {
-            sql += "\nAND server_type = $server_type";
+            sql += $"\nAND server_type = {ServerTypeParameterName}";
         }
 
         if (!string.IsNullOrWhiteSpace(normalizedLibraryId))
         {
-            sql += "\nAND library_id = $library_id";
+            sql += $"\nAND library_id = {LibraryIdParameterName}";
         }
 
         sql += """
@@ -259,11 +223,11 @@ LIMIT $limit OFFSET $offset;
             command.Parameters.AddWithValue("$category", normalizedCategory);
             if (!string.IsNullOrWhiteSpace(normalizedServerType))
             {
-                command.Parameters.AddWithValue("$server_type", normalizedServerType);
+                command.Parameters.AddWithValue(ServerTypeParameterName, normalizedServerType);
             }
             if (!string.IsNullOrWhiteSpace(normalizedLibraryId))
             {
-                command.Parameters.AddWithValue("$library_id", normalizedLibraryId);
+                command.Parameters.AddWithValue(LibraryIdParameterName, normalizedLibraryId);
             }
             command.Parameters.AddWithValue("$limit", safeLimit);
             command.Parameters.AddWithValue("$offset", safeOffset);
@@ -321,77 +285,18 @@ LIMIT $limit OFFSET $offset;
             await using var connection = new SqliteConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
 
-            for (var offset = 0; offset < normalizedIds.Length; offset += maxBatchSize)
+            foreach (var batch in EnumerateBatches(normalizedIds, maxBatchSize))
             {
-                var batch = normalizedIds.Skip(offset).Take(maxBatchSize).ToArray();
                 if (batch.Length == 0)
                 {
                     continue;
                 }
 
-                var sql = new StringBuilder("""
-SELECT
-    server_type,
-    server_label,
-    library_id,
-    library_name,
-    category,
-    item_id,
-    title,
-    year,
-    image_url,
-    content_hash,
-    is_active,
-    first_seen_utc,
-    last_seen_utc,
-    soundtrack_kind,
-    soundtrack_deezer_id,
-    soundtrack_title,
-    soundtrack_subtitle,
-    soundtrack_url,
-    soundtrack_cover_url,
-    soundtrack_score,
-    match_provider,
-    match_reason,
-    match_locked,
-    match_retry_count,
-    match_resolved_utc
-FROM soundtrack_media_cache
-WHERE server_type = $server_type
-  AND library_id = $library_id
-  AND item_id IN (
-""");
-
-                for (var index = 0; index < batch.Length; index++)
-                {
-                    if (index > 0)
-                    {
-                        sql.Append(", ");
-                    }
-
-                    sql.Append("$item_id_").Append(index);
-                }
-
-                sql.Append(");");
-
-                await using var command = new SqliteCommand(sql.ToString(), connection);
-                command.Parameters.AddWithValue("$server_type", normalizedServerType);
-                command.Parameters.AddWithValue("$library_id", normalizedLibraryId);
-                for (var index = 0; index < batch.Length; index++)
-                {
-                    command.Parameters.AddWithValue($"$item_id_{index}", batch[index]);
-                }
-
+                var sql = BuildGetItemsByIdsSql(batch.Length);
+                await using var command = new SqliteCommand(sql, connection);
+                BindGetItemsByIdsParameters(command, normalizedServerType, normalizedLibraryId, batch);
                 await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-                while (await reader.ReadAsync(cancellationToken))
-                {
-                    var row = BuildItemRow(reader);
-                    var key = Normalize(row.ItemId);
-                    if (!string.IsNullOrWhiteSpace(key))
-                    {
-                        rows[key] = row;
-                    }
-                }
+                AddRowsByItemId(reader, rows);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -400,6 +305,135 @@ WHERE server_type = $server_type
         }
 
         return rows;
+    }
+
+    private static string BuildGetItemsByIdsSql(int batchLength)
+    {
+        var sql = new StringBuilder($"""
+SELECT
+    {CacheItemSelectColumnsSql}
+FROM {SoundtrackMediaCacheTableName}
+WHERE server_type = {ServerTypeParameterName}
+  AND library_id = {LibraryIdParameterName}
+  AND item_id IN (
+""");
+
+        for (var index = 0; index < batchLength; index++)
+        {
+            if (index > 0)
+            {
+                sql.Append(", ");
+            }
+
+            sql.Append("$item_id_").Append(index);
+        }
+
+        sql.Append(");");
+        return sql.ToString();
+    }
+
+    private static void BindGetItemsByIdsParameters(
+        SqliteCommand command,
+        string normalizedServerType,
+        string normalizedLibraryId,
+        IReadOnlyList<string> batch)
+    {
+        command.Parameters.AddWithValue(ServerTypeParameterName, normalizedServerType);
+        command.Parameters.AddWithValue(LibraryIdParameterName, normalizedLibraryId);
+        for (var index = 0; index < batch.Count; index++)
+        {
+            command.Parameters.AddWithValue($"$item_id_{index}", batch[index]);
+        }
+    }
+
+    private static void AddRowsByItemId(
+        SqliteDataReader reader,
+        Dictionary<string, MediaServerSoundtrackItemDto> rows)
+    {
+        while (reader.Read())
+        {
+            var row = BuildItemRow(reader);
+            var key = Normalize(row.ItemId);
+            if (!string.IsNullOrWhiteSpace(key))
+            {
+                rows[key] = row;
+            }
+        }
+    }
+
+    private static IEnumerable<string[]> EnumerateBatches(IReadOnlyList<string> values, int batchSize)
+    {
+        for (var offset = 0; offset < values.Count; offset += batchSize)
+        {
+            yield return values.Skip(offset).Take(batchSize).ToArray();
+        }
+    }
+
+    private static bool TryBindUpsertCommand(
+        SqliteCommand command,
+        MediaServerSoundtrackItemDto? item,
+        DateTimeOffset nowUtc,
+        string nowUtcText)
+    {
+        if (item == null
+            || string.IsNullOrWhiteSpace(item.ServerType)
+            || string.IsNullOrWhiteSpace(item.LibraryId)
+            || string.IsNullOrWhiteSpace(item.ItemId)
+            || string.IsNullOrWhiteSpace(item.Title))
+        {
+            return false;
+        }
+
+        var normalizedContentHash = Normalize(item.ContentHash);
+        if (string.IsNullOrWhiteSpace(normalizedContentHash))
+        {
+            normalizedContentHash = BuildFallbackContentHash(item);
+        }
+
+        var match = item.Soundtrack;
+        var matchResolvedUtc = ResolveMatchTimestamp(match, nowUtc);
+        var matchProvider = NormalizeMatchProvider(match?.Provider, match?.Kind, match?.Url);
+
+        command.Parameters.Clear();
+        command.Parameters.AddWithValue(ServerTypeParameterName, Normalize(item.ServerType));
+        command.Parameters.AddWithValue("$server_label", Normalize(item.ServerLabel));
+        command.Parameters.AddWithValue(LibraryIdParameterName, Normalize(item.LibraryId));
+        command.Parameters.AddWithValue("$library_name", Normalize(item.LibraryName));
+        command.Parameters.AddWithValue("$category", NormalizeCategory(item.Category));
+        command.Parameters.AddWithValue("$item_id", Normalize(item.ItemId));
+        command.Parameters.AddWithValue("$title", Normalize(item.Title));
+        command.Parameters.AddWithValue("$year", item.Year.HasValue ? item.Year.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$image_url", NullOrText(item.ImageUrl));
+        command.Parameters.AddWithValue("$content_hash", normalizedContentHash);
+        command.Parameters.AddWithValue("$is_active", item.IsActive ? 1 : 0);
+        command.Parameters.AddWithValue("$first_seen_utc", (item.FirstSeenUtc ?? nowUtc).ToString("O", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$last_seen_utc", (item.LastSeenUtc ?? nowUtc).ToString("O", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$soundtrack_kind", NullOrText(match?.Kind));
+        command.Parameters.AddWithValue("$soundtrack_deezer_id", NullOrText(match?.DeezerId));
+        command.Parameters.AddWithValue("$soundtrack_title", NullOrText(match?.Title));
+        command.Parameters.AddWithValue("$soundtrack_subtitle", NullOrText(match?.Subtitle));
+        command.Parameters.AddWithValue("$soundtrack_url", NullOrText(match?.Url));
+        command.Parameters.AddWithValue("$soundtrack_cover_url", NullOrText(match?.CoverUrl));
+        command.Parameters.AddWithValue("$soundtrack_score", match != null ? match.Score : DBNull.Value);
+        command.Parameters.AddWithValue("$match_provider", NullOrText(matchProvider));
+        command.Parameters.AddWithValue("$match_reason", NullOrText(match?.Reason));
+        command.Parameters.AddWithValue("$match_locked", match?.Locked == true ? 1 : 0);
+        command.Parameters.AddWithValue("$match_retry_count", Math.Max(match?.RetryCount ?? 0, 0));
+        command.Parameters.AddWithValue("$match_resolved_utc", matchResolvedUtc?.ToString("O", CultureInfo.InvariantCulture) ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("$updated_at_utc", nowUtcText);
+        return true;
+    }
+
+    private static DateTimeOffset? ResolveMatchTimestamp(MediaServerSoundtrackMatchDto? match, DateTimeOffset nowUtc)
+    {
+        if (match?.ResolvedAtUtc != null)
+        {
+            return match.ResolvedAtUtc;
+        }
+
+        return HasResolvedSoundtrack(match)
+            ? nowUtc
+            : null;
     }
 
     public async Task DeactivateLibraryItemsNotSeenSinceAsync(
@@ -414,17 +448,17 @@ WHERE server_type = $server_type
         {
             await using var connection = new SqliteConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
-            const string sql = """
-UPDATE soundtrack_media_cache
+            var sql = $"""
+UPDATE {SoundtrackMediaCacheTableName}
 SET is_active = 0,
     updated_at_utc = $updated_at_utc
-WHERE server_type = $server_type
-  AND library_id = $library_id
+WHERE server_type = {ServerTypeParameterName}
+  AND library_id = {LibraryIdParameterName}
   AND last_seen_utc < $cutoff_utc;
 """;
             await using var command = new SqliteCommand(sql, connection);
-            command.Parameters.AddWithValue("$server_type", Normalize(serverType));
-            command.Parameters.AddWithValue("$library_id", Normalize(libraryId));
+            command.Parameters.AddWithValue(ServerTypeParameterName, Normalize(serverType));
+            command.Parameters.AddWithValue(LibraryIdParameterName, Normalize(libraryId));
             command.Parameters.AddWithValue("$cutoff_utc", cutoffUtc.ToString("O", CultureInfo.InvariantCulture));
             command.Parameters.AddWithValue("$updated_at_utc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
             await command.ExecuteNonQueryAsync(cancellationToken);
@@ -440,7 +474,7 @@ WHERE server_type = $server_type
         ArgumentNullException.ThrowIfNull(state);
         await EnsureInitializedAsync(cancellationToken);
 
-        const string sql = """
+        var sql = $"""
 INSERT INTO soundtrack_library_sync_state (
     server_type,
     library_id,
@@ -454,8 +488,8 @@ INSERT INTO soundtrack_library_sync_state (
     last_error,
     updated_at_utc
 ) VALUES (
-    $server_type,
-    $library_id,
+    {ServerTypeParameterName},
+    {LibraryIdParameterName},
     $category,
     $status,
     $last_offset,
@@ -483,8 +517,8 @@ ON CONFLICT(server_type, library_id) DO UPDATE SET
             await using var connection = new SqliteConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
             await using var command = new SqliteCommand(sql, connection);
-            command.Parameters.AddWithValue("$server_type", Normalize(state.ServerType));
-            command.Parameters.AddWithValue("$library_id", Normalize(state.LibraryId));
+            command.Parameters.AddWithValue(ServerTypeParameterName, Normalize(state.ServerType));
+            command.Parameters.AddWithValue(LibraryIdParameterName, Normalize(state.LibraryId));
             command.Parameters.AddWithValue("$category", NormalizeCategory(state.Category));
             command.Parameters.AddWithValue("$status", Normalize(state.Status));
             command.Parameters.AddWithValue("$last_offset", Math.Max(state.LastOffset, 0));
@@ -519,7 +553,7 @@ ON CONFLICT(server_type, library_id) DO UPDATE SET
         {
             await using var connection = new SqliteConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
-            const string sql = """
+            var sql = $"""
 SELECT
     server_type,
     library_id,
@@ -533,13 +567,13 @@ SELECT
     last_error,
     updated_at_utc
 FROM soundtrack_library_sync_state
-WHERE server_type = $server_type
-  AND library_id = $library_id
+WHERE server_type = {ServerTypeParameterName}
+  AND library_id = {LibraryIdParameterName}
 LIMIT 1;
 """;
             await using var command = new SqliteCommand(sql, connection);
-            command.Parameters.AddWithValue("$server_type", normalizedServerType);
-            command.Parameters.AddWithValue("$library_id", normalizedLibraryId);
+            command.Parameters.AddWithValue(ServerTypeParameterName, normalizedServerType);
+            command.Parameters.AddWithValue(LibraryIdParameterName, normalizedLibraryId);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             if (!await reader.ReadAsync(cancellationToken))
             {
@@ -618,8 +652,8 @@ ORDER BY updated_at_utc DESC, server_type, library_id;
                 await modeCommand.ExecuteNonQueryAsync(cancellationToken);
             }
 
-            const string schemaSql = """
-CREATE TABLE IF NOT EXISTS soundtrack_media_cache (
+            var schemaSql = $"""
+CREATE TABLE IF NOT EXISTS {SoundtrackMediaCacheTableName} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     server_type TEXT NOT NULL,
     server_label TEXT NOT NULL,
@@ -651,10 +685,10 @@ CREATE TABLE IF NOT EXISTS soundtrack_media_cache (
 );
 
 CREATE INDEX IF NOT EXISTS idx_soundtrack_media_cache_filters
-ON soundtrack_media_cache (category, is_active, server_type, library_id, title COLLATE NOCASE);
+ON {SoundtrackMediaCacheTableName} (category, is_active, server_type, library_id, title COLLATE NOCASE);
 
 CREATE INDEX IF NOT EXISTS idx_soundtrack_media_cache_updated
-ON soundtrack_media_cache (updated_at_utc DESC);
+ON {SoundtrackMediaCacheTableName} (updated_at_utc DESC);
 
 CREATE TABLE IF NOT EXISTS soundtrack_library_sync_state (
     server_type TEXT NOT NULL,
@@ -677,14 +711,14 @@ CREATE TABLE IF NOT EXISTS soundtrack_library_sync_state (
                 await schemaCommand.ExecuteNonQueryAsync(cancellationToken);
             }
 
-            await EnsureColumnAsync(connection, "soundtrack_media_cache", "content_hash", "TEXT NOT NULL DEFAULT ''", cancellationToken);
-            await EnsureColumnAsync(connection, "soundtrack_media_cache", "is_active", "INTEGER NOT NULL DEFAULT 1", cancellationToken);
-            await EnsureColumnAsync(connection, "soundtrack_media_cache", "first_seen_utc", "TEXT NULL", cancellationToken);
-            await EnsureColumnAsync(connection, "soundtrack_media_cache", "match_provider", "TEXT NULL", cancellationToken);
-            await EnsureColumnAsync(connection, "soundtrack_media_cache", "match_reason", "TEXT NULL", cancellationToken);
-            await EnsureColumnAsync(connection, "soundtrack_media_cache", "match_locked", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
-            await EnsureColumnAsync(connection, "soundtrack_media_cache", "match_retry_count", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
-            await EnsureColumnAsync(connection, "soundtrack_media_cache", "match_resolved_utc", "TEXT NULL", cancellationToken);
+            await EnsureColumnAsync(connection, "content_hash", cancellationToken);
+            await EnsureColumnAsync(connection, "is_active", cancellationToken);
+            await EnsureColumnAsync(connection, "first_seen_utc", cancellationToken);
+            await EnsureColumnAsync(connection, "match_provider", cancellationToken);
+            await EnsureColumnAsync(connection, "match_reason", cancellationToken);
+            await EnsureColumnAsync(connection, "match_locked", cancellationToken);
+            await EnsureColumnAsync(connection, "match_retry_count", cancellationToken);
+            await EnsureColumnAsync(connection, "match_resolved_utc", cancellationToken);
 
             _initialized = true;
         }
@@ -696,34 +730,42 @@ CREATE TABLE IF NOT EXISTS soundtrack_library_sync_state (
 
     private static async Task EnsureColumnAsync(
         SqliteConnection connection,
-        string tableName,
         string columnName,
-        string definitionSql,
         CancellationToken cancellationToken)
     {
-        var columns = await GetTableColumnsAsync(connection, tableName, cancellationToken);
+        var columns = await GetTableColumnsAsync(connection, cancellationToken);
         if (columns.Contains(columnName))
         {
             return;
         }
 
-        var alterSql = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {definitionSql};";
+        var alterSql = columnName switch
+        {
+            "content_hash" => "ALTER TABLE soundtrack_media_cache ADD COLUMN content_hash TEXT NOT NULL DEFAULT '';",
+            "is_active" => "ALTER TABLE soundtrack_media_cache ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1;",
+            "first_seen_utc" => "ALTER TABLE soundtrack_media_cache ADD COLUMN first_seen_utc TEXT NULL;",
+            "match_provider" => "ALTER TABLE soundtrack_media_cache ADD COLUMN match_provider TEXT NULL;",
+            "match_reason" => "ALTER TABLE soundtrack_media_cache ADD COLUMN match_reason TEXT NULL;",
+            "match_locked" => "ALTER TABLE soundtrack_media_cache ADD COLUMN match_locked INTEGER NOT NULL DEFAULT 0;",
+            "match_retry_count" => "ALTER TABLE soundtrack_media_cache ADD COLUMN match_retry_count INTEGER NOT NULL DEFAULT 0;",
+            "match_resolved_utc" => "ALTER TABLE soundtrack_media_cache ADD COLUMN match_resolved_utc TEXT NULL;",
+            _ => throw new InvalidOperationException($"Unsupported soundtrack cache column migration '{columnName}'.")
+        };
         await using var alterCommand = new SqliteCommand(alterSql, connection);
         await alterCommand.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task<HashSet<string>> GetTableColumnsAsync(
         SqliteConnection connection,
-        string tableName,
         CancellationToken cancellationToken)
     {
         var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var pragmaSql = $"PRAGMA table_info({tableName});";
+        const string pragmaSql = "PRAGMA table_info(soundtrack_media_cache);";
         await using var pragmaCommand = new SqliteCommand(pragmaSql, connection);
         await using var reader = await pragmaCommand.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            if (!reader.IsDBNull(1))
+            if (!await reader.IsDBNullAsync(1, cancellationToken))
             {
                 columns.Add(reader.GetString(1));
             }

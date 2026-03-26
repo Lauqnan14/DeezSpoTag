@@ -44,18 +44,7 @@ public static class NodeJsBlowfishDecryptor
                 cipher.ProcessBlock(toDecrypt, i, decrypted, i);
             }
             
-            // Handle result exactly like deezspotag
-            if (chunk.Length == 2048)
-            {
-                return decrypted;
-            }
-            
-            // Combine decrypted part with remaining unencrypted data
-            var result = new byte[chunk.Length];
-            Array.Copy(decrypted, 0, result, 0, decrypted.Length);
-            Array.Copy(chunk, 2048, result, decrypted.Length, chunk.Length - 2048);
-            
-            return result;
+            return DecryptionChunkHelper.MergeDecryptedPrefix(chunk, decrypted, 2048);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

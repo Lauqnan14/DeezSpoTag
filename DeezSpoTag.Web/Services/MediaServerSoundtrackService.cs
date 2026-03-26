@@ -2,26 +2,57 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 using System.Text.RegularExpressions;
-using DeezSpoTag.Core.Models.Deezer;
-using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Integrations.Jellyfin;
 using DeezSpoTag.Integrations.Plex;
 using MusicBrainzArtistCredit = DeezSpoTag.Web.Services.AutoTag.ArtistCredit;
 using MusicBrainzClient = DeezSpoTag.Web.Services.AutoTag.MusicBrainzClient;
 using MusicBrainzRecordingSearchResults = DeezSpoTag.Web.Services.AutoTag.RecordingSearchResults;
 using MusicBrainzRelease = DeezSpoTag.Web.Services.AutoTag.ReleaseSmall;
-using Newtonsoft.Json.Linq;
 
 namespace DeezSpoTag.Web.Services;
 
-public sealed class MediaServerSoundtrackService
+public sealed partial class MediaServerSoundtrackService
 {
+    public sealed class Dependencies
+    {
+        public required PlatformAuthService PlatformAuthService { get; init; }
+
+        public required PlexApiClient PlexApiClient { get; init; }
+
+        public required JellyfinApiClient JellyfinApiClient { get; init; }
+
+        public required SpotifySearchService SpotifySearchService { get; init; }
+
+        public required MusicBrainzClient MusicBrainzClient { get; init; }
+
+        public required MediaServerSoundtrackStore Store { get; init; }
+
+        public required MediaServerSoundtrackCacheRepository CacheRepository { get; init; }
+
+        public required IHttpClientFactory HttpClientFactory { get; init; }
+    }
+
     private const int DefaultItemLimit = 120;
+    private const int RegexTimeoutMilliseconds = 250;
+    private const string SpotifyKindPrefix = "spotify_";
+    private const string MatchKindSearch = "search";
+    private const string MatchKindAlbum = "album";
+    private const string MatchKindPlaylist = "playlist";
+    private const string MatchKindTrack = "track";
+    private const string MatchProviderSpotify = "spotify";
+    private const string MatchProviderDeezer = "deezer";
+    private const string MediaTypeSeries = "series";
+    private const string MediaTypeMovie = "movie";
+    private const string SoundtrackToken = "soundtrack";
+    private const string JellyfinImagePrimary = "Primary";
+    private const string JellyfinImageThumb = "Thumb";
+    private const string SpotifyMarkdownLinkPattern = @"\[(?<title>[^\]]+)\]\((?<url>https:\/\/open\.spotify\.com\/(?<type>album|playlist|track)\/(?<id>[A-Za-z0-9]{22})(?:\?[^)]*)?)";
+    private const string SpotifyWebLinkPattern = @"open\.spotify\.com\/(?<type>album|playlist|track)\/(?<id>[A-Za-z0-9]{22})";
+    private const string SpotifyUriPattern = @"^spotify:(?<type>album|playlist|track):(?<id>[A-Za-z0-9]{22})$";
+    private const string DeezerWebLinkPattern = @"deezer\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?(?<type>album|playlist|track)\/(?<id>\d+)";
     private static readonly TimeSpan SoundtrackCacheTtl = TimeSpan.FromHours(12);
-    private static readonly Regex TitleBracketNoiseRegex = new(@"\[[^\]]*\]|\([^\)]*\)|\{[^\}]*\}", RegexOptions.Compiled);
-    private static readonly Regex TitleWhitespaceRegex = new(@"\s+", RegexOptions.Compiled);
+    private static readonly TimeSpan RegexDynamicTimeout = TimeSpan.FromMilliseconds(RegexTimeoutMilliseconds);
     private static readonly string[] SoundtrackNoiseTokens =
     {
         "2160p", "1080p", "720p", "4k", "uhd", "hdr", "dv",
@@ -33,19 +64,24 @@ public sealed class MediaServerSoundtrackService
     private static readonly HashSet<string> SoundtrackStopWords = new(StringComparer.OrdinalIgnoreCase)
     {
         "a", "an", "and", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "with",
-        "original", "motion", "picture", "television", "series", "season", "movie", "film",
-        "soundtrack", "score", "music", "ost"
+        "original", "motion", "picture", "television", MediaTypeSeries, "season", MediaTypeMovie, "film",
+        SoundtrackToken, "score", "music", "ost"
+    };
+    private static readonly HashSet<string> EditionDecoratorTokens = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "director", "directors", "cut", "edition", "extended", "special", "theatrical", "unrated",
+        "uncut", "ultimate", "final", "deluxe", "anniversary", "collector", "collectors", "remaster",
+        "remastered", "version", "redux", "imax", "enhanced"
     };
 
     private readonly PlatformAuthService _platformAuthService;
     private readonly PlexApiClient _plexApiClient;
     private readonly JellyfinApiClient _jellyfinApiClient;
     private readonly SpotifySearchService _spotifySearchService;
-    private readonly SpotifyDeezerAlbumResolver _spotifyDeezerAlbumResolver;
     private readonly MusicBrainzClient _musicBrainzClient;
-    private readonly DeezerClient _deezerClient;
     private readonly MediaServerSoundtrackStore _store;
     private readonly MediaServerSoundtrackCacheRepository _cacheRepository;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<MediaServerSoundtrackService> _logger;
     private readonly ConcurrentDictionary<string, (DateTimeOffset CachedAtUtc, MediaServerSoundtrackMatchDto Match)> _soundtrackCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, Task<MediaServerSoundtrackMatchDto>> _soundtrackResolutionInFlight = new(StringComparer.OrdinalIgnoreCase);
@@ -71,26 +107,17 @@ public sealed class MediaServerSoundtrackService
     }
 
     public MediaServerSoundtrackService(
-        PlatformAuthService platformAuthService,
-        PlexApiClient plexApiClient,
-        JellyfinApiClient jellyfinApiClient,
-        SpotifySearchService spotifySearchService,
-        SpotifyDeezerAlbumResolver spotifyDeezerAlbumResolver,
-        MusicBrainzClient musicBrainzClient,
-        DeezerClient deezerClient,
-        MediaServerSoundtrackStore store,
-        MediaServerSoundtrackCacheRepository cacheRepository,
+        Dependencies dependencies,
         ILogger<MediaServerSoundtrackService> logger)
     {
-        _platformAuthService = platformAuthService;
-        _plexApiClient = plexApiClient;
-        _jellyfinApiClient = jellyfinApiClient;
-        _spotifySearchService = spotifySearchService;
-        _spotifyDeezerAlbumResolver = spotifyDeezerAlbumResolver;
-        _musicBrainzClient = musicBrainzClient;
-        _deezerClient = deezerClient;
-        _store = store;
-        _cacheRepository = cacheRepository;
+        _platformAuthService = dependencies.PlatformAuthService;
+        _plexApiClient = dependencies.PlexApiClient;
+        _jellyfinApiClient = dependencies.JellyfinApiClient;
+        _spotifySearchService = dependencies.SpotifySearchService;
+        _musicBrainzClient = dependencies.MusicBrainzClient;
+        _store = dependencies.Store;
+        _cacheRepository = dependencies.CacheRepository;
+        _httpClientFactory = dependencies.HttpClientFactory;
         _logger = logger;
     }
 
@@ -120,69 +147,110 @@ public sealed class MediaServerSoundtrackService
         CancellationToken cancellationToken)
     {
         request ??= new MediaServerSoundtrackConfigurationUpdateRequest();
-        await _store.UpdateAsync(settings =>
-        {
-            var changed = false;
-            foreach (var serverUpdate in request.Servers)
-            {
-                var serverType = NormalizeServerType(serverUpdate?.ServerType);
-                if (string.IsNullOrWhiteSpace(serverType))
-                {
-                    continue;
-                }
-
-                var server = GetOrCreateServer(settings, serverType);
-                if (serverUpdate?.AutoIncludeNewLibraries.HasValue == true
-                    && server.AutoIncludeNewLibraries != serverUpdate.AutoIncludeNewLibraries.Value)
-                {
-                    server.AutoIncludeNewLibraries = serverUpdate.AutoIncludeNewLibraries.Value;
-                    changed = true;
-                }
-
-                foreach (var libraryUpdate in serverUpdate?.Libraries ?? Enumerable.Empty<MediaServerSoundtrackLibraryPreferenceUpdateDto>())
-                {
-                    var libraryId = NormalizeText(libraryUpdate?.LibraryId);
-                    if (string.IsNullOrWhiteSpace(libraryId))
-                    {
-                        continue;
-                    }
-
-                    if (!server.Libraries.TryGetValue(libraryId, out var library))
-                    {
-                        library = new MediaServerSoundtrackLibrarySettings
-                        {
-                            LibraryId = libraryId,
-                            Name = libraryId,
-                            Category = MediaServerSoundtrackConstants.MovieCategory,
-                            Enabled = true,
-                            Ignored = false,
-                            FirstDiscoveredUtc = DateTimeOffset.UtcNow,
-                            LastSeenUtc = DateTimeOffset.UtcNow
-                        };
-                        server.Libraries[libraryId] = library;
-                        changed = true;
-                    }
-
-                    if (libraryUpdate?.Enabled.HasValue == true && library.Enabled != libraryUpdate.Enabled.Value)
-                    {
-                        library.Enabled = libraryUpdate.Enabled.Value;
-                        changed = true;
-                    }
-
-                    if (libraryUpdate?.Ignored.HasValue == true && library.Ignored != libraryUpdate.Ignored.Value)
-                    {
-                        library.Ignored = libraryUpdate.Ignored.Value;
-                        changed = true;
-                    }
-
-                    library.UserConfigured = true;
-                }
-            }
-
-            return changed;
-        }, cancellationToken);
+        await _store.UpdateAsync(settings => ApplyConfigurationUpdates(settings, request), cancellationToken);
 
         return await GetConfigurationAsync(refreshDiscovery: false, cancellationToken);
+    }
+
+    private static bool ApplyConfigurationUpdates(
+        MediaServerSoundtrackSettings settings,
+        MediaServerSoundtrackConfigurationUpdateRequest request)
+    {
+        var changed = false;
+        foreach (var serverUpdate in request.Servers)
+        {
+            changed |= ApplyServerConfigurationUpdate(settings, serverUpdate);
+        }
+
+        return changed;
+    }
+
+    private static bool ApplyServerConfigurationUpdate(
+        MediaServerSoundtrackSettings settings,
+        MediaServerSoundtrackServerPreferenceUpdateDto? serverUpdate)
+    {
+        var serverType = NormalizeServerType(serverUpdate?.ServerType);
+        if (string.IsNullOrWhiteSpace(serverType))
+        {
+            return false;
+        }
+
+        var changed = false;
+        var server = GetOrCreateServer(settings, serverType);
+        if (serverUpdate?.AutoIncludeNewLibraries is bool autoInclude
+            && server.AutoIncludeNewLibraries != autoInclude)
+        {
+            server.AutoIncludeNewLibraries = autoInclude;
+            changed = true;
+        }
+
+        foreach (var libraryUpdate in serverUpdate?.Libraries ?? Enumerable.Empty<MediaServerSoundtrackLibraryPreferenceUpdateDto>())
+        {
+            changed |= ApplyLibraryConfigurationUpdate(server, libraryUpdate);
+        }
+
+        return changed;
+    }
+
+    private static bool ApplyLibraryConfigurationUpdate(
+        MediaServerSoundtrackServerSettings server,
+        MediaServerSoundtrackLibraryPreferenceUpdateDto? libraryUpdate)
+    {
+        var libraryId = NormalizeText(libraryUpdate?.LibraryId);
+        if (string.IsNullOrWhiteSpace(libraryId))
+        {
+            return false;
+        }
+
+        var changed = false;
+        var library = GetOrCreateLibrarySettings(server, libraryId, ref changed);
+        changed |= UpdateLibraryToggleValue(
+            libraryUpdate?.Enabled,
+            library.Enabled,
+            value => library.Enabled = value);
+        changed |= UpdateLibraryToggleValue(
+            libraryUpdate?.Ignored,
+            library.Ignored,
+            value => library.Ignored = value);
+        library.UserConfigured = true;
+        return changed;
+    }
+
+    private static MediaServerSoundtrackLibrarySettings GetOrCreateLibrarySettings(
+        MediaServerSoundtrackServerSettings server,
+        string libraryId,
+        ref bool changed)
+    {
+        if (server.Libraries.TryGetValue(libraryId, out var library))
+        {
+            return library;
+        }
+
+        var nowUtc = DateTimeOffset.UtcNow;
+        library = new MediaServerSoundtrackLibrarySettings
+        {
+            LibraryId = libraryId,
+            Name = libraryId,
+            Category = MediaServerSoundtrackConstants.MovieCategory,
+            Enabled = true,
+            Ignored = false,
+            FirstDiscoveredUtc = nowUtc,
+            LastSeenUtc = nowUtc
+        };
+        server.Libraries[libraryId] = library;
+        changed = true;
+        return library;
+    }
+
+    private static bool UpdateLibraryToggleValue(bool? requestedValue, bool currentValue, Action<bool> applyValue)
+    {
+        if (requestedValue is not bool nextValue || currentValue == nextValue)
+        {
+            return false;
+        }
+
+        applyValue(nextValue);
+        return true;
     }
 
     public async Task<MediaServerSoundtrackConfigurationDto> RefreshDiscoveredLibrariesAsync(CancellationToken cancellationToken)
@@ -219,16 +287,8 @@ public sealed class MediaServerSoundtrackService
             cancellationToken);
         if (!refreshFromServer)
         {
-            foreach (var row in persisted)
-            {
-                NormalizeMatchMetadata(row.Soundtrack);
-            }
-            return new MediaServerSoundtrackItemsResponseDto
-            {
-                Category = normalizedCategory,
-                Total = persisted.Count,
-                Items = persisted
-            };
+            NormalizeMatchMetadataRows(persisted);
+            return CreateItemsResponse(normalizedCategory, persisted);
         }
 
         var auth = await _platformAuthService.LoadAsync();
@@ -237,105 +297,130 @@ public sealed class MediaServerSoundtrackService
         var targets = ResolveTargetLibraries(settings, auth, normalizedCategory, normalizedServerType, normalizedLibraryId);
         if (targets.Count == 0)
         {
-            return new MediaServerSoundtrackItemsResponseDto
-            {
-                Category = normalizedCategory,
-                Total = persisted.Count,
-                Items = persisted
-            };
+            return CreateItemsResponse(normalizedCategory, persisted);
         }
 
         try
         {
-            var items = new List<MediaServerContentItem>();
-            foreach (var target in targets)
-            {
-                var fetchOffset = itemOffset;
-                var fetched = await FetchLibraryItemsAsync(auth, target, fetchOffset, itemLimit, cancellationToken);
-                if (fetched.Count == 0)
-                {
-                    continue;
-                }
-
-                items.AddRange(fetched);
-                if (items.Count >= itemLimit)
-                {
-                    break;
-                }
-            }
-
-            items = items
-                .OrderBy(item => item.Title, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(item => item.Year ?? 0)
-                .Take(itemLimit)
-                .ToList();
-
-            var persistedByCacheKey = new Dictionary<string, MediaServerSoundtrackItemDto>(StringComparer.OrdinalIgnoreCase);
-            foreach (var group in items.GroupBy(
-                item => $"{NormalizeServerType(item.ServerType)}::{NormalizeText(item.LibraryId)}",
-                StringComparer.OrdinalIgnoreCase))
-            {
-                var sample = group.FirstOrDefault();
-                if (sample == null)
-                {
-                    continue;
-                }
-
-                var libraryScopedRows = await _cacheRepository.GetItemsByIdsAsync(
-                    sample.ServerType,
-                    sample.LibraryId,
-                    group.Select(item => item.ItemId).ToArray(),
-                    cancellationToken);
-
-                foreach (var row in libraryScopedRows.Values)
-                {
-                    var cacheKey = BuildSoundtrackItemCacheKey(row.ServerType, row.LibraryId, row.ItemId);
-                    if (!string.IsNullOrWhiteSpace(cacheKey))
-                    {
-                        persistedByCacheKey[cacheKey] = row;
-                    }
-                }
-            }
-
-            var resultItems = items
-                .Select(item =>
-                {
-                    var cacheKey = BuildSoundtrackItemCacheKey(item.ServerType, item.LibraryId, item.ItemId);
-                    persistedByCacheKey.TryGetValue(cacheKey, out var persistedRow);
-                    return BuildSoundtrackItemDto(item, persistedRow);
-                })
-                .ToList();
-
+            var items = await FetchFreshLibraryItemsAsync(auth, targets, itemOffset, itemLimit, cancellationToken);
+            var persistedByCacheKey = await LoadPersistedRowsForItemsAsync(items, cancellationToken);
+            var resultItems = BuildResultItems(items, persistedByCacheKey);
             await ResolveAtLeastOneSoundtrackMatchForResponseAsync(resultItems, cancellationToken);
-            foreach (var row in resultItems)
-            {
-                NormalizeMatchMetadata(row.Soundtrack);
-            }
+            NormalizeMatchMetadataRows(resultItems);
             await _cacheRepository.UpsertItemsAsync(resultItems, cancellationToken);
             QueueBackgroundSoundtrackResolution(resultItems);
-
-            if (resultItems.Count == 0)
-            {
-                resultItems = persisted;
-            }
-
-            return new MediaServerSoundtrackItemsResponseDto
-            {
-                Category = normalizedCategory,
-                Total = resultItems.Count,
-                Items = resultItems
-            };
+            var finalItems = resultItems.Count > 0 ? resultItems : persisted;
+            return CreateItemsResponse(normalizedCategory, finalItems);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed loading media-server soundtrack items from source; using persisted soundtrack rows.");
-            return new MediaServerSoundtrackItemsResponseDto
-            {
-                Category = normalizedCategory,
-                Total = persisted.Count,
-                Items = persisted
-            };
+            return CreateItemsResponse(normalizedCategory, persisted);
         }
+    }
+
+    private static MediaServerSoundtrackItemsResponseDto CreateItemsResponse(
+        string category,
+        List<MediaServerSoundtrackItemDto> items)
+    {
+        return new MediaServerSoundtrackItemsResponseDto
+        {
+            Category = category,
+            Total = items.Count,
+            Items = items
+        };
+    }
+
+    private static void NormalizeMatchMetadataRows(List<MediaServerSoundtrackItemDto> rows)
+    {
+        foreach (var row in rows)
+        {
+            NormalizeMatchMetadata(row.Soundtrack);
+        }
+    }
+
+    private async Task<List<MediaServerContentItem>> FetchFreshLibraryItemsAsync(
+        PlatformAuthState auth,
+        IReadOnlyList<(string ServerType, string LibraryId, string LibraryName, string Category)> targets,
+        int itemOffset,
+        int itemLimit,
+        CancellationToken cancellationToken)
+    {
+        var items = new List<MediaServerContentItem>();
+        foreach (var target in targets)
+        {
+            var fetched = await FetchLibraryItemsAsync(auth, target, itemOffset, itemLimit, cancellationToken);
+            if (fetched.Count == 0)
+            {
+                continue;
+            }
+
+            items.AddRange(fetched);
+            if (items.Count >= itemLimit)
+            {
+                break;
+            }
+        }
+
+        return items
+            .OrderBy(item => item.Title, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Year ?? 0)
+            .Take(itemLimit)
+            .ToList();
+    }
+
+    private async Task<Dictionary<string, MediaServerSoundtrackItemDto>> LoadPersistedRowsForItemsAsync(
+        IReadOnlyList<MediaServerContentItem> items,
+        CancellationToken cancellationToken)
+    {
+        var persistedByCacheKey = new Dictionary<string, MediaServerSoundtrackItemDto>(StringComparer.OrdinalIgnoreCase);
+        foreach (var group in items.GroupBy(
+                     item => $"{NormalizeServerType(item.ServerType)}::{NormalizeText(item.LibraryId)}",
+                     StringComparer.OrdinalIgnoreCase))
+        {
+            var sample = group.FirstOrDefault();
+            if (sample == null)
+            {
+                continue;
+            }
+
+            var libraryScopedRows = await _cacheRepository.GetItemsByIdsAsync(
+                sample.ServerType,
+                sample.LibraryId,
+                group.Select(item => item.ItemId).ToArray(),
+                cancellationToken);
+            MergePersistedRowsByCacheKey(persistedByCacheKey, libraryScopedRows.Values);
+        }
+
+        return persistedByCacheKey;
+    }
+
+    private static void MergePersistedRowsByCacheKey(
+        Dictionary<string, MediaServerSoundtrackItemDto> target,
+        IEnumerable<MediaServerSoundtrackItemDto> rows)
+    {
+        foreach (var row in rows)
+        {
+            var cacheKey = BuildSoundtrackItemCacheKey(row.ServerType, row.LibraryId, row.ItemId);
+            if (!string.IsNullOrWhiteSpace(cacheKey))
+            {
+                target[cacheKey] = row;
+            }
+        }
+    }
+
+    private static List<MediaServerSoundtrackItemDto> BuildResultItems(
+        IReadOnlyList<MediaServerContentItem> items,
+        Dictionary<string, MediaServerSoundtrackItemDto> persistedByCacheKey)
+    {
+        return items
+            .Select(item =>
+            {
+                var cacheKey = BuildSoundtrackItemCacheKey(item.ServerType, item.LibraryId, item.ItemId);
+                persistedByCacheKey.TryGetValue(cacheKey, out var persistedRow);
+                return BuildSoundtrackItemDto(item, persistedRow);
+            })
+            .ToList();
     }
 
     public async Task<MediaServerSoundtrackItemDto?> ResolveItemSoundtrackAsync(
@@ -371,7 +456,10 @@ public sealed class MediaServerSoundtrackService
             ImageUrl = NormalizeText(request.ImageUrl)
         };
 
-        var match = await ResolveSoundtrackAsync(item, cancellationToken);
+        var manualQuery = NormalizeText(request.ManualQuery);
+        var match = string.IsNullOrWhiteSpace(manualQuery)
+            ? await ResolveSoundtrackAsync(item, cancellationToken)
+            : await ResolveManualSoundtrackAsync(item, manualQuery, cancellationToken);
         NormalizeMatchMetadata(match);
         var dto = new MediaServerSoundtrackItemDto
         {
@@ -394,7 +482,175 @@ public sealed class MediaServerSoundtrackService
         return dto;
     }
 
-    private MediaServerSoundtrackItemDto BuildSoundtrackItemDto(
+    private async Task<MediaServerSoundtrackMatchDto> ResolveManualSoundtrackAsync(
+        MediaServerContentItem item,
+        string manualQuery,
+        CancellationToken cancellationToken)
+    {
+        MediaServerSoundtrackMatchDto resolvedMatch;
+        if (!TryCreateManualDirectMatch(item, manualQuery, out resolvedMatch))
+        {
+            var manualQueries = BuildManualSoundtrackQueries(item.Title, item.Year, manualQuery);
+            resolvedMatch = await ResolveSoundtrackDirectAsync(item, cancellationToken, manualQueries);
+        }
+
+        NormalizeMatchMetadata(resolvedMatch);
+        if (HasResolvedSoundtrack(resolvedMatch))
+        {
+            resolvedMatch.Locked = true;
+            resolvedMatch.Reason = "manual_override";
+            resolvedMatch.ResolvedAtUtc ??= DateTimeOffset.UtcNow;
+        }
+
+        var cacheKey = BuildSoundtrackCacheKey(item);
+        if (!string.IsNullOrWhiteSpace(cacheKey))
+        {
+            _soundtrackCache[cacheKey] = (DateTimeOffset.UtcNow, resolvedMatch);
+        }
+
+        return resolvedMatch;
+    }
+
+    private static bool TryCreateManualDirectMatch(
+        MediaServerContentItem item,
+        string manualQuery,
+        out MediaServerSoundtrackMatchDto match)
+    {
+        match = default!;
+        var query = NormalizeText(manualQuery);
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return false;
+        }
+
+        if (TryParseSpotifyManualTarget(query, out var spotifyType, out var spotifyId))
+        {
+            if (IsManualTrackBlockedForMovie(item.Category, spotifyType))
+            {
+                return false;
+            }
+
+            var normalizedType = NormalizeText(spotifyType).ToLowerInvariant();
+            var normalizedId = NormalizeText(spotifyId);
+            match = new MediaServerSoundtrackMatchDto
+            {
+                Kind = $"{SpotifyKindPrefix}{normalizedType}",
+                DeezerId = null,
+                Title = $"Manual {normalizedType}",
+                Subtitle = null,
+                Url = $"https://open.spotify.com/{normalizedType}/{normalizedId}",
+                CoverUrl = null,
+                Score = 100
+            };
+            return true;
+        }
+
+        if (!TryParseDeezerManualTarget(query, out var deezerType, out var deezerId))
+        {
+            return false;
+        }
+
+        if (IsManualTrackBlockedForMovie(item.Category, deezerType))
+        {
+            return false;
+        }
+
+        var normalizedDeezerType = NormalizeText(deezerType).ToLowerInvariant();
+        var normalizedDeezerId = NormalizeText(deezerId);
+        match = new MediaServerSoundtrackMatchDto
+        {
+            Kind = normalizedDeezerType,
+            DeezerId = normalizedDeezerId,
+            Title = $"Manual {normalizedDeezerType}",
+            Subtitle = null,
+            Url = $"https://www.deezer.com/{normalizedDeezerType}/{normalizedDeezerId}",
+            CoverUrl = null,
+            Score = 100
+        };
+        return true;
+    }
+
+    private static bool IsManualTrackBlockedForMovie(string? category, string? type)
+    {
+        var normalizedCategory = NormalizeText(category).ToLowerInvariant();
+        var normalizedType = NormalizeText(type).ToLowerInvariant();
+        return string.Equals(normalizedCategory, MediaServerSoundtrackConstants.MovieCategory, StringComparison.Ordinal)
+            && string.Equals(normalizedType, MatchKindTrack, StringComparison.Ordinal);
+    }
+
+    private static string[] BuildManualSoundtrackQueries(string title, int? year, string manualQuery)
+    {
+        var normalizedManualQuery = NormalizeText(manualQuery);
+        if (string.IsNullOrWhiteSpace(normalizedManualQuery))
+        {
+            return BuildSoundtrackQueries(title, year);
+        }
+
+        var queries = new List<string>
+        {
+            normalizedManualQuery
+        };
+
+        if (!normalizedManualQuery.Contains(SoundtrackToken, StringComparison.OrdinalIgnoreCase))
+        {
+            queries.Add($"{normalizedManualQuery} {SoundtrackToken}");
+        }
+
+        if (!normalizedManualQuery.Contains("ost", StringComparison.OrdinalIgnoreCase))
+        {
+            queries.Add($"{normalizedManualQuery} ost");
+        }
+
+        queries.AddRange(BuildSoundtrackQueries(title, year));
+
+        return queries
+            .Select(query => NormalizeText(query))
+            .Where(query => !string.IsNullOrWhiteSpace(query))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static bool TryParseSpotifyManualTarget(string value, out string type, out string id)
+    {
+        type = string.Empty;
+        id = string.Empty;
+
+        var uriMatch = SpotifyUriRegex().Match(value);
+        if (uriMatch.Success)
+        {
+            type = NormalizeText(uriMatch.Groups["type"].Value).ToLowerInvariant();
+            id = NormalizeText(uriMatch.Groups["id"].Value);
+            return !string.IsNullOrWhiteSpace(type) && !string.IsNullOrWhiteSpace(id);
+        }
+
+        var webMatch = SpotifyWebLinkRegex().Match(value);
+        if (!webMatch.Success)
+        {
+            return false;
+        }
+
+        type = NormalizeText(webMatch.Groups["type"].Value).ToLowerInvariant();
+        id = NormalizeText(webMatch.Groups["id"].Value);
+        return !string.IsNullOrWhiteSpace(type) && !string.IsNullOrWhiteSpace(id);
+    }
+
+    private static bool TryParseDeezerManualTarget(string value, out string type, out string id)
+    {
+        type = string.Empty;
+        id = string.Empty;
+
+        var webMatch = DeezerWebLinkRegex().Match(value);
+        if (!webMatch.Success)
+        {
+            return false;
+        }
+
+        type = NormalizeText(webMatch.Groups["type"].Value).ToLowerInvariant();
+        id = NormalizeText(webMatch.Groups["id"].Value);
+        return !string.IsNullOrWhiteSpace(type) && !string.IsNullOrWhiteSpace(id);
+    }
+
+    private static MediaServerSoundtrackItemDto BuildSoundtrackItemDto(
         MediaServerContentItem item,
         MediaServerSoundtrackItemDto? persistedRow)
     {
@@ -679,72 +935,93 @@ public sealed class MediaServerSoundtrackService
             foreach (var row in unresolved)
             {
                 var cacheKey = BuildSoundtrackItemCacheKey(row.ServerType, row.LibraryId, row.ItemId);
-                if (!_backgroundSoundtrackPersistInFlight.TryAdd(cacheKey, 0))
+                if (TryEnterBackgroundPersist(cacheKey))
                 {
-                    continue;
-                }
-
-                try
-                {
-                    var sourceItem = new MediaServerContentItem
-                    {
-                        ServerType = row.ServerType,
-                        LibraryId = row.LibraryId,
-                        LibraryName = row.LibraryName,
-                        Category = row.Category,
-                        ItemId = row.ItemId,
-                        Title = row.Title,
-                        Year = row.Year,
-                        ImageUrl = row.ImageUrl
-                    };
-
-                    var resolvedMatch = await ResolveSoundtrackAsync(sourceItem, CancellationToken.None);
-                    if (AreMatchesEquivalent(row.Soundtrack, resolvedMatch))
-                    {
-                        continue;
-                    }
-
-                    var previousRetries = row.Soundtrack?.RetryCount ?? 0;
-                    if (!HasResolvedSoundtrack(resolvedMatch))
-                    {
-                        resolvedMatch.RetryCount = Math.Min(previousRetries + 1, 1000);
-                    }
-                    else
-                    {
-                        resolvedMatch.RetryCount = 0;
-                    }
-                    NormalizeMatchMetadata(resolvedMatch);
-
-                    var updated = new MediaServerSoundtrackItemDto
-                    {
-                        ServerType = row.ServerType,
-                        ServerLabel = row.ServerLabel,
-                        LibraryId = row.LibraryId,
-                        LibraryName = row.LibraryName,
-                        Category = row.Category,
-                        ItemId = row.ItemId,
-                        Title = row.Title,
-                        Year = row.Year,
-                        ImageUrl = row.ImageUrl,
-                        ContentHash = row.ContentHash,
-                        IsActive = row.IsActive,
-                        FirstSeenUtc = row.FirstSeenUtc,
-                        LastSeenUtc = DateTimeOffset.UtcNow,
-                        Soundtrack = resolvedMatch
-                    };
-
-                    await _cacheRepository.UpsertItemsAsync(new[] { updated }, CancellationToken.None);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    _logger.LogDebug(ex, "Background soundtrack persistence failed for {ServerType}/{LibraryId}/{ItemId}", row.ServerType, row.LibraryId, row.ItemId);
-                }
-                finally
-                {
-                    _backgroundSoundtrackPersistInFlight.TryRemove(cacheKey, out _);
+                    await ResolveAndPersistBackgroundSoundtrackAsync(row, cacheKey);
                 }
             }
         });
+    }
+
+    private bool TryEnterBackgroundPersist(string cacheKey)
+        => !string.IsNullOrWhiteSpace(cacheKey)
+           && _backgroundSoundtrackPersistInFlight.TryAdd(cacheKey, 0);
+
+    private async Task ResolveAndPersistBackgroundSoundtrackAsync(
+        MediaServerSoundtrackItemDto row,
+        string cacheKey)
+    {
+        try
+        {
+            var sourceItem = CreateContentItemFromRow(row);
+            var resolvedMatch = await ResolveSoundtrackAsync(sourceItem, CancellationToken.None);
+            if (AreMatchesEquivalent(row.Soundtrack, resolvedMatch))
+            {
+                return;
+            }
+
+            NormalizeResolvedMatchRetryCount(row.Soundtrack, resolvedMatch);
+            NormalizeMatchMetadata(resolvedMatch);
+            await PersistUpdatedSoundtrackAsync(row, resolvedMatch);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Background soundtrack persistence failed for {ServerType}/{LibraryId}/{ItemId}", row.ServerType, row.LibraryId, row.ItemId);
+        }
+        finally
+        {
+            _backgroundSoundtrackPersistInFlight.TryRemove(cacheKey, out _);
+        }
+    }
+
+    private static MediaServerContentItem CreateContentItemFromRow(MediaServerSoundtrackItemDto row)
+    {
+        return new MediaServerContentItem
+        {
+            ServerType = row.ServerType,
+            LibraryId = row.LibraryId,
+            LibraryName = row.LibraryName,
+            Category = row.Category,
+            ItemId = row.ItemId,
+            Title = row.Title,
+            Year = row.Year,
+            ImageUrl = row.ImageUrl
+        };
+    }
+
+    private static void NormalizeResolvedMatchRetryCount(
+        MediaServerSoundtrackMatchDto? previousMatch,
+        MediaServerSoundtrackMatchDto resolvedMatch)
+    {
+        var previousRetries = previousMatch?.RetryCount ?? 0;
+        resolvedMatch.RetryCount = HasResolvedSoundtrack(resolvedMatch)
+            ? 0
+            : Math.Min(previousRetries + 1, 1000);
+    }
+
+    private async Task PersistUpdatedSoundtrackAsync(
+        MediaServerSoundtrackItemDto row,
+        MediaServerSoundtrackMatchDto resolvedMatch)
+    {
+        var updated = new MediaServerSoundtrackItemDto
+        {
+            ServerType = row.ServerType,
+            ServerLabel = row.ServerLabel,
+            LibraryId = row.LibraryId,
+            LibraryName = row.LibraryName,
+            Category = row.Category,
+            ItemId = row.ItemId,
+            Title = row.Title,
+            Year = row.Year,
+            ImageUrl = row.ImageUrl,
+            ContentHash = row.ContentHash,
+            IsActive = row.IsActive,
+            FirstSeenUtc = row.FirstSeenUtc,
+            LastSeenUtc = DateTimeOffset.UtcNow,
+            Soundtrack = resolvedMatch
+        };
+
+        await _cacheRepository.UpsertItemsAsync(new[] { updated }, CancellationToken.None);
     }
 
     private static bool ShouldResolveSoundtrackInBackground(MediaServerSoundtrackItemDto item)
@@ -760,8 +1037,19 @@ public sealed class MediaServerSoundtrackService
         }
 
         var kind = NormalizeText(item.Soundtrack?.Kind).ToLowerInvariant();
+        if (kind.StartsWith(SpotifyKindPrefix, StringComparison.Ordinal))
+        {
+            var soundtrackTitle = NormalizeText(item.Soundtrack?.Title);
+            if (string.IsNullOrWhiteSpace(soundtrackTitle))
+            {
+                return true;
+            }
+
+            return !IsSoundtrackCandidateCompatible(item.Title, soundtrackTitle, item.Year);
+        }
+
         var deezerId = NormalizeText(item.Soundtrack?.DeezerId);
-        return string.IsNullOrWhiteSpace(deezerId) || string.Equals(kind, "search", StringComparison.Ordinal);
+        return string.IsNullOrWhiteSpace(deezerId) || string.Equals(kind, MatchKindSearch, StringComparison.Ordinal);
     }
 
     private async Task ResolveAtLeastOneSoundtrackMatchForResponseAsync(
@@ -819,7 +1107,14 @@ public sealed class MediaServerSoundtrackService
     }
 
     private static bool HasResolvedSoundtrack(MediaServerSoundtrackItemDto row)
-        => HasResolvedSoundtrack(row.Soundtrack);
+    {
+        if (IsMovieSingleTrackMatch(row.Category, row.Soundtrack))
+        {
+            return false;
+        }
+
+        return HasResolvedSoundtrack(row.Soundtrack);
+    }
 
     private static bool HasResolvedSoundtrack(MediaServerSoundtrackMatchDto? match)
     {
@@ -830,7 +1125,39 @@ public sealed class MediaServerSoundtrackService
 
         var kind = NormalizeText(match.Kind).ToLowerInvariant();
         var deezerId = NormalizeText(match.DeezerId);
-        return !string.IsNullOrWhiteSpace(deezerId) && !string.Equals(kind, "search", StringComparison.Ordinal);
+        if (!string.IsNullOrWhiteSpace(deezerId) && !string.Equals(kind, MatchKindSearch, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (kind.StartsWith(SpotifyKindPrefix, StringComparison.Ordinal))
+        {
+            return !string.IsNullOrWhiteSpace(NormalizeText(match.Url));
+        }
+
+        return false;
+    }
+
+    private static bool IsMovieSingleTrackMatch(string? category, MediaServerSoundtrackMatchDto? match)
+    {
+        if (match == null)
+        {
+            return false;
+        }
+
+        var normalizedCategory = NormalizeText(category).ToLowerInvariant();
+        if (!string.Equals(normalizedCategory, MediaServerSoundtrackConstants.MovieCategory, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var kind = NormalizeText(match.Kind).ToLowerInvariant();
+        if (string.Equals(kind, MatchKindTrack, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return string.Equals(kind, $"{SpotifyKindPrefix}{MatchKindTrack}", StringComparison.Ordinal);
     }
 
     private static bool AreMatchesEquivalent(MediaServerSoundtrackMatchDto? left, MediaServerSoundtrackMatchDto? right)
@@ -1025,156 +1352,121 @@ public sealed class MediaServerSoundtrackService
 
         foreach (var group in discovered.GroupBy(item => NormalizeServerType(item.ServerType), StringComparer.OrdinalIgnoreCase))
         {
-            var serverType = NormalizeServerType(group.Key);
-            if (string.IsNullOrWhiteSpace(serverType))
+            changed |= MergeServerGroup(settings, group, nowUtc);
+        }
+
+        return changed;
+    }
+
+    private static bool MergeServerGroup(
+        MediaServerSoundtrackSettings settings,
+        IGrouping<string, MediaServerLibraryDescriptor> group,
+        DateTimeOffset nowUtc)
+    {
+        var serverType = NormalizeServerType(group.Key);
+        if (string.IsNullOrWhiteSpace(serverType))
+        {
+            return false;
+        }
+
+        var changed = false;
+        var server = GetOrCreateServer(settings, serverType);
+        var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var library in group)
+        {
+            changed |= MergeDiscoveredLibrary(server, library, seenIds, nowUtc);
+        }
+
+        changed |= MarkStaleLibraries(server, seenIds);
+        return changed;
+    }
+
+    private static bool MergeDiscoveredLibrary(
+        MediaServerSoundtrackServerSettings server,
+        MediaServerLibraryDescriptor library,
+        HashSet<string> seenIds,
+        DateTimeOffset nowUtc)
+    {
+        var libraryId = NormalizeText(library.LibraryId);
+        if (string.IsNullOrWhiteSpace(libraryId))
+        {
+            return false;
+        }
+
+        seenIds.Add(libraryId);
+        if (!server.Libraries.TryGetValue(libraryId, out var existing))
+        {
+            server.Libraries[libraryId] = new MediaServerSoundtrackLibrarySettings
             {
-                continue;
-            }
+                LibraryId = libraryId,
+                Name = NormalizeText(library.Name),
+                Category = NormalizeCategory(library.Category),
+                Enabled = server.AutoIncludeNewLibraries,
+                Ignored = false,
+                FirstDiscoveredUtc = nowUtc,
+                LastSeenUtc = nowUtc,
+                UserConfigured = false
+            };
+            return true;
+        }
 
-            var server = GetOrCreateServer(settings, serverType);
-            var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var library in group)
+        return UpdateExistingDiscoveredLibrary(existing, library, nowUtc);
+    }
+
+    private static bool UpdateExistingDiscoveredLibrary(
+        MediaServerSoundtrackLibrarySettings existing,
+        MediaServerLibraryDescriptor library,
+        DateTimeOffset nowUtc)
+    {
+        var changed = false;
+        var normalizedName = NormalizeText(library.Name);
+        var normalizedCategory = NormalizeCategory(library.Category);
+
+        if (!string.Equals(existing.Name, normalizedName, StringComparison.Ordinal))
+        {
+            existing.Name = normalizedName;
+            changed = true;
+        }
+
+        if (!string.Equals(existing.Category, normalizedCategory, StringComparison.Ordinal))
+        {
+            existing.Category = normalizedCategory;
+            changed = true;
+        }
+
+        if (existing.LastSeenUtc != nowUtc)
+        {
+            existing.LastSeenUtc = nowUtc;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private static bool MarkStaleLibraries(MediaServerSoundtrackServerSettings server, HashSet<string> seenIds)
+    {
+        var changed = false;
+        foreach (var staleLibrary in server.Libraries.Values.Where(entry => !seenIds.Contains(entry.LibraryId)))
+        {
+            if (staleLibrary.LastSeenUtc != null)
             {
-                var libraryId = NormalizeText(library.LibraryId);
-                if (string.IsNullOrWhiteSpace(libraryId))
-                {
-                    continue;
-                }
-
-                seenIds.Add(libraryId);
-                if (!server.Libraries.TryGetValue(libraryId, out var existing))
-                {
-                    existing = new MediaServerSoundtrackLibrarySettings
-                    {
-                        LibraryId = libraryId,
-                        Name = NormalizeText(library.Name),
-                        Category = NormalizeCategory(library.Category),
-                        Enabled = server.AutoIncludeNewLibraries,
-                        Ignored = false,
-                        FirstDiscoveredUtc = nowUtc,
-                        LastSeenUtc = nowUtc,
-                        UserConfigured = false
-                    };
-                    server.Libraries[libraryId] = existing;
-                    changed = true;
-                    continue;
-                }
-
-                var normalizedName = NormalizeText(library.Name);
-                var normalizedCategory = NormalizeCategory(library.Category);
-
-                if (!string.Equals(existing.Name, normalizedName, StringComparison.Ordinal))
-                {
-                    existing.Name = normalizedName;
-                    changed = true;
-                }
-
-                if (!string.Equals(existing.Category, normalizedCategory, StringComparison.Ordinal))
-                {
-                    existing.Category = normalizedCategory;
-                    changed = true;
-                }
-
-                if (existing.LastSeenUtc != nowUtc)
-                {
-                    existing.LastSeenUtc = nowUtc;
-                    changed = true;
-                }
-            }
-
-            foreach (var staleLibrary in server.Libraries.Values.Where(entry => !seenIds.Contains(entry.LibraryId)))
-            {
-                if (staleLibrary.LastSeenUtc != null)
-                {
-                    staleLibrary.LastSeenUtc = null;
-                    changed = true;
-                }
+                staleLibrary.LastSeenUtc = null;
+                changed = true;
             }
         }
 
         return changed;
     }
 
-    private MediaServerSoundtrackConfigurationDto BuildConfigurationDto(
+    private static MediaServerSoundtrackConfigurationDto BuildConfigurationDto(
         MediaServerSoundtrackSettings settings,
         PlatformAuthState auth,
         IReadOnlyList<MediaServerLibraryDescriptor> discovered)
     {
-        var discoveredLookup = discovered
-            .GroupBy(item => NormalizeServerType(item.ServerType), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(
-                group => group.Key,
-                group => group.ToDictionary(item => NormalizeText(item.LibraryId), item => item, StringComparer.OrdinalIgnoreCase),
-                StringComparer.OrdinalIgnoreCase);
-
-        var serverTypes = new[]
-        {
-            MediaServerSoundtrackConstants.PlexServer,
-            MediaServerSoundtrackConstants.JellyfinServer
-        };
-
-        var servers = new List<MediaServerSoundtrackServerDto>();
-        foreach (var serverType in serverTypes)
-        {
-            var serverSettings = settings.Servers.TryGetValue(serverType, out var found)
-                ? found
-                : new MediaServerSoundtrackServerSettings();
-            var connected = IsServerConnected(serverType, auth);
-            var discoveredById = discoveredLookup.TryGetValue(serverType, out var lookup)
-                ? lookup
-                : new Dictionary<string, MediaServerLibraryDescriptor>(StringComparer.OrdinalIgnoreCase);
-
-            var libraryIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var id in serverSettings.Libraries.Keys)
-            {
-                libraryIds.Add(NormalizeText(id));
-            }
-            foreach (var id in discoveredById.Keys)
-            {
-                libraryIds.Add(NormalizeText(id));
-            }
-
-            var libraries = new List<MediaServerSoundtrackLibraryDto>();
-            foreach (var id in libraryIds.Where(id => !string.IsNullOrWhiteSpace(id)).OrderBy(id => id, StringComparer.OrdinalIgnoreCase))
-            {
-                serverSettings.Libraries.TryGetValue(id, out var saved);
-                discoveredById.TryGetValue(id, out var live);
-
-                if (live == null && saved?.LastSeenUtc == null)
-                {
-                    continue;
-                }
-
-                var category = NormalizeCategory(saved?.Category ?? live?.Category);
-                var name = NormalizeText(saved?.Name);
-                if (string.IsNullOrWhiteSpace(name))
-                {
-                    name = NormalizeText(live?.Name);
-                }
-
-                libraries.Add(new MediaServerSoundtrackLibraryDto
-                {
-                    LibraryId = id,
-                    Name = name,
-                    Category = category,
-                    CategoryLabel = GetCategoryLabel(category),
-                    Enabled = saved?.Enabled ?? serverSettings.AutoIncludeNewLibraries,
-                    Ignored = saved?.Ignored ?? false,
-                    Connected = live != null,
-                    FirstDiscoveredUtc = saved?.FirstDiscoveredUtc,
-                    LastSeenUtc = saved?.LastSeenUtc
-                });
-            }
-
-            servers.Add(new MediaServerSoundtrackServerDto
-            {
-                ServerType = serverType,
-                DisplayName = GetServerDisplayName(serverType),
-                Connected = connected,
-                AutoIncludeNewLibraries = serverSettings.AutoIncludeNewLibraries,
-                Libraries = libraries
-            });
-        }
+        var discoveredLookup = BuildDiscoveredLookup(discovered);
+        var servers = GetSupportedServerTypes()
+            .Select(serverType => BuildServerConfigurationDto(serverType, settings, auth, discoveredLookup))
+            .ToList();
 
         return new MediaServerSoundtrackConfigurationDto
         {
@@ -1183,7 +1475,127 @@ public sealed class MediaServerSoundtrackService
         };
     }
 
-    private List<(string ServerType, string LibraryId, string LibraryName, string Category)> ResolveTargetLibraries(
+    private static Dictionary<string, Dictionary<string, MediaServerLibraryDescriptor>> BuildDiscoveredLookup(
+        IReadOnlyList<MediaServerLibraryDescriptor> discovered)
+    {
+        return discovered
+            .GroupBy(item => NormalizeServerType(item.ServerType), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.ToDictionary(
+                    item => NormalizeText(item.LibraryId),
+                    item => item,
+                    StringComparer.OrdinalIgnoreCase),
+                StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string[] GetSupportedServerTypes()
+    {
+        return
+        [
+            MediaServerSoundtrackConstants.PlexServer,
+            MediaServerSoundtrackConstants.JellyfinServer
+        ];
+    }
+
+    private static MediaServerSoundtrackServerDto BuildServerConfigurationDto(
+        string serverType,
+        MediaServerSoundtrackSettings settings,
+        PlatformAuthState auth,
+        Dictionary<string, Dictionary<string, MediaServerLibraryDescriptor>> discoveredLookup)
+    {
+        var serverSettings = settings.Servers.TryGetValue(serverType, out var found)
+            ? found
+            : new MediaServerSoundtrackServerSettings();
+        var discoveredById = discoveredLookup.TryGetValue(serverType, out var lookup)
+            ? lookup
+            : new Dictionary<string, MediaServerLibraryDescriptor>(StringComparer.OrdinalIgnoreCase);
+        var libraries = BuildServerLibraryDtos(serverSettings, discoveredById);
+
+        return new MediaServerSoundtrackServerDto
+        {
+            ServerType = serverType,
+            DisplayName = GetServerDisplayName(serverType),
+            Connected = IsServerConnected(serverType, auth),
+            AutoIncludeNewLibraries = serverSettings.AutoIncludeNewLibraries,
+            Libraries = libraries
+        };
+    }
+
+    private static List<MediaServerSoundtrackLibraryDto> BuildServerLibraryDtos(
+        MediaServerSoundtrackServerSettings serverSettings,
+        IReadOnlyDictionary<string, MediaServerLibraryDescriptor> discoveredById)
+    {
+        return BuildLibraryIds(serverSettings, discoveredById)
+            .Select(id => BuildLibraryDtoForConfiguration(id, serverSettings, discoveredById))
+            .Where(static dto => dto != null)
+            .Select(static dto => dto!)
+            .ToList();
+    }
+
+    private static IEnumerable<string> BuildLibraryIds(
+        MediaServerSoundtrackServerSettings serverSettings,
+        IReadOnlyDictionary<string, MediaServerLibraryDescriptor> discoveredById)
+    {
+        var libraryIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var id in serverSettings.Libraries.Keys)
+        {
+            libraryIds.Add(NormalizeText(id));
+        }
+
+        foreach (var id in discoveredById.Keys)
+        {
+            libraryIds.Add(NormalizeText(id));
+        }
+
+        return libraryIds
+            .Where(static id => !string.IsNullOrWhiteSpace(id))
+            .OrderBy(static id => id, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static MediaServerSoundtrackLibraryDto? BuildLibraryDtoForConfiguration(
+        string id,
+        MediaServerSoundtrackServerSettings serverSettings,
+        IReadOnlyDictionary<string, MediaServerLibraryDescriptor> discoveredById)
+    {
+        serverSettings.Libraries.TryGetValue(id, out var saved);
+        discoveredById.TryGetValue(id, out var live);
+        if (live == null && saved?.LastSeenUtc == null)
+        {
+            return null;
+        }
+
+        var category = NormalizeCategory(saved?.Category ?? live?.Category);
+        var name = ResolveLibraryDisplayName(saved, live, id);
+        return new MediaServerSoundtrackLibraryDto
+        {
+            LibraryId = id,
+            Name = name,
+            Category = category,
+            CategoryLabel = GetCategoryLabel(category),
+            Enabled = saved?.Enabled ?? serverSettings.AutoIncludeNewLibraries,
+            Ignored = saved?.Ignored ?? false,
+            Connected = live != null,
+            FirstDiscoveredUtc = saved?.FirstDiscoveredUtc,
+            LastSeenUtc = saved?.LastSeenUtc
+        };
+    }
+
+    private static string ResolveLibraryDisplayName(
+        MediaServerSoundtrackLibrarySettings? saved,
+        MediaServerLibraryDescriptor? live,
+        string fallbackId)
+    {
+        var name = NormalizeText(saved?.Name);
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            name = NormalizeText(live?.Name);
+        }
+
+        return string.IsNullOrWhiteSpace(name) ? fallbackId : name;
+    }
+
+    private static List<(string ServerType, string LibraryId, string LibraryName, string Category)> ResolveTargetLibraries(
         MediaServerSoundtrackSettings settings,
         PlatformAuthState auth,
         string category,
@@ -1275,12 +1687,7 @@ public sealed class MediaServerSoundtrackService
             return await FetchJellyfinEpisodesAsync(auth.Jellyfin, show, cancellationToken);
         }
 
-        return new TvEpisodeFetchResult
-        {
-            ShowId = show.ItemId,
-            ShowTitle = show.Title,
-            ShowImageUrl = show.ImageUrl
-        };
+        return CreateEpisodeFetchResultSeed(show);
     }
 
     private async Task<List<MediaServerContentItem>> FetchPlexItemsAsync(
@@ -1364,20 +1771,10 @@ public sealed class MediaServerSoundtrackService
     {
         if (!HasCredentials(plex?.Url, plex?.Token))
         {
-            return new TvEpisodeFetchResult
-            {
-                ShowId = show.ItemId,
-                ShowTitle = show.Title,
-                ShowImageUrl = show.ImageUrl
-            };
+            return CreateEpisodeFetchResultSeed(show);
         }
 
-        var result = new TvEpisodeFetchResult
-        {
-            ShowId = show.ItemId,
-            ShowTitle = show.Title,
-            ShowImageUrl = show.ImageUrl
-        };
+        var result = CreateEpisodeFetchResultSeed(show);
 
         var seasons = await _plexApiClient.GetShowSeasonsAsync(plex!.Url!, plex.Token!, show.ItemId, cancellationToken);
         foreach (var season in seasons)
@@ -1429,12 +1826,7 @@ public sealed class MediaServerSoundtrackService
     {
         if (!HasCredentials(jellyfin?.Url, jellyfin?.ApiKey))
         {
-            return new TvEpisodeFetchResult
-            {
-                ShowId = show.ItemId,
-                ShowTitle = show.Title,
-                ShowImageUrl = show.ImageUrl
-            };
+            return CreateEpisodeFetchResultSeed(show);
         }
 
         var userId = NormalizeText(jellyfin!.UserId);
@@ -1444,12 +1836,7 @@ public sealed class MediaServerSoundtrackService
             userId = NormalizeText(currentUser?.Id);
         }
 
-        var result = new TvEpisodeFetchResult
-        {
-            ShowId = show.ItemId,
-            ShowTitle = show.Title,
-            ShowImageUrl = show.ImageUrl
-        };
+        var result = CreateEpisodeFetchResultSeed(show);
 
         if (string.IsNullOrWhiteSpace(userId))
         {
@@ -1566,9 +1953,21 @@ public sealed class MediaServerSoundtrackService
         }
     }
 
-    private async Task<MediaServerSoundtrackMatchDto> ResolveSoundtrackDirectAsync(MediaServerContentItem item, CancellationToken cancellationToken)
+    private async Task<MediaServerSoundtrackMatchDto> ResolveSoundtrackDirectAsync(
+        MediaServerContentItem item,
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? queryOverride = null)
     {
-        var queries = BuildSoundtrackQueries(item.Title);
+        var queries = queryOverride?
+            .Select(query => NormalizeText(query))
+            .Where(query => !string.IsNullOrWhiteSpace(query))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray()
+            ?? Array.Empty<string>();
+        if (queries.Length == 0)
+        {
+            queries = BuildSoundtrackQueries(item.Title, item.Year);
+        }
         var primaryQuery = queries[0];
         var defaultMatch = CreateFallbackSearchMatch(primaryQuery);
 
@@ -1577,33 +1976,10 @@ public sealed class MediaServerSoundtrackService
             var bestMatch = defaultMatch;
             var spotifyMatch = await TryResolveSpotifySoundtrackMatchAsync(item, queries, cancellationToken);
             bestMatch = SelectHigherScore(bestMatch, spotifyMatch);
-            if (!string.IsNullOrWhiteSpace(bestMatch.DeezerId) && bestMatch.Score >= 55)
+            if (bestMatch.Score < 65)
             {
-                return bestMatch;
-            }
-
-            var musicBrainzCuratedMatch = await TryResolveMusicBrainzCuratedMatchAsync(item, queries, cancellationToken);
-            bestMatch = SelectHigherScore(bestMatch, musicBrainzCuratedMatch);
-            if (!string.IsNullOrWhiteSpace(bestMatch.DeezerId) && bestMatch.Score >= 55)
-            {
-                return bestMatch;
-            }
-
-            foreach (var query in queries)
-            {
-                var albumResult = await _deezerClient.SearchAlbumAsync(query, new ApiOptions { Limit = 5 });
-                var playlistResult = await _deezerClient.SearchPlaylistAsync(query, new ApiOptions { Limit = 5 });
-                var trackResult = await _deezerClient.SearchTrackAsync(query, new ApiOptions { Limit = 8 });
-
-                var albumMatch = SelectBestAlbumMatch(albumResult, item.Title, query);
-                var playlistMatch = SelectBestPlaylistMatch(playlistResult, item.Title, query);
-                var trackAlbumMatch = SelectBestTrackAlbumMatch(trackResult, item.Title, query);
-                bestMatch = ChooseBestMatch(bestMatch, albumMatch, playlistMatch, trackAlbumMatch);
-
-                if (!string.IsNullOrWhiteSpace(bestMatch.DeezerId) && bestMatch.Score >= 55)
-                {
-                    break;
-                }
+                var curatedSpotify = await TryResolveMusicBrainzCuratedMatchAsync(item, queries, cancellationToken);
+                bestMatch = SelectHigherScore(bestMatch, curatedSpotify);
             }
 
             return bestMatch;
@@ -1623,95 +1999,74 @@ public sealed class MediaServerSoundtrackService
         MediaServerSoundtrackMatchDto? best = null;
         foreach (var query in queries)
         {
-            SpotifySearchTypeResponse? spotifyAlbums;
-            try
+            best = await TryResolveSpotifyAlbumsForQueryAsync(item, query, best, cancellationToken);
+            if (ShouldReturnHighConfidence(best))
             {
-                spotifyAlbums = await _spotifySearchService.SearchByTypeAsync(query, "album", 10, 0, cancellationToken);
+                return best;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogDebug(ex, "Spotify soundtrack candidate search failed for {Title}", item.Title);
-                continue;
-            }
+        }
 
-            if (spotifyAlbums?.Items == null || spotifyAlbums.Items.Count == 0)
-            {
-                continue;
-            }
-
-            var albumCandidates = spotifyAlbums.Items
-                .Where(candidate => !string.IsNullOrWhiteSpace(candidate.Id) && !string.IsNullOrWhiteSpace(candidate.Name))
-                .Where(candidate => IsSoundtrackCandidateCompatible(item.Title, candidate.Name))
-                .OrderByDescending(candidate => ComputeMatchScore(item.Title, candidate.Name))
-                .Take(4)
-                .ToList();
-            if (albumCandidates.Count == 0)
-            {
-                continue;
-            }
-
-            foreach (var candidate in albumCandidates)
-            {
-                var spotifyDirectMatch = BuildSpotifyDirectSoundtrackMatch(item, candidate);
-                best = SelectHigherScoreNullable(best, spotifyDirectMatch);
-
-                var deezerAlbumId = await TryResolveDeezerAlbumIdFromSpotifyCandidateAsync(candidate, cancellationToken);
-                if (string.IsNullOrWhiteSpace(deezerAlbumId))
-                {
-                    var spotifyFallbackCandidate = await TryResolveCuratedCandidateViaDeezerAsync(
-                        item,
-                        candidate.Name,
-                        ExtractSpotifyItemArtist(candidate.Subtitle),
-                        scoreBonus: 12,
-                        cancellationToken);
-                    best = SelectHigherScoreNullable(best, spotifyFallbackCandidate);
-                    continue;
-                }
-
-                var deezerAlbum = await TryGetDeezerAlbumAsync(deezerAlbumId);
-                var deezerTitle = NormalizeText(deezerAlbum?.Title);
-                if (string.IsNullOrWhiteSpace(deezerTitle))
-                {
-                    deezerTitle = candidate.Name;
-                }
-
-                var subtitle = NormalizeText(deezerAlbum?.Artist?.Name);
-                if (string.IsNullOrWhiteSpace(subtitle))
-                {
-                    subtitle = ExtractSpotifyItemArtist(candidate.Subtitle);
-                }
-
-                var score = Math.Max(
-                    ComputeMatchScore(item.Title, deezerTitle) + 12,
-                    ComputeMatchScore(item.Title, candidate.Name) + 8);
-                var match = new MediaServerSoundtrackMatchDto
-                {
-                    Kind = "album",
-                    DeezerId = deezerAlbumId,
-                    Title = deezerTitle,
-                    Subtitle = string.IsNullOrWhiteSpace(subtitle) ? null : subtitle,
-                    Url = $"https://www.deezer.com/album/{Uri.EscapeDataString(deezerAlbumId)}",
-                    CoverUrl = FirstNonEmpty(
-                        deezerAlbum?.CoverMedium,
-                        deezerAlbum?.CoverBig,
-                        deezerAlbum?.Cover,
-                        candidate.ImageUrl),
-                    Score = score
-                };
-
-                best = SelectHigherScoreNullable(best, match);
-                if (best is { Score: >= 65 })
-                {
-                    return best;
-                }
-            }
+        if (ShouldTrySpotifyWebFallback(best))
+        {
+            var webSearchMatch = await TryResolveSpotifyWebSearchMatchAsync(item, queries, cancellationToken);
+            best = SelectHigherScoreNullable(best, webSearchMatch);
         }
 
         return best;
     }
 
-    private static MediaServerSoundtrackMatchDto? BuildSpotifyDirectSoundtrackMatch(
+    private async Task<MediaServerSoundtrackMatchDto?> TryResolveSpotifyAlbumsForQueryAsync(
         MediaServerContentItem item,
+        string query,
+        MediaServerSoundtrackMatchDto? currentBest,
+        CancellationToken cancellationToken)
+    {
+        var spotifyAlbums = await SafeSearchSpotifyAlbumsAsync(item.Title, query, cancellationToken);
+        if (spotifyAlbums?.Items == null || spotifyAlbums.Items.Count == 0)
+        {
+            return currentBest;
+        }
+
+        var albumCandidates = spotifyAlbums.Items
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.Id) && !string.IsNullOrWhiteSpace(candidate.Name))
+            .Where(candidate => IsSoundtrackCandidateCompatible(item.Title, candidate.Name, item.Year))
+            .OrderByDescending(candidate => ComputeMatchScore(item.Title, candidate.Name, item.Year))
+            .Take(12);
+        foreach (var candidate in albumCandidates)
+        {
+            var spotifyDirectMatch = BuildSpotifyDirectSoundtrackMatch(item.Title, item.Year, candidate);
+            currentBest = SelectHigherScoreNullable(currentBest, spotifyDirectMatch);
+            if (ShouldReturnHighConfidence(currentBest))
+            {
+                return currentBest;
+            }
+        }
+
+        return currentBest;
+    }
+
+    private async Task<SpotifySearchTypeResponse?> SafeSearchSpotifyAlbumsAsync(
+        string itemTitle,
+        string query,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _spotifySearchService.SearchByTypeAsync(query, MatchKindAlbum, 40, 0, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Spotify soundtrack candidate search failed for {Title}", itemTitle);
+            return null;
+        }
+    }
+
+    private static bool ShouldTrySpotifyWebFallback(MediaServerSoundtrackMatchDto? best)
+        => best == null || best.Score < 60;
+
+    private static MediaServerSoundtrackMatchDto? BuildSpotifyDirectSoundtrackMatch(
+        string mediaTitle,
+        int? mediaYear,
         SpotifySearchItem candidate)
     {
         var spotifyUrl = BuildSpotifyAlbumUrl(candidate);
@@ -1720,13 +2075,13 @@ public sealed class MediaServerSoundtrackService
         {
             return null;
         }
-        if (!IsSoundtrackCandidateCompatible(item.Title, title))
+        if (!IsSoundtrackCandidateCompatible(mediaTitle, title, mediaYear))
         {
             return null;
         }
 
         var subtitle = ExtractSpotifyItemArtist(candidate.Subtitle);
-        var score = Math.Max(ComputeMatchScore(item.Title, title) + 6, 26);
+        var score = Math.Max(ComputeMatchScore(mediaTitle, title, mediaYear) + 6, 26);
         return new MediaServerSoundtrackMatchDto
         {
             Kind = "spotify_album",
@@ -1753,6 +2108,198 @@ public sealed class MediaServerSoundtrackService
             : $"https://open.spotify.com/album/{Uri.EscapeDataString(id)}";
     }
 
+    private sealed class SpotifyWebSearchCandidate
+    {
+        public string Type { get; init; } = "track";
+
+        public string Id { get; init; } = string.Empty;
+
+        public string Title { get; init; } = string.Empty;
+
+        public string Url { get; init; } = string.Empty;
+    }
+
+    private async Task<MediaServerSoundtrackMatchDto?> TryResolveSpotifyWebSearchMatchAsync(
+        MediaServerContentItem item,
+        IReadOnlyList<string> queries,
+        CancellationToken cancellationToken)
+    {
+        var client = _httpClientFactory.CreateClient();
+        client.Timeout = TimeSpan.FromSeconds(20);
+        MediaServerSoundtrackMatchDto? best = null;
+
+        foreach (var query in queries.Take(5))
+        {
+            var markdown = await FetchSpotifyWebSearchMarkdownAsync(client, query, cancellationToken);
+            if (string.IsNullOrWhiteSpace(markdown))
+            {
+                continue;
+            }
+
+            best = MapSpotifyWebCandidates(item, markdown, best);
+            if (ShouldReturnHighConfidence(best))
+            {
+                return best;
+            }
+        }
+
+        return best;
+    }
+
+    private async Task<string?> FetchSpotifyWebSearchMarkdownAsync(
+        HttpClient client,
+        string query,
+        CancellationToken cancellationToken)
+    {
+        var encodedQuery = Uri.EscapeDataString(query);
+        var bridgeUrl = $"https://r.jina.ai/http://open.spotify.com/search/{encodedQuery}";
+        try
+        {
+            return await client.GetStringAsync(bridgeUrl, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Spotify web-search bridge failed for soundtrack query {Query}", query);
+            return null;
+        }
+    }
+
+    private static MediaServerSoundtrackMatchDto? MapSpotifyWebCandidates(
+        MediaServerContentItem item,
+        string markdown,
+        MediaServerSoundtrackMatchDto? currentBest)
+    {
+        foreach (var candidate in ParseSpotifyWebSearchCandidates(markdown))
+        {
+            if (!IsSpotifyWebCandidateAllowedForItem(item, candidate))
+            {
+                continue;
+            }
+
+            if (!IsSoundtrackCandidateCompatible(item.Title, candidate.Title, item.Year))
+            {
+                continue;
+            }
+
+            var score = ComputeSpotifyWebCandidateScore(item.Title, item.Year, candidate);
+            if (score < 35)
+            {
+                continue;
+            }
+
+            var model = new MediaServerSoundtrackMatchDto
+            {
+                Kind = $"spotify_{candidate.Type}",
+                DeezerId = null,
+                Title = candidate.Title,
+                Subtitle = null,
+                Url = candidate.Url,
+                CoverUrl = null,
+                Score = score
+            };
+
+            currentBest = SelectHigherScoreNullable(currentBest, model);
+            if (ShouldReturnHighConfidence(currentBest))
+            {
+                return currentBest;
+            }
+        }
+
+        return currentBest;
+    }
+
+    private static bool IsSpotifyWebCandidateAllowedForItem(MediaServerContentItem item, SpotifyWebSearchCandidate candidate)
+    {
+        var candidateType = NormalizeText(candidate.Type).ToLowerInvariant();
+        if (candidateType is not (MatchKindAlbum or MatchKindPlaylist or MatchKindTrack))
+        {
+            return false;
+        }
+
+        var category = NormalizeText(item.Category).ToLowerInvariant();
+        if (string.Equals(category, MediaServerSoundtrackConstants.MovieCategory, StringComparison.Ordinal)
+            && string.Equals(candidateType, MatchKindTrack, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static List<SpotifyWebSearchCandidate> ParseSpotifyWebSearchCandidates(string markdown)
+    {
+        if (string.IsNullOrWhiteSpace(markdown))
+        {
+            return new List<SpotifyWebSearchCandidate>();
+        }
+
+        var parsed = new List<SpotifyWebSearchCandidate>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (Match match in SpotifyMarkdownLinkRegex().Matches(markdown))
+        {
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            var type = NormalizeText(match.Groups["type"].Value).ToLowerInvariant();
+            var id = NormalizeText(match.Groups["id"].Value);
+            var title = NormalizeText(match.Groups["title"].Value);
+            var url = NormalizeText(match.Groups["url"].Value);
+            if (string.IsNullOrWhiteSpace(type)
+                || string.IsNullOrWhiteSpace(id)
+                || string.IsNullOrWhiteSpace(url))
+            {
+                continue;
+            }
+
+            if (!(type == MatchKindAlbum || type == MatchKindPlaylist || type == MatchKindTrack))
+            {
+                continue;
+            }
+
+            var key = $"{type}:{id}";
+            if (!seen.Add(key))
+            {
+                continue;
+            }
+
+            parsed.Add(new SpotifyWebSearchCandidate
+            {
+                Type = type,
+                Id = id,
+                Title = string.IsNullOrWhiteSpace(title) ? "Spotify soundtrack" : title,
+                Url = url
+            });
+        }
+
+        return parsed;
+    }
+
+    private static int ComputeSpotifyWebCandidateScore(string mediaTitle, int? mediaYear, SpotifyWebSearchCandidate candidate)
+    {
+        var score = ComputeMatchScore(mediaTitle, candidate.Title, mediaYear);
+        if (candidate.Type == MatchKindAlbum)
+        {
+            score += 8;
+        }
+        else if (candidate.Type == MatchKindPlaylist)
+        {
+            score += 6;
+        }
+        else
+        {
+            score += 2;
+        }
+
+        if (LooksLikeSoundtrackTitle(candidate.Title))
+        {
+            score += 8;
+        }
+
+        return Math.Clamp(score, 1, 100);
+    }
+
     private sealed class MusicBrainzSoundtrackCandidate
     {
         public string Title { get; init; } = string.Empty;
@@ -1770,68 +2317,16 @@ public sealed class MediaServerSoundtrackService
         var curatedCandidates = new List<MusicBrainzSoundtrackCandidate>();
         foreach (var query in queries.Take(3))
         {
-            MusicBrainzRecordingSearchResults? response;
-            try
-            {
-                response = await _musicBrainzClient.SearchAsync(query, cancellationToken);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogDebug(ex, "MusicBrainz soundtrack candidate search failed for {Title}", item.Title);
-                continue;
-            }
-
-            foreach (var recording in response?.Recordings ?? Enumerable.Empty<DeezSpoTag.Web.Services.AutoTag.Recording>())
-            {
-                foreach (var release in recording.Releases ?? Enumerable.Empty<MusicBrainzRelease>())
-                {
-                    var releaseTitle = NormalizeText(release.Title);
-                    if (string.IsNullOrWhiteSpace(releaseTitle))
-                    {
-                        continue;
-                    }
-
-                    var score = ComputeMusicBrainzCuratedScore(item.Title, recording.Title, release);
-                    if (score < 45)
-                    {
-                        continue;
-                    }
-
-                    curatedCandidates.Add(new MusicBrainzSoundtrackCandidate
-                    {
-                        Title = releaseTitle,
-                        ArtistHint = BuildArtistText(release.ArtistCredit) ?? BuildArtistText(recording.ArtistCredit),
-                        Score = score
-                    });
-
-                    var groupTitle = NormalizeText(release.ReleaseGroup?.Title);
-                    if (string.IsNullOrWhiteSpace(groupTitle)
-                        || string.Equals(groupTitle, releaseTitle, StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    curatedCandidates.Add(new MusicBrainzSoundtrackCandidate
-                    {
-                        Title = groupTitle,
-                        ArtistHint = BuildArtistText(release.ArtistCredit) ?? BuildArtistText(recording.ArtistCredit),
-                        Score = Math.Max(40, score - 3)
-                    });
-                }
-            }
+            var response = await SafeSearchMusicBrainzAsync(item.Title, query, cancellationToken);
+            curatedCandidates.AddRange(ExtractMusicBrainzCuratedCandidates(item, response));
         }
 
-        var dedupedCandidates = curatedCandidates
-            .GroupBy(candidate => candidate.Title, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.OrderByDescending(candidate => candidate.Score).First())
-            .OrderByDescending(candidate => candidate.Score)
-            .Take(8)
-            .ToList();
+        var dedupedCandidates = DeduplicateCuratedCandidates(curatedCandidates);
 
         MediaServerSoundtrackMatchDto? best = null;
         foreach (var candidate in dedupedCandidates)
         {
-            var mapped = await TryResolveCuratedCandidateViaDeezerAsync(
+            var mapped = await TryResolveCuratedCandidateViaSpotifyAsync(
                 item,
                 candidate.Title,
                 candidate.ArtistHint,
@@ -1847,7 +2342,89 @@ public sealed class MediaServerSoundtrackService
         return best;
     }
 
-    private async Task<MediaServerSoundtrackMatchDto?> TryResolveCuratedCandidateViaDeezerAsync(
+    private async Task<MusicBrainzRecordingSearchResults?> SafeSearchMusicBrainzAsync(
+        string itemTitle,
+        string query,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _musicBrainzClient.SearchAsync(query, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "MusicBrainz soundtrack candidate search failed for {Title}", itemTitle);
+            return null;
+        }
+    }
+
+    private static IEnumerable<MusicBrainzSoundtrackCandidate> ExtractMusicBrainzCuratedCandidates(
+        MediaServerContentItem item,
+        MusicBrainzRecordingSearchResults? response)
+    {
+        foreach (var recording in response?.Recordings ?? Enumerable.Empty<DeezSpoTag.Web.Services.AutoTag.Recording>())
+        {
+            foreach (var candidate in BuildCuratedCandidatesFromRecording(item, recording))
+            {
+                yield return candidate;
+            }
+        }
+    }
+
+    private static IEnumerable<MusicBrainzSoundtrackCandidate> BuildCuratedCandidatesFromRecording(
+        MediaServerContentItem item,
+        DeezSpoTag.Web.Services.AutoTag.Recording recording)
+    {
+        foreach (var release in recording.Releases ?? Enumerable.Empty<MusicBrainzRelease>())
+        {
+            var releaseTitle = NormalizeText(release.Title);
+            if (string.IsNullOrWhiteSpace(releaseTitle))
+            {
+                continue;
+            }
+
+            var score = ComputeMusicBrainzCuratedScore(item.Title, item.Year, recording.Title, release);
+            if (score < 45)
+            {
+                continue;
+            }
+
+            var artistHint = BuildArtistText(release.ArtistCredit) ?? BuildArtistText(recording.ArtistCredit);
+            yield return new MusicBrainzSoundtrackCandidate
+            {
+                Title = releaseTitle,
+                ArtistHint = artistHint,
+                Score = score
+            };
+
+            var groupTitle = NormalizeText(release.ReleaseGroup?.Title);
+            if (string.IsNullOrWhiteSpace(groupTitle)
+                || string.Equals(groupTitle, releaseTitle, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            yield return new MusicBrainzSoundtrackCandidate
+            {
+                Title = groupTitle,
+                ArtistHint = artistHint,
+                Score = Math.Max(40, score - 3)
+            };
+        }
+    }
+
+    private static List<MusicBrainzSoundtrackCandidate> DeduplicateCuratedCandidates(
+        IEnumerable<MusicBrainzSoundtrackCandidate> candidates)
+    {
+        return candidates
+            .GroupBy(candidate => candidate.Title, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.OrderByDescending(candidate => candidate.Score).First())
+            .OrderByDescending(candidate => candidate.Score)
+            .Take(8)
+            .ToList();
+    }
+
+    private async Task<MediaServerSoundtrackMatchDto?> TryResolveCuratedCandidateViaSpotifyAsync(
         MediaServerContentItem item,
         string candidateTitle,
         string? artistHint,
@@ -1862,40 +2439,133 @@ public sealed class MediaServerSoundtrackService
 
         try
         {
-            var albumResult = await _deezerClient.SearchAlbumAsync(normalizedTitle, new ApiOptions { Limit = 6 });
-            var playlistResult = await _deezerClient.SearchPlaylistAsync(normalizedTitle, new ApiOptions { Limit = 4 });
-            var trackResult = await _deezerClient.SearchTrackAsync(normalizedTitle, new ApiOptions { Limit = 6 });
+            var queryCandidates = BuildCuratedSpotifyQueries(normalizedTitle, artistHint);
 
-            var albumMatch = SelectBestAlbumMatch(albumResult, item.Title, normalizedTitle);
-            var playlistMatch = SelectBestPlaylistMatch(playlistResult, item.Title, normalizedTitle);
-            var trackAlbumMatch = SelectBestTrackAlbumMatch(trackResult, item.Title, normalizedTitle);
-            var best = ChooseBestMatch(CreateFallbackSearchMatch(normalizedTitle), albumMatch, playlistMatch, trackAlbumMatch);
-            if (string.IsNullOrWhiteSpace(best.DeezerId))
+            MediaServerSoundtrackMatchDto? best = null;
+            foreach (var query in queryCandidates)
             {
-                return null;
-            }
-
-            var artistBoost = ComputeArtistHintBoost(artistHint, best.Subtitle);
-            best.Score = Math.Min(100, best.Score + Math.Max(0, scoreBonus) + artistBoost);
-            if (string.IsNullOrWhiteSpace(best.Subtitle) && !string.IsNullOrWhiteSpace(artistHint))
-            {
-                best.Subtitle = artistHint.Trim();
+                var spotifyAlbums = await SafeSearchSpotifyCuratedAlbumsAsync(query, cancellationToken);
+                var resolved = MapCuratedSpotifyAlbumCandidates(
+                    item,
+                    normalizedTitle,
+                    artistHint,
+                    scoreBonus,
+                    spotifyAlbums?.Items);
+                best = SelectHigherScoreNullable(best, resolved);
+                if (ShouldReturnHighConfidence(best))
+                {
+                    return best;
+                }
             }
 
             return best;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer mapping from curated soundtrack candidate failed for {Title}", candidateTitle);
+            _logger.LogDebug(ex, "Spotify mapping from curated soundtrack candidate failed for {Title}", candidateTitle);
             return null;
         }
     }
 
-    private static int ComputeMusicBrainzCuratedScore(string mediaTitle, string recordingTitle, MusicBrainzRelease release)
+    private static string[] BuildCuratedSpotifyQueries(string normalizedTitle, string? artistHint)
+    {
+        return new string?[]
+        {
+            $"{normalizedTitle} {SoundtrackToken}",
+            normalizedTitle,
+            string.IsNullOrWhiteSpace(artistHint) ? null : $"{normalizedTitle} {artistHint}"
+        }
+            .Where(static q => !string.IsNullOrWhiteSpace(q))
+            .Select(static q => q!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private async Task<SpotifySearchTypeResponse?> SafeSearchSpotifyCuratedAlbumsAsync(
+        string query,
+        CancellationToken cancellationToken)
+    {
+        return await _spotifySearchService.SearchByTypeAsync(
+            query,
+            MatchKindAlbum,
+            limit: 30,
+            offset: 0,
+            cancellationToken);
+    }
+
+    private static MediaServerSoundtrackMatchDto? MapCuratedSpotifyAlbumCandidates(
+        MediaServerContentItem item,
+        string normalizedTitle,
+        string? artistHint,
+        int scoreBonus,
+        IReadOnlyList<SpotifySearchItem>? candidates)
+    {
+        MediaServerSoundtrackMatchDto? best = null;
+        foreach (var candidate in candidates ?? Array.Empty<SpotifySearchItem>())
+        {
+            var model = BuildCuratedSpotifyModel(item, normalizedTitle, artistHint, scoreBonus, candidate);
+            best = SelectHigherScoreNullable(best, model);
+            if (ShouldReturnHighConfidence(best))
+            {
+                return best;
+            }
+        }
+
+        return best;
+    }
+
+    private static MediaServerSoundtrackMatchDto? BuildCuratedSpotifyModel(
+        MediaServerContentItem item,
+        string normalizedTitle,
+        string? artistHint,
+        int scoreBonus,
+        SpotifySearchItem candidate)
+    {
+        if (string.IsNullOrWhiteSpace(candidate.Id) || string.IsNullOrWhiteSpace(candidate.Name))
+        {
+            return null;
+        }
+
+        if (!IsSoundtrackCandidateCompatible(normalizedTitle, candidate.Name, null)
+            && !IsSoundtrackCandidateCompatible(item.Title, candidate.Name, item.Year))
+        {
+            return null;
+        }
+
+        var spotifyUrl = BuildSpotifyAlbumUrl(candidate);
+        if (string.IsNullOrWhiteSpace(spotifyUrl))
+        {
+            return null;
+        }
+
+        var subtitle = ExtractSpotifyItemArtist(candidate.Subtitle);
+        var computed = Math.Max(
+            ComputeMatchScore(item.Title, candidate.Name, item.Year),
+            ComputeMatchScore(normalizedTitle, candidate.Name, null));
+        computed += Math.Max(0, scoreBonus);
+        computed += ComputeArtistHintBoost(artistHint, subtitle);
+        if (LooksLikeSoundtrackTitle(candidate.Name))
+        {
+            computed += 6;
+        }
+
+        return new MediaServerSoundtrackMatchDto
+        {
+            Kind = "spotify_album",
+            DeezerId = null,
+            Title = NormalizeText(candidate.Name),
+            Subtitle = string.IsNullOrWhiteSpace(subtitle) ? null : subtitle,
+            Url = spotifyUrl,
+            CoverUrl = candidate.ImageUrl,
+            Score = Math.Clamp(computed, 1, 100)
+        };
+    }
+
+    private static int ComputeMusicBrainzCuratedScore(string mediaTitle, int? mediaYear, string recordingTitle, MusicBrainzRelease release)
     {
         var releaseTitle = NormalizeText(release.Title);
-        var score = ComputeMatchScore(mediaTitle, releaseTitle);
-        score = Math.Max(score, ComputeMatchScore(mediaTitle, recordingTitle));
+        var score = ComputeMatchScore(mediaTitle, releaseTitle, mediaYear);
+        score = Math.Max(score, ComputeMatchScore(mediaTitle, recordingTitle, mediaYear));
 
         var primaryType = NormalizeText(release.ReleaseGroup?.PrimaryType);
         if (string.Equals(primaryType, "Album", StringComparison.OrdinalIgnoreCase))
@@ -1972,47 +2642,16 @@ public sealed class MediaServerSoundtrackService
         return names.Length == 0 ? null : string.Join(", ", names);
     }
 
-    private async Task<string?> TryResolveDeezerAlbumIdFromSpotifyCandidateAsync(
-        SpotifySearchItem candidate,
-        CancellationToken cancellationToken)
+    private static MediaServerSoundtrackMatchDto SelectHigherScore(
+        MediaServerSoundtrackMatchDto baseline,
+        MediaServerSoundtrackMatchDto? candidate)
     {
-        var metadata = new SpotifyUrlMetadata(
-            Type: "album",
-            Id: candidate.Id,
-            Name: candidate.Name,
-            SourceUrl: candidate.SourceUrl,
-            ImageUrl: candidate.ImageUrl,
-            Subtitle: ExtractSpotifyItemArtist(candidate.Subtitle),
-            TotalTracks: null,
-            DurationMs: null,
-            TrackList: new List<SpotifyTrackSummary>(),
-            AlbumList: new List<SpotifyAlbumSummary>(),
-            OwnerName: null,
-            Followers: null,
-            SnapshotId: null);
+        if (candidate == null)
+        {
+            return baseline;
+        }
 
-        try
-        {
-            return await _spotifyDeezerAlbumResolver.ResolveAlbumIdAsync(metadata, cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Spotify->Deezer soundtrack album resolution failed for Spotify album {AlbumName}", candidate.Name);
-            return null;
-        }
-    }
-
-    private async Task<ApiAlbum?> TryGetDeezerAlbumAsync(string albumId)
-    {
-        try
-        {
-            return await _deezerClient.GetAlbum(albumId);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Failed loading Deezer album {AlbumId} for soundtrack hydration.", albumId);
-            return null;
-        }
+        return candidate.Score > baseline.Score ? candidate : baseline;
     }
 
     private static string? ExtractSpotifyItemArtist(string? subtitle)
@@ -2033,31 +2672,6 @@ public sealed class MediaServerSoundtrackService
         return string.IsNullOrWhiteSpace(artist) ? raw : artist;
     }
 
-    private static string? FirstNonEmpty(params string?[] values)
-    {
-        foreach (var value in values)
-        {
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
-        }
-
-        return null;
-    }
-
-    private static MediaServerSoundtrackMatchDto SelectHigherScore(
-        MediaServerSoundtrackMatchDto baseline,
-        MediaServerSoundtrackMatchDto? candidate)
-    {
-        if (candidate == null)
-        {
-            return baseline;
-        }
-
-        return candidate.Score > baseline.Score ? candidate : baseline;
-    }
-
     private static MediaServerSoundtrackMatchDto? SelectHigherScoreNullable(
         MediaServerSoundtrackMatchDto? baseline,
         MediaServerSoundtrackMatchDto? candidate)
@@ -2075,167 +2689,18 @@ public sealed class MediaServerSoundtrackService
         return candidate.Score > baseline.Score ? candidate : baseline;
     }
 
-    private static MediaServerSoundtrackMatchDto ChooseBestMatch(
-        MediaServerSoundtrackMatchDto fallback,
-        MediaServerSoundtrackMatchDto? album,
-        MediaServerSoundtrackMatchDto? playlist,
-        MediaServerSoundtrackMatchDto? trackAlbum)
-    {
-        var best = fallback;
-        if (album != null && album.Score > best.Score)
+    private static TvEpisodeFetchResult CreateEpisodeFetchResultSeed(MediaServerContentItem show)
+        => new()
         {
-            best = album;
-        }
+            ShowId = show.ItemId,
+            ShowTitle = show.Title,
+            ShowImageUrl = show.ImageUrl
+        };
 
-        if (playlist != null && playlist.Score > best.Score)
-        {
-            best = playlist;
-        }
+    private static bool ShouldReturnHighConfidence(MediaServerSoundtrackMatchDto? match)
+        => match is { Score: >= 70 };
 
-        if (trackAlbum != null && trackAlbum.Score > best.Score)
-        {
-            best = trackAlbum;
-        }
-
-        return best;
-    }
-
-    private static MediaServerSoundtrackMatchDto? SelectBestAlbumMatch(DeezerSearchResult? result, string title, string query)
-    {
-        if (result?.Data == null || result.Data.Length == 0)
-        {
-            return null;
-        }
-
-        MediaServerSoundtrackMatchDto? best = null;
-        foreach (var item in result.Data)
-        {
-            var id = GetDynamicString(item, "id");
-            var albumTitle = GetDynamicString(item, "title");
-            if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(albumTitle))
-            {
-                continue;
-            }
-            if (!IsSoundtrackCandidateCompatible(title, albumTitle))
-            {
-                continue;
-            }
-
-            var artistName = GetDynamicNestedString(item, "artist", "name");
-            var score = ComputeMatchScore(title, albumTitle);
-            var model = new MediaServerSoundtrackMatchDto
-            {
-                Kind = "album",
-                DeezerId = id,
-                Title = albumTitle,
-                Subtitle = artistName,
-                Url = $"https://www.deezer.com/album/{Uri.EscapeDataString(id)}",
-                CoverUrl = GetDynamicString(item, "cover_medium") ?? GetDynamicString(item, "cover") ?? BuildDeezerSearchUrl(query),
-                Score = score
-            };
-
-            if (best == null || model.Score > best.Score)
-            {
-                best = model;
-            }
-        }
-
-        return best;
-    }
-
-    private static MediaServerSoundtrackMatchDto? SelectBestPlaylistMatch(DeezerSearchResult? result, string title, string query)
-    {
-        if (result?.Data == null || result.Data.Length == 0)
-        {
-            return null;
-        }
-
-        MediaServerSoundtrackMatchDto? best = null;
-        foreach (var item in result.Data)
-        {
-            var id = GetDynamicString(item, "id");
-            var playlistTitle = GetDynamicString(item, "title");
-            if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(playlistTitle))
-            {
-                continue;
-            }
-            if (!IsSoundtrackCandidateCompatible(title, playlistTitle))
-            {
-                continue;
-            }
-
-            var creator = GetDynamicNestedString(item, "user", "name");
-            var score = ComputeMatchScore(title, playlistTitle) - 2;
-            var model = new MediaServerSoundtrackMatchDto
-            {
-                Kind = "playlist",
-                DeezerId = id,
-                Title = playlistTitle,
-                Subtitle = creator,
-                Url = $"https://www.deezer.com/playlist/{Uri.EscapeDataString(id)}",
-                CoverUrl = GetDynamicString(item, "picture_medium") ?? GetDynamicString(item, "picture") ?? BuildDeezerSearchUrl(query),
-                Score = score
-            };
-
-            if (best == null || model.Score > best.Score)
-            {
-                best = model;
-            }
-        }
-
-        return best;
-    }
-
-    private static MediaServerSoundtrackMatchDto? SelectBestTrackAlbumMatch(DeezerSearchResult? result, string title, string query)
-    {
-        if (result?.Data == null || result.Data.Length == 0)
-        {
-            return null;
-        }
-
-        MediaServerSoundtrackMatchDto? best = null;
-        foreach (var item in result.Data)
-        {
-            var albumNode = GetDynamicProperty(item, "album");
-            if (albumNode == null)
-            {
-                continue;
-            }
-
-            var albumId = GetDynamicString(albumNode, "id");
-            var albumTitle = GetDynamicString(albumNode, "title");
-            if (string.IsNullOrWhiteSpace(albumId) || string.IsNullOrWhiteSpace(albumTitle))
-            {
-                continue;
-            }
-            if (!IsSoundtrackCandidateCompatible(title, albumTitle))
-            {
-                continue;
-            }
-
-            var artistName = GetDynamicNestedString(item, "artist", "name");
-            var score = ComputeMatchScore(title, albumTitle) - 1;
-            var model = new MediaServerSoundtrackMatchDto
-            {
-                Kind = "album",
-                DeezerId = albumId,
-                Title = albumTitle,
-                Subtitle = artistName,
-                Url = $"https://www.deezer.com/album/{Uri.EscapeDataString(albumId)}",
-                CoverUrl = GetDynamicString(albumNode, "cover_medium") ?? GetDynamicString(albumNode, "cover") ?? BuildDeezerSearchUrl(query),
-                Score = score
-            };
-
-            if (best == null || model.Score > best.Score)
-            {
-                best = model;
-            }
-        }
-
-        return best;
-    }
-
-    private static int ComputeMatchScore(string targetTitle, string candidateTitle)
+    private static int ComputeMatchScore(string targetTitle, string candidateTitle, int? targetYear = null)
     {
         var normalizedTarget = NormalizeMatchingText(targetTitle);
         var normalizedCandidate = NormalizeMatchingText(candidateTitle);
@@ -2264,22 +2729,45 @@ public sealed class MediaServerSoundtrackService
             score = Math.Min(score, 32);
         }
 
+        score += ComputeSequelAndSubtitleScoreAdjustment(targetTitle, candidateTitle);
+        score += ComputeYearScoreAdjustment(targetYear, candidateTitle);
+
         return Math.Clamp(score, 1, 100);
     }
 
-    private static bool IsSoundtrackCandidateCompatible(string mediaTitle, string candidateTitle)
+    private static bool IsSoundtrackCandidateCompatible(string mediaTitle, string candidateTitle, int? mediaYear)
+    {
+        if (IsSoundtrackCandidateCompatibleCore(mediaTitle, candidateTitle, mediaYear))
+        {
+            return true;
+        }
+
+        var canonicalMediaTitle = SanitizeSoundtrackTitle(mediaTitle);
+        if (!string.Equals(canonicalMediaTitle, mediaTitle, StringComparison.OrdinalIgnoreCase)
+            && IsSoundtrackCandidateCompatibleCore(canonicalMediaTitle, candidateTitle, mediaYear))
+        {
+            return true;
+        }
+
+        var canonicalCandidateTitle = SanitizeSoundtrackTitle(candidateTitle);
+        if (!string.Equals(canonicalCandidateTitle, candidateTitle, StringComparison.OrdinalIgnoreCase)
+            && IsSoundtrackCandidateCompatibleCore(mediaTitle, canonicalCandidateTitle, mediaYear))
+        {
+            return true;
+        }
+
+        return !string.Equals(canonicalMediaTitle, mediaTitle, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(canonicalCandidateTitle, candidateTitle, StringComparison.OrdinalIgnoreCase)
+            && IsSoundtrackCandidateCompatibleCore(canonicalMediaTitle, canonicalCandidateTitle, mediaYear);
+    }
+
+    private static bool IsSoundtrackCandidateCompatibleCore(string mediaTitle, string candidateTitle, int? mediaYear)
     {
         var normalizedMedia = NormalizeMatchingText(mediaTitle);
         var normalizedCandidate = NormalizeMatchingText(candidateTitle);
         if (string.IsNullOrWhiteSpace(normalizedMedia) || string.IsNullOrWhiteSpace(normalizedCandidate))
         {
             return false;
-        }
-
-        if (normalizedCandidate.Contains(normalizedMedia, StringComparison.OrdinalIgnoreCase)
-            || normalizedMedia.Contains(normalizedCandidate, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
         }
 
         var mediaTokens = ExtractCoreTokens(normalizedMedia);
@@ -2289,14 +2777,235 @@ public sealed class MediaServerSoundtrackService
             return false;
         }
 
+        var targetContains = normalizedCandidate.Contains(normalizedMedia, StringComparison.OrdinalIgnoreCase);
+        var candidateContains = normalizedMedia.Contains(normalizedCandidate, StringComparison.OrdinalIgnoreCase);
         var shared = mediaTokens.Count(token => candidateTokens.Contains(token));
-        if (shared >= 2)
+        var ratio = (double)shared / mediaTokens.Count;
+        var soundtrackLikeCandidate = LooksLikeSoundtrackTitle(candidateTitle);
+        var nonOverlappingMediaTokens = mediaTokens
+            .Where(token => !candidateTokens.Contains(token))
+            .ToArray();
+        var editionOnlyDelta = nonOverlappingMediaTokens.Length > 0
+            && nonOverlappingMediaTokens.All(IsEditionDecoratorToken);
+
+        if (candidateContains && mediaTokens.Count >= 3 && !soundtrackLikeCandidate && !editionOnlyDelta)
+        {
+            return false;
+        }
+
+        if (!soundtrackLikeCandidate && mediaTokens.Count >= 3 && ratio < 0.75 && !editionOnlyDelta)
+        {
+            return false;
+        }
+
+        if (!(targetContains || candidateContains) && shared < 2 && ratio < 0.34)
+        {
+            return false;
+        }
+
+        if (!IsSequelCompatible(mediaTitle, candidateTitle))
+        {
+            return false;
+        }
+
+        return IsYearCompatible(mediaYear, candidateTitle);
+    }
+
+    private static bool IsEditionDecoratorToken(string token)
+        => EditionDecoratorTokens.Contains(token);
+
+    private static int ComputeSequelAndSubtitleScoreAdjustment(string mediaTitle, string candidateTitle)
+    {
+        var targetSequel = ExtractSequelNumber(mediaTitle);
+        var candidateSequel = ExtractSequelNumber(candidateTitle);
+        if (targetSequel.HasValue)
+        {
+            if (candidateSequel.HasValue)
+            {
+                return candidateSequel.Value == targetSequel.Value ? 10 : -45;
+            }
+
+            return HasSubtitleAnchorOverlap(mediaTitle, candidateTitle) ? 5 : -32;
+        }
+
+        if (candidateSequel.HasValue)
+        {
+            return -18;
+        }
+
+        return 0;
+    }
+
+    private static int ComputeYearScoreAdjustment(int? targetYear, string candidateTitle)
+    {
+        if (!targetYear.HasValue || targetYear.Value < 1900)
+        {
+            return 0;
+        }
+
+        var years = ExtractTitleYears(candidateTitle);
+        if (years.Count == 0)
+        {
+            return 0;
+        }
+
+        var smallestDiff = years
+            .Select(year => Math.Abs(year - targetYear.Value))
+            .DefaultIfEmpty(int.MaxValue)
+            .Min();
+
+        if (smallestDiff == 0)
+        {
+            return 10;
+        }
+
+        if (smallestDiff == 1)
+        {
+            return 4;
+        }
+
+        if (smallestDiff <= 3)
+        {
+            return -6;
+        }
+
+        return -14;
+    }
+
+    private static bool IsYearCompatible(int? targetYear, string candidateTitle)
+    {
+        if (!targetYear.HasValue || targetYear.Value < 1900)
         {
             return true;
         }
 
-        var ratio = (double)shared / mediaTokens.Count;
-        return ratio >= 0.34;
+        var years = ExtractTitleYears(candidateTitle);
+        if (years.Count == 0)
+        {
+            return true;
+        }
+
+        return years.Any(year => Math.Abs(year - targetYear.Value) <= 3);
+    }
+
+    private static bool IsSequelCompatible(string mediaTitle, string candidateTitle)
+    {
+        var targetSequel = ExtractSequelNumber(mediaTitle);
+        if (!targetSequel.HasValue)
+        {
+            return true;
+        }
+
+        var candidateSequel = ExtractSequelNumber(candidateTitle);
+        if (candidateSequel.HasValue)
+        {
+            return candidateSequel.Value == targetSequel.Value;
+        }
+
+        return HasSubtitleAnchorOverlap(mediaTitle, candidateTitle);
+    }
+
+    private static bool HasSubtitleAnchorOverlap(string mediaTitle, string candidateTitle)
+    {
+        var anchorTokens = ExtractSubtitleAnchorTokens(mediaTitle);
+        if (anchorTokens.Count == 0)
+        {
+            return false;
+        }
+
+        var candidateTokens = ExtractCoreTokens(NormalizeMatchingText(candidateTitle));
+        if (candidateTokens.Count == 0)
+        {
+            return false;
+        }
+
+        return anchorTokens.Any(candidateTokens.Contains);
+    }
+
+    private static HashSet<string> ExtractSubtitleAnchorTokens(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var colonIndex = title.IndexOf(':');
+        if (colonIndex < 0 || colonIndex >= title.Length - 1)
+        {
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var subtitle = title[(colonIndex + 1)..];
+        return ExtractCoreTokens(NormalizeMatchingText(subtitle))
+            .Where(token => token.Length >= 4)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static int? ExtractSequelNumber(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return null;
+        }
+
+        var normalized = title.Trim();
+
+        var keywordMatch = SequelKeywordRegex().Match(normalized);
+        if (keywordMatch.Success && int.TryParse(keywordMatch.Groups["n"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var keywordNumber))
+        {
+            return keywordNumber;
+        }
+
+        var beforeColonMatch = SequelBeforeColonRegex().Match(normalized);
+        if (beforeColonMatch.Success
+            && int.TryParse(beforeColonMatch.Groups["n"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var beforeColonNumber))
+        {
+            return beforeColonNumber;
+        }
+
+        var endNumberMatch = SequelAtEndRegex().Match(normalized);
+        if (endNumberMatch.Success
+            && int.TryParse(endNumberMatch.Groups["n"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var trailingNumber))
+        {
+            return trailingNumber;
+        }
+
+        var romanMatch = SequelRomanRegex().Match(normalized);
+        if (!romanMatch.Success)
+        {
+            return null;
+        }
+
+        return romanMatch.Groups["n"].Value.ToUpperInvariant() switch
+        {
+            "II" => 2,
+            "III" => 3,
+            "IV" => 4,
+            "V" => 5,
+            "VI" => 6,
+            "VII" => 7,
+            "VIII" => 8,
+            "IX" => 9,
+            "X" => 10,
+            "XI" => 11,
+            "XII" => 12,
+            _ => null
+        };
+    }
+
+    private static HashSet<int> ExtractTitleYears(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return new HashSet<int>();
+        }
+
+        return TitleYearRegex()
+            .Matches(title)
+            .Select(static match => match.Value)
+            .Select(static value => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : 0)
+            .Where(static year => year >= 1900)
+            .ToHashSet();
     }
 
     private static double ComputeTokenOverlap(string normalizedLeft, string normalizedRight)
@@ -2344,49 +3053,69 @@ public sealed class MediaServerSoundtrackService
     private static MediaServerSoundtrackMatchDto CreateFallbackSearchMatch(string query)
         => new()
         {
-            Kind = "search",
+            Kind = MatchKindSearch,
             DeezerId = null,
-            Title = "Search on Deezer",
+            Title = "Search on Spotify",
             Subtitle = null,
-            Url = BuildDeezerSearchUrl(query),
+            Url = BuildSpotifySearchUrl(query),
             CoverUrl = null,
             Score = 1,
-            Provider = "search",
+            Provider = MatchKindSearch,
             Reason = "pending_match",
             Locked = false,
             RetryCount = 0,
             ResolvedAtUtc = null
         };
 
-    private static string BuildDeezerSearchUrl(string query)
-        => $"https://www.deezer.com/search/{Uri.EscapeDataString(query)}";
+    private static string BuildSpotifySearchUrl(string query)
+        => $"https://open.spotify.com/search/{Uri.EscapeDataString(query)}";
 
-    private static string BuildSoundtrackQuery(string title)
-        => string.IsNullOrWhiteSpace(title) ? "soundtrack" : $"{title} soundtrack";
-
-    private static IReadOnlyList<string> BuildSoundtrackQueries(string title)
+    private static string[] BuildSoundtrackQueries(string title, int? year = null)
     {
         if (string.IsNullOrWhiteSpace(title))
         {
-            return new[] { "soundtrack" };
+            return new[] { SoundtrackToken };
         }
 
         var normalizedTitle = title.Trim();
         var sanitizedTitle = SanitizeSoundtrackTitle(normalizedTitle);
+        var romanizedTitle = RomanizeSimpleSequelNumbers(normalizedTitle);
+        var prefixBeforeColon = normalizedTitle.Split(':', 2)[0].Trim();
         var queries = new List<string>
         {
-            $"{normalizedTitle} soundtrack",
-            $"{normalizedTitle} original soundtrack",
+            $"{normalizedTitle} {SoundtrackToken}",
+            $"{normalizedTitle} original {SoundtrackToken}",
             $"{normalizedTitle} ost",
             normalizedTitle
         };
 
+        if (year.HasValue && year.Value > 0)
+        {
+            queries.Add($"{normalizedTitle} {year.Value} {SoundtrackToken}");
+            queries.Add($"{normalizedTitle} {year.Value} ost");
+        }
+
         if (!string.Equals(sanitizedTitle, normalizedTitle, StringComparison.OrdinalIgnoreCase))
         {
-            queries.Add($"{sanitizedTitle} soundtrack");
-            queries.Add($"{sanitizedTitle} original soundtrack");
+            queries.Add($"{sanitizedTitle} {SoundtrackToken}");
+            queries.Add($"{sanitizedTitle} original {SoundtrackToken}");
             queries.Add($"{sanitizedTitle} ost");
             queries.Add(sanitizedTitle);
+        }
+
+        if (!string.Equals(romanizedTitle, normalizedTitle, StringComparison.OrdinalIgnoreCase))
+        {
+            queries.Add($"{romanizedTitle} {SoundtrackToken}");
+            queries.Add($"{romanizedTitle} original {SoundtrackToken}");
+            queries.Add($"{romanizedTitle} ost");
+            queries.Add(romanizedTitle);
+        }
+
+        if (!string.IsNullOrWhiteSpace(prefixBeforeColon)
+            && !string.Equals(prefixBeforeColon, normalizedTitle, StringComparison.OrdinalIgnoreCase))
+        {
+            queries.Add($"{prefixBeforeColon} {SoundtrackToken}");
+            queries.Add(prefixBeforeColon);
         }
 
         return queries
@@ -2396,21 +3125,85 @@ public sealed class MediaServerSoundtrackService
             .ToArray();
     }
 
-    private static string SanitizeSoundtrackTitle(string title)
+    private static string RomanizeSimpleSequelNumbers(string title)
     {
-        var sanitized = TitleBracketNoiseRegex.Replace(title, " ");
-        foreach (var token in SoundtrackNoiseTokens)
+        if (string.IsNullOrWhiteSpace(title))
         {
-            sanitized = Regex.Replace(
-                sanitized,
-                $@"\b{Regex.Escape(token)}\b",
-                " ",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            return string.Empty;
         }
 
-        sanitized = TitleWhitespaceRegex.Replace(sanitized, " ").Trim();
+        return SimpleSequelNumberRegex().Replace(
+            title,
+            static match =>
+            {
+                var value = match.Groups["n"].Value;
+                return value switch
+                {
+                    "2" => "II",
+                    "3" => "III",
+                    "4" => "IV",
+                    "5" => "V",
+                    "6" => "VI",
+                    "7" => "VII",
+                    "8" => "VIII",
+                    "9" => "IX",
+                    "10" => "X",
+                    _ => value
+                };
+            });
+    }
+
+    private static string SanitizeSoundtrackTitle(string title)
+    {
+        var sanitized = TitleBracketNoiseRegex().Replace(title, " ");
+        foreach (var token in SoundtrackNoiseTokens)
+        {
+            var tokenRegex = new Regex(
+                $@"\b{Regex.Escape(token)}\b",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+                RegexDynamicTimeout);
+            sanitized = tokenRegex.Replace(sanitized, " ");
+        }
+
+        sanitized = TitleWhitespaceRegex().Replace(sanitized, " ").Trim();
         return string.IsNullOrWhiteSpace(sanitized) ? title.Trim() : sanitized;
     }
+
+    [GeneratedRegex(@"\[[^\]]*\]|\([^\)]*\)|\{[^\}]*\}", RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
+    private static partial Regex TitleBracketNoiseRegex();
+
+    [GeneratedRegex(@"\s+", RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
+    private static partial Regex TitleWhitespaceRegex();
+
+    [GeneratedRegex(SpotifyMarkdownLinkPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
+    private static partial Regex SpotifyMarkdownLinkRegex();
+
+    [GeneratedRegex(SpotifyWebLinkPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
+    private static partial Regex SpotifyWebLinkRegex();
+
+    [GeneratedRegex(SpotifyUriPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
+    private static partial Regex SpotifyUriRegex();
+
+    [GeneratedRegex(DeezerWebLinkPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
+    private static partial Regex DeezerWebLinkRegex();
+
+    [GeneratedRegex(@"\b(?:part|chapter|episode|vol|volume)\s*(?<n>[2-9]|1[0-2])\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
+    private static partial Regex SequelKeywordRegex();
+
+    [GeneratedRegex(@"\b(?<n>[2-9]|1[0-2])\s*:", RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
+    private static partial Regex SequelBeforeColonRegex();
+
+    [GeneratedRegex(@"\b(?<n>[2-9]|1[0-2])\b\s*$", RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
+    private static partial Regex SequelAtEndRegex();
+
+    [GeneratedRegex(@"\b(?<n>II|III|IV|V|VI|VII|VIII|IX|X|XI|XII)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
+    private static partial Regex SequelRomanRegex();
+
+    [GeneratedRegex(@"\b(19|20)\d{2}\b", RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
+    private static partial Regex TitleYearRegex();
+
+    [GeneratedRegex(@"\b(?<n>[2-9]|10)\b", RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
+    private static partial Regex SimpleSequelNumberRegex();
 
     private static string ComputeContentHash(MediaServerContentItem item)
     {
@@ -2435,18 +3228,21 @@ public sealed class MediaServerSoundtrackService
 
         var normalizedKind = NormalizeText(match.Kind).ToLowerInvariant();
         var hasResolvedDeezerId = !string.IsNullOrWhiteSpace(NormalizeText(match.DeezerId))
-            && !string.Equals(normalizedKind, "search", StringComparison.Ordinal);
+            && !string.Equals(normalizedKind, MatchKindSearch, StringComparison.Ordinal);
+        var hasResolvedSpotifyReference = normalizedKind.StartsWith(SpotifyKindPrefix, StringComparison.Ordinal)
+            && !string.IsNullOrWhiteSpace(NormalizeText(match.Url));
+        var hasResolvedMatch = hasResolvedDeezerId || hasResolvedSpotifyReference;
         var resolvedConfidence = Math.Clamp(match.Score, 0, 100);
 
         match.Provider = ResolveMatchProvider(match);
-        match.Reason = ResolveMatchReason(match, hasResolvedDeezerId, resolvedConfidence);
+        match.Reason = ResolveMatchReason(match, hasResolvedMatch, resolvedConfidence);
         match.Locked = hasResolvedDeezerId && resolvedConfidence >= 80;
-        if (hasResolvedDeezerId && match.ResolvedAtUtc == null)
+        if (hasResolvedMatch && match.ResolvedAtUtc == null)
         {
             match.ResolvedAtUtc = DateTimeOffset.UtcNow;
         }
 
-        if (!hasResolvedDeezerId && match.RetryCount < 0)
+        if (!hasResolvedMatch && match.RetryCount < 0)
         {
             match.RetryCount = 0;
         }
@@ -2461,31 +3257,31 @@ public sealed class MediaServerSoundtrackService
         }
 
         var kind = NormalizeText(match.Kind).ToLowerInvariant();
-        if (kind.StartsWith("spotify_", StringComparison.Ordinal))
+        if (kind.StartsWith(SpotifyKindPrefix, StringComparison.Ordinal))
         {
-            return "spotify";
+            return MatchProviderSpotify;
         }
 
-        if (kind is "album" or "playlist" or "track")
+        if (kind is MatchKindAlbum or MatchKindPlaylist or MatchKindTrack)
         {
-            return "deezer";
+            return MatchProviderDeezer;
         }
 
         var url = NormalizeText(match.Url).ToLowerInvariant();
         if (url.Contains("spotify.com", StringComparison.Ordinal))
         {
-            return "spotify";
+            return MatchProviderSpotify;
         }
 
         if (url.Contains("deezer.com", StringComparison.Ordinal))
         {
-            return "deezer";
+            return MatchProviderDeezer;
         }
 
-        return "search";
+        return MatchKindSearch;
     }
 
-    private static string ResolveMatchReason(MediaServerSoundtrackMatchDto match, bool hasResolvedDeezerId, double confidence)
+    private static string ResolveMatchReason(MediaServerSoundtrackMatchDto match, bool hasResolvedMatch, double confidence)
     {
         var existingReason = NormalizeText(match.Reason);
         if (!string.IsNullOrWhiteSpace(existingReason))
@@ -2493,7 +3289,7 @@ public sealed class MediaServerSoundtrackService
             return existingReason;
         }
 
-        if (!hasResolvedDeezerId)
+        if (!hasResolvedMatch)
         {
             return "pending_match";
         }
@@ -2544,99 +3340,33 @@ public sealed class MediaServerSoundtrackService
         selectedTag = null;
         if (imageTags == null || imageTags.Count == 0)
         {
-            return "Primary";
+            return JellyfinImagePrimary;
         }
 
         if (episodePreferred
-            && imageTags.TryGetValue("Thumb", out var thumbTag)
+            && imageTags.TryGetValue(JellyfinImageThumb, out var thumbTag)
             && !string.IsNullOrWhiteSpace(thumbTag))
         {
             selectedTag = thumbTag;
-            return "Thumb";
+            return JellyfinImageThumb;
         }
 
-        if (imageTags.TryGetValue("Primary", out var primaryTag)
+        if (imageTags.TryGetValue(JellyfinImagePrimary, out var primaryTag)
             && !string.IsNullOrWhiteSpace(primaryTag))
         {
             selectedTag = primaryTag;
-            return "Primary";
+            return JellyfinImagePrimary;
         }
 
-        if (imageTags.TryGetValue("Thumb", out thumbTag)
+        if (imageTags.TryGetValue(JellyfinImageThumb, out thumbTag)
             && !string.IsNullOrWhiteSpace(thumbTag))
         {
             selectedTag = thumbTag;
-            return "Thumb";
+            return JellyfinImageThumb;
         }
 
         selectedTag = null;
-        return "Primary";
-    }
-
-    private static string? GetDynamicString(object? source, string propertyName)
-    {
-        var token = AsDynamicToken(source);
-        if (token is not JObject obj || !obj.TryGetValue(propertyName, StringComparison.OrdinalIgnoreCase, out var value))
-        {
-            return null;
-        }
-
-        return value.Type switch
-        {
-            JTokenType.String => value.Value<string>(),
-            JTokenType.Integer => value.ToString(),
-            JTokenType.Float => value.ToString(),
-            _ => null
-        };
-    }
-
-    private static string? GetDynamicNestedString(object? source, string objectName, string propertyName)
-    {
-        var nested = GetDynamicProperty(source, objectName);
-        if (nested == null)
-        {
-            return null;
-        }
-
-        return GetDynamicString(nested, propertyName);
-    }
-
-    private static object? GetDynamicProperty(object? source, string propertyName)
-    {
-        var token = AsDynamicToken(source);
-        if (token is not JObject obj || !obj.TryGetValue(propertyName, StringComparison.OrdinalIgnoreCase, out var value))
-        {
-            return null;
-        }
-
-        return value;
-    }
-
-    private static JToken? AsDynamicToken(object? source)
-    {
-        if (source == null)
-        {
-            return null;
-        }
-
-        if (source is JToken token)
-        {
-            return token;
-        }
-
-        if (source is JsonElement element)
-        {
-            return JToken.Parse(element.GetRawText());
-        }
-
-        try
-        {
-            return JToken.FromObject(source);
-        }
-        catch
-        {
-            return null;
-        }
+        return JellyfinImagePrimary;
     }
 
     private static bool HasCredentials(string? url, string? token)
@@ -2689,7 +3419,7 @@ public sealed class MediaServerSoundtrackService
             "tvshow" => MediaServerSoundtrackConstants.TvShowCategory,
             "tv_show" => MediaServerSoundtrackConstants.TvShowCategory,
             "show" => MediaServerSoundtrackConstants.TvShowCategory,
-            "series" => MediaServerSoundtrackConstants.TvShowCategory,
+            MediaTypeSeries => MediaServerSoundtrackConstants.TvShowCategory,
             _ => MediaServerSoundtrackConstants.MovieCategory
         };
     }
@@ -2699,9 +3429,9 @@ public sealed class MediaServerSoundtrackService
         var normalized = NormalizeText(plexType).ToLowerInvariant();
         return normalized switch
         {
-            "movie" => MediaServerSoundtrackConstants.MovieCategory,
+            MediaTypeMovie => MediaServerSoundtrackConstants.MovieCategory,
             "show" => MediaServerSoundtrackConstants.TvShowCategory,
-            "series" => MediaServerSoundtrackConstants.TvShowCategory,
+            MediaTypeSeries => MediaServerSoundtrackConstants.TvShowCategory,
             "tvshow" => MediaServerSoundtrackConstants.TvShowCategory,
             "tvshows" => MediaServerSoundtrackConstants.TvShowCategory,
             _ => string.Empty
@@ -2713,11 +3443,11 @@ public sealed class MediaServerSoundtrackService
         var normalized = NormalizeText(jellyfinCollectionType).ToLowerInvariant();
         return normalized switch
         {
-            "movie" => MediaServerSoundtrackConstants.MovieCategory,
+            MediaTypeMovie => MediaServerSoundtrackConstants.MovieCategory,
             "movies" => MediaServerSoundtrackConstants.MovieCategory,
             "tvshows" => MediaServerSoundtrackConstants.TvShowCategory,
             "tvshow" => MediaServerSoundtrackConstants.TvShowCategory,
-            "series" => MediaServerSoundtrackConstants.TvShowCategory,
+            MediaTypeSeries => MediaServerSoundtrackConstants.TvShowCategory,
             _ => string.Empty
         };
     }
@@ -2727,8 +3457,8 @@ public sealed class MediaServerSoundtrackService
         var normalized = NormalizeText(jellyfinType).ToLowerInvariant();
         return normalized switch
         {
-            "series" => MediaServerSoundtrackConstants.TvShowCategory,
-            "movie" => MediaServerSoundtrackConstants.MovieCategory,
+            MediaTypeSeries => MediaServerSoundtrackConstants.TvShowCategory,
+            MediaTypeMovie => MediaServerSoundtrackConstants.MovieCategory,
             _ => string.Empty
         };
     }

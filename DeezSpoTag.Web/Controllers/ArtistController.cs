@@ -49,20 +49,11 @@ public class ArtistController : Controller
             var resolvedBitrate = DownloadSourceOrder.ResolveDeezerBitrate(settings, bitrate);
             var url = $"https://www.deezer.com/artist/{id}";
             var queued = await _deezSpoTagApp.AddToQueueAsync(new[] { url }, resolvedBitrate);
-            if (queued.Count == 0)
-            {
-                return Json(new { success = false, message = "Nothing queued." });
-            }
-
-            return Json(new { success = true, queued = queued });
+            return DeezerQueueActionResultHelper.FromQueued(this, queued);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "Error initiating artist download: ArtistId");
-            return Json(new { 
-                success = false, 
-                message = ex.Message 
-            });
+            return DeezerQueueActionResultHelper.FromError(this, _logger, ex, "Error initiating artist download: ArtistId");
         }
     }
 

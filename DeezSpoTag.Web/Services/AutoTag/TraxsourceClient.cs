@@ -123,16 +123,6 @@ public sealed class TraxsourceClient
         }
     }
 
-    private static TimeSpan ParseDuration(string text)
-    {
-        var parts = text.Split(':');
-        if (parts.Length == 2 && int.TryParse(parts[0], out var minutes) && int.TryParse(parts[1], out var seconds))
-        {
-            return TimeSpan.FromSeconds((minutes * 60d) + seconds);
-        }
-        return TimeSpan.Zero;
-    }
-
     private static bool TryParseTrackRow(HtmlNode row, out TraxsourceTrackInfo track)
     {
         track = new TraxsourceTrackInfo();
@@ -182,12 +172,12 @@ public sealed class TraxsourceClient
     {
         if (titleParts.Count >= 3)
         {
-            return (titleParts[1].Trim(), ParseDuration(titleParts[2]));
+            return (titleParts[1].Trim(), DurationParser.ParseMinutesSeconds(titleParts[2]));
         }
 
         if (titleParts.Count == 2)
         {
-            return (null, ParseDuration(titleParts[1]));
+            return (null, DurationParser.ParseMinutesSeconds(titleParts[1]));
         }
 
         return (null, TimeSpan.Zero);

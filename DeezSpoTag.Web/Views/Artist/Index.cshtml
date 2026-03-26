@@ -1843,6 +1843,19 @@ function getArtistTabCacheKey(artistId, source) {
     return `artist-page-tab:${String(source || 'deezer').toLowerCase()}:${artistId}`;
 }
 
+function isTabPreferenceEnabled() {
+    try {
+        const stored = localStorage.getItem('tabs-preference-enabled');
+        if (stored === null || stored === '') {
+            return true;
+        }
+
+        return stored === 'true';
+    } catch {
+        return true;
+    }
+}
+
 function loadArtistPayloadFromCache(artistId, source) {
     const key = getArtistPayloadCacheKey(artistId, source);
     if (!key) {
@@ -1888,6 +1901,10 @@ function saveArtistPayloadToCache(artistId, source, payload) {
 }
 
 function loadArtistTabFromCache(artistId, source) {
+    if (!isTabPreferenceEnabled()) {
+        return '';
+    }
+
     const key = getArtistTabCacheKey(artistId, source);
     if (!key) {
         return '';
@@ -1901,12 +1918,32 @@ function loadArtistTabFromCache(artistId, source) {
 
 function saveArtistTabToCache(artistId, source, tab) {
     const key = getArtistTabCacheKey(artistId, source);
-    if (!key || !tab) {
+    if (!key) {
         return;
     }
+
+    if (!isTabPreferenceEnabled()) {
+        try {
+            localStorage.removeItem(key);
+        } catch {
+        }
+        if (window.UserPrefs?.setTabSelection) {
+            window.UserPrefs.setTabSelection(key, '');
+        }
+        return;
+    }
+
+    if (!tab) {
+        return;
+    }
+
     try {
         localStorage.setItem(key, tab);
     } catch {
+    }
+
+    if (window.UserPrefs?.setTabSelection) {
+        window.UserPrefs.setTabSelection(key, tab);
     }
 }
 

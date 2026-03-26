@@ -214,11 +214,11 @@ public sealed class SpotifyDeezerAlbumResolver
                 continue;
             }
 
-            var title = GetString(element, TitleKey) ?? GetString(element, NameKey);
-            var artist = GetNestedString(element, ArtistType, NameKey) ?? GetString(element, ArtistType);
+            var title = JsonElementReader.GetString(element, TitleKey) ?? JsonElementReader.GetString(element, NameKey);
+            var artist = GetNestedString(element, ArtistType, NameKey) ?? JsonElementReader.GetString(element, ArtistType);
             if (MatchesExactToken(targetTitle, title) && MatchesOptionalExactToken(targetArtist, artist))
             {
-                return GetString(element, "id");
+                return JsonElementReader.GetString(element, "id");
             }
         }
 
@@ -233,7 +233,7 @@ public sealed class SpotifyDeezerAlbumResolver
         }
 
         var first = result.Data[0];
-        return first is JsonElement element ? GetString(element, "id") : null;
+        return first is JsonElement element ? JsonElementReader.GetString(element, "id") : null;
     }
 
     private static string NormalizeToken(string? value)
@@ -288,21 +288,6 @@ public sealed class SpotifyDeezerAlbumResolver
         return string.IsNullOrWhiteSpace(target) || MatchesExactToken(target, candidate);
     }
 
-    private static string? GetString(JsonElement element, string name)
-    {
-        if (!element.TryGetProperty(name, out var value))
-        {
-            return null;
-        }
-
-        if (value.ValueKind == JsonValueKind.String)
-        {
-            return value.GetString();
-        }
-
-        return value.ValueKind == JsonValueKind.Number ? value.ToString() : null;
-    }
-
     private static string? GetNestedString(JsonElement element, string objectName, string propertyName)
     {
         if (!element.TryGetProperty(objectName, out var nested) || nested.ValueKind != JsonValueKind.Object)
@@ -310,7 +295,7 @@ public sealed class SpotifyDeezerAlbumResolver
             return null;
         }
 
-        return GetString(nested, propertyName);
+        return JsonElementReader.GetString(nested, propertyName);
     }
 
     private static IEnumerable<string> BuildTrackSearchQueries(SpotifyUrlMetadata metadata)
@@ -346,7 +331,7 @@ public sealed class SpotifyDeezerAlbumResolver
                 continue;
             }
 
-            var albumId = GetNestedString(element, AlbumType, "id") ?? GetString(element, "album_id");
+            var albumId = GetNestedString(element, AlbumType, "id") ?? JsonElementReader.GetString(element, "album_id");
             if (string.IsNullOrWhiteSpace(albumId))
             {
                 continue;
@@ -384,7 +369,7 @@ public sealed class SpotifyDeezerAlbumResolver
             return null;
         }
 
-        var albumId = GetString(element, "id");
+        var albumId = JsonElementReader.GetString(element, "id");
         if (string.IsNullOrWhiteSpace(albumId))
         {
             return null;

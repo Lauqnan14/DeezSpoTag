@@ -55,7 +55,7 @@ public sealed class SpotifySearchService
             return pathfinder;
         }
 
-        _logger.LogWarning("Spotify Pathfinder search unavailable; v1 /search fallback skipped to minimize rate limits.");
+        _logger.LogDebug("Spotify Pathfinder search unavailable; v1 /search fallback skipped to minimize rate limits.");
         return null;
     }
 
@@ -72,7 +72,7 @@ public sealed class SpotifySearchService
             return pathfinder;
         }
 
-        _logger.LogWarning("Spotify Pathfinder typed search unavailable; v1 /search fallback skipped to minimize rate limits.");
+        _logger.LogDebug("Spotify Pathfinder typed search unavailable; v1 /search fallback skipped to minimize rate limits.");
         return null;
     }
 
@@ -107,7 +107,7 @@ public sealed class SpotifySearchService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Spotify Pathfinder search failed.");
+            _logger.LogDebug(ex, "Spotify Pathfinder search failed.");
             return null;
         }
     }
@@ -164,7 +164,7 @@ public sealed class SpotifySearchService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Spotify Pathfinder typed search failed. type=Type");
+            _logger.LogDebug(ex, "Spotify Pathfinder typed search failed. type={Type}", type);
             return null;
         }
     }

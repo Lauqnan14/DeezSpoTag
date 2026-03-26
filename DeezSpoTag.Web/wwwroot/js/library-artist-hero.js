@@ -115,16 +115,28 @@ function sanitizeMediaUrl(url) {
         return '';
     }
 
-    if (/[\u0000-\u001F\u007F]/.test(value)) {
-        return '';
+    for (let index = 0; index < value.length; index += 1) {
+        const codePoint = value.codePointAt(index) ?? 0;
+        if (codePoint <= 0x1f || codePoint === 0x7f) {
+            return '';
+        }
     }
 
-    const lower = value.toLowerCase();
-    if (lower.startsWith('javascript:') || lower.startsWith('data:')) {
-        return '';
+    if (value.startsWith('/') || value.startsWith('./') || value.startsWith('../')) {
+        return value;
     }
 
-    return value;
+    try {
+        const parsed = new URL(value, globalThis.location?.origin || 'http://localhost');
+        const allowedProtocol = parsed.protocol === 'http:' || parsed.protocol === 'https:';
+        if (!allowedProtocol) {
+            return '';
+        }
+
+        return value;
+    } catch {
+        return '';
+    }
 }
 
 function toSafeCssImageValue(url) {
@@ -415,9 +427,12 @@ function initArtistActionsDropdown() {
         event.preventDefault();
         const currentIndex = items.indexOf(document.activeElement);
         const step = event.key === 'ArrowDown' ? 1 : -1;
-        const nextIndex = currentIndex < 0
-            ? (step > 0 ? 0 : items.length - 1)
-            : (currentIndex + step + items.length) % items.length;
+        let nextIndex;
+        if (currentIndex < 0) {
+            nextIndex = step > 0 ? 0 : items.length - 1;
+        } else {
+            nextIndex = (currentIndex + step + items.length) % items.length;
+        }
         items[nextIndex].focus();
     });
 

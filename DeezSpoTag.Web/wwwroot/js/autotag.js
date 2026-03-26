@@ -691,7 +691,7 @@
         state.config.downloadTagSource = normalized;
 
         if (!syncUi) {
-            return normalized;
+            return;
         }
 
         const deezerToggle = el("metadataSourceDeezerEnabled");
@@ -703,7 +703,6 @@
             spotifyToggle.checked = normalized === "spotify";
         }
 
-        return normalized;
     }
 
     function enforceSingleDownloadSource(changedId) {
@@ -948,9 +947,11 @@
                     checkbox.dataset.uniformityFolderId = String(folder.id);
                     checkbox.checked = selectedIds.includes(folder.id);
                     checkbox.addEventListener("change", () => {
-                        const ids = Array.from(folderUniformityOptions.querySelectorAll("input[data-uniformity-folder-id]:checked"))
-                            .map((input) => parseOptionalFolderId(input.dataset.uniformityFolderId))
-                            .filter((value, index, array) => value != null && array.indexOf(value) === index);
+                        const ids = collectCheckedFolderIds(
+                            folderUniformityOptions,
+                            "input[data-uniformity-folder-id]:checked",
+                            "uniformityFolderId"
+                        );
                         updateFolderUniformityFolderSummary(ids);
                     });
 
@@ -978,9 +979,11 @@
                     checkbox.dataset.folderId = String(folder.id);
                     checkbox.checked = selectedIds.includes(folder.id);
                     checkbox.addEventListener("change", () => {
-                        const ids = Array.from(coverOptions.querySelectorAll("input[data-folder-id]:checked"))
-                            .map((input) => parseOptionalFolderId(input.dataset.folderId))
-                            .filter((value, index, array) => value != null && array.indexOf(value) === index);
+                        const ids = collectCheckedFolderIds(
+                            coverOptions,
+                            "input[data-folder-id]:checked",
+                            "folderId"
+                        );
                         updateCoverMaintenanceFolderSummary(ids);
                     });
 
@@ -1008,9 +1011,11 @@
                     checkbox.dataset.qualityFolderId = String(folder.id);
                     checkbox.checked = selectedIds.includes(folder.id);
                     checkbox.addEventListener("change", () => {
-                        const ids = Array.from(qualityFolderOptions.querySelectorAll("input[data-quality-folder-id]:checked"))
-                            .map((input) => parseOptionalFolderId(input.dataset.qualityFolderId))
-                            .filter((value, index, array) => value != null && array.indexOf(value) === index);
+                        const ids = collectCheckedFolderIds(
+                            qualityFolderOptions,
+                            "input[data-quality-folder-id]:checked",
+                            "qualityFolderId"
+                        );
                         updateQualityChecksFolderSummary(ids);
                         state.config.enhancement.qualityChecks.folderIds = parseFolderIdList(ids);
                         void refreshEnhancementTechnicalProfiles();
@@ -1202,7 +1207,7 @@
             const data = await response.json();
             const source = Array.isArray(data) ? data : [];
             const filtered = source
-                .filter((item) => item && item.rootPath)
+                .filter((item) => item?.rootPath)
                 .filter((item) => isFolderEnabledFlag(item?.enabled))
                 .map((item) => {
                     const id = Number.parseInt(String(item.id ?? ""), 10);
@@ -1408,6 +1413,17 @@
         return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
     }
 
+    function collectCheckedFolderIds(container, selector, dataKey) {
+        if (!container) {
+            return [];
+        }
+
+        const values = Array.from(container.querySelectorAll(selector))
+            .map((input) => parseOptionalFolderId(input?.dataset?.[dataKey]))
+            .filter((item, index, array) => item != null && array.indexOf(item) === index);
+        return values;
+    }
+
     function parseFolderIdList(value) {
         const values = Array.isArray(value)
             ? value
@@ -1488,18 +1504,6 @@
         return Math.max(min, Math.min(max, parsed));
     }
 
-    function parseOptionalBoundedFloat(value, min, max) {
-        const text = String(value ?? "").trim();
-        if (!text) {
-            return null;
-        }
-        const parsed = Number.parseFloat(text);
-        if (!Number.isFinite(parsed)) {
-            return null;
-        }
-        return Math.max(min, Math.min(max, parsed));
-    }
-
     function mapArtworkProviderToCoverSource(provider) {
         const normalized = String(provider || "").trim().toLowerCase();
         if (normalized === "apple") {
@@ -1565,7 +1569,8 @@
 
     function resolveCoverMaintenanceTargetResolution(artworkSettings = null) {
         const settings = artworkSettings || readArtworkSettingsFromUI(state.settingsCache || {});
-        const providerOrder = settings.artworkFallbackEnabled !== false
+        const fallbackEnabled = settings.artworkFallbackEnabled ?? true;
+        const providerOrder = fallbackEnabled
             ? normalizeProviderOrder(settings.artworkFallbackOrder || ARTWORK_SOURCE_ORDER.join(","), ARTWORK_SOURCE_ORDER)
             : buildPreferredProviderOrder(
                 settings.artworkDefaultSource || el("artworkDefaultSource")?.value || ARTWORK_SOURCE_ORDER[0],
@@ -1604,7 +1609,8 @@
 
     function resolveCoverMaintenancePolicyFromTechnical(artworkSettings = null) {
         const settings = artworkSettings || readArtworkSettingsFromUI(state.settingsCache || {});
-        const providerOrder = settings.artworkFallbackEnabled !== false
+        const fallbackEnabled = settings.artworkFallbackEnabled ?? true;
+        const providerOrder = fallbackEnabled
             ? normalizeProviderOrder(settings.artworkFallbackOrder || ARTWORK_SOURCE_ORDER.join(","), ARTWORK_SOURCE_ORDER)
             : buildPreferredProviderOrder(
                 settings.artworkDefaultSource || el("artworkDefaultSource")?.value || ARTWORK_SOURCE_ORDER[0],
@@ -1748,6 +1754,155 @@
         qualityChecks.cooldownMinutes = parseOptionalBoundedInt(qualityChecks.cooldownMinutes, 0, 43200);
     }
 
+    function createPlatformSpeedIcon(platform) {
+        const speed = document.createElement("span");
+        speed.className = "platform-meta-icon";
+        speed.innerHTML = '<i class="fas fa-tachometer-alt"></i>';
+        if (platform.maxThreads === 1) {
+            speed.title = "This platform allows up to 1 concurrent search";
+            return speed;
+        }
+        if (platform.maxThreads > 1) {
+            speed.title = `This platform allows up to ${platform.maxThreads} concurrent searches`;
+            return speed;
+        }
+        speed.title = "This platform allows unlimited concurrent searches";
+        return speed;
+    }
+
+    function createPlatformMeta(platform) {
+        const meta = document.createElement("div");
+        meta.className = "platform-meta";
+        meta.appendChild(createPlatformSpeedIcon(platform));
+
+        if (platform.requiresAuth) {
+            const lock = document.createElement("span");
+            lock.className = "platform-meta-icon";
+            lock.innerHTML = '<i class="fas fa-lock"></i>';
+            lock.title = "Platform requires an account";
+            meta.appendChild(lock);
+        }
+
+        if (platform.supportsLyrics) {
+            const lyrics = document.createElement("span");
+            lyrics.className = "platform-meta-icon";
+            lyrics.innerHTML = '<i class="fas fa-microphone"></i>';
+            lyrics.title = "Platform can fetch lyrics";
+            meta.appendChild(lyrics);
+        }
+
+        return meta;
+    }
+
+    function createPlatformIcon(platform) {
+        const primaryIcon = platform.icon || platform.fallbackIcon || "";
+        const fallbackIcon = platform.fallbackIcon || "";
+        preloadPlatformIcon(primaryIcon);
+        if (fallbackIcon && fallbackIcon !== primaryIcon) {
+            preloadPlatformIcon(fallbackIcon);
+        }
+
+        const iconEl = document.createElement("img");
+        iconEl.src = primaryIcon;
+        iconEl.alt = platform.name || platform.id;
+        iconEl.className = "platform-icon";
+        iconEl.loading = "eager";
+        iconEl.decoding = "sync";
+        if ("fetchPriority" in iconEl) {
+            iconEl.fetchPriority = "high";
+        }
+
+        let usedFallbackIcon = false;
+        iconEl.addEventListener("error", () => {
+            if (!usedFallbackIcon && fallbackIcon && fallbackIcon !== primaryIcon) {
+                usedFallbackIcon = true;
+                iconEl.src = fallbackIcon;
+                return;
+            }
+            iconEl.style.opacity = "0.45";
+        });
+
+        return iconEl;
+    }
+
+    function createPlatformCheckbox(platform, isSelected) {
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = isSelected;
+        const selectable = canEnablePlatform(platform);
+        checkbox.disabled = !selectable;
+        if (!selectable && platform.requiresAuth) {
+            checkbox.title = state.authReady
+                ? "Login required before enabling this platform."
+                : "Checking login status...";
+        }
+        checkbox.addEventListener("change", () => togglePlatform(platform.id));
+        return checkbox;
+    }
+
+    function createPlatformInfo(platform, isSelected) {
+        const info = document.createElement("div");
+        info.className = "platform-info";
+        info.appendChild(createPlatformCheckbox(platform, isSelected));
+        info.appendChild(createPlatformIcon(platform));
+
+        const titleRow = document.createElement("div");
+        titleRow.className = "platform-title";
+
+        const name = document.createElement("span");
+        name.textContent = platform.name;
+        titleRow.appendChild(name);
+        titleRow.appendChild(createPlatformMeta(platform));
+
+        const text = document.createElement("div");
+        text.className = "platform-text";
+        text.appendChild(titleRow);
+        if (platform.description) {
+            const description = document.createElement("div");
+            description.className = "platform-description";
+            description.textContent = platform.description;
+            text.appendChild(description);
+        }
+
+        info.appendChild(text);
+        return info;
+    }
+
+    function createPlatformHandle(isSelected) {
+        const handle = document.createElement("div");
+        handle.className = "platform-handle";
+        if (isSelected) {
+            handle.classList.add("is-draggable");
+            handle.setAttribute("draggable", "true");
+        } else {
+            handle.classList.add("is-disabled");
+        }
+        handle.innerHTML = `
+            <svg class="platform-handle-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <rect x="2.5" y="3" width="11" height="1.6" rx="0.8"></rect>
+                <rect x="2.5" y="7.2" width="11" height="1.6" rx="0.8"></rect>
+                <rect x="2.5" y="11.4" width="11" height="1.6" rx="0.8"></rect>
+            </svg>
+        `;
+        return handle;
+    }
+
+    function appendPlatformRow(container, platform) {
+        const isSelected = state.config.platforms.includes(platform.id);
+        const row = document.createElement("div");
+        row.className = "platform-row";
+        row.dataset.platformId = platform.id;
+        if (isSelected) {
+            row.classList.add("platform-row-draggable");
+        }
+
+        const handle = createPlatformHandle(isSelected);
+        row.appendChild(createPlatformInfo(platform, isSelected));
+        row.appendChild(handle);
+        bindPlatformDrag(row, handle, platform.id, container);
+        container.appendChild(row);
+    }
+
     function renderPlatforms() {
         const container = el("autotag-platforms");
         container.innerHTML = "";
@@ -1757,142 +1912,8 @@
         }
         rebuildSourceOrdersFromPlatforms();
         const order = state.config.platforms;
-        const platforms = [...state.platforms].sort((a, b) => {
-            const aIndex = order.indexOf(a.id);
-            const bIndex = order.indexOf(b.id);
-            const safeA = aIndex === -1 ? 999 : aIndex;
-            const safeB = bIndex === -1 ? 999 : bIndex;
-            return safeA - safeB;
-        });
-
-        platforms.forEach((platform) => {
-            const isSelected = state.config.platforms.includes(platform.id);
-            const row = document.createElement("div");
-            row.className = "platform-row";
-            row.dataset.platformId = platform.id;
-            if (isSelected) {
-                row.classList.add("platform-row-draggable");
-            }
-
-            const info = document.createElement("div");
-            info.className = "platform-info";
-
-            const checkbox = document.createElement("input");
-            checkbox.type = "checkbox";
-            checkbox.checked = isSelected;
-            const selectable = canEnablePlatform(platform);
-            checkbox.disabled = !selectable;
-            if (!selectable && platform.requiresAuth) {
-                checkbox.title = state.authReady
-                    ? "Login required before enabling this platform."
-                    : "Checking login status...";
-            }
-            checkbox.addEventListener("change", () => togglePlatform(platform.id));
-
-            const primaryIcon = platform.icon || platform.fallbackIcon || "";
-            const fallbackIcon = platform.fallbackIcon || "";
-            preloadPlatformIcon(primaryIcon);
-            if (fallbackIcon && fallbackIcon !== primaryIcon) {
-                preloadPlatformIcon(fallbackIcon);
-            }
-
-            const iconEl = document.createElement("img");
-            iconEl.src = primaryIcon;
-            iconEl.alt = platform.name || platform.id;
-            iconEl.className = "platform-icon";
-            iconEl.loading = "eager";
-            iconEl.decoding = "sync";
-            if ("fetchPriority" in iconEl) {
-                iconEl.fetchPriority = "high";
-            }
-            let usedFallbackIcon = false;
-            iconEl.addEventListener("error", () => {
-                if (!usedFallbackIcon && fallbackIcon && fallbackIcon !== primaryIcon) {
-                    usedFallbackIcon = true;
-                    iconEl.src = fallbackIcon;
-                    return;
-                }
-                iconEl.style.opacity = "0.45";
-            });
-
-            const titleRow = document.createElement("div");
-            titleRow.className = "platform-title";
-
-            const name = document.createElement("span");
-            name.textContent = platform.name;
-
-            const meta = document.createElement("div");
-            meta.className = "platform-meta";
-
-            const speed = document.createElement("span");
-            speed.className = "platform-meta-icon";
-            if (platform.maxThreads === 1) {
-                speed.innerHTML = '<i class="fas fa-tachometer-alt"></i>';
-                speed.title = "This platform allows up to 1 concurrent search";
-            } else if (platform.maxThreads > 1) {
-                speed.innerHTML = '<i class="fas fa-tachometer-alt"></i>';
-                speed.title = `This platform allows up to ${platform.maxThreads} concurrent searches`;
-            } else {
-                speed.innerHTML = '<i class="fas fa-tachometer-alt"></i>';
-                speed.title = "This platform allows unlimited concurrent searches";
-            }
-            meta.appendChild(speed);
-
-            if (platform.requiresAuth) {
-                const lock = document.createElement("span");
-                lock.className = "platform-meta-icon";
-                lock.innerHTML = '<i class="fas fa-lock"></i>';
-                lock.title = "Platform requires an account";
-                meta.appendChild(lock);
-            }
-
-            if (platform.supportsLyrics) {
-                const lyrics = document.createElement("span");
-                lyrics.className = "platform-meta-icon";
-                lyrics.innerHTML = '<i class="fas fa-microphone"></i>';
-                lyrics.title = "Platform can fetch lyrics";
-                meta.appendChild(lyrics);
-            }
-
-            const description = document.createElement("div");
-            description.className = "platform-description";
-            description.textContent = platform.description || "";
-            const text = document.createElement("div");
-            text.className = "platform-text";
-
-            info.appendChild(checkbox);
-            info.appendChild(iconEl);
-            titleRow.appendChild(name);
-            titleRow.appendChild(meta);
-            text.appendChild(titleRow);
-            if (platform.description) {
-                text.appendChild(description);
-            }
-            info.appendChild(text);
-
-            const handle = document.createElement("div");
-            handle.className = "platform-handle";
-            if (isSelected) {
-                handle.classList.add("is-draggable");
-                handle.setAttribute("draggable", "true");
-            } else {
-                handle.classList.add("is-disabled");
-            }
-            handle.innerHTML = `
-                <svg class="platform-handle-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                    <rect x="2.5" y="3" width="11" height="1.6" rx="0.8"></rect>
-                    <rect x="2.5" y="7.2" width="11" height="1.6" rx="0.8"></rect>
-                    <rect x="2.5" y="11.4" width="11" height="1.6" rx="0.8"></rect>
-                </svg>
-            `;
-
-            row.appendChild(info);
-            row.appendChild(handle);
-
-            bindPlatformDrag(row, handle, platform.id, container);
-
-            container.appendChild(row);
-        });
+        const platforms = getPlatformsSortedBySelectionOrder(order);
+        platforms.forEach((platform) => appendPlatformRow(container, platform));
 
         if (typeof state.syncLyricsFallbackOrder === "function") {
             state.syncLyricsFallbackOrder();
@@ -1905,6 +1926,16 @@
         }
         syncFallbackSourceControls();
         renderPlatformOptions();
+    }
+
+    function getPlatformsSortedBySelectionOrder(order) {
+        return [...state.platforms].sort((a, b) => {
+            const aIndex = order.indexOf(a.id);
+            const bIndex = order.indexOf(b.id);
+            const safeA = aIndex === -1 ? 999 : aIndex;
+            const safeB = bIndex === -1 ? 999 : bIndex;
+            return safeA - safeB;
+        });
     }
 
     function bindPlatformDrag(row, handle, platformId, container) {
@@ -2028,6 +2059,168 @@
             return fallback;
         }
         return Math.max(100, Math.min(5000, parsed));
+    }
+
+    function createPlatformOptionLabel(option) {
+        const label = document.createElement("label");
+        label.textContent = option.label;
+        if (option.tooltip) {
+            label.title = option.tooltip;
+        }
+        return label;
+    }
+
+    function setPlatformOptionValue(platformId, optionId, value) {
+        state.config.custom[platformId][optionId] = value;
+        if (optionId === "art_resolution") {
+            updateCoverMaintenanceTargetResolutionPolicyUI();
+        }
+    }
+
+    function createBooleanPlatformOptionField(platform, option) {
+        const field = document.createElement("div");
+        field.className = "form-group";
+        const wrapper = document.createElement("div");
+        wrapper.className = "checkbox-group";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = Boolean(state.config.custom[platform.id][option.id]);
+        input.addEventListener("change", () => {
+            setPlatformOptionValue(platform.id, option.id, input.checked);
+        });
+
+        wrapper.appendChild(input);
+        const text = document.createElement("span");
+        text.textContent = option.label;
+        if (option.tooltip) {
+            text.title = option.tooltip;
+        }
+        wrapper.appendChild(text);
+        field.appendChild(wrapper);
+        return field;
+    }
+
+    function createNumberPlatformOptionField(platform, option) {
+        const field = document.createElement("div");
+        field.className = "form-group";
+        field.appendChild(createPlatformOptionLabel(option));
+
+        const min = option.value?.min ?? 0;
+        const max = option.value?.max ?? 0;
+        const step = option.value?.step ?? 1;
+        const fallback = option.value?.value ?? 0;
+        const rawValue = Number(state.config.custom[platform.id][option.id]);
+        const initial = Number.isFinite(rawValue) ? rawValue : fallback;
+        setPlatformOptionValue(platform.id, option.id, initial);
+
+        if (option.value?.slider) {
+            const row = document.createElement("div");
+            row.className = "autotag-slider-row";
+
+            const slider = document.createElement("input");
+            slider.type = "range";
+            slider.min = min;
+            slider.max = max;
+            slider.step = step;
+            slider.value = initial;
+            slider.className = "autotag-slider";
+
+            const numberInput = document.createElement("input");
+            numberInput.type = "number";
+            numberInput.min = min;
+            numberInput.max = max;
+            numberInput.step = step;
+            numberInput.value = initial;
+            numberInput.className = "autotag-slider-number";
+
+            const value = document.createElement("span");
+            value.className = "autotag-slider-value";
+            value.textContent = `${initial}`;
+
+            const update = (nextRaw) => {
+                const parsed = Number(nextRaw);
+                if (!Number.isFinite(parsed)) {
+                    return;
+                }
+                const clamped = Math.min(max, Math.max(min, parsed));
+                slider.value = clamped;
+                numberInput.value = clamped;
+                value.textContent = `${clamped}`;
+                setPlatformOptionValue(platform.id, option.id, clamped);
+            };
+
+            slider.addEventListener("input", () => update(slider.value));
+            numberInput.addEventListener("input", () => update(numberInput.value));
+
+            row.appendChild(slider);
+            row.appendChild(numberInput);
+            row.appendChild(value);
+            field.appendChild(row);
+            return field;
+        }
+
+        const input = document.createElement("input");
+        input.type = "number";
+        input.min = min;
+        input.max = max;
+        input.step = step;
+        input.value = initial;
+        if (platform.normalizedId === "itunes" && option.id === "art_resolution") {
+            input.id = "autotag-itunes-art-resolution";
+        }
+        input.addEventListener("input", () => {
+            const parsed = Number.parseFloat(input.value);
+            setPlatformOptionValue(platform.id, option.id, Number.isNaN(parsed) ? fallback : parsed);
+        });
+        field.appendChild(input);
+        return field;
+    }
+
+    function createSelectPlatformOptionField(platform, option) {
+        const field = document.createElement("div");
+        field.className = "form-group";
+        field.appendChild(createPlatformOptionLabel(option));
+        const input = document.createElement("select");
+        (option.value?.values || []).forEach((value) => {
+            const opt = document.createElement("option");
+            opt.value = value;
+            opt.textContent = value;
+            input.appendChild(opt);
+        });
+        input.value = state.config.custom[platform.id][option.id];
+        input.addEventListener("change", () => {
+            setPlatformOptionValue(platform.id, option.id, input.value);
+        });
+        field.appendChild(input);
+        return field;
+    }
+
+    function createTextPlatformOptionField(platform, option) {
+        const field = document.createElement("div");
+        field.className = "form-group";
+        field.appendChild(createPlatformOptionLabel(option));
+        const input = document.createElement("input");
+        input.type = option.value?.hidden ? "password" : "text";
+        input.value = state.config.custom[platform.id][option.id] ?? "";
+        input.addEventListener("input", () => {
+            setPlatformOptionValue(platform.id, option.id, input.value);
+        });
+        field.appendChild(input);
+        return field;
+    }
+
+    function createPlatformOptionField(platform, option) {
+        const optionType = option.value?.type;
+        if (optionType === "boolean") {
+            return createBooleanPlatformOptionField(platform, option);
+        }
+        if (optionType === "number") {
+            return createNumberPlatformOptionField(platform, option);
+        }
+        if (optionType === "option") {
+            return createSelectPlatformOptionField(platform, option);
+        }
+        return createTextPlatformOptionField(platform, option);
     }
 
     function renderPlatformOptions() {
@@ -2185,146 +2378,7 @@
             }
 
             platform.options.forEach((option) => {
-                const field = document.createElement("div");
-                field.className = "form-group";
-
-                let input;
-                const optionType = option.value?.type;
-                if (optionType === "boolean") {
-                    const wrapper = document.createElement("div");
-                    wrapper.className = "checkbox-group";
-                    input = document.createElement("input");
-                    input.type = "checkbox";
-                    input.checked = Boolean(state.config.custom[platform.id][option.id]);
-                    input.addEventListener("change", () => {
-                        state.config.custom[platform.id][option.id] = input.checked;
-                    });
-                    wrapper.appendChild(input);
-                    const text = document.createElement("span");
-                    text.textContent = option.label;
-                    if (option.tooltip) {
-                        text.title = option.tooltip;
-                    }
-                    wrapper.appendChild(text);
-                    field.appendChild(wrapper);
-                    optionsFields.appendChild(field);
-                    return;
-                } else if (optionType === "number") {
-                    const label = document.createElement("label");
-                    label.textContent = option.label;
-                    if (option.tooltip) {
-                        label.title = option.tooltip;
-                    }
-                    field.appendChild(label);
-                    const min = option.value?.min ?? 0;
-                    const max = option.value?.max ?? 0;
-                    const step = option.value?.step ?? 1;
-                    const fallback = option.value?.value ?? 0;
-                    const rawValue = Number(state.config.custom[platform.id][option.id]);
-                    const initial = Number.isFinite(rawValue) ? rawValue : fallback;
-                    state.config.custom[platform.id][option.id] = initial;
-
-                    if (option.value?.slider) {
-                        const row = document.createElement("div");
-                        row.className = "autotag-slider-row";
-
-                        const slider = document.createElement("input");
-                        slider.type = "range";
-                        slider.min = min;
-                        slider.max = max;
-                        slider.step = step;
-                        slider.value = initial;
-                        slider.className = "autotag-slider";
-
-                        const numberInput = document.createElement("input");
-                        numberInput.type = "number";
-                        numberInput.min = min;
-                        numberInput.max = max;
-                        numberInput.step = step;
-                        numberInput.value = initial;
-                        numberInput.className = "autotag-slider-number";
-
-                        const value = document.createElement("span");
-                        value.className = "autotag-slider-value";
-                        value.textContent = `${initial}`;
-
-                        const update = (nextRaw) => {
-                            const parsed = Number(nextRaw);
-                            if (!Number.isFinite(parsed)) {
-                                return;
-                            }
-                            const clamped = Math.min(max, Math.max(min, parsed));
-                            slider.value = clamped;
-                            numberInput.value = clamped;
-                            value.textContent = `${clamped}`;
-                            state.config.custom[platform.id][option.id] = clamped;
-                            if (option.id === "art_resolution") {
-                                updateCoverMaintenanceTargetResolutionPolicyUI();
-                            }
-                        };
-
-                        slider.addEventListener("input", () => update(slider.value));
-                        numberInput.addEventListener("input", () => update(numberInput.value));
-
-                        row.appendChild(slider);
-                        row.appendChild(numberInput);
-                        row.appendChild(value);
-                        field.appendChild(row);
-                        optionsFields.appendChild(field);
-                        return;
-                    }
-
-                    input = document.createElement("input");
-                    input.type = "number";
-                    input.min = min;
-                    input.max = max;
-                    input.step = step;
-                    input.value = initial;
-                    if (platform.normalizedId === "itunes" && option.id === "art_resolution") {
-                        input.id = "autotag-itunes-art-resolution";
-                    }
-                    input.addEventListener("input", () => {
-                        const parsed = Number.parseFloat(input.value);
-                        state.config.custom[platform.id][option.id] = Number.isNaN(parsed) ? fallback : parsed;
-                        if (option.id === "art_resolution") {
-                            updateCoverMaintenanceTargetResolutionPolicyUI();
-                        }
-                    });
-                } else if (optionType === "option") {
-                    const label = document.createElement("label");
-                    label.textContent = option.label;
-                    if (option.tooltip) {
-                        label.title = option.tooltip;
-                    }
-                    field.appendChild(label);
-                    input = document.createElement("select");
-                    (option.value?.values || []).forEach((value) => {
-                        const opt = document.createElement("option");
-                        opt.value = value;
-                        opt.textContent = value;
-                        input.appendChild(opt);
-                    });
-                    input.value = state.config.custom[platform.id][option.id];
-                    input.addEventListener("change", () => {
-                        state.config.custom[platform.id][option.id] = input.value;
-                    });
-                } else {
-                    const label = document.createElement("label");
-                    label.textContent = option.label;
-                    if (option.tooltip) {
-                        label.title = option.tooltip;
-                    }
-                    field.appendChild(label);
-                    input = document.createElement("input");
-                    input.type = option.value?.hidden ? "password" : "text";
-                    input.value = state.config.custom[platform.id][option.id] ?? "";
-                    input.addEventListener("input", () => {
-                        state.config.custom[platform.id][option.id] = input.value;
-                    });
-                }
-
-                field.appendChild(input);
-                optionsFields.appendChild(field);
+                optionsFields.appendChild(createPlatformOptionField(platform, option));
             });
 
             if (optionsFields.children.length === 0) {
@@ -2422,7 +2476,7 @@
         }
         setValue(
             "autotag-move-success-library",
-            state.config.moveSuccessLibraryFolderId != null ? String(state.config.moveSuccessLibraryFolderId) : ""
+            state.config.moveSuccessLibraryFolderId == null ? "" : String(state.config.moveSuccessLibraryFolderId)
         );
         setChecked("autotag-move-failed", state.config.moveFailed);
         setValue("autotag-move-failed-path", state.config.moveFailedPath || "");
@@ -2859,6 +2913,7 @@
             }
             showToast(`Preferences saved for profile "${activeProfileName}".`, "success");
         } catch (error) {
+            console.error("Failed to save AutoTag preferences.", error);
             showToast(`Failed to save preferences for profile "${activeProfileName}".`, "error");
         }
     }
@@ -3224,7 +3279,7 @@
 
     function normalizeSpotifyConfig(config) {
         const spotify = config.spotify;
-        if (!spotify || !spotify.clientId || !spotify.clientSecret) {
+        if (!spotify?.clientId || !spotify?.clientSecret) {
             config.spotify = null;
         }
     }
@@ -3700,6 +3755,7 @@
             applyFolderUniformityCompletion(payload, true);
         } catch (error) {
             // Keep the active job id so monitoring can resume on next focus/page load.
+            console.debug("Folder uniformity monitoring failed.", error);
         } finally {
             setFolderUniformityRunButtonDisabled(false);
         }
@@ -3823,9 +3879,12 @@
                 throw new Error(message);
             }
 
-            const qualityStarted = payload?.qualityScanner?.requested
-                ? (payload?.qualityScanner?.started ? "Quality Scanner started" : "Quality Scanner already running")
-                : "Quality Scanner skipped";
+            let qualityStarted = "Quality Scanner skipped";
+            if (payload?.qualityScanner?.requested) {
+                qualityStarted = payload?.qualityScanner?.started
+                    ? "Quality Scanner started"
+                    : "Quality Scanner already running";
+            }
             const duplicateSummary = payload?.duplicateCheck
                 ? `Duplicates: ${Number(payload.duplicateCheck.duplicatesFound ?? 0)} found, ${Number(payload.duplicateCheck.deleted ?? 0)} moved to ${String(payload.duplicateCheck.duplicatesFolderName || "%duplicates%")}`
                 : "Duplicate Cleaner skipped";
@@ -3985,7 +4044,7 @@
     function renderTemplatePreview(template, fallback) {
         const rawTemplate = String(template || fallback || "").trim() || String(fallback || "");
         const illegalCharacterReplacer = (el("illegalCharacterReplacer")?.value || "_").charAt(0) || "_";
-        const interpolated = rawTemplate.replaceAll(/%([a-zA-Z0-9_]+)%/g, (_, token) => {
+        const interpolated = rawTemplate.replaceAll(/%(\w+)%/g, (_, token) => {
             const key = String(token || "").toLowerCase();
             return FOLDER_PREVIEW_SAMPLES[key] ?? token;
         });
@@ -4012,6 +4071,54 @@
         tree.appendChild(line);
     }
 
+    function appendAlbumPathPreview(tree, options) {
+        let albumIndent = 1;
+        if (options.createArtistFolder) {
+            appendFolderPreviewLine(tree, options.artistName, albumIndent++, false);
+        }
+        if (options.createAlbumFolder) {
+            appendFolderPreviewLine(tree, options.albumName, albumIndent++, false);
+        }
+        if (options.createCDFolder) {
+            appendFolderPreviewLine(tree, "CD1", albumIndent++, false);
+        }
+        appendFolderPreviewLine(tree, options.albumTrackName, albumIndent, true);
+    }
+
+    function appendPlaylistPathPreview(tree, options) {
+        if (!options.createPlaylistFolder) {
+            return;
+        }
+
+        appendFolderPreviewLine(tree, options.playlistName, 1, false);
+        let playlistIndent = 2;
+        if (options.createStructurePlaylist) {
+            if (options.createArtistFolder) {
+                appendFolderPreviewLine(tree, options.artistName, playlistIndent++, false);
+            }
+            if (options.createAlbumFolder) {
+                appendFolderPreviewLine(tree, options.albumName, playlistIndent++, false);
+            }
+            if (options.createCDFolder) {
+                appendFolderPreviewLine(tree, "CD1", playlistIndent++, false);
+            }
+        }
+        appendFolderPreviewLine(tree, options.playlistTrackName, playlistIndent, true);
+    }
+
+    function appendSinglePathPreview(tree, options) {
+        if (!options.createSingleFolder) {
+            return;
+        }
+
+        appendFolderPreviewLine(tree, "Singles", 1, false);
+        let singleIndent = 2;
+        if (options.createArtistFolder) {
+            appendFolderPreviewLine(tree, options.artistName, singleIndent++, false);
+        }
+        appendFolderPreviewLine(tree, options.defaultTrackName, singleIndent, true);
+    }
+
     function renderFolderStructurePreview() {
         const tree = el("folderPreviewTree");
         if (!tree) {
@@ -4021,60 +4128,24 @@
         tree.innerHTML = "";
         appendFolderPreviewLine(tree, "Library", 0, false);
 
-        const createArtistFolder = el("createArtistFolder")?.checked ?? true;
-        const createAlbumFolder = el("createAlbumFolder")?.checked ?? true;
-        const createPlaylistFolder = el("createPlaylistFolder")?.checked ?? false;
-        const createStructurePlaylist = el("createStructurePlaylist")?.checked ?? false;
-        const createCDFolder = el("createCDFolder")?.checked ?? false;
-        const createSingleFolder = el("createSingleFolder")?.checked ?? false;
+        const previewOptions = {
+            createArtistFolder: el("createArtistFolder")?.checked ?? true,
+            createAlbumFolder: el("createAlbumFolder")?.checked ?? true,
+            createPlaylistFolder: el("createPlaylistFolder")?.checked ?? false,
+            createStructurePlaylist: el("createStructurePlaylist")?.checked ?? false,
+            createCDFolder: el("createCDFolder")?.checked ?? false,
+            createSingleFolder: el("createSingleFolder")?.checked ?? false,
+            artistName: renderTemplatePreview(el("artistNameTemplate")?.value, "%artist%"),
+            albumName: renderTemplatePreview(el("albumNameTemplate")?.value, "%album%"),
+            playlistName: renderTemplatePreview(el("playlistNameTemplate")?.value, "%playlist%"),
+            defaultTrackName: `${renderTemplatePreview(el("autotag-trackname-template")?.value, "%artist% - %title%")}.flac`,
+            albumTrackName: `${renderTemplatePreview(el("autotag-album-trackname-template")?.value, "%tracknumber% - %title%")}.flac`,
+            playlistTrackName: `${renderTemplatePreview(el("autotag-playlist-trackname-template")?.value, "%artist% - %title%")}.flac`
+        };
 
-        const artistName = renderTemplatePreview(el("artistNameTemplate")?.value, "%artist%");
-        const albumName = renderTemplatePreview(el("albumNameTemplate")?.value, "%album%");
-        const playlistName = renderTemplatePreview(el("playlistNameTemplate")?.value, "%playlist%");
-        const defaultTrackName = `${renderTemplatePreview(el("autotag-trackname-template")?.value, "%artist% - %title%")}.flac`;
-        const albumTrackName = `${renderTemplatePreview(el("autotag-album-trackname-template")?.value, "%tracknumber% - %title%")}.flac`;
-        const playlistTrackName = `${renderTemplatePreview(el("autotag-playlist-trackname-template")?.value, "%artist% - %title%")}.flac`;
-
-        // Album/library path preview.
-        let albumIndent = 1;
-        if (createArtistFolder) {
-            appendFolderPreviewLine(tree, artistName, albumIndent++, false);
-        }
-        if (createAlbumFolder) {
-            appendFolderPreviewLine(tree, albumName, albumIndent++, false);
-        }
-        if (createCDFolder) {
-            appendFolderPreviewLine(tree, "CD1", albumIndent++, false);
-        }
-        appendFolderPreviewLine(tree, albumTrackName, albumIndent, true);
-
-        // Playlist path preview.
-        if (createPlaylistFolder) {
-            appendFolderPreviewLine(tree, playlistName, 1, false);
-            let playlistIndent = 2;
-            if (createStructurePlaylist) {
-                if (createArtistFolder) {
-                    appendFolderPreviewLine(tree, artistName, playlistIndent++, false);
-                }
-                if (createAlbumFolder) {
-                    appendFolderPreviewLine(tree, albumName, playlistIndent++, false);
-                }
-                if (createCDFolder) {
-                    appendFolderPreviewLine(tree, "CD1", playlistIndent++, false);
-                }
-            }
-            appendFolderPreviewLine(tree, playlistTrackName, playlistIndent, true);
-        }
-
-        // Single path preview.
-        if (createSingleFolder) {
-            appendFolderPreviewLine(tree, "Singles", 1, false);
-            let singleIndent = 2;
-            if (createArtistFolder) {
-                appendFolderPreviewLine(tree, artistName, singleIndent++, false);
-            }
-            appendFolderPreviewLine(tree, defaultTrackName, singleIndent, true);
-        }
+        appendAlbumPathPreview(tree, previewOptions);
+        appendPlaylistPathPreview(tree, previewOptions);
+        appendSinglePathPreview(tree, previewOptions);
     }
 
     function getCheckedTags(name) {
@@ -4126,47 +4197,45 @@
         }
     }
 
+    function updateToggleGroupVisibility(groupId, toggleId, options = {}) {
+        const group = el(groupId);
+        const toggle = el(toggleId);
+        const enabled = toggle?.checked === true;
+        if (group && toggle) {
+            group.style.display = enabled ? (options.enabledDisplay || "block") : "none";
+        }
+
+        const input = options.inputId ? el(options.inputId) : null;
+        if (input) {
+            input.disabled = !enabled;
+        }
+
+        return enabled;
+    }
+
     function updateConditionalSections() {
         const overwriteTags = el("autotag-overwrite-tags-group");
         const overwrite = el("autotag-overwrite");
         if (overwriteTags && overwrite) {
             overwriteTags.style.display = overwrite.checked ? "none" : "block";
         }
+
         const stylesGroup = el("autotag-styles-custom-group");
         const stylesSelect = el("autotag-styles-options");
         if (stylesGroup && stylesSelect) {
             stylesGroup.style.display = stylesSelect.value === "customTag" ? "block" : "none";
         }
-        const moveSuccessLibraryGroup = el("autotag-move-success-library-group");
-        const moveSuccess = el("autotag-move-success");
-        const moveSuccessLibrarySelect = el("autotag-move-success-library");
-        const successEnabled = moveSuccess?.checked === true;
-        if (moveSuccessLibraryGroup && moveSuccess) {
-            moveSuccessLibraryGroup.style.display = successEnabled ? "block" : "none";
-        }
-        if (moveSuccessLibrarySelect) {
-            moveSuccessLibrarySelect.disabled = !successEnabled;
-        }
-        const moveFailedGroup = el("autotag-move-failed-group");
-        const moveFailed = el("autotag-move-failed");
-        const moveFailedPathInput = el("autotag-move-failed-path");
-        const failedEnabled = moveFailed?.checked === true;
-        if (moveFailedGroup && moveFailed) {
-            moveFailedGroup.style.display = failedEnabled ? "block" : "none";
-        }
-        if (moveFailedPathInput) {
-            moveFailedPathInput.disabled = !failedEnabled;
-        }
-        const enhancedGroup = el("autotag-enhanced-lrc-group");
-        const writeLrc = el("autotag-write-lrc");
-        if (enhancedGroup && writeLrc) {
-            enhancedGroup.style.display = writeLrc.checked ? "flex" : "none";
-        }
-        const filenameGroup = el("autotag-filename-template-group");
-        const parseFilename = el("autotag-parse-filename");
-        if (filenameGroup && parseFilename) {
-            filenameGroup.style.display = parseFilename.checked ? "block" : "none";
-        }
+
+        updateToggleGroupVisibility("autotag-move-success-library-group", "autotag-move-success", {
+            inputId: "autotag-move-success-library"
+        });
+        updateToggleGroupVisibility("autotag-move-failed-group", "autotag-move-failed", {
+            inputId: "autotag-move-failed-path"
+        });
+        updateToggleGroupVisibility("autotag-enhanced-lrc-group", "autotag-write-lrc", {
+            enabledDisplay: "flex"
+        });
+        updateToggleGroupVisibility("autotag-filename-template-group", "autotag-parse-filename");
 
         syncFallbackSourceControls();
         syncMultiArtistHandlingState();
@@ -4714,6 +4783,21 @@
         updateCoverMaintenanceTargetResolutionPolicyUI();
     }
 
+    function insertTemplateVariable(input, value) {
+        if (!input || !value) {
+            return;
+        }
+
+        const start = input.selectionStart ?? input.value.length;
+        const end = input.selectionEnd ?? input.value.length;
+        const before = input.value.slice(0, start);
+        const after = input.value.slice(end);
+        input.value = `${before}${value}${after}`;
+        const cursor = start + value.length;
+        input.setSelectionRange(cursor, cursor);
+        input.focus();
+    }
+
     function setupTemplateVariableHelpers() {
         const variableSets = {
             track: [
@@ -4740,7 +4824,7 @@
         };
 
         document.querySelectorAll("[data-template-variables]").forEach((container) => {
-            const type = container.getAttribute("data-variables") || "track";
+            const type = container.dataset.variables || "track";
             const list = container.querySelector(".template-variables-list");
             if (!list) {
                 return;
@@ -4751,28 +4835,14 @@
                 .join("");
         });
 
-        function insertTemplateVariable(input, value) {
-            if (!input || !value) {
-                return;
-            }
-            const start = input.selectionStart ?? input.value.length;
-            const end = input.selectionEnd ?? input.value.length;
-            const before = input.value.slice(0, start);
-            const after = input.value.slice(end);
-            input.value = `${before}${value}${after}`;
-            const cursor = start + value.length;
-            input.setSelectionRange(cursor, cursor);
-            input.focus();
-        }
-
         document.querySelectorAll(".template-variable").forEach((item) => {
             item.addEventListener("click", () => {
-                const value = item.getAttribute("data-variable") || "";
+                const value = item.dataset.variable || "";
                 if (!value) {
                     return;
                 }
                 const container = item.closest("[data-template-variables]");
-                const inputId = container?.getAttribute("data-input");
+                const inputId = container?.dataset.input;
                 if (!inputId) {
                     return;
                 }
@@ -4781,6 +4851,33 @@
                 showToast(`Added ${value}`, "success");
             });
         });
+    }
+
+    function applyFieldValueIfPresent(id, value) {
+        const field = document.getElementById(id);
+        if (!field || value === undefined || value === null) {
+            return;
+        }
+
+        field.value = value;
+    }
+
+    function applyFieldCheckedTrueOnly(id, value) {
+        const field = document.getElementById(id);
+        if (!field) {
+            return;
+        }
+
+        field.checked = value === true;
+    }
+
+    function applyFieldCheckedWhenBoolean(id, value) {
+        const field = document.getElementById(id);
+        if (!field || typeof value !== "boolean") {
+            return;
+        }
+
+        field.checked = value;
     }
 
     function applyLyricsSettingsToUI(settings) {
@@ -4863,33 +4960,20 @@
             return;
         }
 
-        const applyValue = (id, value) => {
-            const field = document.getElementById(id);
-            if (field) {
-                field.value = value ?? field.value;
-            }
-        };
-        const applyChecked = (id, value) => {
-            const field = document.getElementById(id);
-            if (field) {
-                field.checked = value === true;
-            }
-        };
-
-        applyChecked("saveArtwork", settings.saveArtwork);
-        applyChecked("saveAnimatedArtwork", settings.saveAnimatedArtwork);
-        applyChecked("dlAlbumcoverForPlaylist", settings.dlAlbumcoverForPlaylist);
-        applyChecked("saveArtworkArtist", settings.saveArtworkArtist);
-        applyValue("coverImageTemplate", settings.coverImageTemplate ?? "cover");
-        applyValue("artistImageTemplate", settings.artistImageTemplate ?? "folder");
-        applyValue("localArtworkFormat", settings.localArtworkFormat ?? "jpg");
-        applyChecked("embedMaxQualityCover", settings.embedMaxQualityCover ?? true);
-        applyChecked("artworkFallbackEnabled", settings.artworkFallbackEnabled ?? true);
-        applyValue("artworkFallbackOrder", settings.artworkFallbackOrder ?? ARTWORK_SOURCE_ORDER.join(","));
-        applyChecked("artistArtworkFallbackEnabled", settings.artistArtworkFallbackEnabled ?? settings.artworkFallbackEnabled ?? true);
-        applyValue("artistArtworkFallbackOrder", settings.artistArtworkFallbackOrder ?? settings.artworkFallbackOrder ?? ARTWORK_SOURCE_ORDER.join(","));
-        applyChecked("coverDescriptionUTF8", settings.tags?.coverDescriptionUTF8 ?? settings.coverDescriptionUTF8);
-        applyValue("jpegImageQuality", settings.jpegImageQuality ?? 90);
+        applyFieldCheckedTrueOnly("saveArtwork", settings.saveArtwork);
+        applyFieldCheckedTrueOnly("saveAnimatedArtwork", settings.saveAnimatedArtwork);
+        applyFieldCheckedTrueOnly("dlAlbumcoverForPlaylist", settings.dlAlbumcoverForPlaylist);
+        applyFieldCheckedTrueOnly("saveArtworkArtist", settings.saveArtworkArtist);
+        applyFieldValueIfPresent("coverImageTemplate", settings.coverImageTemplate ?? "cover");
+        applyFieldValueIfPresent("artistImageTemplate", settings.artistImageTemplate ?? "folder");
+        applyFieldValueIfPresent("localArtworkFormat", settings.localArtworkFormat ?? "jpg");
+        applyFieldCheckedTrueOnly("embedMaxQualityCover", settings.embedMaxQualityCover ?? true);
+        applyFieldCheckedTrueOnly("artworkFallbackEnabled", settings.artworkFallbackEnabled ?? true);
+        applyFieldValueIfPresent("artworkFallbackOrder", settings.artworkFallbackOrder ?? ARTWORK_SOURCE_ORDER.join(","));
+        applyFieldCheckedTrueOnly("artistArtworkFallbackEnabled", settings.artistArtworkFallbackEnabled ?? settings.artworkFallbackEnabled ?? true);
+        applyFieldValueIfPresent("artistArtworkFallbackOrder", settings.artistArtworkFallbackOrder ?? settings.artworkFallbackOrder ?? ARTWORK_SOURCE_ORDER.join(","));
+        applyFieldCheckedTrueOnly("coverDescriptionUTF8", settings.tags?.coverDescriptionUTF8 ?? settings.coverDescriptionUTF8);
+        applyFieldValueIfPresent("jpegImageQuality", settings.jpegImageQuality ?? 90);
         refreshArtworkTemplateFieldState();
 
         loadItunesArtOptions();
@@ -4915,33 +4999,20 @@
             return;
         }
 
-        const applyValue = (id, value) => {
-            const field = document.getElementById(id);
-            if (field) {
-                field.value = value ?? field.value;
-            }
-        };
-        const applyChecked = (id, value) => {
-            const field = document.getElementById(id);
-            if (field) {
-                field.checked = value === true;
-            }
-        };
-
-        applyValue("dateFormat", settings.dateFormat ?? "Y-M-D");
-        applyChecked("albumVariousArtists", settings.albumVariousArtists);
-        applyChecked("removeAlbumVersion", settings.removeAlbumVersion);
-        applyChecked("removeDuplicateArtists", settings.removeDuplicateArtists);
-        applyValue("featuredToTitle", settings.featuredToTitle ?? "0");
-        applyValue("titleCasing", settings.titleCasing ?? "nothing");
-        applyValue("artistCasing", settings.artistCasing ?? "nothing");
+        applyFieldValueIfPresent("dateFormat", settings.dateFormat ?? "Y-M-D");
+        applyFieldCheckedTrueOnly("albumVariousArtists", settings.albumVariousArtists);
+        applyFieldCheckedTrueOnly("removeAlbumVersion", settings.removeAlbumVersion);
+        applyFieldCheckedTrueOnly("removeDuplicateArtists", settings.removeDuplicateArtists);
+        applyFieldValueIfPresent("featuredToTitle", settings.featuredToTitle ?? "0");
+        applyFieldValueIfPresent("titleCasing", settings.titleCasing ?? "nothing");
+        applyFieldValueIfPresent("artistCasing", settings.artistCasing ?? "nothing");
 
         if (settings.tags) {
-            applyChecked("savePlaylistAsCompilation", settings.tags.savePlaylistAsCompilation);
-            applyChecked("useNullSeparator", settings.tags.useNullSeparator);
-            applyChecked("saveID3v1", settings.tags.saveID3v1);
-            applyValue("multiArtistSeparator", settings.tags.multiArtistSeparator ?? "default");
-            applyChecked("singleAlbumArtist", settings.tags.singleAlbumArtist ?? true);
+            applyFieldCheckedTrueOnly("savePlaylistAsCompilation", settings.tags.savePlaylistAsCompilation);
+            applyFieldCheckedTrueOnly("useNullSeparator", settings.tags.useNullSeparator);
+            applyFieldCheckedTrueOnly("saveID3v1", settings.tags.saveID3v1);
+            applyFieldValueIfPresent("multiArtistSeparator", settings.tags.multiArtistSeparator ?? "default");
+            applyFieldCheckedTrueOnly("singleAlbumArtist", settings.tags.singleAlbumArtist ?? true);
         }
 
         syncMultiArtistHandlingState();
@@ -4952,47 +5023,28 @@
             return;
         }
 
-        const applyValue = (id, value) => {
-            if (value === undefined || value === null) {
-                return;
-            }
-            const field = document.getElementById(id);
-            if (field) {
-                field.value = value;
-            }
-        };
-        const applyChecked = (id, value) => {
-            if (typeof value !== "boolean") {
-                return;
-            }
-            const field = document.getElementById(id);
-            if (field) {
-                field.checked = value;
-            }
-        };
-
-        applyChecked("savePlaylistAsCompilation", technical.savePlaylistAsCompilation);
-        applyChecked("useNullSeparator", technical.useNullSeparator);
-        applyChecked("saveID3v1", technical.saveID3v1);
-        applyValue("multiArtistSeparator", technical.multiArtistSeparator);
-        applyChecked("singleAlbumArtist", technical.singleAlbumArtist);
-        applyChecked("albumVariousArtists", technical.albumVariousArtists);
-        applyChecked("removeDuplicateArtists", technical.removeDuplicateArtists);
-        applyChecked("removeAlbumVersion", technical.removeAlbumVersion);
-        applyValue("dateFormat", technical.dateFormat);
-        applyValue("featuredToTitle", technical.featuredToTitle);
-        applyValue("titleCasing", technical.titleCasing);
-        applyValue("artistCasing", technical.artistCasing);
-        applyChecked("saveLyrics", technical.saveLyrics ?? technical.syncedLyrics);
-        applyChecked("embedLyrics", technical.embedLyrics ?? true);
-        applyValue("lrcType", normalizeLyricsTypeSetting(technical.lrcType || DEFAULT_LYRICS_TYPE_SELECTION));
-        applyValue("lrcFormat", normalizeEmbedLyricsFormat(technical.lrcFormat || "both"));
-        applyChecked("lyricsFallbackEnabled", technical.lyricsFallbackEnabled);
-        applyValue("lyricsFallbackOrder", technical.lyricsFallbackOrder || LYRICS_SOURCE_ORDER.join(","));
-        applyChecked("artworkFallbackEnabled", technical.artworkFallbackEnabled);
-        applyValue("artworkFallbackOrder", technical.artworkFallbackOrder || ARTWORK_SOURCE_ORDER.join(","));
-        applyChecked("artistArtworkFallbackEnabled", technical.artistArtworkFallbackEnabled);
-        applyValue("artistArtworkFallbackOrder", technical.artistArtworkFallbackOrder || ARTWORK_SOURCE_ORDER.join(","));
+        applyFieldCheckedWhenBoolean("savePlaylistAsCompilation", technical.savePlaylistAsCompilation);
+        applyFieldCheckedWhenBoolean("useNullSeparator", technical.useNullSeparator);
+        applyFieldCheckedWhenBoolean("saveID3v1", technical.saveID3v1);
+        applyFieldValueIfPresent("multiArtistSeparator", technical.multiArtistSeparator);
+        applyFieldCheckedWhenBoolean("singleAlbumArtist", technical.singleAlbumArtist);
+        applyFieldCheckedWhenBoolean("albumVariousArtists", technical.albumVariousArtists);
+        applyFieldCheckedWhenBoolean("removeDuplicateArtists", technical.removeDuplicateArtists);
+        applyFieldCheckedWhenBoolean("removeAlbumVersion", technical.removeAlbumVersion);
+        applyFieldValueIfPresent("dateFormat", technical.dateFormat);
+        applyFieldValueIfPresent("featuredToTitle", technical.featuredToTitle);
+        applyFieldValueIfPresent("titleCasing", technical.titleCasing);
+        applyFieldValueIfPresent("artistCasing", technical.artistCasing);
+        applyFieldCheckedWhenBoolean("saveLyrics", technical.saveLyrics ?? technical.syncedLyrics);
+        applyFieldCheckedWhenBoolean("embedLyrics", technical.embedLyrics ?? true);
+        applyFieldValueIfPresent("lrcType", normalizeLyricsTypeSetting(technical.lrcType || DEFAULT_LYRICS_TYPE_SELECTION));
+        applyFieldValueIfPresent("lrcFormat", normalizeEmbedLyricsFormat(technical.lrcFormat || "both"));
+        applyFieldCheckedWhenBoolean("lyricsFallbackEnabled", technical.lyricsFallbackEnabled);
+        applyFieldValueIfPresent("lyricsFallbackOrder", technical.lyricsFallbackOrder || LYRICS_SOURCE_ORDER.join(","));
+        applyFieldCheckedWhenBoolean("artworkFallbackEnabled", technical.artworkFallbackEnabled);
+        applyFieldValueIfPresent("artworkFallbackOrder", technical.artworkFallbackOrder || ARTWORK_SOURCE_ORDER.join(","));
+        applyFieldCheckedWhenBoolean("artistArtworkFallbackEnabled", technical.artistArtworkFallbackEnabled);
+        applyFieldValueIfPresent("artistArtworkFallbackOrder", technical.artistArtworkFallbackOrder || ARTWORK_SOURCE_ORDER.join(","));
 
         if (state.syncLyricsFallbackOrder) {
             state.syncLyricsFallbackOrder();
@@ -5024,29 +5076,16 @@
             return;
         }
 
-        const applyCheckbox = (id, value) => {
-            const field = document.getElementById(id);
-            if (field) {
-                field.checked = value === true;
-            }
-        };
-        const applyValue = (id, value) => {
-            const field = document.getElementById(id);
-            if (field) {
-                field.value = value ?? field.value;
-            }
-        };
-
-        applyCheckbox("createPlaylistFolder", settings.createPlaylistFolder !== false);
-        applyValue("playlistNameTemplate", settings.playlistNameTemplate || "%playlist%");
-        applyCheckbox("createArtistFolder", settings.createArtistFolder !== false);
-        applyValue("artistNameTemplate", settings.artistNameTemplate || "%artist%");
-        applyCheckbox("createAlbumFolder", settings.createAlbumFolder !== false);
-        applyValue("albumNameTemplate", settings.albumNameTemplate || "%album%");
-        applyCheckbox("createCDFolder", settings.createCDFolder);
-        applyCheckbox("createStructurePlaylist", settings.createStructurePlaylist);
-        applyCheckbox("createSingleFolder", settings.createSingleFolder);
-        applyValue("illegalCharacterReplacer", settings.illegalCharacterReplacer || "_");
+        applyFieldCheckedTrueOnly("createPlaylistFolder", settings.createPlaylistFolder !== false);
+        applyFieldValueIfPresent("playlistNameTemplate", settings.playlistNameTemplate || "%playlist%");
+        applyFieldCheckedTrueOnly("createArtistFolder", settings.createArtistFolder !== false);
+        applyFieldValueIfPresent("artistNameTemplate", settings.artistNameTemplate || "%artist%");
+        applyFieldCheckedTrueOnly("createAlbumFolder", settings.createAlbumFolder !== false);
+        applyFieldValueIfPresent("albumNameTemplate", settings.albumNameTemplate || "%album%");
+        applyFieldCheckedTrueOnly("createCDFolder", settings.createCDFolder);
+        applyFieldCheckedTrueOnly("createStructurePlaylist", settings.createStructurePlaylist);
+        applyFieldCheckedTrueOnly("createSingleFolder", settings.createSingleFolder);
+        applyFieldValueIfPresent("illegalCharacterReplacer", settings.illegalCharacterReplacer || "_");
         updateFolderStructureVisibility();
         renderFolderStructurePreview();
     }
@@ -5451,6 +5490,7 @@
             }
             return await response.json();
         } catch (error) {
+            console.debug("Failed to fetch AutoTag job by id.", error);
             return null;
         }
     }
@@ -5463,6 +5503,7 @@
             }
             return await response.json();
         } catch (error) {
+            console.debug("Failed to fetch latest AutoTag job.", error);
             return null;
         }
     }
@@ -5576,6 +5617,7 @@
                 localStorage.removeItem("autotagJobId");
             }
         } catch (error) {
+            console.debug("AutoTag status polling failed.", error);
             updateStatus(state.jobId || "unknown", "error");
         }
     }

@@ -13,7 +13,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Authorize]
 public sealed class AppleTracklistApiController : ControllerBase
 {
-    private static readonly bool AppleDisabled = ReadAppleDisabled();
+    private static readonly bool AppleDisabled = AppleCatalogJsonHelper.IsAppleDisabledByEnvironment();
     private const string AppleSource = "apple";
     private const string AlbumType = "album";
     private const string TrackType = "track";
@@ -24,8 +24,6 @@ public sealed class AppleTracklistApiController : ControllerBase
     private const string TracksField = "tracks";
     private const string NameField = "name";
     private const string UrlField = "url";
-    private const string ArtworkField = "artwork";
-    private const string PreviewsField = "previews";
     private const string ReleaseDateField = "releaseDate";
     private const string AlbumNameField = "albumName";
     private const string HasLyricsField = "hasLyrics";
@@ -44,19 +42,6 @@ public sealed class AppleTracklistApiController : ControllerBase
         _catalog = catalog;
         _settingsService = settingsService;
         _logger = logger;
-    }
-
-    private static bool ReadAppleDisabled()
-    {
-        var value = Environment.GetEnvironmentVariable("DEEZSPOTAG_APPLE_DISABLED");
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-
-        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
-            || value.Equals("true", StringComparison.OrdinalIgnoreCase)
-            || value.Equals("yes", StringComparison.OrdinalIgnoreCase);
     }
 
     [HttpGet]
@@ -140,7 +125,7 @@ public sealed class AppleTracklistApiController : ControllerBase
         var rel = album.GetProperty(RelationshipsField);
         var tracks = BuildRelationshipTracks(rel);
 
-        var cover = ResolveArtwork(attrs);
+        var cover = AppleCatalogJsonHelper.ResolveArtwork(attrs);
         var title = attrs.TryGetProperty(NameField, out var nameEl) ? nameEl.GetString() ?? "" : "";
         var artistName = attrs.TryGetProperty(ArtistNameField, out var artistEl) ? artistEl.GetString() ?? "" : "";
         var trackCount = attrs.TryGetProperty("trackCount", out var tcEl) ? tcEl.GetInt32() : tracks.Count;
@@ -161,7 +146,7 @@ public sealed class AppleTracklistApiController : ControllerBase
         var track = dataArr[0];
         var ta = track.GetProperty(AttributesField);
 
-        var cover = ResolveArtwork(ta);
+        var cover = AppleCatalogJsonHelper.ResolveArtwork(ta);
         var title = ta.TryGetProperty(NameField, out var nameEl) ? nameEl.GetString() ?? "" : "";
         var artistName = ta.TryGetProperty(ArtistNameField, out var artistEl) ? artistEl.GetString() ?? "" : "";
         var releaseDate = ta.TryGetProperty(ReleaseDateField, out var rdEl) ? rdEl.GetString() ?? "" : "";
@@ -185,7 +170,7 @@ public sealed class AppleTracklistApiController : ControllerBase
         var rel = playlist.GetProperty(RelationshipsField);
         var tracks = BuildRelationshipTracks(rel);
 
-        var cover = ResolveArtwork(attrs);
+        var cover = AppleCatalogJsonHelper.ResolveArtwork(attrs);
         var title = attrs.TryGetProperty(NameField, out var nameEl) ? nameEl.GetString() ?? "" : "";
         var curator = attrs.TryGetProperty("curatorName", out var curatorEl) ? curatorEl.GetString() ?? "" : "";
         var trackCount = attrs.TryGetProperty("trackCount", out var tcEl) ? tcEl.GetInt32() : tracks.Count;
@@ -233,16 +218,16 @@ public sealed class AppleTracklistApiController : ControllerBase
             album = new
             {
                 title = albumName,
-                cover_medium = ResolveArtwork(attributes)
+                cover_medium = AppleCatalogJsonHelper.ResolveArtwork(attributes)
             },
             source = AppleSource,
             sourceUrl = attributes.TryGetProperty(UrlField, out var u) ? u.GetString() ?? "" : "",
-            preview = ResolvePreviewUrl(attributes),
-            hasAtmos = HasAtmos(attributes),
+            preview = AppleCatalogJsonHelper.ReadPreviewUrl(attributes),
+            hasAtmos = AppleCatalogJsonHelper.HasAtmos(attributes),
             hasLyrics = ReadOptionalBoolAttribute(attributes, HasLyricsField),
             hasTimeSyncedLyrics = ReadOptionalBoolAttribute(attributes, HasTimeSyncedLyricsField),
             audioTraits = ReadAudioTraits(attributes),
-            hasAppleDigitalMaster = HasAppleDigitalMaster(attributes),
+            hasAppleDigitalMaster = AppleCatalogJsonHelper.HasAppleDigitalMaster(attributes),
             bitDepth = ResolveBitDepth(attributes),
             sampleRate = ResolveSampleRate(attributes)
         };
@@ -268,49 +253,6 @@ public sealed class AppleTracklistApiController : ControllerBase
                 tracks
             }
         };
-    }
-
-    private static string ResolveArtwork(JsonElement attributes)
-    {
-        if (attributes.ValueKind != JsonValueKind.Object)
-        {
-            return "";
-        }
-
-        if (!attributes.TryGetProperty(ArtworkField, out var art) || art.ValueKind != JsonValueKind.Object)
-        {
-            return "";
-        }
-
-        if (!art.TryGetProperty(UrlField, out var urlEl) || urlEl.ValueKind != JsonValueKind.String)
-        {
-            return "";
-        }
-
-        var raw = urlEl.GetString() ?? "";
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return "";
-        }
-
-        var width = art.TryGetProperty("width", out var w) ? w.GetInt32() : 0;
-        var height = art.TryGetProperty("height", out var h) ? h.GetInt32() : 0;
-        return AppleArtworkRenderHelper.BuildArtworkUrl(raw, width, height);
-    }
-
-    private static bool HasAtmos(JsonElement attributes)
-    {
-        if (attributes.ValueKind != JsonValueKind.Object)
-        {
-            return false;
-        }
-
-        return attributes.TryGetProperty(AudioTraitsField, out var traits)
-            && traits.ValueKind == JsonValueKind.Array
-            && traits.EnumerateArray()
-                .Where(static trait => trait.ValueKind == JsonValueKind.String)
-                .Select(static trait => trait.GetString())
-                .Any(static value => value?.IndexOf("atmos", StringComparison.OrdinalIgnoreCase) >= 0);
     }
 
     private static IReadOnlyList<string> ReadAudioTraits(JsonElement attributes)
@@ -343,41 +285,9 @@ public sealed class AppleTracklistApiController : ControllerBase
         return values;
     }
 
-    private static bool HasAppleDigitalMaster(JsonElement attributes)
-    {
-        if (attributes.ValueKind != JsonValueKind.Object)
-        {
-            return false;
-        }
-
-        if (attributes.TryGetProperty("isAppleDigitalMaster", out var admEl) && admEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
-        {
-            return admEl.GetBoolean();
-        }
-
-        if (attributes.TryGetProperty("isMasteredForItunes", out var mfiEl) && mfiEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
-        {
-            return mfiEl.GetBoolean();
-        }
-
-        return false;
-    }
-
     private static string ResolveBitDepth(JsonElement attributes)
     {
-        if (attributes.ValueKind != JsonValueKind.Object)
-        {
-            return string.Empty;
-        }
-
-        if (!attributes.TryGetProperty(AudioTraitsField, out var traits) || traits.ValueKind != JsonValueKind.Array)
-        {
-            return string.Empty;
-        }
-
-        return traits.EnumerateArray()
-            .Where(static trait => trait.ValueKind == JsonValueKind.String)
-            .Select(static trait => trait.GetString() ?? string.Empty)
+        return ReadAudioTraits(attributes)
             .Where(static value => value.StartsWith("bit-", StringComparison.OrdinalIgnoreCase))
             .Select(static value => value.Replace("bit-", "", StringComparison.OrdinalIgnoreCase).Trim() + "B")
             .FirstOrDefault() ?? string.Empty;
@@ -385,19 +295,7 @@ public sealed class AppleTracklistApiController : ControllerBase
 
     private static string ResolveSampleRate(JsonElement attributes)
     {
-        if (attributes.ValueKind != JsonValueKind.Object)
-        {
-            return string.Empty;
-        }
-
-        if (!attributes.TryGetProperty(AudioTraitsField, out var traits) || traits.ValueKind != JsonValueKind.Array)
-        {
-            return string.Empty;
-        }
-
-        return traits.EnumerateArray()
-            .Where(static trait => trait.ValueKind == JsonValueKind.String)
-            .Select(static trait => trait.GetString() ?? string.Empty)
+        return ReadAudioTraits(attributes)
             .Where(static value => value.EndsWith("khz", StringComparison.OrdinalIgnoreCase))
             .Select(static value => value.ToUpperInvariant().Replace("KHZ", "kHz"))
             .FirstOrDefault() ?? string.Empty;
@@ -410,28 +308,4 @@ public sealed class AppleTracklistApiController : ControllerBase
             && boolEl.GetBoolean();
     }
 
-    private static string ResolvePreviewUrl(JsonElement attributes)
-    {
-        if (attributes.ValueKind != JsonValueKind.Object)
-        {
-            return string.Empty;
-        }
-
-        if (attributes.TryGetProperty(PreviewsField, out var previews) && previews.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var preview in previews.EnumerateArray())
-            {
-                if (preview.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
-                if (preview.TryGetProperty(UrlField, out var urlEl) && urlEl.ValueKind == JsonValueKind.String)
-                {
-                    return urlEl.GetString() ?? string.Empty;
-                }
-            }
-        }
-
-        return string.Empty;
-    }
 }

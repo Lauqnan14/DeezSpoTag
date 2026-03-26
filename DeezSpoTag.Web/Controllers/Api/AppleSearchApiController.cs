@@ -9,7 +9,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Authorize]
 public sealed class AppleSearchApiController : ControllerBase
 {
-    private static readonly bool AppleDisabled = ReadAppleDisabled();
+    private static readonly bool AppleDisabled = AppleCatalogJsonHelper.IsAppleDisabledByEnvironment();
     private readonly DeezSpoTagSearchService _searchService;
     private readonly ILogger<AppleSearchApiController> _logger;
 
@@ -17,19 +17,6 @@ public sealed class AppleSearchApiController : ControllerBase
     {
         _searchService = searchService;
         _logger = logger;
-    }
-
-    private static bool ReadAppleDisabled()
-    {
-        var value = Environment.GetEnvironmentVariable("DEEZSPOTAG_APPLE_DISABLED");
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-
-        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
-            || value.Equals("true", StringComparison.OrdinalIgnoreCase)
-            || value.Equals("yes", StringComparison.OrdinalIgnoreCase);
     }
 
     [HttpGet("search")]

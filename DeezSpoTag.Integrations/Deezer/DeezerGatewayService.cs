@@ -515,22 +515,10 @@ public class GwUserOptions
     public bool MobileHq { get; set; }
 }
 
-public class GwAlbum
+public class GwAlbum : GwAlbumArtistMetadata
 {
-    [JsonProperty("ALB_ID")]
-    public string AlbId { get; set; } = "";
-    
-    [JsonProperty("ALB_TITLE")]
-    public string AlbTitle { get; set; } = "";
-    
-    [JsonProperty("ALB_PICTURE")]
-    public string AlbPicture { get; set; } = "";
-    
-    [JsonProperty("ART_ID")]
-    public long ArtId { get; set; }
-    
-    [JsonProperty("ART_NAME")]
-    public string ArtName { get; set; } = "";
+    [JsonIgnore]
+    public bool HasArtwork => !string.IsNullOrWhiteSpace(AlbPicture);
 }
 
 public class GwArtist

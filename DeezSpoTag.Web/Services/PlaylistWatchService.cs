@@ -702,39 +702,31 @@ public sealed class PlaylistWatchService
 
         var rules = new List<PlaylistTrackBlockRule>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var preference in preferences)
+        foreach (var rule in preferences.SelectMany(static preference => preference.IgnoreRules ?? []))
         {
-            if (preference.IgnoreRules is null || preference.IgnoreRules.Count == 0)
+            var field = (rule.ConditionField ?? string.Empty).Trim();
+            var op = (rule.ConditionOperator ?? string.Empty).Trim();
+            var value = (rule.ConditionValue ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(field)
+                || string.IsNullOrWhiteSpace(op)
+                || string.IsNullOrWhiteSpace(value))
             {
                 continue;
             }
 
-            foreach (var rule in preference.IgnoreRules)
+            var dedupeKey = $"{field}\u001F{op}\u001F{value}";
+            if (!seen.Add(dedupeKey))
             {
-                var field = (rule.ConditionField ?? string.Empty).Trim();
-                var op = (rule.ConditionOperator ?? string.Empty).Trim();
-                var value = (rule.ConditionValue ?? string.Empty).Trim();
-                if (string.IsNullOrWhiteSpace(field)
-                    || string.IsNullOrWhiteSpace(op)
-                    || string.IsNullOrWhiteSpace(value))
-                {
-                    continue;
-                }
-
-                var dedupeKey = $"{field}\u001F{op}\u001F{value}";
-                if (!seen.Add(dedupeKey))
-                {
-                    continue;
-                }
-
-                rules.Add(new PlaylistTrackBlockRule(field, op, value, rules.Count));
+                continue;
             }
+
+            rules.Add(new PlaylistTrackBlockRule(field, op, value, rules.Count));
         }
 
         return rules;
     }
 
-    private static IReadOnlyList<PlaylistTrackBlockRule>? MergeBlockRules(
+    private static List<PlaylistTrackBlockRule>? MergeBlockRules(
         IReadOnlyList<PlaylistTrackBlockRule>? playlistRules,
         IReadOnlyList<PlaylistTrackBlockRule> globalRules)
     {
@@ -2844,42 +2836,18 @@ public sealed class PlaylistWatchService
             cancellationToken.ThrowIfCancellationRequested();
 
             var intent = track.Intent;
-            if (ShouldBlockTrack(intent, options.BlockRules))
+            if (await HandleBlockedWatchIntentAsync(intent, track, options, cancellationToken))
             {
-                _logger.LogDebug(
-                    "{Source} watch skipped blocked track {TrackId} ({Title} - {Artist}).",
-                    options.SourceLabel,
-                    track.TrackId,
-                    intent.Title,
-                    intent.Artist);
-                await TryPersistWatchTrackIgnoreAsync(
-                    options.WatchlistSource,
-                    options.WatchlistPlaylistId,
-                    track,
-                    cancellationToken);
-                await TryMarkWatchTrackCompletedAsync(
-                    options.WatchlistSource,
-                    options.WatchlistPlaylistId,
-                    track.TrackId,
-                    cancellationToken);
                 continue;
             }
 
-            intent.DestinationFolderId = ResolveRoutingFolderId(intent, options.RoutingRules, destinationFolderId);
-            if (normalizedDownloadVariantMode == "atmos_only")
-            {
-                intent = CreateAtmosOnlyIntent(intent, intent.DestinationFolderId);
-            }
-            else if (!string.IsNullOrWhiteSpace(normalizedPreferredEngine))
-            {
-                intent.PreferredEngine = normalizedPreferredEngine;
-            }
-            if (HasWatchlistContext(options.WatchlistSource, options.WatchlistPlaylistId))
-            {
-                intent.WatchlistSource = options.WatchlistSource!;
-                intent.WatchlistPlaylistId = options.WatchlistPlaylistId!;
-                intent.WatchlistTrackId = track.TrackId;
-            }
+            intent = PrepareWatchIntent(
+                intent,
+                track.TrackId,
+                options,
+                destinationFolderId,
+                normalizedDownloadVariantMode,
+                normalizedPreferredEngine);
 
             var result = await TryQueuePrimaryIntentAsync(
                 intentService,
@@ -2892,47 +2860,127 @@ public sealed class PlaylistWatchService
                 continue;
             }
 
-            if (result.Success)
-            {
-                queuedCount++;
-                queuedCount += await TryQueueAtmosIntentAsync(
-                    intentService,
-                    normalizedDownloadVariantMode,
-                    intent,
-                    options.SourceLabel,
-                    track.TrackId,
-                    afterPrimarySkip: false,
-                    cancellationToken);
-                continue;
-            }
-
-            if (ShouldMarkWatchTrackAsCompleted(result))
-            {
-                if (ShouldPersistBlockedTrackIgnore(result))
-                {
-                    await TryPersistWatchTrackIgnoreAsync(
-                        options.WatchlistSource,
-                        options.WatchlistPlaylistId,
-                        track,
-                        cancellationToken);
-                }
-                queuedCount += await TryQueueAtmosIntentAsync(
-                    intentService,
-                    normalizedDownloadVariantMode,
-                    intent,
-                    options.SourceLabel,
-                    track.TrackId,
-                    afterPrimarySkip: true,
-                    cancellationToken);
-                await TryMarkWatchTrackCompletedAsync(
-                    options.WatchlistSource,
-                    options.WatchlistPlaylistId,
-                    track.TrackId,
-                    cancellationToken);
-            }
+            queuedCount += await HandleQueuedWatchIntentResultAsync(
+                intentService,
+                result,
+                track,
+                intent,
+                options,
+                normalizedDownloadVariantMode,
+                cancellationToken);
         }
 
         return queuedCount;
+    }
+
+    private async Task<int> HandleQueuedWatchIntentResultAsync(
+        DownloadIntentService intentService,
+        DownloadIntentResult result,
+        WatchIntentTrack track,
+        DownloadIntent intent,
+        QueueWatchOptions options,
+        string normalizedDownloadVariantMode,
+        CancellationToken cancellationToken)
+    {
+        var queuedCount = 0;
+        if (result.Success)
+        {
+            queuedCount++;
+            queuedCount += await TryQueueAtmosIntentAsync(
+                intentService,
+                normalizedDownloadVariantMode,
+                intent,
+                options.SourceLabel,
+                track.TrackId,
+                afterPrimarySkip: false,
+                cancellationToken);
+            return queuedCount;
+        }
+
+        if (ShouldMarkWatchTrackAsCompleted(result))
+        {
+            if (ShouldPersistBlockedTrackIgnore(result))
+            {
+                await TryPersistWatchTrackIgnoreAsync(
+                    options.WatchlistSource,
+                    options.WatchlistPlaylistId,
+                    track,
+                    cancellationToken);
+            }
+            queuedCount += await TryQueueAtmosIntentAsync(
+                intentService,
+                normalizedDownloadVariantMode,
+                intent,
+                options.SourceLabel,
+                track.TrackId,
+                afterPrimarySkip: true,
+                cancellationToken);
+            await TryMarkWatchTrackCompletedAsync(
+                options.WatchlistSource,
+                options.WatchlistPlaylistId,
+                track.TrackId,
+                cancellationToken);
+        }
+
+        return queuedCount;
+    }
+
+    private async Task<bool> HandleBlockedWatchIntentAsync(
+        DownloadIntent intent,
+        WatchIntentTrack track,
+        QueueWatchOptions options,
+        CancellationToken cancellationToken)
+    {
+        if (!ShouldBlockTrack(intent, options.BlockRules))
+        {
+            return false;
+        }
+
+        _logger.LogDebug(
+            "{Source} watch skipped blocked track {TrackId} ({Title} - {Artist}).",
+            options.SourceLabel,
+            track.TrackId,
+            intent.Title,
+            intent.Artist);
+        await TryPersistWatchTrackIgnoreAsync(
+            options.WatchlistSource,
+            options.WatchlistPlaylistId,
+            track,
+            cancellationToken);
+        await TryMarkWatchTrackCompletedAsync(
+            options.WatchlistSource,
+            options.WatchlistPlaylistId,
+            track.TrackId,
+            cancellationToken);
+        return true;
+    }
+
+    private DownloadIntent PrepareWatchIntent(
+        DownloadIntent intent,
+        string trackId,
+        QueueWatchOptions options,
+        long? destinationFolderId,
+        string normalizedDownloadVariantMode,
+        string? normalizedPreferredEngine)
+    {
+        intent.DestinationFolderId = ResolveRoutingFolderId(intent, options.RoutingRules, destinationFolderId);
+        if (normalizedDownloadVariantMode == "atmos_only")
+        {
+            intent = CreateAtmosOnlyIntent(intent, intent.DestinationFolderId);
+        }
+        else if (!string.IsNullOrWhiteSpace(normalizedPreferredEngine))
+        {
+            intent.PreferredEngine = normalizedPreferredEngine;
+        }
+
+        if (HasWatchlistContext(options.WatchlistSource, options.WatchlistPlaylistId))
+        {
+            intent.WatchlistSource = options.WatchlistSource!;
+            intent.WatchlistPlaylistId = options.WatchlistPlaylistId!;
+            intent.WatchlistTrackId = trackId;
+        }
+
+        return intent;
     }
 
     private async Task<DownloadIntentResult?> TryQueuePrimaryIntentAsync(
@@ -3082,15 +3130,8 @@ public sealed class PlaylistWatchService
             return false;
         }
 
-        foreach (var reasonCode in result.SkipReasonCodes)
-        {
-            if (string.Equals(reasonCode?.Trim(), "blocklist_match", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return result.SkipReasonCodes.Any(
+            reasonCode => string.Equals(reasonCode?.Trim(), "blocklist_match", StringComparison.OrdinalIgnoreCase));
     }
 
     private static string BuildSpotifyTrackUrl(string trackId, string? sourceUrl)

@@ -5,10 +5,25 @@ namespace DeezSpoTag.Web.Services;
 
 public static class AppleCatalogJsonHelper
 {
+    private const string AppleDisabledEnvironmentVariable = "DEEZSPOTAG_APPLE_DISABLED";
     private const string DataField = "data";
     private const string ArtworkField = "artwork";
     private const string UrlField = "url";
     private const string PreviewsField = "previews";
+    private const string AudioTraitsField = "audioTraits";
+
+    public static bool IsAppleDisabledByEnvironment()
+    {
+        var value = Environment.GetEnvironmentVariable(AppleDisabledEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("yes", StringComparison.OrdinalIgnoreCase);
+    }
 
     public static bool TryGetDataArray(JsonElement root, out JsonElement dataArr)
     {
@@ -62,6 +77,46 @@ public static class AppleCatalogJsonHelper
         }
 
         return string.Empty;
+    }
+
+    public static bool HasAtmos(JsonElement attributes)
+    {
+        if (attributes.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (!attributes.TryGetProperty(AudioTraitsField, out var traits)
+            || traits.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        return traits.EnumerateArray().Any(static trait =>
+            trait.ValueKind == JsonValueKind.String
+            && trait.GetString()?.IndexOf("atmos", StringComparison.OrdinalIgnoreCase) >= 0);
+    }
+
+    public static bool HasAppleDigitalMaster(JsonElement attributes)
+    {
+        if (attributes.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (attributes.TryGetProperty("isAppleDigitalMaster", out var admEl)
+            && admEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            return admEl.GetBoolean();
+        }
+
+        if (attributes.TryGetProperty("isMasteredForItunes", out var mfiEl)
+            && mfiEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            return mfiEl.GetBoolean();
+        }
+
+        return false;
     }
 
     public static List<string> ReadStringArray(JsonElement attributes, string propertyName)

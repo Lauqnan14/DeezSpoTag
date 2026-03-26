@@ -2,7 +2,6 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using DeezSpoTag.Services.Utils;
-using System.Globalization;
 
 namespace DeezSpoTag.Services.Library;
 
@@ -43,27 +42,14 @@ LIMIT 1;";
         {
             await using var connection = new SqliteConnection(connectionString);
             await connection.OpenAsync(cancellationToken);
-            await using var command = new SqliteCommand(sql, connection);
-            command.Parameters.AddWithValue(SourceParameterName, source);
-            command.Parameters.AddWithValue(SourceIdParameterName, sourceId);
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            if (!await reader.ReadAsync(cancellationToken))
+            await using var command = CreateSourceAndIdCommand(sql, connection, source, sourceId);
+            var cacheRow = await SqlitePayloadCacheReader.TryReadAsync(command, cancellationToken);
+            if (!cacheRow.Found)
             {
                 return null;
             }
 
-            var payload = reader.GetString(0);
-            var fetchedText = reader.GetString(1);
-            if (!DateTimeOffset.TryParse(
-                    fetchedText,
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.RoundtripKind,
-                    out var fetchedUtc))
-            {
-                fetchedUtc = DateTimeOffset.MinValue;
-            }
-
-            return new ArtistCacheEntry(payload, fetchedUtc);
+            return new ArtistCacheEntry(cacheRow.PayloadJson, cacheRow.FetchedUtc);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -280,13 +266,7 @@ ORDER BY genre;";
             await connection.OpenAsync(cancellationToken);
             await using var command = new SqliteCommand(sql, connection);
             command.Parameters.AddWithValue("$name", artistName);
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            var genres = new List<string>();
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                genres.Add(reader.GetString(0));
-            }
-            return genres;
+            return await ReadStringColumnValuesAsync(command, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -316,17 +296,8 @@ ORDER BY genre;";
         {
             await using var connection = new SqliteConnection(connectionString);
             await connection.OpenAsync(cancellationToken);
-            await using var command = new SqliteCommand(sql, connection);
-            command.Parameters.AddWithValue(SourceParameterName, source);
-            command.Parameters.AddWithValue(SourceIdParameterName, sourceId);
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            var genres = new List<string>();
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                genres.Add(reader.GetString(0));
-            }
-
-            return genres;
+            await using var command = CreateSourceAndIdCommand(sql, connection, source, sourceId);
+            return await ReadStringColumnValuesAsync(command, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -340,6 +311,26 @@ ORDER BY genre;";
         var rawConnection = Environment.GetEnvironmentVariable("LIBRARY_DB")
             ?? _configuration.GetConnectionString("Library");
         return SqliteConnectionStringResolver.Resolve(rawConnection, "deezspotag.db");
+    }
+
+    private static SqliteCommand CreateSourceAndIdCommand(string sql, SqliteConnection connection, string source, string sourceId)
+    {
+        var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceParameterName, source);
+        command.Parameters.AddWithValue(SourceIdParameterName, sourceId);
+        return command;
+    }
+
+    private static async Task<List<string>> ReadStringColumnValuesAsync(SqliteCommand command, CancellationToken cancellationToken)
+    {
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var values = new List<string>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            values.Add(reader.GetString(0));
+        }
+
+        return values;
     }
 }
 

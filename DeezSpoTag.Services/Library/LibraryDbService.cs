@@ -32,6 +32,27 @@ public sealed class LibraryDbService
     private const string RealType = "REAL";
     private const string SourceIdColumn = "source_id";
     private const string ExternalIdColumn = "external_id";
+    private static readonly Dictionary<string, (string Table, string Column, bool Unique)> KnownIndexDefinitions =
+        new Dictionary<string, (string Table, string Column, bool Unique)>(StringComparer.Ordinal)
+        {
+            ["idx_audio_file_folder_relative"] = (AudioFileTable, "folder_id, relative_path", true),
+            ["idx_download_task_isrc"] = (DownloadTaskTable, "isrc", false),
+            ["idx_download_task_deezer_track"] = (DownloadTaskTable, "deezer_track_id", false),
+            ["idx_download_task_deezer_album"] = (DownloadTaskTable, "deezer_album_id", false),
+            ["idx_download_task_deezer_artist"] = (DownloadTaskTable, "deezer_artist_id", false),
+            ["idx_download_task_spotify_track"] = (DownloadTaskTable, "spotify_track_id", false),
+            ["idx_download_task_spotify_album"] = (DownloadTaskTable, "spotify_album_id", false),
+            ["idx_download_task_spotify_artist"] = (DownloadTaskTable, "spotify_artist_id", false),
+            ["idx_download_task_apple_track"] = (DownloadTaskTable, "apple_track_id", false),
+            ["idx_download_task_apple_album"] = (DownloadTaskTable, "apple_album_id", false),
+            ["idx_download_task_apple_artist"] = (DownloadTaskTable, "apple_artist_id", false),
+            ["idx_download_task_destination_folder"] = (DownloadTaskTable, "destination_folder_id", false),
+            ["idx_folder_library_id"] = (FolderTable, LibraryIdColumn, false),
+            ["idx_download_blocklist_field"] = (DownloadBlocklistTable, "field, is_enabled", false),
+            ["idx_download_blocklist_normalized"] = (DownloadBlocklistTable, "normalized_value, is_enabled", false),
+            ["idx_track_shazam_cache_status"] = (TrackShazamCacheTable, "status", false),
+            ["idx_track_shazam_cache_scanned"] = (TrackShazamCacheTable, "scanned_at_utc", false)
+        };
     private readonly IConfiguration _configuration;
     private readonly ILogger<LibraryDbService> _logger;
 
@@ -86,32 +107,36 @@ public sealed class LibraryDbService
         await EnsureColumnAsync(connection, AlbumTable, "has_animated_artwork", $"{IntegerType} DEFAULT 0", cancellationToken);
 
         await EnsureColumnAsync(connection, TrackTable, "deezer_id", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "lyrics_type", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_title", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_artist", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_album", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_album_artist", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_version", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_label", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_catalog_number", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_bpm", IntegerType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_key", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_track_total", IntegerType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_duration_ms", IntegerType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_year", IntegerType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_track_no", IntegerType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_disc", IntegerType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_genre", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_isrc", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_release_date", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_publish_date", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_url", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_release_id", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_track_id", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "tag_meta_tagged_date", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "lyrics_unsynced", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "lyrics_synced", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackTable, "metadata_json", TextType, cancellationToken);
+        await EnsureColumnsAsync(
+            connection,
+            TrackTable,
+            cancellationToken,
+            ("lyrics_type", TextType),
+            ("tag_title", TextType),
+            ("tag_artist", TextType),
+            ("tag_album", TextType),
+            ("tag_album_artist", TextType),
+            ("tag_version", TextType),
+            ("tag_label", TextType),
+            ("tag_catalog_number", TextType),
+            ("tag_bpm", IntegerType),
+            ("tag_key", TextType),
+            ("tag_track_total", IntegerType),
+            ("tag_duration_ms", IntegerType),
+            ("tag_year", IntegerType),
+            ("tag_track_no", IntegerType),
+            ("tag_disc", IntegerType),
+            ("tag_genre", TextType),
+            ("tag_isrc", TextType),
+            ("tag_release_date", TextType),
+            ("tag_publish_date", TextType),
+            ("tag_url", TextType),
+            ("tag_release_id", TextType),
+            ("tag_track_id", TextType),
+            ("tag_meta_tagged_date", TextType),
+            ("lyrics_unsynced", TextType),
+            ("lyrics_synced", TextType),
+            ("metadata_json", TextType));
 
         await EnsureColumnAsync(connection, AudioFileTable, "extension", TextType, cancellationToken);
         await EnsureColumnAsync(connection, AudioFileTable, "relative_path", TextType, cancellationToken);
@@ -125,27 +150,25 @@ public sealed class LibraryDbService
         await EnsureColumnAsync(connection, DownloadTaskTable, "bitrate_kbps", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "content_type", TextType, cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "isrc", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, DownloadTaskTable, "deezer_track_id", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, DownloadTaskTable, "deezer_album_id", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, DownloadTaskTable, "deezer_artist_id", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, DownloadTaskTable, "spotify_track_id", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, DownloadTaskTable, "spotify_album_id", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, DownloadTaskTable, "spotify_artist_id", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, DownloadTaskTable, "apple_track_id", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, DownloadTaskTable, "apple_album_id", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, DownloadTaskTable, "apple_artist_id", TextType, cancellationToken);
+
+        foreach (var source in new[] { "deezer", "spotify", "apple" })
+        {
+            await EnsureColumnAsync(connection, DownloadTaskTable, $"{source}_track_id", TextType, cancellationToken);
+            await EnsureColumnAsync(connection, DownloadTaskTable, $"{source}_album_id", TextType, cancellationToken);
+            await EnsureColumnAsync(connection, DownloadTaskTable, $"{source}_artist_id", TextType, cancellationToken);
+        }
+
         await EnsureColumnAsync(connection, DownloadTaskTable, "destination_folder_id", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "final_destinations_json", TextType, cancellationToken);
         await EnsureIndexAsync(connection, "idx_download_task_isrc", DownloadTaskTable, "isrc", unique: false, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_download_task_deezer_track", DownloadTaskTable, "deezer_track_id", unique: false, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_download_task_deezer_album", DownloadTaskTable, "deezer_album_id", unique: false, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_download_task_deezer_artist", DownloadTaskTable, "deezer_artist_id", unique: false, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_download_task_spotify_track", DownloadTaskTable, "spotify_track_id", unique: false, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_download_task_spotify_album", DownloadTaskTable, "spotify_album_id", unique: false, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_download_task_spotify_artist", DownloadTaskTable, "spotify_artist_id", unique: false, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_download_task_apple_track", DownloadTaskTable, "apple_track_id", unique: false, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_download_task_apple_album", DownloadTaskTable, "apple_album_id", unique: false, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_download_task_apple_artist", DownloadTaskTable, "apple_artist_id", unique: false, cancellationToken);
+
+        foreach (var source in new[] { "deezer", "spotify", "apple" })
+        {
+            await EnsureIndexAsync(connection, $"idx_download_task_{source}_track", DownloadTaskTable, $"{source}_track_id", unique: false, cancellationToken);
+            await EnsureIndexAsync(connection, $"idx_download_task_{source}_album", DownloadTaskTable, $"{source}_album_id", unique: false, cancellationToken);
+            await EnsureIndexAsync(connection, $"idx_download_task_{source}_artist", DownloadTaskTable, $"{source}_artist_id", unique: false, cancellationToken);
+        }
+
         await EnsureIndexAsync(connection, "idx_download_task_destination_folder", DownloadTaskTable, "destination_folder_id", unique: false, cancellationToken);
 
         await EnsureColumnAsync(connection, FolderTable, LibraryIdColumn, BigIntType, cancellationToken);
@@ -222,41 +245,44 @@ CREATE TABLE IF NOT EXISTS track_shazam_cache (
 
         await MigrateSourceMappingTablesAsync(connection, cancellationToken);
 
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "analysis_mode", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "analysis_version", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "mood_tags", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "mood_happy", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "mood_sad", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "mood_relaxed", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "mood_aggressive", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "mood_party", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "mood_acoustic", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "mood_electronic", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "valence", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "arousal", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "beats_count", IntegerType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "key", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "key_scale", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "key_strength", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "loudness", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "dynamic_range", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "danceability", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "instrumentalness", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "acousticness", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "speechiness", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "danceability_ml", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "essentia_genres", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "lastfm_tags", TextType, cancellationToken);
-
-        // Vibe analysis - new Essentia model fields
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "approachability", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "engagement", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "voice_instrumental", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "tonal_atonal", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "valence_ml", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "arousal_ml", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "dynamic_complexity", RealType, cancellationToken);
-        await EnsureColumnAsync(connection, TrackAnalysisTable, "loudness_ml", RealType, cancellationToken);
+        await EnsureColumnsAsync(
+            connection,
+            TrackAnalysisTable,
+            cancellationToken,
+            ("analysis_mode", TextType),
+            ("analysis_version", TextType),
+            ("mood_tags", TextType),
+            ("mood_happy", RealType),
+            ("mood_sad", RealType),
+            ("mood_relaxed", RealType),
+            ("mood_aggressive", RealType),
+            ("mood_party", RealType),
+            ("mood_acoustic", RealType),
+            ("mood_electronic", RealType),
+            ("valence", RealType),
+            ("arousal", RealType),
+            ("beats_count", IntegerType),
+            ("key", TextType),
+            ("key_scale", TextType),
+            ("key_strength", RealType),
+            ("loudness", RealType),
+            ("dynamic_range", RealType),
+            ("danceability", RealType),
+            ("instrumentalness", RealType),
+            ("acousticness", RealType),
+            ("speechiness", RealType),
+            ("danceability_ml", RealType),
+            ("essentia_genres", TextType),
+            ("lastfm_tags", TextType),
+            // Vibe analysis - new Essentia model fields
+            ("approachability", RealType),
+            ("engagement", RealType),
+            ("voice_instrumental", RealType),
+            ("tonal_atonal", RealType),
+            ("valence_ml", RealType),
+            ("arousal_ml", RealType),
+            ("dynamic_complexity", RealType),
+            ("loudness_ml", RealType));
 
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS track_plex_metadata (
@@ -269,33 +295,10 @@ CREATE TABLE IF NOT EXISTS track_plex_metadata (
     PRIMARY KEY (track_id)
 );", cancellationToken);
 
-        await EnsureTableAsync(connection, @"
-CREATE TABLE IF NOT EXISTS track_genre (
-    track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
-    value TEXT NOT NULL,
-    PRIMARY KEY (track_id, value)
-);", cancellationToken);
-
-        await EnsureTableAsync(connection, @"
-CREATE TABLE IF NOT EXISTS track_style (
-    track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
-    value TEXT NOT NULL,
-    PRIMARY KEY (track_id, value)
-);", cancellationToken);
-
-        await EnsureTableAsync(connection, @"
-CREATE TABLE IF NOT EXISTS track_mood (
-    track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
-    value TEXT NOT NULL,
-    PRIMARY KEY (track_id, value)
-);", cancellationToken);
-
-        await EnsureTableAsync(connection, @"
-CREATE TABLE IF NOT EXISTS track_remixer (
-    track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
-    value TEXT NOT NULL,
-    PRIMARY KEY (track_id, value)
-);", cancellationToken);
+        await EnsureTrackValueTableAsync(connection, "track_genre", cancellationToken);
+        await EnsureTrackValueTableAsync(connection, "track_style", cancellationToken);
+        await EnsureTrackValueTableAsync(connection, "track_mood", cancellationToken);
+        await EnsureTrackValueTableAsync(connection, "track_remixer", cancellationToken);
 
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS track_other_tag (
@@ -314,6 +317,20 @@ CREATE TABLE IF NOT EXISTS track_other_tag (
     {
         await using var command = new SqliteCommand(createSql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static Task EnsureTrackValueTableAsync(
+        SqliteConnection connection,
+        string tableName,
+        CancellationToken cancellationToken)
+    {
+        var createSql = $@"
+CREATE TABLE IF NOT EXISTS {tableName} (
+    track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
+    value TEXT NOT NULL,
+    PRIMARY KEY (track_id, value)
+);";
+        return EnsureTableAsync(connection, createSql, cancellationToken);
     }
 
     private static async Task EnsureIndexAsync(
@@ -336,6 +353,18 @@ CREATE TABLE IF NOT EXISTS track_other_tag (
         string type,
         CancellationToken cancellationToken)
         => await SqliteSchemaUtils.EnsureColumnAsync(connection, table, column, type, cancellationToken);
+
+    private static async Task EnsureColumnsAsync(
+        SqliteConnection connection,
+        string table,
+        CancellationToken cancellationToken,
+        params (string Column, string Type)[] columns)
+    {
+        foreach (var (column, type) in columns)
+        {
+            await EnsureColumnAsync(connection, table, column, type, cancellationToken);
+        }
+    }
 
     private static async Task BackfillColumnFromLegacyAsync(
         SqliteConnection connection,
@@ -431,125 +460,75 @@ WHERE library_id IS NULL;";
     }
 
     private static string ResolveCreateIndexSql(string indexName, string table, string column, bool unique)
-        => (indexName, table, column, unique) switch
+    {
+        if (!KnownIndexDefinitions.TryGetValue(indexName, out var definition)
+            || !string.Equals(definition.Table, table, StringComparison.Ordinal)
+            || !string.Equals(definition.Column, column, StringComparison.Ordinal)
+            || definition.Unique != unique)
         {
-            ("idx_audio_file_folder_relative", AudioFileTable, "folder_id, relative_path", true) =>
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_audio_file_folder_relative ON audio_file (folder_id, relative_path);",
-            ("idx_download_task_isrc", DownloadTaskTable, "isrc", false) =>
-                "CREATE INDEX IF NOT EXISTS idx_download_task_isrc ON download_task (isrc);",
-            ("idx_download_task_deezer_track", DownloadTaskTable, "deezer_track_id", false) =>
-                "CREATE INDEX IF NOT EXISTS idx_download_task_deezer_track ON download_task (deezer_track_id);",
-            ("idx_download_task_deezer_album", DownloadTaskTable, "deezer_album_id", false) =>
-                "CREATE INDEX IF NOT EXISTS idx_download_task_deezer_album ON download_task (deezer_album_id);",
-            ("idx_download_task_deezer_artist", DownloadTaskTable, "deezer_artist_id", false) =>
-                "CREATE INDEX IF NOT EXISTS idx_download_task_deezer_artist ON download_task (deezer_artist_id);",
-            ("idx_download_task_spotify_track", DownloadTaskTable, "spotify_track_id", false) =>
-                "CREATE INDEX IF NOT EXISTS idx_download_task_spotify_track ON download_task (spotify_track_id);",
-            ("idx_download_task_spotify_album", DownloadTaskTable, "spotify_album_id", false) =>
-                "CREATE INDEX IF NOT EXISTS idx_download_task_spotify_album ON download_task (spotify_album_id);",
-            ("idx_download_task_spotify_artist", DownloadTaskTable, "spotify_artist_id", false) =>
-                "CREATE INDEX IF NOT EXISTS idx_download_task_spotify_artist ON download_task (spotify_artist_id);",
-            ("idx_download_task_apple_track", DownloadTaskTable, "apple_track_id", false) =>
-                "CREATE INDEX IF NOT EXISTS idx_download_task_apple_track ON download_task (apple_track_id);",
-            ("idx_download_task_apple_album", DownloadTaskTable, "apple_album_id", false) =>
-                "CREATE INDEX IF NOT EXISTS idx_download_task_apple_album ON download_task (apple_album_id);",
-            ("idx_download_task_apple_artist", DownloadTaskTable, "apple_artist_id", false) =>
-                "CREATE INDEX IF NOT EXISTS idx_download_task_apple_artist ON download_task (apple_artist_id);",
-            ("idx_download_task_destination_folder", DownloadTaskTable, "destination_folder_id", false) =>
-                "CREATE INDEX IF NOT EXISTS idx_download_task_destination_folder ON download_task (destination_folder_id);",
-            ("idx_folder_library_id", FolderTable, LibraryIdColumn, false) =>
-                "CREATE INDEX IF NOT EXISTS idx_folder_library_id ON folder (library_id);",
-            ("idx_download_blocklist_field", DownloadBlocklistTable, "field, is_enabled", false) =>
-                "CREATE INDEX IF NOT EXISTS idx_download_blocklist_field ON download_blocklist (field, is_enabled);",
-            ("idx_download_blocklist_normalized", DownloadBlocklistTable, "normalized_value, is_enabled", false) =>
-                "CREATE INDEX IF NOT EXISTS idx_download_blocklist_normalized ON download_blocklist (normalized_value, is_enabled);",
-            ("idx_track_shazam_cache_status", TrackShazamCacheTable, "status", false) =>
-                "CREATE INDEX IF NOT EXISTS idx_track_shazam_cache_status ON track_shazam_cache (status);",
-            ("idx_track_shazam_cache_scanned", TrackShazamCacheTable, "scanned_at_utc", false) =>
-                "CREATE INDEX IF NOT EXISTS idx_track_shazam_cache_scanned ON track_shazam_cache (scanned_at_utc);",
-            _ => throw new InvalidOperationException(
-                $"Unsupported index migration: name='{indexName}' table='{table}' column='{column}' unique={unique}.")
-        };
+            throw new InvalidOperationException(
+                $"Unsupported index migration: name='{indexName}' table='{table}' column='{column}' unique={unique}.");
+        }
+
+        var uniqueSql = unique ? "UNIQUE " : string.Empty;
+        return $"CREATE {uniqueSql}INDEX IF NOT EXISTS {indexName} ON {table} ({column});";
+    }
 
     private static string ResolveBackfillLegacySql(string table, string column, string legacyColumn)
-        => (table, column, legacyColumn) switch
+    {
+        if (!IsSupportedLegacyBackfillTable(table)
+            || !string.Equals(column, SourceIdColumn, StringComparison.Ordinal)
+            || !string.Equals(legacyColumn, ExternalIdColumn, StringComparison.Ordinal))
         {
-            (PlaylistWatchlistTable, SourceIdColumn, ExternalIdColumn) => @"
-UPDATE playlist_watchlist
-SET source_id = external_id
-WHERE (source_id IS NULL OR source_id = '')
-  AND external_id IS NOT NULL
-  AND external_id <> '';",
-            (PlaylistWatchPreferencesTable, SourceIdColumn, ExternalIdColumn) => @"
-UPDATE playlist_watch_preferences
-SET source_id = external_id
-WHERE (source_id IS NULL OR source_id = '')
-  AND external_id IS NOT NULL
-  AND external_id <> '';",
-            (PlaylistWatchStateTable, SourceIdColumn, ExternalIdColumn) => @"
-UPDATE playlist_watch_state
-SET source_id = external_id
-WHERE (source_id IS NULL OR source_id = '')
-  AND external_id IS NOT NULL
-  AND external_id <> '';",
-            (PlaylistWatchTrackTable, SourceIdColumn, ExternalIdColumn) => @"
-UPDATE playlist_watch_track
-SET source_id = external_id
-WHERE (source_id IS NULL OR source_id = '')
-  AND external_id IS NOT NULL
-  AND external_id <> '';",
-            (PlaylistWatchIgnoreTable, SourceIdColumn, ExternalIdColumn) => @"
-UPDATE playlist_watch_ignore
-SET source_id = external_id
-WHERE (source_id IS NULL OR source_id = '')
-  AND external_id IS NOT NULL
-  AND external_id <> '';",
-            (WatchlistHistoryTable, SourceIdColumn, ExternalIdColumn) => @"
-UPDATE watchlist_history
-SET source_id = external_id
-WHERE (source_id IS NULL OR source_id = '')
-  AND external_id IS NOT NULL
-  AND external_id <> '';",
-            _ => throw new InvalidOperationException(
-                $"Unsupported legacy backfill migration: table='{table}', column='{column}', legacy='{legacyColumn}'.")
-        };
+            throw new InvalidOperationException(
+                $"Unsupported legacy backfill migration: table='{table}', column='{column}', legacy='{legacyColumn}'.");
+        }
+
+        return BuildBackfillLegacySql(table, column, legacyColumn);
+    }
 
     private static string ResolveCopySourceMappingSql(string legacyTable, string newTable, string idColumn, bool legacyHasSourceId)
-        => (legacyTable, newTable, idColumn, legacyHasSourceId) switch
+    {
+        if (!IsSupportedSourceMappingMigration(legacyTable, newTable, idColumn))
         {
-            ("artist_external", "artist_source", "artist_id", true) => @"
-INSERT OR IGNORE INTO artist_source (artist_id, source, source_id)
-SELECT artist_id, source, source_id
-FROM artist_external
-WHERE source_id IS NOT NULL AND source_id <> '';",
-            ("artist_external", "artist_source", "artist_id", false) => @"
-INSERT OR IGNORE INTO artist_source (artist_id, source, source_id)
-SELECT artist_id, source, external_id
-FROM artist_external
-WHERE external_id IS NOT NULL AND external_id <> '';",
-            ("album_external", "album_source", "album_id", true) => @"
-INSERT OR IGNORE INTO album_source (album_id, source, source_id)
-SELECT album_id, source, source_id
-FROM album_external
-WHERE source_id IS NOT NULL AND source_id <> '';",
-            ("album_external", "album_source", "album_id", false) => @"
-INSERT OR IGNORE INTO album_source (album_id, source, source_id)
-SELECT album_id, source, external_id
-FROM album_external
-WHERE external_id IS NOT NULL AND external_id <> '';",
-            ("track_external", "track_source", "track_id", true) => @"
-INSERT OR IGNORE INTO track_source (track_id, source, source_id)
-SELECT track_id, source, source_id
-FROM track_external
-WHERE source_id IS NOT NULL AND source_id <> '';",
-            ("track_external", "track_source", "track_id", false) => @"
-INSERT OR IGNORE INTO track_source (track_id, source, source_id)
-SELECT track_id, source, external_id
-FROM track_external
-WHERE external_id IS NOT NULL AND external_id <> '';",
-            _ => throw new InvalidOperationException(
-                $"Unsupported source mapping migration: legacy='{legacyTable}', new='{newTable}', id='{idColumn}', hasSourceId={legacyHasSourceId}.")
-        };
+            throw new InvalidOperationException(
+                $"Unsupported source mapping migration: legacy='{legacyTable}', new='{newTable}', id='{idColumn}', hasSourceId={legacyHasSourceId}.");
+        }
+
+        var sourceValueColumn = legacyHasSourceId ? SourceIdColumn : ExternalIdColumn;
+        return BuildCopySourceMappingSql(legacyTable, newTable, idColumn, sourceValueColumn);
+    }
+
+    private static bool IsSupportedLegacyBackfillTable(string table)
+        => table is PlaylistWatchlistTable
+            or PlaylistWatchPreferencesTable
+            or PlaylistWatchStateTable
+            or PlaylistWatchTrackTable
+            or PlaylistWatchIgnoreTable
+            or WatchlistHistoryTable;
+
+    private static string BuildBackfillLegacySql(string table, string sourceColumn, string legacyColumn) => $@"
+UPDATE {table}
+SET {sourceColumn} = {legacyColumn}
+WHERE ({sourceColumn} IS NULL OR {sourceColumn} = '')
+  AND {legacyColumn} IS NOT NULL
+  AND {legacyColumn} <> '';";
+
+    private static bool IsSupportedSourceMappingMigration(string legacyTable, string newTable, string idColumn)
+        => (legacyTable, newTable, idColumn) is
+            ("artist_external", "artist_source", "artist_id")
+            or ("album_external", "album_source", "album_id")
+            or ("track_external", "track_source", "track_id");
+
+    private static string BuildCopySourceMappingSql(
+        string legacyTable,
+        string newTable,
+        string idColumn,
+        string sourceValueColumn) => $@"
+INSERT OR IGNORE INTO {newTable} ({idColumn}, source, {SourceIdColumn})
+SELECT {idColumn}, source, {sourceValueColumn}
+FROM {legacyTable}
+WHERE {sourceValueColumn} IS NOT NULL AND {sourceValueColumn} <> '';";
 
     private static async Task<bool> ColumnExistsAsync(
         SqliteConnection connection,
@@ -615,6 +594,23 @@ WHERE af.relative_path IS NULL OR af.relative_path = '';";
 
     private static async Task BackfillAudioFileVariantsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
+        const string atmosCodecPredicate = @"
+(
+    LOWER(COALESCE(codec, '')) LIKE '%ec-3%'
+    OR LOWER(COALESCE(codec, '')) LIKE '%eac3%'
+    OR LOWER(COALESCE(codec, '')) LIKE '%ac-3%'
+    OR LOWER(COALESCE(codec, '')) LIKE '%ac3%'
+    OR LOWER(COALESCE(codec, '')) LIKE '%truehd%'
+    OR LOWER(COALESCE(codec, '')) LIKE '%mlp%'
+    OR LOWER(COALESCE(extension, '')) IN ('.ec3', '.ac3', '.mlp')
+)";
+        const string atmosPathPredicate = @"
+(
+    LOWER(REPLACE(COALESCE(path, ''), '\', '/')) LIKE '%/atmos/%'
+    OR LOWER(REPLACE(COALESCE(path, ''), '\', '/')) LIKE '%/dolby atmos/%'
+    OR LOWER(REPLACE(COALESCE(path, ''), '\', '/')) LIKE '%/spatial/%'
+    OR LOWER(COALESCE(path, '')) LIKE '%atmos%'
+)";
         const string sql = @"
 UPDATE audio_file
 SET audio_variant = CASE
@@ -624,34 +620,15 @@ SET audio_variant = CASE
         OR LOWER(COALESCE(codec, '')) LIKE '%atmos%'
     ) THEN 'atmos'
     WHEN (
-        (
-            LOWER(COALESCE(codec, '')) LIKE '%ec-3%'
-            OR LOWER(COALESCE(codec, '')) LIKE '%eac3%'
-            OR LOWER(COALESCE(codec, '')) LIKE '%ac-3%'
-            OR LOWER(COALESCE(codec, '')) LIKE '%ac3%'
-            OR LOWER(COALESCE(codec, '')) LIKE '%truehd%'
-            OR LOWER(COALESCE(codec, '')) LIKE '%mlp%'
-            OR LOWER(COALESCE(extension, '')) IN ('.ec3', '.ac3', '.mlp')
-        )
+        " + atmosCodecPredicate + @"
         AND channels IS NOT NULL
         AND channels > 2
     ) THEN 'atmos'
     WHEN (
-        (
-            LOWER(REPLACE(COALESCE(path, ''), '\', '/')) LIKE '%/atmos/%'
-            OR LOWER(REPLACE(COALESCE(path, ''), '\', '/')) LIKE '%/dolby atmos/%'
-            OR LOWER(REPLACE(COALESCE(path, ''), '\', '/')) LIKE '%/spatial/%'
-            OR LOWER(COALESCE(path, '')) LIKE '%atmos%'
-        )
+        " + atmosPathPredicate + @"
         AND (
             (channels IS NOT NULL AND channels > 2)
-            OR LOWER(COALESCE(codec, '')) LIKE '%ec-3%'
-            OR LOWER(COALESCE(codec, '')) LIKE '%eac3%'
-            OR LOWER(COALESCE(codec, '')) LIKE '%ac-3%'
-            OR LOWER(COALESCE(codec, '')) LIKE '%ac3%'
-            OR LOWER(COALESCE(codec, '')) LIKE '%truehd%'
-            OR LOWER(COALESCE(codec, '')) LIKE '%mlp%'
-            OR LOWER(COALESCE(extension, '')) IN ('.ec3', '.ac3', '.mlp')
+            OR " + atmosCodecPredicate + @"
         )
     ) THEN 'atmos'
     ELSE 'stereo'

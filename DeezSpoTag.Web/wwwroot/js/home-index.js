@@ -414,6 +414,18 @@ function tryPlayNextHomeTrendingQueueItem() {
     return false;
 }
 
+function handleHomeTrendingToggleForActiveTrack(audio, trackKey, fromQueue) {
+    if (fromQueue || homeTrendingPreviewState.trackKey !== trackKey || audio.paused) {
+        return false;
+    }
+
+    audio.pause();
+    clearHomeTrendingPreviewButton();
+    homeTrendingPreviewState.trackKey = null;
+    resetHomeTrendingQueue();
+    return true;
+}
+
 async function playHomeTrendingTrackInApp(target, options = {}) {
     const button = resolveHomeTrendingPlayButton(target);
     if (!button) {
@@ -454,11 +466,7 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
 
         const audio = homeTrendingPreviewState.audio ?? new Audio();
 
-        if (!fromQueue && homeTrendingPreviewState.trackKey === trackKey && !audio.paused) {
-            audio.pause();
-            clearHomeTrendingPreviewButton();
-            homeTrendingPreviewState.trackKey = null;
-            resetHomeTrendingQueue();
+        if (handleHomeTrendingToggleForActiveTrack(audio, trackKey, fromQueue)) {
             return;
         }
 
@@ -799,7 +807,7 @@ function tryBuildExternalPlaylistRoute(parsedUrl, originalInput) {
 }
 
 function navigateToMappedDeezer(mapping) {
-    if (!mapping || mapping.available !== true) {
+    if (mapping?.available !== true) {
         return false;
     }
 
@@ -984,6 +992,472 @@ async function loadHomeData() {
     }
 }
 
+function dedupeExactHomeArtistItems(items, helpers) {
+    const seenExact = new Map();
+    const stableItems = [];
+    for (const item of items) {
+        if (!item || typeof item !== 'object') {
+            continue;
+        }
+
+        const source = helpers.getItemSource(item);
+        const type = helpers.getItemType(item);
+        const id = helpers.getItemId(item);
+        if (source && type && id) {
+            const key = `${source}:${type}:${id}`;
+            if (seenExact.has(key)) {
+                const existingIndex = seenExact.get(key);
+                const existingItem = stableItems[existingIndex];
+                if (helpers.isArtistItem(existingItem) && helpers.isArtistItem(item)) {
+                    stableItems[existingIndex] = helpers.choosePreferredArtistCard(existingItem, item);
+                }
+                continue;
+            }
+            seenExact.set(key, stableItems.length);
+        }
+        stableItems.push(item);
+    }
+
+    return stableItems;
+}
+
+function dedupeCrossSourceHomeArtistItems(items, helpers) {
+    const firstArtistByName = new Map();
+    const deduped = [];
+    for (const item of items) {
+        if (!helpers.isArtistItem(item)) {
+            deduped.push(item);
+            continue;
+        }
+
+        const nameKey = helpers.normalizeArtistNameKey(helpers.getArtistDisplayName(item));
+        if (!nameKey) {
+            deduped.push(item);
+            continue;
+        }
+
+        if (!firstArtistByName.has(nameKey)) {
+            firstArtistByName.set(nameKey, deduped.length);
+            deduped.push(item);
+            continue;
+        }
+
+        const existingIndex = firstArtistByName.get(nameKey);
+        const existingItem = deduped[existingIndex];
+        if (!helpers.isSameCrossSourceArtist(existingItem, item)) {
+            deduped.push(item);
+            continue;
+        }
+
+        deduped[existingIndex] = helpers.choosePreferredArtistCard(existingItem, item);
+    }
+
+    return deduped;
+}
+
+function dedupeMergedHomePopularArtistItems(items, helpers) {
+    if (!Array.isArray(items) || items.length === 0) {
+        return [];
+    }
+    return dedupeCrossSourceHomeArtistItems(dedupeExactHomeArtistItems(items, helpers), helpers);
+}
+
+function resolveHomeSectionRowClass(layoutRaw, isDiscover, isTrendingSongs, isTopGenres, isChannelSection) {
+    if (isDiscover) {
+        return 'discover-grid';
+    }
+    if (isTrendingSongs) {
+        return 'home-trending-grid';
+    }
+    if (isTopGenres || isChannelSection) {
+        return 'top-genres-grid';
+    }
+    return layoutRaw === 'grid' ? 'home-grid' : 'home-row';
+}
+
+function resolveHomeSectionLimit(section, options) {
+    const hasSectionItems = Array.isArray(section?.items) && section.items.length > 0;
+    const preserveAllItems = section?.__preserveAllItems === true || section?.preserveAllItems === true;
+    if (preserveAllItems && hasSectionItems) {
+        return section.items.length;
+    }
+    if (options.isChannelPage) {
+        return 60;
+    }
+    if (options.isTrendingSongs) {
+        return 20;
+    }
+    return options.maxItemsPerSection;
+}
+
+function filterHomeSectionItems(items, options) {
+    if (options.isDiscover || options.isTopGenres || options.isTrendingSongs) {
+        return items;
+    }
+    return items.filter(item => !options.isGhostHomeItem(item));
+}
+
+function applyPopularRadioPreviewItems(items, options) {
+    if (options.isChannelPage || !options.isPopularRadio || items.length <= options.popularRadioPreviewCount) {
+        return items;
+    }
+    return [
+        ...items.slice(0, options.popularRadioPreviewCount),
+        { __homeAction: 'popular-radio-see-more' }
+    ];
+}
+
+function computeHomeSectionRenderMeta(section, options) {
+    const normalizedTitle = options.normalizeTitle(section?.title);
+    const isTrendingSongs = normalizedTitle === 'trending songs';
+    const isPopularRadio = options.isPopularRadioSection(section);
+    const sectionLimit = resolveHomeSectionLimit(section, {
+        isChannelPage: options.isChannelPage,
+        isTrendingSongs,
+        maxItemsPerSection: options.maxItemsPerSection
+    });
+    const items = Array.isArray(section?.items) ? section.items.slice(0, sectionLimit) : [];
+    const layoutRaw = (section?.layout || '').toString().toLowerCase();
+    const filter = section?.filter || null;
+    const hasFilter = layoutRaw === 'filterable-grid' && Array.isArray(filter?.options) && filter.options.length > 0;
+    const isDiscover = normalizedTitle === 'discover';
+    const isTopGenres = normalizedTitle === 'your top genres' || normalizedTitle === 'categories';
+    const isChannelSection = items.length > 0 && items.every(item => (item?.type || '').toString().toLowerCase() === 'channel');
+    const rowClass = resolveHomeSectionRowClass(layoutRaw, isDiscover, isTrendingSongs, isTopGenres, isChannelSection);
+    const filteredItems = applyPopularRadioPreviewItems(
+        filterHomeSectionItems(items, {
+            isDiscover,
+            isTopGenres,
+            isTrendingSongs,
+            isGhostHomeItem: options.isGhostHomeItem
+        }),
+        {
+            isChannelPage: options.isChannelPage,
+            isPopularRadio,
+            popularRadioPreviewCount: options.popularRadioPreviewCount
+        }
+    );
+    const isSpaceAware = filteredItems.length > 0
+        && filteredItems.length < options.spaceAwareThreshold
+        && rowClass !== 'discover-grid';
+
+    return {
+        normalizedTitle,
+        isTrendingSongs,
+        isPopularRadio,
+        layoutRaw,
+        filter,
+        hasFilter,
+        isDiscover,
+        isTopGenres,
+        rowClass,
+        items,
+        filteredItems,
+        isSpaceAware
+    };
+}
+
+function renderHomeSectionCardItem(item, meta) {
+    if (item?.__homeAction === 'popular-radio-see-more') {
+        return renderPopularRadioSeeMoreCard();
+    }
+    if (!meta.hasFilter) {
+        if (meta.isDiscover) {
+            return renderDiscoveryItem(item);
+        }
+        if (meta.isTopGenres) {
+            return renderTopGenresItem(item);
+        }
+        return renderHomeItem(item);
+    }
+
+    const filterIds = (item?.filter_option_ids || []).map(String);
+    const dataAttr = filterIds.length ? ` data-filter-ids="${filterIds.join(',')}"` : '';
+    let rendered = renderHomeItem(item);
+    if (meta.isDiscover) {
+        rendered = renderDiscoveryItem(item);
+    } else if (meta.isTopGenres) {
+        rendered = renderTopGenresItem(item);
+    }
+    return `<div class="home-filtered-item"${dataAttr}>${rendered}</div>`;
+}
+
+function renderHomeTopGenresCards(meta, isChannelPage) {
+    const maxTopGenresSlots = isChannelPage ? meta.items.length : 14;
+    const baseTopGenresItems = meta.items.slice(0, maxTopGenresSlots);
+    const mergedItems = mergeSpotifyCategories(baseTopGenresItems, maxTopGenresSlots);
+    const sliced = mergedItems.map((item) => renderTopGenresItem(item)).join('');
+    const showMoreCard = isChannelPage
+        ? ''
+        : `<a class="top-genres-card top-genres-card--more" href="/Categories">View all</a>`;
+    return {
+        cards: `${sliced}${showMoreCard}`,
+        deezerItemsAttr: `data-deezer-items="${encodeURIComponent(JSON.stringify(baseTopGenresItems))}"`
+    };
+}
+
+function resolveHomeSectionRowSpaceAwareMin(rowClass) {
+    if (rowClass === 'home-grid') {
+        return 'var(--art-grid-min)';
+    }
+    if (rowClass === 'home-row') {
+        return 'var(--art-card-size)';
+    }
+    return '0px';
+}
+
+function renderHomeSectionEntry(entry, index, isChannelPage) {
+    const section = entry.section;
+    const meta = entry.meta;
+    const filterId = `home-filter-${index}`;
+    const filtersHtml = meta.hasFilter
+        ? `<div class="home-filters" data-filter-group="${filterId}">
+            ${meta.filter.options.map(opt => `<button class="home-filter-btn" data-filter-id="${opt.id}">${escapeHtml(opt.label || opt.id)}</button>`).join('')}
+           </div>`
+        : '';
+    const showMore = !meta.isPopularRadio && section.hasMore && section.pagePath
+        ? `<div class="home-section-more"><button class="action-btn action-btn-sm" onclick="openHomeChannel('${section.pagePath}')">Show more</button></div>`
+        : '';
+    const sectionIdAttr = meta.isTrendingSongs ? ' id="home-trending"' : '';
+    const trendingWatchKey = meta.isTrendingSongs
+        ? cacheHomeTrendingWatchMeta(section, meta.filteredItems)
+        : '';
+    const titleHtml = trendingWatchKey
+        ? `<button type="button" class="home-section-title home-section-title--action" data-home-trending-tracklist="${trendingWatchKey}">${escapeHtml(section.title || '')}</button>`
+        : `<div class="home-section-title">${escapeHtml(section.title || '')}</div>`;
+    const topGenres = meta.isTopGenres ? renderHomeTopGenresCards(meta, isChannelPage) : null;
+    let sectionItemsHtml = meta.filteredItems.map(item => renderHomeSectionCardItem(item, meta)).join('');
+    if (meta.isTopGenres && topGenres) {
+        sectionItemsHtml = topGenres.cards;
+    } else if (meta.isTrendingSongs) {
+        sectionItemsHtml = meta.filteredItems.map(item => renderHomeTrendingSongItem(item)).join('');
+    }
+    const rowClass = meta.isSpaceAware ? `${meta.rowClass} home-space-aware-row` : meta.rowClass;
+    const rowStyle = meta.isSpaceAware
+        ? `style="--home-space-aware-count:${meta.filteredItems.length}; --home-space-aware-min:${resolveHomeSectionRowSpaceAwareMin(meta.rowClass)};"`
+        : '';
+    const deezerItemsAttr = topGenres ? topGenres.deezerItemsAttr : '';
+
+    return `
+        <div class="home-section"${sectionIdAttr}>
+            ${titleHtml}
+            ${filtersHtml}
+            <div class="${rowClass}" ${rowStyle} ${deezerItemsAttr}>
+                ${sectionItemsHtml}
+            </div>
+            ${meta.isTopGenres ? '' : showMore}
+        </div>
+    `;
+}
+
+function filterHomeSectionsForRender(sections, options) {
+    return sections.filter(section => {
+        if (options.isEpisodesYouMightLikeSection(section)) {
+            return false;
+        }
+        if (!options.isRecentlyPlayedSection(section)) {
+            return true;
+        }
+        const itemCount = Array.isArray(section?.items) ? section.items.length : 0;
+        return itemCount >= 4;
+    });
+}
+
+function normalizeHomeCategoriesSection(sections, normalizeTitle) {
+    const categoriesSection = sections.find(section => normalizeTitle(section?.title) === 'categories');
+    const topGenresSection = sections.find(section => normalizeTitle(section?.title) === 'your top genres');
+    if (categoriesSection) {
+        const alias = { ...categoriesSection, title: 'Categories', __aliasTopGenres: true };
+        const trimmed = sections.filter(section => {
+            const normalized = normalizeTitle(section?.title);
+            return normalized !== 'your top genres' && normalized !== 'categories' && section !== categoriesSection;
+        });
+        const insertIndex = sections.findIndex(section => normalizeTitle(section?.title) === 'your top genres');
+        if (insertIndex >= 0 && insertIndex <= trimmed.length) {
+            trimmed.splice(insertIndex, 0, alias);
+        } else {
+            const categoriesIndex = sections.indexOf(categoriesSection);
+            const targetIndex = categoriesIndex >= 0 && categoriesIndex <= trimmed.length ? categoriesIndex : trimmed.length;
+            trimmed.splice(targetIndex, 0, alias);
+        }
+        return trimmed;
+    }
+
+    if (topGenresSection) {
+        topGenresSection.title = 'Categories';
+    }
+    return sections;
+}
+
+function mergeHomeContinuePopularArtistsSections(sections, options) {
+    const continueStreamingIndex = sections.findIndex(section => options.isContinueStreamingSection(section));
+    const popularArtistsIndex = sections.findIndex(section => options.isPopularArtistsSection(section));
+    if (continueStreamingIndex < 0) {
+        return sections;
+    }
+
+    const continueSection = sections[continueStreamingIndex] || {};
+    const continueArtistItems = options.extractArtistItems(continueSection);
+    const hasExplicitPopularArtistsSection = popularArtistsIndex >= 0 && popularArtistsIndex !== continueStreamingIndex;
+    const popularArtistsSection = hasExplicitPopularArtistsSection ? (sections[popularArtistsIndex] || {}) : null;
+    const spotifyArtistItems = hasExplicitPopularArtistsSection
+        ? options.extractArtistItems(popularArtistsSection)
+        : options.collectSpotifyArtistItemsForContinueMerge(sections, new Set([continueStreamingIndex]));
+    if (continueArtistItems.length === 0 && spotifyArtistItems.length === 0) {
+        return sections;
+    }
+
+    const mergedArtistItems = options.dedupeMergedPopularArtistItems([
+        ...continueArtistItems,
+        ...spotifyArtistItems
+    ]);
+    const mergedSectionSource = popularArtistsSection || continueSection;
+    const mergedSection = {
+        ...mergedSectionSource,
+        title: 'Continue Streaming Popular Artists',
+        __preserveAllItems: true,
+        items: mergedArtistItems,
+        hasMore: (popularArtistsSection?.hasMore === true) || (continueSection.hasMore === true),
+        pagePath: (popularArtistsSection?.pagePath || continueSection.pagePath || ''),
+        related: popularArtistsSection?.related || continueSection.related || null,
+        filter: popularArtistsSection?.filter || continueSection.filter || null,
+        layout: popularArtistsSection?.layout || continueSection.layout || 'row'
+    };
+
+    if (!hasExplicitPopularArtistsSection) {
+        const next = sections.slice();
+        next[continueStreamingIndex] = mergedSection;
+        return next;
+    }
+
+    const compactSections = sections.filter((_, index) => index !== continueStreamingIndex && index !== popularArtistsIndex);
+    const mergedInsertIndex = popularArtistsIndex - (continueStreamingIndex < popularArtistsIndex ? 1 : 0);
+    compactSections.splice(Math.max(0, mergedInsertIndex), 0, mergedSection);
+    return compactSections;
+}
+
+function mergeHomeRecommendedNewReleaseSections(sections, options) {
+    const recommendedIndexes = sections
+        .map((section, index) => options.isRecommendedForTodaySection(section) ? index : -1)
+        .filter(index => index >= 0);
+    const newReleaseIndexes = sections
+        .map((section, index) => options.isNewReleasesForYouSection(section) ? index : -1)
+        .filter(index => index >= 0);
+    if (recommendedIndexes.length === 0 || newReleaseIndexes.length === 0) {
+        return sections;
+    }
+
+    const mergeIndexes = new Set([...recommendedIndexes, ...newReleaseIndexes]);
+    const mergeSections = [...mergeIndexes]
+        .sort((left, right) => left - right)
+        .map(index => sections[index])
+        .filter(Boolean);
+    const preferredBaseSection = mergeSections.find(section => options.isSpotifyHomeSection(section))
+        || mergeSections[0]
+        || {};
+    const mergedItems = options.dedupeSectionItems(
+        mergeSections.flatMap(section => Array.isArray(section?.items) ? section.items : [])
+    );
+    const mergedSection = {
+        ...preferredBaseSection,
+        title: 'Recommended new releases for you today',
+        __preserveAllItems: true,
+        items: mergedItems,
+        hasMore: mergeSections.some(section => section?.hasMore === true),
+        pagePath: mergeSections
+            .map(section => (section?.pagePath || '').toString().trim())
+            .find(value => value.length > 0) || '',
+        related: mergeSections.map(section => section?.related).find(Boolean) || null,
+        filter: mergeSections.map(section => section?.filter).find(Boolean) || null,
+        layout: mergeSections
+            .map(section => (section?.layout || '').toString().trim())
+            .find(value => value.length > 0) || 'row'
+    };
+    const compactSections = sections.filter((_, index) => !mergeIndexes.has(index));
+    const popularRadioIndex = compactSections.findIndex(section => options.isPopularRadioSection(section));
+    const fallbackInsertIndex = Math.min(...mergeIndexes);
+    const insertIndex = popularRadioIndex >= 0
+        ? popularRadioIndex + 1
+        : Math.min(fallbackInsertIndex, compactSections.length);
+    compactSections.splice(insertIndex, 0, mergedSection);
+    return compactSections;
+}
+
+function repositionHomeCategoriesAfterRecommended(sections, options) {
+    const recommendedNewReleasesIndex = sections.findIndex(section => options.isRecommendedNewReleasesCombinedSection(section));
+    const categoriesIndex = sections.findIndex(section => options.normalizeTitle(section?.title) === 'categories');
+    if (recommendedNewReleasesIndex < 0 || categoriesIndex < 0) {
+        return sections;
+    }
+
+    const next = sections.slice();
+    const [categoriesSection] = next.splice(categoriesIndex, 1);
+    const refreshedRecommendedIndex = next.findIndex(section => options.isRecommendedNewReleasesCombinedSection(section));
+    const refreshedPopularRadioIndex = next.findIndex(section => options.isPopularRadioSection(section));
+    let insertAfterRecommendedIndex = next.length;
+    if (refreshedRecommendedIndex >= 0) {
+        if (refreshedPopularRadioIndex > refreshedRecommendedIndex) {
+            insertAfterRecommendedIndex = refreshedPopularRadioIndex + 1;
+        } else {
+            insertAfterRecommendedIndex = refreshedRecommendedIndex + 1;
+        }
+    }
+    next.splice(insertAfterRecommendedIndex, 0, categoriesSection);
+    return next;
+}
+
+function preprocessHomeSectionsForRender(sections, options) {
+    let next = filterHomeSectionsForRender(sections, options);
+    if (options.isChannelPage) {
+        return next;
+    }
+
+    next = normalizeHomeCategoriesSection(next, options.normalizeTitle);
+    next = mergeHomeContinuePopularArtistsSections(next, options);
+    next = mergeHomeRecommendedNewReleaseSections(next, options);
+    next = repositionHomeCategoriesAfterRecommended(next, options);
+    return next;
+}
+
+function orderHomeSectionsForRender(sections, options) {
+    if (options.isChannelPage) {
+        return sections;
+    }
+
+    const normalizedSections = sections.slice();
+    const pinned = [];
+    const used = new Set();
+    const pushPinned = (predicate) => {
+        const index = normalizedSections.findIndex((section, sectionIndex) => !used.has(sectionIndex) && predicate(section));
+        if (index >= 0) {
+            used.add(index);
+            pinned.push(normalizedSections[index]);
+        }
+    };
+
+    pushPinned(section => options.isSpotifyHomeSection(section) && options.normalizeSectionTitle(section?.title) === 'trending songs');
+    pushPinned(section => options.isSpotifyHomeSection(section) && options.isMadeForYouSection(section));
+    pushPinned(section => options.normalizeSectionTitle(section?.title) === 'discover');
+    pushPinned(section => options.isPopularRadioSection(section));
+    pushPinned(section => options.isRecommendedNewReleasesCombinedSection(section));
+    pushPinned(section => options.normalizeTitle(section?.title) === 'categories' || options.normalizeTitle(section?.title) === 'your top genres');
+
+    const remaining = normalizedSections.filter((_, index) => !used.has(index));
+    return [...pinned, ...remaining];
+}
+
+function buildHomeSectionsToRender(orderedSections, computeSectionRenderMeta, isSingleCardNewReleaseSection) {
+    return orderedSections
+        .map(section => ({ section, meta: computeSectionRenderMeta(section) }))
+        .filter(entry => {
+            const itemCount = entry.meta.filteredItems.length;
+            if (itemCount >= 4) {
+                return true;
+            }
+            return itemCount >= 1 && isSingleCardNewReleaseSection(entry.meta.normalizedTitle);
+        });
+}
+
 function renderHomeSections(sections) {
     const container = document.getElementById('home-sections');
     if (!sections || sections.length === 0) {
@@ -1157,70 +1631,16 @@ function renderHomeSections(sections) {
 
         return true;
     };
-    const dedupeMergedPopularArtistItems = (items) => {
-        if (!Array.isArray(items) || items.length === 0) {
-            return [];
-        }
-
-        // Pass 1: remove exact duplicates by stable platform identity (source+type+id).
-        const seenExact = new Map();
-        const stableItems = [];
-        for (const item of items) {
-            if (!item || typeof item !== 'object') {
-                continue;
-            }
-
-            const source = getItemSource(item);
-            const type = getItemType(item);
-            const id = getItemId(item);
-            if (source && type && id) {
-                const key = `${source}:${type}:${id}`;
-                if (seenExact.has(key)) {
-                    const existingIndex = seenExact.get(key);
-                    const existingItem = stableItems[existingIndex];
-                    if (isArtistItem(existingItem) && isArtistItem(item)) {
-                        stableItems[existingIndex] = choosePreferredArtistCard(existingItem, item);
-                    }
-                    continue;
-                }
-                seenExact.set(key, stableItems.length);
-            }
-            stableItems.push(item);
-        }
-
-        // Pass 2: collapse same artist shown from different sources by canonical exact name.
-        const firstArtistByName = new Map();
-        const deduped = [];
-        for (const item of stableItems) {
-            if (!isArtistItem(item)) {
-                deduped.push(item);
-                continue;
-            }
-
-            const nameKey = normalizeArtistNameKey(getArtistDisplayName(item));
-            if (!nameKey) {
-                deduped.push(item);
-                continue;
-            }
-
-            if (!firstArtistByName.has(nameKey)) {
-                firstArtistByName.set(nameKey, deduped.length);
-                deduped.push(item);
-                continue;
-            }
-
-            const existingIndex = firstArtistByName.get(nameKey);
-            const existingItem = deduped[existingIndex];
-            if (!isSameCrossSourceArtist(existingItem, item)) {
-                deduped.push(item);
-                continue;
-            }
-
-            deduped[existingIndex] = choosePreferredArtistCard(existingItem, item);
-        }
-
-        return deduped;
-    };
+    const dedupeMergedPopularArtistItems = (items) => dedupeMergedHomePopularArtistItems(items, {
+        getItemSource,
+        getItemType,
+        getItemId,
+        isArtistItem,
+        choosePreferredArtistCard,
+        normalizeArtistNameKey,
+        getArtistDisplayName,
+        isSameCrossSourceArtist
+    });
     const dedupeSectionItems = (items) => {
         if (!Array.isArray(items) || items.length === 0) {
             return [];
@@ -1277,186 +1697,39 @@ function renderHomeSections(sections) {
         if (items.some(item => (item?.uri || '').toString().toLowerCase().startsWith('spotify:'))) return true;
         return false;
     };
-    sections = sections.filter(section => {
-        if (isEpisodesYouMightLikeSection(section)) {
-            return false;
-        }
-        if (!isRecentlyPlayedSection(section)) {
-            return true;
-        }
-        const itemCount = Array.isArray(section?.items) ? section.items.length : 0;
-        return itemCount >= 4;
+    sections = preprocessHomeSectionsForRender(sections, {
+        isChannelPage,
+        normalizeTitle,
+        isContinueStreamingSection,
+        isPopularArtistsSection,
+        extractArtistItems,
+        collectSpotifyArtistItemsForContinueMerge,
+        dedupeMergedPopularArtistItems,
+        isRecommendedForTodaySection,
+        isNewReleasesForYouSection,
+        isSpotifyHomeSection,
+        dedupeSectionItems,
+        isRecommendedNewReleasesCombinedSection,
+        isPopularRadioSection,
+        isEpisodesYouMightLikeSection,
+        isRecentlyPlayedSection
     });
-    if (!isChannelPage) {
-        const categoriesSection = sections.find(section => normalizeTitle(section?.title) === 'categories');
-        const topGenresSection = sections.find(section => normalizeTitle(section?.title) === 'your top genres');
-        if (categoriesSection) {
-            const alias = { ...categoriesSection, title: 'Categories', __aliasTopGenres: true };
-            const trimmed = sections.filter(section => {
-                const normalized = normalizeTitle(section?.title);
-                return normalized !== 'your top genres' && normalized !== 'categories' && section !== categoriesSection;
-            });
-            const insertIndex = sections.findIndex(section => normalizeTitle(section?.title) === 'your top genres');
-            if (insertIndex >= 0 && insertIndex <= trimmed.length) {
-                trimmed.splice(insertIndex, 0, alias);
-            } else {
-                const categoriesIndex = sections.indexOf(categoriesSection);
-                const targetIndex = categoriesIndex >= 0 && categoriesIndex <= trimmed.length ? categoriesIndex : trimmed.length;
-                trimmed.splice(targetIndex, 0, alias);
-            }
-            sections = trimmed;
-        } else if (topGenresSection) {
-            topGenresSection.title = 'Categories';
-        }
-
-        const continueStreamingIndex = sections.findIndex(section => isContinueStreamingSection(section));
-        const popularArtistsIndex = sections.findIndex(section => isPopularArtistsSection(section));
-        if (continueStreamingIndex >= 0) {
-            const continueSection = sections[continueStreamingIndex] || {};
-            const continueArtistItems = extractArtistItems(continueSection);
-            const hasExplicitPopularArtistsSection = popularArtistsIndex >= 0 && popularArtistsIndex !== continueStreamingIndex;
-            const popularArtistsSection = hasExplicitPopularArtistsSection
-                ? (sections[popularArtistsIndex] || {})
-                : null;
-            const spotifyArtistFallbackItems = hasExplicitPopularArtistsSection
-                ? []
-                : collectSpotifyArtistItemsForContinueMerge(sections, new Set([continueStreamingIndex]));
-            const spotifyArtistItems = hasExplicitPopularArtistsSection
-                ? extractArtistItems(popularArtistsSection)
-                : spotifyArtistFallbackItems;
-
-            if (continueArtistItems.length > 0 || spotifyArtistItems.length > 0) {
-                const mergedArtistItems = dedupeMergedPopularArtistItems([
-                    ...continueArtistItems,
-                    ...spotifyArtistItems
-                ]);
-                const mergedSectionSource = popularArtistsSection || continueSection;
-                const mergedSection = {
-                    ...mergedSectionSource,
-                    title: 'Continue Streaming Popular Artists',
-                    __preserveAllItems: true,
-                    items: mergedArtistItems,
-                    hasMore: (popularArtistsSection?.hasMore === true) || (continueSection.hasMore === true),
-                    pagePath: (popularArtistsSection?.pagePath || continueSection.pagePath || ''),
-                    related: popularArtistsSection?.related || continueSection.related || null,
-                    filter: popularArtistsSection?.filter || continueSection.filter || null,
-                    layout: popularArtistsSection?.layout || continueSection.layout || 'row'
-                };
-
-                if (hasExplicitPopularArtistsSection) {
-                    const compactSections = sections.filter((_, index) => index !== continueStreamingIndex && index !== popularArtistsIndex);
-                    const mergedInsertIndex = popularArtistsIndex - (continueStreamingIndex < popularArtistsIndex ? 1 : 0);
-                    compactSections.splice(Math.max(0, mergedInsertIndex), 0, mergedSection);
-                    sections = compactSections;
-                } else {
-                    sections[continueStreamingIndex] = mergedSection;
-                }
-            }
-        }
-
-        const recommendedIndexes = sections
-            .map((section, index) => isRecommendedForTodaySection(section) ? index : -1)
-            .filter(index => index >= 0);
-        const newReleaseIndexes = sections
-            .map((section, index) => isNewReleasesForYouSection(section) ? index : -1)
-            .filter(index => index >= 0);
-        if (recommendedIndexes.length > 0 && newReleaseIndexes.length > 0) {
-            const mergeIndexes = new Set([...recommendedIndexes, ...newReleaseIndexes]);
-            const mergeSections = [...mergeIndexes]
-                .sort((left, right) => left - right)
-                .map(index => sections[index])
-                .filter(Boolean);
-            const preferredBaseSection = mergeSections.find(section => isSpotifyHomeSection(section))
-                || mergeSections[0]
-                || {};
-            const mergedItems = dedupeSectionItems(
-                mergeSections.flatMap(section => Array.isArray(section?.items) ? section.items : [])
-            );
-            const mergedSection = {
-                ...preferredBaseSection,
-                title: 'Recommended new releases for you today',
-                __preserveAllItems: true,
-                items: mergedItems,
-                hasMore: mergeSections.some(section => section?.hasMore === true),
-                pagePath: mergeSections
-                    .map(section => (section?.pagePath || '').toString().trim())
-                    .find(value => value.length > 0) || '',
-                related: mergeSections.map(section => section?.related).find(Boolean) || null,
-                filter: mergeSections.map(section => section?.filter).find(Boolean) || null,
-                layout: mergeSections
-                    .map(section => (section?.layout || '').toString().trim())
-                    .find(value => value.length > 0) || 'row'
-            };
-            const compactSections = sections.filter((_, index) => !mergeIndexes.has(index));
-            const popularRadioIndex = compactSections.findIndex(section => isPopularRadioSection(section));
-            const fallbackInsertIndex = Math.min(...mergeIndexes);
-            const insertIndex = popularRadioIndex >= 0
-                ? popularRadioIndex + 1
-                : Math.min(fallbackInsertIndex, compactSections.length);
-            compactSections.splice(insertIndex, 0, mergedSection);
-            sections = compactSections;
-        }
-
-        const recommendedNewReleasesIndex = sections.findIndex(
-            section => isRecommendedNewReleasesCombinedSection(section)
-        );
-        const categoriesIndex = sections.findIndex(
-            section => normalizeTitle(section?.title) === 'categories'
-        );
-        if (recommendedNewReleasesIndex >= 0 && categoriesIndex >= 0) {
-            const [categoriesSection] = sections.splice(categoriesIndex, 1);
-            const refreshedRecommendedIndex = sections.findIndex(
-                section => isRecommendedNewReleasesCombinedSection(section)
-            );
-            const refreshedPopularRadioIndex = sections.findIndex(
-                section => isPopularRadioSection(section)
-            );
-            let insertAfterRecommendedIndex = sections.length;
-            if (refreshedRecommendedIndex >= 0) {
-                if (refreshedPopularRadioIndex > refreshedRecommendedIndex) {
-                    insertAfterRecommendedIndex = refreshedPopularRadioIndex + 1;
-                } else {
-                    insertAfterRecommendedIndex = refreshedRecommendedIndex + 1;
-                }
-            }
-            sections.splice(insertAfterRecommendedIndex, 0, categoriesSection);
-        }
-    }
 
     if (!sections.length) {
         container.innerHTML = '<div class="empty-section">No home sections available</div>';
         return;
     }
 
-    const orderedSections = (() => {
-        if (isChannelPage) {
-            return sections;
-        }
-        const normalizedSections = sections.slice();
-        const pinned = [];
-        const used = new Set();
+    const orderedSections = orderHomeSectionsForRender(sections, {
+        isChannelPage,
+        isSpotifyHomeSection,
+        normalizeSectionTitle,
+        isMadeForYouSection,
+        isPopularRadioSection,
+        isRecommendedNewReleasesCombinedSection,
+        normalizeTitle
+    });
 
-        const pushPinned = (predicate) => {
-            const index = normalizedSections.findIndex((section, sectionIndex) => !used.has(sectionIndex) && predicate(section));
-            if (index >= 0) {
-                used.add(index);
-                pinned.push(normalizedSections[index]);
-            }
-        };
-
-        // Explicit homepage pin order requested by product design.
-        pushPinned(section => isSpotifyHomeSection(section) && normalizeSectionTitle(section?.title) === 'trending songs');
-        pushPinned(section => isSpotifyHomeSection(section) && isMadeForYouSection(section));
-        pushPinned(section => normalizeSectionTitle(section?.title) === 'discover');
-        pushPinned(section => isPopularRadioSection(section));
-        pushPinned(section => isRecommendedNewReleasesCombinedSection(section));
-        pushPinned(section => normalizeTitle(section?.title) === 'categories' || normalizeTitle(section?.title) === 'your top genres');
-
-        const remaining = normalizedSections.filter((_, index) => !used.has(index));
-        return [...pinned, ...remaining];
-    })();
-
-    const minItemsToRenderSection = 4;
     const spaceAwareThreshold = 8;
     const isSingleCardNewReleaseSection = (normalizedTitle) => {
         if (!normalizedTitle) {
@@ -1468,75 +1741,21 @@ function renderHomeSections(sections) {
             || normalizedTitle.includes('novedad');
     };
 
-    const computeSectionRenderMeta = (section) => {
-        const normalizedTitle = normalizeTitle(section?.title);
-        const isTrendingSongs = normalizedTitle === 'trending songs';
-        const isPopularRadio = isPopularRadioSection(section);
-        const preserveAllItems = section?.__preserveAllItems === true || section?.preserveAllItems === true;
-        const hasSectionItems = Array.isArray(section?.items) && section.items.length > 0;
-        let sectionLimit = maxItemsPerSection;
-        if (preserveAllItems && hasSectionItems) {
-            sectionLimit = section.items.length;
-        } else if (isChannelPage) {
-            sectionLimit = 60;
-        } else if (isTrendingSongs) {
-            sectionLimit = 20;
-        }
-        const items = Array.isArray(section?.items) ? section.items.slice(0, sectionLimit) : [];
-        const layoutRaw = (section?.layout || '').toString().toLowerCase();
-        const filter = section?.filter || null;
-        const hasFilter = layoutRaw === 'filterable-grid' && Array.isArray(filter?.options) && filter.options.length > 0;
-        const isDiscover = normalizedTitle === 'discover';
-        const isTopGenres = normalizedTitle === 'your top genres' || normalizedTitle === 'categories';
-        const isChannelSection = items.length > 0 && items.every(item => (item?.type || '').toString().toLowerCase() === 'channel');
-        const layoutClass = layoutRaw === 'grid' ? 'home-grid' : 'home-row';
-        let rowClass = layoutClass;
-        if (isDiscover) {
-            rowClass = 'discover-grid';
-        } else if (isTrendingSongs) {
-            rowClass = 'home-trending-grid';
-        } else if (isTopGenres || isChannelSection) {
-            rowClass = 'top-genres-grid';
-        }
-        let filteredItems = items;
-        if (!isDiscover && !isTopGenres && !isTrendingSongs) {
-            filteredItems = items.filter(item => !isGhostHomeItem(item));
-        }
-        if (!isChannelPage && isPopularRadio && filteredItems.length > popularRadioPreviewCount) {
-            filteredItems = [
-                ...filteredItems.slice(0, popularRadioPreviewCount),
-                { __homeAction: 'popular-radio-see-more' }
-            ];
-        }
-        const isSpaceAware = filteredItems.length > 0
-            && filteredItems.length < spaceAwareThreshold
-            && rowClass !== 'discover-grid';
+    const computeSectionRenderMeta = (section) => computeHomeSectionRenderMeta(section, {
+        normalizeTitle,
+        isPopularRadioSection,
+        isGhostHomeItem,
+        isChannelPage,
+        maxItemsPerSection,
+        popularRadioPreviewCount,
+        spaceAwareThreshold
+    });
 
-        return {
-            normalizedTitle,
-            isTrendingSongs,
-            isPopularRadio,
-            layoutRaw,
-            filter,
-            hasFilter,
-            isDiscover,
-            isTopGenres,
-            rowClass,
-            items,
-            filteredItems,
-            isSpaceAware
-        };
-    };
-
-    const sectionsToRender = orderedSections
-        .map(section => ({ section, meta: computeSectionRenderMeta(section) }))
-        .filter(entry => {
-            const itemCount = entry.meta.filteredItems.length;
-            if (itemCount >= minItemsToRenderSection) {
-                return true;
-            }
-            return itemCount >= 1 && isSingleCardNewReleaseSection(entry.meta.normalizedTitle);
-        });
+    const sectionsToRender = buildHomeSectionsToRender(
+        orderedSections,
+        computeSectionRenderMeta,
+        isSingleCardNewReleaseSection
+    );
 
     if (!sectionsToRender.length) {
         container.innerHTML = '<div class="empty-section">No home sections available</div>';
@@ -1544,89 +1763,9 @@ function renderHomeSections(sections) {
     }
 
     homeTrendingWatchMetaCache.clear();
-    container.innerHTML = sectionsToRender.map((entry, index) => {
-        const section = entry.section;
-        const meta = entry.meta;
-        const filterId = `home-filter-${index}`;
-        const filtersHtml = meta.hasFilter
-            ? `<div class="home-filters" data-filter-group="${filterId}">
-                ${meta.filter.options.map(opt => `<button class="home-filter-btn" data-filter-id="${opt.id}">${escapeHtml(opt.label || opt.id)}</button>`).join('')}
-               </div>`
-            : '';
-        const showMore = !meta.isPopularRadio && section.hasMore && section.pagePath
-            ? `<div class="home-section-more"><button class="action-btn action-btn-sm" onclick="openHomeChannel('${section.pagePath}')">Show more</button></div>`
-            : '';
-        const maxTopGenresSlots = isChannelPage ? meta.items.length : 14;
-        const baseTopGenresItems = meta.isTopGenres ? meta.items.slice(0, maxTopGenresSlots) : [];
-        const topGenresCards = meta.isTopGenres
-            ? (() => {
-                const mergedItems = mergeSpotifyCategories(baseTopGenresItems, maxTopGenresSlots);
-                const sliced = mergedItems.map((item) => renderTopGenresItem(item)).join('');
-                let showMoreCard = '';
-                if (isChannelPage) {
-                    showMoreCard = '';
-                } else {
-                    showMoreCard = `<a class="top-genres-card top-genres-card--more" href="/Categories">View all</a>`;
-                }
-                return `${sliced}${showMoreCard}`;
-            })()
-            : '';
-        const sectionIdAttr = meta.isTrendingSongs ? ' id="home-trending"' : '';
-        const trendingWatchKey = meta.isTrendingSongs
-            ? cacheHomeTrendingWatchMeta(section, meta.filteredItems)
-            : '';
-        const titleHtml = trendingWatchKey
-            ? `<button type="button" class="home-section-title home-section-title--action" data-home-trending-tracklist="${trendingWatchKey}">${escapeHtml(section.title || '')}</button>`
-            : `<div class="home-section-title">${escapeHtml(section.title || '')}</div>`;
-        const renderSectionCardItem = (item) => {
-            if (item?.__homeAction === 'popular-radio-see-more') {
-                return renderPopularRadioSeeMoreCard();
-            }
-            if (!meta.hasFilter) {
-                if (meta.isDiscover) {
-                    return renderDiscoveryItem(item);
-                }
-                if (meta.isTopGenres) {
-                    return renderTopGenresItem(item);
-                }
-                return renderHomeItem(item);
-            }
-            const filterIds = (item?.filter_option_ids || []).map(String);
-            const dataAttr = filterIds.length ? ` data-filter-ids="${filterIds.join(',')}"` : '';
-            let rendered = renderHomeItem(item);
-            if (meta.isDiscover) {
-                rendered = renderDiscoveryItem(item);
-            } else if (meta.isTopGenres) {
-                rendered = renderTopGenresItem(item);
-            }
-            return `<div class="home-filtered-item"${dataAttr}>${rendered}</div>`;
-        };
-        const sectionItemsHtml = meta.isTopGenres
-            ? topGenresCards
-            : (meta.isTrendingSongs
-                ? meta.filteredItems.map(item => renderHomeTrendingSongItem(item)).join('')
-                : meta.filteredItems.map(item => renderSectionCardItem(item)).join(''));
-        const rowClass = meta.isSpaceAware ? `${meta.rowClass} home-space-aware-row` : meta.rowClass;
-        let rowSpaceAwareMin = '0px';
-        if (meta.rowClass === 'home-grid') {
-            rowSpaceAwareMin = 'var(--art-grid-min)';
-        } else if (meta.rowClass === 'home-row') {
-            rowSpaceAwareMin = 'var(--art-card-size)';
-        }
-        const rowStyle = meta.isSpaceAware
-            ? `style="--home-space-aware-count:${meta.filteredItems.length}; --home-space-aware-min:${rowSpaceAwareMin};"`
-            : '';
-        return `
-            <div class="home-section"${sectionIdAttr}>
-                ${titleHtml}
-                ${filtersHtml}
-                <div class="${rowClass}" ${rowStyle} ${meta.isTopGenres ? `data-deezer-items="${encodeURIComponent(JSON.stringify(baseTopGenresItems))}"` : ''}>
-                    ${sectionItemsHtml}
-                </div>
-                ${meta.isTopGenres ? '' : showMore}
-            </div>
-        `;
-    }).join('');
+    container.innerHTML = sectionsToRender
+        .map((entry, index) => renderHomeSectionEntry(entry, index, isChannelPage))
+        .join('');
 
     setupHomeFilters(sectionsToRender.map(entry => entry.section));
     scheduleHomeTrendingTrackMappingWarmup();
@@ -1900,7 +2039,7 @@ function normalizeHomeSubtitle(item, subtitleValue) {
     }
 
     subtitle = subtitle.replaceAll(/\bfollowers?\b/gi, 'fans');
-    subtitle = subtitle.replaceAll(/(\d[\d\s,._-]*)\s*(tracks?|songs?|fans?|followers?)/gi, (_, numberPart, labelPart) => {
+    subtitle = subtitle.replaceAll(/(\d[\d\s,._-]{0,64})\s*(tracks?|songs?|fans?|followers?)/gi, (_, numberPart, labelPart) => {
         const formatted = formatHomeStatNumber(numberPart);
         const label = normalizeHomeStatLabel(labelPart);
         if (!formatted) {
@@ -1963,20 +2102,33 @@ function isGhostHomeItem(item) {
     return !hasRoutingTarget;
 }
 
-function renderHomeItem(item) {
-    if (!item) {
-        return '';
+function getHomeItemType(item) {
+    return (item?.type || '').toString().toLowerCase();
+}
+
+function registerHomeSpotifyCard(item) {
+    const isSpotifyItem = (item?.source || '').toString().toLowerCase() === 'spotify';
+    if (!isSpotifyItem) {
+        return {
+            isSpotifyItem: false,
+            spotifyAttr: '',
+            clickAttr: ` onclick="${buildHomeClick(item)}"`
+        };
     }
-    const isSpotifyItem = (item.source || '').toString().toLowerCase() === 'spotify';
-    let spotifyItemKey = '';
-    if (isSpotifyItem) {
-        spotifyItemKey = `spotify-item-${spotifyHomeItemSeq++}`;
-        spotifyHomeItemCache.set(spotifyItemKey, item);
-    }
+
+    const spotifyItemKey = `spotify-item-${spotifyHomeItemSeq++}`;
+    spotifyHomeItemCache.set(spotifyItemKey, item);
+    return {
+        isSpotifyItem: true,
+        spotifyAttr: ` data-spotify-item="${spotifyItemKey}"`,
+        clickAttr: ''
+    };
+}
+
+function resolveHomeItemImage(item, thumbSize) {
     const imageType = item.picture_type || item.pictureType || item.imageType || 'cover';
-    const thumbSize = item.type === 'artist' || item.type === 'channel' ? 140 : 250;
     const imageHash = item.md5_image || item.md5 || item.imageHash || item.PLAYLIST_PICTURE || item.playlistPicture || item.cover?.md5 || item.cover?.MD5 || item.background_image?.md5;
-    const image = upgradeSpotifyImageUrl(extractFirstUrl(
+    return upgradeSpotifyImageUrl(extractFirstUrl(
         item.image?.fullUrl
         || item.image?.full
         || item.image?.url
@@ -1992,86 +2144,113 @@ function renderHomeItem(item) {
         || buildDeezerImageUrl(imageHash, imageType)
         || ''
     ));
-    const logoHash = item.logo || item.logo_image?.md5 || item.logo_image?.MD5;
-    const logoImage = logoHash ? buildDeezerLogoUrlWithSize(logoHash, 'misc', 52, 100) : '';
-    const titleRaw = (item.title || item.name || '').toString().trim();
-    if (!titleRaw) {
+}
+
+function resolveHomeFallbackIcon(itemType) {
+    if (itemType === 'artist') {
+        return '👤';
+    }
+    if (itemType === 'playlist') {
+        return '🎵';
+    }
+    if (itemType === 'album') {
+        return '💿';
+    }
+    return '✨';
+}
+
+function buildHomePlaylistBadges(item, subtitleRaw) {
+    if (getHomeItemType(item) !== 'playlist') {
+        return [];
+    }
+
+    const playlistTracks = item.nb_tracks ?? item.trackCount ?? item.track_count;
+    const playlistFans = item.fans ?? item.followers;
+    const subtitleHasCounts = /track|fan/i.test(subtitleRaw);
+    const parsedPlaylistTracks = toHomeStatNumber(playlistTracks);
+    const parsedPlaylistFans = toHomeStatNumber(playlistFans);
+    const playlistFlags = [];
+    if (typeof item.public === 'boolean') {
+        playlistFlags.push({
+            label: item.public ? 'Public' : 'Private',
+            className: item.public ? 'playlist-badge--public' : 'playlist-badge--private'
+        });
+    }
+    if (item.collaborative === true) {
+        playlistFlags.push({
+            label: 'Collaborative',
+            className: 'playlist-badge--collab'
+        });
+    }
+
+    if (subtitleHasCounts) {
+        return playlistFlags;
+    }
+
+    const statBadges = [
+        parsedPlaylistTracks === null ? null : { label: `${formatHomeStatNumber(parsedPlaylistTracks)} tracks` },
+        parsedPlaylistFans === null ? null : { label: `${formatHomeStatNumber(parsedPlaylistFans)} fans` }
+    ].filter(Boolean);
+    return [...statBadges, ...playlistFlags];
+}
+
+function renderHomePlaylistBadgesMarkup(badges) {
+    if (!Array.isArray(badges) || badges.length === 0) {
         return '';
     }
-    const title = escapeHtml(titleRaw);
-    const subtitleRaw = normalizeHomeSubtitle(item, item.subtitle || '');
-    let subtitle = escapeHtml(subtitleRaw);
-    let badges = [];
-    if (item.type === 'playlist') {
-        const playlistTracks = item.nb_tracks ?? item.trackCount ?? item.track_count;
-        const playlistFans = item.fans ?? item.followers;
-        const subtitleHasCounts = /track|fan/i.test(subtitleRaw);
-        const parsedPlaylistTracks = toHomeStatNumber(playlistTracks);
-        const parsedPlaylistFans = toHomeStatNumber(playlistFans);
-        const playlistFlags = [];
-        if (typeof item.public === 'boolean') {
-            playlistFlags.push({
-                label: item.public ? 'Public' : 'Private',
-                className: item.public ? 'playlist-badge--public' : 'playlist-badge--private'
-            });
-        }
-        if (item.collaborative === true) {
-            playlistFlags.push({
-                label: 'Collaborative',
-                className: 'playlist-badge--collab'
-            });
-        }
-        let statBadges = [];
-        if (!subtitleHasCounts) {
-            statBadges = [
-                parsedPlaylistTracks !== null ? { label: `${formatHomeStatNumber(parsedPlaylistTracks)} tracks` } : null,
-                parsedPlaylistFans !== null ? { label: `${formatHomeStatNumber(parsedPlaylistFans)} fans` } : null
-            ].filter(Boolean);
-        }
-        badges = [...statBadges, ...playlistFlags];
-    }
-    let fallbackIcon = '✨';
-    if (item.type === 'artist') {
-        fallbackIcon = '👤';
-    } else if (item.type === 'playlist') {
-        fallbackIcon = '🎵';
-    } else if (item.type === 'album') {
-        fallbackIcon = '💿';
-    }
-    const click = buildHomeClick(item);
 
-    const needsSquare = item.type === 'artist' || item.type === 'channel';
+    const badgeItems = badges.map(badge => {
+        const label = escapeHtml(badge.label || '');
+        const className = badge.className ? ` ${badge.className}` : '';
+        return `<span class="playlist-badge${className}">${label}</span>`;
+    }).join('');
+    return `<div class="playlist-badges">${badgeItems}</div>`;
+}
+
+function renderHomeChannelCard(item, title, image, fallbackIcon, spotifyAttr, clickAttr) {
+    const artStyle = image ? `style="background-image: url('${image}');"` : '';
+    return `
+        <div class="channel-card"${spotifyAttr}${clickAttr}>
+            <div class="channel-card-title">${title}</div>
+            <div class="channel-card-art" ${artStyle}>${image ? '' : fallbackIcon}</div>
+        </div>
+    `;
+}
+
+function renderHomeShowCard(title, image, fallbackIcon, spotifyAttr, clickAttr) {
+    const artStyle = image ? `style="background-image: url('${image}');"` : '';
+    return `
+        <div class="show-card"${spotifyAttr}${clickAttr}>
+            <div class="show-art" ${artStyle}>${image ? '' : fallbackIcon}</div>
+            <div class="show-title">${title}</div>
+        </div>
+    `;
+}
+
+function renderHomeDefaultCard(card) {
+    const {
+        item,
+        title,
+        subtitle,
+        badges,
+        image,
+        logoImage,
+        fallbackIcon,
+        spotifyAttr,
+        clickAttr
+    } = card;
+    const itemType = getHomeItemType(item);
+    const needsSquare = itemType === 'artist' || itemType === 'channel';
     const imageClass = needsSquare ? 'playlist-image square-art' : 'playlist-image';
-    const cardClass = `playlist-card${item.type === 'playlist' ? ' playlist-card--playlist' : ''}`;
+    const cardClass = `playlist-card${itemType === 'playlist' ? ' playlist-card--playlist' : ''}`;
     const channelBg = item.background_color ? `background-color: ${item.background_color};` : '';
     const channelBgStyle = channelBg ? `style="${channelBg}"` : '';
     const imageStyle = `style="${channelBg}background-image: url('${image}'); background-size: cover; background-position: center;"`;
-    const spotifyAttr = isSpotifyItem ? ` data-spotify-item="${spotifyItemKey}"` : '';
-    const clickAttr = isSpotifyItem ? '' : ` onclick="${click}"`;
     let logoMarkup = '';
     if (logoImage) {
         logoMarkup = `<img class="channel-logo" src="${logoImage}" alt="">`;
     } else if (!image) {
         logoMarkup = fallbackIcon;
-    }
-
-    if (item.type === 'channel') {
-        const artStyle = image ? `style="background-image: url('${image}');"` : '';
-        return `
-            <div class="channel-card"${spotifyAttr}${clickAttr}>
-                <div class="channel-card-title">${title}</div>
-                <div class="channel-card-art" ${artStyle}>${!image ? fallbackIcon : ''}</div>
-            </div>
-        `;
-    }
-    if (item.type === 'show') {
-        const artStyle = image ? `style="background-image: url('${image}');"` : '';
-        return `
-            <div class="show-card"${spotifyAttr}${clickAttr}>
-                <div class="show-art" ${artStyle}>${!image ? fallbackIcon : ''}</div>
-                <div class="show-title">${title}</div>
-            </div>
-        `;
     }
 
     return `
@@ -2081,36 +2260,75 @@ function renderHomeItem(item) {
             </div>
             <div class="playlist-title"><span class="home-marquee">${title}</span></div>
             ${subtitle ? `<div class="playlist-meta"><span class="home-marquee">${subtitle}</span></div>` : ''}
-            ${badges.length ? `<div class="playlist-badges">${badges.map(badge => {
-                const label = escapeHtml(badge.label || '');
-                const className = badge.className ? ` ${badge.className}` : '';
-                return `<span class="playlist-badge${className}">${label}</span>`;
-            }).join('')}</div>` : ''}
+            ${renderHomePlaylistBadgesMarkup(badges)}
         </div>
     `;
 }
 
-function renderHomeTrendingSongItem(item) {
+function renderHomeItem(item) {
     if (!item) {
         return '';
     }
 
-    const isSpotifyItem = (item.source || '').toString().toLowerCase() === 'spotify';
-    let spotifyAttr = '';
-    let clickAttr = '';
-    let clickableAttr = '';
+    const itemType = getHomeItemType(item);
+    const { spotifyAttr, clickAttr } = registerHomeSpotifyCard(item);
+    const thumbSize = itemType === 'artist' || itemType === 'channel' ? 140 : 250;
+    const image = resolveHomeItemImage(item, thumbSize);
+    const logoHash = item.logo || item.logo_image?.md5 || item.logo_image?.MD5;
+    const logoImage = logoHash ? buildDeezerLogoUrlWithSize(logoHash, 'misc', 52, 100) : '';
+    const titleRaw = (item.title || item.name || '').toString().trim();
+    if (!titleRaw) {
+        return '';
+    }
+    const title = escapeHtml(titleRaw);
+    const subtitleRaw = normalizeHomeSubtitle(item, item.subtitle || '');
+    const subtitle = escapeHtml(subtitleRaw);
+    const badges = buildHomePlaylistBadges(item, subtitleRaw);
+    const fallbackIcon = resolveHomeFallbackIcon(itemType);
+
+    if (itemType === 'channel') {
+        return renderHomeChannelCard(item, title, image, fallbackIcon, spotifyAttr, clickAttr);
+    }
+    if (itemType === 'show') {
+        return renderHomeShowCard(title, image, fallbackIcon, spotifyAttr, clickAttr);
+    }
+
+    return renderHomeDefaultCard({
+        item,
+        title,
+        subtitle,
+        badges,
+        image,
+        logoImage,
+        fallbackIcon,
+        spotifyAttr,
+        clickAttr
+    });
+}
+
+function buildHomeTrendingCardInteractivity(item) {
+    const isSpotifyItem = (item?.source || '').toString().toLowerCase() === 'spotify';
     if (isSpotifyItem) {
         const spotifyItemKey = `spotify-item-${spotifyHomeItemSeq++}`;
         spotifyHomeItemCache.set(spotifyItemKey, item);
-        spotifyAttr = ` data-spotify-item="${spotifyItemKey}"`;
-    } else {
-        clickAttr = ` onclick="${buildHomeClick(item)}"`;
-        clickableAttr = ' data-home-clickable="true"';
+        return {
+            spotifyAttr: ` data-spotify-item="${spotifyItemKey}"`,
+            clickAttr: '',
+            clickableAttr: ''
+        };
     }
 
+    return {
+        spotifyAttr: '',
+        clickAttr: ` onclick="${buildHomeClick(item)}"`,
+        clickableAttr: ' data-home-clickable="true"'
+    };
+}
+
+function resolveHomeTrendingCover(item) {
     const imageType = item.picture_type || item.pictureType || item.imageType || 'cover';
     const imageHash = item.md5_image || item.md5 || item.imageHash || item.cover?.md5 || item.cover?.MD5;
-    const cover = upgradeSpotifyImageUrl(extractFirstUrl(
+    return upgradeSpotifyImageUrl(extractFirstUrl(
         extractSpotifyCoverUrl(item)
         || item.image?.fullUrl
         || item.image?.full
@@ -2127,33 +2345,34 @@ function renderHomeTrendingSongItem(item) {
         || buildDeezerImageUrl(imageHash, imageType)
         || ''
     ));
+}
 
-    const titleRaw = (item.name || item.title || '').toString().trim();
-    const title = escapeHtml(titleRaw || 'Untitled');
-    const subtitle = escapeHtml(buildHomeTrendingSubtitle(item));
-    const altText = escapeHtml(titleRaw || 'track');
-    const itemSource = (item.source || '').toString().toLowerCase();
-    const itemType = (item.type || '').toString().toLowerCase();
-    const itemTarget = (item.target || '').toString();
-    const targetTrackMatch = itemTarget.match(/\/track\/(\d+)/i);
-    let deezerTrackId = '';
+function resolveHomeTrendingDeezerTrackId(item, itemSource, itemType) {
     if (itemSource === 'deezer' && itemType === 'track' && item.id) {
-        deezerTrackId = String(item.id);
-    } else if (targetTrackMatch) {
-        deezerTrackId = targetTrackMatch[1];
+        return String(item.id);
     }
-    const previewUrl = (item.preview_url || item.previewUrl || item.preview || '').toString().trim();
-    let spotifyTrackUrl = '';
-    if (itemSource === 'spotify') {
-        spotifyTrackUrl = buildSpotifyWebUrl(item.uri || item.url || item.sourceUrl || '');
-        if (!spotifyTrackUrl && itemType === 'track' && item.id) {
-            spotifyTrackUrl = `https://open.spotify.com/track/${encodeURIComponent(String(item.id))}`;
-        }
+
+    const itemTarget = (item?.target || '').toString();
+    const targetTrackMatch = itemTarget.match(/\/track\/(\d+)/i);
+    return targetTrackMatch ? targetTrackMatch[1] : '';
+}
+
+function resolveHomeTrendingSpotifyTrackUrl(item, itemSource, itemType) {
+    if (itemSource !== 'spotify') {
+        return '';
     }
-    const canPlay = Boolean(deezerTrackId || spotifyTrackUrl || previewUrl);
-    const coverMarkup = cover
-        ? `<img src="${escapeHtml(cover)}" alt="${altText}" loading="lazy" decoding="async" />`
-        : '<div class="home-top-song-item__placeholder"></div>';
+
+    const existing = buildSpotifyWebUrl(item.uri || item.url || item.sourceUrl || '');
+    if (existing) {
+        return existing;
+    }
+    if (itemType === 'track' && item.id) {
+        return `https://open.spotify.com/track/${encodeURIComponent(String(item.id))}`;
+    }
+    return '';
+}
+
+function buildHomeTrendingPlayAttributes(item, deezerTrackId, spotifyTrackUrl, previewUrl) {
     const deezerPlaybackContext = normalizeHomeDeezerPlaybackContext({
         streamTrackId: item.stream_track_id || item.streamTrackId || '',
         trackToken: item.track_token || item.trackToken || '',
@@ -2161,6 +2380,7 @@ function renderHomeTrendingSongItem(item) {
         mv: item.media_version || item.mediaVersion || item.mv || ''
     });
     const playAttrs = [];
+
     if (deezerTrackId) {
         playAttrs.push(`data-deezer-id="${escapeHtml(deezerTrackId)}"`);
         if (deezerPlaybackContext) {
@@ -2182,12 +2402,17 @@ function renderHomeTrendingSongItem(item) {
     if (previewUrl) {
         playAttrs.push(`data-preview-url="${escapeHtml(previewUrl)}"`);
     }
-    const thumbClickAttrs = canPlay
-        ? `data-home-play-thumb="true" ${playAttrs.join(' ')} onclick="event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); playHomeTrendingTrackInApp(this); return false;"`
-        : '';
-    const playButton = canPlay
-        ? `
-        <button class="home-top-song-item__play" type="button" ${playAttrs.join(' ')} aria-label="Play ${altText} preview" onclick="event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); playHomeTrendingTrackInApp(this); return false;">
+
+    return playAttrs;
+}
+
+function buildHomeTrendingPlayButton(canPlay, playAttributes, altText) {
+    if (!canPlay) {
+        return '';
+    }
+
+    return `
+        <button class="home-top-song-item__play" type="button" ${playAttributes.join(' ')} aria-label="Play ${altText} preview" onclick="event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); playHomeTrendingTrackInApp(this); return false;">
             <span class="playback-glyph" aria-hidden="true">
                 <svg class="playback-icon playback-icon--play" viewBox="0 0 24 24" focusable="false">
                     <path d="M8 5v14l11-7z"></path>
@@ -2197,8 +2422,35 @@ function renderHomeTrendingSongItem(item) {
                 </svg>
             </span>
         </button>
-    `
+    `;
+}
+
+function renderHomeTrendingSongItem(item) {
+    if (!item) {
+        return '';
+    }
+
+    const { spotifyAttr, clickAttr, clickableAttr } = buildHomeTrendingCardInteractivity(item);
+    const cover = resolveHomeTrendingCover(item);
+
+    const titleRaw = (item.name || item.title || '').toString().trim();
+    const title = escapeHtml(titleRaw || 'Untitled');
+    const subtitle = escapeHtml(buildHomeTrendingSubtitle(item));
+    const altText = escapeHtml(titleRaw || 'track');
+    const itemSource = (item.source || '').toString().toLowerCase();
+    const itemType = (item.type || '').toString().toLowerCase();
+    const deezerTrackId = resolveHomeTrendingDeezerTrackId(item, itemSource, itemType);
+    const previewUrl = (item.preview_url || item.previewUrl || item.preview || '').toString().trim();
+    const spotifyTrackUrl = resolveHomeTrendingSpotifyTrackUrl(item, itemSource, itemType);
+    const canPlay = Boolean(deezerTrackId || spotifyTrackUrl || previewUrl);
+    const coverMarkup = cover
+        ? `<img src="${escapeHtml(cover)}" alt="${altText}" loading="lazy" decoding="async" />`
+        : '<div class="home-top-song-item__placeholder"></div>';
+    const playAttrs = buildHomeTrendingPlayAttributes(item, deezerTrackId, spotifyTrackUrl, previewUrl);
+    const thumbClickAttrs = canPlay
+        ? `data-home-play-thumb="true" ${playAttrs.join(' ')} onclick="event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); playHomeTrendingTrackInApp(this); return false;"`
         : '';
+    const playButton = buildHomeTrendingPlayButton(canPlay, playAttrs, altText);
 
     return `
         <div class="home-top-song-item"${spotifyAttr}${clickAttr}${clickableAttr}>

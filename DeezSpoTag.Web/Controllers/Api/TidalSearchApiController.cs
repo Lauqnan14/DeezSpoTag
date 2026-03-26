@@ -37,46 +37,48 @@ public sealed class TidalSearchApiController : ControllerBase
         [FromQuery] string? type = null,
         [FromQuery] int limit = 25,
         CancellationToken cancellationToken = default)
-    {
-        return await ExternalSearchControllerHelpers.RunSearchAsync(
+        => await ExternalSearchControllerHelpers.RunSearchAsync(
             query,
             type,
             limit,
             _logger,
             failureMessage: "Tidal search failed.",
-            async (normalizedType, normalizedLimit, ct) =>
-            {
-                var token = await _tidalAccessTokenProvider.GetAccessTokenAsync(ct);
-                var tracks = normalizedType is null or TrackType
-                    ? await SearchTypedAsync("tracks", query, normalizedLimit, token, MapTrack, ct)
-                    : new List<object>();
-                var albums = normalizedType is null or AlbumType
-                    ? await SearchTypedAsync("albums", query, normalizedLimit, token, MapAlbum, ct)
-                    : new List<object>();
-                var artists = normalizedType is null or ArtistType
-                    ? await SearchTypedAsync("artists", query, normalizedLimit, token, MapArtist, ct)
-                    : new List<object>();
-                var playlists = normalizedType is null or PlaylistType
-                    ? await SearchTypedAsync("playlists", query, normalizedLimit, token, MapPlaylist, ct)
-                    : new List<object>();
-
-                return new
-                {
-                    available = true,
-                    tracks,
-                    albums,
-                    artists,
-                    playlists,
-                    totals = new Dictionary<string, int>
-                    {
-                        ["tracks"] = tracks.Count,
-                        ["albums"] = albums.Count,
-                        ["artists"] = artists.Count,
-                        ["playlists"] = playlists.Count
-                    }
-                };
-            },
+            (normalizedType, normalizedLimit, ct) => BuildSearchPayloadAsync(query, normalizedType, normalizedLimit, ct),
             cancellationToken);
+
+    private async Task<object> BuildSearchPayloadAsync(
+        string query,
+        string? normalizedType,
+        int normalizedLimit,
+        CancellationToken cancellationToken)
+    {
+        var token = await _tidalAccessTokenProvider.GetAccessTokenAsync(cancellationToken);
+        var tracks = normalizedType is null or TrackType
+            ? await SearchTypedAsync("tracks", query, normalizedLimit, token, MapTrack, cancellationToken)
+            : new List<object>();
+        var albums = normalizedType is null or AlbumType
+            ? await SearchTypedAsync("albums", query, normalizedLimit, token, MapAlbum, cancellationToken)
+            : new List<object>();
+        var artists = normalizedType is null or ArtistType
+            ? await SearchTypedAsync("artists", query, normalizedLimit, token, MapArtist, cancellationToken)
+            : new List<object>();
+        var playlists = normalizedType is null or PlaylistType
+            ? await SearchTypedAsync("playlists", query, normalizedLimit, token, MapPlaylist, cancellationToken)
+            : new List<object>();
+
+        return new
+        {
+            available = true,
+            tracks,
+            albums,
+            artists,
+            playlists,
+            totals = ExternalSearchControllerHelpers.BuildTotals(
+                tracks.Count,
+                albums.Count,
+                artists.Count,
+                playlists.Count)
+        };
     }
 
     private async Task<List<object>> SearchTypedAsync(

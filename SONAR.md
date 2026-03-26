@@ -22,7 +22,7 @@ export BUILD_CONFIG="Debug"
 export SONAR_SCAN_ALL="false"
 export SONAR_LIGHTWEIGHT="false"
 export SONAR_INCLUDE_COVERAGE="false"
-export SONAR_COVERAGE_EXCLUSIONS="**/*"
+export SONAR_COVERAGE_EXCLUSIONS="**/DeezSpoTag.Tests/**,**/DeezSpoTag.CoverPortTests/**,**/Tools/**,**/References/**,**/bin/**,**/obj/**"
 ```
 
 Examples:

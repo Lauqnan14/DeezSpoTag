@@ -76,24 +76,7 @@ public sealed class DeezerMatcher
         }
 
         var tracks = results.Data.Select(t => t.ToTrackInfo()).ToList();
-        var match = OneTaggerMatching.MatchTrack(
-            info,
-            tracks,
-            config,
-            new OneTaggerMatching.TrackSelectors<DeezerTrackInfo>(
-                track => track.Title,
-                track => track.Version,
-                track => track.Artists,
-                track => track.Duration,
-                track => track.ReleaseDate),
-            matchArtist: true);
-
-        if (match == null)
-        {
-            return null;
-        }
-
-        return await BuildMatchResultAsync(match.Track, match.Accuracy, deezerConfig, cancellationToken);
+        return await TryBuildMatchFromCandidatesAsync(info, tracks, config, deezerConfig, cancellationToken);
     }
 
     private async Task<AutoTagMatchResult?> TryMatchByTrackIdAsync(long trackId, DeezerConfig deezerConfig, CancellationToken cancellationToken)
@@ -117,13 +100,7 @@ public sealed class DeezerMatcher
             return null;
         }
 
-        if (!string.IsNullOrWhiteSpace(track.ArtHash))
-        {
-            track.ArtUrl = DeezerClient.BuildImageUrl(CoverImageType, track.ArtHash, deezerConfig.ArtResolution);
-        }
-
-        await ExtendTrackAsync(track, cancellationToken);
-        return new AutoTagMatchResult { Accuracy = 1.0, Track = ToAutoTagTrack(track) };
+        return await BuildMatchResultAsync(track, 1.0, deezerConfig, cancellationToken);
     }
 
     private async Task<AutoTagMatchResult?> TryMatchByIsrcAsync(string isrc, DeezerConfig deezerConfig, CancellationToken cancellationToken)
@@ -144,13 +121,7 @@ public sealed class DeezerMatcher
             return null;
         }
 
-        if (!string.IsNullOrWhiteSpace(track.ArtHash))
-        {
-            track.ArtUrl = DeezerClient.BuildImageUrl(CoverImageType, track.ArtHash, deezerConfig.ArtResolution);
-        }
-
-        await ExtendTrackAsync(track, cancellationToken);
-        return new AutoTagMatchResult { Accuracy = 1.0, Track = ToAutoTagTrack(track) };
+        return await BuildMatchResultAsync(track, 1.0, deezerConfig, cancellationToken);
     }
 
     private async Task<AutoTagMatchResult> BuildMatchResultAsync(
@@ -197,23 +168,11 @@ public sealed class DeezerMatcher
                     results.Data.Select(track => track.ToTrackInfo()).ToList(),
                     album,
                     releaseYearHint);
-                var match = OneTaggerMatching.MatchTrack(
-                    info,
-                    tracks,
-                    config,
-                    new OneTaggerMatching.TrackSelectors<DeezerTrackInfo>(
-                        track => track.Title,
-                        track => track.Version,
-                        track => track.Artists,
-                        track => track.Duration,
-                        track => track.ReleaseDate),
-                    matchArtist: true);
-                if (match == null)
+                var matchResult = await TryBuildMatchFromCandidatesAsync(info, tracks, config, deezerConfig, cancellationToken);
+                if (matchResult != null)
                 {
-                    continue;
+                    return matchResult;
                 }
-
-                return await BuildMatchResultAsync(match.Track, match.Accuracy, deezerConfig, cancellationToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -222,6 +181,30 @@ public sealed class DeezerMatcher
         }
 
         return null;
+    }
+
+    private async Task<AutoTagMatchResult?> TryBuildMatchFromCandidatesAsync(
+        AutoTagAudioInfo info,
+        IReadOnlyCollection<DeezerTrackInfo> tracks,
+        AutoTagMatchingConfig config,
+        DeezerConfig deezerConfig,
+        CancellationToken cancellationToken)
+    {
+        var match = OneTaggerMatching.MatchTrack(
+            info,
+            tracks.ToList(),
+            config,
+            new OneTaggerMatching.TrackSelectors<DeezerTrackInfo>(
+                track => track.Title,
+                track => track.Version,
+                track => track.Artists,
+                track => track.Duration,
+                track => track.ReleaseDate),
+            matchArtist: true);
+
+        return match == null
+            ? null
+            : await BuildMatchResultAsync(match.Track, match.Accuracy, deezerConfig, cancellationToken);
     }
 
     private static AutoTagAudioInfo BuildEffectiveInfo(AutoTagAudioInfo info)

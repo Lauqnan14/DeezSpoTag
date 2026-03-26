@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Models.Qobuz;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Integrations.Qobuz;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -265,8 +266,8 @@ public sealed class QobuzTrackResolver
 
     private static bool TitlesMatch(string? expected, string? actual)
     {
-        var normalizedExpected = NormalizeText(expected);
-        var normalizedActual = NormalizeText(actual);
+        var normalizedExpected = TrackTitleMatcher.NormalizeText(expected);
+        var normalizedActual = TrackTitleMatcher.NormalizeText(actual);
         if (string.IsNullOrWhiteSpace(normalizedExpected) || string.IsNullOrWhiteSpace(normalizedActual))
         {
             return false;
@@ -290,8 +291,8 @@ public sealed class QobuzTrackResolver
 
     private static bool ArtistsMatch(string? expected, string? actual)
     {
-        var normalizedExpected = NormalizeText(expected);
-        var normalizedActual = NormalizeText(actual);
+        var normalizedExpected = TrackTitleMatcher.NormalizeText(expected);
+        var normalizedActual = TrackTitleMatcher.NormalizeText(actual);
         if (string.IsNullOrWhiteSpace(normalizedExpected) || string.IsNullOrWhiteSpace(normalizedActual))
         {
             return false;
@@ -323,8 +324,8 @@ public sealed class QobuzTrackResolver
             return false;
         }
 
-        var normalizedExpected = CleanTitle(NormalizeText(expected));
-        var normalizedActual = CleanTitle(NormalizeText(actual));
+        var normalizedExpected = CleanTitle(TrackTitleMatcher.NormalizeText(expected));
+        var normalizedActual = CleanTitle(TrackTitleMatcher.NormalizeText(actual));
         if (string.IsNullOrWhiteSpace(normalizedExpected) || string.IsNullOrWhiteSpace(normalizedActual))
         {
             return false;
@@ -339,18 +340,6 @@ public sealed class QobuzTrackResolver
         => track.Performer?.Name
            ?? track.Album?.Artists?.FirstOrDefault()?.Name
            ?? string.Empty;
-
-    private static string NormalizeText(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        var normalized = value.Trim().ToLowerInvariant();
-        normalized = Regex.Replace(normalized, @"\s+", " ", RegexOptions.None, RegexTimeout);
-        return normalized;
-    }
 
     private static string CleanTitle(string title)
     {

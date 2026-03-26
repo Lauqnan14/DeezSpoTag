@@ -1,7 +1,6 @@
 using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Net.Http.Headers;
 using System.Net;
 using Microsoft.AspNetCore.Authorization;
 
@@ -140,21 +139,16 @@ public class AutoPlaylistsApiController : ControllerBase
 
         var client = _httpClientFactory.CreateClient();
         using var response = await client.GetAsync(proxyContext.TargetUrl, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return StatusCode((int)response.StatusCode);
-        }
-
-        var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
-        var contentType = response.Content.Headers.ContentType?.ToString() ?? "image/jpeg";
-        var typedHeaders = Response.GetTypedHeaders();
-        typedHeaders.CacheControl = new CacheControlHeaderValue
-        {
-            NoStore = true,
-            NoCache = true,
-            MustRevalidate = true
-        };
-        return File(bytes, contentType);
+        return await ImageProxyResponseHelper.CreateImageResultAsync(
+            this,
+            response,
+            cache =>
+            {
+                cache.NoStore = true;
+                cache.NoCache = true;
+                cache.MustRevalidate = true;
+            },
+            cancellationToken);
     }
 
     [HttpGet("stream")]

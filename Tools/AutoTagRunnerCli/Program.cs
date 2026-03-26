@@ -60,31 +60,7 @@ internal static class Program
         var services = new ServiceCollection();
         services.AddLogging(b => b.AddSimpleConsole(o => { o.SingleLine = true; }).SetMinimumLevel(LogLevel.Information));
         services.AddHttpClient();
-
-        services.AddTransient<MusicBrainzClient>();
-        services.AddTransient<BeatportClient>();
-        services.AddTransient<DiscogsClient>();
-        services.AddTransient<TraxsourceClient>();
-        services.AddTransient<JunoDownloadClient>();
-        services.AddTransient<BandcampClient>();
-        services.AddTransient<BeatsourceTokenManager>();
-        services.AddTransient<BeatsourceClient>();
-        services.AddTransient<BpmSupremeClient>();
-        services.AddTransient<ITunesClient>();
-        services.AddTransient<DeezerClient>();
-        services.AddTransient<MusixmatchClient>();
-
-        services.AddTransient<MusicBrainzMatcher>();
-        services.AddTransient<BeatportMatcher>();
-        services.AddTransient<DiscogsMatcher>();
-        services.AddTransient<TraxsourceMatcher>();
-        services.AddTransient<JunoDownloadMatcher>();
-        services.AddTransient<BandcampMatcher>();
-        services.AddTransient<BeatsourceMatcher>();
-        services.AddTransient<BpmSupremeMatcher>();
-        services.AddTransient<ITunesMatcher>();
-        services.AddTransient<DeezerMatcher>();
-        services.AddTransient<MusixmatchMatcher>();
+        RegisterSharedAutoTagServices(services);
 
         var provider = services.BuildServiceProvider();
         var logger = provider.GetRequiredService<ILoggerFactory>().CreateLogger("autotag-cli");
@@ -400,6 +376,16 @@ internal static class Program
         services.AddSingleton<SpotifySearchService>();
         services.AddSingleton<SpotifyClient>();
 
+        RegisterSharedAutoTagServices(services);
+        services.AddTransient<SpotifyMatcher>();
+        services.AddTransient<LastFmMatcher>();
+        services.AddTransient<LocalAutoTagRunner>();
+
+        return services.BuildServiceProvider();
+    }
+
+    private static void RegisterSharedAutoTagServices(IServiceCollection services)
+    {
         services.AddTransient<MusicBrainzClient>();
         services.AddTransient<BeatportClient>();
         services.AddTransient<DiscogsClient>();
@@ -422,13 +408,8 @@ internal static class Program
         services.AddTransient<BeatsourceMatcher>();
         services.AddTransient<BpmSupremeMatcher>();
         services.AddTransient<ITunesMatcher>();
-        services.AddTransient<SpotifyMatcher>();
         services.AddTransient<DeezerMatcher>();
-        services.AddTransient<LastFmMatcher>();
         services.AddTransient<MusixmatchMatcher>();
-        services.AddTransient<LocalAutoTagRunner>();
-
-        return services.BuildServiceProvider();
     }
 
     private static string ResolveWebContentRoot()

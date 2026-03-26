@@ -141,29 +141,18 @@ public static class TrackIdNormalization
             return value[deezerTrackPrefix.Length..];
         }
 
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri))
+        var segments = TryGetUriSegmentsForHost(value, static host =>
+            host.Contains("deezer.com", StringComparison.OrdinalIgnoreCase)
+            || host.Contains("dzr.page.link", StringComparison.OrdinalIgnoreCase));
+        if (segments == null || segments.Length == 0)
         {
             return null;
         }
 
-        var host = uri.Host;
-        if (!host.Contains("deezer.com", StringComparison.OrdinalIgnoreCase) &&
-            !host.Contains("dzr.page.link", StringComparison.OrdinalIgnoreCase))
+        var deezerTrackId = TryGetSegmentAfter(segments, "track");
+        if (!string.IsNullOrWhiteSpace(deezerTrackId))
         {
-            return null;
-        }
-
-        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (segments.Length == 0)
-        {
-            return null;
-        }
-
-        var trackSegmentIndex = Array.FindIndex(segments, static segment =>
-            segment.Equals("track", StringComparison.OrdinalIgnoreCase));
-        if (trackSegmentIndex >= 0 && trackSegmentIndex + 1 < segments.Length)
-        {
-            return segments[trackSegmentIndex + 1];
+            return deezerTrackId;
         }
 
         for (var i = segments.Length - 1; i >= 0; i--)
@@ -254,26 +243,41 @@ public static class TrackIdNormalization
             return uriTrackId.Length == 22 && uriTrackId.All(char.IsLetterOrDigit) ? uriTrackId : null;
         }
 
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
-            !uri.Host.Contains("spotify.com", StringComparison.OrdinalIgnoreCase))
+        var segments = TryGetUriSegmentsForHost(value, static host =>
+            host.Contains("spotify.com", StringComparison.OrdinalIgnoreCase));
+        if (segments == null)
         {
             return null;
         }
 
-        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (segments.Length == 0)
+        var trackId = TryGetSegmentAfter(segments, "track");
+        if (string.IsNullOrWhiteSpace(trackId))
         {
             return null;
         }
 
-        var trackSegmentIndex = Array.FindIndex(segments, static segment =>
-            segment.Equals("track", StringComparison.OrdinalIgnoreCase));
-        if (trackSegmentIndex < 0 || trackSegmentIndex + 1 >= segments.Length)
-        {
-            return null;
-        }
-
-        var trackId = segments[trackSegmentIndex + 1];
         return trackId.Length == 22 && trackId.All(char.IsLetterOrDigit) ? trackId : null;
+    }
+
+    private static string[]? TryGetUriSegmentsForHost(string value, Func<string, bool> hostPredicate)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || !hostPredicate(uri.Host))
+        {
+            return null;
+        }
+
+        return uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
+    private static string? TryGetSegmentAfter(string[] segments, string segmentName)
+    {
+        var segmentIndex = Array.FindIndex(segments, segment =>
+            segment.Equals(segmentName, StringComparison.OrdinalIgnoreCase));
+        if (segmentIndex < 0 || segmentIndex + 1 >= segments.Length)
+        {
+            return null;
+        }
+
+        return segments[segmentIndex + 1];
     }
 }

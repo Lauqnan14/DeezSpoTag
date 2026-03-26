@@ -13,7 +13,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Authorize]
 public sealed class AppleArtistApiController : ControllerBase
 {
-    private static readonly bool AppleDisabled = ReadAppleDisabled();
+    private static readonly bool AppleDisabled = AppleCatalogJsonHelper.IsAppleDisabledByEnvironment();
     private const string AppleSource = "apple";
     private const string MusicVideosType = "music-videos";
     private const string DefaultStorefront = "us";
@@ -39,6 +39,13 @@ public sealed class AppleArtistApiController : ControllerBase
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly AppleCatalogVideoAtmosEnricher _appleCatalogVideoAtmosEnricher;
     private readonly ILogger<AppleArtistApiController> _logger;
+
+    private enum ArtistPageMode
+    {
+        Albums,
+        Videos
+    }
+
     public AppleArtistApiController(
         AppleMusicCatalogService catalog,
         DeezSpoTagSettingsService settingsService,
@@ -49,19 +56,6 @@ public sealed class AppleArtistApiController : ControllerBase
         _settingsService = settingsService;
         _appleCatalogVideoAtmosEnricher = appleCatalogVideoAtmosEnricher;
         _logger = logger;
-    }
-
-    private static bool ReadAppleDisabled()
-    {
-        var value = Environment.GetEnvironmentVariable("DEEZSPOTAG_APPLE_DISABLED");
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-
-        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
-            || value.Equals("true", StringComparison.OrdinalIgnoreCase)
-            || value.Equals("yes", StringComparison.OrdinalIgnoreCase);
     }
 
     private IActionResult? ValidateArtistRequest(string id)
@@ -80,6 +74,17 @@ public sealed class AppleArtistApiController : ControllerBase
     {
         limit = Math.Clamp(limit, 1, 100);
         offset = Math.Max(offset, 0);
+    }
+
+    private IActionResult? ValidateAndNormalizeArtistPageRequest(string id, ref int limit, ref int offset)
+    {
+        if (ValidateArtistRequest(id) is { } validationError)
+        {
+            return validationError;
+        }
+
+        NormalizePageArgs(ref limit, ref offset);
+        return null;
     }
 
     private string GetStorefront()
@@ -124,83 +129,91 @@ public sealed class AppleArtistApiController : ControllerBase
     }
 
     [HttpGet("albums")]
-    public async Task<IActionResult> GetAlbums(
+    public Task<IActionResult> GetAlbums(
         [FromQuery] string id,
         [FromQuery] int limit = 25,
         [FromQuery] int offset = 0,
-        CancellationToken cancellationToken = default)
-    {
-        if (ValidateArtistRequest(id) is { } validationError)
-        {
-            return validationError;
-        }
-
-        NormalizePageArgs(ref limit, ref offset);
-
-        try
-        {
-            using var doc = await _catalog.GetArtistAlbumsAsync(id, GetStorefront(), language: DefaultLanguage, limit, offset, cancellationToken);
-            var root = doc.RootElement;
-            if (!AppleCatalogJsonHelper.TryGetDataArray(root, out var dataArr))
-            {
-                return Ok(new { albums = Array.Empty<object>() });
-            }
-
-            var albums = new List<object>();
-            foreach (var item in dataArr.EnumerateArray())
-            {
-                var attrs = item.TryGetProperty(AttributesField, out var a) ? a : default;
-                albums.Add(new
-                {
-                    source = AppleSource,
-                    appleId = item.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "",
-                    appleUrl = attrs.TryGetProperty(UrlField, out var urlEl) ? urlEl.GetString() ?? "" : "",
-                    name = attrs.TryGetProperty(NameField, out var nameEl) ? nameEl.GetString() ?? "" : "",
-                    artist = attrs.TryGetProperty(ArtistNameField, out var artistEl) ? artistEl.GetString() ?? "" : "",
-                    image = AppleCatalogJsonHelper.ResolveArtwork(attrs)
-                });
-            }
-
-            return Ok(new { albums });
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Apple artist albums fetch failed");
-            return StatusCode(500, new { error = "Apple artist albums failed." });
-        }
-    }
+        CancellationToken cancellationToken = default) =>
+        GetArtistPageAsync(id, limit, offset, ArtistPageMode.Albums, cancellationToken);
 
     [HttpGet("videos")]
-    public async Task<IActionResult> GetVideos(
+    public Task<IActionResult> GetVideos(
         [FromQuery] string id,
         [FromQuery] int limit = 25,
         [FromQuery] int offset = 0,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        GetArtistPageAsync(id, limit, offset, ArtistPageMode.Videos, cancellationToken);
+
+    private async Task<IActionResult> GetArtistPageAsync(
+        string id,
+        int limit,
+        int offset,
+        ArtistPageMode mode,
+        CancellationToken cancellationToken)
     {
-        if (ValidateArtistRequest(id) is { } validationError)
+        if (ValidateAndNormalizeArtistPageRequest(id, ref limit, ref offset) is { } validationError)
         {
             return validationError;
         }
 
-        NormalizePageArgs(ref limit, ref offset);
+        return mode switch
+        {
+            ArtistPageMode.Albums => await ExecuteArtistPagedRequestAsync(
+                async ct => await _catalog.GetArtistAlbumsAsync(id, GetStorefront(), language: DefaultLanguage, limit, offset, ct),
+                _ => Ok(new { albums = Array.Empty<object>() }),
+                static (root, dataArr, _) =>
+                {
+                    var albums = new List<Dictionary<string, object?>>();
+                    foreach (var item in dataArr.EnumerateArray())
+                    {
+                        var attrs = item.TryGetProperty(AttributesField, out var a) ? a : default;
+                        albums.Add(BuildArtistMediaCore(item, attrs));
+                    }
 
+                    return Task.FromResult<IActionResult>(new OkObjectResult(new { albums }));
+                },
+                "Apple artist albums fetch failed",
+                "Apple artist albums failed.",
+                cancellationToken),
+            ArtistPageMode.Videos => await ExecuteArtistPagedRequestAsync(
+                async ct => await _catalog.GetArtistMusicVideosAsync(id, GetStorefront(), language: DefaultLanguage, limit, offset, ct),
+                _ => Ok(BuildEmptyVideosResponse()),
+                async (root, dataArr, ct) =>
+                {
+                    var videos = BuildVideosPayload(dataArr);
+                    await EnrichVideoAtmosAsync(videos, id, ct);
+                    return Ok(BuildVideosResponse(root, videos));
+                },
+                "Apple artist videos fetch failed",
+                "Apple artist videos failed.",
+                cancellationToken),
+            _ => Ok(BuildEmptyVideosResponse())
+        };
+    }
+
+    private async Task<IActionResult> ExecuteArtistPagedRequestAsync(
+        Func<CancellationToken, Task<JsonDocument>> requestFactory,
+        Func<JsonElement, IActionResult> onDataMissing,
+        Func<JsonElement, JsonElement, CancellationToken, Task<IActionResult>> onDataPresent,
+        string failureLogMessage,
+        string failureResponseMessage,
+        CancellationToken cancellationToken)
+    {
         try
         {
-            using var doc = await _catalog.GetArtistMusicVideosAsync(id, GetStorefront(), language: DefaultLanguage, limit, offset, cancellationToken);
+            using var doc = await requestFactory(cancellationToken);
             var root = doc.RootElement;
             if (!AppleCatalogJsonHelper.TryGetDataArray(root, out var dataArr))
             {
-                return Ok(BuildEmptyVideosResponse());
+                return onDataMissing(root);
             }
 
-            var videos = BuildVideosPayload(dataArr);
-            await EnrichVideoAtmosAsync(videos, id, cancellationToken);
-            return Ok(BuildVideosResponse(root, videos));
+            return await onDataPresent(root, dataArr, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Apple artist videos fetch failed");
-            return StatusCode(500, new { error = "Apple artist videos failed." });
+            _logger.LogWarning(ex, "{FailureLogMessage}", failureLogMessage);
+            return StatusCode(500, new { error = failureResponseMessage });
         }
     }
 
@@ -222,23 +235,29 @@ public sealed class AppleArtistApiController : ControllerBase
         var attrs = item.TryGetProperty(AttributesField, out var a) ? a : default;
         var audioTraits = AppleCatalogJsonHelper.ReadStringArray(attrs, AudioTraitsField);
         var hasAtmosCatalog = audioTraits.Any(t => t.Contains("atmos", StringComparison.OrdinalIgnoreCase));
+        var video = BuildArtistMediaCore(item, attrs);
+        video[TypeField] = MusicVideosType;
+        video["isVideo"] = true;
+        video[PreviewUrlField] = AppleCatalogJsonHelper.ReadPreviewUrl(attrs);
+        video["durationMs"] = attrs.TryGetProperty("durationInMillis", out var durationEl) ? durationEl.GetInt64() : 0;
+        video[ReleaseDateField] = attrs.TryGetProperty(ReleaseDateField, out var releaseEl) ? releaseEl.GetString() ?? "" : "";
+        video[AudioTraitsField] = audioTraits;
+        video["hasAtmosCatalog"] = hasAtmosCatalog;
+        video[HasAtmosField] = hasAtmosCatalog;
+        video[AtmosDetectionField] = hasAtmosCatalog ? CatalogDetection : UnavailableDetection;
+        return video;
+    }
+
+    private static Dictionary<string, object?> BuildArtistMediaCore(JsonElement item, JsonElement attrs)
+    {
         return new Dictionary<string, object?>
         {
             [SourceField] = AppleSource,
-            [TypeField] = MusicVideosType,
             [AppleIdField] = item.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "",
             [AppleUrlField] = attrs.TryGetProperty(UrlField, out var urlEl) ? urlEl.GetString() ?? "" : "",
             [NameField] = attrs.TryGetProperty(NameField, out var nameEl) ? nameEl.GetString() ?? "" : "",
             [ArtistField] = attrs.TryGetProperty(ArtistNameField, out var artistEl) ? artistEl.GetString() ?? "" : "",
-            [ImageField] = AppleCatalogJsonHelper.ResolveArtwork(attrs),
-            ["isVideo"] = true,
-            [PreviewUrlField] = AppleCatalogJsonHelper.ReadPreviewUrl(attrs),
-            ["durationMs"] = attrs.TryGetProperty("durationInMillis", out var durationEl) ? durationEl.GetInt64() : 0,
-            [ReleaseDateField] = attrs.TryGetProperty(ReleaseDateField, out var releaseEl) ? releaseEl.GetString() ?? "" : "",
-            [AudioTraitsField] = audioTraits,
-            ["hasAtmosCatalog"] = hasAtmosCatalog,
-            [HasAtmosField] = hasAtmosCatalog,
-            [AtmosDetectionField] = hasAtmosCatalog ? CatalogDetection : UnavailableDetection
+            [ImageField] = AppleCatalogJsonHelper.ResolveArtwork(attrs)
         };
     }
 

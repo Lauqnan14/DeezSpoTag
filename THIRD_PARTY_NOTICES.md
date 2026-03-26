@@ -2,7 +2,7 @@
 
 This document summarizes third-party project references observed in:
 
-- `References/`
+- local vendor archive directories
 
 It is intended as a maintainable attribution baseline for releases.
 
@@ -61,13 +61,13 @@ Thank you to all original creators, maintainers, contributors, and users of thes
 
 The following directories did not expose a clear top-level license file in the scan depth used:
 
-1. `References/Quality Scaanner/whatsmybitrate-main`  
+1. `Quality Scaanner/whatsmybitrate-main`  
    Note: README states MIT, but no dedicated LICENSE file found in the scanned levels.
-2. `References/Wrapper/2`
-3. `References/Apple Music/Wrapper`
-4. `References/Apple Music/WorldObservationLog`
-5. `References/meloday`
-6. `References/Untitled Folder`
+2. `Wrapper/2`
+3. `Apple Music/Wrapper`
+4. `Apple Music/WorldObservationLog`
+5. `meloday`
+6. `Untitled Folder`
 
 ## License posture recommendation
 

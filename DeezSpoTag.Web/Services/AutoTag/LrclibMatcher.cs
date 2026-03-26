@@ -636,19 +636,9 @@ public sealed class LrclibMatcher
     private static List<string> BuildTitleCandidates(string title)
     {
         var candidates = new List<string>();
-        void Add(string? value)
-        {
-            var normalized = (value ?? string.Empty).Trim();
-            if (!string.IsNullOrWhiteSpace(normalized) &&
-                !candidates.Contains(normalized, StringComparer.OrdinalIgnoreCase))
-            {
-                candidates.Add(normalized);
-            }
-        }
-
-        Add(title);
-        Add(SimplifyTrackName(title));
-        Add(NormalizeLooseTitle(title));
+        AddDistinctCandidate(candidates, title);
+        AddDistinctCandidate(candidates, SimplifyTrackName(title));
+        AddDistinctCandidate(candidates, NormalizeLooseTitle(title));
 
         return candidates;
     }
@@ -656,26 +646,30 @@ public sealed class LrclibMatcher
     private static List<string> BuildArtistCandidates(string primaryArtist, string originalArtist, IEnumerable<string> allArtists)
     {
         var candidates = new List<string>();
-        void Add(string? value)
-        {
-            var normalized = (value ?? string.Empty).Trim();
-            if (!string.IsNullOrWhiteSpace(normalized) &&
-                !candidates.Contains(normalized, StringComparer.OrdinalIgnoreCase))
-            {
-                candidates.Add(normalized);
-            }
-        }
-
-        Add(primaryArtist);
-        Add(originalArtist);
+        AddDistinctCandidate(candidates, primaryArtist);
+        AddDistinctCandidate(candidates, originalArtist);
 
         foreach (var artist in allArtists)
         {
-            Add(artist);
-            Add(NormalizeArtistName(artist));
+            AddDistinctCandidate(candidates, artist);
+            AddDistinctCandidate(candidates, NormalizeArtistName(artist));
         }
 
         return candidates;
+    }
+
+    private static void AddDistinctCandidate(List<string> candidates, string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return;
+        }
+
+        if (!candidates.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+        {
+            candidates.Add(normalized);
+        }
     }
 
     private static string SimplifyTrackName(string title)

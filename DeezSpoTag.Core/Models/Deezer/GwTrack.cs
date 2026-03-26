@@ -6,7 +6,29 @@ namespace DeezSpoTag.Core.Models.Deezer;
 /// GW Track model (ported from deezspotag GWTrack interface)
 /// EXACT PORT: Matches the JSON structure from Deezer GW API
 /// </summary>
-public class GwTrack
+public class GwAlbumArtistMetadata
+{
+    [JsonProperty("ALB_ID")]
+    public string AlbId { get; set; } = "";
+
+    [JsonProperty("ALB_TITLE")]
+    public string AlbTitle { get; set; } = "";
+
+    [JsonProperty("ALB_PICTURE")]
+    public string AlbPicture { get; set; } = "";
+
+    [JsonProperty("ART_ID")]
+    public long ArtId { get; set; }
+
+    [JsonProperty("ART_NAME")]
+    public string ArtName { get; set; } = "";
+}
+
+/// <summary>
+/// GW Track model (ported from deezspotag GWTrack interface)
+/// EXACT PORT: Matches the JSON structure from Deezer GW API
+/// </summary>
+public class GwTrack : GwAlbumArtistMetadata
 {
     [JsonProperty("SNG_ID")]
     public long SngId { get; set; }
@@ -27,21 +49,6 @@ public class GwTrack
     [JsonProperty("FILESIZE")]
     public int Filesize { get; set; }
     
-    [JsonProperty("ALB_ID")]
-    public string AlbId { get; set; } = "";
-    
-    [JsonProperty("ALB_TITLE")]
-    public string AlbTitle { get; set; } = "";
-    
-    [JsonProperty("ALB_PICTURE")]
-    public string AlbPicture { get; set; } = "";
-    
-    [JsonProperty("ART_ID")]
-    public long ArtId { get; set; }
-    
-    [JsonProperty("ART_NAME")]
-    public string ArtName { get; set; } = "";
-
     [JsonProperty("ART_PICTURE")]
     public string ArtPicture { get; set; } = "";
     

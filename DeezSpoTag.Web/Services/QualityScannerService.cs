@@ -2,7 +2,6 @@ using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
-using System.Globalization;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -302,8 +301,8 @@ public sealed class QualityScannerService
 
         if (options.TechnicalProfiles.Count > 0)
         {
-            tracks = tracks
-                .Where(track => options.TechnicalProfiles.Contains(BuildTechnicalProfileLabel(track)))
+                tracks = tracks
+                .Where(track => options.TechnicalProfiles.Contains(QualityScanTrackFormatter.FormatTechnicalProfile(track)))
                 .ToList();
         }
 
@@ -1421,20 +1420,6 @@ public sealed class QualityScannerService
             normalized.Add(folderId.Value);
         }
         return normalized;
-    }
-
-    private static string BuildTechnicalProfileLabel(QualityScanTrackDto track)
-    {
-        var extension = string.IsNullOrWhiteSpace(track.BestExtension)
-            ? "UNKNOWN"
-            : track.BestExtension.Trim().ToUpperInvariant();
-        var bitDepth = track.BestBitsPerSample.HasValue && track.BestBitsPerSample.Value > 0
-            ? $"{track.BestBitsPerSample.Value}-bit"
-            : "unknown";
-        var sampleRate = track.BestSampleRateHz.HasValue && track.BestSampleRateHz.Value > 0
-            ? string.Create(CultureInfo.InvariantCulture, $"{track.BestSampleRateHz.Value / 1000d:0.0} kHz")
-            : "unknown";
-        return $"{extension} • {bitDepth} • {sampleRate}";
     }
 
     private static int? NormalizeMinBitDepth(int? minBitDepth)

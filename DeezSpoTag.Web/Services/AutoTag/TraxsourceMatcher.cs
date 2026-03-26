@@ -20,30 +20,7 @@ public sealed class TraxsourceMatcher
             return null;
         }
 
-        var match = MatchTracks(info, tracks, config);
-        if (match == null)
-        {
-            return null;
-        }
-
-        if (extend)
-        {
-            try
-            {
-                await _client.ExtendTrackAsync(match.Track, albumMeta, cancellationToken);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "Failed extending Traxsource track.");
-            }
-        }
-
-        return new AutoTagMatchResult { Accuracy = match.Accuracy, Track = ToAutoTagTrack(match.Track) };
-    }
-
-    private static MatchCandidate? MatchTracks(AutoTagAudioInfo info, List<TraxsourceTrackInfo> tracks, AutoTagMatchingConfig config)
-    {
-        var match = OneTaggerMatching.MatchTrack(
+        var match = AutoTagMatchSelection.SelectBestTrack(
             info,
             tracks,
             config,
@@ -54,33 +31,27 @@ public sealed class TraxsourceMatcher
                 track => track.Duration,
                 track => track.ReleaseDate),
             matchArtist: true);
+        if (match == null)
+        {
+            return null;
+        }
 
-        return match == null ? null : new MatchCandidate(match.Accuracy, match.Track);
+        if (extend)
+        {
+            try
+            {
+                await _client.ExtendTrackAsync(match.Value.Track, albumMeta, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Failed extending Traxsource track.");
+            }
+        }
+
+        return new AutoTagMatchResult { Accuracy = match.Value.Accuracy, Track = ToAutoTagTrack(match.Value.Track) };
     }
 
     private static AutoTagTrack ToAutoTagTrack(TraxsourceTrackInfo track)
-    {
-        return new AutoTagTrack
-        {
-            Title = track.Title,
-            Version = track.Version,
-            Artists = track.Artists.ToList(),
-            AlbumArtists = track.AlbumArtists.ToList(),
-            Album = track.Album,
-            Key = track.Key,
-            Bpm = track.Bpm,
-            Genres = track.Genres.ToList(),
-            Art = track.Art,
-            Url = track.Url,
-            Label = track.Label,
-            CatalogNumber = track.CatalogNumber,
-            ReleaseId = track.ReleaseId,
-            Duration = track.Duration,
-            TrackNumber = track.TrackNumber,
-            TrackTotal = track.TrackTotal,
-            ReleaseDate = track.ReleaseDate
-        };
-    }
+        => AutoTagTrackFactory.FromTraxsource(track);
 
-    private sealed record MatchCandidate(double Accuracy, TraxsourceTrackInfo Track);
 }

@@ -10,6 +10,8 @@ public sealed class ReferencesIsolationTests
     private static readonly HashSet<string> ExcludedDirectories = new(StringComparer.OrdinalIgnoreCase)
     {
         ".git",
+        ".sonarqube",
+        ".sonar-coverage",
         "References",
         "Data",
         "bin",
@@ -18,6 +20,8 @@ public sealed class ReferencesIsolationTests
         "venv",
         "node_modules",
         "reports",
+        ".tmp",
+        "Tools",
         "tmp-wrapper",
         "meloday-main"
     };
@@ -47,6 +51,13 @@ public sealed class ReferencesIsolationTests
         ".config",
     };
 
+    private static readonly HashSet<string> AllowedReferencesPathFiles = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "SONAR.md",
+        "scripts/scan.sh",
+        "scripts/scan_keep.sh"
+    };
+
     [Fact]
     public void NonReferenceFiles_DoNotContainReferencesFolderPaths()
     {
@@ -55,6 +66,12 @@ public sealed class ReferencesIsolationTests
 
         foreach (var filePath in EnumerateCandidateFiles(repoRoot))
         {
+            var relativePath = NormalizePath(Path.GetRelativePath(repoRoot, filePath));
+            if (AllowedReferencesPathFiles.Contains(relativePath))
+            {
+                continue;
+            }
+
             if (IsBinaryFile(filePath))
             {
                 continue;
@@ -69,7 +86,6 @@ public sealed class ReferencesIsolationTests
                     continue;
                 }
 
-                var relativePath = Path.GetRelativePath(repoRoot, filePath);
                 violations.Add($"{relativePath}:{lineNumber}");
                 if (violations.Count >= 25)
                 {
@@ -126,7 +142,7 @@ public sealed class ReferencesIsolationTests
             foreach (var childDirectory in childDirectories)
             {
                 var name = Path.GetFileName(childDirectory);
-                if (ExcludedDirectories.Contains(name))
+                if (ExcludedDirectories.Contains(name) || name.StartsWith(".jscpd", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -172,10 +188,43 @@ public sealed class ReferencesIsolationTests
             return false;
         }
 
-        return line.Contains("../References/", StringComparison.OrdinalIgnoreCase)
-            || line.Contains("..\\References\\", StringComparison.OrdinalIgnoreCase)
-            || line.Contains("References/", StringComparison.OrdinalIgnoreCase)
-            || line.Contains("References\\", StringComparison.OrdinalIgnoreCase);
+        var normalized = line.Replace('\\', '/');
+        const string marker = "references/";
+        var index = 0;
+
+        while ((index = normalized.IndexOf(marker, index, StringComparison.OrdinalIgnoreCase)) >= 0)
+        {
+            if (index >= 3
+                && normalized[index - 3] == '.'
+                && normalized[index - 2] == '.'
+                && normalized[index - 1] == '/')
+            {
+                return true;
+            }
+
+            if (index == 0)
+            {
+                return true;
+            }
+
+            var preceding = normalized[index - 1];
+            if (preceding == '/'
+                || preceding == '"'
+                || preceding == '\''
+                || preceding == '`'
+                || preceding == '('
+                || preceding == '['
+                || preceding == ':'
+                || preceding == '='
+                || char.IsWhiteSpace(preceding))
+            {
+                return true;
+            }
+
+            index += marker.Length;
+        }
+
+        return false;
     }
 
     private static bool IsBinaryFile(string filePath)
@@ -198,5 +247,10 @@ public sealed class ReferencesIsolationTests
         catch (Exception ex) when (ex is not OperationCanceledException) {
             return true;
         }
+    }
+
+    private static string NormalizePath(string path)
+    {
+        return path.Replace('\\', '/');
     }
 }

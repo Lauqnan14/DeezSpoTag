@@ -1,7 +1,6 @@
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Net.Http.Headers;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -10,6 +9,8 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Authorize]
 public sealed class MediaServerSoundtracksApiController : ControllerBase
 {
+    private const char UrlPathSeparator = '/';
+    private const char QuerySeparator = '?';
     private readonly MediaServerSoundtrackService _service;
     private readonly PlatformAuthService _platformAuthService;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -139,21 +140,15 @@ public sealed class MediaServerSoundtracksApiController : ControllerBase
 
         var client = _httpClientFactory.CreateClient();
         using var response = await client.GetAsync(targetUrl, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return StatusCode((int)response.StatusCode);
-        }
-
-        var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
-        var contentType = response.Content.Headers.ContentType?.ToString() ?? "image/jpeg";
-        var typedHeaders = Response.GetTypedHeaders();
-        typedHeaders.CacheControl = new CacheControlHeaderValue
-        {
-            Private = true,
-            MaxAge = TimeSpan.FromMinutes(15)
-        };
-
-        return File(bytes, contentType);
+        return await ImageProxyResponseHelper.CreateImageResultAsync(
+            this,
+            response,
+            cache =>
+            {
+                cache.Private = true;
+                cache.MaxAge = TimeSpan.FromMinutes(15);
+            },
+            cancellationToken);
     }
 
     private string? BuildImageProxyUrl(string? serverType, string? sourceUrl)
@@ -317,9 +312,9 @@ public sealed class MediaServerSoundtracksApiController : ControllerBase
             return null;
         }
 
-        if (!normalized.StartsWith("/", StringComparison.Ordinal))
+        if (!normalized.StartsWith(UrlPathSeparator))
         {
-            normalized = "/" + normalized;
+            normalized = UrlPathSeparator + normalized;
         }
 
         return normalized;
@@ -391,11 +386,11 @@ public sealed class MediaServerSoundtracksApiController : ControllerBase
     private static string BuildUrlWithQueryToken(string serverUrl, string pathAndQuery, string key, string token)
     {
         var baseUrl = serverUrl.TrimEnd('/');
-        var path = pathAndQuery.StartsWith("/", StringComparison.Ordinal)
+        var path = pathAndQuery.StartsWith(UrlPathSeparator)
             ? pathAndQuery
-            : "/" + pathAndQuery;
+            : UrlPathSeparator + pathAndQuery;
 
-        var separator = path.Contains("?", StringComparison.Ordinal) ? '&' : '?';
+        var separator = path.Contains(QuerySeparator) ? '&' : QuerySeparator;
         var encodedToken = Uri.EscapeDataString(token);
         return $"{baseUrl}{path}{separator}{key}={encodedToken}";
     }

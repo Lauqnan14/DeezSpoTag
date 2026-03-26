@@ -7,8 +7,6 @@ public sealed class AutoTagDefaultsStore
 {
     private const string AutoTagFolderName = "autotag";
     private const string DefaultsFileName = "defaults.json";
-    private const string DataFolderName = "Data";
-    private const string WebProjectFolderName = "DeezSpoTag.Web";
     private readonly string _defaultsPath;
     private readonly string _dataRoot;
     private readonly string _contentRoot;
@@ -67,17 +65,7 @@ public sealed class AutoTagDefaultsStore
 
     public async Task<bool> RemoveProfileReferencesAsync(string? profileId, string? profileName)
     {
-        var references = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (!string.IsNullOrWhiteSpace(profileId))
-        {
-            references.Add(profileId.Trim());
-        }
-
-        if (!string.IsNullOrWhiteSpace(profileName))
-        {
-            references.Add(profileName.Trim());
-        }
-
+        var references = AutoTagProfileReferenceSet.Build(profileId, profileName);
         if (references.Count == 0)
         {
             return false;
@@ -157,38 +145,7 @@ public sealed class AutoTagDefaultsStore
     }
 
     private IEnumerable<string> GetLegacyDefaultsCandidates()
-    {
-        var candidates = new[]
-        {
-            Path.Join(_contentRoot, DataFolderName, AutoTagFolderName, DefaultsFileName),
-            Path.Join(AppContext.BaseDirectory, DataFolderName, AutoTagFolderName, DefaultsFileName),
-            Path.Join(Directory.GetCurrentDirectory(), DataFolderName, AutoTagFolderName, DefaultsFileName),
-            Path.Join(Directory.GetCurrentDirectory(), WebProjectFolderName, DataFolderName, AutoTagFolderName, DefaultsFileName)
-        };
-
-        foreach (var candidate in candidates)
-        {
-            if (string.IsNullOrWhiteSpace(candidate))
-            {
-                continue;
-            }
-
-            var fullPath = Path.GetFullPath(candidate);
-            if (string.Equals(fullPath, _defaultsPath, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var fullDirectory = Path.GetDirectoryName(fullPath);
-            if (!string.IsNullOrWhiteSpace(fullDirectory) &&
-                string.Equals(fullDirectory, Path.GetFullPath(Path.Join(_dataRoot, AutoTagFolderName)), StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            yield return fullPath;
-        }
-    }
+        => AutoTagLegacyPathCandidates.Enumerate(_contentRoot, _dataRoot, _defaultsPath, DefaultsFileName, AutoTagFolderName);
 }
 
 public sealed record AutoTagDefaultsDto(

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Linq;
+using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.Logging;
 
 namespace DeezSpoTag.Services.Settings;
@@ -19,7 +20,7 @@ public sealed class PlatformCapabilitiesStore
     public PlatformCapabilitiesStore(string? dataRoot = null, ILogger<PlatformCapabilitiesStore>? logger = null)
     {
         _logger = logger;
-        var root = ResolveDataRoot(dataRoot);
+        var root = DeezSpoTagDataRootResolver.Resolve(dataRoot);
         var dir = Path.Join(root, "autotag");
         Directory.CreateDirectory(dir);
         _path = Path.Join(dir, "platform-capabilities.json");
@@ -138,27 +139,6 @@ public sealed class PlatformCapabilitiesStore
         }
     }
 
-    private static string ResolveDataRoot(string? dataRoot)
-    {
-        if (!string.IsNullOrWhiteSpace(dataRoot))
-        {
-            return dataRoot.Trim();
-        }
-
-        var configDir = Environment.GetEnvironmentVariable("DEEZSPOTAG_CONFIG_DIR");
-        if (!string.IsNullOrWhiteSpace(configDir))
-        {
-            return configDir.Trim();
-        }
-
-        var dataDir = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_DIR");
-        if (!string.IsNullOrWhiteSpace(dataDir))
-        {
-            return dataDir.Trim();
-        }
-
-        return Path.Join(AppContext.BaseDirectory, "Data");
-    }
 }
 
 public sealed class PlatformCapabilitiesSnapshot
