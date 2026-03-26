@@ -98,7 +98,10 @@ const soundtrackState = {
     selectedTvShow: null,
     selectedTvSeasonId: '',
     backgroundRefreshTimer: 0,
-    backgroundRefreshAttempt: 0
+    backgroundRefreshAttempt: 0,
+    syncStatusTimer: 0,
+    syncStatusSnapshot: '',
+    syncRunning: false
 };
 
 const librarySpotifyArtistCacheTtlMs = 2 * 60 * 60 * 1000;
@@ -8167,6 +8170,7 @@ function getSoundtrackElements() {
         refreshButton: document.getElementById('soundtrackRefreshItems'),
         syncButton: document.getElementById('soundtrackSyncLibraries'),
         status: document.getElementById('soundtrackStatus'),
+        syncStatus: document.getElementById('soundtrackSyncStatus'),
         tvNav: document.getElementById('soundtrackTvNav'),
         tvBackButton: document.getElementById('soundtrackTvBack'),
         tvShowTitle: document.getElementById('soundtrackTvShowTitle'),
@@ -8335,6 +8339,91 @@ function clearSoundtrackBackgroundRefreshTimer() {
         window.clearTimeout(soundtrackState.backgroundRefreshTimer);
         soundtrackState.backgroundRefreshTimer = 0;
     }
+}
+
+function clearSoundtrackSyncStatusTimer() {
+    if (soundtrackState.syncStatusTimer) {
+        window.clearInterval(soundtrackState.syncStatusTimer);
+        soundtrackState.syncStatusTimer = 0;
+    }
+}
+
+function renderSoundtrackSyncStatus(payload) {
+    const elements = getSoundtrackElements();
+    if (!elements.syncStatus) {
+        return;
+    }
+
+    const libraries = Array.isArray(payload?.libraries) ? payload.libraries : [];
+    const runningLibrary = libraries.find(entry => String(entry?.status || '').toLowerCase() === 'running');
+    const erroredLibrary = libraries.find(entry => String(entry?.status || '').toLowerCase() === 'error');
+    const pendingJobs = Number.isFinite(Number(payload?.pendingJobs)) ? Number(payload.pendingJobs) : 0;
+    const syncRunning = payload?.syncRunning === true || pendingJobs > 0 || Boolean(runningLibrary);
+    soundtrackState.syncRunning = syncRunning;
+
+    if (runningLibrary) {
+        const serverType = String(runningLibrary.serverType || '').trim().toLowerCase();
+        const libraryId = String(runningLibrary.libraryId || '').trim();
+        const label = [serverType || 'server', libraryId].filter(Boolean).join('/');
+        const offset = Number.isFinite(Number(runningLibrary.lastOffset)) ? Number(runningLibrary.lastOffset) : 0;
+        const processed = Number.isFinite(Number(runningLibrary.totalProcessed)) ? Number(runningLibrary.totalProcessed) : 0;
+        elements.syncStatus.textContent = `Sync running: ${label} (offset ${offset}, processed ${processed}).`;
+        return;
+    }
+
+    if (erroredLibrary) {
+        const serverType = String(erroredLibrary.serverType || '').trim().toLowerCase();
+        const libraryId = String(erroredLibrary.libraryId || '').trim();
+        const label = [serverType || 'server', libraryId].filter(Boolean).join('/');
+        const lastError = String(erroredLibrary.lastError || '').trim();
+        elements.syncStatus.textContent = `Sync error: ${label}${lastError ? ` (${lastError})` : ''}`;
+        return;
+    }
+
+    if (syncRunning) {
+        elements.syncStatus.textContent = 'Sync queued...';
+        return;
+    }
+
+    elements.syncStatus.textContent = '';
+}
+
+async function pollSoundtrackSyncStatusOnce() {
+    try {
+        const payload = await fetchJson('/api/media-server/soundtracks/status');
+        const snapshot = JSON.stringify({
+            syncRunning: payload?.syncRunning === true,
+            pendingJobs: payload?.pendingJobs || 0,
+            libraries: Array.isArray(payload?.libraries)
+                ? payload.libraries.map(entry => ({
+                    serverType: entry?.serverType || '',
+                    libraryId: entry?.libraryId || '',
+                    status: entry?.status || '',
+                    lastOffset: entry?.lastOffset || 0,
+                    totalProcessed: entry?.totalProcessed || 0,
+                    lastError: entry?.lastError || ''
+                }))
+                : []
+        });
+
+        if (snapshot !== soundtrackState.syncStatusSnapshot) {
+            soundtrackState.syncStatusSnapshot = snapshot;
+            renderSoundtrackSyncStatus(payload);
+        }
+    } catch {
+        // Non-blocking status telemetry; ignore poll failures.
+    }
+}
+
+function startSoundtrackSyncStatusPolling() {
+    if (soundtrackState.syncStatusTimer) {
+        return;
+    }
+
+    void pollSoundtrackSyncStatusOnce();
+    soundtrackState.syncStatusTimer = window.setInterval(() => {
+        void pollSoundtrackSyncStatusOnce();
+    }, 3000);
 }
 
 function resolveSoundtrackCardArtVariant(category) {
@@ -9167,8 +9256,9 @@ function bindSoundtrackTabHandlers() {
                 renderSoundtrackFilters(configuration);
                 resetSoundtrackTvSelection();
                 renderSoundtrackTvNavigation();
-                await loadSoundtrackItems({ forceServerRefresh: true });
-                showToast('Media server soundtrack libraries synced.');
+                await loadSoundtrackItems();
+                await pollSoundtrackSyncStatusOnce();
+                showToast('Media server soundtrack sync started.');
             } catch (error) {
                 showToast(`Soundtrack sync failed: ${error?.message || 'Unknown error'}`, true);
             }
@@ -9186,6 +9276,7 @@ async function initializeSoundtracksTab() {
 
     bindSoundtrackTabHandlers();
     renderSoundtrackTvNavigation();
+    startSoundtrackSyncStatusPolling();
     if (soundtrackState.initialized) {
         await loadSoundtrackItems();
         return;

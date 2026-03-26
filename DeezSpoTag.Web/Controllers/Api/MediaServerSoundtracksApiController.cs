@@ -44,8 +44,15 @@ public sealed class MediaServerSoundtracksApiController : ControllerBase
     public async Task<IActionResult> SyncLibraries(CancellationToken cancellationToken)
     {
         var configuration = await _service.RefreshDiscoveredLibrariesAsync(cancellationToken);
-        _service.TriggerPersistentMediaCacheSync();
+        _service.TriggerPersistentMediaCacheSync(fullRefresh: true);
         return Ok(configuration);
+    }
+
+    [HttpGet("status")]
+    public async Task<IActionResult> GetSyncStatus(CancellationToken cancellationToken)
+    {
+        var status = await _service.GetSyncStatusAsync(cancellationToken);
+        return Ok(status);
     }
 
     [HttpGet("items")]

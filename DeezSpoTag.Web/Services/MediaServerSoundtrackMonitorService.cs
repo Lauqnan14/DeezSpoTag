@@ -2,6 +2,7 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class MediaServerSoundtrackMonitorService : BackgroundService
 {
+    private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromMinutes(10);
     private readonly MediaServerSoundtrackService _service;
     private readonly ILogger<MediaServerSoundtrackMonitorService> _logger;
@@ -16,8 +17,19 @@ public sealed class MediaServerSoundtrackMonitorService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        try
+        {
+            await Task.Delay(InitialDelay, stoppingToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
+            await RunSyncIterationAsync(stoppingToken);
+
             try
             {
                 await Task.Delay(RefreshInterval, stoppingToken);
@@ -26,19 +38,23 @@ public sealed class MediaServerSoundtrackMonitorService : BackgroundService
             {
                 return;
             }
+        }
+    }
 
-            try
-            {
-                await _service.RefreshDiscoveredLibrariesAsync(stoppingToken);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Soundtrack monitor refresh failed.");
-            }
+    private async Task RunSyncIterationAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _service.RefreshDiscoveredLibrariesAsync(cancellationToken);
+            await _service.SyncPersistentMediaCacheAsync(fullRefresh: false, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Soundtrack monitor refresh failed.");
         }
     }
 }
