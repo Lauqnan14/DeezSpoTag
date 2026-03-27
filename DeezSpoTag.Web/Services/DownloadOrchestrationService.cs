@@ -40,6 +40,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
     private sealed class EnhancementScheduleState
     {
         public Dictionary<string, DateTimeOffset> LastRunByFolderId { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, string> LastScheduleByFolderId { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     private static readonly Regex ScheduleTokenRegex = new(
@@ -70,6 +71,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
     private readonly SemaphoreSlim _enhancementPauseLock = new(1, 1);
     private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(10);
     private readonly TimeSpan _downloadIdleDelay = TimeSpan.FromSeconds(15);
+    private readonly object _enhancementResumeLock = new();
+    private readonly HashSet<string> _pendingEnhancementResumeFolderIds = new(StringComparer.OrdinalIgnoreCase);
 
     private DateTimeOffset? _queueIdleSince;
     private DateTimeOffset _lastPipelineCompletedAt = DateTimeOffset.UtcNow;
@@ -108,6 +111,55 @@ public sealed class DownloadOrchestrationService : BackgroundService
     }
 
     public bool TaggingInProgress => _taggingInProgress || _autoTagService.HasRunningJobs();
+
+    private void QueueEnhancementResumeFolder(string folderId)
+    {
+        if (string.IsNullOrWhiteSpace(folderId))
+        {
+            return;
+        }
+
+        lock (_enhancementResumeLock)
+        {
+            _pendingEnhancementResumeFolderIds.Add(folderId.Trim());
+        }
+    }
+
+    private void QueueEnhancementResumeFolders(IEnumerable<string> folderIds)
+    {
+        if (folderIds == null)
+        {
+            return;
+        }
+
+        lock (_enhancementResumeLock)
+        {
+            foreach (var folderId in folderIds)
+            {
+                if (string.IsNullOrWhiteSpace(folderId))
+                {
+                    continue;
+                }
+
+                _pendingEnhancementResumeFolderIds.Add(folderId.Trim());
+            }
+        }
+    }
+
+    private List<string> ConsumeEnhancementResumeFolders()
+    {
+        lock (_enhancementResumeLock)
+        {
+            if (_pendingEnhancementResumeFolderIds.Count == 0)
+            {
+                return new List<string>();
+            }
+
+            var folders = _pendingEnhancementResumeFolderIds.ToList();
+            _pendingEnhancementResumeFolderIds.Clear();
+            return folders;
+        }
+    }
 
     public async Task<DownloadGateDecision> EvaluateDownloadGateAsync(CancellationToken cancellationToken = default)
     {
@@ -255,6 +307,10 @@ public sealed class DownloadOrchestrationService : BackgroundService
         var context = await PreparePipelineRunContextAsync(cancellationToken);
         if (context is null)
         {
+            // Resume-only path: enrichment context can be unavailable (for example, no
+            // pending completed downloads), but an interrupted enhancement run may still
+            // need to continue once the queue is idle.
+            await ResumeInterruptedEnhancementAfterEnrichmentAsync(cancellationToken);
             return;
         }
 
@@ -264,8 +320,41 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return;
         }
 
+        await ResumeInterruptedEnhancementAfterEnrichmentAsync(cancellationToken);
+        if (!await EnsurePipelineStillIdleAsync(cancellationToken))
+        {
+            return;
+        }
+
         await RunPostAutoTagStagesAsync(cancellationToken);
         _lastPipelineCompletedAt = context.PipelineStartedAt;
+    }
+
+    private async Task ResumeInterruptedEnhancementAfterEnrichmentAsync(CancellationToken cancellationToken)
+    {
+        var resumeFolderIds = ConsumeEnhancementResumeFolders();
+        if (resumeFolderIds.Count == 0)
+        {
+            return;
+        }
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"Automation: resuming interrupted enhancement after enrichment for folder(s): {string.Join(", ", resumeFolderIds)}."));
+
+        var pausedAgain = await RunEnhancementStageAsync(
+            forceRunEvenIfNotDue: true,
+            sourceLabel: "resume",
+            quietWhenNoDue: false,
+            cancellationToken: cancellationToken,
+            restrictedFolderIds: resumeFolderIds);
+
+        if (pausedAgain)
+        {
+            _pipelineRequested = true;
+            _queueIdleSince = null;
+        }
     }
 
     private async Task<PipelineRunContext?> PreparePipelineRunContextAsync(CancellationToken cancellationToken)
@@ -456,9 +545,14 @@ public sealed class DownloadOrchestrationService : BackgroundService
         bool forceRunEvenIfNotDue,
         string sourceLabel,
         bool quietWhenNoDue = false,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyCollection<string>? restrictedFolderIds = null)
     {
-        var plan = await BuildEnhancementTargetPlanAsync(forceRunEvenIfNotDue, quietWhenNoDue, cancellationToken);
+        var plan = await BuildEnhancementTargetPlanAsync(
+            forceRunEvenIfNotDue,
+            quietWhenNoDue,
+            cancellationToken,
+            restrictedFolderIds);
         if (plan is null)
         {
             return false;
@@ -487,10 +581,19 @@ public sealed class DownloadOrchestrationService : BackgroundService
     private async Task<EnhancementTargetPlan?> BuildEnhancementTargetPlanAsync(
         bool forceRunEvenIfNotDue,
         bool quietWhenNoDue,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyCollection<string>? restrictedFolderIds = null)
     {
         var now = DateTimeOffset.UtcNow;
         var targets = await ResolveEnhancementTargetsAsync(now, cancellationToken);
+        if (restrictedFolderIds != null && restrictedFolderIds.Count > 0)
+        {
+            var allowedFolderIds = restrictedFolderIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            targets = targets
+                .Where(target => allowedFolderIds.Contains(target.FolderId))
+                .ToList();
+        }
+
         var dueTargets = targets.Where(target => target.IsDue).ToList();
         var skippedBySchedule = targets.Where(target => !target.IsDue).ToList();
 
@@ -566,6 +669,11 @@ public sealed class DownloadOrchestrationService : BackgroundService
         {
             if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
             {
+                var remainingTargets = dueTargets
+                    .SkipWhile(candidate => !string.Equals(candidate.FolderId, target.FolderId, StringComparison.OrdinalIgnoreCase))
+                    .Select(candidate => candidate.FolderId)
+                    .ToList();
+                QueueEnhancementResumeFolders(remainingTargets);
                 _logger.LogInformation("Automation halted: downloads started before enhancement target {RootPath}.", target.RootPath);
                 _pipelineRequested = true;
                 _queueIdleSince = null;
@@ -674,6 +782,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
             && string.Equals(enhancementJob.Status, "canceled", StringComparison.OrdinalIgnoreCase)
             && _enhancementPauseRequested)
         {
+            QueueEnhancementResumeFolder(target.FolderId);
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
@@ -730,6 +839,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
             }
 
             _enhancementPauseRequested = true;
+            _pipelineRequested = true;
+            _queueIdleSince = null;
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
@@ -1077,6 +1188,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
         var schedules = profileContext.Defaults.LibrarySchedules ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var state = await LoadEnhancementScheduleStateAsync();
         var targets = new List<EnhancementTarget>();
+        var dirtyState = false;
+        var activeScheduleFolderIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var folder in folders)
         {
@@ -1094,9 +1207,30 @@ public sealed class DownloadOrchestrationService : BackgroundService
             {
                 continue;
             }
-            var lastRun = state.LastRunByFolderId.TryGetValue(key, out var storedLastRun)
-                ? storedLastRun
-                : (DateTimeOffset?)null;
+
+            activeScheduleFolderIds.Add(key);
+
+            var scheduleToken = BuildScheduleStateToken(interval);
+            var hadLastRun = state.LastRunByFolderId.TryGetValue(key, out var storedLastRun);
+            var previousScheduleToken = state.LastScheduleByFolderId.TryGetValue(key, out var existingScheduleToken)
+                ? existingScheduleToken
+                : null;
+
+            if (!string.Equals(previousScheduleToken, scheduleToken, StringComparison.OrdinalIgnoreCase))
+            {
+                state.LastScheduleByFolderId[key] = scheduleToken;
+                dirtyState = true;
+            }
+
+            // Seed first-run schedule baseline so newly scheduled folders do not run immediately.
+            if (!hadLastRun)
+            {
+                storedLastRun = now;
+                state.LastRunByFolderId[key] = storedLastRun;
+                dirtyState = true;
+            }
+
+            var lastRun = (DateTimeOffset?)storedLastRun;
             var isDue = !lastRun.HasValue || (now - lastRun.Value) >= interval;
 
             targets.Add(new EnhancementTarget(
@@ -1108,7 +1242,35 @@ public sealed class DownloadOrchestrationService : BackgroundService
                 lastRun));
         }
 
+        var staleScheduleFolders = state.LastRunByFolderId.Keys
+            .Where(folderId => !activeScheduleFolderIds.Contains(folderId))
+            .ToList();
+        foreach (var folderId in staleScheduleFolders)
+        {
+            state.LastRunByFolderId.Remove(folderId);
+            dirtyState = true;
+        }
+
+        var staleScheduleTokens = state.LastScheduleByFolderId.Keys
+            .Where(folderId => !activeScheduleFolderIds.Contains(folderId))
+            .ToList();
+        foreach (var folderId in staleScheduleTokens)
+        {
+            state.LastScheduleByFolderId.Remove(folderId);
+            dirtyState = true;
+        }
+
+        if (dirtyState)
+        {
+            await SaveEnhancementScheduleStateAsync(state);
+        }
+
         return targets;
+    }
+
+    private static string BuildScheduleStateToken(TimeSpan interval)
+    {
+        return interval.Ticks.ToString(CultureInfo.InvariantCulture);
     }
 
     private static bool TryParseScheduleInterval(string? rawSchedule, out TimeSpan interval)
@@ -1163,7 +1325,14 @@ public sealed class DownloadOrchestrationService : BackgroundService
             }
 
             var loaded = JsonSerializer.Deserialize<EnhancementScheduleState>(json, ScheduleJsonOptions);
-            return loaded ?? new EnhancementScheduleState();
+            if (loaded == null)
+            {
+                return new EnhancementScheduleState();
+            }
+
+            loaded.LastRunByFolderId ??= new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
+            loaded.LastScheduleByFolderId ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            return loaded;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
