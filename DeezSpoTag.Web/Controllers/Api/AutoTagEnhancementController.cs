@@ -6,6 +6,7 @@ using DeezSpoTag.Core.Models.Settings;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.RegularExpressions;
+using IOFile = System.IO.File;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -16,6 +17,7 @@ public class AutoTagEnhancementController : ControllerBase
 {
     private const string RunningStatus = "running";
     private const string NoLibraryFoldersMessage = "No enabled music library folders are available for folder uniformity.";
+    private const string FolderWriteAccessErrorPrefix = "Folder uniformity requires write access to all enabled music library folders.";
     private static readonly IReadOnlyList<string> NoLibraryFoldersErrors = new[] { NoLibraryFoldersMessage };
     private static readonly object FolderUniformityStateLock = new();
     private static FolderUniformityRunState? _folderUniformityRun;
@@ -307,6 +309,17 @@ public class AutoTagEnhancementController : ControllerBase
             return BuildFolderUniformityNoFoldersResult(runState?.JobId, options, runOrganizer, runDedupe);
         }
 
+        var folderWriteAccessErrors = ValidateFolderUniformityWriteAccess(enabledFolders);
+        if (folderWriteAccessErrors.Count > 0)
+        {
+            return BuildFolderUniformityWriteAccessFailureResult(
+                runState?.JobId,
+                options,
+                runOrganizer,
+                runDedupe,
+                folderWriteAccessErrors);
+        }
+
         var execution = new FolderUniformityExecutionState();
         var totalSteps = CalculateTotalSteps(runOrganizer, runDedupe, enabledFolders.Count);
         InitializeFolderUniformityExecutionState(runState?.JobId, options, enabledFolders.Count, totalSteps, runOrganizer, runDedupe);
@@ -496,6 +509,118 @@ public class AutoTagEnhancementController : ControllerBase
             Logs: Array.Empty<string>(),
             Errors: NoLibraryFoldersErrors,
             ValidationError: NoLibraryFoldersMessage);
+    }
+
+    private static FolderUniformityResultPayload BuildFolderUniformityWriteAccessFailureResult(
+        string? jobId,
+        object options,
+        bool runOrganizer,
+        bool runDedupe,
+        IReadOnlyList<string> errors)
+    {
+        var validationError = $"{FolderWriteAccessErrorPrefix} {errors[0]}";
+        UpdateFolderUniformityState(jobId, state =>
+        {
+            state.RunOrganizer = runOrganizer;
+            state.RunDedupe = runDedupe;
+            state.Options = options;
+            state.TotalFolders = 0;
+            state.TotalSteps = 0;
+            state.CompletedSteps = 0;
+            state.Phase = "Validation failed";
+            foreach (var error in errors.Take(MaxFolderUniformityLogs))
+            {
+                state.Errors.Add(error);
+            }
+        });
+
+        return new FolderUniformityResultPayload(
+            Success: false,
+            Skipped: false,
+            Message: FolderWriteAccessErrorPrefix,
+            FoldersProcessed: 0,
+            FoldersSkipped: 0,
+            Options: options,
+            Dedupe: null,
+            ReconciliationReports: Array.Empty<object>(),
+            Logs: Array.Empty<string>(),
+            Errors: errors,
+            ValidationError: validationError);
+    }
+
+    private static List<string> ValidateFolderUniformityWriteAccess(IReadOnlyList<FolderDto> folders)
+    {
+        var errors = new List<string>();
+        foreach (var rootPath in folders
+                     .Select(folder => folder.RootPath?.Trim())
+                     .Where(static path => !string.IsNullOrWhiteSpace(path))
+                     .Distinct(StringComparer.OrdinalIgnoreCase)
+                     .Cast<string>())
+        {
+            if (TryProbeFolderWriteAccess(rootPath, out var error))
+            {
+                continue;
+            }
+
+            errors.Add(error);
+        }
+
+        return errors;
+    }
+
+    private static bool TryProbeFolderWriteAccess(string rootPath, out string error)
+    {
+        var normalizedRoot = Path.GetFullPath(rootPath);
+        var probeDirectory = Path.Join(normalizedRoot, $".deezspotag-write-probe-{Guid.NewGuid():N}");
+        var probeFile = Path.Join(probeDirectory, "probe.tmp");
+        try
+        {
+            if (!Directory.Exists(normalizedRoot))
+            {
+                error = $"Folder '{normalizedRoot}' does not exist.";
+                return false;
+            }
+
+            Directory.CreateDirectory(probeDirectory);
+            IOFile.WriteAllText(probeFile, "probe");
+            IOFile.Delete(probeFile);
+            Directory.Delete(probeDirectory);
+            error = string.Empty;
+            return true;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            TryDeleteProbeArtifacts(probeFile, probeDirectory);
+            error = $"Folder '{normalizedRoot}' is not writable ({ex.Message}).";
+            return false;
+        }
+    }
+
+    private static void TryDeleteProbeArtifacts(string probeFile, string probeDirectory)
+    {
+        try
+        {
+            if (IOFile.Exists(probeFile))
+            {
+                IOFile.Delete(probeFile);
+            }
+        }
+        catch
+        {
+            // Best effort probe cleanup.
+        }
+
+        try
+        {
+            if (Directory.Exists(probeDirectory))
+            {
+                Directory.Delete(probeDirectory, recursive: true);
+            }
+        }
+        catch
+        {
+            // Best effort probe cleanup.
+        }
     }
 
     private async Task<List<FolderDto>> ResolveEnabledMusicFoldersAsync(
