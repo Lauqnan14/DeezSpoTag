@@ -905,16 +905,31 @@ public class AutoTagLibraryOrganizer
             return true;
         }
 
-        Directory.CreateDirectory(Path.GetDirectoryName(destinationDir) ?? destinationDir);
-        Directory.Move(sourceDir, destinationDir);
-        if (report != null)
+        try
         {
-            report.MovedFolders++;
+            Directory.CreateDirectory(Path.GetDirectoryName(destinationDir) ?? destinationDir);
+            Directory.Move(sourceDir, destinationDir);
+            if (report != null)
+            {
+                report.MovedFolders++;
+            }
+
+            _logger.LogInformation("AutoTag organizer moved folder {SourceDir} -> {DestinationDir}", sourceDir, destinationDir);
+            log?.Invoke($"organizer moved folder: {sourceDir} -> {destinationDir}");
+            report?.Entries.Add($"move-folder: {sourceDir} -> {destinationDir}");
+            return true;
         }
-        _logger.LogInformation("AutoTag organizer moved folder {SourceDir} -> {DestinationDir}", sourceDir, destinationDir);
-        log?.Invoke($"organizer moved folder: {sourceDir} -> {destinationDir}");
-        report?.Entries.Add($"move-folder: {sourceDir} -> {destinationDir}");
-        return true;
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            RecordOrganizerFailure(
+                report,
+                log,
+                "move folder",
+                sourceDir,
+                destinationDir,
+                ex);
+            return false;
+        }
     }
 
     private static bool IsPathUnderRoot(string path, string root)
@@ -961,25 +976,39 @@ public class AutoTagLibraryOrganizer
             return;
         }
 
-        Directory.CreateDirectory(action.DestinationDir);
-        MoveFileOverwrite(action.SourcePath, action.DestinationPath);
-        if (report != null)
+        try
         {
-            report.MovedFiles++;
+            Directory.CreateDirectory(action.DestinationDir);
+            MoveFileOverwrite(action.SourcePath, action.DestinationPath);
+            if (report != null)
+            {
+                report.MovedFiles++;
+            }
+
+            _logger.LogInformation("AutoTag organizer moved file {SourcePath} -> {DestinationPath}", action.SourcePath, action.DestinationPath);
+            log?.Invoke($"organizer moved file: {action.SourcePath} -> {action.DestinationPath}");
+            report?.Entries.Add($"move-file: {action.SourcePath} -> {action.DestinationPath}");
+            MoveSidecarFiles(new SidecarMoveContext(
+                rootPath,
+                action.SourceDir,
+                action.DestinationDir,
+                action.SourcePath,
+                action.DestinationPath,
+                options,
+                report,
+                log));
+            CleanupSourceDirectoryIfConfigured(rootPath, action.SourceDir, options, log);
         }
-        _logger.LogInformation("AutoTag organizer moved file {SourcePath} -> {DestinationPath}", action.SourcePath, action.DestinationPath);
-        log?.Invoke($"organizer moved file: {action.SourcePath} -> {action.DestinationPath}");
-        report?.Entries.Add($"move-file: {action.SourcePath} -> {action.DestinationPath}");
-        MoveSidecarFiles(new SidecarMoveContext(
-            rootPath,
-            action.SourceDir,
-            action.DestinationDir,
-            action.SourcePath,
-            action.DestinationPath,
-            options,
-            report,
-            log));
-        CleanupSourceDirectoryIfConfigured(rootPath, action.SourceDir, options, log);
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            RecordOrganizerFailure(
+                report,
+                log,
+                "move file",
+                action.SourcePath,
+                action.DestinationPath,
+                ex);
+        }
     }
 
     private bool HandleDuplicateFileCollision(
@@ -1839,30 +1868,44 @@ public class AutoTagLibraryOrganizer
             return false;
         }
 
-        if (ShouldMergeLyricsSidecar(sourcePath, target, context.Options))
+        try
         {
-            MergeLyricsSidecar(sourcePath, target);
-            TryDeleteFile(sourcePath);
-            if (context.Report != null)
+            if (ShouldMergeLyricsSidecar(sourcePath, target, context.Options))
             {
-                context.Report.MergedLyricsSidecars++;
+                MergeLyricsSidecar(sourcePath, target);
+                TryDeleteFile(sourcePath);
+                if (context.Report != null)
+                {
+                    context.Report.MergedLyricsSidecars++;
+                }
+
+                context.Report?.Entries.Add($"merge-lyrics-sidecar: {sourcePath} -> {target}");
+                context.Log?.Invoke($"organizer merged lyrics sidecar: {sourcePath} -> {target}");
+                return true;
             }
 
-            context.Report?.Entries.Add($"merge-lyrics-sidecar: {sourcePath} -> {target}");
-            context.Log?.Invoke($"organizer merged lyrics sidecar: {sourcePath} -> {target}");
+            MoveFileOverwrite(sourcePath, target);
+            if (context.Report != null)
+            {
+                context.Report.MovedSidecars++;
+            }
+
+            _logger.LogInformation("AutoTag organizer moved sidecar {SourcePath} -> {DestinationPath}", sourcePath, target);
+            context.Log?.Invoke($"organizer moved sidecar: {sourcePath} -> {target}");
+            context.Report?.Entries.Add($"move-sidecar: {sourcePath} -> {target}");
             return true;
         }
-
-        MoveFileOverwrite(sourcePath, target);
-        if (context.Report != null)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            context.Report.MovedSidecars++;
+            RecordOrganizerFailure(
+                context.Report,
+                context.Log,
+                "move sidecar",
+                sourcePath,
+                target,
+                ex);
+            return false;
         }
-
-        _logger.LogInformation("AutoTag organizer moved sidecar {SourcePath} -> {DestinationPath}", sourcePath, target);
-        context.Log?.Invoke($"organizer moved sidecar: {sourcePath} -> {target}");
-        context.Report?.Entries.Add($"move-sidecar: {sourcePath} -> {target}");
-        return true;
     }
 
     private void MoveRemainingFilesIfAlbumDone(string rootPath, string sourceDir, string destinationDir, Action<string>? log, AutoTagOrganizerOptions options, AutoTagOrganizerReport? report)
@@ -1883,14 +1926,28 @@ public class AutoTagLibraryOrganizer
                 continue;
             }
 
-            MoveFileOverwrite(file, target);
-            if (report != null)
+            try
             {
-                report.MovedLeftovers++;
+                MoveFileOverwrite(file, target);
+                if (report != null)
+                {
+                    report.MovedLeftovers++;
+                }
+
+                _logger.LogInformation("AutoTag organizer moved leftover {SourcePath} -> {DestinationPath}", file, target);
+                log?.Invoke($"organizer moved leftover: {file} -> {target}");
+                report?.Entries.Add($"move-leftover: {file} -> {target}");
             }
-            _logger.LogInformation("AutoTag organizer moved leftover {SourcePath} -> {DestinationPath}", file, target);
-            log?.Invoke($"organizer moved leftover: {file} -> {target}");
-            report?.Entries.Add($"move-leftover: {file} -> {target}");
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                RecordOrganizerFailure(
+                    report,
+                    log,
+                    "move leftover",
+                    file,
+                    target,
+                    ex);
+            }
         }
 
         if (!options.DryRun && options.RemoveEmptyFolders)
@@ -1966,28 +2023,41 @@ public class AutoTagLibraryOrganizer
         AutoTagOrganizerReport? report,
         Action<string>? log)
     {
-        var artistFolderName = Path.GetFileName(sourceArtistDir)?.Trim();
-        if (string.IsNullOrWhiteSpace(artistFolderName))
+        try
         {
-            return;
-        }
+            var artistFolderName = Path.GetFileName(sourceArtistDir)?.Trim();
+            if (string.IsNullOrWhiteSpace(artistFolderName))
+            {
+                return;
+            }
 
-        var expandedArtists = ExpandArtistNames(new[] { artistFolderName });
-        if (expandedArtists.Count <= 1)
-        {
-            return;
-        }
+            var expandedArtists = ExpandArtistNames(new[] { artistFolderName });
+            if (expandedArtists.Count <= 1)
+            {
+                return;
+            }
 
-        var primaryArtist = expandedArtists[0];
-        var targetArtistDir = ResolvePrimaryArtistDirectory(rootPath, primaryArtist);
-        if (string.Equals(sourceArtistDir, targetArtistDir, StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
+            var primaryArtist = expandedArtists[0];
+            var targetArtistDir = ResolvePrimaryArtistDirectory(rootPath, primaryArtist);
+            if (string.Equals(sourceArtistDir, targetArtistDir, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
 
-        foreach (var albumDir in Directory.EnumerateDirectories(sourceArtistDir).ToList())
+            foreach (var albumDir in Directory.EnumerateDirectories(sourceArtistDir).ToList())
+            {
+                ReconcileOrphanAlbumDirectory(rootPath, albumDir, targetArtistDir, options, report, log);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            ReconcileOrphanAlbumDirectory(rootPath, albumDir, targetArtistDir, options, report, log);
+            RecordOrganizerFailure(
+                report,
+                log,
+                "reconcile orphan artist folder",
+                sourceArtistDir,
+                destinationPath: null,
+                ex);
         }
     }
 
@@ -2271,9 +2341,19 @@ public class AutoTagLibraryOrganizer
                 break;
             }
 
-            Directory.Delete(current);
-            _logger.LogInformation("AutoTag organizer deleted empty folder {SourceDir}", current);
-            log?.Invoke($"organizer deleted empty folder: {current}");
+            try
+            {
+                Directory.Delete(current);
+                _logger.LogInformation("AutoTag organizer deleted empty folder {SourceDir}", current);
+                log?.Invoke($"organizer deleted empty folder: {current}");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "AutoTag organizer failed deleting empty folder {SourceDir}", current);
+                log?.Invoke($"organizer failed deleting empty folder: {current} ({ex.Message})");
+                break;
+            }
+
             current = Path.GetDirectoryName(current) ?? string.Empty;
         }
     }
@@ -2282,21 +2362,35 @@ public class AutoTagLibraryOrganizer
     {
         foreach (var artistDir in Directory.EnumerateDirectories(rootPath))
         {
-            if (EnumerateAudioFiles(artistDir, true).Any() || !TryGetArtistName(artistDir, out var artistName))
+            try
             {
-                continue;
-            }
+                if (EnumerateAudioFiles(artistDir, true).Any() || !TryGetArtistName(artistDir, out var artistName))
+                {
+                    continue;
+                }
 
-            if (HandleVariousArtistsFolderCleanup(artistDir, artistName, report, log))
-            {
-                continue;
-            }
+                if (HandleVariousArtistsFolderCleanup(artistDir, artistName, report, log))
+                {
+                    continue;
+                }
 
-            if (usePrimaryArtistFolders)
-            {
-                MovePrimaryArtistArtwork(rootPath, artistDir, artistName, log);
+                if (usePrimaryArtistFolders)
+                {
+                    MovePrimaryArtistArtwork(rootPath, artistDir, artistName, log);
+                }
+
+                DeleteArtistFolderIfEmpty(artistDir, log);
             }
-            DeleteArtistFolderIfEmpty(artistDir, log);
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                RecordOrganizerFailure(
+                    report,
+                    log,
+                    "cleanup artist folder",
+                    artistDir,
+                    destinationPath: null,
+                    ex);
+            }
         }
     }
 
@@ -2352,6 +2446,27 @@ public class AutoTagLibraryOrganizer
         Directory.Delete(artistDir);
         _logger.LogInformation("AutoTag organizer deleted empty artist folder {SourceDir}", artistDir);
         log?.Invoke($"organizer deleted empty artist folder: {artistDir}");
+    }
+
+    private void RecordOrganizerFailure(
+        AutoTagOrganizerReport? report,
+        Action<string>? log,
+        string action,
+        string sourcePath,
+        string? destinationPath,
+        Exception ex)
+    {
+        if (report != null)
+        {
+            report.SkippedConflicts++;
+        }
+
+        var logLine = string.IsNullOrWhiteSpace(destinationPath)
+            ? $"organizer failed to {action}: {sourcePath} ({ex.Message})"
+            : $"organizer failed to {action}: {sourcePath} -> {destinationPath} ({ex.Message})";
+        _logger.LogWarning(ex, "AutoTag organizer failed to {Action} {SourcePath} -> {DestinationPath}", action, sourcePath, destinationPath);
+        log?.Invoke(logLine);
+        report?.Entries.Add(logLine);
     }
 
 }
