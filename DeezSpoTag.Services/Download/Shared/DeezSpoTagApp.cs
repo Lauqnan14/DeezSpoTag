@@ -150,6 +150,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     private readonly object _queueLock = new object();
     private bool _isProcessingQueue = false;
     private bool _stopRequested = false;
+    private bool _startRequested = false;
     private string? _currentQueueUuid;
     private string? _pausedByUserUuid;
 
@@ -157,16 +158,27 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
     public async Task StartQueueAsync()
     {
+        var shouldStartProcessor = false;
+
         // Prevent multiple queue processors from running simultaneously
         lock (_queueLock)
         {
             if (_isProcessingQueue)
             {
-                _logger.LogDebug("Queue processor already running, skipping");
+                _startRequested = true;
+                _stopRequested = false;
+                _logger.LogDebug("Queue processor already running; marked start request.");
                 return;
             }
             _isProcessingQueue = true;
             _stopRequested = false;
+            _startRequested = false;
+            shouldStartProcessor = true;
+        }
+
+        if (!shouldStartProcessor)
+        {
+            return;
         }
 
         try
@@ -193,9 +205,18 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         }
         finally
         {
+            var shouldRestart = false;
             lock (_queueLock)
             {
                 _isProcessingQueue = false;
+                shouldRestart = _startRequested && !_stopRequested;
+                _startRequested = false;
+            }
+
+            if (shouldRestart)
+            {
+                _logger.LogInformation("Restarting queue processor after pending start request.");
+                _ = Task.Run(StartQueueAsync);
             }
         }
     }
@@ -411,24 +432,39 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
     public async Task PauseQueueAsync()
     {
-        _stopRequested = true;
-        if (!string.IsNullOrWhiteSpace(_currentQueueUuid))
+        string? currentQueueUuid;
+        lock (_queueLock)
         {
-            _cancellationRegistry.MarkUserPaused(_currentQueueUuid);
-            _cancellationRegistry.Cancel(_currentQueueUuid);
+            _stopRequested = true;
+            _startRequested = false;
+            currentQueueUuid = _currentQueueUuid;
+            if (!string.IsNullOrWhiteSpace(currentQueueUuid))
+            {
+                _pausedByUserUuid = currentQueueUuid;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(currentQueueUuid))
+        {
+            _cancellationRegistry.MarkUserPaused(currentQueueUuid);
+            _cancellationRegistry.Cancel(currentQueueUuid);
+            await _queueRepository.UpdateStatusAsync(currentQueueUuid, "paused");
+            Listener?.Send("updateQueue", new { uuid = currentQueueUuid, status = "paused" });
             lock (_queueLock)
             {
-                _pausedByUserUuid = _currentQueueUuid;
+                _currentQueueUuid = null;
             }
-            await _queueRepository.UpdateStatusAsync(_currentQueueUuid, "paused");
-            Listener?.Send("updateQueue", new { uuid = _currentQueueUuid, status = "paused" });
-            _currentQueueUuid = null;
             CurrentJob = null;
         }
     }
 
     public async Task EnsureQueueProcessorRunningAsync()
     {
+        lock (_queueLock)
+        {
+            _stopRequested = false;
+            _startRequested = true;
+        }
         await StartQueueAsync();
     }
 

@@ -88,8 +88,6 @@ public class ActivitiesController : Controller
             {
                 await _queueRepository.DeleteByStatusAsync(engine, CompletedStatus);
                 await _queueRepository.DeleteByStatusAsync(engine, CompleteStatus);
-                await _queueRepository.DeleteByStatusAsync(engine, CanceledStatus);
-                await _queueRepository.DeleteByStatusAsync(engine, CancelledStatus);
                 await _queueRepository.DeleteByStatusAsync(engine, SkippedStatus);
             }
             _deezspotagListener.SendRemovedFinishedDownloads();
@@ -99,6 +97,27 @@ public class ActivitiesController : Controller
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error clearing completed downloads");
+            return Json(new { success = false, error = ex.Message });
+        }
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> ClearCanceled()
+    {
+        try
+        {
+            foreach (var engine in GetEngines())
+            {
+                await _queueRepository.DeleteByStatusAsync(engine, CanceledStatus);
+                await _queueRepository.DeleteByStatusAsync(engine, CancelledStatus);
+            }
+            _deezspotagListener.SendRemovedFinishedDownloads();
+            _logger.LogInformation("Cleared canceled downloads");
+            return Json(new { success = true, message = "Canceled downloads cleared" });
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Error clearing canceled downloads");
             return Json(new { success = false, error = ex.Message });
         }
     }
