@@ -9202,38 +9202,22 @@ async function resolveManualSoundtrackSearch(button) {
         return;
     }
 
-    const suggestedQuery = String(requestPayload.title || '').trim();
-    const promptMessage = `Search soundtrack for ${suggestedQuery}\n\nPaste a Spotify/Deezer album/playlist URL or type a search query.`;
-    const manualQueryInput = globalThis.prompt(promptMessage, suggestedQuery);
-    if (manualQueryInput === null) {
-        return;
+    const params = new URLSearchParams();
+    params.set('term', String(requestPayload.title || '').trim());
+    params.set('type', 'all');
+    params.set('source', 'spotify');
+    params.set('mode', 'soundtrack');
+    params.set('contextType', String(requestPayload.category || '').trim().toLowerCase() || 'movie');
+    params.set('contextServerType', String(requestPayload.serverType || '').trim().toLowerCase());
+    params.set('contextLibraryId', String(requestPayload.libraryId || '').trim());
+    params.set('contextItemId', String(requestPayload.itemId || '').trim());
+    params.set('contextTitle', String(requestPayload.title || '').trim());
+    if (Number.isFinite(requestPayload.year)) {
+        params.set('contextYear', String(requestPayload.year));
     }
 
-    const manualQuery = String(manualQueryInput || '').trim();
-    if (!manualQuery) {
-        showToast('Manual soundtrack search was empty.', true);
-        return;
-    }
-
-    try {
-        const payload = await resolveSoundtrackForCard(
-            {
-                ...requestPayload,
-                manualQuery
-            },
-            button
-        );
-        const target = resolveSoundtrackTracklistTarget(payload?.soundtrack);
-        if (!target) {
-            showToast(`No soundtrack match found for ${requestPayload.title}.`, true);
-            return;
-        }
-
-        showToast(`Manual soundtrack match saved for ${requestPayload.title}.`);
-        await loadSoundtrackItems({ showLoadingSkeleton: false });
-    } catch (error) {
-        showToast(`Manual soundtrack search failed: ${error?.message || 'Unknown error'}`, true);
-    }
+    persistSoundtrackReturnState();
+    globalThis.location.href = `/Search?${params.toString()}`;
 }
 
 function setSoundtrackStatus(elements, text) {

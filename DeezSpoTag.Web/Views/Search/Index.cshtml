@@ -1,6 +1,8 @@
 @{
     ViewData["Title"] = $"Search Results - {ViewData["SearchTerm"]}";
     Layout = "~/Views/Shared/_Layout.cshtml";
+    var searchMode = (ViewData["SearchMode"]?.ToString() ?? string.Empty).Trim().ToLowerInvariant();
+    var soundtrackMode = searchMode == "soundtrack";
 }
 
 @section Styles {
@@ -479,7 +481,7 @@
 }
 
 <div class="search-header">
-    <h1 class="search-title">Search Results</h1>
+    <h1 class="search-title">@(soundtrackMode ? "Soundtrack Match Search" : "Search Results")</h1>
 <div class="search-meta">
     <span id="search-query">Searching for "@ViewData["SearchTerm"]"</span>
     <span id="search-count"></span>
@@ -493,19 +495,32 @@
     <li class="nav-item">
         <button class="nav-link source-btn active" type="button" role="tab" aria-selected="true" data-source="spotify" id="tab-spotify" data-bs-toggle="tab" data-bs-target="#search-source-spotify">Spotify</button>
     </li>
+    @if (!soundtrackMode)
+    {
     <li class="nav-item">
         <button class="nav-link source-btn" type="button" role="tab" aria-selected="false" data-source="apple" id="tab-apple" data-bs-toggle="tab" data-bs-target="#search-source-apple">Apple Music</button>
     </li>
+    }
 </ul>
 
 <div class="tab-content" id="searchSourceTabContent">
     <div class="tab-pane fade" id="search-source-deezer" role="tabpanel" aria-labelledby="tab-deezer">
         <div class="search-filters">
+            @if (soundtrackMode)
+            {
+            <a href="#" class="filter-btn action-btn action-btn-sm active" data-type="all" data-source="deezer">All</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="album" data-source="deezer">Albums</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="playlist" data-source="deezer">Playlists</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="compilation" data-source="deezer">Compilations</a>
+            }
+            else
+            {
             <a href="#" class="filter-btn action-btn action-btn-sm active" data-type="track" data-source="deezer">Tracks</a>
             <a href="#" class="filter-btn action-btn action-btn-sm" data-type="album" data-source="deezer">Albums</a>
             <a href="#" class="filter-btn action-btn action-btn-sm" data-type="artist" data-source="deezer">Artists</a>
             <a href="#" class="filter-btn action-btn action-btn-sm" data-type="playlist" data-source="deezer">Playlists</a>
             <a href="#" class="filter-btn action-btn action-btn-sm" data-type="station" data-source="deezer">Stations</a>
+            }
         </div>
 
         <div class="results-section">
@@ -520,11 +535,21 @@
 
     <div class="tab-pane fade show active" id="search-source-spotify" role="tabpanel" aria-labelledby="tab-spotify">
         <div class="search-filters">
+            @if (soundtrackMode)
+            {
+            <a href="#" class="filter-btn action-btn action-btn-sm active" data-type="all" data-source="spotify">All</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="album" data-source="spotify">Albums</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="playlist" data-source="spotify">Playlists</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="compilation" data-source="spotify">Compilations</a>
+            }
+            else
+            {
             <a href="#" class="filter-btn action-btn action-btn-sm active" data-type="track" data-source="spotify">Tracks</a>
             <a href="#" class="filter-btn action-btn action-btn-sm" data-type="album" data-source="spotify">Albums</a>
             <a href="#" class="filter-btn action-btn action-btn-sm" data-type="artist" data-source="spotify">Artists</a>
             <a href="#" class="filter-btn action-btn action-btn-sm" data-type="playlist" data-source="spotify">Playlists</a>
             <a href="#" class="filter-btn action-btn action-btn-sm" data-type="station" data-source="spotify">Stations</a>
+            }
         </div>
 
         <div class="results-section">
@@ -537,6 +562,8 @@
         </div>
     </div>
 
+    @if (!soundtrackMode)
+    {
     <div class="tab-pane fade" id="search-source-apple" role="tabpanel" aria-labelledby="tab-apple">
         <div class="search-filters">
             <a href="#" class="filter-btn action-btn action-btn-sm active" data-type="track" data-source="apple">Tracks</a>
@@ -566,6 +593,7 @@
             </div>
         </div>
     </div>
+    }
 
 </div>
 
@@ -573,7 +601,7 @@
 <script>
 let currentSearchTerm = '@ViewData["SearchTerm"]';
 let currentSearchType = '@ViewData["SearchType"]';
-let currentSearchSource = 'spotify';
+let currentSearchSource = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SearchSource"]?.ToString() ?? "spotify"));
 let activeSearchRequestId = 0;
 let appleVideoOffset = 0;
 let appleHasMoreVideos = false;
@@ -582,12 +610,29 @@ const selectedVideoKeys = new Set();
 let showSelectedOnly = false;
 const searchPreviewCache = new Map();
 const libraryExistenceCache = new Map();
-const searchSources = ['spotify', 'deezer', 'apple'];
+const searchMode = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SearchMode"]?.ToString() ?? string.Empty));
+const searchModeNormalized = String(searchMode || '').trim().toLowerCase();
+const soundtrackSearchMode = searchModeNormalized === 'soundtrack';
+const soundtrackSearchTypes = new Set(['all', 'album', 'playlist', 'compilation']);
+const searchSources = soundtrackSearchMode ? ['spotify', 'deezer'] : ['spotify', 'deezer', 'apple'];
+const soundtrackContextTypeRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextType"]?.ToString() ?? string.Empty));
+const soundtrackContextServerTypeRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextServerType"]?.ToString() ?? string.Empty));
+const soundtrackContextLibraryIdRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextLibraryId"]?.ToString() ?? string.Empty));
+const soundtrackContextItemIdRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextItemId"]?.ToString() ?? string.Empty));
+const soundtrackContextTitleRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextTitle"]?.ToString() ?? string.Empty));
+const soundtrackContextYearRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextYear"]?.ToString() ?? string.Empty));
+const soundtrackContextType = String(soundtrackContextTypeRaw || '').trim();
+const soundtrackContextServerType = String(soundtrackContextServerTypeRaw || '').trim().toLowerCase();
+const soundtrackContextLibraryId = String(soundtrackContextLibraryIdRaw || '').trim();
+const soundtrackContextItemId = String(soundtrackContextItemIdRaw || '').trim();
+const soundtrackContextTitle = String(soundtrackContextTitleRaw || '').trim();
+const soundtrackContextYear = String(soundtrackContextYearRaw || '').trim();
 const cachedSearchTerms = {};
+currentSearchSource = String(currentSearchSource || 'spotify').trim().toLowerCase();
 
-const validSearchTypes = new Set(['track', 'album', 'artist', 'playlist', 'station', 'atmos', 'video']);
+const validSearchTypes = new Set(['track', 'album', 'artist', 'playlist', 'station', 'atmos', 'video', 'all', 'compilation']);
 if (!validSearchTypes.has((currentSearchType || '').toLowerCase())) {
-    currentSearchType = 'track';
+    currentSearchType = soundtrackSearchMode ? 'all' : 'track';
 }
 
 function isValidURL(value) {
@@ -720,7 +765,7 @@ function redirectToDeezerEntity(type, id) {
         return true;
     }
 
-    window.location.href = `/Tracklist?id=${encodeURIComponent(normalizedId)}&type=${encodeURIComponent(normalizedType)}&source=deezer`;
+    navigateToTracklist(normalizedId, normalizedType, 'deezer');
     return true;
 }
 
@@ -731,8 +776,46 @@ function redirectToExternalPlaylistFlow(source, url) {
         return false;
     }
 
-    window.location.href = `/Tracklist?id=${encodeURIComponent(normalizedUrl)}&type=playlist&source=${encodeURIComponent(normalizedSource)}&externalUrl=${encodeURIComponent(normalizedUrl)}`;
+    navigateToTracklist(normalizedUrl, 'playlist', normalizedSource, { externalUrl: normalizedUrl });
     return true;
+}
+
+function hasSoundtrackContext() {
+    return soundtrackSearchMode
+        && Boolean(soundtrackContextServerType)
+        && Boolean(soundtrackContextLibraryId)
+        && Boolean(soundtrackContextItemId)
+        && Boolean(soundtrackContextTitle);
+}
+
+function appendSoundtrackContextToParams(params) {
+    if (!hasSoundtrackContext()) {
+        return;
+    }
+
+    if (soundtrackContextType) params.set('matchContextType', soundtrackContextType);
+    if (soundtrackContextServerType) params.set('matchContextServerType', soundtrackContextServerType);
+    if (soundtrackContextLibraryId) params.set('matchContextLibraryId', soundtrackContextLibraryId);
+    if (soundtrackContextItemId) params.set('matchContextItemId', soundtrackContextItemId);
+    if (soundtrackContextTitle) params.set('matchContextTitle', soundtrackContextTitle);
+    if (soundtrackContextYear) params.set('matchContextYear', soundtrackContextYear);
+}
+
+function navigateToTracklist(id, type, source, options = {}) {
+    const query = new URLSearchParams();
+    query.set('id', String(id || ''));
+    query.set('type', String(type || 'track'));
+    query.set('source', String(source || 'deezer'));
+    const externalUrl = String(options.externalUrl || '').trim();
+    if (externalUrl) {
+        query.set('externalUrl', externalUrl);
+    }
+    const appleUrl = String(options.appleUrl || '').trim();
+    if (appleUrl) {
+        query.set('appleUrl', appleUrl);
+    }
+    appendSoundtrackContextToParams(query);
+    window.location.href = `/Tracklist?${query.toString()}`;
 }
 
 function fallbackToDeezerLinkParseOrSearch(input, type) {
@@ -741,7 +824,7 @@ function fallbackToDeezerLinkParseOrSearch(input, type) {
             if (parsed.type === 'artist') {
                 window.location.href = `/Artist?id=${encodeURIComponent(parsed.id)}&source=deezer`;
             } else {
-                window.location.href = `/Tracklist?id=${encodeURIComponent(parsed.id)}&type=${encodeURIComponent(parsed.type)}&source=deezer`;
+                navigateToTracklist(parsed.id, parsed.type, 'deezer');
             }
         })
         .catch((error) => {
@@ -756,8 +839,11 @@ document.addEventListener('DOMContentLoaded', function() {
     setupInfiniteScroll();
     const urlParams = new URLSearchParams(window.location.search);
     const sourceParam = (urlParams.get('source') || '').toLowerCase();
-    if (['deezer', 'spotify', 'apple'].includes(sourceParam)) {
+    if (searchSources.includes(sourceParam)) {
         currentSearchSource = sourceParam;
+    }
+    if (!searchSources.includes((currentSearchSource || '').toLowerCase())) {
+        currentSearchSource = 'spotify';
     }
     currentSearchType = normalizeTypeForSource(currentSearchSource, currentSearchType);
     updateActiveSource(currentSearchSource);
@@ -795,7 +881,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                         performSearch(currentSearchTerm, currentSearchType);
                                     });
                             } else {
-                                window.location.href = `/Tracklist?id=${encodeURIComponent(metadata.id)}&type=${encodeURIComponent(metadata.type || 'track')}&source=spotify`;
+                                navigateToTracklist(metadata.id, metadata.type || 'track', 'spotify');
                             }
                             return;
                         }
@@ -813,7 +899,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (appleLink.type === 'artist') {
                         window.location.href = `/Artist?id=${encodeURIComponent(appleLink.id)}&source=apple`;
                     } else {
-                        window.location.href = `/Tracklist?id=${encodeURIComponent(appleLink.id)}&type=${encodeURIComponent(appleLink.type)}&source=apple&appleUrl=${encodeURIComponent(appleLink.url)}`;
+                        navigateToTracklist(appleLink.id, appleLink.type, 'apple', { externalUrl: appleLink.url, appleUrl: appleLink.url });
                     }
                     return;
                 }
@@ -1112,6 +1198,50 @@ function getResultsForType(type, source) {
     };
 
     const isAtmosOnly = (item) => Boolean(item && item.hasAtmos);
+    if (soundtrackSearchMode && (source === 'spotify' || source === 'deezer')) {
+        const sourceData = source === 'spotify'
+            ? (cachedResults.spotify || {})
+            : (cachedResults.deezer || {});
+        const dedupeMixed = (rows) => {
+            const seen = new Set();
+            const unique = [];
+            rows.forEach(item => {
+                const key = `${item?.__kind || item?.type || ''}|${item?.spotifyId || item?.deezerId || item?.id || ''}|${item?.name || ''}`.toLowerCase();
+                if (seen.has(key)) {
+                    return;
+                }
+                seen.add(key);
+                unique.push(item);
+            });
+            return unique;
+        };
+        const albums = (sourceData.albums || []).map(item => ({ ...item, __kind: 'album' }));
+        const playlists = (sourceData.playlists || []).map(item => ({ ...item, __kind: 'playlist' }));
+        const isCompilationLike = (item) => {
+            const value = `${item?.name || ''} ${item?.album || ''} ${item?.artist || ''}`.toLowerCase();
+            return value.includes('compilation')
+                || value.includes('original motion picture soundtrack')
+                || value.includes('music from')
+                || value.includes('soundtrack')
+                || value.includes('ost')
+                || value.includes('score');
+        };
+
+        if (type === 'all') {
+            return dedupeMixed([...albums, ...playlists]);
+        }
+        if (type === 'album') {
+            return albums;
+        }
+        if (type === 'playlist') {
+            return playlists;
+        }
+        if (type === 'compilation') {
+            return dedupeMixed([...albums, ...playlists].filter(isCompilationLike));
+        }
+        return [];
+    }
+
     if (type === 'atmos') {
         if (source !== 'apple') return [];
         const appleTracks = (cachedResults.apple?.tracks || []).filter(isAtmosOnly).map(t => ({ ...t, __kind: 'track' }));
@@ -1329,6 +1459,9 @@ function displayResults(results, type) {
 }
 
 function renderResultCard(item, type) {
+    const resolvedType = (type === 'all' || type === 'compilation')
+        ? String(item?.__kind || item?.type || 'album').toLowerCase()
+        : type;
     let imageUrl = '';
     let title = '';
     let artist = '';
@@ -1340,7 +1473,7 @@ function renderResultCard(item, type) {
     let qobuzQualityHtml = '';
     let effectiveType = type;
     
-    switch (type) {
+    switch (resolvedType) {
         case 'track':
         case 'atmos':
             effectiveType = item.__kind || (type === 'atmos' ? 'track' : type);
@@ -1447,19 +1580,19 @@ function renderResultCard(item, type) {
         ? `<img src="${escapeHtml(imageUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove();" />`
         : '';
 
-    const selectedClass = (type === 'video' && videoKey && isVideoSelected(videoKey)) ? ' selected' : '';
-    const extraClass = type === 'video' ? ' video' : '';
-    const isAppleAudioTrackCard = currentSearchSource === 'apple' && effectiveType === 'track' && type !== 'video';
+    const selectedClass = (resolvedType === 'video' && videoKey && isVideoSelected(videoKey)) ? ' selected' : '';
+    const extraClass = resolvedType === 'video' ? ' video' : '';
+    const isAppleAudioTrackCard = currentSearchSource === 'apple' && effectiveType === 'track' && resolvedType !== 'video';
     const audioPreviewButton = isAppleAudioTrackCard && previewUrl
         ? `<button class="audio-preview-btn" type="button" aria-label="Play preview" onclick="event.stopPropagation(); playSearchPreview('', '', '${escapeJsString(appleUrl)}', '${escapeJsString(item.appleId || '')}', '${escapeJsString(previewUrl)}', 'apple')">
                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
            </button>`
         : '';
 
-    const libKeyRaw = (type === 'track' || type === 'atmos') ? buildLibraryCheckKey(item) : '';
+    const libKeyRaw = (resolvedType === 'track' || resolvedType === 'atmos') ? buildLibraryCheckKey(item) : '';
     const libKeyAttr = libKeyRaw ? ` data-lib-key="${escapeHtml(libKeyRaw).replace(/"/g, '&quot;')}"` : '';
 
-    const isVideoCard = type === 'video';
+    const isVideoCard = resolvedType === 'video';
     const showLibraryBadge = isVideoCard && item?.inLibrary && (effectiveType === 'track' || type === 'track' || type === 'atmos');
     const libraryBadge = showLibraryBadge
         ? `<div class="result-badge">In Library</div>`
@@ -1702,7 +1835,7 @@ function openUnifiedTracklist(id, type, source) {
     if (!id) {
         return;
     }
-    window.location.href = `/Tracklist?id=${encodeURIComponent(id)}&type=${encodeURIComponent(type)}&source=${encodeURIComponent(source)}`;
+    navigateToTracklist(id, type, source);
 }
 
 async function playSearchPreview(deezerId, spotifyId, appleUrl, appleId, nativePreviewUrl = '', source = '') {
@@ -1863,6 +1996,14 @@ function escapeJsString(value) {
 }
 
 function normalizeTypeForSource(source, type) {
+    if (soundtrackSearchMode) {
+        const normalized = String(type || '').trim().toLowerCase();
+        if (soundtrackSearchTypes.has(normalized)) {
+            return normalized;
+        }
+        return 'all';
+    }
+
     if (source !== 'apple' && (type === 'atmos' || type === 'video')) {
         return 'track';
     }

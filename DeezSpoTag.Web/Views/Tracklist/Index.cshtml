@@ -57,9 +57,20 @@
 }
 
 .tracklist-header-actions {
-    margin-left: auto;
     position: relative;
     align-self: flex-start;
+}
+
+.tracklist-header-utility {
+    margin-left: auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.tracklist-soundtrack-match-btn {
+    min-height: 42px;
+    white-space: nowrap;
 }
 
 .tracklist-header-menu-btn {
@@ -76,6 +87,17 @@
 .tracklist-header-menu-btn:hover {
     border-color: color-mix(in srgb, var(--primary-color) 45%, transparent);
     background: rgba(8, 15, 28, 0.92);
+}
+
+@@media (max-width: 900px) {
+    .tracklist-header-utility {
+        width: 100%;
+        justify-content: flex-end;
+    }
+
+    .tracklist-soundtrack-match-btn {
+        max-width: 100%;
+    }
 }
 
 .tracklist-header-dropdown {
@@ -1337,6 +1359,15 @@ const boomplayDeezerSimilarMode = (() => {
     return deezerSimilarParam === '1';
 })();
 const tracklistLibraryId = '@Html.Raw(ViewData["LibraryId"] ?? "")';
+const soundtrackMatchContextType = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["MatchContextType"]?.ToString() ?? ""));
+const soundtrackMatchContextServerType = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["MatchContextServerType"]?.ToString() ?? ""));
+const soundtrackMatchContextLibraryId = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["MatchContextLibraryId"]?.ToString() ?? ""));
+const soundtrackMatchContextItemId = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["MatchContextItemId"]?.ToString() ?? ""));
+const soundtrackMatchContextTitle = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["MatchContextTitle"]?.ToString() ?? ""));
+const soundtrackMatchContextYearRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["MatchContextYear"]?.ToString() ?? ""));
+const soundtrackMatchContextYear = Number.isFinite(Number(soundtrackMatchContextYearRaw))
+    ? Number(soundtrackMatchContextYearRaw)
+    : null;
 const externalDeezerMatchCache = new Map();
 const externalDeezerMatchInFlight = new Map();
 const deezerPlaybackContextCache = new Map();
@@ -1434,6 +1465,110 @@ function isPodcastTracklistContext() {
     return normalizedType === 'show'
         || normalizedType === 'episode'
         || normalizedType === 'podcast';
+}
+
+function hasSoundtrackMatchContext() {
+    return Boolean(String(soundtrackMatchContextServerType || '').trim())
+        && Boolean(String(soundtrackMatchContextLibraryId || '').trim())
+        && Boolean(String(soundtrackMatchContextItemId || '').trim())
+        && Boolean(String(soundtrackMatchContextTitle || '').trim());
+}
+
+function mapSoundtrackMatchCategory() {
+    const contextType = String(soundtrackMatchContextType || '').trim().toLowerCase();
+    return contextType === 'tv_show'
+        || contextType === 'episode'
+        || contextType === 'season'
+        ? 'tv_show'
+        : 'movie';
+}
+
+function getTracklistManualMatchTargetUrl() {
+    const source = String(requestSource || tracklistSource || '').trim().toLowerCase();
+    const type = String(tracklistType || '').trim().toLowerCase();
+    const normalizedId = String(tracklistId || '').trim();
+    const externalUrl = String(tracklistExternalUrl || tracklistAppleUrl || '').trim();
+
+    if (externalUrl && /(?:open\.spotify\.com|deezer\.com)/i.test(externalUrl)) {
+        return externalUrl;
+    }
+
+    if (!normalizedId) {
+        return '';
+    }
+
+    if (source === 'spotify' && (type === 'album' || type === 'playlist' || type === 'track')) {
+        return `https://open.spotify.com/${type}/${encodeURIComponent(normalizedId)}`;
+    }
+
+    if (source === 'deezer' && (type === 'album' || type === 'playlist' || type === 'track')) {
+        return `https://www.deezer.com/${type}/${encodeURIComponent(normalizedId)}`;
+    }
+
+    return externalUrl;
+}
+
+async function matchCurrentTracklistToSoundtrackContext(button) {
+    if (!hasSoundtrackMatchContext()) {
+        return;
+    }
+
+    const manualQuery = getTracklistManualMatchTargetUrl();
+    if (!manualQuery) {
+        showTracklistToast('No Spotify/Deezer tracklist URL available to save this soundtrack match.', 'warning');
+        return;
+    }
+
+    const payload = {
+        serverType: String(soundtrackMatchContextServerType || '').trim().toLowerCase(),
+        libraryId: String(soundtrackMatchContextLibraryId || '').trim(),
+        category: mapSoundtrackMatchCategory(),
+        itemId: String(soundtrackMatchContextItemId || '').trim(),
+        title: String(soundtrackMatchContextTitle || '').trim(),
+        year: Number.isFinite(soundtrackMatchContextYear) ? soundtrackMatchContextYear : null,
+        manualQuery
+    };
+
+    const label = button?.querySelector('[data-match-label]');
+    if (button) {
+        button.disabled = true;
+    }
+    if (label) {
+        label.textContent = 'Matching...';
+    }
+
+    try {
+        const result = await fetchJson('/api/media-server/soundtracks/resolve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const matchedTitle = String(result?.soundtrack?.title || soundtrackMatchContextTitle || 'item').trim();
+        showTracklistToast(`Soundtrack matched for ${matchedTitle}.`, 'success');
+        if (label) {
+            label.textContent = 'Matched';
+        }
+    } catch (error) {
+        showTracklistToast(`Soundtrack match failed: ${error?.message || 'Unknown error'}`, 'error');
+        if (label) {
+            label.textContent = 'Match';
+        }
+    } finally {
+        if (button) {
+            button.disabled = false;
+        }
+    }
+}
+
+function bindSoundtrackTracklistMatchButton() {
+    const button = document.getElementById('tracklist-soundtrack-match-btn');
+    if (!button) {
+        return;
+    }
+
+    button.addEventListener('click', async () => {
+        await matchCurrentTracklistToSoundtrackContext(button);
+    });
 }
 
 function setDestinationContentMode(select, contentMode) {
@@ -2910,6 +3045,12 @@ function renderTracklist(data, options = {}) {
     }
     
     const fallbackAlbumTitle = tracklistType === 'track' ? title : '';
+    const soundtrackMatchButton = hasSoundtrackMatchContext()
+        ? `<button class="btn btn-secondary action-btn tracklist-soundtrack-match-btn" id="tracklist-soundtrack-match-btn" type="button" title="Match this soundtrack to ${escapeHtml(soundtrackMatchContextTitle)}">
+                <span class="material-icons">playlist_add_check</span>
+                <span data-match-label>Match</span>
+           </button>`
+        : '';
     container.innerHTML = `
         <div class="tracklist-content">
             <div class="tracklist-header" style="background-image: url('${backgroundImage}')">
@@ -2932,31 +3073,34 @@ function renderTracklist(data, options = {}) {
                         </div>
                         ${releaseDate ? `<div class="release-date">${releaseDate}</div>` : ''}
                     </div>
-                    <div class="tracklist-header-actions" id="tracklist-header-actions" style="display:none;">
-                        <button class="tracklist-header-menu-btn" id="tracklist-header-actions-toggle" type="button" aria-label="Playlist actions" aria-expanded="false">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
-                        </button>
-                        <div class="tracklist-header-dropdown" id="tracklist-header-actions-dropdown" hidden>
-                            <button type="button" class="dropdown-item" data-tracklist-monitor-action="manage-settings">
-                                <span class="material-icons">tune</span>
-                                <span>Manage settings</span>
+                    <div class="tracklist-header-utility">
+                        ${soundtrackMatchButton}
+                        <div class="tracklist-header-actions" id="tracklist-header-actions" style="display:none;">
+                            <button class="tracklist-header-menu-btn" id="tracklist-header-actions-toggle" type="button" aria-label="Playlist actions" aria-expanded="false">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
                             </button>
-                            <button type="button" class="dropdown-item" data-tracklist-monitor-action="sync">
-                                <span class="material-icons">sync</span>
-                                <span>Sync now</span>
-                            </button>
-                            <button type="button" class="dropdown-item" data-tracklist-monitor-action="refresh-artwork">
-                                <span class="material-icons">image</span>
-                                <span>Refresh artwork</span>
-                            </button>
-                            <button type="button" class="dropdown-item" data-tracklist-monitor-action="artwork-history">
-                                <span class="material-icons">collections</span>
-                                <span>Artwork history</span>
-                            </button>
-                            <button type="button" class="dropdown-item danger" data-tracklist-monitor-action="remove">
-                                <span class="material-icons">delete</span>
-                                <span>Stop monitoring</span>
-                            </button>
+                            <div class="tracklist-header-dropdown" id="tracklist-header-actions-dropdown" hidden>
+                                <button type="button" class="dropdown-item" data-tracklist-monitor-action="manage-settings">
+                                    <span class="material-icons">tune</span>
+                                    <span>Manage settings</span>
+                                </button>
+                                <button type="button" class="dropdown-item" data-tracklist-monitor-action="sync">
+                                    <span class="material-icons">sync</span>
+                                    <span>Sync now</span>
+                                </button>
+                                <button type="button" class="dropdown-item" data-tracklist-monitor-action="refresh-artwork">
+                                    <span class="material-icons">image</span>
+                                    <span>Refresh artwork</span>
+                                </button>
+                                <button type="button" class="dropdown-item" data-tracklist-monitor-action="artwork-history">
+                                    <span class="material-icons">collections</span>
+                                    <span>Artwork history</span>
+                                </button>
+                                <button type="button" class="dropdown-item danger" data-tracklist-monitor-action="remove">
+                                    <span class="material-icons">delete</span>
+                                    <span>Stop monitoring</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2970,6 +3114,7 @@ function renderTracklist(data, options = {}) {
     `;
 
     bindTracklistHeaderActions();
+    bindSoundtrackTracklistMatchButton();
     if (!isLocalSource) {
         void updateMonitorButtonState();
     }
