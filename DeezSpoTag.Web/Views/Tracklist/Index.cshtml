@@ -547,6 +547,22 @@
     cursor: not-allowed;
 }
 
+.track-number .preview-controls.is-pending {
+    opacity: 0.8;
+    cursor: pointer;
+}
+
+.track-number .preview-controls.is-resolving {
+    color: var(--primary-color);
+    animation: track-preview-resolving-pulse 0.9s ease-in-out infinite;
+}
+
+@@keyframes track-preview-resolving-pulse {
+    0% { opacity: 0.45; }
+    50% { opacity: 1; }
+    100% { opacity: 0.45; }
+}
+
 /* Show play icon on row hover, hide number */
 .tracks-table tbody tr:hover .track-number .track-num {
     display: none;
@@ -1422,6 +1438,7 @@ const externalMatchInitialBatchSize = 24;
 const externalMatchBackgroundBatchSize = 96;
 const externalMatchMaxConcurrent = 4;
 const externalMatchLowConcurrencyCap = 2;
+const externalMatchHighConcurrencyCap = 2;
 const externalResolverScheduler = {
     activeHigh: 0,
     activeLow: 0,
@@ -3994,25 +4011,39 @@ async function ensureRowPreviewForPlayback(row, control) {
         return '';
     }
 
-    let deezerId = externalDeezerMatchCache.get(request.link) || '';
-    if (!deezerId) {
-        deezerId = await resolveExternalRequestToDeezer(request, source, row, { priority: 'high' });
-    }
-    if (!/^\d+$/.test(deezerId)) {
-        return '';
-    }
-
-    const context = getDeezerPlaybackContextForRow(row, deezerId);
-    const previewUrl = buildDeezerStreamUrl(deezerId, {
-        type: getRowPlaybackTypeHint(row),
-        context
-    });
-    control.setAttribute('data-preview', previewUrl);
+    const originalIcon = control.textContent;
+    control.classList.add('is-resolving');
     control.classList.remove('is-disabled');
-    if (!context) {
-        void ensureDeezerPlaybackContextForRow(row, deezerId);
+    control.classList.add('is-pending');
+    control.textContent = 'hourglass_top';
+
+    try {
+        let deezerId = externalDeezerMatchCache.get(request.link) || '';
+        if (!deezerId) {
+            deezerId = await resolveExternalRequestToDeezer(request, source, row, { priority: 'high' });
+        }
+        if (!/^\d+$/.test(deezerId)) {
+            return '';
+        }
+
+        const context = getDeezerPlaybackContextForRow(row, deezerId);
+        const previewUrl = buildDeezerStreamUrl(deezerId, {
+            type: getRowPlaybackTypeHint(row),
+            context
+        });
+        control.setAttribute('data-preview', previewUrl);
+        control.classList.remove('is-disabled');
+        control.classList.remove('is-pending');
+        if (!context) {
+            void ensureDeezerPlaybackContextForRow(row, deezerId);
+        }
+        return previewUrl;
+    } finally {
+        control.classList.remove('is-resolving');
+        if (!control.hasAttribute('playing')) {
+            control.textContent = originalIcon || 'play_arrow';
+        }
     }
-    return previewUrl;
 }
 
 function applyExternalMatchToRow(row, deezerId) {
@@ -4046,18 +4077,24 @@ function applyMatchedRowState(row, deezerId, updateIgnoreButton) {
             ignoreButton.setAttribute('data-ignore-track-id', deezerId);
         }
     }
+    const source = getRowTrackSource(row);
+    const canRetryMatch = !deezerId
+        && isDeezerMatchedExternalSource(source)
+        && !!buildExternalMatchRequestFromRow(row);
     row.dataset.availabilityDeezerId = deezerId;
-    row.classList.toggle('track-row-dead', !deezerId);
+    row.classList.toggle('track-row-dead', !deezerId && !canRetryMatch);
     const previewControl = row.querySelector('.preview-controls');
     if (previewControl) {
         if (deezerId) {
             previewControl.setAttribute('data-preview', preview);
             previewControl.classList.remove('is-disabled');
+            previewControl.classList.remove('is-pending');
             previewControl.setAttribute('title', 'Play Track');
         } else {
             previewControl.setAttribute('data-preview', '');
-            previewControl.classList.add('is-disabled');
-            previewControl.setAttribute('title', 'No Deezer match');
+            previewControl.classList.toggle('is-disabled', !canRetryMatch);
+            previewControl.classList.toggle('is-pending', canRetryMatch);
+            previewControl.setAttribute('title', canRetryMatch ? 'Match and play track' : 'No Deezer match');
         }
     }
 
@@ -4266,6 +4303,18 @@ function drainExternalResolverQueue() {
 function runExternalResolverTask(work, priority = 'low') {
     return new Promise((resolve, reject) => {
         const task = { work, resolve, reject };
+        if (priority === 'high' && externalResolverScheduler.activeHigh < externalMatchHighConcurrencyCap) {
+            externalResolverScheduler.activeHigh += 1;
+            Promise.resolve()
+                .then(task.work)
+                .then(task.resolve, task.reject)
+                .finally(() => {
+                    externalResolverScheduler.activeHigh = Math.max(0, externalResolverScheduler.activeHigh - 1);
+                    drainExternalResolverQueue();
+                });
+            return;
+        }
+
         if (priority === 'high') {
             externalResolverScheduler.queueHigh.push(task);
         } else {
@@ -5570,7 +5619,14 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
         const isDeadSpotifyRow = isSpotifyExternalSource && !deezerId;
         const isDeadBoomplayRow = isBoomplayExternalSource && !deezerId;
         const isDeadGenericExternalRow = isGenericExternalSource && !deezerId;
-        const isDeadExternalRow = isDeadSpotifyRow || isDeadBoomplayRow || isDeadGenericExternalRow;
+        const supportsOnDemandMatch = isDeezerMatchedExternalSource(playbackSource);
+        const hasResolvableExternalLink = !!String(track.link || track.sourceUrl || track.appleUrl || '').trim()
+            || (isSpotifyExternalSource && !!spotifyId);
+        const isPendingExternalRow = (isDeadSpotifyRow || isDeadBoomplayRow || isDeadGenericExternalRow)
+            && supportsOnDemandMatch
+            && hasResolvableExternalLink;
+        const isDeadExternalRow = (isDeadSpotifyRow || isDeadBoomplayRow || isDeadGenericExternalRow)
+            && !isPendingExternalRow;
         const rowSourceAttr = escapeHtml(playbackSource);
         const rowClass = isDeadExternalRow ? ' class="track-row-dead"' : '';
         const checkboxDisabledAttr = isDeadExternalRow ? ' disabled aria-disabled="true" title="Waiting for Deezer match"' : ' title="Select track"';
@@ -5589,9 +5645,11 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
                 })
                 : (track.preview || ''));
         const hasPreview = !!previewUrl;
+        const canResolveOnDemand = !hasPreview && isPendingExternalRow;
+        const previewClass = hasPreview ? '' : (canResolveOnDemand ? ' is-pending' : ' is-disabled');
         const previewLabel = hasPreview
             ? (isPodcastShow ? 'Play Episode' : 'Play Track')
-            : 'No Deezer match';
+            : (canResolveOnDemand ? 'Match and play track' : 'No Deezer match');
         const albumTitle = escapeHtml(track.album?.title || fallbackAlbumTitle || 'Unknown');
         const collectionCell = isPlaylistLike
             ? (isPodcastShow
@@ -5602,7 +5660,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
         <tr${rowClass} data-track-index="${track.index ?? index}" data-track-source="${rowSourceAttr}"${spotifyId ? ` data-spotify-id="${spotifyId}"` : ''}${availabilityKeyAttr}${availabilitySpotifyAttr}${availabilityUrlAttr}${availabilityIsrcAttr}${availabilityTitleAttr}${availabilityArtistAttr}${availabilityDurationAttr}${availabilityDeezerAttr}${streamTrackIdAttr}${trackTokenAttr}${md5OriginAttr}${mediaVersionAttr}>
             <td class="track-number">
                 <span class="track-num">${track.track_position || index + 1}</span>
-                <span class="material-icons preview-controls${hasPreview ? '' : ' is-disabled'}"
+                <span class="material-icons preview-controls${previewClass}"
                       data-preview="${previewUrl}"
                       data-link-only="${track.link || ''}"
                       onclick="playPausePreview(this)"
@@ -5897,8 +5955,9 @@ async function playPausePreview(control) {
     }
 
     if (!previewUrl) {
-        if (isSpotifyPlaylistDeezerMatchContext() && window.DeezSpoTag?.ui?.showToast) {
-            DeezSpoTag.ui.showToast('No Deezer match available for this track.', { type: 'warning' });
+        const source = row ? getRowTrackSource(row) : '';
+        if (isDeezerMatchedExternalSource(source) && window.DeezSpoTag?.ui?.showToast) {
+            DeezSpoTag.ui.showToast('No Deezer match available yet for this track.', { type: 'warning' });
             return;
         }
         if (linkOnly) {
