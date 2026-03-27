@@ -17,6 +17,8 @@ coverage*.xml
 reports/
 DeezSpoTag.Web/Tools/venv/
 .jscpd-report/
+.jscpd*/
+.tmp/jscpd*/
 .scan.lock
 
 # Local caches and temp files
