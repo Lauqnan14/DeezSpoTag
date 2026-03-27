@@ -522,9 +522,10 @@ public sealed class LibraryRecommendationService
                 scope.StationId);
             enriched = eligible;
         }
-        var cappedTracks = enriched
-            .Take(cappedLimit)
-            .ToList();
+        var cappedTracks = BuildDiversifiedTrackSelection(
+            enriched,
+            cappedLimit,
+            dayUtc);
         var imageUrl = stationImageUrl
             ?? cappedTracks
                 .Select(track => track.Album?.CoverMedium)
@@ -2227,6 +2228,97 @@ public sealed class LibraryRecommendationService
         }
 
         return merged;
+    }
+
+    private sealed record RecommendationLane(string Key, Queue<RecommendationTrackDto> Tracks);
+
+    private static List<RecommendationTrackDto> BuildDiversifiedTrackSelection(
+        IReadOnlyList<RecommendationTrackDto> tracks,
+        int limit,
+        DateOnly dayUtc)
+    {
+        var cappedLimit = Math.Clamp(limit, 1, MaxDailyRecommendations);
+        if (tracks.Count == 0)
+        {
+            return new List<RecommendationTrackDto>();
+        }
+
+        if (tracks.Count <= cappedLimit)
+        {
+            return tracks
+                .Select((track, index) => track with { TrackPosition = index + 1 })
+                .ToList();
+        }
+
+        var lanes = tracks
+            .GroupBy(BuildRecommendationLaneKey, StringComparer.Ordinal)
+            .Select(group => new RecommendationLane(
+                group.Key,
+                new Queue<RecommendationTrackDto>(group)))
+            .OrderBy(lane => ComputeStableHash($"{dayUtc:yyyyMMdd}:{lane.Key}"))
+            .ThenBy(lane => lane.Key, StringComparer.Ordinal)
+            .ToList();
+
+        if (lanes.Count == 0)
+        {
+            return tracks
+                .Take(cappedLimit)
+                .Select((track, index) => track with { TrackPosition = index + 1 })
+                .ToList();
+        }
+
+        var selected = new List<RecommendationTrackDto>(cappedLimit);
+        while (selected.Count < cappedLimit && lanes.Count > 0)
+        {
+            for (var index = 0; index < lanes.Count && selected.Count < cappedLimit; index++)
+            {
+                var lane = lanes[index];
+                if (lane.Tracks.Count == 0)
+                {
+                    continue;
+                }
+
+                selected.Add(lane.Tracks.Dequeue());
+            }
+
+            lanes.RemoveAll(lane => lane.Tracks.Count == 0);
+        }
+
+        return selected
+            .Select((track, index) => track with { TrackPosition = index + 1 })
+            .ToList();
+    }
+
+    private static string BuildRecommendationLaneKey(RecommendationTrackDto track)
+    {
+        var artistId = NormalizeReferenceId(track.Artist.Id);
+        if (!string.IsNullOrWhiteSpace(artistId))
+        {
+            return $"artist:{artistId}";
+        }
+
+        var artistName = NormalizeText(track.Artist.Name, UnknownArtist);
+        if (!string.IsNullOrWhiteSpace(artistName)
+            && !string.Equals(artistName, UnknownArtist, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"artist-name:{artistName.ToLowerInvariant()}";
+        }
+
+        var albumId = NormalizeReferenceId(track.Album.Id);
+        if (!string.IsNullOrWhiteSpace(albumId))
+        {
+            return $"album:{albumId}";
+        }
+
+        var normalizedTrackId = NormalizeTrackId(track.Id);
+        if (!string.IsNullOrWhiteSpace(normalizedTrackId))
+        {
+            return $"track:{normalizedTrackId}";
+        }
+
+        var fallbackArtist = NormalizeText(track.Artist.Name, UnknownArtist);
+        var fallbackTitle = NormalizeText(track.Title, UnknownTitle);
+        return $"fallback:{fallbackArtist.ToLowerInvariant()}|{fallbackTitle.ToLowerInvariant()}";
     }
 
     private static void DrainTracksUntilLimit(
