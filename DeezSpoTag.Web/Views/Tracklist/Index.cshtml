@@ -1385,6 +1385,7 @@ const soundtrackMatchContextYear = Number.isFinite(Number(soundtrackMatchContext
     ? Number(soundtrackMatchContextYearRaw)
     : null;
 const externalDeezerMatchCache = new Map();
+// Map<link, { promise: Promise<{ deezerId: string, resolvePayload: any }>, priority: 'high'|'low' }>
 const externalDeezerMatchInFlight = new Map();
 const deezerPlaybackContextCache = new Map();
 const deezerPlaybackContextRequests = new Map();
@@ -3953,9 +3954,13 @@ async function resolveExternalRequestToDeezer(current, source, row, options = {}
     }
 
     const priority = options?.priority === 'high' ? 'high' : 'low';
-    let inFlight = externalDeezerMatchInFlight.get(cacheKey);
-    if (!inFlight) {
-        inFlight = runExternalResolverTask(async () => {
+    let inFlightEntry = externalDeezerMatchInFlight.get(cacheKey);
+    const shouldPromotePriority = priority === 'high'
+        && inFlightEntry
+        && inFlightEntry.priority !== 'high';
+
+    if (!inFlightEntry || shouldPromotePriority) {
+        const inFlightPromise = runExternalResolverTask(async () => {
             let deezerId = '';
             let resolvePayload = null;
 
@@ -3994,11 +3999,16 @@ async function resolveExternalRequestToDeezer(current, source, row, options = {}
             externalDeezerMatchCache.set(cacheKey, deezerId);
             return { deezerId, resolvePayload };
         }, priority);
-        externalDeezerMatchInFlight.set(cacheKey, inFlight);
+
+        inFlightEntry = {
+            promise: inFlightPromise,
+            priority
+        };
+        externalDeezerMatchInFlight.set(cacheKey, inFlightEntry);
     }
 
     try {
-        const result = await inFlight;
+        const result = await inFlightEntry.promise;
         const deezerId = String(result?.deezerId || '').trim();
         if (deezerId && row) {
             if (result?.resolvePayload) {
@@ -4008,7 +4018,7 @@ async function resolveExternalRequestToDeezer(current, source, row, options = {}
         }
         return deezerId;
     } finally {
-        if (externalDeezerMatchInFlight.get(cacheKey) === inFlight) {
+        if (externalDeezerMatchInFlight.get(cacheKey) === inFlightEntry) {
             externalDeezerMatchInFlight.delete(cacheKey);
         }
     }
