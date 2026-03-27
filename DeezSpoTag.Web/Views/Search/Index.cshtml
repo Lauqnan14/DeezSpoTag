@@ -477,6 +477,46 @@
     opacity: 0.5;
 }
 
+.soundtrack-url-panel {
+    background: color-mix(in srgb, var(--bg-secondary) 86%, transparent);
+    border: 1px solid var(--border-secondary);
+    border-radius: 12px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.soundtrack-url-label {
+    font-size: 13px;
+    color: var(--text-muted);
+    letter-spacing: 0.02em;
+}
+
+.soundtrack-url-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.soundtrack-url-input {
+    flex: 1;
+    min-width: 180px;
+}
+
+.soundtrack-url-help {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+@@media (max-width: 640px) {
+    .soundtrack-url-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+}
+
 </style>
 }
 
@@ -495,6 +535,12 @@
     <li class="nav-item">
         <button class="nav-link source-btn active" type="button" role="tab" aria-selected="true" data-source="spotify" id="tab-spotify" data-bs-toggle="tab" data-bs-target="#search-source-spotify">Spotify</button>
     </li>
+    @if (soundtrackMode)
+    {
+    <li class="nav-item">
+        <button class="nav-link source-btn" type="button" role="tab" aria-selected="false" data-source="manual" id="tab-manual" data-bs-toggle="tab" data-bs-target="#search-source-manual">Paste URL</button>
+    </li>
+    }
     @if (!soundtrackMode)
     {
     <li class="nav-item">
@@ -562,6 +608,23 @@
         </div>
     </div>
 
+    @if (soundtrackMode)
+    {
+    <div class="tab-pane fade" id="search-source-manual" role="tabpanel" aria-labelledby="tab-manual">
+        <div class="results-section">
+            <div class="soundtrack-url-panel">
+                <label class="soundtrack-url-label" for="soundtrack-url-input">Paste Spotify or Deezer album/playlist/track URL</label>
+                <div class="soundtrack-url-row">
+                    <input id="soundtrack-url-input" class="form-control soundtrack-url-input" type="text" placeholder="https://open.spotify.com/album/...">
+                    <button id="soundtrack-url-open" type="button" class="btn btn-secondary action-btn action-btn-sm">Open Tracklist</button>
+                </div>
+                <p class="soundtrack-url-help">This opens Tracklist with soundtrack-match context preserved.</p>
+                <div id="soundtrack-url-error" class="error-section" hidden></div>
+            </div>
+        </div>
+    </div>
+    }
+
     @if (!soundtrackMode)
     {
     <div class="tab-pane fade" id="search-source-apple" role="tabpanel" aria-labelledby="tab-apple">
@@ -614,7 +677,7 @@ const searchMode = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData[
 const searchModeNormalized = String(searchMode || '').trim().toLowerCase();
 const soundtrackSearchMode = searchModeNormalized === 'soundtrack';
 const soundtrackSearchTypes = new Set(['all', 'album', 'playlist', 'compilation']);
-const searchSources = soundtrackSearchMode ? ['spotify', 'deezer'] : ['spotify', 'deezer', 'apple'];
+const searchSources = soundtrackSearchMode ? ['spotify', 'deezer', 'manual'] : ['spotify', 'deezer', 'apple'];
 const soundtrackContextTypeRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextType"]?.ToString() ?? string.Empty));
 const soundtrackContextServerTypeRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextServerType"]?.ToString() ?? string.Empty));
 const soundtrackContextLibraryIdRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextLibraryId"]?.ToString() ?? string.Empty));
@@ -833,6 +896,129 @@ function fallbackToDeezerLinkParseOrSearch(input, type) {
         });
 }
 
+function getSoundtrackManualElements() {
+    return {
+        input: document.getElementById('soundtrack-url-input'),
+        openButton: document.getElementById('soundtrack-url-open'),
+        error: document.getElementById('soundtrack-url-error')
+    };
+}
+
+function showSoundtrackUrlError(message) {
+    const { error } = getSoundtrackManualElements();
+    if (!error) return;
+    error.hidden = false;
+    error.innerHTML = `
+        <h3>Unable to open link</h3>
+        <p>${escapeHtml(message)}</p>
+    `;
+}
+
+function clearSoundtrackUrlError() {
+    const { error } = getSoundtrackManualElements();
+    if (!error) return;
+    error.hidden = true;
+    error.textContent = '';
+}
+
+async function openSoundtrackManualUrl(rawUrl) {
+    const inputUrl = String(rawUrl || '').trim();
+    if (!inputUrl) {
+        showSoundtrackUrlError('Paste a Spotify or Deezer album/playlist/track URL.');
+        return;
+    }
+
+    if (!isValidURL(inputUrl)) {
+        showSoundtrackUrlError('The URL is invalid. Use a full http(s) link.');
+        return;
+    }
+
+    clearSoundtrackUrlError();
+
+    let host = '';
+    try {
+        host = new URL(inputUrl).hostname.toLowerCase();
+    } catch {
+        showSoundtrackUrlError('The URL is invalid. Use a full http(s) link.');
+        return;
+    }
+
+    try {
+        if (host.includes('spotify.com')) {
+            const response = await fetch(`/api/spotify/metadata?url=${encodeURIComponent(inputUrl)}`);
+            if (!response.ok) {
+                throw new Error(`Spotify link parse failed (HTTP ${response.status}).`);
+            }
+
+            const payload = await response.json();
+            const metadata = payload?.metadata;
+            const itemId = String(metadata?.id || '').trim();
+            const itemType = String(metadata?.type || '').trim().toLowerCase();
+            if (!itemId || !itemType) {
+                throw new Error('Could not parse Spotify URL.');
+            }
+
+            if (itemType === 'artist') {
+                throw new Error('Artist links are not supported for soundtrack matching. Use album, playlist, or track.');
+            }
+
+            navigateToTracklist(itemId, itemType, 'spotify', { externalUrl: inputUrl });
+            return;
+        }
+
+        if (host.includes('deezer.com') || host.includes('deezer.page.link')) {
+            const parsed = await parseDeezerLink(inputUrl);
+            const itemId = String(parsed?.id || '').trim();
+            const itemType = String(parsed?.type || '').trim().toLowerCase();
+            if (!itemId || !itemType) {
+                throw new Error('Could not parse Deezer URL.');
+            }
+
+            if (itemType === 'artist') {
+                throw new Error('Artist links are not supported for soundtrack matching. Use album, playlist, or track.');
+            }
+
+            navigateToTracklist(itemId, itemType, 'deezer', { externalUrl: inputUrl });
+            return;
+        }
+
+        showSoundtrackUrlError('Only Spotify and Deezer links are supported in this tab.');
+    } catch (error) {
+        console.error('Soundtrack URL open failed:', error);
+        showSoundtrackUrlError(error?.message || 'Could not open that URL.');
+    }
+}
+
+function initializeSoundtrackManualTab() {
+    if (!soundtrackSearchMode) {
+        return;
+    }
+
+    const { input, openButton } = getSoundtrackManualElements();
+    if (!input || !openButton || input.dataset.bound === 'true') {
+        return;
+    }
+
+    input.dataset.bound = 'true';
+    openButton.addEventListener('click', () => {
+        void openSoundtrackManualUrl(input.value);
+    });
+    input.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') {
+            return;
+        }
+        event.preventDefault();
+        void openSoundtrackManualUrl(input.value);
+    });
+    input.addEventListener('input', () => {
+        clearSoundtrackUrlError();
+    });
+
+    if (isValidURL(currentSearchTerm)) {
+        input.value = currentSearchTerm;
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     // Set active filter
     updateActiveFilter(currentSearchType);
@@ -845,11 +1031,12 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!searchSources.includes((currentSearchSource || '').toLowerCase())) {
         currentSearchSource = 'spotify';
     }
+    initializeSoundtrackManualTab();
     currentSearchType = normalizeTypeForSource(currentSearchSource, currentSearchType);
     updateActiveSource(currentSearchSource);
     
     // Perform initial search
-    if (currentSearchTerm) {
+    if (currentSearchTerm && currentSearchSource !== 'manual') {
         if (isValidURL(currentSearchTerm)) {
             const parsedUrl = new URL(currentSearchTerm);
             if (parsedUrl.hostname.includes('spotify.com')) {
@@ -963,7 +1150,8 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             currentSearchSource = this.dataset.source;
             updateActiveSource(currentSearchSource);
-            if (cachedSearchTerms[currentSearchSource] !== currentSearchTerm || !cachedResults?.[currentSearchSource]) {
+            if (currentSearchSource !== 'manual'
+                && (cachedSearchTerms[currentSearchSource] !== currentSearchTerm || !cachedResults?.[currentSearchSource])) {
                 performSearch(currentSearchTerm, currentSearchType);
             }
             const url = new URL(window.location);
@@ -982,6 +1170,11 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 function updateActiveFilter(type) {
+    if (currentSearchSource === 'manual') {
+        enforceAppleOnlySource(type);
+        return;
+    }
+
     const scope = document.getElementById(`search-source-${currentSearchSource}`) || document;
     scope.querySelectorAll('.filter-btn').forEach(btn => {
         btn.classList.remove('active');
@@ -1115,6 +1308,10 @@ function enforceAppleOnlySource(type) {
 async function performSearch(term, type) {
     if (!term) return;
     const source = currentSearchSource;
+    if (source === 'manual') {
+        document.getElementById('search-count').textContent = '';
+        return;
+    }
     const requestId = ++activeSearchRequestId;
     const normalizedType = normalizeTypeForSource(source, type);
 
@@ -1404,6 +1601,10 @@ async function loadMoreAppleVideos() {
 
 function updateActiveSource(source) {
     setActiveSourceTab(source);
+    if (source === 'manual') {
+        document.getElementById('search-count').textContent = '';
+        return;
+    }
     currentSearchType = normalizeTypeForSource(source, currentSearchType);
     updateActiveFilter(currentSearchType);
     if (cachedResults) {

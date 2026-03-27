@@ -1508,14 +1508,40 @@ function getTracklistManualMatchTargetUrl() {
     return externalUrl;
 }
 
-async function matchCurrentTracklistToSoundtrackContext(button) {
+function isSupportedSoundtrackMatchLink(value) {
+    const input = String(value || '').trim();
+    if (!input) {
+        return false;
+    }
+
+    if (/^spotify:(album|playlist|track):[a-z0-9]{22}$/i.test(input)) {
+        return true;
+    }
+
+    if (/open\.spotify\.com\/(album|playlist|track)\/[a-z0-9]{22}/i.test(input)) {
+        return true;
+    }
+
+    if (/deezer\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?(album|playlist|track)\/\d+/i.test(input)) {
+        return true;
+    }
+
+    return false;
+}
+
+async function matchCurrentTracklistToSoundtrackContext(button, manualQueryOverride = '') {
     if (!hasSoundtrackMatchContext()) {
         return;
     }
 
-    const manualQuery = getTracklistManualMatchTargetUrl();
+    const manualQuery = String(manualQueryOverride || '').trim() || getTracklistManualMatchTargetUrl();
     if (!manualQuery) {
         showTracklistToast('No Spotify/Deezer tracklist URL available to save this soundtrack match.', 'warning');
+        return;
+    }
+
+    if (!isSupportedSoundtrackMatchLink(manualQuery)) {
+        showTracklistToast('Only Spotify/Deezer album, playlist, or track links are supported.', 'warning');
         return;
     }
 
@@ -1560,15 +1586,42 @@ async function matchCurrentTracklistToSoundtrackContext(button) {
     }
 }
 
-function bindSoundtrackTracklistMatchButton() {
-    const button = document.getElementById('tracklist-soundtrack-match-btn');
-    if (!button) {
+async function promptAndMatchSoundtrackWithPastedLink(button) {
+    const suggested = getTracklistManualMatchTargetUrl();
+    const entered = globalThis.prompt(
+        'Paste Spotify or Deezer album/playlist/track link (Spotify URI is also supported).',
+        suggested || ''
+    );
+    if (entered === null) {
         return;
     }
 
-    button.addEventListener('click', async () => {
-        await matchCurrentTracklistToSoundtrackContext(button);
-    });
+    const trimmed = String(entered || '').trim();
+    if (!trimmed) {
+        showTracklistToast('Paste a Spotify/Deezer link to continue.', 'warning');
+        return;
+    }
+
+    await matchCurrentTracklistToSoundtrackContext(button, trimmed);
+}
+
+function bindSoundtrackTracklistMatchButton() {
+    const button = document.getElementById('tracklist-soundtrack-match-btn');
+    const pasteButton = document.getElementById('tracklist-soundtrack-match-paste-btn');
+    if (!button && !pasteButton) {
+        return;
+    }
+
+    if (button) {
+        button.addEventListener('click', async () => {
+            await matchCurrentTracklistToSoundtrackContext(button);
+        });
+    }
+    if (pasteButton) {
+        pasteButton.addEventListener('click', async () => {
+            await promptAndMatchSoundtrackWithPastedLink(pasteButton);
+        });
+    }
 }
 
 function setDestinationContentMode(select, contentMode) {
@@ -3049,6 +3102,10 @@ function renderTracklist(data, options = {}) {
         ? `<button class="btn btn-secondary action-btn tracklist-soundtrack-match-btn" id="tracklist-soundtrack-match-btn" type="button" title="Match this soundtrack to ${escapeHtml(soundtrackMatchContextTitle)}">
                 <span class="material-icons">playlist_add_check</span>
                 <span data-match-label>Match</span>
+           </button>
+           <button class="btn btn-secondary action-btn tracklist-soundtrack-match-btn" id="tracklist-soundtrack-match-paste-btn" type="button" title="Paste Spotify/Deezer link to match soundtrack">
+                <span class="material-icons">link</span>
+                <span data-match-label>Paste Link</span>
            </button>`
         : '';
     container.innerHTML = `
