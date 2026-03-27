@@ -340,6 +340,17 @@ jobs:
             is_prerelease="true"
           fi
 
+          repo="${{ github.repository }}"
+          release_endpoint="repos/${repo}/releases/tags/${tag}"
+          existing_release_json="/tmp/release-existing.json"
+          existing_release="false"
+          previous_ref=""
+
+          if gh api "${release_endpoint}" > "${existing_release_json}" 2>/dev/null; then
+            existing_release="true"
+            previous_ref="$(jq -r '.target_commitish // empty' "${existing_release_json}")"
+          fi
+
           if [[ "$is_prerelease" == "true" ]]; then
             # Keep prerelease tag moving with latest main so prerelease entry auto-updates.
             git tag -f "${tag}" "${release_sha}"
@@ -349,13 +360,53 @@ jobs:
             git push origin "${tag}"
           fi
 
-          notes="$(gh api -X POST "repos/${{ github.repository }}/releases/generate-notes" \
-            -f tag_name="${tag}" \
-            -f target_commitish="${release_sha}" \
-            --jq '.body')"
+          if [[ -n "${previous_ref}" ]] && ! git rev-parse --verify "${previous_ref}^{commit}" >/dev/null 2>&1; then
+            previous_ref=""
+          fi
 
-          if gh api "repos/${{ github.repository }}/releases/tags/${tag}" > /tmp/release.json 2>/dev/null; then
-            release_id="$(jq -r '.id' /tmp/release.json)"
+          if [[ -z "${previous_ref}" ]]; then
+            if [[ "$is_prerelease" == "true" ]]; then
+              if git rev-parse --verify "${release_sha}^" >/dev/null 2>&1; then
+                previous_ref="$(git rev-parse "${release_sha}^")"
+              fi
+            else
+              previous_ref="$(git tag --list 'v*' --sort=-v:refname \
+                | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+                | grep -Fvx "${tag}" \
+                | head -n1 || true)"
+            fi
+          fi
+
+          changelog_url="https://github.com/${repo}/blob/${tag}/CHANGELOG.md"
+          compare_url=""
+          if [[ -n "${previous_ref}" ]]; then
+            compare_url="https://github.com/${repo}/compare/${previous_ref}...${tag}"
+          fi
+
+          notes_file="$(mktemp)"
+          {
+            echo "## Changelog"
+            echo "- [CHANGELOG.md](${changelog_url})"
+            if [[ -n "${compare_url}" ]]; then
+              echo "- [Compare changes](${compare_url})"
+            fi
+            echo
+            echo "## Commits"
+            if [[ -n "${previous_ref}" ]]; then
+              git log --no-merges --pretty="- %s ([\`%h\`](https://github.com/${repo}/commit/%H))" "${previous_ref}..${release_sha}"
+            else
+              git log --no-merges -n 30 --pretty="- %s ([\`%h\`](https://github.com/${repo}/commit/%H))" "${release_sha}"
+            fi
+          } > "${notes_file}"
+
+          if ! grep -q '^- ' "${notes_file}"; then
+            echo "- No new commits captured for this release range." >> "${notes_file}"
+          fi
+
+          notes="$(cat "${notes_file}")"
+
+          if [[ "${existing_release}" == "true" ]]; then
+            release_id="$(jq -r '.id' "${existing_release_json}")"
             gh api -X PATCH "repos/${{ github.repository }}/releases/${release_id}" \
               -f tag_name="${tag}" \
               -f target_commitish="${release_sha}" \
