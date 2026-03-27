@@ -29,6 +29,10 @@ public class AutoTagEnhancementController : ControllerBase
         @"organizer plan prepared:\s*(?<count>\d+)\s+move action\(s\)$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant,
         TimeSpan.FromMilliseconds(250));
+    private static readonly Regex PlanProgressRegex = new(
+        @"organizer planning progress:\s*(?<processed>\d+)\s*/\s*(?<total>\d+)$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(250));
     private static readonly Regex SourceFolderProgressRegex = new(
         @"organizer processing source folder \((?<index>\d+)\s*/\s*(?<total>\d+)\):\s*(?<path>.+)$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant,
@@ -765,6 +769,19 @@ public class AutoTagEnhancementController : ControllerBase
             return;
         }
 
+        if (TryParseOrganizerPlanProgress(message, out var plannedFilesProcessed, out var plannedFilesTotal))
+        {
+            UpdateFolderUniformityState(jobId, state =>
+            {
+                state.CurrentLibraryFolder = folderLabel;
+                state.CurrentArtistFolder = null;
+                state.ArtistFoldersProcessed = plannedFilesProcessed;
+                state.ArtistFoldersTotal = plannedFilesTotal;
+                state.Phase = $"Planning {folderLabel} ({folderIndex}/{totalFolders}) • analyzed {plannedFilesProcessed}/{plannedFilesTotal} files";
+            });
+            return;
+        }
+
         if (!IsOrganizerNoMoveActionsMessage(message))
         {
             return;
@@ -1066,6 +1083,31 @@ public class AutoTagEnhancementController : ControllerBase
         return match.Success
             && int.TryParse(match.Groups["count"].Value, out plannedMoveActions)
             && plannedMoveActions >= 0;
+    }
+
+    private static bool TryParseOrganizerPlanProgress(
+        string? message,
+        out int plannedFilesProcessed,
+        out int plannedFilesTotal)
+    {
+        plannedFilesProcessed = 0;
+        plannedFilesTotal = 0;
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        var match = PlanProgressRegex.Match(message.Trim());
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        return int.TryParse(match.Groups["processed"].Value, out plannedFilesProcessed)
+            && int.TryParse(match.Groups["total"].Value, out plannedFilesTotal)
+            && plannedFilesProcessed > 0
+            && plannedFilesTotal > 0
+            && plannedFilesProcessed <= plannedFilesTotal;
     }
 
     private static bool IsOrganizerNoMoveActionsMessage(string? message)

@@ -40,6 +40,7 @@ public class AutoTagLibraryOrganizer
     private const string SinglesAlbumTitle = "Singles";
     private const string DownloadTypeTrack = "track";
     private const string DownloadTypeAlbum = "album";
+    private const int PlanProgressLogInterval = 200;
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private readonly ILogger<AutoTagLibraryOrganizer> _logger;
     private readonly ILoggerFactory _loggerFactory;
@@ -336,10 +337,14 @@ public class AutoTagLibraryOrganizer
     {
         var results = new List<MovePlanItem>();
         var sourcePolicies = BuildSourceDirectoryPolicies(rootPath, filePaths, options);
+        var totalFiles = filePaths.Count;
+        var processedFiles = 0;
         foreach (var filePath in filePaths)
         {
+            processedFiles++;
             if (string.IsNullOrWhiteSpace(filePath))
             {
+                ReportPlanProgress(log, processedFiles, totalFiles);
                 continue;
             }
 
@@ -355,9 +360,26 @@ public class AutoTagLibraryOrganizer
             {
                 results.Add(item);
             }
+
+            ReportPlanProgress(log, processedFiles, totalFiles);
         }
 
         return results;
+    }
+
+    private static void ReportPlanProgress(Action<string>? log, int processedFiles, int totalFiles)
+    {
+        if (log == null || totalFiles <= 0 || processedFiles <= 0)
+        {
+            return;
+        }
+
+        if (processedFiles == 1
+            || processedFiles == totalFiles
+            || processedFiles % PlanProgressLogInterval == 0)
+        {
+            log($"organizer planning progress: {processedFiles}/{totalFiles}");
+        }
     }
 
     private bool TryBuildMovePlanItem(

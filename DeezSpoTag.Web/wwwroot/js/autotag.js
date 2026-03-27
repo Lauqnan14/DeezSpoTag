@@ -268,8 +268,11 @@
     const AUTOTAG_PREFERENCES_KEY = "autotag-preferences";
     const AUTOTAG_ACTIVE_PROFILE_KEY = "autotag-active-profile-id";
     const AUTOTAG_FOLDER_UNIFORMITY_JOB_KEY = "autotag-folder-uniformity-job-id";
+    const AUTOTAG_FOLDER_UNIFORMITY_STATUS_SNAPSHOT_KEY = "autotag-folder-uniformity-status-snapshot";
+    const AUTOTAG_FOLDER_UNIFORMITY_LAST_SCAN_KEY = "autotag-folder-uniformity-last-scan";
     const AUTOTAG_LIBRARY_FOLDERS_API = "/api/library/folders";
     const PROFILE_AUTOSAVE_DEBOUNCE_MS = 900;
+    const ENHANCEMENT_LAST_SCAN_BANNER_MS = 15000;
 
     const state = {
         config: structuredClone(DEFAULT_CONFIG),
@@ -290,6 +293,8 @@
         lockedTabTarget: null,
         settingsCache: null,
         folderUniformityJobId: null,
+        folderUniformityResumeInFlight: false,
+        folderUniformityLastScanTimer: null,
         syncLyricsFallbackOrder: null,
         syncArtworkFallbackOrder: null,
         syncArtistArtworkFallbackOrder: null,
@@ -3462,6 +3467,179 @@
         }
     }
 
+    function saveFolderUniformityStatusSnapshot(status) {
+        if (!status || typeof status !== "object") {
+            return;
+        }
+
+        const snapshot = {
+            jobId: String(status.jobId || "").trim(),
+            status: String(status.status || "running").trim().toLowerCase(),
+            phase: String(status.phase || "").trim(),
+            percentComplete: Number(status.percentComplete ?? 0),
+            completedSteps: Number(status.completedSteps ?? 0),
+            totalSteps: Number(status.totalSteps ?? 0),
+            foldersProcessed: Number(status.foldersProcessed ?? 0),
+            foldersSkipped: Number(status.foldersSkipped ?? 0),
+            totalFolders: Number(status.totalFolders ?? 0),
+            currentArtistFolder: String(status.currentArtistFolder || "").trim(),
+            artistFoldersProcessed: Number(status.artistFoldersProcessed ?? 0),
+            artistFoldersTotal: Number(status.artistFoldersTotal ?? 0),
+            updatedAtUtc: new Date().toISOString()
+        };
+
+        try {
+            localStorage.setItem(AUTOTAG_FOLDER_UNIFORMITY_STATUS_SNAPSHOT_KEY, JSON.stringify(snapshot));
+        } catch (error) {
+            console.debug("Unable to persist folder uniformity status snapshot.", error);
+        }
+    }
+
+    function clearFolderUniformityStatusSnapshot() {
+        try {
+            localStorage.removeItem(AUTOTAG_FOLDER_UNIFORMITY_STATUS_SNAPSHOT_KEY);
+        } catch (error) {
+            console.debug("Unable to clear folder uniformity status snapshot.", error);
+        }
+    }
+
+    function loadFolderUniformityStatusSnapshot() {
+        try {
+            const raw = localStorage.getItem(AUTOTAG_FOLDER_UNIFORMITY_STATUS_SNAPSHOT_KEY);
+            if (!raw) {
+                return null;
+            }
+
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== "object") {
+                return null;
+            }
+
+            return parsed;
+        } catch (error) {
+            console.debug("Unable to load folder uniformity status snapshot.", error);
+            return null;
+        }
+    }
+
+    function restoreFolderUniformityStatusSnapshot() {
+        const snapshot = loadFolderUniformityStatusSnapshot();
+        if (!snapshot) {
+            return false;
+        }
+
+        const message = buildFolderUniformityProgressMessage(snapshot);
+        if (!String(message || "").trim()) {
+            return false;
+        }
+
+        setEnhancementStatus("folderUniformityStatus", message);
+        return true;
+    }
+
+    function persistFolderUniformityLastScan(summary) {
+        const normalizedSummary = String(summary || "").trim();
+        if (!normalizedSummary) {
+            return;
+        }
+
+        const entry = {
+            summary: normalizedSummary,
+            completedAtUtc: new Date().toISOString()
+        };
+
+        try {
+            localStorage.setItem(AUTOTAG_FOLDER_UNIFORMITY_LAST_SCAN_KEY, JSON.stringify(entry));
+        } catch (error) {
+            console.debug("Unable to persist folder uniformity last scan message.", error);
+        }
+    }
+
+    function loadFolderUniformityLastScan() {
+        try {
+            const raw = localStorage.getItem(AUTOTAG_FOLDER_UNIFORMITY_LAST_SCAN_KEY);
+            if (!raw) {
+                return null;
+            }
+
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== "object") {
+                return null;
+            }
+
+            return parsed;
+        } catch (error) {
+            console.debug("Unable to load folder uniformity last scan message.", error);
+            return null;
+        }
+    }
+
+    function clearFolderUniformityLastScanTimer() {
+        if (state.folderUniformityLastScanTimer) {
+            clearTimeout(state.folderUniformityLastScanTimer);
+            state.folderUniformityLastScanTimer = null;
+        }
+    }
+
+    function showFolderUniformityLastScanBanner() {
+        if (getActiveFolderUniformityJobId()) {
+            return;
+        }
+
+        const entry = loadFolderUniformityLastScan();
+        if (!entry) {
+            return;
+        }
+
+        const summary = String(entry.summary || "").trim();
+        if (!summary) {
+            return;
+        }
+
+        const completedAt = new Date(String(entry.completedAtUtc || ""));
+        const completedAtLabel = Number.isNaN(completedAt.getTime())
+            ? "unknown time"
+            : completedAt.toLocaleString();
+        const message = `Last scan: ${completedAtLabel} • ${summary}`;
+        setEnhancementStatus("folderUniformityStatus", message);
+
+        clearFolderUniformityLastScanTimer();
+        state.folderUniformityLastScanTimer = setTimeout(() => {
+            state.folderUniformityLastScanTimer = null;
+            if (getActiveFolderUniformityJobId()) {
+                return;
+            }
+
+            const target = el("folderUniformityStatus");
+            if (target && String(target.textContent || "").trim() === message) {
+                target.textContent = "";
+            }
+        }, ENHANCEMENT_LAST_SCAN_BANNER_MS);
+    }
+
+    function isEnhancementTabActive() {
+        const panel = el("autotag-stage3-panel");
+        return !!(panel && panel.classList.contains("active") && panel.classList.contains("show"));
+    }
+
+    function bindEnhancementTabLastScanBanner() {
+        const enhancementTab = el("autotag-stage3-tab");
+        if (!enhancementTab) {
+            return;
+        }
+
+        enhancementTab.addEventListener("shown.bs.tab", () => {
+            if (getActiveFolderUniformityJobId()) {
+                clearFolderUniformityLastScanTimer();
+                restoreFolderUniformityStatusSnapshot();
+                void resumeFolderUniformityRunIfNeeded();
+                return;
+            }
+
+            showFolderUniformityLastScanBanner();
+        });
+    }
+
     function createUniformityReportStat(label, value) {
         const stat = document.createElement("div");
         stat.className = "uniformity-report-stat";
@@ -3577,8 +3755,10 @@
         const sourceFolderProcessed = Number(status?.artistFoldersProcessed ?? 0);
         const sourceFolderTotal = Number(status?.artistFoldersTotal ?? 0);
         const sourceFolder = String(status?.currentArtistFolder || "").trim();
+        const planningPhase = phase.toLowerCase().includes("planning");
+        const sourceProgressLabel = planningPhase ? "files" : "source folders";
         const sourceFolderProgress = sourceFolderTotal > 0
-            ? ` - source folders ${sourceFolderProcessed}/${sourceFolderTotal}`
+            ? ` - ${sourceProgressLabel} ${sourceFolderProcessed}/${sourceFolderTotal}`
             : "";
         const sourceFolderSuffix = sourceFolder.length > 0
             ? ` - current: ${sourceFolder}`
@@ -3642,6 +3822,8 @@
 
                 latestStatus = await response.json();
                 transientFailures = 0;
+                saveFolderUniformityStatusSnapshot(latestStatus);
+                clearFolderUniformityLastScanTimer();
                 setEnhancementStatus("folderUniformityStatus", buildFolderUniformityProgressMessage(latestStatus));
                 renderFolderUniformityLiveLog(latestStatus);
 
@@ -3709,6 +3891,8 @@
         const summary = payload?.skipped
             ? String(payload?.message || "Folder uniformity skipped.")
             : String(payload?.message || `Folder uniformity finished: ${foldersProcessed} processed, ${foldersSkipped} skipped.`) + dedupeSummary + reportSummary;
+        clearFolderUniformityStatusSnapshot();
+        persistFolderUniformityLastScan(summary);
         renderFolderUniformityReports(payload?.reconciliationReports);
         renderFolderUniformityLiveLog(payload);
         setEnhancementStatus("folderUniformityStatus", summary);
@@ -3720,21 +3904,33 @@
     }
 
     async function resumeFolderUniformityRunIfNeeded() {
+        if (state.folderUniformityResumeInFlight) {
+            return;
+        }
+
+        state.folderUniformityResumeInFlight = true;
         const jobId = getActiveFolderUniformityJobId();
         if (!jobId) {
+            state.folderUniformityResumeInFlight = false;
             return;
         }
 
         try {
+            restoreFolderUniformityStatusSnapshot();
             const response = await fetch(`/api/autotag/enhancement/folder-uniformity/status?jobId=${encodeURIComponent(jobId)}`);
             if (!response.ok) {
                 if (response.status === 404) {
                     clearActiveFolderUniformityJob();
+                    clearFolderUniformityStatusSnapshot();
+                    if (isEnhancementTabActive()) {
+                        showFolderUniformityLastScanBanner();
+                    }
                 }
                 return;
             }
 
             const status = await response.json();
+            saveFolderUniformityStatusSnapshot(status);
             renderFolderUniformityLiveLog(status);
             if (Array.isArray(status?.reconciliationReports)) {
                 renderFolderUniformityReports(status.reconciliationReports);
@@ -3749,6 +3945,7 @@
             }
 
             rememberActiveFolderUniformityJob(jobId);
+            clearFolderUniformityLastScanTimer();
             setEnhancementStatus("folderUniformityStatus", buildFolderUniformityProgressMessage(status));
             setFolderUniformityRunButtonDisabled(true);
             const payload = await pollFolderUniformityStatus(jobId);
@@ -3758,6 +3955,7 @@
             console.debug("Folder uniformity monitoring failed.", error);
         } finally {
             setFolderUniformityRunButtonDisabled(false);
+            state.folderUniformityResumeInFlight = false;
         }
     }
 
@@ -3773,6 +3971,18 @@
             renderFolderUniformityReports([]);
             renderFolderUniformityLiveLog({ logs: [], errors: [] });
             setEnhancementStatus("folderUniformityStatus", "Starting folder uniformity run...");
+            clearFolderUniformityLastScanTimer();
+            saveFolderUniformityStatusSnapshot({
+                jobId: getActiveFolderUniformityJobId(),
+                status: "running",
+                phase: "Starting folder uniformity run...",
+                percentComplete: 0,
+                completedSteps: 0,
+                totalSteps: 0,
+                foldersProcessed: 0,
+                foldersSkipped: 0,
+                totalFolders: 0
+            });
             const startResponse = await fetch("/api/autotag/enhancement/folder-uniformity/start", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -3823,6 +4033,17 @@
                 throw new Error("Folder uniformity job did not return a valid id.");
             }
             rememberActiveFolderUniformityJob(jobId);
+            saveFolderUniformityStatusSnapshot({
+                jobId,
+                status: "running",
+                phase: "Preparing scope",
+                percentComplete: 0,
+                completedSteps: 0,
+                totalSteps: 0,
+                foldersProcessed: 0,
+                foldersSkipped: 0,
+                totalFolders: 0
+            });
 
             if (startPayload?.started === false) {
                 setEnhancementStatus("folderUniformityStatus", "Folder uniformity is already running. Monitoring current progress...");
@@ -3833,6 +4054,7 @@
         } catch (error) {
             const message = `Folder uniformity failed: ${error?.message || error}`;
             setEnhancementStatus("folderUniformityStatus", message);
+            clearFolderUniformityStatusSnapshot();
             showToast(message, "error");
         } finally {
             const activeJobId = getActiveFolderUniformityJobId();
@@ -6202,7 +6424,12 @@
     loadLyricsSettings();
     initializeAutoTagStickyShell();
     bindProfileTabNavigationGuards();
+    bindEnhancementTabLastScanBanner();
     setActiveProfileId(loadStoredActiveProfileId(), { persist: false });
+    restoreFolderUniformityStatusSnapshot();
+    if (isEnhancementTabActive() && !getActiveFolderUniformityJobId()) {
+        showFolderUniformityLastScanBanner();
+    }
 
     Promise.all([loadPlatforms(), loadEnrichmentLibraryFolders()]).then(async () => {
         loadConfigToUI();
