@@ -361,6 +361,10 @@ jobs:
             previous_ref=""
           fi
 
+          if [[ -n "${previous_ref}" && "${previous_ref}" == "${release_sha}" ]]; then
+            previous_ref=""
+          fi
+
           if [[ -z "${previous_ref}" ]]; then
             if [[ "$is_prerelease" == "true" ]]; then
               if git rev-parse --verify "${release_sha}^" >/dev/null 2>&1; then
@@ -374,18 +378,68 @@ jobs:
             fi
           fi
 
+          if [[ -n "${previous_ref}" ]]; then
+            range_count="$(git rev-list --count "${previous_ref}..${release_sha}" || echo 0)"
+            if [[ "${range_count}" == "0" ]]; then
+              previous_ref=""
+            fi
+          fi
+
           compare_url=""
           if [[ -n "${previous_ref}" ]]; then
             compare_url="https://github.com/${repo}/compare/${previous_ref}...${tag}"
           fi
 
           notes_file="$(mktemp)"
+          changelog_file=""
+          for candidate in CHANGELOG.md Changelog.md changelog.md; do
+            if [[ -f "${candidate}" ]]; then
+              changelog_file="${candidate}"
+              break
+            fi
+          done
+
+          changelog_tmp="$(mktemp)"
+          changelog_found="false"
+          if [[ -n "${changelog_file}" ]]; then
+            normalized_tag="${tag#v}"
+            awk -v tag="${tag}" -v nt="${normalized_tag}" '
+              BEGIN {
+                capture = 0;
+              }
+              /^[[:space:]]*##[[:space:]]+/ {
+                if (capture == 1) {
+                  exit;
+                }
+                heading = $0;
+                if (index(heading, "[" tag "]") || index(heading, "[" nt "]") || index(heading, tag) || index(heading, nt)) {
+                  capture = 1;
+                  next;
+                }
+              }
+              capture == 1 {
+                print;
+              }
+            ' "${changelog_file}" > "${changelog_tmp}"
+            if grep -q '[^[:space:]]' "${changelog_tmp}"; then
+              changelog_found="true"
+            fi
+          fi
+
           {
-            echo "## Commits"
-            if [[ -n "${previous_ref}" ]]; then
-              git log --no-merges --pretty="- %s ([\`%h\`](https://github.com/${repo}/commit/%H))" "${previous_ref}..${release_sha}"
+            if [[ "${changelog_found}" == "true" ]]; then
+              echo "## Changelog"
+              cat "${changelog_tmp}"
+              echo
+              echo "## Commits"
             else
-              git log --no-merges -n 30 --pretty="- %s ([\`%h\`](https://github.com/${repo}/commit/%H))" "${release_sha}"
+              echo "## Commits"
+            fi
+
+            if [[ -n "${previous_ref}" ]]; then
+              git log --pretty="- %s ([\`%h\`](https://github.com/${repo}/commit/%H))" "${previous_ref}..${release_sha}"
+            else
+              git log -n 30 --pretty="- %s ([\`%h\`](https://github.com/${repo}/commit/%H))" "${release_sha}"
             fi
             if [[ -n "${compare_url}" ]]; then
               echo
