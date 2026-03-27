@@ -10,6 +10,7 @@
         new { Project = "MusicMover", Creators = "MusicMoveArr and contributors", Url = "https://github.com/MusicMoveArr/MusicMover" },
         new { Project = "Quality Scanner (whatsmybitrate-main)", Creators = "oren-cohen and contributors", Url = "https://github.com/oren-cohen/whatsmybitrate" },
         new { Project = "ShazamIO", Creators = "dotX12 and contributors", Url = "https://github.com/dotX12/ShazamIO" },
+        new { Project = "SeinopSys PersonalSite", Creators = "SeinopSys and contributors", Url = "https://github.com/SeinopSys/PersonalSite" },
         new { Project = "SoulSync", Creators = "Nezreka and contributors", Url = "https://github.com/Nezreka/SoulSync" },
         new { Project = "SpotiFLAC Desktop", Creators = "afkarxyz and contributors", Url = "https://github.com/afkarxyz/SpotiFLAC" },
         new { Project = "SPotiFLAC Mobile", Creators = "zarzet and contributors", Url = "https://github.com/zarzet/SpotiFLAC-Mobile" },
@@ -27,105 +28,252 @@
         new { Project = "ATL .NET", Creators = "Zeugma440 and contributors", Url = "https://github.com/Zeugma440/atldotnet" },
         new { Project = "tone", Creators = "sandreas and contributors", Url = "https://github.com/sandreas/tone" }
     };
+
+    var sortedReferences = references
+        .OrderBy(x => x.Project, System.StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+    var githubReferenceCount = sortedReferences.Count(x => x.Url.Contains("github.com", System.StringComparison.OrdinalIgnoreCase));
+    var otherReferenceCount = sortedReferences.Length - githubReferenceCount;
 }
 
 @section Styles {
 <style>
 .about-page {
+    padding: 20px;
+    padding-bottom: 100px;
     color: var(--text-primary);
 }
 
-.about-page h1,
-.about-page h2,
-.about-page h3,
-.about-page h4,
-.about-page p,
-.about-page li,
-.about-page td,
-.about-page th {
+.about-hero {
+    background: linear-gradient(145deg, color-mix(in srgb, var(--bg-tertiary) 88%, var(--primary-color)), var(--bg-secondary));
+    border: 1px solid color-mix(in srgb, var(--primary-color) 25%, var(--border-secondary));
+    border-radius: 14px;
+    padding: 22px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+    flex-wrap: wrap;
+}
+
+.about-title {
+    margin: 0 0 8px 0;
+    font-size: 2rem;
+    font-weight: 700;
     color: var(--text-primary);
 }
 
-.about-page .about-subtle {
+.about-subtitle {
+    margin: 0;
+    color: var(--text-muted);
+    max-width: 760px;
+    line-height: 1.55;
+}
+
+.about-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 45%, var(--border-secondary));
+    background: color-mix(in srgb, var(--bg-primary) 74%, var(--primary-color));
+    border-radius: 999px;
+    padding: 7px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-primary);
+}
+
+.about-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    width: min(460px, 100%);
+}
+
+.about-stat-card {
+    border: 1px solid var(--border-secondary);
+    border-radius: 12px;
+    padding: 14px;
+    background: color-mix(in srgb, var(--bg-darker) 88%, var(--bg-tertiary));
+}
+
+.about-stat-label {
+    margin: 0 0 8px 0;
+    color: var(--text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+}
+
+.about-stat-value {
+    margin: 0;
+    color: var(--primary-color);
+    font-weight: 700;
+    font-size: 1.45rem;
+    line-height: 1.1;
+}
+
+.about-section {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 14px;
+}
+
+.about-section-head {
+    border-bottom: 1px solid var(--border-secondary);
+    padding: 18px 20px;
+}
+
+.about-section-title {
+    margin: 0 0 5px 0;
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.about-section-subtle {
+    margin: 0;
     color: var(--text-muted);
 }
 
-.about-page .about-table {
-    --bs-table-bg: var(--bg-secondary);
-    --bs-table-striped-bg: color-mix(in srgb, var(--bg-darker) 85%, var(--bg-secondary));
-    --bs-table-hover-bg: color-mix(in srgb, var(--primary-color) 10%, var(--bg-secondary));
-    --bs-table-color: var(--text-primary);
-    --bs-table-border-color: var(--border-secondary);
+.about-reference-grid {
+    padding: 20px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+    gap: 14px;
 }
 
-.about-page .about-table thead th {
-    background: var(--bg-tertiary);
+.about-reference-card {
+    border: 1px solid var(--border-secondary);
+    border-radius: 12px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: var(--bg-darker);
+    min-height: 178px;
+}
+
+.about-reference-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.about-project-title {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 700;
     color: var(--text-primary);
-    border-bottom: 1px solid var(--border-secondary);
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
 }
 
-.about-page .about-table td {
-    vertical-align: middle;
+.about-project-creators {
+    margin: 0;
+    color: var(--text-muted);
+    line-height: 1.45;
+    font-size: 0.94rem;
 }
 
-.about-page .about-link {
+.about-source-pill {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--border-secondary);
+    border-radius: 999px;
+    padding: 4px 9px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: var(--bg-secondary);
+    white-space: nowrap;
+}
+
+.about-repo-link {
+    margin-top: auto;
+    width: fit-content;
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    color: var(--primary-color);
+    font-size: 0.875rem;
+    font-weight: 600;
+    padding: 8px 12px;
+    text-decoration: none;
+    transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.about-repo-link:hover {
+    border-color: color-mix(in srgb, var(--primary-color) 55%, var(--border-secondary));
+    background: color-mix(in srgb, var(--bg-secondary) 78%, var(--primary-color));
     color: var(--primary-color);
 }
 
-.about-page .about-link:hover {
-    color: var(--primary-color);
-    text-decoration: underline;
+@@media (max-width: 900px) {
+    .about-stats {
+        grid-template-columns: 1fr;
+    }
+
+    .about-reference-grid {
+        grid-template-columns: 1fr;
+    }
 }
 </style>
 }
 
 <div class="container-fluid d-flex flex-column gap-4 about-page">
-    <div class="card bg-darker border-secondary">
-        <div class="card-body">
-            <h1 class="welcome-title mb-2">About DeezSpoTag</h1>
-            <p class="about-subtle mb-3">
-                This project was made possible by open-source creators, maintainers, contributors, and the users who test, report issues, and keep these ecosystems alive.
-            </p>
-            <p class="mb-2">
-                Thank you to everyone behind the referenced projects listed below.
-            </p>
-            <p class="mb-0">
-                Attribution includes separate acknowledgements for <strong>SpotiFLAC Desktop</strong> and <strong>SPotiFLAC Mobile</strong> because they are distinct projects/maintainers.
+    <section class="about-hero">
+        <div>
+            <span class="about-badge"><i class="fas fa-heart"></i> Open Source Credits</span>
+            <h1 class="about-title mt-3">About DeezSpoTag</h1>
+            <p class="about-subtitle">
+                DeezSpoTag exists because of open-source maintainers, contributors, and users who share ideas and tools.
+                This page credits the projects and creators referenced in the build and workflow design.
             </p>
         </div>
-    </div>
-
-    <div class="card bg-darker border-secondary">
-        <div class="card-body">
-            <h3 class="mb-3">Referenced Projects</h3>
-            <p class="about-subtle mb-3">
-                Upstream repository links are shown below (mostly GitHub, with one non-GitHub upstream).
-            </p>
-            <div class="table-responsive">
-                <table class="table table-dark table-hover about-table mb-0">
-                    <thead>
-                        <tr>
-                            <th scope="col">Project</th>
-                            <th scope="col">Creators / Community</th>
-                            <th scope="col">Repository</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                    @foreach (var item in references.OrderBy(x => x.Project, System.StringComparer.OrdinalIgnoreCase))
-                    {
-                        <tr>
-                            <td><strong>@item.Project</strong></td>
-                            <td>@item.Creators</td>
-                            <td><a class="about-link text-decoration-none" href="@item.Url" target="_blank" rel="noopener noreferrer">@item.Url</a></td>
-                        </tr>
-                    }
-                    </tbody>
-                </table>
-            </div>
+        <div class="about-stats">
+            <article class="about-stat-card">
+                <p class="about-stat-label">Referenced Projects</p>
+                <p class="about-stat-value">@sortedReferences.Length</p>
+            </article>
+            <article class="about-stat-card">
+                <p class="about-stat-label">GitHub Upstreams</p>
+                <p class="about-stat-value">@githubReferenceCount</p>
+            </article>
+            <article class="about-stat-card">
+                <p class="about-stat-label">Other Upstreams</p>
+                <p class="about-stat-value">@otherReferenceCount</p>
+            </article>
         </div>
-    </div>
+    </section>
 
+    <section class="about-section">
+        <div class="about-section-head">
+            <h2 class="about-section-title">Referenced Projects</h2>
+            <p class="about-section-subtle">
+                Attribution includes separate credits for <strong>SpotiFLAC Desktop</strong> and <strong>SpotiFLAC Mobile</strong> because they are distinct upstream projects and maintainers.
+            </p>
+        </div>
+        <div class="about-reference-grid">
+            @foreach (var item in sortedReferences)
+            {
+                var host = item.Url;
+                if (System.Uri.TryCreate(item.Url, System.UriKind.Absolute, out var itemUri))
+                {
+                    host = itemUri.Host;
+                }
+                <article class="about-reference-card">
+                    <div class="about-reference-top">
+                        <h3 class="about-project-title">@item.Project</h3>
+                        <span class="about-source-pill">@host</span>
+                    </div>
+                    <p class="about-project-creators">@item.Creators</p>
+                    <a class="about-repo-link" href="@item.Url" target="_blank" rel="noopener noreferrer">
+                        Open Repository <i class="fas fa-arrow-up-right-from-square ms-1"></i>
+                    </a>
+                </article>
+            }
+        </div>
+    </section>
 </div>

@@ -143,8 +143,15 @@ jobs:
           app_version="${prefix}.${revision}"
           IFS='.' read -r major minor _ <<< "$prefix"
           app_major_minor="${major}.${minor}"
+          channel="${{ needs.release-context.outputs.channel }}"
+          if [[ "$channel" == "stable" ]]; then
+            app_release_tag="v${app_version}"
+          else
+            app_release_tag="v${app_version}-pre"
+          fi
           echo "app_version=${app_version}" >> "$GITHUB_OUTPUT"
           echo "app_major_minor=${app_major_minor}" >> "$GITHUB_OUTPUT"
+          echo "app_release_tag=${app_release_tag}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -159,7 +166,7 @@ jobs:
           set -euo pipefail
           docker buildx build \
             --platform linux/amd64 \
-            --build-arg DEEZSPOTAG_BUILD_VERSION=${{ steps.commit.outputs.full_sha }} \
+            --build-arg DEEZSPOTAG_BUILD_VERSION=${{ steps.version.outputs.app_release_tag }} \
             --load \
             -t deezspotag-audit:${{ steps.commit.outputs.full_sha }} \
             .
@@ -183,7 +190,7 @@ jobs:
           set -euo pipefail
           chmod +x scripts/docker-parity-smoke.sh
           PARITY_TEST_PLATFORM=linux/amd64 \
-          PARITY_EXPECTED_BUILD_VERSION=${{ steps.commit.outputs.full_sha }} \
+          PARITY_EXPECTED_BUILD_VERSION=${{ steps.version.outputs.app_release_tag }} \
           PARITY_APPLE_WRAPPER_IMAGE=deezspotag-apple-wrapper-audit:${{ steps.commit.outputs.full_sha }} \
             ./scripts/docker-parity-smoke.sh deezspotag-audit:${{ steps.commit.outputs.full_sha }}
 
@@ -228,10 +235,9 @@ jobs:
           images: ${{ steps.vars.outputs.image }}
           tags: |
             type=raw,value=prerelease,enable=${{ needs.release-context.outputs.channel == 'prerelease' }}
-            type=raw,value=${{ steps.version.outputs.app_version }}-pre,enable=${{ needs.release-context.outputs.channel == 'prerelease' }}
+            type=raw,value=v${{ steps.version.outputs.app_version }}-pre,enable=${{ needs.release-context.outputs.channel == 'prerelease' }}
             type=raw,value=latest,enable=${{ needs.release-context.outputs.channel == 'stable' }}
-            type=raw,value=${{ steps.version.outputs.app_version }},enable=${{ needs.release-context.outputs.channel == 'stable' }}
-            type=raw,value=${{ steps.version.outputs.app_major_minor }},enable=${{ needs.release-context.outputs.channel == 'stable' }}
+            type=raw,value=v${{ steps.version.outputs.app_version }},enable=${{ needs.release-context.outputs.channel == 'stable' }}
             type=raw,value=${{ steps.commit.outputs.short_sha }}
             type=raw,value=${{ steps.commit.outputs.full_sha }}
             type=sha,prefix=sha-
@@ -242,7 +248,7 @@ jobs:
             org.opencontainers.image.url=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.commit.outputs.full_sha }}
             org.opencontainers.image.vendor=${{ github.repository_owner }}
-            org.opencontainers.image.version=${{ steps.version.outputs.app_version }}
+            org.opencontainers.image.version=${{ steps.version.outputs.app_release_tag }}
             org.opencontainers.image.channel=${{ needs.release-context.outputs.channel }}
 
       - name: Build and push
@@ -256,7 +262,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            DEEZSPOTAG_BUILD_VERSION=${{ steps.commit.outputs.full_sha }}
+            DEEZSPOTAG_BUILD_VERSION=${{ steps.version.outputs.app_release_tag }}
           cache-from: type=gha,scope=${{ matrix.image_name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image_name }}
 

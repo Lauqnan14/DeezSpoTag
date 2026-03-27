@@ -108,6 +108,9 @@ If your host uses Compose v1, replace `docker compose` with `docker-compose`.
 - GitHub Releases behavior:
   - default (`push` to `main`): creates prerelease entries (`vX.Y.Z.W-pre`)
   - manual promote (`workflow_dispatch` with `release_channel=stable`): creates stable release (`vX.Y.Z.W`)
+- Versioned image tags follow the same GitHub release format:
+  - prerelease image version tag: `vX.Y.Z.W-pre`
+  - stable image version tag: `vX.Y.Z.W`
 
 ### Current Runtime Model
 
@@ -203,6 +206,61 @@ Use this if you want to validate the wrapper image locally before publishing it.
 ## Contributing
 
 See `CONTRIBUTING.md`.
+
+---
+
+## License Recommendation
+
+Based on a folders-only scan of the reference projects under `References/` (no archive extraction), including AGPL-3.0, GPL-3.0, GPL-2.0-or-later, MIT, Apache-2.0, and ISC sources, the safest project license for DeezSpoTag is:
+
+- **GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`)**
+
+Why this is the safest fit:
+
+- It remains compatible with the strong-copyleft references already used during development.
+- It covers network/server use (relevant for self-hosted web deployments).
+- Permissive dependencies (MIT/Apache/ISC) remain compatible.
+- GPL-2.0-or-later references (such as Picard) can be consumed in AGPLv3-compatible form.
+
+Important note:
+
+- Some reference folders do not expose a clear root license in-place (for example: `cinemagoria-main`, `meloday`, `Quality Scaanner/whatsmybitrate-main`).
+- Treat unlicensed material as **all rights reserved** unless explicit permission is granted.
+- If direct code was copied from any unlicensed source, replace it or obtain written permission before release.
+
+---
+
+## Acknowledgements
+
+DeezSpoTag was informed by ideas, architecture patterns, and implementation approaches from many open-source projects. Thank you to the creators and maintainers behind these references:
+
+- **Deemixrr** (AGPL-3.0) and contributors.
+- **deemix** (GPL-3.0) by Bambanah and contributors.
+- **Lidarr** (GPL-3.0) by Team Lidarr.
+- **MusicMover** (GPL) and contributors.
+- **ShazamIO** (MIT) by dotX12.
+- **SoulSync** (MIT-style license text) and contributors.
+- **SpotiFLAC** (MIT) by afkarxyz, zarzet, and contributors.
+- **hifi-api** (MIT) by sachin senal.
+- **Wolframe Spotify Canvas** (MIT) by the Wolframe Team.
+- **boomplay-main** (MIT) by Okoya Usman.
+- **idonthavespotify** (MIT) by Juan Rodriguez Donado.
+- **lidify** (GPL-3.0) and contributors.
+- **lrclib** (MIT) by tranxuanthang and contributors.
+- **OneTagger** (GPL-3.0) and contributors.
+- **MusicBrainz Picard** (GPL-2.0-or-later) by the MetaBrainz community.
+- **puddletag** (GPL) and contributors.
+- **qobuz-artist-discography** (MIT/ISC components) by Paweł Januszek and contributors.
+- **refreezer** (GPL-3.0) and contributors.
+- **spotizerr-phoenix** (GPL-3.0) and contributors.
+- **ATL.NET** (MIT) by Zeugma440.
+- **Cinemagoria** by Iván Luna and contributors.
+- **Meloday** and its maintainer community.
+- **WhatsMyBitrate** by oren-cohen and contributors.
+- **syrics-web** (MIT) by Akash R. Chandran.
+- **Apple Music API / tooling references** including work by Myp3a and Sendy McSenderson.
+
+If any project listed above needs correction or more specific attribution, open an issue and it will be updated.
 
 ---
 
