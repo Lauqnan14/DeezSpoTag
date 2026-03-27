@@ -214,7 +214,14 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                 requestContext.TrackContext,
                 result.OutputPath,
                 itemToken);
-            await PersistOutputMetadataIfPresentAsync(next.QueueUuid, queueContext.Payload, outputPath, itemToken);
+            var persisted = await PersistOutputMetadataIfPresentAsync(next.QueueUuid, queueContext.Payload, outputPath, itemToken);
+            if (!persisted)
+            {
+                const string verificationError = "Downloaded file missing or empty after transfer.";
+                _logger.LogWarning("Apple download verification failed for {QueueUuid}: {OutputPath}", next.QueueUuid, outputPath);
+                await HandleDownloadFailureAsync(next, queueContext.Payload, verificationError, stoppingToken, itemToken);
+                return;
+            }
             await MarkQueueItemCompletedAsync(next.QueueUuid, queueContext.Payload, itemToken);
         }
         catch (OperationCanceledException) when (itemToken.IsCancellationRequested)
@@ -627,7 +634,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         }
     }
 
-    private async Task PersistOutputMetadataIfPresentAsync(
+    private async Task<bool> PersistOutputMetadataIfPresentAsync(
         string queueUuid,
         AppleQueueItem payload,
         string outputPath,
@@ -635,16 +642,17 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
     {
         if (string.IsNullOrWhiteSpace(outputPath))
         {
-            return;
+            return false;
         }
 
         var finalSize = AppleQueueItemHelpers.TryGetFileSizeMb(outputPath);
         if (finalSize <= 0 || !AppleQueueItemHelpers.OutputExists(outputPath))
         {
-            return;
+            return false;
         }
 
         await AppleQueueItemHelpers.UpdateQueuePayloadAsync(_queueRepository, queueUuid, payload, outputPath, finalSize, itemToken);
+        return true;
     }
 
     private async Task MarkQueueItemCompletedAsync(
@@ -655,7 +663,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         payload.Progress = 100;
         payload.Downloaded = Math.Max(payload.Size, 1);
         payload.Status = AppleDownloadStatus.Completed;
-        await _queueRepository.UpdateStatusAsync(queueUuid, CompletedStatus, progress: 100, cancellationToken: itemToken);
+        await _queueRepository.UpdateStatusAsync(queueUuid, CompletedStatus, downloaded: 1, progress: 100, cancellationToken: itemToken);
         _deezspotagListener.Send(UpdateQueueEvent, payload.ToQueuePayload());
         _retryScheduler.Clear(queueUuid);
     }
