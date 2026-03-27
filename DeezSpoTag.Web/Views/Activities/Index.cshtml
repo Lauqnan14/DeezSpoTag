@@ -2859,6 +2859,8 @@ const queueActivityByTask = {};
 const queuePrefetchByTask = {};
 let queueRealtimeAttached = false;
 let queueRealtimeAttachTimer = null;
+let queueRealtimeLifecycleAttached = false;
+let queueActionInFlight = false;
 
 let analysisPollTimeoutId = null;
 let analysisPollInFlight = false;
@@ -2939,8 +2941,10 @@ function updateQueueButtons() {
     const pauseBtn = document.getElementById('pauseBtn');
     const resumeBtn = document.getElementById('resumeBtn');
     if (!pauseBtn || !resumeBtn) return;
-    pauseBtn.disabled = queueState === 'paused';
-    resumeBtn.disabled = queueState === 'running';
+    const pauseDisabled = queueActionInFlight || queueState === 'paused';
+    const resumeDisabled = queueActionInFlight || queueState === 'running';
+    pauseBtn.disabled = pauseDisabled;
+    resumeBtn.disabled = resumeDisabled;
 }
 
 function activityActionIconSvg(name) {
@@ -3684,28 +3688,40 @@ function initLibraryMaintenance() {
 }
 
 async function pauseQueue() {
+    if (queueActionInFlight) {
+        return;
+    }
+
+    queueActionInFlight = true;
+    updateQueueButtons();
     try {
-        const response = await fetch('/Activities/PauseAll', { method: 'POST' });
-        if (!response.ok) {
-            throw new Error(await response.text());
-        }
+        await ensureActionSuccess('/Activities/PauseAll');
         queueState = 'paused';
         updateQueueButtons();
         if (window.DeezSpoTag?.showNotification) {
             window.DeezSpoTag.showNotification('Downloads Paused', 'info');
         }
-        await loadQueueFromServer();
+        await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error('Failed to pause downloads:', error);
+        if (window.DeezSpoTag?.showNotification) {
+            window.DeezSpoTag.showNotification(error?.message || 'Failed to pause downloads.', 'error');
+        }
+    } finally {
+        queueActionInFlight = false;
+        updateQueueButtons();
     }
 }
 
 async function resumeQueue() {
+    if (queueActionInFlight) {
+        return;
+    }
+
+    queueActionInFlight = true;
+    updateQueueButtons();
     try {
-        const response = await fetch('/Activities/ResumeAll', { method: 'POST' });
-        if (!response.ok) {
-            throw new Error(await response.text());
-        }
+        await ensureActionSuccess('/Activities/ResumeAll');
         queueState = 'running';
         updateQueueButtons();
         if (window.DeezSpoTag?.showNotification) {
@@ -3714,33 +3730,39 @@ async function resumeQueue() {
         await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error('Failed to resume downloads:', error);
+        if (window.DeezSpoTag?.showNotification) {
+            window.DeezSpoTag.showNotification(error?.message || 'Failed to resume downloads.', 'error');
+        }
+    } finally {
+        queueActionInFlight = false;
+        updateQueueButtons();
     }
 }
 
 async function cancelAllTasks() {
     try {
-        const response = await fetch('/Activities/CancelAll', { method: 'POST' });
-        if (!response.ok) {
-            throw new Error(await response.text());
-        }
+        await ensureActionSuccess('/Activities/CancelAll');
         if (window.DeezSpoTag?.showNotification) {
             window.DeezSpoTag.showNotification('All Downloads Cancelled', 'info');
         }
         await loadQueueFromServer();
     } catch (error) {
         console.error('Failed to cancel all downloads:', error);
+        if (window.DeezSpoTag?.showNotification) {
+            window.DeezSpoTag.showNotification(error?.message || 'Failed to cancel downloads.', 'error');
+        }
     }
 }
 
 async function clearAllTasks() {
     try {
-        const response = await fetch('/Activities/ClearAll', { method: 'POST' });
-        if (!response.ok) {
-            throw new Error(await response.text());
-        }
+        await ensureActionSuccess('/Activities/ClearAll');
         await loadQueueFromServer();
     } catch (error) {
         console.error('Failed to clear all downloads:', error);
+        if (window.DeezSpoTag?.showNotification) {
+            window.DeezSpoTag.showNotification(error?.message || 'Failed to clear downloads.', 'error');
+        }
     }
 }
 
@@ -3758,25 +3780,25 @@ function getStatusIcon(status) {
 }
 async function clearCompletedTasks() {
     try {
-        const response = await fetch('/Activities/ClearCompleted', { method: 'POST' });
-        if (!response.ok) {
-            throw new Error(await response.text());
-        }
+        await ensureActionSuccess('/Activities/ClearCompleted');
         await loadQueueFromServer();
     } catch (error) {
         console.error('Failed to clear completed downloads:', error);
+        if (window.DeezSpoTag?.showNotification) {
+            window.DeezSpoTag.showNotification(error?.message || 'Failed to clear completed downloads.', 'error');
+        }
     }
 }
 
 async function clearCanceledTasks() {
     try {
-        const response = await fetch('/Activities/ClearCanceled', { method: 'POST' });
-        if (!response.ok) {
-            throw new Error(await response.text());
-        }
+        await ensureActionSuccess('/Activities/ClearCanceled');
         await loadQueueFromServer();
     } catch (error) {
         console.error('Failed to clear canceled downloads:', error);
+        if (window.DeezSpoTag?.showNotification) {
+            window.DeezSpoTag.showNotification(error?.message || 'Failed to clear canceled downloads.', 'error');
+        }
     }
 }
 
@@ -4228,7 +4250,13 @@ async function loadQueueFromServer(options) {
     }
     queuePollInFlight = true;
     try {
-        const response = await fetch('/Activities/GetDownloadQueue');
+        const cacheBuster = Date.now();
+        const response = await fetch(`/Activities/GetDownloadQueue?_=${cacheBuster}`, {
+            cache: 'no-store',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        });
         if (!response.ok) {
             throw new Error(await response.text());
         }
@@ -4735,13 +4763,33 @@ function applyQueueRealtimeProgress(payload) {
         return;
     }
     const progress = normalizeQueueProgressPercent(payload?.progress ?? payload?.progressNext);
+    const task = tasks.find(entry => entry.taskId === taskId);
+    let changed = false;
+    if (task) {
+        if (task.progress !== progress) {
+            task.progress = progress;
+            changed = true;
+        }
+        if (progress > 0 && task.status === 'queued') {
+            task.status = 'running';
+            changed = true;
+        }
+    }
     if (progress >= 100) {
         setTaskActivity(taskId, 'Finalizing items...');
     } else {
         if (hasActivePrefetchStatus(taskId)) {
+            if (changed) {
+                updateStats();
+                scheduleRenderTasks();
+            }
             return;
         }
         clearTaskActivity(taskId);
+    }
+    if (changed) {
+        updateStats();
+        scheduleRenderTasks();
     }
 }
 
@@ -4864,6 +4912,46 @@ function initQueueRealtimeEvents() {
             setTaskActivity(taskId, message);
         }
     });
+
+    if (!queueRealtimeLifecycleAttached) {
+        queueRealtimeLifecycleAttached = true;
+        if (typeof connection.onreconnected === 'function') {
+            connection.onreconnected(() => {
+                loadQueueFromServer({ force: true });
+            });
+        }
+        if (typeof connection.onclose === 'function') {
+            connection.onclose(() => {
+                startQueuePolling();
+            });
+        }
+    }
+}
+
+async function ensureActionSuccess(url) {
+    const response = await fetch(url, {
+        method: 'POST',
+        cache: 'no-store',
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'application/json'
+        }
+    });
+
+    let payload = null;
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+        payload = await response.json();
+    }
+
+    if (!response.ok) {
+        const errorMessage = payload?.error || payload?.message || `Request failed (${response.status})`;
+        throw new Error(errorMessage);
+    }
+
+    if (payload && payload.success === false) {
+        throw new Error(payload.error || payload.message || 'Request failed.');
+    }
 }
 
 function deriveQueueState(taskList) {

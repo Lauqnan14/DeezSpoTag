@@ -12,6 +12,9 @@ DeezSpoTag.Download = {
         items: [],
         isProcessing: false
     },
+    queueSyncTimer: null,
+    queueSyncDelayMs: 4000,
+    isRealtimeConnected: false,
     engineById: {},
     downloadMetaById: {},
     progressCacheById: {},
@@ -40,6 +43,8 @@ DeezSpoTag.Download = {
             }
         });
         this.resumePendingQueue();
+        this.refreshQueueFromServer().catch((error) => console.warn('Initial queue sync failed', error));
+        this.startQueueSyncLoop();
         console.log('DeezSpoTag Download Engine initialized');
     },
 
@@ -579,8 +584,10 @@ DeezSpoTag.Download = {
                 .build();
 
             this.connection.start().then(() => {
+                this.isRealtimeConnected = true;
                 console.log('SignalR connected for Deezer download updates');
                 this.logDownloadEvent('info', 'realtime connection established');
+                this.refreshQueueFromServer().catch((error) => console.warn('Queue sync after realtime connect failed', error));
                 
                 // Deezer queue progress updates
                 this.connection.on("updateQueue", (update) => {
@@ -730,21 +737,26 @@ DeezSpoTag.Download = {
                 });
 
             }).catch(err => {
+                this.isRealtimeConnected = false;
                 console.error('SignalR connection failed:', err);
                 this.logDownloadEvent('warning', 'realtime connection failed');
             });
 
             this.connection.onreconnecting((error) => {
+                this.isRealtimeConnected = false;
                 console.warn('SignalR reconnecting for Deezer download updates', error);
                 this.logDownloadEvent('warning', 'realtime reconnecting');
             });
 
             this.connection.onreconnected(() => {
+                this.isRealtimeConnected = true;
                 console.log('SignalR reconnected for Deezer download updates');
                 this.logDownloadEvent('info', 'realtime reconnected');
+                this.refreshQueueFromServer().catch((error) => console.warn('Queue sync after realtime reconnect failed', error));
             });
 
             this.connection.onclose((error) => {
+                this.isRealtimeConnected = false;
                 console.warn('SignalR closed for Deezer download updates', error);
                 this.logDownloadEvent('warning', 'realtime disconnected');
             });
@@ -1690,7 +1702,12 @@ DeezSpoTag.Download = {
     // Get download queue status
     async getQueueStatus() {
         try {
-            const response = await fetch('/api/deezer/download/queue/status');
+            const response = await fetch(`/api/deezer/download/queue/status?_=${Date.now()}`, {
+                cache: 'no-store',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
             
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
@@ -1706,7 +1723,12 @@ DeezSpoTag.Download = {
     // Get active downloads
     async getActiveDownloads() {
         try {
-            const response = await fetch('/api/deezer/download/queue/active');
+            const response = await fetch(`/api/deezer/download/queue/active?_=${Date.now()}`, {
+                cache: 'no-store',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
             
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
@@ -1717,6 +1739,137 @@ DeezSpoTag.Download = {
             console.error('Error getting active downloads:', error);
             return [];
         }
+    },
+    startQueueSyncLoop() {
+        if (this.queueSyncTimer) {
+            clearTimeout(this.queueSyncTimer);
+            this.queueSyncTimer = null;
+        }
+        const scheduleNext = () => {
+            this.queueSyncTimer = setTimeout(async () => {
+                try {
+                    if (document.visibilityState === 'visible') {
+                        await this.refreshQueueFromServer();
+                    }
+                } catch (error) {
+                    console.warn('Queue sync loop failed', error);
+                } finally {
+                    scheduleNext();
+                }
+            }, this.queueSyncDelayMs);
+        };
+        scheduleNext();
+    },
+    mapServerQueueStatus(status) {
+        const normalized = String(status || '').trim().toLowerCase();
+        switch (normalized) {
+            case 'inqueue':
+            case 'queued':
+                return 'queued';
+            case 'running':
+            case 'downloading':
+                return 'downloading';
+            case 'completed':
+            case 'complete':
+            case 'finished':
+            case 'download finished':
+                return 'completed';
+            case 'failed':
+            case 'error':
+                return 'failed';
+            case 'paused':
+                return 'paused';
+            case 'canceled':
+            case 'cancelled':
+                return 'cancelled';
+            default:
+                return normalized || 'queued';
+        }
+    },
+    normalizeProgressPercent(progress) {
+        const numeric = Number(progress);
+        if (!Number.isFinite(numeric)) {
+            return 0;
+        }
+        if (numeric <= 1) {
+            return Math.max(0, Math.min(100, numeric * 100));
+        }
+        return Math.max(0, Math.min(100, numeric));
+    },
+    buildServerQueueSnapshot(statusPayload) {
+        const queue = statusPayload?.queue;
+        if (!queue || typeof queue !== 'object') {
+            return [];
+        }
+
+        const queueOrder = Array.isArray(statusPayload?.queueOrder)
+            ? statusPayload.queueOrder.map((value) => String(value))
+            : [];
+        const knownIds = new Set(queueOrder);
+        Object.keys(queue).forEach((key) => knownIds.add(String(key)));
+
+        const existingById = new Map(this.queue.items.map((item) => [String(item.id), item]));
+        const snapshot = [];
+
+        knownIds.forEach((rawId) => {
+            const id = String(rawId);
+            const payload = queue[id];
+            if (!payload || typeof payload !== 'object') {
+                return;
+            }
+
+            const existing = existingById.get(id) || {};
+            const resolvedEngine = this.resolveEngine(
+                payload.engine || existing.engine,
+                payload.sourceService || payload.source_service || existing.type || '');
+            const normalizedEngine = this.normalizeEngine(resolvedEngine);
+            this.engineById[id] = normalizedEngine;
+
+            const url = payload.url
+                || payload.link
+                || payload.sourceUrl
+                || payload.source_url
+                || existing.url
+                || payload.title
+                || id;
+            const title = payload.title || payload.id || existing.type || '';
+            const quality = payload.quality || payload.Quality || existing.quality || '';
+            this.downloadMetaById[id] = {
+                title: title || this.downloadMetaById[id]?.title || '',
+                quality: quality || this.downloadMetaById[id]?.quality || ''
+            };
+
+            snapshot.push({
+                id,
+                url,
+                type: payload.type || normalizedEngine || existing.type || '',
+                engine: normalizedEngine,
+                status: this.mapServerQueueStatus(payload.status),
+                progress: this.normalizeProgressPercent(payload.progress),
+                addedAt: existing.addedAt || new Date()
+            });
+        });
+
+        return snapshot;
+    },
+    async refreshQueueFromServer() {
+        const statusPayload = await this.getQueueStatus();
+        if (!statusPayload) {
+            return;
+        }
+
+        const snapshot = this.buildServerQueueSnapshot(statusPayload);
+        if (!Array.isArray(snapshot) || snapshot.length === 0) {
+            if (this.queue.items.length !== 0) {
+                this.queue.items = [];
+                this.progressCacheById = {};
+                this.updateQueueDisplay();
+            }
+            return;
+        }
+
+        this.queue.items = snapshot;
+        this.updateQueueDisplay();
     },
 
     // Cancel download
