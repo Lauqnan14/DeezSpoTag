@@ -201,14 +201,6 @@ Use this if you want to validate the wrapper image locally before publishing it.
 - Restrict external access by network policy, IP rules, and/or upstream auth.
 - Use strong credentials and rotate tokens regularly.
 
----
-
-## Contributing
-
-See `CONTRIBUTING.md`.
-
----
-
 ## License Recommendation
 
 Based on a folders-only scan of the reference projects under `References/` (no archive extraction), including AGPL-3.0, GPL-3.0, GPL-2.0-or-later, MIT, Apache-2.0, and ISC sources, the safest project license for DeezSpoTag is:

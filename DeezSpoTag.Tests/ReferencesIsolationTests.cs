@@ -53,7 +53,6 @@ public sealed class ReferencesIsolationTests
 
     private static readonly HashSet<string> AllowedReferencesPathFiles = new(StringComparer.OrdinalIgnoreCase)
     {
-        "SONAR.md",
         "scripts/scan.sh",
         "scripts/scan_keep.sh"
     };
@@ -110,7 +109,7 @@ public sealed class ReferencesIsolationTests
         var current = new DirectoryInfo(AppContext.BaseDirectory);
         while (current != null)
         {
-            if (File.Exists(Path.Join(current.FullName, "src.sln")))
+            if (File.Exists(Path.Join(current.FullName, "Directory.Build.props")))
             {
                 return current.FullName;
             }

@@ -8,7 +8,7 @@ WORKDIR /src
 
 COPY . .
 
-RUN dotnet restore src.sln
+RUN dotnet restore DeezSpoTag.Web/DeezSpoTag.Web.csproj
 RUN dotnet publish DeezSpoTag.Web/DeezSpoTag.Web.csproj -c Release -o /app/publish --no-restore \
     && mkdir -p /app/publish/Tools \
     && cp -a Tools/AppleMusicWrapper /app/publish/Tools/AppleMusicWrapper
@@ -73,7 +73,24 @@ RUN apt-get update -o Acquire::Retries=5 \
        fi \
     && rm -rf /var/lib/apt/lists/*
 
-COPY docker/openssl-legacy.cnf /etc/ssl/openssl-legacy.cnf
+RUN cat > /etc/ssl/openssl-legacy.cnf <<'EOF'
+openssl_conf = openssl_init
+
+.include /etc/ssl/openssl.cnf
+
+[openssl_init]
+providers = provider_sect
+
+[provider_sect]
+default = default_sect
+legacy = legacy_sect
+
+[default_sect]
+activate = 1
+
+[legacy_sect]
+activate = 1
+EOF
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose

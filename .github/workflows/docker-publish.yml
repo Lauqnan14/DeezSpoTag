@@ -67,8 +67,6 @@ jobs:
         run: |
           set -euo pipefail
           props_file="Directory.Build.props"
-          changelog_file="CHANGELOG.md"
-
           ./scripts/release.sh change
 
           target_prefix="$(sed -n 's:.*<VersionPrefix>\(.*\)</VersionPrefix>.*:\1:p' "$props_file" | head -n1)"
@@ -80,8 +78,7 @@ jobs:
           fi
 
           target_version="${target_prefix}.${target_revision}"
-
-          if git diff --quiet -- "$props_file" "$changelog_file"; then
+          if git diff --quiet -- "$props_file"; then
             echo "bumped=false" >> "$GITHUB_OUTPUT"
             echo "target_version=${target_version}" >> "$GITHUB_OUTPUT"
             exit 0
@@ -92,7 +89,7 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$props_file" "$changelog_file"
+          git add "$props_file"
           git commit -m "chore(release): bump version to ${target_version} [skip-version-bump]"
           git push origin HEAD:main
 
@@ -377,7 +374,6 @@ jobs:
             fi
           fi
 
-          changelog_url="https://github.com/${repo}/blob/${tag}/CHANGELOG.md"
           compare_url=""
           if [[ -n "${previous_ref}" ]]; then
             compare_url="https://github.com/${repo}/compare/${previous_ref}...${tag}"
@@ -385,17 +381,16 @@ jobs:
 
           notes_file="$(mktemp)"
           {
-            echo "## Changelog"
-            echo "- [CHANGELOG.md](${changelog_url})"
-            if [[ -n "${compare_url}" ]]; then
-              echo "- [Compare changes](${compare_url})"
-            fi
-            echo
             echo "## Commits"
             if [[ -n "${previous_ref}" ]]; then
               git log --no-merges --pretty="- %s ([\`%h\`](https://github.com/${repo}/commit/%H))" "${previous_ref}..${release_sha}"
             else
               git log --no-merges -n 30 --pretty="- %s ([\`%h\`](https://github.com/${repo}/commit/%H))" "${release_sha}"
+            fi
+            if [[ -n "${compare_url}" ]]; then
+              echo
+              echo "## Compare"
+              echo "- [Compare changes](${compare_url})"
             fi
           } > "${notes_file}"
 

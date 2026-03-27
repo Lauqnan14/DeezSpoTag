@@ -2617,7 +2617,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
             var candidate = parent.FullName;
             if (Directory.Exists(Path.Join(candidate, ToolsDirectory, AppleMusicWrapperDirectory)) ||
-                File.Exists(Path.Join(candidate, "src.sln")))
+                File.Exists(Path.Join(candidate, "Directory.Build.props")))
             {
                 return candidate;
             }

@@ -187,7 +187,7 @@ public sealed class AppleWrapperDecryptor
             }
 
             var candidate = parent.FullName;
-            if (File.Exists(Path.Join(candidate, "src.sln")) ||
+            if (File.Exists(Path.Join(candidate, "Directory.Build.props")) ||
                 Directory.Exists(Path.Join(candidate, "Tools")))
             {
                 return candidate;

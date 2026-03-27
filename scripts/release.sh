@@ -16,7 +16,6 @@ Behavior:
   - Updates VersionPrefix/VersionRevision in Directory.Build.props
   - change/revision: increments revision until .9, then rolls to next patch with .0
   - patch/minor/major: bumps patch/minor/major and resets revision to .0
-  - Inserts a new version section in CHANGELOG.md under [Unreleased] if missing
   - Optionally creates a release commit + annotated git tag
   - Optionally pushes the commit + tag
 EOF
@@ -28,7 +27,6 @@ SEMVER4_RE='^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROPS_FILE="${ROOT_DIR}/Directory.Build.props"
-CHANGELOG_FILE="${ROOT_DIR}/CHANGELOG.md"
 
 if [[ $# -lt 1 ]]; then
   usage
@@ -72,11 +70,6 @@ done
 
 if [[ ! -f "$PROPS_FILE" ]]; then
   echo "Missing $PROPS_FILE" >&2
-  exit 1
-fi
-
-if [[ ! -f "$CHANGELOG_FILE" ]]; then
-  echo "Missing $CHANGELOG_FILE" >&2
   exit 1
 fi
 
@@ -153,8 +146,6 @@ fi
 
 next_version="${next_prefix}.${next_revision}"
 
-release_date="$(date +%F)"
-
 if [[ "$DO_TAG" == true ]]; then
   if ! command -v git >/dev/null 2>&1; then
     echo "git is required for --tag/--push." >&2
@@ -173,62 +164,11 @@ if [[ "$DO_TAG" == true ]]; then
   fi
 fi
 
-insert_changelog_section() {
-  if grep -q "^## \[${next_version}\]" "$CHANGELOG_FILE"; then
-    return 0
-  fi
-
-  local tmp
-  tmp="$(mktemp)"
-  awk -v version="$next_version" -v today="$release_date" '
-    BEGIN { inserted = 0 }
-    {
-      print
-      if (!inserted && $0 ~ /^## \[Unreleased\]/) {
-        print ""
-        print "## [" version "] - " today
-        print "### Added"
-        print "- _TBD_"
-        print ""
-        print "### Changed"
-        print "- _TBD_"
-        print ""
-        print "### Fixed"
-        print "- _TBD_"
-        print ""
-        print "### Security"
-        print "- _TBD_"
-        print ""
-        inserted = 1
-      }
-    }
-    END {
-      if (!inserted) {
-        print ""
-        print "## [" version "] - " today
-        print "### Added"
-        print "- _TBD_"
-        print ""
-        print "### Changed"
-        print "- _TBD_"
-        print ""
-        print "### Fixed"
-        print "- _TBD_"
-        print ""
-        print "### Security"
-        print "- _TBD_"
-      }
-    }
-  ' "$CHANGELOG_FILE" > "$tmp"
-  mv "$tmp" "$CHANGELOG_FILE"
-}
-
 echo "Current version : ${current_prefix}.${current_revision}"
 echo "Next version    : $next_version"
 
 if [[ "$DRY_RUN" == true ]]; then
   echo "[dry-run] Would update $PROPS_FILE"
-  echo "[dry-run] Would update $CHANGELOG_FILE"
   if [[ "$DO_TAG" == true ]]; then
     echo "[dry-run] Would create commit + tag v$next_version"
   fi
@@ -254,12 +194,11 @@ else
   ' "$PROPS_FILE" > "$tmp_props"
   mv "$tmp_props" "$PROPS_FILE"
 fi
-insert_changelog_section
 
 echo "Updated version files."
 
 if [[ "$DO_TAG" == true ]]; then
-  git -C "$git_root" add "$PROPS_FILE" "$CHANGELOG_FILE"
+  git -C "$git_root" add "$PROPS_FILE"
   git -C "$git_root" commit -m "chore(release): v${next_version}"
   git -C "$git_root" tag -a "v${next_version}" -m "Release v${next_version}"
   echo "Created commit + tag v${next_version}"
