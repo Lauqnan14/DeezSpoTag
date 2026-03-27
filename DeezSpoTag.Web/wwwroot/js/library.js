@@ -83,6 +83,17 @@ const libraryTrackSummaryCache = new Map();
 let spotifyTopTrackMatchRequestId = 0;
 let spotifyTopTrackPreviewWarmupTimer = 0;
 const LIBRARY_VIEW_SESSION_KEY = 'libraryViewFolderId';
+const LIBRARY_RETURN_STATE_SESSION_KEY = 'library:return:state';
+const SOUNDTRACK_RETURN_STATE_SESSION_KEY = 'soundtrack:return:state';
+const ALPHA_JUMP_LETTERS = Object.freeze([
+    '#',
+    'A', 'B', 'C', 'D', 'E', 'F', 'G',
+    'H', 'I', 'J', 'K', 'L', 'M', 'N',
+    'O', 'P', 'Q', 'R', 'S', 'T', 'U',
+    'V', 'W', 'X', 'Y', 'Z'
+]);
+let pendingLibraryReturnState = null;
+let pendingSoundtrackReturnState = null;
 
 const analysisState = {
     running: false,
@@ -866,6 +877,343 @@ function getNavigationType() {
     } catch {
     }
     return '';
+}
+
+function isNavigationRestoreCandidate(referrerPathFragment) {
+    const navigationType = getNavigationType();
+    if (navigationType === 'back_forward') {
+        return true;
+    }
+
+    const fragment = String(referrerPathFragment || '').trim();
+    if (!fragment) {
+        return false;
+    }
+
+    try {
+        if (!document.referrer) {
+            return false;
+        }
+        const referrer = new URL(document.referrer, globalThis.location.origin);
+        return referrer.pathname.includes(fragment);
+    } catch {
+        return false;
+    }
+}
+
+function setSessionJsonValue(key, payload) {
+    try {
+        sessionStorage.setItem(key, JSON.stringify(payload));
+    } catch {
+        // Ignore session storage failures.
+    }
+}
+
+function getSessionJsonValue(key) {
+    try {
+        const raw = sessionStorage.getItem(key);
+        if (!raw) {
+            return null;
+        }
+        return JSON.parse(raw);
+    } catch {
+        return null;
+    }
+}
+
+function removeSessionValue(key) {
+    try {
+        sessionStorage.removeItem(key);
+    } catch {
+        // Ignore session storage failures.
+    }
+}
+
+function getAlphaJumpLetter(value) {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) {
+        return '#';
+    }
+
+    const firstCodePoint = Array.from(trimmed)[0] || '';
+    const upper = firstCodePoint.toLocaleUpperCase();
+    return /^[A-Z]$/.test(upper) ? upper : '#';
+}
+
+function buildAlphaJumpAnchorId(prefix, letter) {
+    const safePrefix = String(prefix || 'alpha').trim().toLowerCase() || 'alpha';
+    const safeLetter = letter === '#'
+        ? 'num'
+        : String(letter || '').trim().toLowerCase();
+    return `${safePrefix}-alpha-anchor-${safeLetter}`;
+}
+
+function bindAlphaJumpNavigation(navElement) {
+    if (!navElement || navElement.dataset.alphaJumpBound === 'true') {
+        return;
+    }
+
+    navElement.addEventListener('click', event => {
+        const button = event.target.closest('[data-alpha-anchor-id]');
+        if (!button || button.disabled) {
+            return;
+        }
+
+        const anchorId = String(button.dataset.alphaAnchorId || '').trim();
+        if (!anchorId) {
+            return;
+        }
+
+        const anchor = document.getElementById(anchorId);
+        if (!anchor) {
+            return;
+        }
+
+        const offset = 88;
+        const destinationTop = Math.max(0, Math.floor(anchor.getBoundingClientRect().top + globalThis.scrollY - offset));
+        globalThis.scrollTo({ top: destinationTop, behavior: 'smooth' });
+    });
+
+    navElement.dataset.alphaJumpBound = 'true';
+}
+
+function resolveAlphaJumpVisibilityTarget(navElement) {
+    if (!navElement) {
+        return null;
+    }
+
+    if (navElement.id === 'libraryLetterNav') {
+        return document.getElementById('artistsGrid');
+    }
+    if (navElement.id === 'soundtrackLetterNav') {
+        return document.getElementById('soundtrackGrid');
+    }
+    return null;
+}
+
+function updateAlphaJumpVisibility(navElement) {
+    if (!navElement || navElement.hidden) {
+        return;
+    }
+
+    const target = resolveAlphaJumpVisibilityTarget(navElement);
+    if (!target) {
+        navElement.classList.add('is-visible');
+        return;
+    }
+
+    const revealOffset = 170;
+    const targetRect = target.getBoundingClientRect();
+    const shouldShow = targetRect.top <= revealOffset && targetRect.bottom > 120;
+    navElement.classList.toggle('is-visible', shouldShow);
+}
+
+function bindAlphaJumpAutoVisibility(navElement) {
+    if (!navElement || navElement.dataset.alphaJumpVisibilityBound === 'true') {
+        return;
+    }
+
+    let scheduled = false;
+    const scheduleUpdate = () => {
+        if (scheduled) {
+            return;
+        }
+        scheduled = true;
+        globalThis.requestAnimationFrame(() => {
+            scheduled = false;
+            updateAlphaJumpVisibility(navElement);
+        });
+    };
+
+    globalThis.addEventListener('scroll', scheduleUpdate, { passive: true });
+    globalThis.addEventListener('resize', scheduleUpdate, { passive: true });
+    document.addEventListener('visibilitychange', scheduleUpdate);
+
+    const soundtrackTabButton = document.getElementById('soundtracks-tab');
+    if (soundtrackTabButton && navElement.id === 'soundtrackLetterNav') {
+        soundtrackTabButton.addEventListener('shown.bs.tab', scheduleUpdate);
+    }
+
+    navElement.dataset.alphaJumpVisibilityBound = 'true';
+}
+
+function renderAlphaJumpNavigation(navElement, anchorIdsByLetter) {
+    if (!navElement) {
+        return;
+    }
+
+    bindAlphaJumpNavigation(navElement);
+    const anchors = anchorIdsByLetter instanceof Map ? anchorIdsByLetter : new Map();
+    if (anchors.size === 0) {
+        navElement.hidden = true;
+        navElement.classList.remove('is-visible');
+        navElement.innerHTML = '';
+        return;
+    }
+
+    const buttons = ALPHA_JUMP_LETTERS.map(letter => {
+        const anchorId = anchors.get(letter) || '';
+        const disabled = !anchorId;
+        return `<button type="button" class="alpha-jump-nav__button${disabled ? ' is-disabled' : ''}" data-alpha-anchor-id="${escapeHtml(anchorId)}" aria-label="Jump to ${escapeHtml(letter)}" ${disabled ? 'disabled' : ''}>${escapeHtml(letter)}</button>`;
+    });
+    navElement.innerHTML = buttons.join('');
+    navElement.hidden = false;
+    bindAlphaJumpAutoVisibility(navElement);
+    updateAlphaJumpVisibility(navElement);
+}
+
+function maybeApplyPendingScrollRestore(getState, clearState, allowDeferred = true) {
+    const state = typeof getState === 'function' ? getState() : null;
+    if (!state) {
+        return false;
+    }
+
+    const desiredScroll = Math.max(0, Number.parseInt(String(state.scrollY ?? 0), 10) || 0);
+    const maxScroll = Math.max(0, document.documentElement.scrollHeight - globalThis.innerHeight);
+    if (allowDeferred && maxScroll + 20 < desiredScroll) {
+        return false;
+    }
+
+    globalThis.scrollTo({
+        top: Math.min(desiredScroll, maxScroll),
+        behavior: 'auto'
+    });
+    if (typeof clearState === 'function') {
+        clearState();
+    }
+    return true;
+}
+
+function persistLibraryReturnState() {
+    if (!document.getElementById('artistsGrid')) {
+        return;
+    }
+
+    const viewSelect = document.getElementById('libraryViewSelect');
+    setSessionJsonValue(LIBRARY_RETURN_STATE_SESSION_KEY, {
+        scrollY: globalThis.scrollY,
+        viewSelection: String(viewSelect?.value || getStoredLibraryViewSelection() || 'main'),
+        searchQuery: String(libraryState.artistSearchQuery || ''),
+        sortKey: String(libraryState.artistSortKey || 'name-asc'),
+        capturedAtUtc: new Date().toISOString()
+    });
+}
+
+function clearPendingLibraryReturnState() {
+    pendingLibraryReturnState = null;
+    removeSessionValue(LIBRARY_RETURN_STATE_SESSION_KEY);
+}
+
+function primePendingLibraryReturnState() {
+    const payload = getSessionJsonValue(LIBRARY_RETURN_STATE_SESSION_KEY);
+    if (!payload) {
+        return;
+    }
+
+    if (!isNavigationRestoreCandidate('/Library/Artist/')) {
+        clearPendingLibraryReturnState();
+        return;
+    }
+
+    pendingLibraryReturnState = payload;
+    const viewSelection = String(payload.viewSelection || '').trim();
+    if (viewSelection) {
+        setStoredLibraryViewSelection(viewSelection);
+    }
+
+    libraryState.artistSearchQuery = String(payload.searchQuery || '');
+    const savedSortKey = String(payload.sortKey || '').trim().toLowerCase();
+    libraryState.artistSortKey = savedSortKey === 'name-desc' ? 'name-desc' : 'name-asc';
+}
+
+function applyPendingLibraryScrollRestore() {
+    maybeApplyPendingScrollRestore(() => pendingLibraryReturnState, clearPendingLibraryReturnState, false);
+}
+
+function persistSoundtrackReturnState() {
+    if (!document.getElementById('soundtrackGrid')) {
+        return;
+    }
+
+    const selectedShow = soundtrackState.selectedTvShow;
+    setSessionJsonValue(SOUNDTRACK_RETURN_STATE_SESSION_KEY, {
+        scrollY: globalThis.scrollY,
+        category: normalizeSoundtrackCategory(soundtrackState.category),
+        selectedServerType: String(soundtrackState.selectedServerType || '').trim().toLowerCase(),
+        selectedLibraryId: String(soundtrackState.selectedLibraryId || '').trim(),
+        selectedTvSeasonId: String(soundtrackState.selectedTvSeasonId || '').trim(),
+        selectedTvShow: selectedShow
+            ? {
+                showId: String(selectedShow.showId || '').trim(),
+                showTitle: String(selectedShow.showTitle || '').trim(),
+                showImageUrl: String(selectedShow.showImageUrl || '').trim(),
+                serverType: String(selectedShow.serverType || '').trim().toLowerCase(),
+                libraryId: String(selectedShow.libraryId || '').trim(),
+                libraryName: String(selectedShow.libraryName || '').trim(),
+                year: Number.isFinite(selectedShow.year) ? selectedShow.year : null
+            }
+            : null,
+        capturedAtUtc: new Date().toISOString()
+    });
+}
+
+function clearPendingSoundtrackReturnState() {
+    pendingSoundtrackReturnState = null;
+    removeSessionValue(SOUNDTRACK_RETURN_STATE_SESSION_KEY);
+}
+
+function primePendingSoundtrackReturnState() {
+    const payload = getSessionJsonValue(SOUNDTRACK_RETURN_STATE_SESSION_KEY);
+    if (!payload) {
+        return;
+    }
+
+    if (!isNavigationRestoreCandidate('/Tracklist')) {
+        clearPendingSoundtrackReturnState();
+        return;
+    }
+
+    pendingSoundtrackReturnState = payload;
+    soundtrackState.category = normalizeSoundtrackCategory(payload.category);
+    soundtrackState.selectedServerType = String(payload.selectedServerType || '').trim().toLowerCase();
+    soundtrackState.selectedLibraryId = String(payload.selectedLibraryId || '').trim();
+    soundtrackState.selectedTvSeasonId = String(payload.selectedTvSeasonId || '').trim();
+
+    const selectedShow = payload.selectedTvShow;
+    if (selectedShow && typeof selectedShow === 'object' && String(selectedShow.showId || '').trim()) {
+        soundtrackState.selectedTvShow = {
+            showId: String(selectedShow.showId || '').trim(),
+            showTitle: String(selectedShow.showTitle || 'TV Show').trim(),
+            showImageUrl: String(selectedShow.showImageUrl || '').trim(),
+            serverType: String(selectedShow.serverType || '').trim().toLowerCase(),
+            libraryId: String(selectedShow.libraryId || '').trim(),
+            libraryName: String(selectedShow.libraryName || '').trim(),
+            year: Number.isFinite(selectedShow.year) ? selectedShow.year : null,
+            seasons: [],
+            episodes: []
+        };
+    } else {
+        soundtrackState.selectedTvShow = null;
+    }
+}
+
+function isSoundtracksTabVisible() {
+    const tabPane = document.getElementById('soundtracks-content');
+    if (!tabPane) {
+        return false;
+    }
+    if (tabPane.classList.contains('active') || tabPane.classList.contains('show')) {
+        return true;
+    }
+    return document.getElementById('soundtracks-tab')?.classList.contains('active') === true;
+}
+
+function applyPendingSoundtrackScrollRestore() {
+    if (!isSoundtracksTabVisible()) {
+        return;
+    }
+
+    maybeApplyPendingScrollRestore(() => pendingSoundtrackReturnState, clearPendingSoundtrackReturnState);
 }
 
 function getDiscographyFilterStorageKey() {
@@ -2476,6 +2824,7 @@ async function waitForScanCompletion(startedAtMs) {
 
 function renderArtistGrid(artists) {
     const container = document.getElementById('artistsGrid');
+    const letterNav = document.getElementById('libraryLetterNav');
     if (!container) {
         return;
     }
@@ -2485,12 +2834,21 @@ function renderArtistGrid(artists) {
         container.innerHTML = hasFilter
             ? '<p class="library-empty-note">No artists match your filter.</p>'
             : '<p class="library-empty-note">No local artists yet.</p>';
+        renderAlphaJumpNavigation(letterNav, new Map());
+        applyPendingLibraryScrollRestore();
         return;
     }
 
+    const anchorIdsByLetter = new Map();
     artists.forEach(artist => {
         const card = document.createElement('div');
         card.className = 'artist-card ds-tile';
+        const letter = getAlphaJumpLetter(artist?.name);
+        if (!anchorIdsByLetter.has(letter)) {
+            const anchorId = buildAlphaJumpAnchorId('library', letter);
+            anchorIdsByLetter.set(letter, anchorId);
+            card.id = anchorId;
+        }
         const initials = artist.name.split(' ').map(part => part[0]).slice(0, 2).join('').toUpperCase();
         const coverPath = artist.preferredImagePath
             ? `/api/library/image?path=${encodeURIComponent(artist.preferredImagePath)}&size=240`
@@ -2504,10 +2862,14 @@ function renderArtistGrid(artists) {
             <strong>${escapeHtml(artist.name || 'Unknown Artist')}</strong>
         `;
         card.addEventListener('click', () => {
+            persistLibraryReturnState();
             globalThis.location.href = `/Library/Artist/${artist.id}`;
         });
         container.appendChild(card);
     });
+
+    renderAlphaJumpNavigation(letterNav, anchorIdsByLetter);
+    applyPendingLibraryScrollRestore();
 }
 
 async function loadAlbums(artistId) {
@@ -8313,6 +8675,7 @@ function getSoundtrackElements() {
         tvShowTitle: document.getElementById('soundtrackTvShowTitle'),
         tvSeasonFilterGroup: document.getElementById('soundtrackTvSeasonFilterGroup'),
         tvSeasonPills: document.getElementById('soundtrackTvSeasonPills'),
+        letterNav: document.getElementById('soundtrackLetterNav'),
         grid: document.getElementById('soundtrackGrid'),
         empty: document.getElementById('soundtrackEmpty')
     };
@@ -8759,6 +9122,7 @@ function navigateToSoundtrackTracklist(target) {
     if (normalizedExternalUrl) {
         query.set('externalUrl', normalizedExternalUrl);
     }
+    persistSoundtrackReturnState();
     globalThis.location.href = `/Tracklist?${query.toString()}`;
 }
 
@@ -9107,8 +9471,36 @@ function setTvSoundtrackStatus(elements, label, count) {
     setSoundtrackStatus(elements, `TV Shows: ${count} ${label}${getPluralSuffix(count)}`);
 }
 
+function renderSoundtrackAlphaJumpNavigation(elements, rows) {
+    if (!elements?.letterNav || !elements?.grid) {
+        return;
+    }
+
+    const cards = Array.from(elements.grid.querySelectorAll('.soundtrack-card'));
+    if (!Array.isArray(rows) || rows.length === 0 || cards.length === 0) {
+        renderAlphaJumpNavigation(elements.letterNav, new Map());
+        return;
+    }
+
+    const anchorIdsByLetter = new Map();
+    cards.forEach(card => {
+        const titleValue = card.querySelector('.soundtrack-card-title')?.textContent || '';
+        const letter = getAlphaJumpLetter(titleValue);
+        if (anchorIdsByLetter.has(letter)) {
+            return;
+        }
+
+        const anchorId = buildAlphaJumpAnchorId('soundtrack', letter);
+        anchorIdsByLetter.set(letter, anchorId);
+        card.id = anchorId;
+    });
+
+    renderAlphaJumpNavigation(elements.letterNav, anchorIdsByLetter);
+}
+
 function renderMovieSoundtrackRows(elements, rows) {
     elements.grid.innerHTML = rows.map(item => buildSoundtrackMovieCardMarkup(item)).join('');
+    renderSoundtrackAlphaJumpNavigation(elements, rows);
     setMovieSoundtrackStatus(elements, rows.length);
 }
 
@@ -9123,17 +9515,20 @@ function renderSelectedTvShowSeasons(elements) {
     }
 
     elements.grid.innerHTML = seasons.map(season => buildSoundtrackTvSeasonCardMarkup(season)).join('');
+    renderSoundtrackAlphaJumpNavigation(elements, seasons);
     setTvSoundtrackStatus(elements, 'season', seasons.length);
     return true;
 }
 
 function renderSelectedTvShowEpisodes(elements, rows) {
     elements.grid.innerHTML = rows.map(item => buildSoundtrackTvEpisodeCardMarkup(item)).join('');
+    renderSoundtrackAlphaJumpNavigation(elements, rows);
     setTvSoundtrackStatus(elements, 'episode', rows.length);
 }
 
 function renderTvShowSoundtrackRows(elements, rows) {
     elements.grid.innerHTML = rows.map(item => buildSoundtrackTvShowCardMarkup(item)).join('');
+    renderSoundtrackAlphaJumpNavigation(elements, rows);
     setTvSoundtrackStatus(elements, 'show', rows.length);
 }
 
@@ -9160,20 +9555,25 @@ function renderSoundtrackItems(items, category) {
     const normalizedCategory = normalizeSoundtrackCategory(category);
     if (rows.length === 0) {
         renderSoundtrackEmptyState(elements, normalizedCategory, category);
+        renderAlphaJumpNavigation(elements.letterNav, new Map());
+        applyPendingSoundtrackScrollRestore();
         return;
     }
 
     elements.empty.hidden = true;
     if (normalizedCategory === 'movie') {
         renderMovieSoundtrackRows(elements, rows);
+        applyPendingSoundtrackScrollRestore();
         return;
     }
 
     if (renderSelectedTvShowSoundtrackRows(elements, rows)) {
+        applyPendingSoundtrackScrollRestore();
         return;
     }
 
     renderTvShowSoundtrackRows(elements, rows);
+    applyPendingSoundtrackScrollRestore();
 }
 
 function hasPendingSoundtrackMatches(rows) {
@@ -9476,6 +9876,9 @@ function bindSoundtrackTabHandlers() {
     const rememberedCategory = restoreSoundtrackCategoryPreference();
     if (rememberedCategory) {
         soundtrackState.category = rememberedCategory;
+    }
+    if (pendingSoundtrackReturnState?.category) {
+        soundtrackState.category = normalizeSoundtrackCategory(pendingSoundtrackReturnState.category);
     }
 
     setActiveSoundtrackCategory(soundtrackState.category);
@@ -12362,7 +12765,9 @@ function bindDeferredSoundtrackInitialization(shouldLoadSoundtracks) {
 
     if (soundtrackTabButton) {
         soundtrackTabButton.addEventListener('shown.bs.tab', () => {
-            ensureInitialized().catch(() => {
+            ensureInitialized().then(() => {
+                applyPendingSoundtrackScrollRestore();
+            }).catch(() => {
                 // Initializer failures are handled by the tab loader UI.
             });
         });
@@ -12372,7 +12777,9 @@ function bindDeferredSoundtrackInitialization(shouldLoadSoundtracks) {
         || soundtrackTabPane.classList.contains('show')
         || soundtrackTabButton?.classList.contains('active') === true;
     if (soundtrackTabActive) {
-        ensureInitialized().catch(() => {
+        ensureInitialized().then(() => {
+            applyPendingSoundtrackScrollRestore();
+        }).catch(() => {
             // Initializer failures are handled by the tab loader UI.
         });
     }
@@ -12540,6 +12947,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         syncFolderConversionFieldsState();
 
         const targets = getLibraryLoadTargets();
+        if (targets.shouldLoadArtists) {
+            primePendingLibraryReturnState();
+        }
+        if (targets.shouldLoadSoundtracks) {
+            primePendingSoundtrackReturnState();
+        }
         bindDeferredSoundtrackInitialization(targets.shouldLoadSoundtracks);
         if (targets.shouldLoadArtistAlbums) {
             initializeDiscographyFilterState();

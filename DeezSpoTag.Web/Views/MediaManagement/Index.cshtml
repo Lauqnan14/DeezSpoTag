@@ -165,6 +165,7 @@
                         <div id="soundtrackTvSeasonPills" class="soundtrack-pill-row"></div>
                     </div>
                 </div>
+                <nav id="soundtrackLetterNav" class="alpha-jump-nav alpha-jump-nav--soundtrack" aria-label="Soundtrack letter navigation" hidden></nav>
                 <div id="soundtrackGrid" class="soundtrack-grid"></div>
                 <div id="soundtrackEmpty" class="auto-playlists-empty" hidden>
                     No soundtrack items available for this category and filter.
@@ -893,8 +894,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
 .soundtrack-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(208px, 1fr));
+    gap: 14px;
+    padding-right: 52px;
 }
 
 .soundtrack-card {
@@ -1241,6 +1243,10 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 
 @@media (max-width: 640px) {
+    .soundtrack-grid {
+        padding-right: 0;
+    }
+
     #mediaManagementTabs .nav-link,
     #watchlistSubTabs .nav-link,
     #soundtrackSubTabs .nav-link {
