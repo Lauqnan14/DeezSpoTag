@@ -27,8 +27,22 @@ public static class AppDataPathResolver
 
     public static string GetDefaultWorkersDataDir()
     {
+        var configuredConfigDir = NormalizeConfiguredDataRoot(Environment.GetEnvironmentVariable(ConfigDirEnvVar));
+        if (!string.IsNullOrWhiteSpace(configuredConfigDir))
+        {
+            EnsureWritableDirectoryOrThrow(configuredConfigDir, ConfigDirEnvVar);
+            return configuredConfigDir;
+        }
+
+        var configuredDataDir = NormalizeConfiguredDataRoot(Environment.GetEnvironmentVariable(DataDirEnvVar));
+        if (!string.IsNullOrWhiteSpace(configuredDataDir))
+        {
+            EnsureWritableDirectoryOrThrow(configuredDataDir, DataDirEnvVar);
+            return configuredDataDir;
+        }
+
         var canonicalPrimary = CanonicalWorkersDataCandidates[0];
-        Directory.CreateDirectory(canonicalPrimary);
+        EnsureWritableDirectoryOrThrow(canonicalPrimary, "default workers data root");
 
         foreach (var misplacedCandidate in MisplacedWorkersDataCandidates.Where(Directory.Exists))
         {
@@ -51,7 +65,7 @@ public static class AppDataPathResolver
 
         foreach (var legacyCandidate in LegacyWorkersDataCandidates.Where(Directory.Exists))
         {
-            var migrateTarget = CanonicalWorkersDataCandidates[0];
+            var migrateTarget = canonicalPrimary;
             TryMigrateLegacyWorkersData(legacyCandidate, migrateTarget);
             if (Directory.Exists(migrateTarget))
             {
@@ -62,12 +76,12 @@ public static class AppDataPathResolver
         var existingLegacyCandidate = Array.Find(LegacyWorkersDataCandidates, Directory.Exists);
         if (!string.IsNullOrWhiteSpace(existingLegacyCandidate))
         {
-            var migrateTarget = CanonicalWorkersDataCandidates[0];
+            var migrateTarget = canonicalPrimary;
             TryMigrateLegacyWorkersData(existingLegacyCandidate, migrateTarget);
             return migrateTarget;
         }
 
-        return CanonicalWorkersDataCandidates[0];
+        return canonicalPrimary;
     }
 
     public static bool IsLegacyWorkersDataDir(string? path)
@@ -99,6 +113,24 @@ public static class AppDataPathResolver
         catch
         {
             // Best effort migration; fallback selection continues if migration fails.
+        }
+    }
+
+    private static void EnsureWritableDirectoryOrThrow(string path, string source)
+    {
+        try
+        {
+            Directory.CreateDirectory(path);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            throw new UnauthorizedAccessException(
+                $"Data root '{path}' from '{source}' is not writable. Set DEEZSPOTAG_DATA_DIR/DEEZSPOTAG_CONFIG_DIR to a writable path.");
+        }
+        catch (IOException)
+        {
+            throw new IOException(
+                $"Data root '{path}' from '{source}' is not writable or cannot be created. Set DEEZSPOTAG_DATA_DIR/DEEZSPOTAG_CONFIG_DIR to a writable path.");
         }
     }
 
