@@ -126,8 +126,26 @@ RUN set -eux; \
     fetch_if_missing() { \
       file="$1"; \
       url="$2"; \
-      if [ ! -s "${models_dir}/${file}" ]; then \
-        curl -fL -o "${models_dir}/${file}" "${url}"; \
+      target="${models_dir}/${file}"; \
+      tmp="${target}.tmp"; \
+      if [ ! -s "${target}" ]; then \
+        attempt=1; \
+        max_attempts=8; \
+        while [ "${attempt}" -le "${max_attempts}" ]; do \
+          if curl -fL --connect-timeout 20 --max-time 300 -o "${tmp}" "${url}"; then \
+            mv "${tmp}" "${target}"; \
+            return 0; \
+          fi; \
+          rm -f "${tmp}"; \
+          if [ "${attempt}" -eq "${max_attempts}" ]; then \
+            echo "Failed to download ${file} from ${url} after ${max_attempts} attempts." >&2; \
+            return 1; \
+          fi; \
+          sleep_seconds=$((attempt * 3)); \
+          echo "Retry ${attempt}/${max_attempts} for ${file} in ${sleep_seconds}s..." >&2; \
+          sleep "${sleep_seconds}"; \
+          attempt=$((attempt + 1)); \
+        done; \
       fi; \
     }; \
     fetch_if_missing "msd-musicnn-1.pb" "https://essentia.upf.edu/models/feature-extractors/musicnn/msd-musicnn-1.pb"; \

@@ -1,6 +1,7 @@
 # Build output
 **/bin/
 **/obj/
+Dockerfile.watch
 publish/
 artifacts/
 TestResults/
@@ -27,6 +28,9 @@ DeezSpoTag.Web/Tools/venv/
 .tmp_wheels/
 .claude/
 .tools/
+**/__pycache__/
+*.pyc
+*.pyo
 *.tmp
 *.temp
 *.deb
@@ -52,9 +56,11 @@ Tools/AppleMusicWrapper/runtime/app/rootfs/
 Tools/AppleMusicWrapper/runv2/apple-wrapper-runv2
 Tools/AppleMusicWrapper/runtime/app/.backup-ref-swap/
 DeezSpoTag.Web/Tools/models/
+DeezSpoTag.Web/DeezSpoTag.Web/Tools/models/
 DeezSpoTag.Web/spotify/auth/
 DeezSpoTag.Web/spotify/blobs/
 DeezSpoTag.Web/credentials.json
+Layout.png
 
 # Local environment files
 .env
