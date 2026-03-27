@@ -1596,6 +1596,12 @@ public class AutoTagEnhancementController : ControllerBase
         var minSampleRateHz = request.MinSampleRateKhz.HasValue && request.MinSampleRateKhz.Value > 0
             ? (int?)Math.Clamp((int)Math.Round(request.MinSampleRateKhz.Value * 1000d), 1000, 768000)
             : null;
+        var runQualityUpgradeStage = request.FlagMissingTags == true
+            || request.FlagMismatchedMetadata == true
+            || !string.IsNullOrWhiteSpace(request.MinFormat)
+            || request.MinBitDepth.HasValue
+            || minSampleRateHz.HasValue
+            || technicalProfiles.Count > 0;
         var started = await _qualityScannerService.StartAsync(
             new QualityScannerStartRequest
             {
@@ -1604,6 +1610,7 @@ public class AutoTagEnhancementController : ControllerBase
                 MinFormat = request.MinFormat,
                 MinBitDepth = request.MinBitDepth,
                 MinSampleRateHz = minSampleRateHz,
+                RunQualityUpgradeStage = runQualityUpgradeStage,
                 QueueAtmosAlternatives = request.QueueAtmosAlternatives,
                 CooldownMinutes = request.CooldownMinutes,
                 Trigger = "enhancement",
