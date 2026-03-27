@@ -1727,8 +1727,38 @@ async function loadIgnoredTracks() {
     }
 }
 
+const csrfUnsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+function readCsrfRequestToken() {
+    const tokenMeta = document.querySelector('meta[name="deezspotag-csrf-token"]');
+    const token = tokenMeta?.getAttribute('content');
+    return typeof token === 'string' ? token.trim() : '';
+}
+
+function buildCsrfFetchOptions(options) {
+    const requestOptions = options ? { ...options } : {};
+    const method = String(requestOptions.method || 'GET').toUpperCase();
+    if (!csrfUnsafeMethods.has(method)) {
+        return requestOptions;
+    }
+
+    const headers = new Headers(requestOptions.headers || {});
+    if (!headers.has('X-CSRF-TOKEN')) {
+        const csrfToken = readCsrfRequestToken();
+        if (csrfToken) {
+            headers.set('X-CSRF-TOKEN', csrfToken);
+        }
+    }
+
+    requestOptions.headers = headers;
+    if (!requestOptions.credentials) {
+        requestOptions.credentials = 'same-origin';
+    }
+    return requestOptions;
+}
+
 async function fetchJson(url, options) {
-    const response = await fetch(url, options);
+    const response = await fetch(url, buildCsrfFetchOptions(options));
     if (!response.ok) {
         const raw = await response.text();
         const trimmed = String(raw || '').trim();
@@ -4056,14 +4086,14 @@ function applyExternalMatchToRow(row, deezerId) {
 }
 
 function applySpotifyMatchToRow(row, deezerId) {
-    applyMatchedRowState(row, deezerId, true);
+    applyMatchedRowState(row, deezerId);
 }
 
 function applyBoomplayMatchToRow(row, deezerId) {
-    applyMatchedRowState(row, deezerId, false);
+    applyMatchedRowState(row, deezerId);
 }
 
-function applyMatchedRowState(row, deezerId, updateIgnoreButton) {
+function applyMatchedRowState(row, deezerId) {
     const preview = deezerId
         ? buildDeezerStreamUrl(deezerId, {
             type: getRowPlaybackTypeHint(row),
@@ -4071,12 +4101,6 @@ function applyMatchedRowState(row, deezerId, updateIgnoreButton) {
         })
         : '';
     updateMatchedRowCheckbox(row, deezerId);
-    if (updateIgnoreButton) {
-        const ignoreButton = row.querySelector('.track-ignore-btn');
-        if (ignoreButton) {
-            ignoreButton.setAttribute('data-ignore-track-id', deezerId);
-        }
-    }
     const source = getRowTrackSource(row);
     const canRetryMatch = !deezerId
         && isDeezerMatchedExternalSource(source)
