@@ -4110,6 +4110,87 @@
     gap: 32px;
 }
 
+.alpha-jump-nav {
+    position: fixed;
+    right: 10px;
+    top: var(--alpha-jump-top, 150px);
+    transform: none;
+    z-index: 40;
+    display: grid;
+    gap: 4px;
+    padding: 8px 6px;
+    border-radius: 14px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 28%, transparent);
+    background: color-mix(in srgb, var(--bg-secondary) 88%, black 12%);
+    box-shadow: 0 10px 24px color-mix(in srgb, black 45%, transparent);
+    max-height: calc(100vh - var(--alpha-jump-top, 150px) - 12px);
+    overflow-y: auto;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.18s ease;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.alpha-jump-nav::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+}
+
+.alpha-jump-nav.is-visible {
+    opacity: 1;
+    visibility: visible;
+}
+
+.library-page .alpha-jump-nav {
+    --alpha-jump-top: 205px;
+}
+
+#soundtracks-content .alpha-jump-nav {
+    --alpha-jump-top: 220px;
+}
+
+.alpha-jump-nav[hidden] {
+    display: none !important;
+}
+
+.alpha-jump-nav__button {
+    width: 26px;
+    height: 22px;
+    border-radius: 7px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+    pointer-events: auto;
+}
+
+.alpha-jump-nav__button:hover,
+.alpha-jump-nav__button:focus-visible {
+    outline: none;
+    border-color: color-mix(in srgb, var(--primary-color) 45%, transparent);
+    color: var(--primary-color);
+    background: color-mix(in srgb, var(--primary-color) 14%, transparent);
+}
+
+.alpha-jump-nav__button.is-disabled,
+.alpha-jump-nav__button:disabled {
+    cursor: default;
+    opacity: 0.35;
+    color: var(--text-muted);
+}
+
+.alpha-jump-nav__button:disabled:hover {
+    border-color: transparent;
+    background: transparent;
+}
+
 .index-section__head {
     display: flex;
     align-items: center;
@@ -4197,6 +4278,12 @@
     .index-search-input {
         width: 100%;
         flex: 1;
+    }
+}
+
+@media (max-width: 640px) {
+    .alpha-jump-nav {
+        display: none !important;
     }
 }
 
