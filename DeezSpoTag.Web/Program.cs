@@ -17,6 +17,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authentication;
@@ -42,6 +43,9 @@ protected Program()
 
 private const string UnknownValue = "unknown";
 private const string MissingValue = "missing";
+private static readonly Regex BuildVersionPattern = new(
+    @"^v?(?<core>\d+\.\d+\.\d+\.\d+)(?:[-+][0-9A-Za-z][0-9A-Za-z.\-]*)?$",
+    RegexOptions.Compiled | RegexOptions.CultureInvariant);
 public static async Task Main(string[] args)
 {
     var builder = WebApplication.CreateBuilder(args);
@@ -398,7 +402,7 @@ static string ResolveBuildDisplayVersion(Assembly entryAssembly, string fallback
     var injectedBuildVersion = Environment.GetEnvironmentVariable("DEEZSPOTAG_BUILD_VERSION");
     if (!string.IsNullOrWhiteSpace(injectedBuildVersion))
     {
-        return injectedBuildVersion.Trim();
+        return NormalizeBuildDisplayVersion(injectedBuildVersion);
     }
 
     var informationalVersion = entryAssembly
@@ -406,10 +410,33 @@ static string ResolveBuildDisplayVersion(Assembly entryAssembly, string fallback
         ?.InformationalVersion;
     if (!string.IsNullOrWhiteSpace(informationalVersion))
     {
-        return informationalVersion.Trim();
+        return NormalizeBuildDisplayVersion(informationalVersion);
     }
 
-    return fallbackVersion;
+    return NormalizeBuildDisplayVersion(fallbackVersion);
+}
+
+static string NormalizeBuildDisplayVersion(string? candidate)
+{
+    var value = (candidate ?? string.Empty).Trim();
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return UnknownValue;
+    }
+
+    if (string.Equals(value, UnknownValue, StringComparison.OrdinalIgnoreCase))
+    {
+        return UnknownValue;
+    }
+
+    var match = BuildVersionPattern.Match(value);
+    if (!match.Success)
+    {
+        return value;
+    }
+
+    var core = match.Groups["core"].Value;
+    return $"v{core}";
 }
 
 static void ConfigurePipeline(WebApplication app, IConfiguration configuration)
