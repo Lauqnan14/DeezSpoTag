@@ -108,6 +108,7 @@ public sealed class QualityScannerService
 
         var settings = _settingsService.LoadSettings();
         var effectiveQueueAtmos = request.QueueAtmosAlternatives ?? automationSettings.QueueAtmosAlternatives;
+        var runQualityUpgradeStage = request.RunQualityUpgradeStage ?? true;
         var effectiveCooldown = Math.Clamp(request.CooldownMinutes ?? automationSettings.CooldownMinutes, 0, 43200);
         var atmosDestinationFolderId = GetAtmosDestinationFolderId(settings);
         CancellationTokenSource? previousCts;
@@ -123,6 +124,7 @@ public sealed class QualityScannerService
                 normalizedScope,
                 request.FolderId,
                 request.Trigger,
+                runQualityUpgradeStage,
                 effectiveQueueAtmos,
                 effectiveCooldown);
             previousCts = _cts;
@@ -135,6 +137,7 @@ public sealed class QualityScannerService
                 MinBitDepth: NormalizeMinBitDepth(request.MinBitDepth),
                 MinSampleRateHz: NormalizeMinSampleRateHz(request.MinSampleRateHz),
                 Trigger: string.IsNullOrWhiteSpace(request.Trigger) ? "manual" : request.Trigger.Trim().ToLowerInvariant(),
+                RunQualityUpgradeStage: runQualityUpgradeStage,
                 QueueAtmosAlternatives: effectiveQueueAtmos,
                 CooldownMinutes: effectiveCooldown,
                 AtmosDestinationFolderId: atmosDestinationFolderId,
@@ -206,7 +209,10 @@ public sealed class QualityScannerService
 
             using var serviceScope = _scopeFactory.CreateScope();
             var downloadIntentService = serviceScope.ServiceProvider.GetRequiredService<DownloadIntentService>();
-            await ProcessQualityUpgradeStageAsync(runId, tracks, options, settings, downloadIntentService, cancellationToken);
+            if (options.RunQualityUpgradeStage)
+            {
+                await ProcessQualityUpgradeStageAsync(runId, tracks, options, settings, downloadIntentService, cancellationToken);
+            }
             if (options.QueueAtmosAlternatives)
             {
                 await ProcessAtmosEnhancementStageAsync(runId, tracks, options, downloadIntentService, cancellationToken);
@@ -323,7 +329,7 @@ public sealed class QualityScannerService
         await PersistRunProgressAsync(runId, cancellationToken);
 
         LogInfo(
-            $"Quality scan started: scope={options.Scope}, folderId={(options.FolderId?.ToString() ?? "all")}, tracks={tracks.Count}, trigger={options.Trigger}, queueAtmos={options.QueueAtmosAlternatives}, minFormat={(options.MinFormat ?? "any")}, minBitDepth={(options.MinBitDepth?.ToString() ?? "any")}, minSampleRateHz={(options.MinSampleRateHz?.ToString() ?? "any")}");
+            $"Quality scan started: scope={options.Scope}, folderId={(options.FolderId?.ToString() ?? "all")}, tracks={tracks.Count}, trigger={options.Trigger}, runQualityUpgrade={options.RunQualityUpgradeStage}, queueAtmos={options.QueueAtmosAlternatives}, minFormat={(options.MinFormat ?? "any")}, minBitDepth={(options.MinBitDepth?.ToString() ?? "any")}, minSampleRateHz={(options.MinSampleRateHz?.ToString() ?? "any")}");
     }
 
     private async Task<bool> HandleEmptyTrackSetAsync(
@@ -679,6 +685,7 @@ public sealed class QualityScannerService
             var track = tracks[index];
             UpdateState(state => state with
             {
+                Processed = index + 1,
                 Progress = tracks.Count == 0 ? 100 : (index + 1) * 100d / tracks.Count,
                 Phase = $"Enhancement stage: {track.ArtistName} - {track.Title}"
             });
@@ -1514,6 +1521,7 @@ public sealed class QualityScannerStartRequest
     public string? MinFormat { get; init; }
     public int? MinBitDepth { get; init; }
     public int? MinSampleRateHz { get; init; }
+    public bool? RunQualityUpgradeStage { get; init; }
     public bool? QueueAtmosAlternatives { get; init; }
     public int? CooldownMinutes { get; init; }
     public string Trigger { get; init; } = "manual";
@@ -1539,17 +1547,19 @@ public sealed record QualityScannerState(
     string Scope,
     long? FolderId,
     string Trigger,
+    bool RunQualityUpgradeStage,
     bool QueueAtmosAlternatives,
     int CooldownMinutes,
     long? RunId)
 {
     public static QualityScannerState Idle()
-        => new("idle", "Ready to scan", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, string.Empty, "watchlist", null, "manual", false, 1440, null);
+        => new("idle", "Ready to scan", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, string.Empty, "watchlist", null, "manual", true, false, 1440, null);
 
     public static QualityScannerState Running(
         string scope,
         long? folderId,
         string trigger,
+        bool runQualityUpgradeStage,
         bool queueAtmosAlternatives,
         int cooldownMinutes)
         => new(
@@ -1569,6 +1579,7 @@ public sealed record QualityScannerState(
             scope,
             folderId,
             trigger,
+            runQualityUpgradeStage,
             queueAtmosAlternatives,
             cooldownMinutes,
             null);
@@ -1582,6 +1593,7 @@ internal sealed record QualityScannerRunOptions(
     int? MinBitDepth,
     int? MinSampleRateHz,
     string Trigger,
+    bool RunQualityUpgradeStage,
     bool QueueAtmosAlternatives,
     int CooldownMinutes,
     long? AtmosDestinationFolderId,

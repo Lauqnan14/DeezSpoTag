@@ -1595,6 +1595,7 @@ public class AutoTagService
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+        var runQualityUpgradeStage = flagMissingTags || flagMismatchedMetadata || technicalProfiles.Count > 0;
         var runQualityScanner = flagMissingTags || flagMismatchedMetadata || queueAtmosAlternatives || technicalProfiles.Count > 0;
         return new QualityCheckOptions(
             FlagDuplicates: flagDuplicates,
@@ -1603,6 +1604,7 @@ public class AutoTagService
             DuplicatesFolderName: qualityChecks["duplicatesFolderName"]?.GetValue<string>(),
             QueueLyricsRefresh: queueLyricsRefresh,
             QueueAtmosAlternatives: queueAtmosAlternatives,
+            RunQualityUpgradeStage: runQualityUpgradeStage,
             RunQualityScanner: runQualityScanner,
             TechnicalProfiles: technicalProfiles);
     }
@@ -1624,6 +1626,7 @@ public class AutoTagService
             {
                 Scope = "all",
                 FolderId = scopedFolderIds.Count == 1 ? scopedFolderIds[0] : null,
+                RunQualityUpgradeStage = options.RunQualityUpgradeStage,
                 QueueAtmosAlternatives = options.QueueAtmosAlternatives,
                 CooldownMinutes = ReadOptionalInt(qualityChecks, "cooldownMinutes"),
                 Trigger = "enhancement",
@@ -1734,6 +1737,7 @@ public class AutoTagService
         string? DuplicatesFolderName,
         bool QueueLyricsRefresh,
         bool QueueAtmosAlternatives,
+        bool RunQualityUpgradeStage,
         bool RunQualityScanner,
         IReadOnlyList<string> TechnicalProfiles)
     {
