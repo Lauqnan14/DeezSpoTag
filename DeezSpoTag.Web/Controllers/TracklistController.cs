@@ -29,6 +29,12 @@ namespace DeezSpoTag.Web.Controllers
             public string? AppleUrl { get; set; }
             public string? AppleId { get; set; }
             public string? AudioVariant { get; set; }
+            public string? MatchContextType { get; set; }
+            public string? MatchContextServerType { get; set; }
+            public string? MatchContextLibraryId { get; set; }
+            public string? MatchContextItemId { get; set; }
+            public string? MatchContextTitle { get; set; }
+            public string? MatchContextYear { get; set; }
         }
 
         private sealed record TracklistIndexContext(
@@ -288,6 +294,12 @@ namespace DeezSpoTag.Web.Controllers
             ViewData["AppleId"] = request.AppleId ?? "";
             ViewData["ExternalUrl"] = request.ExternalUrl ?? "";
             ViewData["AudioVariant"] = context.NormalizedAudioVariant ?? "";
+            ViewData["MatchContextType"] = request.MatchContextType ?? "";
+            ViewData["MatchContextServerType"] = request.MatchContextServerType ?? "";
+            ViewData["MatchContextLibraryId"] = request.MatchContextLibraryId ?? "";
+            ViewData["MatchContextItemId"] = request.MatchContextItemId ?? "";
+            ViewData["MatchContextTitle"] = request.MatchContextTitle ?? "";
+            ViewData["MatchContextYear"] = request.MatchContextYear ?? "";
         }
 
         private static string? NormalizeAudioVariant(string? audioVariant)
