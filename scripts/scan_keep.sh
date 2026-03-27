@@ -11,7 +11,7 @@ Options:
   -k, --project-key <key>   SonarQube project key (default: DeezSpoTag)
   -u, --host-url <url>      SonarQube host URL (default: http://localhost:9000)
   -t, --token <token>       SonarQube token (default: SONAR_TOKEN env var)
-  -s, --solution <path>     Solution path (default: ./src.sln)
+  -s, --solution <path>     Solution/project path (default: ./DeezSpoTag.Web/DeezSpoTag.Web.csproj)
   -c, --config <cfg>        Build config (default: Debug)
       --lightweight         Exclude JS/TS/HTML/CSS web assets from scan
       --begin-arg <arg>     Extra begin arg (repeatable)
@@ -44,7 +44,7 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 project_key="${SONAR_PROJECT_KEY:-DeezSpoTag}"
 host_url="${SONAR_HOST_URL:-http://localhost:9000}"
 token="${SONAR_TOKEN:-}"
-solution_path="${ROOT_DIR}/src.sln"
+solution_path="${ROOT_DIR}/DeezSpoTag.Web/DeezSpoTag.Web.csproj"
 build_config="${BUILD_CONFIG:-Debug}"
 sonar_python_version="${SONAR_PYTHON_VERSION:-}"
 sonar_exclusions="${SONAR_EXCLUSIONS:-}"

@@ -1081,7 +1081,7 @@ public sealed class SpotifyBlobService
         var current = new DirectoryInfo(_environment.ContentRootPath);
         while (current != null)
         {
-            if (Directory.Exists(Path.Join(current.FullName, ".git")) || File.Exists(Path.Join(current.FullName, "src.sln")))
+            if (Directory.Exists(Path.Join(current.FullName, ".git")) || File.Exists(Path.Join(current.FullName, "Directory.Build.props")))
             {
                 return current.FullName;
             }
