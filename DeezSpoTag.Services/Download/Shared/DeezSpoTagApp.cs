@@ -198,7 +198,18 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                     break;
                 }
 
-                await ProcessQueueItemAsync(nextItem, CancellationToken.None);
+                try
+                {
+                    await ProcessQueueItemAsync(nextItem, CancellationToken.None);
+                }
+                catch (OperationCanceledException ex)
+                {
+                    await HandleUnhandledProcessorCancellationAsync(nextItem, ex);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    await HandleUnhandledProcessorFailureAsync(nextItem, ex);
+                }
             }
 
             _logger.LogInformation("Queue processing completed.");
@@ -219,6 +230,59 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                 _ = Task.Run(StartQueueAsync);
             }
         }
+    }
+
+    private async Task HandleUnhandledProcessorCancellationAsync(DownloadQueueItem item, OperationCanceledException ex)
+    {
+        if (_cancellationRegistry.WasUserPaused(item.QueueUuid))
+        {
+            await _queueRepository.UpdateStatusAsync(
+                item.QueueUuid,
+                "paused",
+                "Paused by user",
+                cancellationToken: CancellationToken.None);
+            _retryScheduler.Clear(item.QueueUuid);
+            return;
+        }
+
+        if (_cancellationRegistry.WasUserCanceled(item.QueueUuid))
+        {
+            await _queueRepository.UpdateStatusAsync(
+                item.QueueUuid,
+                "canceled",
+                "Canceled by user",
+                cancellationToken: CancellationToken.None);
+            _retryScheduler.Clear(item.QueueUuid);
+            _cancellationRegistry.ClearUserCanceled(item.QueueUuid);
+            return;
+        }
+
+        var timeoutException = new TimeoutException(
+            $"Unhandled queue processor cancellation for {item.QueueUuid}.",
+            ex);
+        _logger.LogError(timeoutException, "Queue processor cancellation escaped engine for {QueueUuid}", item.QueueUuid);
+        await MarkQueueItemAsFailedAndRetryAsync(item, timeoutException.Message);
+    }
+
+    private async Task HandleUnhandledProcessorFailureAsync(DownloadQueueItem item, Exception ex)
+    {
+        _logger.LogError(ex, "Queue processor failure escaped engine for {QueueUuid}", item.QueueUuid);
+        await MarkQueueItemAsFailedAndRetryAsync(item, ex.Message);
+    }
+
+    private async Task MarkQueueItemAsFailedAndRetryAsync(DownloadQueueItem item, string error)
+    {
+        if (string.IsNullOrWhiteSpace(item.QueueUuid))
+        {
+            return;
+        }
+
+        await _queueRepository.UpdateStatusAsync(
+            item.QueueUuid,
+            "failed",
+            string.IsNullOrWhiteSpace(error) ? "Unhandled processor failure." : error,
+            cancellationToken: CancellationToken.None);
+        _retryScheduler.ScheduleRetry(item.QueueUuid, item.Engine ?? "unknown", error);
     }
 
     public async Task ProcessQueueItemAsync(DownloadQueueItem nextItem, CancellationToken cancellationToken = default)

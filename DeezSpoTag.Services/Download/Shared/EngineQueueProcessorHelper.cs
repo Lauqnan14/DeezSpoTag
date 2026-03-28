@@ -220,6 +220,30 @@ internal static class EngineQueueProcessorHelper
                 cancellationContext,
                 itemToken);
         }
+        catch (OperationCanceledException ex) when (!itemToken.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+        {
+            // Provider/request timeouts can bubble up as OperationCanceledException even when the user did not cancel.
+            // Treat these as retriable failures so the queue keeps processing subsequent items.
+            var timeoutException = new TimeoutException(
+                $"{engineName} operation timed out or was canceled by an external provider.",
+                ex);
+            var failureContext = new EngineAudioPostDownloadHelper.FailureHandlingContext<TPayload>(
+                deps.QueueRepository,
+                deps.ActivityLog,
+                deps.Listener,
+                deps.RetryScheduler,
+                deps.ServiceProvider,
+                deps.FallbackCoordinator.TryAdvanceAsync,
+                callbacks.ToQueuePayload,
+                engineName,
+                deps.Logger);
+            await EngineAudioPostDownloadHelper.HandleFailureAsync(
+                timeoutException,
+                next.QueueUuid,
+                payload,
+                failureContext,
+                stoppingToken);
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             var failureContext = new EngineAudioPostDownloadHelper.FailureHandlingContext<TPayload>(
