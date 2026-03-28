@@ -4838,6 +4838,11 @@ function applyQueueRealtimeUpdate(payload) {
                 taskChanged = true;
             }
         }
+        const nextLyricsBadges = getLyricsBadgesFromRealtimeUpdate(update, taskId);
+        if (nextLyricsBadges && !areSameBadgeSet(task.lyricsBadges, nextLyricsBadges)) {
+            task.lyricsBadges = nextLyricsBadges;
+            taskChanged = true;
+        }
         if (status === 'complete' && task.progress !== 100) {
             task.progress = 100;
             taskChanged = true;
@@ -5071,21 +5076,78 @@ function getLyricsBadges(item) {
         badges.push('unsynced');
     }
     if (badges.length === 0) {
-        const statusRaw = item.lyricsStatus || item.lyrics_status || '';
-        if (typeof statusRaw === 'string' && statusRaw.trim()) {
-            const status = statusRaw.trim().toLowerCase();
-            if (status.includes('ttml') || status.includes('time')) {
-                badges.push('time-synced');
-            }
-            if (status.includes('synced') && !badges.includes('synced')) {
-                badges.push('synced');
-            }
-            if ((status.includes('unsynced') || status.includes('plain') || status.includes('text')) && !badges.includes('unsynced')) {
-                badges.push('unsynced');
-            }
+        const statusBadges = getLyricsBadgesFromStatus(item.lyricsStatus || item.lyrics_status || '');
+        if (statusBadges.length) {
+            badges.push(...statusBadges);
         }
     }
     return badges;
+}
+
+function getLyricsBadgesFromRealtimeUpdate(update, taskId) {
+    if (!update || typeof update !== 'object') {
+        return null;
+    }
+
+    const fileBadges = getLyricsBadgesFromFiles(update);
+    if (fileBadges.length) {
+        return fileBadges;
+    }
+
+    const statusBadges = getLyricsBadgesFromStatus(update.lyricsStatus || update.lyrics_status || '');
+    if (statusBadges.length) {
+        return statusBadges;
+    }
+
+    const typeBadges = getLyricsBadgesFromStatus(update.prefetchLyricsType || '');
+    if (typeBadges.length) {
+        return typeBadges;
+    }
+
+    const prefetchState = queuePrefetchByTask[taskId];
+    if (prefetchState && prefetchState.lyricsType) {
+        const prefetchBadges = getLyricsBadgesFromStatus(prefetchState.lyricsType);
+        if (prefetchBadges.length) {
+            return prefetchBadges;
+        }
+    }
+
+    return null;
+}
+
+function getLyricsBadgesFromStatus(rawStatus) {
+    if (typeof rawStatus !== 'string' || !rawStatus.trim()) {
+        return [];
+    }
+
+    const status = rawStatus.trim().toLowerCase();
+    const badges = [];
+    if (status.includes('ttml') || status.includes('time')) {
+        badges.push('time-synced');
+    }
+    if (status.includes('synced') && !badges.includes('synced')) {
+        badges.push('synced');
+    }
+    if ((status.includes('unsynced') || status.includes('plain') || status.includes('text')) && !badges.includes('unsynced')) {
+        badges.push('unsynced');
+    }
+    return badges;
+}
+
+function areSameBadgeSet(left, right) {
+    const leftBadges = Array.isArray(left) ? left.map(value => String(value).toLowerCase()).sort() : [];
+    const rightBadges = Array.isArray(right) ? right.map(value => String(value).toLowerCase()).sort() : [];
+    if (leftBadges.length !== rightBadges.length) {
+        return false;
+    }
+
+    for (let i = 0; i < leftBadges.length; i += 1) {
+        if (leftBadges[i] !== rightBadges[i]) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 function getLyricsBadgesFromFiles(item) {

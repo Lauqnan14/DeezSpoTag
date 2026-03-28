@@ -474,6 +474,67 @@ public static class EngineAudioPostDownloadHelper
         }
 
         await Task.WhenAll(artworkTask, lyricsTask);
+        await PersistPrefetchPayloadStateAsync(provider, execution, token);
+    }
+
+    private static async Task PersistPrefetchPayloadStateAsync(
+        IServiceProvider provider,
+        PrefetchExecutionContext execution,
+        CancellationToken token)
+    {
+        try
+        {
+            var queueRepository = provider.GetService<DownloadQueueRepository>();
+            if (queueRepository == null)
+            {
+                return;
+            }
+
+            var outputPath = ResolveCurrentOutputPath(execution);
+            if (string.IsNullOrWhiteSpace(outputPath))
+            {
+                return;
+            }
+
+            var result = QueuePayloadFileHelper.BuildAudioFiles(execution.Request.Context.PathResult, outputPath);
+            execution.Request.Payload.Files = result.Files;
+            execution.Request.Payload.LyricsStatus = result.LyricsStatus;
+            await QueueHelperUtils.UpdatePayloadAsync(queueRepository, execution.Paths.QueueUuid, execution.Request.Payload, token);
+
+            execution.Request.Listener.Send(UpdateQueueEvent, new
+            {
+                uuid = execution.Paths.QueueUuid,
+                files = result.Files,
+                lyricsStatus = result.LyricsStatus,
+                lyrics_status = result.LyricsStatus
+            });
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            execution.Request.Logger.LogDebug(
+                ex,
+                "{Engine} failed to persist prefetch payload state for {QueueUuid}",
+                execution.Request.Engine,
+                execution.Paths.QueueUuid);
+        }
+    }
+
+    private static string ResolveCurrentOutputPath(PrefetchExecutionContext execution)
+    {
+        if (!string.IsNullOrWhiteSpace(execution.Request.Payload.FilePath))
+        {
+            return DownloadPathResolver.NormalizeDisplayPath(execution.Request.Payload.FilePath);
+        }
+
+        var filePath = execution.Request.Payload.Files
+            .Select(file => file.TryGetValue("path", out var value) ? value?.ToString() : null)
+            .FirstOrDefault(path => !string.IsNullOrWhiteSpace(path));
+        if (!string.IsNullOrWhiteSpace(filePath))
+        {
+            return DownloadPathResolver.NormalizeDisplayPath(filePath);
+        }
+
+        return DownloadPathResolver.NormalizeDisplayPath(execution.Request.ExpectedOutputPath);
     }
 
     private static PrefetchRuntimeServices ResolvePrefetchRuntimeServices(IServiceProvider provider)
