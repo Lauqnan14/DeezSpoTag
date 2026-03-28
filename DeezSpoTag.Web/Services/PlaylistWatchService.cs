@@ -2712,7 +2712,7 @@ public sealed class PlaylistWatchService
             WatchlistSource = sourceIntent.WatchlistSource,
             WatchlistPlaylistId = sourceIntent.WatchlistPlaylistId,
             WatchlistTrackId = sourceIntent.WatchlistTrackId,
-            HasAtmos = true,
+            HasAtmos = sourceIntent.HasAtmos,
             HasAppleDigitalMaster = sourceIntent.HasAppleDigitalMaster,
             Danceability = sourceIntent.Danceability,
             Energy = sourceIntent.Energy,
