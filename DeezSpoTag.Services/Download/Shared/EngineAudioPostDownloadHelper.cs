@@ -624,6 +624,11 @@ public static class EngineAudioPostDownloadHelper
         CancellationToken token)
     {
         var settings = execution.Request.Settings;
+        var coverName = runtime.PathProcessor.GenerateAlbumName(
+            settings.CoverImageTemplate,
+            execution.Request.Context.Track.Album,
+            settings,
+            execution.Request.Context.Track.Playlist);
         var storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront) ? "us" : settings.AppleMusic!.Storefront;
         var savedAnimated = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
             runtime.AppleCatalog!,
@@ -634,6 +639,7 @@ public static class EngineAudioPostDownloadHelper
                 Title = execution.Request.Payload.Title,
                 Artist = execution.Request.Payload.Artist,
                 Album = execution.Request.Payload.Album,
+                BaseFileName = coverName,
                 Storefront = storefront,
                 MaxResolution = settings.Video.AppleMusicVideoMaxResolution,
                 OutputDir = execution.Paths.CoverPath,

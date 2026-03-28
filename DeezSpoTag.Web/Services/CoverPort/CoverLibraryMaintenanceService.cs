@@ -1,7 +1,10 @@
 using System.Collections.Concurrent;
 using System.Threading;
+using DeezSpoTag.Core.Models;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Apple;
+using DeezSpoTag.Services.Download.Shared.Utils;
+using DeezSpoTag.Services.Settings;
 using SixLabors.ImageSharp;
 
 namespace DeezSpoTag.Web.Services.CoverPort;
@@ -243,6 +246,7 @@ public sealed class CoverLibraryMaintenanceService
         ConcurrentQueue<string> logs,
         CancellationToken cancellationToken)
     {
+        var baseFileName = BuildAlbumArtworkBaseFileName(metadata, request.CoverImageTemplate);
         var savedAnimated = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
             _appleMusicCatalogService,
             _httpClientFactory,
@@ -251,6 +255,7 @@ public sealed class CoverLibraryMaintenanceService
                 Title = metadata.Title,
                 Artist = metadata.Artist,
                 Album = metadata.Album,
+                BaseFileName = baseFileName,
                 Storefront = request.AppleStorefront,
                 MaxResolution = request.AnimatedArtworkMaxResolution,
                 OutputDir = albumDir,
@@ -265,6 +270,29 @@ public sealed class CoverLibraryMaintenanceService
 
         logs.Enqueue($"[skip] {albumDir}: animated artwork unavailable.");
         return false;
+    }
+
+    private static string BuildAlbumArtworkBaseFileName(AlbumMetadata metadata, string? coverImageTemplate)
+    {
+        var settings = DeezSpoTagSettingsService.GetStaticDefaultSettings();
+        if (!string.IsNullOrWhiteSpace(coverImageTemplate))
+        {
+            settings.CoverImageTemplate = coverImageTemplate.Trim();
+        }
+
+        var artist = string.IsNullOrWhiteSpace(metadata.Artist) ? "Unknown Artist" : metadata.Artist.Trim();
+        var album = string.IsNullOrWhiteSpace(metadata.Album) ? "Unknown Album" : metadata.Album.Trim();
+        var albumModel = new Album(album)
+        {
+            MainArtist = new Artist(artist),
+            Artists = new List<string> { artist }
+        };
+
+        return PathTemplateGenerator.GenerateAlbumName(
+            settings.CoverImageTemplate,
+            albumModel,
+            settings,
+            playlist: null);
     }
 
     private static AlbumArtworkState InspectAlbumArtwork(
@@ -618,7 +646,8 @@ public sealed record CoverLibraryMaintenanceRequest(
     bool QueueAnimatedArtwork = false,
     string AppleStorefront = "us",
     int AnimatedArtworkMaxResolution = 2160,
-    IReadOnlyCollection<CoverSourceName>? EnabledSources = null);
+    IReadOnlyCollection<CoverSourceName>? EnabledSources = null,
+    string CoverImageTemplate = "cover");
 
 public sealed record CoverLibraryMaintenanceResult(
     bool Success,

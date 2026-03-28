@@ -1542,7 +1542,8 @@ public class AutoTagService
             QueueAnimatedArtwork: queueAnimatedArtwork,
             AppleStorefront: string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront) ? "us" : settings.AppleMusic!.Storefront,
             AnimatedArtworkMaxResolution: settings.Video?.AppleMusicVideoMaxResolution ?? 2160,
-            EnabledSources: null);
+            EnabledSources: null,
+            CoverImageTemplate: settings.CoverImageTemplate);
 
         AppendLog(job, $"enhancement workflow: cover maintenance starting ({rootPaths.Count} path(s)).");
         var result = await _coverMaintenanceService.RunAsync(request, cancellationToken);

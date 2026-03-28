@@ -2260,7 +2260,7 @@ public class TrackDownloader
                 },
                 cancellationToken);
 
-            await SaveAnimatedArtworkAsync(track, settings, result.AlbumPath, cancellationToken);
+            await SaveAnimatedArtworkAsync(track, settings, result.AlbumPath, result.AlbumFilename, cancellationToken);
 
             await DownloadArtworkSetAsync(
                 new ArtworkDownloadSetRequest
@@ -2289,6 +2289,7 @@ public class TrackDownloader
         Track track,
         DeezSpoTagSettings settings,
         string? outputDir,
+        string? baseFileName,
         CancellationToken cancellationToken)
     {
         if (!settings.SaveAnimatedArtwork || string.IsNullOrEmpty(outputDir))
@@ -2307,6 +2308,7 @@ public class TrackDownloader
                 Title = track.Title,
                 Artist = track.MainArtist?.Name,
                 Album = track.Album?.Title,
+                BaseFileName = baseFileName,
                 Storefront = storefront,
                 MaxResolution = settings.Video.AppleMusicVideoMaxResolution,
                 OutputDir = outputDir,
