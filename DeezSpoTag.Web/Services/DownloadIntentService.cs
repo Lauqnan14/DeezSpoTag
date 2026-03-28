@@ -268,7 +268,7 @@ public sealed class DownloadIntentService
         var routing = state.Routing;
         var resolvedTarget = state.ResolvedTarget;
         var multiQuality = settings.MultiQuality;
-        var useMultiQuality = multiQuality?.Enabled == true && multiQuality.SecondaryEnabled;
+        var useMultiQuality = IsMultiQualityDualEnabled(multiQuality);
         var engine = resolvedTarget.Engine;
         var selectedQuality = ApplyResolvedQuality(intent, settings, engine, resolvedTarget.SelectedQuality);
         LogResolvedIntentMapping(resolvedTarget.Resolution, engine);
@@ -1069,7 +1069,7 @@ public sealed class DownloadIntentService
     private static long? ResolveMetadataDestinationFolderId(DownloadIntent intent, DeezSpoTagSettings settings)
     {
         var routingMultiQuality = settings.MultiQuality;
-        var useMultiQualityForRouting = routingMultiQuality?.Enabled == true && routingMultiQuality.SecondaryEnabled;
+        var useMultiQualityForRouting = IsMultiQualityDualEnabled(routingMultiQuality);
         return useMultiQualityForRouting
             ? (routingMultiQuality!.PrimaryDestinationFolderId ?? intent.DestinationFolderId)
             : intent.DestinationFolderId;
@@ -1123,13 +1123,16 @@ public sealed class DownloadIntentService
         var targetQuality = string.IsNullOrWhiteSpace(intent.Quality) ? null : intent.Quality;
         var availability = await ResolveAvailabilityAsync(intent, cancellationToken);
         var multiQuality = settings.MultiQuality;
-        var useMultiQuality = multiQuality?.Enabled == true && multiQuality.SecondaryEnabled;
+        var useMultiQuality = IsMultiQualityDualEnabled(multiQuality);
         if (useMultiQuality && !explicitAtmosRequest && IsMusicIntent(intent) && !intent.HasAtmos)
         {
             await TryHydrateAtmosCapabilityAsync(intent, availability, settings, cancellationToken);
         }
 
-        var useAtmosStereoDual = useMultiQuality && intent.HasAtmos && IsMusicIntent(intent) && !explicitAtmosRequest;
+        // Secondary Atmos queueing should not depend solely on pre-hydrated Atmos metadata.
+        // Always attempt the Atmos branch in dual-profile mode for music items, then let
+        // Apple resolution/strict Atmos selection decide per-track capability.
+        var useAtmosStereoDual = useMultiQuality && IsMusicIntent(intent) && !explicitAtmosRequest;
         var normalizedPreferredEngine = intent.PreferredEngine?.Trim().ToLowerInvariant() ?? string.Empty;
         var intentRequestsAuto = string.Equals(normalizedPreferredEngine, AutoService, StringComparison.OrdinalIgnoreCase);
         var appleOnlyRequired = RequiresAppleOnly(intent, targetQuality);
@@ -4058,6 +4061,18 @@ public sealed class DownloadIntentService
         !string.IsNullOrWhiteSpace(quality)
         && quality.Contains(AtmosQuality, StringComparison.OrdinalIgnoreCase);
 
+    private static bool IsMultiQualityDualEnabled(MultiQualityDownloadSettings? multiQuality)
+    {
+        if (multiQuality == null)
+        {
+            return false;
+        }
+
+        // Backward/forward compatibility:
+        // some persisted configs only toggle one of these flags.
+        return multiQuality.Enabled || multiQuality.SecondaryEnabled;
+    }
+
     private static bool IsAppleAtmosOnlyRequest(string? engine, string? quality)
     {
         return string.Equals(engine, ApplePlatform, StringComparison.OrdinalIgnoreCase)
@@ -4248,7 +4263,12 @@ public sealed class DownloadIntentService
 
     private async Task<bool> TryEnqueueAppleAtmosSecondaryAsync(AppleSecondaryEnqueueRequest request)
     {
-        if (request.SecondaryDestinationFolderId is null)
+        var secondaryDestinationFolderId =
+            request.SecondaryDestinationFolderId
+            ?? request.Settings.MultiQuality?.SecondaryDestinationFolderId
+            ?? request.Intent.SecondaryDestinationFolderId
+            ?? request.Intent.DestinationFolderId;
+        if (secondaryDestinationFolderId is null)
         {
             _logger.LogWarning(
                 "Multi-quality secondary skipped: secondary destination folder is required for Apple Atmos.");
@@ -4294,7 +4314,7 @@ public sealed class DownloadIntentService
         // Secondary branch in dual routing is Atmos-only by design.
         payload.ContentType = DownloadContentTypes.Atmos;
         payload.Id = Guid.NewGuid().ToString("N");
-        payload.DestinationFolderId = request.SecondaryDestinationFolderId;
+        payload.DestinationFolderId = secondaryDestinationFolderId;
         payload.QualityBucket = AtmosQuality;
         var fallbackInfo = BuildFallbackInfoForEngine(request.Intent, request.Settings, ApplePlatform, secondaryQuality);
         ApplyFallbackInfo(payload, fallbackInfo);

@@ -170,7 +170,20 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
                 CompleteItem(item);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogWarning(ex, "Spotify artist fetch timed out/canceled for {ArtistName}; scheduling retry.", item.ArtistName);
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "warn",
+                $"Spotify artist fetch canceled for {item.ArtistName}; retry scheduled."));
+            ScheduleRetry(item, "request canceled or timed out");
+        }
+        catch (Exception ex)
         {
             _logger.LogWarning(ex, "Spotify artist fetch failed for {ArtistName}", item.ArtistName);
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
