@@ -27,6 +27,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private const string BrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan ProviderRequestTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan ProviderTransientRetryDelay = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan ProviderCooldown = TimeSpan.FromMinutes(10);
     private static readonly ConcurrentDictionary<string, DateTimeOffset> ProviderBackoffUntil = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Uri JumoReferrerUri = new UriBuilder(Uri.UriSchemeHttps, "jumo-dl.pages.dev").Uri;
@@ -168,28 +169,34 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     {
         Directory.CreateDirectory(request.OutputDir);
 
-        var trackId = TryExtractTrackId(request.TrackUrl ?? request.ServiceUrl);
+        var sourceUrl = request.TrackUrl ?? request.ServiceUrl;
+        var trackId = TryExtractTrackId(sourceUrl);
         if (trackId == null || trackId <= 0)
         {
             throw new InvalidOperationException("Qobuz download requires a valid track URL.");
         }
 
-        var resolution = await _trackResolver.ResolveTrackAsync(
-            isrc: null,
-            title: request.TrackName,
-            artist: request.ArtistName,
-            album: request.AlbumName,
-            durationMs: request.DurationSeconds > 0 ? request.DurationSeconds * 1000 : null,
-            cancellationToken);
-        if (resolution?.Track.Id > 0 && resolution.Track.Id != trackId.Value)
+        // Keep explicit Qobuz track URLs authoritative to avoid unintentionally swapping
+        // to a different catalog entry/edition during metadata resolution.
+        if (!IsExplicitQobuzTrackUrl(sourceUrl))
         {
-            _logger.LogInformation(
-                "Qobuz download URL corrected by resolver: requested={RequestedTrackId} resolved={ResolvedTrackId} source={Source} score={Score}",
-                trackId.Value,
-                resolution.Track.Id,
-                resolution.Source,
-                resolution.Score);
-            trackId = resolution.Track.Id;
+            var resolution = await _trackResolver.ResolveTrackAsync(
+                isrc: null,
+                title: request.TrackName,
+                artist: request.ArtistName,
+                album: request.AlbumName,
+                durationMs: request.DurationSeconds > 0 ? request.DurationSeconds * 1000 : null,
+                cancellationToken);
+            if (resolution?.Track.Id > 0 && resolution.Track.Id != trackId.Value)
+            {
+                _logger.LogInformation(
+                    "Qobuz download URL corrected by resolver: requested={RequestedTrackId} resolved={ResolvedTrackId} source={Source} score={Score}",
+                    trackId.Value,
+                    resolution.Track.Id,
+                    resolution.Source,
+                    resolution.Score);
+                trackId = resolution.Track.Id;
+            }
         }
 
         var expectedPath = BuildSanitizedOutputPath(request, ".flac");
@@ -537,9 +544,22 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             {
                 throw;
             }
+            catch (OperationCanceledException ex)
+            {
+                if (ShouldApplyProviderCooldown(ex))
+                {
+                    MarkProviderCoolingDown(provider.Name);
+                }
+
+                _logger.LogWarning(ex, "Qobuz provider {Provider} canceled/timed out for track {TrackId} quality {Quality}", provider.Name, trackId, qualityCode);
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                MarkProviderCoolingDown(provider.Name);
+                if (ShouldApplyProviderCooldown(ex))
+                {
+                    MarkProviderCoolingDown(provider.Name);
+                }
+
                 _logger.LogWarning(ex, "Qobuz provider {Provider} failed for track {TrackId} quality {Quality}", provider.Name, trackId, qualityCode);
             }
         }
@@ -557,9 +577,10 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         };
 
         var url = $"https://jumo-dl.pages.dev/get?track_id={trackId}&format_id={formatId}&region=US";
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Referrer = JumoReferrerUri;
-        using var response = await SendProviderRequestAsync(request, cancellationToken);
+        using var response = await SendProviderRequestWithRetryAsync(
+            url,
+            JumoReferrerUri,
+            cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             throw new InvalidOperationException($"Jumo returned HTTP {(int)response.StatusCode}");
@@ -569,6 +590,11 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         if (string.IsNullOrWhiteSpace(body))
         {
             throw new InvalidOperationException("Jumo returned an empty response.");
+        }
+
+        if (TryExtractDirectUrlPayload(body, out var directUrl))
+        {
+            return directUrl;
         }
 
         if (LooksLikeHtml(body))
@@ -639,8 +665,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private async Task<string?> TryGetStreamUrlAsync(string url, CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        using var response = await SendProviderRequestAsync(request, cancellationToken);
+        using var response = await SendProviderRequestWithRetryAsync(url, null, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             throw new InvalidOperationException($"Provider returned HTTP {(int)response.StatusCode}");
@@ -650,6 +675,11 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         if (string.IsNullOrWhiteSpace(body))
         {
             throw new InvalidOperationException("Provider returned an empty response.");
+        }
+
+        if (TryExtractDirectUrlPayload(body, out var directUrl))
+        {
+            return directUrl;
         }
 
         if (LooksLikeHtml(body))
@@ -685,12 +715,57 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         throw new InvalidOperationException("Provider response did not contain a usable stream URL.");
     }
 
+    private async Task<HttpResponseMessage> SendProviderRequestWithRetryAsync(
+        string url,
+        Uri? referrer,
+        CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 3;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                if (referrer != null)
+                {
+                    request.Headers.Referrer = referrer;
+                }
+
+                return await SendProviderRequestAsync(request, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (attempt < maxAttempts && IsTransientProviderFailure(ex))
+            {
+                await Task.Delay(ProviderTransientRetryDelay, cancellationToken);
+            }
+        }
+
+        using var finalRequest = new HttpRequestMessage(HttpMethod.Get, url);
+        if (referrer != null)
+        {
+            finalRequest.Headers.Referrer = referrer;
+        }
+
+        return await SendProviderRequestAsync(finalRequest, cancellationToken);
+    }
+
     private async Task<HttpResponseMessage> SendProviderRequestAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         using var providerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         providerCts.CancelAfter(ProviderRequestTimeout);
         request.Headers.TryAddWithoutValidation("User-Agent", BrowserUserAgent);
-        return await _apiClient.SendAsync(request, providerCts.Token);
+
+        try
+        {
+            return await _apiClient.SendAsync(request, providerCts.Token);
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException($"Provider request timed out after {ProviderRequestTimeout.TotalSeconds:0} seconds.", ex);
+        }
     }
 
     private static bool IsProviderCoolingDown(string providerName)
@@ -704,16 +779,48 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         ProviderBackoffUntil[providerName] = DateTimeOffset.UtcNow.Add(ProviderCooldown);
     }
 
+    private static bool ShouldApplyProviderCooldown(Exception ex)
+    {
+        return !IsTransientProviderFailure(ex);
+    }
+
+    private static bool IsTransientProviderFailure(Exception ex)
+    {
+        if (ex is TimeoutException or HttpRequestException)
+        {
+            return true;
+        }
+
+        if (ex is InvalidOperationException invalidOperation)
+        {
+            var message = invalidOperation.Message;
+            return message.Contains("HTTP 408", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("HTTP 429", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("HTTP 500", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("HTTP 502", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("HTTP 503", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("HTTP 504", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("service unavailable", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("upstream fetch failed", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("empty response", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
+    }
+
     private ProviderCandidate[] BuildProviders(long trackId, string qualityCode)
     {
         var primaryBase = DecodeBase64("aHR0cHM6Ly9kYWIueWVldC5zdS9hcGkvc3RyZWFtP3RyYWNrSWQ9");
         var fallbackBase = DecodeBase64("aHR0cHM6Ly9kYWJtdXNpYy54eXovYXBpL3N0cmVhbT90cmFja0lkPQ==");
         var squidBase = DecodeBase64("aHR0cHM6Ly9xb2J1ei5zcXVpZC53dGYvYXBpL2Rvd25sb2FkLW11c2ljP3RyYWNrX2lkPQ==");
+        var qbzBase = "https://qbz.afkarxyz.qzz.io/api/track/";
 
         return
         [
             new ProviderCandidate("dab.yeet.su", ct => TryGetStreamUrlAsync($"{primaryBase}{trackId}&quality={qualityCode}", ct)),
             new ProviderCandidate("dabmusic.xyz", ct => TryGetStreamUrlAsync($"{fallbackBase}{trackId}&quality={qualityCode}", ct)),
+            new ProviderCandidate("qbz.afkarxyz.qzz.io", ct => TryGetStreamUrlAsync($"{qbzBase}{trackId}?quality={qualityCode}", ct)),
             new ProviderCandidate("qobuz.squid.wtf/us", ct => TryGetStreamUrlAsync($"{squidBase}{trackId}&quality={qualityCode}&country=US", ct)),
             new ProviderCandidate("qobuz.squid.wtf/fr", ct => TryGetStreamUrlAsync($"{squidBase}{trackId}&quality={qualityCode}&country=FR", ct)),
             new ProviderCandidate("jumo-dl", ct => TryGetJumoStreamUrlAsync(trackId, qualityCode, ct))
@@ -1217,6 +1324,59 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         return false;
+    }
+
+    private static bool TryExtractDirectUrlPayload(string value, out string? url)
+    {
+        url = null;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Length >= 2 && trimmed[0] == '"' && trimmed[^1] == '"')
+        {
+            trimmed = trimmed[1..^1];
+        }
+
+        if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        url = trimmed;
+        return true;
+    }
+
+    private static bool IsExplicitQobuzTrackUrl(string? sourceUrl)
+    {
+        if (string.IsNullOrWhiteSpace(sourceUrl))
+        {
+            return false;
+        }
+
+        if (!Uri.TryCreate(sourceUrl, UriKind.Absolute, out var parsed))
+        {
+            return false;
+        }
+
+        if (!parsed.Host.Contains("qobuz.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(
+            parsed.AbsolutePath,
+            @"(?:^|/)track/\d+(?:/|$)",
+            RegexOptions.IgnoreCase,
+            RegexTimeout);
     }
 
     private static string DecodeBase64(string value)
