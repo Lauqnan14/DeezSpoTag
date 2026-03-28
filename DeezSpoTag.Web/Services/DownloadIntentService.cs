@@ -679,6 +679,23 @@ public sealed class DownloadIntentService
                 0);
         }
 
+        if (RequiresVerifiedAtmosCapability(request.Intent, request.SelectedQuality))
+        {
+            var hasAtmosVariant = await ValidateAppleAtmosCapabilityAsync(
+                request.Intent,
+                request.ResolvedSourceUrl,
+                request.Availability,
+                request.Settings,
+                "primary",
+                request.CancellationToken);
+            if (!hasAtmosVariant)
+            {
+                request.SkipReasonCodes.Add("atmos_variant_unavailable");
+                request.SkipReasons.Add("Skipped Atmos queue: no Atmos variant found for this track.");
+                return new EngineEnqueueOutcome(null, 1);
+            }
+        }
+
         var selectedAutoIndex = Math.Max(0, request.FallbackInfo.AutoIndex);
         (AppleQueueItem payload, bool isVideo) = await BuildApplePayloadBaseAsync(
             request.Intent,
@@ -4261,6 +4278,102 @@ public sealed class DownloadIntentService
         return false;
     }
 
+    private static bool RequiresVerifiedAtmosCapability(DownloadIntent intent, string? targetQuality)
+    {
+        if (intent == null)
+        {
+            return false;
+        }
+
+        var normalizedContentType = NormalizeContentType(intent.ContentType);
+        return string.Equals(normalizedContentType, DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase)
+               || IsAtmosQuality(targetQuality);
+    }
+
+    private async Task<bool> ValidateAppleAtmosCapabilityAsync(
+        DownloadIntent intent,
+        string? resolvedSourceUrl,
+        SongLinkResult? availability,
+        DeezSpoTagSettings settings,
+        string queueBranch,
+        CancellationToken cancellationToken)
+    {
+        var appleSourceUrl = ResolveAppleAtmosValidationSourceUrl(intent, resolvedSourceUrl, availability, settings);
+        if (string.IsNullOrWhiteSpace(appleSourceUrl))
+        {
+            _activityLog.Warn($"Skipped {queueBranch} Atmos queue: Apple source URL unavailable for capability check.");
+            return false;
+        }
+
+        var probeIntent = BuildAppleAtmosProbeIntent(intent);
+        await PopulateAppleMetadataAsync(probeIntent, appleSourceUrl, settings, cancellationToken);
+        if (probeIntent.HasAtmos)
+        {
+            intent.HasAtmos = true;
+            if (string.IsNullOrWhiteSpace(intent.AppleId))
+            {
+                intent.AppleId = probeIntent.AppleId;
+            }
+
+            return true;
+        }
+
+        _activityLog.Warn(
+            $"Skipped {queueBranch} Atmos queue: no Atmos variant found for title='{intent.Title ?? string.Empty}' artist='{intent.Artist ?? string.Empty}'.");
+        return false;
+    }
+
+    private static string? ResolveAppleAtmosValidationSourceUrl(
+        DownloadIntent intent,
+        string? resolvedSourceUrl,
+        SongLinkResult? availability,
+        DeezSpoTagSettings settings)
+    {
+        if (ContainsAppleMusicUrl(resolvedSourceUrl))
+        {
+            return resolvedSourceUrl;
+        }
+
+        if (ContainsAppleMusicUrl(intent.SourceUrl))
+        {
+            return intent.SourceUrl;
+        }
+
+        if (ContainsAppleMusicUrl(availability?.AppleMusicUrl))
+        {
+            return availability?.AppleMusicUrl;
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.AppleId))
+        {
+            return null;
+        }
+
+        var storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront)
+            ? "us"
+            : settings.AppleMusic!.Storefront;
+        return $"https://music.apple.com/{storefront}/song/id{intent.AppleId}";
+    }
+
+    private static bool ContainsAppleMusicUrl(string? url)
+    {
+        return !string.IsNullOrWhiteSpace(url)
+               && url.Contains(AppleMusicDomain, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static DownloadIntent BuildAppleAtmosProbeIntent(DownloadIntent intent)
+    {
+        return new DownloadIntent
+        {
+            AppleId = intent.AppleId,
+            Isrc = intent.Isrc,
+            Title = intent.Title,
+            Artist = intent.Artist,
+            Album = intent.Album,
+            SourceUrl = intent.SourceUrl
+        };
+    }
+
     private async Task<bool> TryEnqueueAppleAtmosSecondaryAsync(AppleSecondaryEnqueueRequest request)
     {
         var secondaryDestinationFolderId =
@@ -4296,6 +4409,17 @@ public sealed class DownloadIntentService
         if (string.IsNullOrWhiteSpace(candidate.SourceUrl))
         {
             _activityLog.Warn("Secondary Atmos mapping skipped: Apple URL unavailable.");
+            return false;
+        }
+
+        if (!await ValidateAppleAtmosCapabilityAsync(
+                request.Intent,
+                candidate.SourceUrl,
+                request.Availability,
+                request.Settings,
+                "secondary",
+                request.CancellationToken))
+        {
             return false;
         }
 
