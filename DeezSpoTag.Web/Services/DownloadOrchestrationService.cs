@@ -347,8 +347,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
             forceRunEvenIfNotDue: true,
             sourceLabel: "resume",
             quietWhenNoDue: false,
-            cancellationToken: cancellationToken,
-            restrictedFolderIds: resumeFolderIds);
+            restrictedFolderIds: resumeFolderIds,
+            cancellationToken: cancellationToken);
 
         if (pausedAgain)
         {
@@ -545,8 +545,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
         bool forceRunEvenIfNotDue,
         string sourceLabel,
         bool quietWhenNoDue = false,
-        CancellationToken cancellationToken = default,
-        IReadOnlyCollection<string>? restrictedFolderIds = null)
+        IReadOnlyCollection<string>? restrictedFolderIds = null,
+        CancellationToken cancellationToken = default)
     {
         var plan = await BuildEnhancementTargetPlanAsync(
             forceRunEvenIfNotDue,
@@ -1185,7 +1185,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
         var profileContext = await BuildAutomationProfileContextAsync(cancellationToken);
         var folders = profileContext.FoldersById.Values.ToList();
-        var schedules = profileContext.Defaults.LibrarySchedules ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, string> schedules = profileContext.Defaults.LibrarySchedules
+            ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var state = await LoadEnhancementScheduleStateAsync();
         var targets = new List<EnhancementTarget>();
         var dirtyState = false;
@@ -1193,72 +1194,18 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
         foreach (var folder in folders)
         {
-            if (!folder.Enabled
-                || !folder.AutoTagEnabled
-                || string.IsNullOrWhiteSpace(folder.RootPath))
+            if (!TryBuildEnhancementTarget(folder, schedules, state, now, out var target, out var folderStateDirty))
             {
                 continue;
             }
 
-            var key = folder.Id.ToString();
-            schedules.TryGetValue(key, out var rawSchedule);
-            var hasInterval = TryParseScheduleInterval(rawSchedule, out var interval);
-            if (!hasInterval)
-            {
-                continue;
-            }
-
-            activeScheduleFolderIds.Add(key);
-
-            var scheduleToken = BuildScheduleStateToken(interval);
-            var hadLastRun = state.LastRunByFolderId.TryGetValue(key, out var storedLastRun);
-            var previousScheduleToken = state.LastScheduleByFolderId.TryGetValue(key, out var existingScheduleToken)
-                ? existingScheduleToken
-                : null;
-
-            if (!string.Equals(previousScheduleToken, scheduleToken, StringComparison.OrdinalIgnoreCase))
-            {
-                state.LastScheduleByFolderId[key] = scheduleToken;
-                dirtyState = true;
-            }
-
-            // Seed first-run schedule baseline so newly scheduled folders do not run immediately.
-            if (!hadLastRun)
-            {
-                storedLastRun = now;
-                state.LastRunByFolderId[key] = storedLastRun;
-                dirtyState = true;
-            }
-
-            var lastRun = (DateTimeOffset?)storedLastRun;
-            var isDue = !lastRun.HasValue || (now - lastRun.Value) >= interval;
-
-            targets.Add(new EnhancementTarget(
-                key,
-                folder.RootPath,
-                folder.AutoTagProfileId,
-                interval,
-                isDue,
-                lastRun));
+            dirtyState |= folderStateDirty;
+            targets.Add(target);
+            activeScheduleFolderIds.Add(target.FolderId);
         }
 
-        var staleScheduleFolders = state.LastRunByFolderId.Keys
-            .Where(folderId => !activeScheduleFolderIds.Contains(folderId))
-            .ToList();
-        foreach (var folderId in staleScheduleFolders)
-        {
-            state.LastRunByFolderId.Remove(folderId);
-            dirtyState = true;
-        }
-
-        var staleScheduleTokens = state.LastScheduleByFolderId.Keys
-            .Where(folderId => !activeScheduleFolderIds.Contains(folderId))
-            .ToList();
-        foreach (var folderId in staleScheduleTokens)
-        {
-            state.LastScheduleByFolderId.Remove(folderId);
-            dirtyState = true;
-        }
+        dirtyState |= RemoveInactiveScheduleEntries(state.LastRunByFolderId, activeScheduleFolderIds);
+        dirtyState |= RemoveInactiveScheduleEntries(state.LastScheduleByFolderId, activeScheduleFolderIds);
 
         if (dirtyState)
         {
@@ -1266,6 +1213,84 @@ public sealed class DownloadOrchestrationService : BackgroundService
         }
 
         return targets;
+    }
+
+    private static bool TryBuildEnhancementTarget(
+        FolderDto folder,
+        Dictionary<string, string> schedules,
+        EnhancementScheduleState state,
+        DateTimeOffset now,
+        out EnhancementTarget target,
+        out bool stateDirty)
+    {
+        target = default!;
+        stateDirty = false;
+        if (!IsEnhancementEligibleFolder(folder))
+        {
+            return false;
+        }
+
+        var key = folder.Id.ToString();
+        schedules.TryGetValue(key, out var rawSchedule);
+        if (!TryParseScheduleInterval(rawSchedule, out var interval))
+        {
+            return false;
+        }
+
+        var scheduleToken = BuildScheduleStateToken(interval);
+        var hasLastRun = state.LastRunByFolderId.TryGetValue(key, out var storedLastRun);
+        if (!state.LastScheduleByFolderId.TryGetValue(key, out var existingScheduleToken)
+            || !string.Equals(existingScheduleToken, scheduleToken, StringComparison.OrdinalIgnoreCase))
+        {
+            state.LastScheduleByFolderId[key] = scheduleToken;
+            stateDirty = true;
+        }
+
+        // Seed first-run schedule baseline so newly scheduled folders do not run immediately.
+        if (!hasLastRun)
+        {
+            storedLastRun = now;
+            state.LastRunByFolderId[key] = storedLastRun;
+            stateDirty = true;
+        }
+
+        var lastRun = (DateTimeOffset?)storedLastRun;
+        var isDue = !lastRun.HasValue || (now - lastRun.Value) >= interval;
+        target = new EnhancementTarget(
+            key,
+            folder.RootPath,
+            folder.AutoTagProfileId,
+            interval,
+            isDue,
+            lastRun);
+        return true;
+    }
+
+    private static bool IsEnhancementEligibleFolder(FolderDto folder)
+    {
+        return folder.Enabled
+               && folder.AutoTagEnabled
+               && !string.IsNullOrWhiteSpace(folder.RootPath);
+    }
+
+    private static bool RemoveInactiveScheduleEntries<TValue>(
+        Dictionary<string, TValue> source,
+        HashSet<string> activeScheduleFolderIds)
+    {
+        var staleKeys = source.Keys
+            .Where(folderId => !activeScheduleFolderIds.Contains(folderId))
+            .ToList();
+        if (staleKeys.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var folderId in staleKeys)
+        {
+            source.Remove(folderId);
+        }
+
+        return true;
     }
 
     private static string BuildScheduleStateToken(TimeSpan interval)

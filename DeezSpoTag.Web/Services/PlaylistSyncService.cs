@@ -96,72 +96,14 @@ public sealed class PlaylistSyncService
         PlaylistMergeSyncRequest request,
         CancellationToken cancellationToken)
     {
-        if (request == null)
+        var selectedSources = BuildValidMergeSourceList(mergeSources);
+        var validationFailure = ValidateMergeRequest(request, selectedSources.Count);
+        if (validationFailure is not null)
         {
-            return new PlaylistMergeSyncResult(
-                false,
-                "Merge request is required.",
-                0,
-                0,
-                0,
-                Array.Empty<PlaylistMergeTargetResult>());
+            return validationFailure;
         }
 
-        var selectedSources = (mergeSources ?? Array.Empty<PlaylistMergeSourceInput>())
-            .Where(source => source?.Playlist is not null
-                && !string.IsNullOrWhiteSpace(source.Playlist.Source)
-                && !string.IsNullOrWhiteSpace(source.Playlist.SourceId))
-            .ToList();
-        if (selectedSources.Count < 2)
-        {
-            return new PlaylistMergeSyncResult(
-                false,
-                "Select at least two monitored playlists to merge.",
-                selectedSources.Count,
-                0,
-                0,
-                Array.Empty<PlaylistMergeTargetResult>());
-        }
-
-        if (!request.SyncToPlex && !request.SyncToJellyfin)
-        {
-            return new PlaylistMergeSyncResult(
-                false,
-                "Select at least one destination server (Plex or Jellyfin).",
-                selectedSources.Count,
-                0,
-                0,
-                Array.Empty<PlaylistMergeTargetResult>());
-        }
-
-        var candidateTrackCount = 0;
-        var dedupe = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var mergedTracks = new List<SyncTrackSummary>();
-
-        foreach (var source in selectedSources)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var candidates = (source.TrackCandidates ?? Array.Empty<PlaylistWatchService.PlaylistTrackCandidate>())
-                .Select(ToSyncTrackSummary)
-                .ToList();
-            candidateTrackCount += candidates.Count;
-
-            var filteredTracks = await FilterTracksForSyncAsync(
-                source.Playlist,
-                source.Preference,
-                candidates,
-                cancellationToken);
-
-            foreach (var track in filteredTracks)
-            {
-                var dedupeKey = BuildMergeTrackDedupKey(track);
-                if (dedupe.Add(dedupeKey))
-                {
-                    mergedTracks.Add(track);
-                }
-            }
-        }
+        var (candidateTrackCount, mergedTracks) = await BuildMergedTracksAsync(selectedSources, cancellationToken);
 
         if (mergedTracks.Count == 0)
         {
@@ -191,25 +133,136 @@ public sealed class PlaylistSyncService
             CreatedAt: now);
 
         var syncMode = NormalizeSyncMode(request.SyncMode);
+        var targets = await SyncMergedPlaylistTargetsAsync(
+            request,
+            mergedPlaylist,
+            mergedTracks,
+            syncMode,
+            now,
+            cancellationToken);
+
+        var anySucceeded = targets.Any(static target => target.Success);
+        var allSucceeded = targets.Count > 0 && targets.All(static target => target.Success);
+        string message;
+        if (allSucceeded)
+        {
+            message = "Merged playlist synced successfully.";
+        }
+        else if (anySucceeded)
+        {
+            message = "Merged playlist synced to some targets. Review target results.";
+        }
+        else
+        {
+            message = "Merged playlist sync failed on all selected targets.";
+        }
+        return new PlaylistMergeSyncResult(
+            anySucceeded,
+            message,
+            selectedSources.Count,
+            candidateTrackCount,
+            mergedTracks.Count,
+            targets);
+    }
+
+    private static List<PlaylistMergeSourceInput> BuildValidMergeSourceList(IReadOnlyList<PlaylistMergeSourceInput> mergeSources)
+    {
+        return (mergeSources ?? Array.Empty<PlaylistMergeSourceInput>())
+            .Where(source => source?.Playlist is not null
+                && !string.IsNullOrWhiteSpace(source.Playlist.Source)
+                && !string.IsNullOrWhiteSpace(source.Playlist.SourceId))
+            .ToList();
+    }
+
+    private static PlaylistMergeSyncResult? ValidateMergeRequest(
+        PlaylistMergeSyncRequest? request,
+        int selectedSourceCount)
+    {
+        if (request == null)
+        {
+            return new PlaylistMergeSyncResult(
+                false,
+                "Merge request is required.",
+                0,
+                0,
+                0,
+                Array.Empty<PlaylistMergeTargetResult>());
+        }
+
+        if (selectedSourceCount < 2)
+        {
+            return new PlaylistMergeSyncResult(
+                false,
+                "Select at least two monitored playlists to merge.",
+                selectedSourceCount,
+                0,
+                0,
+                Array.Empty<PlaylistMergeTargetResult>());
+        }
+
+        if (!request.SyncToPlex && !request.SyncToJellyfin)
+        {
+            return new PlaylistMergeSyncResult(
+                false,
+                "Select at least one destination server (Plex or Jellyfin).",
+                selectedSourceCount,
+                0,
+                0,
+                Array.Empty<PlaylistMergeTargetResult>());
+        }
+
+        return null;
+    }
+
+    private async Task<(int CandidateTrackCount, List<SyncTrackSummary> MergedTracks)> BuildMergedTracksAsync(
+        IReadOnlyList<PlaylistMergeSourceInput> selectedSources,
+        CancellationToken cancellationToken)
+    {
+        var candidateTrackCount = 0;
+        var dedupe = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var mergedTracks = new List<SyncTrackSummary>();
+        foreach (var source in selectedSources)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var candidates = (source.TrackCandidates ?? Array.Empty<PlaylistWatchService.PlaylistTrackCandidate>())
+                .Select(ToSyncTrackSummary)
+                .ToList();
+            candidateTrackCount += candidates.Count;
+
+            var filteredTracks = await FilterTracksForSyncAsync(
+                source.Playlist,
+                source.Preference,
+                candidates,
+                cancellationToken);
+
+            foreach (var track in filteredTracks)
+            {
+                var dedupeKey = BuildMergeTrackDedupKey(track);
+                if (dedupe.Add(dedupeKey))
+                {
+                    mergedTracks.Add(track);
+                }
+            }
+        }
+
+        return (candidateTrackCount, mergedTracks);
+    }
+
+    private async Task<List<PlaylistMergeTargetResult>> SyncMergedPlaylistTargetsAsync(
+        PlaylistMergeSyncRequest request,
+        PlaylistWatchlistDto mergedPlaylist,
+        IReadOnlyList<SyncTrackSummary> mergedTracks,
+        string syncMode,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
         var targets = new List<PlaylistMergeTargetResult>();
         if (request.SyncToPlex)
         {
-            var preference = new PlaylistWatchPreferenceDto(
-                Source: "merged",
-                SourceId: mergedPlaylist.SourceId,
-                DestinationFolderId: null,
-                Service: PlexService,
-                PreferredEngine: null,
-                DownloadVariantMode: null,
-                SyncMode: syncMode,
-                AutotagProfile: null,
-                UpdateArtwork: true,
-                ReuseSavedArtwork: false,
-                CreatedAt: now,
-                UpdatedAt: now);
             var result = await SyncToPlexAsync(
                 mergedPlaylist,
-                preference,
+                CreateMergedPlaylistPreference(mergedPlaylist, PlexService, syncMode, now),
                 mergedTracks,
                 cancellationToken);
             targets.Add(new PlaylistMergeTargetResult(
@@ -222,22 +275,9 @@ public sealed class PlaylistSyncService
 
         if (request.SyncToJellyfin)
         {
-            var preference = new PlaylistWatchPreferenceDto(
-                Source: "merged",
-                SourceId: mergedPlaylist.SourceId,
-                DestinationFolderId: null,
-                Service: JellyfinService,
-                PreferredEngine: null,
-                DownloadVariantMode: null,
-                SyncMode: syncMode,
-                AutotagProfile: null,
-                UpdateArtwork: true,
-                ReuseSavedArtwork: false,
-                CreatedAt: now,
-                UpdatedAt: now);
             var result = await SyncToJellyfinAsync(
                 mergedPlaylist,
-                preference,
+                CreateMergedPlaylistPreference(mergedPlaylist, JellyfinService, syncMode, now),
                 mergedTracks,
                 cancellationToken);
             targets.Add(new PlaylistMergeTargetResult(
@@ -248,20 +288,28 @@ public sealed class PlaylistSyncService
                 result.SyncedTracks));
         }
 
-        var anySucceeded = targets.Any(static target => target.Success);
-        var allSucceeded = targets.Count > 0 && targets.All(static target => target.Success);
-        var message = allSucceeded
-            ? "Merged playlist synced successfully."
-            : anySucceeded
-                ? "Merged playlist synced to some targets. Review target results."
-                : "Merged playlist sync failed on all selected targets.";
-        return new PlaylistMergeSyncResult(
-            anySucceeded,
-            message,
-            selectedSources.Count,
-            candidateTrackCount,
-            mergedTracks.Count,
-            targets);
+        return targets;
+    }
+
+    private static PlaylistWatchPreferenceDto CreateMergedPlaylistPreference(
+        PlaylistWatchlistDto mergedPlaylist,
+        string service,
+        string syncMode,
+        DateTimeOffset now)
+    {
+        return new PlaylistWatchPreferenceDto(
+            Source: "merged",
+            SourceId: mergedPlaylist.SourceId,
+            DestinationFolderId: null,
+            Service: service,
+            PreferredEngine: null,
+            DownloadVariantMode: null,
+            SyncMode: syncMode,
+            AutotagProfile: null,
+            UpdateArtwork: true,
+            ReuseSavedArtwork: false,
+            CreatedAt: now,
+            UpdatedAt: now);
     }
 
     public async Task<PlaylistSyncResult> SyncPlaylistAsync(
@@ -371,7 +419,8 @@ public sealed class PlaylistSyncService
             plex.MachineIdentifier,
             playlistName,
             ratingKeys,
-            appendMissingOnly: appendMissingOnly,
+            options: new PlexApiClient.PlaylistUpsertOptions(
+                AppendMissingOnly: appendMissingOnly),
             cancellationToken: cancellationToken);
         if (string.IsNullOrWhiteSpace(playlistId))
         {
@@ -437,87 +486,37 @@ public sealed class PlaylistSyncService
         var syncedTracks = 0;
         if (string.IsNullOrWhiteSpace(playlistId))
         {
-            playlistId = await _jellyfinApiClient.CreatePlaylistAsync(
+            var createdPlaylistId = await _jellyfinApiClient.CreatePlaylistAsync(
                 jellyfin.Url,
                 jellyfin.ApiKey,
                 jellyfin.UserId,
                 playlistName,
                 itemIds,
                 cancellationToken);
-            if (string.IsNullOrWhiteSpace(playlistId))
+            if (string.IsNullOrWhiteSpace(createdPlaylistId))
             {
                 return new PlaylistSyncResult(false, "Failed to create Jellyfin playlist.");
             }
 
+            playlistId = createdPlaylistId;
             syncedTracks = itemIds.Count;
         }
         else
         {
-            var entries = await _jellyfinApiClient.GetPlaylistEntriesAsync(
+            var syncItemsResult = await SyncExistingJellyfinPlaylistItemsAsync(
                 jellyfin.Url,
                 jellyfin.ApiKey,
                 jellyfin.UserId,
                 playlistId,
+                itemIds,
+                appendMissingOnly,
                 cancellationToken);
-
-            if (appendMissingOnly)
+            if (!syncItemsResult.Success)
             {
-                var existingItemIds = entries
-                    .Select(static entry => entry.ItemId)
-                    .Where(static value => !string.IsNullOrWhiteSpace(value))
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                var pending = itemIds
-                    .Where(trackId => !existingItemIds.Contains(trackId))
-                    .ToList();
-
-                if (pending.Count > 0)
-                {
-                    var appended = await _jellyfinApiClient.AddPlaylistItemsAsync(
-                        jellyfin.Url,
-                        jellyfin.ApiKey,
-                        jellyfin.UserId,
-                        playlistId,
-                        pending,
-                        cancellationToken);
-                    if (!appended)
-                    {
-                        return new PlaylistSyncResult(false, "Failed to append tracks to Jellyfin playlist.");
-                    }
-                }
-
-                syncedTracks = pending.Count;
+                return new PlaylistSyncResult(false, syncItemsResult.ErrorMessage ?? "Failed to sync Jellyfin playlist.");
             }
-            else
-            {
-                if (entries.Count > 0)
-                {
-                    var cleared = await _jellyfinApiClient.RemovePlaylistEntriesAsync(
-                        jellyfin.Url,
-                        jellyfin.ApiKey,
-                        jellyfin.UserId,
-                        playlistId,
-                        entries.Select(static entry => entry.PlaylistEntryId).ToList(),
-                        cancellationToken);
-                    if (!cleared)
-                    {
-                        return new PlaylistSyncResult(false, "Failed to clear existing Jellyfin playlist items.");
-                    }
-                }
 
-                var added = await _jellyfinApiClient.AddPlaylistItemsAsync(
-                    jellyfin.Url,
-                    jellyfin.ApiKey,
-                    jellyfin.UserId,
-                    playlistId,
-                    itemIds,
-                    cancellationToken);
-                if (!added)
-                {
-                    return new PlaylistSyncResult(false, "Failed to add tracks to Jellyfin playlist.");
-                }
-
-                syncedTracks = itemIds.Count;
-            }
+            syncedTracks = syncItemsResult.SyncedTracks;
         }
 
         if (!string.IsNullOrWhiteSpace(playlist.Description))
@@ -532,6 +531,104 @@ public sealed class PlaylistSyncService
 
         var modeLabel = appendMissingOnly ? "append" : "mirror";
         return new PlaylistSyncResult(true, $"Playlist synced ({modeLabel}).", playlistId, syncedTracks);
+    }
+
+    private async Task<(bool Success, string? ErrorMessage, int SyncedTracks)> SyncExistingJellyfinPlaylistItemsAsync(
+        string url,
+        string apiKey,
+        string userId,
+        string playlistId,
+        IReadOnlyList<string> itemIds,
+        bool appendMissingOnly,
+        CancellationToken cancellationToken)
+    {
+        var entries = await _jellyfinApiClient.GetPlaylistEntriesAsync(
+            url,
+            apiKey,
+            userId,
+            playlistId,
+            cancellationToken);
+        if (appendMissingOnly)
+        {
+            return await AppendMissingJellyfinItemsAsync(url, apiKey, userId, playlistId, itemIds, entries, cancellationToken);
+        }
+
+        return await ReplaceJellyfinPlaylistItemsAsync(url, apiKey, userId, playlistId, itemIds, entries, cancellationToken);
+    }
+
+    private async Task<(bool Success, string? ErrorMessage, int SyncedTracks)> AppendMissingJellyfinItemsAsync(
+        string url,
+        string apiKey,
+        string userId,
+        string playlistId,
+        IReadOnlyList<string> itemIds,
+        IReadOnlyList<JellyfinPlaylistEntry> entries,
+        CancellationToken cancellationToken)
+    {
+        var existingItemIds = entries
+            .Select(static entry => entry.ItemId)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var pending = itemIds
+            .Where(trackId => !existingItemIds.Contains(trackId))
+            .ToList();
+        if (pending.Count == 0)
+        {
+            return (true, null, 0);
+        }
+
+        var appended = await _jellyfinApiClient.AddPlaylistItemsAsync(
+            url,
+            apiKey,
+            userId,
+            playlistId,
+            pending,
+            cancellationToken);
+        if (!appended)
+        {
+            return (false, "Failed to append tracks to Jellyfin playlist.", 0);
+        }
+
+        return (true, null, pending.Count);
+    }
+
+    private async Task<(bool Success, string? ErrorMessage, int SyncedTracks)> ReplaceJellyfinPlaylistItemsAsync(
+        string url,
+        string apiKey,
+        string userId,
+        string playlistId,
+        IReadOnlyList<string> itemIds,
+        IReadOnlyList<JellyfinPlaylistEntry> entries,
+        CancellationToken cancellationToken)
+    {
+        if (entries.Count > 0)
+        {
+            var cleared = await _jellyfinApiClient.RemovePlaylistEntriesAsync(
+                url,
+                apiKey,
+                userId,
+                playlistId,
+                entries.Select(static entry => entry.PlaylistEntryId).ToList(),
+                cancellationToken);
+            if (!cleared)
+            {
+                return (false, "Failed to clear existing Jellyfin playlist items.", 0);
+            }
+        }
+
+        var added = await _jellyfinApiClient.AddPlaylistItemsAsync(
+            url,
+            apiKey,
+            userId,
+            playlistId,
+            itemIds,
+            cancellationToken);
+        if (!added)
+        {
+            return (false, "Failed to add tracks to Jellyfin playlist.", 0);
+        }
+
+        return (true, null, itemIds.Count);
     }
 
     private async Task<List<SyncTrackSummary>> FilterTracksForSyncAsync(
@@ -551,7 +648,7 @@ public sealed class PlaylistSyncService
             playlist.SourceId,
             cancellationToken);
         var globalRules = await GetGlobalPlaylistBlockRulesAsync(cancellationToken);
-        var effectiveBlockRules = MergeBlockRules(preference?.IgnoreRules, globalRules);
+        var effectiveBlockRules = PlaylistTrackBlockRuleHelper.MergeRules(preference?.IgnoreRules, globalRules);
         if (ignoredTrackIds.Count == 0 && (effectiveBlockRules == null || effectiveBlockRules.Count == 0))
         {
             return tracks.ToList();
@@ -567,93 +664,7 @@ public sealed class PlaylistSyncService
     private async Task<IReadOnlyList<PlaylistTrackBlockRule>> GetGlobalPlaylistBlockRulesAsync(CancellationToken cancellationToken)
     {
         var preferences = await _libraryRepository.GetPlaylistWatchPreferencesAsync(cancellationToken);
-        if (preferences.Count == 0)
-        {
-            return Array.Empty<PlaylistTrackBlockRule>();
-        }
-
-        var rules = new List<PlaylistTrackBlockRule>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var rule in preferences.SelectMany(static preference => preference.IgnoreRules ?? []))
-        {
-            var field = (rule.ConditionField ?? string.Empty).Trim();
-            var op = (rule.ConditionOperator ?? string.Empty).Trim();
-            var value = (rule.ConditionValue ?? string.Empty).Trim();
-            var isExplicitRule = string.Equals(field, "explicit", StringComparison.OrdinalIgnoreCase);
-            if (string.IsNullOrWhiteSpace(field)
-                || string.IsNullOrWhiteSpace(op)
-                || (!isExplicitRule && string.IsNullOrWhiteSpace(value)))
-            {
-                continue;
-            }
-
-            var dedupeKey = $"{field}\u001F{op}\u001F{value}";
-            if (!seen.Add(dedupeKey))
-            {
-                continue;
-            }
-
-            rules.Add(new PlaylistTrackBlockRule(field, op, value, rules.Count));
-        }
-
-        return rules;
-    }
-
-    private static List<PlaylistTrackBlockRule>? MergeBlockRules(
-        IReadOnlyList<PlaylistTrackBlockRule>? playlistRules,
-        IReadOnlyList<PlaylistTrackBlockRule> globalRules)
-    {
-        var hasPlaylistRules = playlistRules is { Count: > 0 };
-        var hasGlobalRules = globalRules.Count > 0;
-        if (!hasPlaylistRules && !hasGlobalRules)
-        {
-            return null;
-        }
-
-        var merged = new List<PlaylistTrackBlockRule>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (hasPlaylistRules)
-        {
-            foreach (var rule in playlistRules!)
-            {
-                AppendRuleIfUnique(rule, merged, seen);
-            }
-        }
-
-        if (hasGlobalRules)
-        {
-            foreach (var rule in globalRules)
-            {
-                AppendRuleIfUnique(rule, merged, seen);
-            }
-        }
-
-        return merged;
-    }
-
-    private static void AppendRuleIfUnique(
-        PlaylistTrackBlockRule rule,
-        List<PlaylistTrackBlockRule> merged,
-        HashSet<string> seen)
-    {
-        var field = (rule.ConditionField ?? string.Empty).Trim();
-        var op = (rule.ConditionOperator ?? string.Empty).Trim();
-        var value = (rule.ConditionValue ?? string.Empty).Trim();
-        var isExplicitRule = string.Equals(field, "explicit", StringComparison.OrdinalIgnoreCase);
-        if (string.IsNullOrWhiteSpace(field)
-            || string.IsNullOrWhiteSpace(op)
-            || (!isExplicitRule && string.IsNullOrWhiteSpace(value)))
-        {
-            return;
-        }
-
-        var dedupeKey = $"{field}\u001F{op}\u001F{value}";
-        if (!seen.Add(dedupeKey))
-        {
-            return;
-        }
-
-        merged.Add(new PlaylistTrackBlockRule(field, op, value, merged.Count));
+        return PlaylistTrackBlockRuleHelper.BuildGlobalRules(preferences);
     }
 
     private static bool ShouldBlockTrack(SyncTrackSummary track, IReadOnlyList<PlaylistTrackBlockRule>? rules)
@@ -812,7 +823,7 @@ public sealed class PlaylistSyncService
         CancellationToken cancellationToken)
     {
         var source = NormalizeSource(playlistSource);
-        IReadOnlyDictionary<string, long> trackIdBySource = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        var trackIdBySource = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         if (!string.IsNullOrWhiteSpace(source))
         {
             var sourceIds = tracks
@@ -820,7 +831,11 @@ public sealed class PlaylistSyncService
                 .Where(static trackId => !string.IsNullOrWhiteSpace(trackId))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            trackIdBySource = await _libraryRepository.GetTrackIdsBySourceIdsAsync(source, sourceIds, cancellationToken);
+            var sourceLookup = await _libraryRepository.GetTrackIdsBySourceIdsAsync(source, sourceIds, cancellationToken);
+            foreach (var pair in sourceLookup)
+            {
+                trackIdBySource[pair.Key] = pair.Value;
+            }
         }
 
         var isrcs = tracks

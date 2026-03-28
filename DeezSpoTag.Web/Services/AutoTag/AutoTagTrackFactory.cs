@@ -48,49 +48,11 @@ internal static class AutoTagTrackFactory
     }
 
     public static AutoTagTrack FromTraxsource(TraxsourceTrackInfo track)
-        => CreateDanceTrack(new DanceTrackInput
-        {
-            Title = track.Title,
-            Version = track.Version,
-            Artists = track.Artists,
-            AlbumArtists = track.AlbumArtists,
-            Album = track.Album,
-            Key = track.Key,
-            Bpm = track.Bpm,
-            Genres = track.Genres,
-            Art = track.Art,
-            Url = track.Url,
-            Label = track.Label,
-            CatalogNumber = track.CatalogNumber,
-            ReleaseId = track.ReleaseId,
-            Duration = track.Duration,
-            TrackNumber = track.TrackNumber,
-            TrackTotal = track.TrackTotal,
-            ReleaseDate = track.ReleaseDate
-        });
+        => CreateDanceTrack(BuildDanceTrackInput(track));
 
     public static AutoTagTrack FromBeatport(BeatportTrackInfo track)
     {
-        var autoTagTrack = CreateDanceTrack(new DanceTrackInput
-        {
-            Title = track.Title,
-            Version = track.Version,
-            Artists = track.Artists,
-            AlbumArtists = track.AlbumArtists,
-            Album = track.Album,
-            Key = track.Key,
-            Bpm = track.Bpm,
-            Genres = track.Genres,
-            Art = track.Art,
-            Url = track.Url,
-            Label = track.Label,
-            CatalogNumber = track.CatalogNumber,
-            ReleaseId = track.ReleaseId,
-            Duration = track.Duration,
-            TrackNumber = track.TrackNumber,
-            TrackTotal = track.TrackTotal,
-            ReleaseDate = track.ReleaseDate
-        });
+        var autoTagTrack = CreateDanceTrack(BuildDanceTrackInput(ToTraxsourceTrackInfo(track)));
 
         autoTagTrack.Styles = track.Styles.ToList();
         autoTagTrack.TrackId = track.TrackId;
@@ -99,6 +61,53 @@ internal static class AutoTagTrackFactory
         autoTagTrack.PublishDate = track.PublishDate;
         autoTagTrack.Other = track.Other.ToDictionary(k => k.Key, v => v.Values);
         return autoTagTrack;
+    }
+
+    private static DanceTrackInput BuildDanceTrackInput(TraxsourceTrackInfo track)
+    {
+        return new DanceTrackInput
+        {
+            Title = track.Title,
+            Version = track.Version,
+            Artists = track.Artists,
+            AlbumArtists = track.AlbumArtists,
+            Album = track.Album,
+            Key = track.Key,
+            Bpm = track.Bpm,
+            Genres = track.Genres,
+            Art = track.Art,
+            Url = track.Url,
+            Label = track.Label,
+            CatalogNumber = track.CatalogNumber,
+            ReleaseId = track.ReleaseId,
+            Duration = track.Duration,
+            TrackNumber = track.TrackNumber,
+            TrackTotal = track.TrackTotal,
+            ReleaseDate = track.ReleaseDate
+        };
+    }
+
+    private static TraxsourceTrackInfo ToTraxsourceTrackInfo(BeatportTrackInfo track)
+    {
+        var mapped = new TraxsourceTrackInfo();
+        mapped.Title = track.Title;
+        mapped.Version = track.Version;
+        mapped.Artists = track.Artists.ToList();
+        mapped.AlbumArtists = track.AlbumArtists.ToList();
+        mapped.Album = track.Album;
+        mapped.Key = track.Key;
+        mapped.Bpm = track.Bpm;
+        mapped.Genres = track.Genres.ToList();
+        mapped.Art = track.Art;
+        mapped.Url = track.Url;
+        mapped.Label = track.Label;
+        mapped.CatalogNumber = track.CatalogNumber;
+        mapped.ReleaseId = track.ReleaseId;
+        mapped.Duration = track.Duration;
+        mapped.TrackNumber = track.TrackNumber;
+        mapped.TrackTotal = track.TrackTotal;
+        mapped.ReleaseDate = track.ReleaseDate;
+        return mapped;
     }
 
     public static AutoTagTrack FromBeatsource(BeatsourceTrackInfo track)

@@ -532,39 +532,50 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 continue;
             }
 
-            try
+            var resolved = await TryResolveProviderAsync(provider, trackId, qualityCode, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(resolved))
             {
-                var resolved = await provider.ResolveAsync(cancellationToken);
-                if (!string.IsNullOrWhiteSpace(resolved))
-                {
-                    return resolved;
-                }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (OperationCanceledException ex)
-            {
-                if (ShouldApplyProviderCooldown(ex))
-                {
-                    MarkProviderCoolingDown(provider.Name);
-                }
-
-                _logger.LogWarning(ex, "Qobuz provider {Provider} canceled/timed out for track {TrackId} quality {Quality}", provider.Name, trackId, qualityCode);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                if (ShouldApplyProviderCooldown(ex))
-                {
-                    MarkProviderCoolingDown(provider.Name);
-                }
-
-                _logger.LogWarning(ex, "Qobuz provider {Provider} failed for track {TrackId} quality {Quality}", provider.Name, trackId, qualityCode);
+                return resolved;
             }
         }
 
         return null;
+    }
+
+    private async Task<string?> TryResolveProviderAsync(
+        ProviderCandidate provider,
+        long trackId,
+        string qualityCode,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await provider.ResolveAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            if (ShouldApplyProviderCooldown(ex))
+            {
+                MarkProviderCoolingDown(provider.Name);
+            }
+
+            _logger.LogWarning(ex, "Qobuz provider {Provider} canceled/timed out for track {TrackId} quality {Quality}", provider.Name, trackId, qualityCode);
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (ShouldApplyProviderCooldown(ex))
+            {
+                MarkProviderCoolingDown(provider.Name);
+            }
+
+            _logger.LogWarning(ex, "Qobuz provider {Provider} failed for track {TrackId} quality {Quality}", provider.Name, trackId, qualityCode);
+            return null;
+        }
     }
 
     private async Task<string?> TryGetJumoStreamUrlAsync(long trackId, string qualityCode, CancellationToken cancellationToken)

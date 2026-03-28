@@ -291,7 +291,8 @@ public sealed class MelodayService
             machineId,
             title,
             ratingKeyList,
-            existingTitlePrefix: effective.PlaylistPrefix,
+            options: new PlexApiClient.PlaylistUpsertOptions(
+                ExistingTitlePrefix: effective.PlaylistPrefix),
             cancellationToken: cancellationToken);
 
         if (string.IsNullOrWhiteSpace(playlistId))

@@ -1803,7 +1803,7 @@ DeezSpoTag.Download = {
         }
 
         const queueOrder = Array.isArray(statusPayload?.queueOrder)
-            ? statusPayload.queueOrder.map((value) => String(value))
+            ? statusPayload.queueOrder.map(String)
             : [];
         const knownIds = new Set(queueOrder);
         Object.keys(queue).forEach((key) => knownIds.add(String(key)));

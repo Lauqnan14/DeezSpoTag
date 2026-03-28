@@ -657,7 +657,7 @@ public sealed class PlaylistWatchService
 
         var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(source, playlist.SourceId, cancellationToken);
         var globalBlockRules = await GetGlobalPlaylistBlockRulesAsync(cancellationToken);
-        var effectiveBlockRules = MergeBlockRules(preference?.IgnoreRules, globalBlockRules);
+        var effectiveBlockRules = PlaylistTrackBlockRuleHelper.MergeRules(preference?.IgnoreRules, globalBlockRules);
 
         switch (source)
         {
@@ -695,94 +695,7 @@ public sealed class PlaylistWatchService
     private async Task<IReadOnlyList<PlaylistTrackBlockRule>> GetGlobalPlaylistBlockRulesAsync(CancellationToken cancellationToken)
     {
         var preferences = await _libraryRepository.GetPlaylistWatchPreferencesAsync(cancellationToken);
-        if (preferences.Count == 0)
-        {
-            return Array.Empty<PlaylistTrackBlockRule>();
-        }
-
-        var rules = new List<PlaylistTrackBlockRule>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var rule in preferences.SelectMany(static preference => preference.IgnoreRules ?? []))
-        {
-            var field = (rule.ConditionField ?? string.Empty).Trim();
-            var op = (rule.ConditionOperator ?? string.Empty).Trim();
-            var value = (rule.ConditionValue ?? string.Empty).Trim();
-            var isExplicitRule = string.Equals(field, "explicit", StringComparison.OrdinalIgnoreCase);
-            if (string.IsNullOrWhiteSpace(field)
-                || string.IsNullOrWhiteSpace(op)
-                || (!isExplicitRule && string.IsNullOrWhiteSpace(value)))
-            {
-                continue;
-            }
-
-            var dedupeKey = $"{field}\u001F{op}\u001F{value}";
-            if (!seen.Add(dedupeKey))
-            {
-                continue;
-            }
-
-            rules.Add(new PlaylistTrackBlockRule(field, op, value, rules.Count));
-        }
-
-        return rules;
-    }
-
-    private static List<PlaylistTrackBlockRule>? MergeBlockRules(
-        IReadOnlyList<PlaylistTrackBlockRule>? playlistRules,
-        IReadOnlyList<PlaylistTrackBlockRule> globalRules)
-    {
-        var hasPlaylistRules = playlistRules is { Count: > 0 };
-        var hasGlobalRules = globalRules.Count > 0;
-        if (!hasPlaylistRules && !hasGlobalRules)
-        {
-            return null;
-        }
-
-        var merged = new List<PlaylistTrackBlockRule>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        if (hasPlaylistRules)
-        {
-            foreach (var rule in playlistRules!)
-            {
-                AppendRuleIfUnique(rule, merged, seen);
-            }
-        }
-
-        if (hasGlobalRules)
-        {
-            foreach (var rule in globalRules)
-            {
-                AppendRuleIfUnique(rule, merged, seen);
-            }
-        }
-
-        return merged;
-    }
-
-    private static void AppendRuleIfUnique(
-        PlaylistTrackBlockRule rule,
-        List<PlaylistTrackBlockRule> merged,
-        HashSet<string> seen)
-    {
-        var field = (rule.ConditionField ?? string.Empty).Trim();
-        var op = (rule.ConditionOperator ?? string.Empty).Trim();
-        var value = (rule.ConditionValue ?? string.Empty).Trim();
-        var isExplicitRule = string.Equals(field, "explicit", StringComparison.OrdinalIgnoreCase);
-        if (string.IsNullOrWhiteSpace(field)
-            || string.IsNullOrWhiteSpace(op)
-            || (!isExplicitRule && string.IsNullOrWhiteSpace(value)))
-        {
-            return;
-        }
-
-        var dedupeKey = $"{field}\u001F{op}\u001F{value}";
-        if (!seen.Add(dedupeKey))
-        {
-            return;
-        }
-
-        merged.Add(new PlaylistTrackBlockRule(field, op, value, merged.Count));
+        return PlaylistTrackBlockRuleHelper.BuildGlobalRules(preferences);
     }
 
     private async Task CheckSpotifyPlaylistAsync(
