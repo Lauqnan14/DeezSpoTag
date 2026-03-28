@@ -1,5 +1,6 @@
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Download.Shared.Utils;
+using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -388,28 +389,67 @@ public class LibraryAnalysisApiController : ControllerBase
         CancellationToken cancellationToken)
     {
         var variants = await _repository.GetTrackAudioVariantsAsync(trackId, cancellationToken);
-        if (variants.Count == 0)
-        {
-            return NotFound();
-        }
+        var playbackRoots = await ResolvePlaybackRootCandidatesAsync(cancellationToken);
+        var hasExplicitRequestedPath = !string.IsNullOrWhiteSpace(filePath);
 
         var requestedVariant = FindRequestedVariant(variants, filePath);
-        var selectedVariant = requestedVariant;
-        if (selectedVariant is null
-            || string.IsNullOrWhiteSpace(selectedVariant.FilePath)
-            || !System.IO.File.Exists(selectedVariant.FilePath))
+        if (hasExplicitRequestedPath && requestedVariant is null)
         {
-            selectedVariant = variants.FirstOrDefault(v =>
-                !string.IsNullOrWhiteSpace(v.FilePath)
-                && System.IO.File.Exists(v.FilePath));
-        }
-
-        if (selectedVariant is null || string.IsNullOrWhiteSpace(selectedVariant.FilePath))
-        {
+            _logger.LogWarning(
+                "Local track playback rejected for track {TrackId}: requested path did not match a known track variant.",
+                trackId);
             return NotFound();
         }
 
-        if (!IsBrowserPlayableVariant(selectedVariant))
+        var selectedVariant = ResolveVariantToExistingPath(requestedVariant, playbackRoots);
+        if (selectedVariant is null && hasExplicitRequestedPath)
+        {
+            var requestedAudioVariant = AudioVariantResolver.NormalizeAudioVariant(requestedVariant?.AudioVariant);
+            if (!string.IsNullOrWhiteSpace(requestedAudioVariant))
+            {
+                selectedVariant = variants
+                    .Where(variant => string.Equals(
+                        AudioVariantResolver.NormalizeAudioVariant(variant.AudioVariant),
+                        requestedAudioVariant,
+                        StringComparison.OrdinalIgnoreCase))
+                    .Select(variant => ResolveVariantToExistingPath(variant, playbackRoots))
+                    .FirstOrDefault(variant => variant is not null);
+            }
+        }
+
+        if (selectedVariant is null && !hasExplicitRequestedPath)
+        {
+            selectedVariant = variants
+                .Select(variant => ResolveVariantToExistingPath(variant, playbackRoots))
+                .FirstOrDefault(variant => variant is not null);
+        }
+
+        if (selectedVariant is null)
+        {
+            var fallbackPath = await ResolveFallbackTrackAudioPathAsync(trackId, filePath, variants, playbackRoots, cancellationToken);
+            if (string.IsNullOrWhiteSpace(fallbackPath))
+            {
+                _logger.LogWarning("Local track playback failed for track {TrackId}: no accessible on-disk path resolved.", trackId);
+                return NotFound();
+            }
+
+            selectedVariant = new AlbumTrackAudioInfoDto(
+                trackId,
+                null,
+                null,
+                null,
+                Path.GetExtension(fallbackPath),
+                null,
+                null,
+                null,
+                null,
+                null,
+                fallbackPath,
+                true,
+                false);
+        }
+
+        if (!IsBrowserPlayableVariant(selectedVariant) && !hasExplicitRequestedPath)
         {
             var playableFallback = variants.FirstOrDefault(v =>
                 !string.IsNullOrWhiteSpace(v.FilePath)
@@ -432,7 +472,20 @@ public class LibraryAnalysisApiController : ControllerBase
 
         var resolvedPath = selectedVariant.FilePath!;
         var contentType = GetAudioContentType(resolvedPath);
-        var stream = new FileStream(resolvedPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        FileStream stream;
+        try
+        {
+            stream = new FileStream(resolvedPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            _logger.LogWarning(ex, "Local track playback failed for track {TrackId}: could not open {Path}.", trackId, resolvedPath);
+            return Problem(
+                detail: $"Unable to access local file '{resolvedPath}'. Check folder mount/path permissions in the running container.",
+                statusCode: StatusCodes.Status503ServiceUnavailable,
+                title: "Local playback unavailable");
+        }
+
         return new FileStreamResult(stream, contentType)
         {
             EnableRangeProcessing = true
@@ -688,6 +741,151 @@ public class LibraryAnalysisApiController : ControllerBase
         {
             return value.Replace('\\', '/').Trim().ToLowerInvariant();
         }
+    }
+
+    private async Task<string?> ResolveFallbackTrackAudioPathAsync(
+        long trackId,
+        string? requestedFilePath,
+        IReadOnlyList<AlbumTrackAudioInfoDto> variants,
+        IReadOnlyList<string> playbackRoots,
+        CancellationToken cancellationToken)
+    {
+        var candidates = new List<string>();
+        AddUniquePathCandidate(candidates, requestedFilePath);
+        foreach (var variant in variants)
+        {
+            AddUniquePathCandidate(candidates, variant.FilePath);
+        }
+
+        var primaryPath = await _repository.GetTrackPrimaryFilePathAsync(trackId, cancellationToken);
+        AddUniquePathCandidate(candidates, primaryPath);
+
+        foreach (var candidate in candidates)
+        {
+            var resolved = ResolveExistingPathWithRoots(candidate, playbackRoots);
+            if (!string.IsNullOrWhiteSpace(resolved))
+            {
+                return resolved;
+            }
+        }
+
+        return null;
+    }
+
+    private static AlbumTrackAudioInfoDto? ResolveVariantToExistingPath(
+        AlbumTrackAudioInfoDto? variant,
+        IReadOnlyList<string> playbackRoots)
+    {
+        if (variant is null || string.IsNullOrWhiteSpace(variant.FilePath))
+        {
+            return null;
+        }
+
+        var resolvedPath = ResolveExistingPathWithRoots(variant.FilePath, playbackRoots);
+        if (string.IsNullOrWhiteSpace(resolvedPath))
+        {
+            return null;
+        }
+
+        return string.Equals(resolvedPath, variant.FilePath, StringComparison.OrdinalIgnoreCase)
+            ? variant
+            : variant with { FilePath = resolvedPath };
+    }
+
+    private async Task<IReadOnlyList<string>> ResolvePlaybackRootCandidatesAsync(CancellationToken cancellationToken)
+    {
+        var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var folders = await _repository.GetFoldersAsync(cancellationToken);
+        foreach (var folder in folders)
+        {
+            AddRootIfExists(roots, folder.RootPath);
+            AddRootIfExists(roots, DownloadPathResolver.ResolveIoPath(folder.RootPath));
+        }
+
+        AddRootIfExists(roots, "/downloads");
+        AddRootIfExists(roots, "/library");
+        AddRootIfExists(roots, "/music");
+        AddRootIfExists(roots, "/data");
+
+        return roots
+            .OrderByDescending(root => root.Length)
+            .ToList();
+    }
+
+    private static void AddRootIfExists(HashSet<string> roots, string? rootPath)
+    {
+        if (string.IsNullOrWhiteSpace(rootPath))
+        {
+            return;
+        }
+
+        try
+        {
+            var fullPath = Path.GetFullPath(rootPath.Trim());
+            if (Directory.Exists(fullPath))
+            {
+                roots.Add(fullPath);
+            }
+        }
+        catch
+        {
+            // Ignore invalid root paths.
+        }
+    }
+
+    private static void AddUniquePathCandidate(List<string> candidates, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        var normalized = NormalizePathForComparison(path);
+        if (string.IsNullOrWhiteSpace(normalized)
+            || candidates.Any(existing => string.Equals(NormalizePathForComparison(existing), normalized, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        candidates.Add(path.Trim());
+    }
+
+    private static string? ResolveExistingPathWithRoots(string path, IReadOnlyList<string> playbackRoots)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        var directPath = path.Trim();
+        if (System.IO.File.Exists(directPath))
+        {
+            return directPath;
+        }
+
+        var normalizedPath = directPath.Replace('\\', '/').Trim();
+        var segments = normalizedPath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length < 2 || playbackRoots.Count == 0)
+        {
+            return null;
+        }
+
+        var maxSuffixLength = Math.Min(segments.Length, 10);
+        for (var suffixLength = maxSuffixLength; suffixLength >= 2; suffixLength--)
+        {
+            var suffixSegments = segments[^suffixLength..];
+            foreach (var root in playbackRoots)
+            {
+                var candidate = Path.Combine(new[] { root }.Concat(suffixSegments).ToArray());
+                if (System.IO.File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        return null;
     }
 
     private async Task<PcmStatsResult?> AnalyzePcmStatsAsync(
