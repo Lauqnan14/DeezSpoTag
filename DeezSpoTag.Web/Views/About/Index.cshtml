@@ -32,8 +32,6 @@
     var sortedReferences = references
         .OrderBy(x => x.Project, System.StringComparer.OrdinalIgnoreCase)
         .ToArray();
-    var githubReferenceCount = sortedReferences.Count(x => x.Url.Contains("github.com", System.StringComparison.OrdinalIgnoreCase));
-    var otherReferenceCount = sortedReferences.Length - githubReferenceCount;
 }
 
 @section Styles {
@@ -83,36 +81,6 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--text-primary);
-}
-
-.about-stats {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 12px;
-    width: min(460px, 100%);
-}
-
-.about-stat-card {
-    border: 1px solid var(--border-secondary);
-    border-radius: 12px;
-    padding: 14px;
-    background: color-mix(in srgb, var(--bg-darker) 88%, var(--bg-tertiary));
-}
-
-.about-stat-label {
-    margin: 0 0 8px 0;
-    color: var(--text-muted);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-}
-
-.about-stat-value {
-    margin: 0;
-    color: var(--primary-color);
-    font-weight: 700;
-    font-size: 1.45rem;
-    line-height: 1.1;
 }
 
 .about-section {
@@ -211,10 +179,6 @@
 }
 
 @@media (max-width: 900px) {
-    .about-stats {
-        grid-template-columns: 1fr;
-    }
-
     .about-reference-grid {
         grid-template-columns: 1fr;
     }
@@ -232,28 +196,11 @@
                 This page credits the projects and creators referenced in the build and workflow design.
             </p>
         </div>
-        <div class="about-stats">
-            <article class="about-stat-card">
-                <p class="about-stat-label">Referenced Projects</p>
-                <p class="about-stat-value">@sortedReferences.Length</p>
-            </article>
-            <article class="about-stat-card">
-                <p class="about-stat-label">GitHub Upstreams</p>
-                <p class="about-stat-value">@githubReferenceCount</p>
-            </article>
-            <article class="about-stat-card">
-                <p class="about-stat-label">Other Upstreams</p>
-                <p class="about-stat-value">@otherReferenceCount</p>
-            </article>
-        </div>
     </section>
 
     <section class="about-section">
         <div class="about-section-head">
             <h2 class="about-section-title">Referenced Projects</h2>
-            <p class="about-section-subtle">
-                Attribution includes separate credits for <strong>SpotiFLAC Desktop</strong> and <strong>SpotiFLAC Mobile</strong> because they are distinct upstream projects and maintainers.
-            </p>
         </div>
         <div class="about-reference-grid">
             @foreach (var item in sortedReferences)
