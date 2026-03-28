@@ -1804,7 +1804,7 @@ async function fetchWithTransientRetry(url, options = {}, retryOptions = {}) {
     let attempt = 0;
     while (true) {
         try {
-            const response = await fetch(url, options);
+            const response = await fetch(url, buildCsrfFetchOptions(options));
             if (response.ok || !shouldRetryTransientResponse(response.status) || attempt >= maxRetries) {
                 return response;
             }
@@ -2890,9 +2890,11 @@ function scheduleSpotifyNextPage() {
 }
 
 async function startSpotifyPlaylistMatching(spotifyUrl) {
-    const response = await fetch(`/api/spotify/tracklist/playlist/match?url=${encodeURIComponent(spotifyUrl)}`, {
-        method: 'POST'
-    });
+    const response = await fetch(
+        `/api/spotify/tracklist/playlist/match?url=${encodeURIComponent(spotifyUrl)}`,
+        buildCsrfFetchOptions({
+            method: 'POST'
+        }));
     if (!response.ok) {
         return;
     }
@@ -6330,20 +6332,22 @@ async function downloadEpisodeTracks(trackElements) {
                     continue;
                 }
 
-                const response = await fetch('/api/deezer/download/add-with-settings', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    keepalive: true,
-                    body: JSON.stringify({
-                        url: url,
-                        bitrate: 0,
-                        userId: window.DeezSpoTagDownload?.getCurrentUserId?.() || null,
-                        destinationFolderId: destinationFolderId,
-                        metadata: request.metadata
-                    })
-                });
+                const response = await fetch(
+                    '/api/deezer/download/add-with-settings',
+                    buildCsrfFetchOptions({
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        keepalive: true,
+                        body: JSON.stringify({
+                            url: url,
+                            bitrate: 0,
+                            userId: window.DeezSpoTagDownload?.getCurrentUserId?.() || null,
+                            destinationFolderId: destinationFolderId,
+                            metadata: request.metadata
+                        })
+                    }));
 
                 if (!response.ok) {
                     const raw = await response.text();
@@ -6793,16 +6797,18 @@ async function downloadTracks(trackElements) {
                             lastMessage = 'No Apple audio tracks available to queue.';
                         }
                     } else {
-                        const response = await fetch('/api/download/intent', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                resolveImmediately: true,
-                                destinationFolderId: stereoDestinationFolderId,
-                                secondaryDestinationFolderId: useDualAtmosRouting ? atmosDestinationFolderId : null,
-                                intents
-                            })
-                        });
+                        const response = await fetch(
+                            '/api/download/intent',
+                            buildCsrfFetchOptions({
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    resolveImmediately: true,
+                                    destinationFolderId: stereoDestinationFolderId,
+                                    secondaryDestinationFolderId: useDualAtmosRouting ? atmosDestinationFolderId : null,
+                                    intents
+                                })
+                            }));
 
                         const rawData = await response.text();
                         let data = null;
@@ -6837,14 +6843,16 @@ async function downloadTracks(trackElements) {
                 }
 
                 if (videoTracks.length > 0) {
-                    const response = await fetch('/api/apple/videos/download', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            destinationFolderId: stereoDestinationFolderId,
-                            tracks: videoTracks
-                        })
-                    });
+                    const response = await fetch(
+                        '/api/apple/videos/download',
+                        buildCsrfFetchOptions({
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                destinationFolderId: stereoDestinationFolderId,
+                                tracks: videoTracks
+                            })
+                        }));
                     const rawData = await response.text();
                     let data = null;
                     if (rawData && rawData.trim()) {
@@ -6958,15 +6966,17 @@ async function downloadTracks(trackElements) {
                 return;
             }
 
-            const response = await fetch('/api/download/intent', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    destinationFolderId: stereoDestinationFolderId,
-                    intents: filtered,
-                    resolveImmediately: true
-                })
-            });
+            const response = await fetch(
+                '/api/download/intent',
+                buildCsrfFetchOptions({
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        destinationFolderId: stereoDestinationFolderId,
+                        intents: filtered,
+                        resolveImmediately: true
+                    })
+                }));
             const rawData = await response.text();
             let data = null;
             if (rawData && rawData.trim()) {
