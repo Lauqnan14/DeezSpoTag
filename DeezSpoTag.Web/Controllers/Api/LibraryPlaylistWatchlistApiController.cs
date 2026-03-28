@@ -313,6 +313,108 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         return Ok(new { result.Success, result.Message, result.PlaylistId, result.SyncedTracks });
     }
 
+    public sealed record PlaylistMergeSourceRequest(string Source, string SourceId);
+
+    public sealed record PlaylistMergeRequest(
+        List<PlaylistMergeSourceRequest> Playlists,
+        string? Name,
+        string? Description,
+        string? SyncMode,
+        bool? SyncToPlex,
+        bool? SyncToJellyfin);
+
+    [HttpPost("merge-sync")]
+    public async Task<IActionResult> MergeSync([FromBody] PlaylistMergeRequest request, CancellationToken cancellationToken)
+    {
+        if (request is null || request.Playlists is null || request.Playlists.Count < 2)
+        {
+            return BadRequest("Select at least two monitored playlists to merge.");
+        }
+
+        if (!_repository.IsConfigured)
+        {
+            return DatabaseNotConfigured();
+        }
+
+        var normalizedSelections = request.Playlists
+            .Where(selection => !string.IsNullOrWhiteSpace(selection?.Source)
+                && !string.IsNullOrWhiteSpace(selection?.SourceId))
+            .Select(selection => new
+            {
+                Source = NormalizePlaylistSource(selection.Source),
+                SourceId = selection.SourceId.Trim()
+            })
+            .Distinct()
+            .ToList();
+        if (normalizedSelections.Count < 2)
+        {
+            return BadRequest("Select at least two valid monitored playlists to merge.");
+        }
+
+        var syncToPlex = request.SyncToPlex == true;
+        var syncToJellyfin = request.SyncToJellyfin == true;
+        if (!syncToPlex && !syncToJellyfin)
+        {
+            return BadRequest("Select Plex, Jellyfin, or both as merge targets.");
+        }
+
+        var allItems = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
+        var selectedSources = new List<PlaylistSyncService.PlaylistMergeSourceInput>(normalizedSelections.Count);
+        var missingSelections = new List<string>();
+
+        foreach (var selection in normalizedSelections)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var item = allItems.FirstOrDefault(entry =>
+                string.Equals(entry.Source, selection.Source, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(entry.SourceId, selection.SourceId, StringComparison.OrdinalIgnoreCase));
+            if (item is null)
+            {
+                missingSelections.Add($"{selection.Source}:{selection.SourceId}");
+                continue;
+            }
+
+            var preference = await _repository.GetPlaylistWatchPreferenceAsync(
+                item.Source,
+                item.SourceId,
+                cancellationToken);
+            var candidates = await _playlistWatchService.GetPlaylistTrackCandidatesAsync(
+                item.Source,
+                item.SourceId,
+                cancellationToken);
+            selectedSources.Add(new PlaylistSyncService.PlaylistMergeSourceInput(item, preference, candidates));
+        }
+
+        if (missingSelections.Count > 0)
+        {
+            return NotFound(new
+            {
+                message = "One or more selected playlists are no longer monitored.",
+                missing = missingSelections
+            });
+        }
+
+        var sourceUserName = User?.Identity?.Name?.Trim();
+        var result = await _playlistSyncService.MergeAndSyncPlaylistsAsync(
+            selectedSources,
+            new PlaylistSyncService.PlaylistMergeSyncRequest(
+                request.Name,
+                request.Description,
+                sourceUserName,
+                request.SyncMode,
+                syncToPlex,
+                syncToJellyfin),
+            cancellationToken);
+
+        if (!result.Success)
+        {
+            return BadRequest(result);
+        }
+
+        return Ok(result);
+    }
+
     [HttpPost("{source}/{sourceId}/refresh-artwork")]
     public async Task<IActionResult> RefreshArtwork(string source, string sourceId, CancellationToken cancellationToken)
     {

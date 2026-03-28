@@ -63,6 +63,207 @@ public sealed class PlaylistSyncService
         return SyncPlaylistAsync(playlist, preference, trackCandidates: null, force, cancellationToken);
     }
 
+    public sealed record PlaylistMergeSourceInput(
+        PlaylistWatchlistDto Playlist,
+        PlaylistWatchPreferenceDto? Preference,
+        IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate> TrackCandidates);
+
+    public sealed record PlaylistMergeSyncRequest(
+        string? PlaylistName,
+        string? Description,
+        string? SourceUsername,
+        string? SyncMode,
+        bool SyncToPlex,
+        bool SyncToJellyfin);
+
+    public sealed record PlaylistMergeTargetResult(
+        string Target,
+        bool Success,
+        string Message,
+        string? PlaylistId,
+        int SyncedTracks);
+
+    public sealed record PlaylistMergeSyncResult(
+        bool Success,
+        string Message,
+        int SourcePlaylists,
+        int CandidateTracks,
+        int MergedTracks,
+        IReadOnlyList<PlaylistMergeTargetResult> Targets);
+
+    public async Task<PlaylistMergeSyncResult> MergeAndSyncPlaylistsAsync(
+        IReadOnlyList<PlaylistMergeSourceInput> mergeSources,
+        PlaylistMergeSyncRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request == null)
+        {
+            return new PlaylistMergeSyncResult(
+                false,
+                "Merge request is required.",
+                0,
+                0,
+                0,
+                Array.Empty<PlaylistMergeTargetResult>());
+        }
+
+        var selectedSources = (mergeSources ?? Array.Empty<PlaylistMergeSourceInput>())
+            .Where(source => source?.Playlist is not null
+                && !string.IsNullOrWhiteSpace(source.Playlist.Source)
+                && !string.IsNullOrWhiteSpace(source.Playlist.SourceId))
+            .ToList();
+        if (selectedSources.Count < 2)
+        {
+            return new PlaylistMergeSyncResult(
+                false,
+                "Select at least two monitored playlists to merge.",
+                selectedSources.Count,
+                0,
+                0,
+                Array.Empty<PlaylistMergeTargetResult>());
+        }
+
+        if (!request.SyncToPlex && !request.SyncToJellyfin)
+        {
+            return new PlaylistMergeSyncResult(
+                false,
+                "Select at least one destination server (Plex or Jellyfin).",
+                selectedSources.Count,
+                0,
+                0,
+                Array.Empty<PlaylistMergeTargetResult>());
+        }
+
+        var candidateTrackCount = 0;
+        var dedupe = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var mergedTracks = new List<SyncTrackSummary>();
+
+        foreach (var source in selectedSources)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var candidates = (source.TrackCandidates ?? Array.Empty<PlaylistWatchService.PlaylistTrackCandidate>())
+                .Select(ToSyncTrackSummary)
+                .ToList();
+            candidateTrackCount += candidates.Count;
+
+            var filteredTracks = await FilterTracksForSyncAsync(
+                source.Playlist,
+                source.Preference,
+                candidates,
+                cancellationToken);
+
+            foreach (var track in filteredTracks)
+            {
+                var dedupeKey = BuildMergeTrackDedupKey(track);
+                if (dedupe.Add(dedupeKey))
+                {
+                    mergedTracks.Add(track);
+                }
+            }
+        }
+
+        if (mergedTracks.Count == 0)
+        {
+            return new PlaylistMergeSyncResult(
+                false,
+                "No eligible tracks remained after blocked/ignored filtering.",
+                selectedSources.Count,
+                candidateTrackCount,
+                0,
+                Array.Empty<PlaylistMergeTargetResult>());
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var mergedPlaylist = new PlaylistWatchlistDto(
+            Id: 0,
+            Source: "merged",
+            SourceId: Guid.NewGuid().ToString("N"),
+            Name: ResolveMergedPlaylistName(request.PlaylistName),
+            ImageUrl: selectedSources
+                .Select(source => source.Playlist.ImageUrl)
+                .FirstOrDefault(static imageUrl => !string.IsNullOrWhiteSpace(imageUrl)),
+            Description: BuildMergedPlaylistDescription(
+                request.Description,
+                selectedSources.Select(source => source.Playlist),
+                request.SourceUsername),
+            TrackCount: mergedTracks.Count,
+            CreatedAt: now);
+
+        var syncMode = NormalizeSyncMode(request.SyncMode);
+        var targets = new List<PlaylistMergeTargetResult>();
+        if (request.SyncToPlex)
+        {
+            var preference = new PlaylistWatchPreferenceDto(
+                Source: "merged",
+                SourceId: mergedPlaylist.SourceId,
+                DestinationFolderId: null,
+                Service: PlexService,
+                PreferredEngine: null,
+                DownloadVariantMode: null,
+                SyncMode: syncMode,
+                AutotagProfile: null,
+                UpdateArtwork: true,
+                ReuseSavedArtwork: false,
+                CreatedAt: now,
+                UpdatedAt: now);
+            var result = await SyncToPlexAsync(
+                mergedPlaylist,
+                preference,
+                mergedTracks,
+                cancellationToken);
+            targets.Add(new PlaylistMergeTargetResult(
+                PlexService,
+                result.Success,
+                result.Message,
+                result.PlaylistId,
+                result.SyncedTracks));
+        }
+
+        if (request.SyncToJellyfin)
+        {
+            var preference = new PlaylistWatchPreferenceDto(
+                Source: "merged",
+                SourceId: mergedPlaylist.SourceId,
+                DestinationFolderId: null,
+                Service: JellyfinService,
+                PreferredEngine: null,
+                DownloadVariantMode: null,
+                SyncMode: syncMode,
+                AutotagProfile: null,
+                UpdateArtwork: true,
+                ReuseSavedArtwork: false,
+                CreatedAt: now,
+                UpdatedAt: now);
+            var result = await SyncToJellyfinAsync(
+                mergedPlaylist,
+                preference,
+                mergedTracks,
+                cancellationToken);
+            targets.Add(new PlaylistMergeTargetResult(
+                JellyfinService,
+                result.Success,
+                result.Message,
+                result.PlaylistId,
+                result.SyncedTracks));
+        }
+
+        var anySucceeded = targets.Any(static target => target.Success);
+        var allSucceeded = targets.Count > 0 && targets.All(static target => target.Success);
+        var message = allSucceeded
+            ? "Merged playlist synced successfully."
+            : anySucceeded
+                ? "Merged playlist synced to some targets. Review target results."
+                : "Merged playlist sync failed on all selected targets.";
+        return new PlaylistMergeSyncResult(
+            anySucceeded,
+            message,
+            selectedSources.Count,
+            candidateTrackCount,
+            mergedTracks.Count,
+            targets);
+    }
+
     public async Task<PlaylistSyncResult> SyncPlaylistAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
@@ -317,6 +518,16 @@ public sealed class PlaylistSyncService
 
                 syncedTracks = itemIds.Count;
             }
+        }
+
+        if (!string.IsNullOrWhiteSpace(playlist.Description))
+        {
+            await _jellyfinApiClient.UpdateItemOverviewAsync(
+                jellyfin.Url,
+                jellyfin.ApiKey,
+                playlistId,
+                playlist.Description,
+                cancellationToken);
         }
 
         var modeLabel = appendMissingOnly ? "append" : "mirror";
@@ -822,6 +1033,93 @@ public sealed class PlaylistSyncService
 
         var delta = Math.Abs(durationMs.Value - durationCandidateMs.Value);
         return delta <= DurationToleranceMs;
+    }
+
+    private static string BuildMergeTrackDedupKey(SyncTrackSummary track)
+    {
+        if (!string.IsNullOrWhiteSpace(track.Isrc))
+        {
+            return $"isrc:{Normalize(track.Isrc)}";
+        }
+
+        var year = TryParseReleaseYear(track.ReleaseDate, out var parsedYear)
+            ? parsedYear.ToString(CultureInfo.InvariantCulture)
+            : string.Empty;
+        var durationBucket = track.DurationMs.HasValue && track.DurationMs.Value > 0
+            ? (track.DurationMs.Value / DurationToleranceMs).ToString(CultureInfo.InvariantCulture)
+            : string.Empty;
+        var fallbackId = string.IsNullOrWhiteSpace(track.SourceTrackId)
+            ? string.Empty
+            : Normalize(track.SourceTrackId);
+        return string.Join(
+            "\u001F",
+            Normalize(track.Name),
+            Normalize(track.Artists),
+            Normalize(track.Album),
+            year,
+            durationBucket,
+            fallbackId);
+    }
+
+    private static string ResolveMergedPlaylistName(string? requestedName)
+    {
+        var trimmed = (requestedName ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(trimmed) ? "Merged Monitored Playlist" : trimmed;
+    }
+
+    private static string? BuildMergedPlaylistDescription(
+        string? userDescription,
+        IEnumerable<PlaylistWatchlistDto> selectedPlaylists,
+        string? sourceUsername)
+    {
+        var values = new List<string>();
+        var trimmedDescription = (userDescription ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(trimmedDescription))
+        {
+            values.Add(trimmedDescription);
+        }
+
+        var sourceSummary = BuildMergeSourceSummary(selectedPlaylists);
+        if (!string.IsNullOrWhiteSpace(sourceSummary))
+        {
+            values.Add(sourceSummary);
+        }
+
+        var trimmedUser = (sourceUsername ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(trimmedUser))
+        {
+            values.Add($"Source user: {trimmedUser}");
+        }
+
+        return values.Count == 0 ? null : string.Join(" | ", values);
+    }
+
+    private static string? BuildMergeSourceSummary(IEnumerable<PlaylistWatchlistDto> selectedPlaylists)
+    {
+        var sources = selectedPlaylists
+            .Select(static playlist => NormalizeMergeSourceLabel(playlist.Source))
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(static value => value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return sources.Count == 0 ? null : $"Sources: {string.Join(", ", sources)}";
+    }
+
+    private static string NormalizeMergeSourceLabel(string? source)
+    {
+        var normalized = NormalizeSource(source);
+        return normalized switch
+        {
+            "spotify" => "Spotify",
+            "deezer" => "Deezer",
+            "apple" => "Apple Music",
+            "boomplay" => "Boomplay",
+            "recommendations" => "Recommendations",
+            "smarttracklist" => "Smart Tracklist",
+            _ => string.IsNullOrWhiteSpace(normalized)
+                ? "Unknown"
+                : char.ToUpperInvariant(normalized[0]) + normalized[1..]
+        };
     }
 
     private static string Normalize(string? value)

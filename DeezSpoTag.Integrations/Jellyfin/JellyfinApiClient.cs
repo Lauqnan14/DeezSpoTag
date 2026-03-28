@@ -471,15 +471,27 @@ public class JellyfinApiClient
 
     public async Task<bool> UpdateArtistOverviewAsync(string serverUrl, string apiKey, string artistId, string biography, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(artistId) || string.IsNullOrWhiteSpace(biography))
+        return await UpdateItemOverviewAsync(serverUrl, apiKey, artistId, biography, cancellationToken);
+    }
+
+    public async Task<bool> UpdateItemOverviewAsync(
+        string serverUrl,
+        string apiKey,
+        string itemId,
+        string overview,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(itemId)
+            || string.IsNullOrWhiteSpace(overview))
         {
             return false;
         }
 
-        // GET the current item so we can preserve all existing metadata fields.
-        var getUrl = BuildUrl(serverUrl, $"/Items/{artistId}");
+        var getUrl = BuildUrl(serverUrl, $"/Items/{itemId}");
         using var getRequest = new HttpRequestMessage(HttpMethod.Get, getUrl);
-        getRequest.Headers.Add("X-Emby-Token", apiKey);
+        getRequest.Headers.Add(EmbyTokenHeader, apiKey);
         using var getResponse = await _httpClient.SendAsync(getRequest, cancellationToken);
         if (!getResponse.IsSuccessStatusCode)
         {
@@ -487,37 +499,37 @@ public class JellyfinApiClient
         }
 
         var itemJson = await getResponse.Content.ReadAsStringAsync(cancellationToken);
-
-        // Re-serialize with the Overview field replaced.
         using var doc = JsonDocument.Parse(itemJson);
         using var ms = new MemoryStream();
         await using var writer = new Utf8JsonWriter(ms);
         writer.WriteStartObject();
-        foreach (var prop in doc.RootElement.EnumerateObject())
+        foreach (var property in doc.RootElement.EnumerateObject())
         {
-            if (prop.Name == OverviewProperty)
+            if (property.NameEquals(OverviewProperty))
             {
-                writer.WriteString(OverviewProperty, biography);
+                writer.WriteString(OverviewProperty, overview);
             }
             else
             {
-                prop.WriteTo(writer);
+                property.WriteTo(writer);
             }
         }
+
         if (!doc.RootElement.TryGetProperty(OverviewProperty, out _))
         {
-            writer.WriteString(OverviewProperty, biography);
+            writer.WriteString(OverviewProperty, overview);
         }
+
         writer.WriteEndObject();
         await writer.FlushAsync(cancellationToken);
 
         var updatedJson = Encoding.UTF8.GetString(ms.ToArray());
-        var postUrl = BuildUrl(serverUrl, $"/Items/{artistId}");
+        var postUrl = BuildUrl(serverUrl, $"/Items/{itemId}");
         using var postRequest = new HttpRequestMessage(HttpMethod.Post, postUrl)
         {
             Content = new StringContent(updatedJson, Encoding.UTF8, "application/json")
         };
-        postRequest.Headers.Add("X-Emby-Token", apiKey);
+        postRequest.Headers.Add(EmbyTokenHeader, apiKey);
         using var postResponse = await _httpClient.SendAsync(postRequest, cancellationToken);
         return postResponse.IsSuccessStatusCode;
     }

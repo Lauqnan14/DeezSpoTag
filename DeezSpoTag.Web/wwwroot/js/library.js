@@ -10456,6 +10456,11 @@ async function loadPlaylistBlockedRules() {
 async function loadPlaylistWatchlist() {
     const container = document.getElementById('playlistWatchlistContainer');
     if (!container) return;
+    const mergeButton = document.getElementById('mergePlaylistWatchlistBtn');
+    if (mergeButton) {
+        mergeButton.disabled = true;
+        mergeButton.onclick = null;
+    }
     try {
         if (!Array.isArray(libraryState.folders) || !libraryState.folders.length) {
             try {
@@ -10471,6 +10476,13 @@ async function loadPlaylistWatchlist() {
         if (!Array.isArray(items) || items.length === 0) {
             container.innerHTML = '<div class="watchlist-empty-state">No monitored playlists yet.</div>';
             return;
+        }
+
+        if (mergeButton) {
+            mergeButton.disabled = items.length < 2;
+            mergeButton.onclick = async () => {
+                await openPlaylistMergePanel(items);
+            };
         }
 
         const playlistPrefs = await hydratePlaylistPreferences();
@@ -10630,6 +10642,174 @@ async function loadPlaylistWatchlist() {
         }
     } catch (error) {
         container.innerHTML = `<div class="watchlist-empty-state">Failed to load playlists: ${escapeHtml(error?.message || 'Unknown error')}</div>`;
+    }
+}
+
+async function openPlaylistMergePanel(items) {
+    if (!Array.isArray(items) || items.length < 2) {
+        showToast('Add at least two monitored playlists before merging.', true);
+        return;
+    }
+
+    if (!globalThis.DeezSpoTag?.ui?.showModal) {
+        showToast('Merge panel unavailable.', true);
+        return;
+    }
+
+    const panel = document.createElement('div');
+    panel.className = 'playlist-settings-panel';
+
+    const sourceSection = document.createElement('div');
+    sourceSection.className = 'playlist-settings-section';
+    sourceSection.innerHTML = '<div class="playlist-settings-section-title">Playlists to merge</div>';
+    const sourceList = document.createElement('div');
+    sourceList.className = 'routing-rules-list';
+    items.forEach((item, index) => {
+        const row = document.createElement('label');
+        row.className = 'routing-rule-row';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'form-check-input';
+        checkbox.dataset.mergeSource = item.source || '';
+        checkbox.dataset.mergeSourceId = item.sourceId || '';
+        checkbox.checked = index < 2;
+        const sourceLabel = document.createElement('div');
+        sourceLabel.className = 'playlist-settings-section-label';
+        sourceLabel.textContent = `${item.name || 'Playlist'} · ${String(item.source || '').toUpperCase()}`;
+        row.appendChild(checkbox);
+        row.appendChild(sourceLabel);
+        sourceList.appendChild(row);
+    });
+    sourceSection.appendChild(sourceList);
+    panel.appendChild(sourceSection);
+
+    const nameSection = document.createElement('div');
+    nameSection.className = 'playlist-settings-section';
+    nameSection.innerHTML = '<div class="playlist-settings-section-title">Merged playlist name</div>';
+    const nameInput = document.createElement('input');
+    nameInput.className = 'form-control';
+    nameInput.type = 'text';
+    nameInput.maxLength = 200;
+    nameInput.value = 'Merged Monitored Playlist';
+    nameSection.appendChild(nameInput);
+    panel.appendChild(nameSection);
+
+    const descriptionSection = document.createElement('div');
+    descriptionSection.className = 'playlist-settings-section';
+    descriptionSection.innerHTML = '<div class="playlist-settings-section-title">Description</div>';
+    const descriptionInput = document.createElement('textarea');
+    descriptionInput.className = 'form-control';
+    descriptionInput.rows = 3;
+    descriptionInput.placeholder = 'Write a custom description for the merged playlist.';
+    descriptionSection.appendChild(descriptionInput);
+    const descriptionHint = document.createElement('div');
+    descriptionHint.className = 'playlist-settings-section-label';
+    descriptionHint.textContent = 'Source attribution will include your DeezSpoTag username.';
+    descriptionSection.appendChild(descriptionHint);
+    panel.appendChild(descriptionSection);
+
+    const targetSection = document.createElement('div');
+    targetSection.className = 'playlist-settings-section';
+    targetSection.innerHTML = '<div class="playlist-settings-section-title">Sync targets</div>';
+    const targetList = document.createElement('div');
+    targetList.className = 'routing-rules-list';
+    const plexRow = document.createElement('label');
+    plexRow.className = 'routing-rule-row';
+    const plexCheck = document.createElement('input');
+    plexCheck.type = 'checkbox';
+    plexCheck.className = 'form-check-input';
+    plexCheck.checked = true;
+    const plexText = document.createElement('div');
+    plexText.className = 'playlist-settings-section-label';
+    plexText.textContent = 'Plex';
+    plexRow.appendChild(plexCheck);
+    plexRow.appendChild(plexText);
+    targetList.appendChild(plexRow);
+    const jellyfinRow = document.createElement('label');
+    jellyfinRow.className = 'routing-rule-row';
+    const jellyfinCheck = document.createElement('input');
+    jellyfinCheck.type = 'checkbox';
+    jellyfinCheck.className = 'form-check-input';
+    jellyfinCheck.checked = false;
+    const jellyfinText = document.createElement('div');
+    jellyfinText.className = 'playlist-settings-section-label';
+    jellyfinText.textContent = 'Jellyfin';
+    jellyfinRow.appendChild(jellyfinCheck);
+    jellyfinRow.appendChild(jellyfinText);
+    targetList.appendChild(jellyfinRow);
+    targetSection.appendChild(targetList);
+    panel.appendChild(targetSection);
+
+    const syncModeSection = document.createElement('div');
+    syncModeSection.className = 'playlist-settings-section';
+    syncModeSection.innerHTML = '<div class="playlist-settings-section-title">Sync behavior</div>';
+    const syncModeSelect = document.createElement('select');
+    syncModeSelect.className = 'form-select';
+    [
+        { value: 'mirror', label: 'Mirror source playlist (replace tracks)' },
+        { value: 'append', label: 'Append new tracks only (keep existing)' }
+    ].forEach(({ value, label }) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        syncModeSelect.appendChild(option);
+    });
+    syncModeSection.appendChild(syncModeSelect);
+    panel.appendChild(syncModeSection);
+
+    const confirmed = await globalThis.DeezSpoTag.ui.showModal({
+        title: 'Merge Monitored Playlists',
+        message: '',
+        allowHtml: false,
+        contentElement: panel,
+        buttons: [
+            { label: 'Merge & Sync', value: 'merge', primary: true },
+            { label: 'Cancel', value: 'cancel' }
+        ]
+    });
+    if (confirmed?.value !== 'merge') {
+        return;
+    }
+
+    const selectedPlaylists = Array.from(sourceList.querySelectorAll('input[type="checkbox"]:checked'))
+        .map(input => ({
+            source: String(input.dataset.mergeSource || '').trim(),
+            sourceId: String(input.dataset.mergeSourceId || '').trim()
+        }))
+        .filter(item => item.source && item.sourceId);
+    if (selectedPlaylists.length < 2) {
+        showToast('Select at least two monitored playlists to merge.', true);
+        return;
+    }
+
+    if (!plexCheck.checked && !jellyfinCheck.checked) {
+        showToast('Select at least one merge target (Plex or Jellyfin).', true);
+        return;
+    }
+
+    const payload = {
+        playlists: selectedPlaylists,
+        name: String(nameInput.value || '').trim(),
+        description: String(descriptionInput.value || '').trim(),
+        syncMode: syncModeSelect.value || 'mirror',
+        syncToPlex: plexCheck.checked,
+        syncToJellyfin: jellyfinCheck.checked
+    };
+
+    try {
+        const result = await fetchJson('/api/library/playlists/merge-sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const targetSummary = Array.isArray(result?.targets)
+            ? result.targets
+                .map(target => `${String(target.target || '').toUpperCase()}: ${target.success ? 'ok' : 'failed'} (${target.syncedTracks || 0})`)
+                .join(' | ')
+            : '';
+        showToast(`${result?.message || 'Merge sync completed.'}${targetSummary ? ` ${targetSummary}` : ''}`);
+    } catch (error) {
+        showToast(`Playlist merge failed: ${error?.message || 'Unknown error'}`, true);
     }
 }
 
