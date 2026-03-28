@@ -224,9 +224,8 @@ Important note:
 
 ## Acknowledgements
 
-DeezSpoTag was informed by ideas, architecture patterns, and implementation approaches from many open-source projects. Thank you to the creators and maintainers behind these references:
+DeezSpoTag was informed by ideas, architecture patterns, and implementation approaches from many open-source projects. Thanks to the creators and maintainers behind these references:
 
-- **Deemixrr** (AGPL-3.0) and contributors.
 - **deemix** (GPL-3.0) by Bambanah and contributors.
 - **Lidarr** (GPL-3.0) by Team Lidarr.
 - **MusicMover** (GPL) and contributors.
@@ -237,6 +236,7 @@ DeezSpoTag was informed by ideas, architecture patterns, and implementation appr
 - **Wolframe Spotify Canvas** (MIT) by the Wolframe Team.
 - **boomplay-main** (MIT) by Okoya Usman.
 - **idonthavespotify** (MIT) by Juan Rodriguez Donado.
+- **apmyx** and contributors.
 - **lidify** (GPL-3.0) and contributors.
 - **lrclib** (MIT) by tranxuanthang and contributors.
 - **OneTagger** (GPL-3.0) and contributors.
@@ -250,6 +250,7 @@ DeezSpoTag was informed by ideas, architecture patterns, and implementation appr
 - **Meloday** and its maintainer community.
 - **WhatsMyBitrate** by oren-cohen and contributors.
 - **syrics-web** (MIT) by Akash R. Chandran.
+- **wrapper** by WorldObservationLog.
 - **Apple Music API / tooling references** including work by Myp3a and Sendy McSenderson.
 
 If any project listed above needs correction or more specific attribution, open an issue and it will be updated.
