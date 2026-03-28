@@ -104,7 +104,7 @@ public class AutoTagLibraryOrganizer
 
     private Task OrganizeAsync(string rootPath, IReadOnlyCollection<string> filePaths, AutoTagOrganizerOptions options, AutoTagOrganizerReport? report, Action<string>? log)
     {
-        if (string.IsNullOrWhiteSpace(rootPath) || filePaths.Count == 0)
+        if (string.IsNullOrWhiteSpace(rootPath))
         {
             return Task.CompletedTask;
         }
@@ -134,6 +134,7 @@ public class AutoTagLibraryOrganizer
         }
 
         ExecuteMovePlan(normalizedRoot, plan, options, report, log);
+        MoveExistingNoAudioDirectoriesToQuarantine(normalizedRoot, options, report, log);
         ReconcileOrphanCombinedArtistFolders(normalizedRoot, usePrimaryArtistFolders, options, report, log);
         if (!options.DryRun && options.RemoveEmptyFolders)
         {
@@ -824,6 +825,7 @@ public class AutoTagLibraryOrganizer
         }
 
         if (options.MoveMisplacedFiles
+            && !options.RenameFilesToTemplate
             && destinationDirs.Count == 1
             && TryMoveFolder(rootPath, sourceDir, destinationDirs[0], options, report, log))
         {
@@ -1111,6 +1113,7 @@ public class AutoTagLibraryOrganizer
     {
         var losingPath = preferIncoming ? action.DestinationPath : action.SourcePath;
         var target = QuarantineDuplicateFile(rootPath, options.DuplicatesFolderName, losingPath);
+        MoveAssociatedDuplicateSidecarsToQuarantine(rootPath, losingPath, target, options, report, log);
         if (report != null)
         {
             report.QuarantinedDuplicates++;
@@ -1133,7 +1136,13 @@ public class AutoTagLibraryOrganizer
             log?.Invoke($"organizer quarantined duplicate source: {action.SourcePath}");
         }
 
-        FinalizeDuplicateCleanup(rootPath, action, options, report, log);
+        FinalizeDuplicateCleanup(
+            rootPath,
+            action,
+            options,
+            report,
+            log,
+            moveSourceSidecarsToDestination: preferIncoming);
         return true;
     }
 
@@ -1148,6 +1157,7 @@ public class AutoTagLibraryOrganizer
         if (preferIncoming)
         {
             var quarantinedPath = QuarantineDuplicateFile(rootPath, options.DuplicatesFolderName, action.DestinationPath);
+            MoveAssociatedDuplicateSidecarsToQuarantine(rootPath, action.DestinationPath, quarantinedPath, options, report, log);
             if (report != null)
             {
                 report.QuarantinedDuplicates++;
@@ -1163,11 +1173,18 @@ public class AutoTagLibraryOrganizer
             _logger.LogInformation("AutoTag organizer replaced duplicate destination {DestinationPath} using {SourcePath}", action.DestinationPath, action.SourcePath);
             log?.Invoke($"organizer replaced duplicate destination: {action.DestinationPath} using {action.SourcePath}");
             report?.Entries.Add($"replace-duplicate: {action.DestinationPath} <= {action.SourcePath}");
-            FinalizeDuplicateCleanup(rootPath, action, options, report, log);
+            FinalizeDuplicateCleanup(
+                rootPath,
+                action,
+                options,
+                report,
+                log,
+                moveSourceSidecarsToDestination: true);
             return true;
         }
 
         var sourceQuarantinedPath = QuarantineDuplicateFile(rootPath, options.DuplicatesFolderName, action.SourcePath);
+        MoveAssociatedDuplicateSidecarsToQuarantine(rootPath, action.SourcePath, sourceQuarantinedPath, options, report, log);
         if (report != null)
         {
             report.QuarantinedDuplicates++;
@@ -1176,7 +1193,13 @@ public class AutoTagLibraryOrganizer
         _logger.LogInformation("AutoTag organizer quarantined duplicate source {SourcePath} (existing {DestinationPath})", action.SourcePath, action.DestinationPath);
         log?.Invoke($"organizer quarantined duplicate source: {action.SourcePath} -> {sourceQuarantinedPath}");
         report?.Entries.Add($"quarantine-duplicate: {action.SourcePath} -> {sourceQuarantinedPath}");
-        FinalizeDuplicateCleanup(rootPath, action, options, report, log);
+        FinalizeDuplicateCleanup(
+            rootPath,
+            action,
+            options,
+            report,
+            log,
+            moveSourceSidecarsToDestination: false);
         return true;
     }
 
@@ -1185,18 +1208,50 @@ public class AutoTagLibraryOrganizer
         MovePlanItem action,
         AutoTagOrganizerOptions options,
         AutoTagOrganizerReport? report,
+        Action<string>? log,
+        bool moveSourceSidecarsToDestination)
+    {
+        if (moveSourceSidecarsToDestination)
+        {
+            MoveSidecarFiles(new SidecarMoveContext(
+                rootPath,
+                action.SourceDir,
+                action.DestinationDir,
+                action.SourcePath,
+                action.DestinationPath,
+                options,
+                report,
+                log));
+        }
+
+        MoveDuplicateSourceFolderToQuarantineIfNoAudio(rootPath, action.SourceDir, options, report, log);
+        CleanupSourceDirectoryIfConfigured(rootPath, action.SourceDir, options, log);
+    }
+
+    private void MoveAssociatedDuplicateSidecarsToQuarantine(
+        string rootPath,
+        string originalFilePath,
+        string quarantinedFilePath,
+        AutoTagOrganizerOptions options,
+        AutoTagOrganizerReport? report,
         Action<string>? log)
     {
+        var sourceDir = Path.GetDirectoryName(originalFilePath);
+        var destinationDir = Path.GetDirectoryName(quarantinedFilePath);
+        if (string.IsNullOrWhiteSpace(sourceDir) || string.IsNullOrWhiteSpace(destinationDir))
+        {
+            return;
+        }
+
         MoveSidecarFiles(new SidecarMoveContext(
             rootPath,
-            action.SourceDir,
-            action.DestinationDir,
-            action.SourcePath,
-            action.DestinationPath,
+            sourceDir,
+            destinationDir,
+            originalFilePath,
+            quarantinedFilePath,
             options,
             report,
             log));
-        CleanupSourceDirectoryIfConfigured(rootPath, action.SourceDir, options, log);
     }
 
     private static string QuarantineDuplicateFile(string rootPath, string? duplicatesFolderName, string sourcePath)
@@ -1209,6 +1264,180 @@ public class AutoTagLibraryOrganizer
         var target = GetUniquePath(Path.Join(duplicatesRoot, Path.GetFileName(sourcePath)), sourcePath);
         MoveFileOverwrite(sourcePath, target);
         return target;
+    }
+
+    private void MoveDuplicateSourceFolderToQuarantineIfNoAudio(
+        string rootPath,
+        string sourceDir,
+        AutoTagOrganizerOptions options,
+        AutoTagOrganizerReport? report,
+        Action<string>? log)
+    {
+        if (!Directory.Exists(sourceDir))
+        {
+            return;
+        }
+
+        var folderName = string.IsNullOrWhiteSpace(options.DuplicatesFolderName)
+            ? DuplicateCleanerService.DuplicatesFolderName
+            : options.DuplicatesFolderName.Trim();
+        var duplicatesRoot = Path.Join(rootPath, folderName);
+        if (IsPathUnderRoot(sourceDir, duplicatesRoot))
+        {
+            return;
+        }
+
+        if (EnumerateAudioFiles(sourceDir, includeSubfolders: true).Any())
+        {
+            return;
+        }
+
+        if (!Directory.EnumerateFileSystemEntries(sourceDir).Any())
+        {
+            return;
+        }
+
+        var sourceFolderName = Path.GetFileName(sourceDir);
+        if (string.IsNullOrWhiteSpace(sourceFolderName))
+        {
+            return;
+        }
+
+        var targetDirectory = GetUniqueDirectoryPath(Path.Join(duplicatesRoot, sourceFolderName), sourceDir);
+        var movedFiles = options.DryRun
+            ? 0
+            : Directory.EnumerateFiles(sourceDir, "*.*", SearchOption.AllDirectories).Count();
+        if (options.DryRun)
+        {
+            log?.Invoke($"organizer dry-run: would move duplicate leftovers folder {sourceDir} -> {targetDirectory}");
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(duplicatesRoot);
+            Directory.Move(sourceDir, targetDirectory);
+            if (report != null)
+            {
+                report.MovedLeftovers += movedFiles;
+            }
+
+            _logger.LogInformation("AutoTag organizer moved duplicate leftovers folder {SourceDir} -> {DestinationDir}", sourceDir, targetDirectory);
+            log?.Invoke($"organizer moved duplicate leftovers folder: {sourceDir} -> {targetDirectory}");
+            report?.Entries.Add($"move-duplicate-leftovers-folder: {sourceDir} -> {targetDirectory}");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            RecordOrganizerFailure(
+                report,
+                log,
+                "move duplicate leftovers folder",
+                sourceDir,
+                targetDirectory,
+                ex);
+        }
+    }
+
+    private void MoveExistingNoAudioDirectoriesToQuarantine(
+        string rootPath,
+        AutoTagOrganizerOptions options,
+        AutoTagOrganizerReport? report,
+        Action<string>? log)
+    {
+        if (!Directory.Exists(rootPath))
+        {
+            return;
+        }
+
+        var folderName = string.IsNullOrWhiteSpace(options.DuplicatesFolderName)
+            ? DuplicateCleanerService.DuplicatesFolderName
+            : options.DuplicatesFolderName.Trim();
+        var duplicatesRoot = Path.Join(rootPath, folderName);
+        var candidates = Directory
+            .EnumerateDirectories(rootPath, "*", SearchOption.AllDirectories)
+            .Select(Path.GetFullPath)
+            .OrderByDescending(path => path.Length)
+            .ToList();
+
+        foreach (var directory in candidates)
+        {
+            if (!Directory.Exists(directory))
+            {
+                continue;
+            }
+
+            if (IsPathUnderRoot(directory, duplicatesRoot))
+            {
+                continue;
+            }
+
+            var files = Directory.EnumerateFiles(directory, "*.*", SearchOption.AllDirectories).ToList();
+            if (files.Count == 0)
+            {
+                continue;
+            }
+
+            if (EnumerateAudioFiles(directory, includeSubfolders: true).Any())
+            {
+                continue;
+            }
+
+            MoveDirectoryToDuplicatesRoot(rootPath, directory, duplicatesRoot, options, report, log, "legacy no-audio leftovers");
+        }
+    }
+
+    private void MoveDirectoryToDuplicatesRoot(
+        string rootPath,
+        string sourceDir,
+        string duplicatesRoot,
+        AutoTagOrganizerOptions options,
+        AutoTagOrganizerReport? report,
+        Action<string>? log,
+        string reason)
+    {
+        var sourceFolderName = Path.GetFileName(sourceDir);
+        if (string.IsNullOrWhiteSpace(sourceFolderName))
+        {
+            return;
+        }
+
+        var targetDirectory = GetUniqueDirectoryPath(Path.Join(duplicatesRoot, sourceFolderName), sourceDir);
+        var movedFiles = options.DryRun
+            ? 0
+            : Directory.EnumerateFiles(sourceDir, "*.*", SearchOption.AllDirectories).Count();
+        if (options.DryRun)
+        {
+            log?.Invoke($"organizer dry-run: would move {reason} folder {sourceDir} -> {targetDirectory}");
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(duplicatesRoot);
+            Directory.Move(sourceDir, targetDirectory);
+            if (report != null)
+            {
+                report.MovedLeftovers += movedFiles;
+            }
+
+            _logger.LogInformation("AutoTag organizer moved {Reason} folder {SourceDir} -> {DestinationDir}", reason, sourceDir, targetDirectory);
+            log?.Invoke($"organizer moved {reason} folder: {sourceDir} -> {targetDirectory}");
+            report?.Entries.Add($"move-{reason.Replace(' ', '-')}-folder: {sourceDir} -> {targetDirectory}");
+            if (options.RemoveEmptyFolders)
+            {
+                DeleteEmptyDirectoryTree(Path.GetDirectoryName(sourceDir) ?? string.Empty, rootPath, log);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            RecordOrganizerFailure(
+                report,
+                log,
+                $"move {reason} folder",
+                sourceDir,
+                targetDirectory,
+                ex);
+        }
     }
 
     private void CleanupSourceDirectoryIfConfigured(
@@ -1760,6 +1989,41 @@ public class AutoTagLibraryOrganizer
         var extension = Path.GetExtension(path);
         var uniqueFilename = DownloadUtils.GenerateUniqueFilename(dir, filename, extension);
         return Path.Join(dir, uniqueFilename + extension);
+    }
+
+    private static string GetUniqueDirectoryPath(string path, string? sourcePath = null)
+    {
+        var parent = Path.GetDirectoryName(path);
+        var folderName = Path.GetFileName(path);
+        if (string.IsNullOrWhiteSpace(parent) || string.IsNullOrWhiteSpace(folderName))
+        {
+            return path;
+        }
+
+        if (!Directory.Exists(path))
+        {
+            return path;
+        }
+
+        if (!string.IsNullOrWhiteSpace(sourcePath))
+        {
+            var candidate = Path.GetFullPath(path);
+            var source = Path.GetFullPath(sourcePath);
+            if (string.Equals(candidate, source, StringComparison.OrdinalIgnoreCase))
+            {
+                return path;
+            }
+        }
+
+        var suffix = 1;
+        var candidatePath = path;
+        while (Directory.Exists(candidatePath))
+        {
+            candidatePath = Path.Join(parent, $"{folderName} ({suffix})");
+            suffix++;
+        }
+
+        return candidatePath;
     }
 
     private static void TryDeleteFile(string path)
