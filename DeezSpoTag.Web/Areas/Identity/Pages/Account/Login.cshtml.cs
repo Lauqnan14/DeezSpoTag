@@ -1,5 +1,6 @@
 using DeezSpoTag.Web.Configuration;
 using DeezSpoTag.Web.Models;
+using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
@@ -19,20 +20,24 @@ using DeezSpoTag.Web.Data;
 namespace DeezSpoTag.Web.Areas.Identity.Pages.Account;
 
 [AllowAnonymous]
+[IgnoreAntiforgeryToken]
 public class LoginModel : PageModel
 {
     private readonly SignInManager<AppUser> _signInManager;
     private readonly ILogger<LoginModel> _logger;
     private readonly UserManager<AppUser> _userManager;
+    private readonly IAntiforgery _antiforgery;
     private readonly LoginConfiguration _loginConfig;
     private readonly AppIdentityDbContext _identityDb;
     private readonly bool _isSingleUserMode;
     private const string MustChangePasswordClaim = "must_change_password";
     private const string UnknownValue = "unknown";
+    private const string InvalidSignInSessionMessage = "Sign-in session expired or invalid. Refresh this page and try again.";
 
     public LoginModel(
         SignInManager<AppUser> signInManager,
         UserManager<AppUser> userManager,
+        IAntiforgery antiforgery,
         IOptions<LoginConfiguration> loginOptions,
         IConfiguration configuration,
         ILogger<LoginModel> logger,
@@ -40,6 +45,7 @@ public class LoginModel : PageModel
     {
         _signInManager = signInManager;
         _userManager = userManager;
+        _antiforgery = antiforgery;
         _loginConfig = loginOptions.Value;
         _isSingleUserMode = configuration.GetValue<bool>("IsSingleUser", true);
         _logger = logger;
@@ -81,6 +87,11 @@ public class LoginModel : PageModel
         ReturnUrl = returnUrl ?? Url.Content("~/");
 
         await EnsureSingleUserSeededAsync();
+        if (!await ValidateSignInAntiforgeryAsync())
+        {
+            return Page();
+        }
+
         if (!ModelState.IsValid)
         {
             return Page();
@@ -145,6 +156,21 @@ public class LoginModel : PageModel
 
         ModelState.AddModelError(string.Empty, "Login failed for an unknown reason.");
         return Page();
+    }
+
+    private async Task<bool> ValidateSignInAntiforgeryAsync()
+    {
+        try
+        {
+            await _antiforgery.ValidateRequestAsync(HttpContext);
+            return true;
+        }
+        catch (AntiforgeryValidationException ex)
+        {
+            _logger.LogWarning(ex, "Rejected login POST due to invalid or expired anti-forgery token.");
+            ModelState.AddModelError(string.Empty, InvalidSignInSessionMessage);
+            return false;
+        }
     }
 
     private async Task<IActionResult> CompleteSuccessfulSignInAsync(AppUser? user)
