@@ -19,6 +19,26 @@ public sealed class DeezerTrackRecommendationService
     private readonly DeezerGatewayService _deezerGatewayService;
     private readonly ConcurrentDictionary<string, RecommendationDetailDto> _dailyCache = new(StringComparer.Ordinal);
 
+    private sealed class RecommendationAccumulator
+    {
+        public RecommendationAccumulator(int limit)
+        {
+            Limit = limit;
+            DestinationTracks = new List<RecommendationTrackDto>(limit);
+            OverflowTracks = new List<RecommendationTrackDto>(limit);
+            SeenRecommendationIds = new HashSet<string>(StringComparer.Ordinal);
+            ArtistCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+            AlbumCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        }
+
+        public int Limit { get; }
+        public List<RecommendationTrackDto> DestinationTracks { get; }
+        public List<RecommendationTrackDto> OverflowTracks { get; }
+        public HashSet<string> SeenRecommendationIds { get; }
+        public Dictionary<string, int> ArtistCounts { get; }
+        public Dictionary<string, int> AlbumCounts { get; }
+    }
+
     public DeezerTrackRecommendationService(
         LibraryRepository repository,
         DeezerGatewayService deezerGatewayService)
@@ -107,17 +127,13 @@ public sealed class DeezerTrackRecommendationService
         int cappedLimit,
         CancellationToken cancellationToken)
     {
-        var tracks = new List<RecommendationTrackDto>(cappedLimit);
-        var overflowTracks = new List<RecommendationTrackDto>(cappedLimit);
-        var seenRecommendationIds = new HashSet<string>(StringComparer.Ordinal);
-        var artistCounts = new Dictionary<string, int>(StringComparer.Ordinal);
-        var albumCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var accumulator = new RecommendationAccumulator(cappedLimit);
         var maxSeedsToProbe = Math.Min(orderedSeeds.Count, SeedProbeLimit);
 
         for (var seedIndex = 0; seedIndex < maxSeedsToProbe; seedIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (tracks.Count >= cappedLimit && overflowTracks.Count >= cappedLimit)
+            if (accumulator.DestinationTracks.Count >= cappedLimit && accumulator.OverflowTracks.Count >= cappedLimit)
             {
                 break;
             }
@@ -126,85 +142,68 @@ public sealed class DeezerTrackRecommendationService
             var mixTracks = await LoadTrackMixAsync(seedId, cancellationToken);
             AddUniqueRecommendationTracks(
                 mixTracks,
-                tracks,
-                overflowTracks,
                 normalizedLibraryIds,
-                seenRecommendationIds,
-                artistCounts,
-                albumCounts,
-                cappedLimit);
+                accumulator);
         }
 
-        if (tracks.Count < cappedLimit && overflowTracks.Count > 0)
+        if (accumulator.DestinationTracks.Count < cappedLimit && accumulator.OverflowTracks.Count > 0)
         {
-            foreach (var overflowTrack in overflowTracks)
+            foreach (var overflowTrack in accumulator.OverflowTracks)
             {
-                if (tracks.Count >= cappedLimit)
+                if (accumulator.DestinationTracks.Count >= cappedLimit)
                 {
                     break;
                 }
 
-                tracks.Add(overflowTrack with { TrackPosition = tracks.Count + 1 });
+                accumulator.DestinationTracks.Add(overflowTrack with { TrackPosition = accumulator.DestinationTracks.Count + 1 });
             }
         }
 
-        return tracks;
+        return accumulator.DestinationTracks;
     }
 
     private static void AddUniqueRecommendationTracks(
         IReadOnlyList<RecommendationTrackDto> sourceTracks,
-        List<RecommendationTrackDto> destinationTracks,
-        List<RecommendationTrackDto> overflowTracks,
         HashSet<string> normalizedLibraryIds,
-        HashSet<string> seenRecommendationIds,
-        Dictionary<string, int> artistCounts,
-        Dictionary<string, int> albumCounts,
-        int limit)
+        RecommendationAccumulator accumulator)
     {
         foreach (var track in sourceTracks)
         {
-            if (destinationTracks.Count >= limit && overflowTracks.Count >= limit)
+            if (accumulator.DestinationTracks.Count >= accumulator.Limit
+                && accumulator.OverflowTracks.Count >= accumulator.Limit)
             {
                 break;
             }
 
             TryAddRecommendationTrack(
                 track,
-                destinationTracks,
-                overflowTracks,
                 normalizedLibraryIds,
-                seenRecommendationIds,
-                artistCounts,
-                albumCounts);
+                accumulator);
         }
     }
 
     private static void TryAddRecommendationTrack(
         RecommendationTrackDto track,
-        List<RecommendationTrackDto> destinationTracks,
-        List<RecommendationTrackDto> overflowTracks,
         HashSet<string> normalizedLibraryIds,
-        HashSet<string> seenRecommendationIds,
-        Dictionary<string, int> artistCounts,
-        Dictionary<string, int> albumCounts)
+        RecommendationAccumulator accumulator)
     {
         var normalizedTrackId = NormalizeId(track.Id);
         if (string.IsNullOrWhiteSpace(normalizedTrackId)
             || normalizedLibraryIds.Contains(normalizedTrackId)
-            || !seenRecommendationIds.Add(normalizedTrackId))
+            || !accumulator.SeenRecommendationIds.Add(normalizedTrackId))
         {
             return;
         }
 
-        if (CanAddWithDiversity(track, artistCounts, albumCounts))
+        if (CanAddWithDiversity(track, accumulator.ArtistCounts, accumulator.AlbumCounts))
         {
-            destinationTracks.Add(track with { TrackPosition = destinationTracks.Count + 1 });
-            IncrementDiversityCount(GetArtistDiversityKey(track), artistCounts);
-            IncrementDiversityCount(GetAlbumDiversityKey(track), albumCounts);
+            accumulator.DestinationTracks.Add(track with { TrackPosition = accumulator.DestinationTracks.Count + 1 });
+            IncrementDiversityCount(GetArtistDiversityKey(track), accumulator.ArtistCounts);
+            IncrementDiversityCount(GetAlbumDiversityKey(track), accumulator.AlbumCounts);
             return;
         }
 
-        overflowTracks.Add(track);
+        accumulator.OverflowTracks.Add(track);
     }
 
     private static bool CanAddWithDiversity(

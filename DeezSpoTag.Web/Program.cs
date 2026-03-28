@@ -43,9 +43,10 @@ protected Program()
 
 private const string UnknownValue = "unknown";
 private const string MissingValue = "missing";
-private static readonly Regex BuildVersionPattern = new(
-    @"^v?(?<core>\d+\.\d+\.\d+\.\d+)(?:[-+][0-9A-Za-z][0-9A-Za-z.\-]*)?$",
-    RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    [GeneratedRegex(
+        @"^v?(?<core>\d+\.\d+\.\d+\.\d+)(?:[-+][0-9A-Za-z][0-9A-Za-z.\-]*)?$",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex BuildVersionPatternRegex();
 public static async Task Main(string[] args)
 {
     var builder = WebApplication.CreateBuilder(args);
@@ -429,7 +430,7 @@ static string NormalizeBuildDisplayVersion(string? candidate)
         return UnknownValue;
     }
 
-    var match = BuildVersionPattern.Match(value);
+    var match = BuildVersionPatternRegex().Match(value);
     if (!match.Success)
     {
         return value;

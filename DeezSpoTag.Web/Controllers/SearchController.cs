@@ -4,28 +4,37 @@ namespace DeezSpoTag.Web.Controllers;
 
 public class SearchController : Controller
 {
-    public IActionResult Index(
-        string term,
-        string type = "track",
-        string source = "spotify",
-        string mode = "",
-        string contextType = "",
-        string contextServerType = "",
-        string contextLibraryId = "",
-        string contextItemId = "",
-        string contextTitle = "",
-        string contextYear = "")
+    public IActionResult Index([FromQuery] SearchQuery query)
     {
-        ViewData["SearchTerm"] = term ?? "";
-        ViewData["SearchType"] = type;
-        ViewData["SearchSource"] = source ?? "spotify";
-        ViewData["SearchMode"] = mode ?? "";
-        ViewData["SoundtrackContextType"] = contextType ?? "";
-        ViewData["SoundtrackContextServerType"] = contextServerType ?? "";
-        ViewData["SoundtrackContextLibraryId"] = contextLibraryId ?? "";
-        ViewData["SoundtrackContextItemId"] = contextItemId ?? "";
-        ViewData["SoundtrackContextTitle"] = contextTitle ?? "";
-        ViewData["SoundtrackContextYear"] = contextYear ?? "";
+        if (!ModelState.IsValid)
+        {
+            return BadRequest(ModelState);
+        }
+
+        ViewData["SearchTerm"] = query.Term ?? string.Empty;
+        ViewData["SearchType"] = query.Type;
+        ViewData["SearchSource"] = query.Source ?? "spotify";
+        ViewData["SearchMode"] = query.Mode ?? string.Empty;
+        ViewData["SoundtrackContextType"] = query.ContextType ?? string.Empty;
+        ViewData["SoundtrackContextServerType"] = query.ContextServerType ?? string.Empty;
+        ViewData["SoundtrackContextLibraryId"] = query.ContextLibraryId ?? string.Empty;
+        ViewData["SoundtrackContextItemId"] = query.ContextItemId ?? string.Empty;
+        ViewData["SoundtrackContextTitle"] = query.ContextTitle ?? string.Empty;
+        ViewData["SoundtrackContextYear"] = query.ContextYear ?? string.Empty;
         return View();
+    }
+
+    public sealed class SearchQuery
+    {
+        public string? Term { get; init; }
+        public string Type { get; init; } = "track";
+        public string? Source { get; init; } = "spotify";
+        public string? Mode { get; init; }
+        public string? ContextType { get; init; }
+        public string? ContextServerType { get; init; }
+        public string? ContextLibraryId { get; init; }
+        public string? ContextItemId { get; init; }
+        public string? ContextTitle { get; init; }
+        public string? ContextYear { get; init; }
     }
 }

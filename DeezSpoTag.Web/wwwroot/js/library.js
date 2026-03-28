@@ -3321,7 +3321,7 @@ function initSpotifyCacheControls(artistId) {
             showToast('Background info is empty, so background info push will be skipped.', false);
         }
 
-        const { includeAvatar, includeBackground, includeBio, payload } = buildSpotifySyncPayload(
+        const { payload } = buildSpotifySyncPayload(
             artistId,
             targetSelect.value,
             selection
@@ -9381,9 +9381,9 @@ function buildSoundtrackTvShowCardMarkup(item) {
     const showId = String(item?.itemId || '').trim();
     const itemServerType = String(item?.serverType || '').trim().toLowerCase();
     const itemLibraryId = String(item?.libraryId || '').trim();
-    const tvShowManualAttributes = ` data-soundtrack-item-id="${escapeHtml(showId)}" data-soundtrack-title="${escapeHtml(title)}" data-soundtrack-year="${escapeHtml(Number.isFinite(item?.year) ? String(item.year) : '')}" data-soundtrack-image="${escapeHtml(image)}" data-soundtrack-server="${escapeHtml(itemServerType)}" data-soundtrack-library="${escapeHtml(itemLibraryId)}" data-soundtrack-library-name="${escapeHtml(libraryName)}" data-soundtrack-category="tv_show"`;
+    const showYearValue = Number.isFinite(item?.year) ? String(item.year) : '';
     const showOpenAttributes = showId
-        ? ` data-soundtrack-open-show="${escapeHtml(showId)}" data-soundtrack-show-title="${escapeHtml(title)}" data-soundtrack-server="${escapeHtml(itemServerType)}" data-soundtrack-library="${escapeHtml(itemLibraryId)}" data-soundtrack-show-library-name="${escapeHtml(libraryName)}" data-soundtrack-show-image="${escapeHtml(image)}" data-soundtrack-year="${escapeHtml(Number.isFinite(item?.year) ? String(item.year) : '')}"`
+        ? ` data-soundtrack-open-show="${escapeHtml(showId)}" data-soundtrack-show-title="${escapeHtml(title)}" data-soundtrack-server="${escapeHtml(itemServerType)}" data-soundtrack-library="${escapeHtml(itemLibraryId)}" data-soundtrack-show-library-name="${escapeHtml(libraryName)}" data-soundtrack-show-image="${escapeHtml(image)}" data-soundtrack-year="${escapeHtml(showYearValue)}"`
         : '';
     const showAriaLabel = showId
         ? `Browse seasons for ${title}`
@@ -10630,24 +10630,32 @@ async function loadPlaylistWatchlist() {
             });
         });
 
-        try {
-            const pendingSettings = sessionStorage.getItem('playlist-watchlist-open-settings');
-            if (pendingSettings) {
-                sessionStorage.removeItem('playlist-watchlist-open-settings');
-                const parsed = JSON.parse(pendingSettings);
-                const pendingSource = String(parsed?.source || '').trim();
-                const pendingSourceId = String(parsed?.sourceId || '').trim();
-                const pendingName = String(parsed?.name || 'Playlist').trim() || 'Playlist';
-                if (pendingSource && pendingSourceId) {
-                    setTimeout(() => {
-                        openPlaylistSettingsPanel(pendingSource, pendingSourceId, pendingName, playlistPrefs);
-                    }, 0);
-                }
-            }
-        } catch {
-        }
+        tryOpenPendingPlaylistSettings(playlistPrefs);
     } catch (error) {
         container.innerHTML = `<div class="watchlist-empty-state">Failed to load playlists: ${escapeHtml(error?.message || 'Unknown error')}</div>`;
+    }
+}
+
+function tryOpenPendingPlaylistSettings(playlistPrefs) {
+    try {
+        const pendingSettings = sessionStorage.getItem('playlist-watchlist-open-settings');
+        if (!pendingSettings) {
+            return;
+        }
+
+        sessionStorage.removeItem('playlist-watchlist-open-settings');
+        const parsed = JSON.parse(pendingSettings);
+        const pendingSource = String(parsed?.source || '').trim();
+        const pendingSourceId = String(parsed?.sourceId || '').trim();
+        const pendingName = String(parsed?.name || 'Playlist').trim() || 'Playlist';
+        if (!pendingSource || !pendingSourceId) {
+            return;
+        }
+
+        setTimeout(() => {
+            openPlaylistSettingsPanel(pendingSource, pendingSourceId, pendingName, playlistPrefs);
+        }, 0);
+    } catch {
     }
 }
 
@@ -10813,7 +10821,9 @@ async function openPlaylistMergePanel(items) {
                 .map(target => `${String(target.target || '').toUpperCase()}: ${target.success ? 'ok' : 'failed'} (${target.syncedTracks || 0})`)
                 .join(' | ')
             : '';
-        showToast(`${result?.message || 'Merge sync completed.'}${targetSummary ? ` ${targetSummary}` : ''}`);
+        const statusMessage = result?.message || 'Merge sync completed.';
+        const summarySuffix = targetSummary ? ` ${targetSummary}` : '';
+        showToast(`${statusMessage}${summarySuffix}`);
     } catch (error) {
         showToast(`Playlist merge failed: ${error?.message || 'Unknown error'}`, true);
     }

@@ -1297,14 +1297,17 @@ public class PlexApiClient
         }
     }
 
+    public sealed record PlaylistUpsertOptions(
+        string? ExistingTitlePrefix = null,
+        bool AppendMissingOnly = false);
+
     public async Task<string?> CreateOrUpdatePlaylistAsync(
         string serverUrl,
         string token,
         string machineIdentifier,
         string playlistName,
         IReadOnlyList<string> ratingKeys,
-        string? existingTitlePrefix = null,
-        bool appendMissingOnly = false,
+        PlaylistUpsertOptions? options = null,
         CancellationToken cancellationToken = default)
     {
         if (ratingKeys.Count == 0)
@@ -1312,6 +1315,8 @@ public class PlexApiClient
             return null;
         }
 
+        var existingTitlePrefix = options?.ExistingTitlePrefix;
+        var appendMissingOnly = options?.AppendMissingOnly ?? false;
         var existing = await GetPlaylistsAsync(serverUrl, token, cancellationToken);
         var match = string.IsNullOrWhiteSpace(existingTitlePrefix)
             ? existing.FirstOrDefault(p => string.Equals(p.Title, playlistName, StringComparison.OrdinalIgnoreCase))
