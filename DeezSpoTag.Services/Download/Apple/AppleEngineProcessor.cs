@@ -233,7 +233,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             var timeoutException = new TimeoutException(
                 $"{EngineName} operation timed out or was canceled by an external provider.",
                 ex);
-            _logger.LogError(timeoutException, "Apple download timed out for {QueueUuid}", next.QueueUuid);
+            _logger.LogError(ex, "Apple download timed out for {QueueUuid}", next.QueueUuid);
             if (queueContext != null)
             {
                 await HandleDownloadFailureAsync(next, queueContext.Payload, timeoutException.Message, stoppingToken, CancellationToken.None);

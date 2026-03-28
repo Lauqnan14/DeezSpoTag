@@ -16,6 +16,8 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 {
     private const string DeezerEngine = "deezer";
     private const string DeezSpoTagEngineAlias = "deezspotag";
+    private const string FailedStatus = "failed";
+    private const string CanceledStatus = "canceled";
     private readonly ILogger<DeezSpoTagApp> _logger;
     private readonly DeezSpoTag.Services.Settings.DeezSpoTagSettingsService _settingsService;
     private readonly IServiceProvider _serviceProvider;
@@ -92,7 +94,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             payload["status"] = MapStatusForUi(task.Status);
             payload["progress"] = task.Progress ?? 0;
             payload["downloaded"] = task.Downloaded ?? 0;
-            payload["failed"] = task.Failed ?? 0;
+            payload[FailedStatus] = task.Failed ?? 0;
             payload["engine"] = NormalizeEngineName(task.Engine);
             payload["uuid"] = task.QueueUuid;
             if (!payload.ContainsKey("contentType") && !string.IsNullOrWhiteSpace(task.ContentType))
@@ -249,7 +251,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         {
             await _queueRepository.UpdateStatusAsync(
                 item.QueueUuid,
-                "canceled",
+                CanceledStatus,
                 "Canceled by user",
                 cancellationToken: CancellationToken.None);
             _retryScheduler.Clear(item.QueueUuid);
@@ -279,7 +281,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
         await _queueRepository.UpdateStatusAsync(
             item.QueueUuid,
-            "failed",
+            FailedStatus,
             string.IsNullOrWhiteSpace(error) ? "Unhandled processor failure." : error,
             cancellationToken: CancellationToken.None);
         _retryScheduler.ScheduleRetry(item.QueueUuid, item.Engine ?? "unknown", error);
@@ -305,7 +307,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             if (processor == null)
             {
                 _logger.LogWarning("Unsupported engine '{Engine}' for queue item {QueueUuid}", nextItem.Engine, nextItem.QueueUuid);
-                await _queueRepository.UpdateStatusAsync(nextItem.QueueUuid, "failed", "Unsupported engine", cancellationToken: cancellationToken);
+                await _queueRepository.UpdateStatusAsync(nextItem.QueueUuid, FailedStatus, "Unsupported engine", cancellationToken: cancellationToken);
                 _retryScheduler.ScheduleRetry(nextItem.QueueUuid, nextItem.Engine ?? "unknown", "unsupported engine");
                 return;
             }
@@ -317,7 +319,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogError(ex, "Engine processing failed for {QueueUuid}", nextItem.QueueUuid);
-                await _queueRepository.UpdateStatusAsync(nextItem.QueueUuid, "failed", ex.Message, cancellationToken: cancellationToken);
+                await _queueRepository.UpdateStatusAsync(nextItem.QueueUuid, FailedStatus, ex.Message, cancellationToken: cancellationToken);
                 _retryScheduler.ScheduleRetry(nextItem.QueueUuid, nextItem.Engine ?? "unknown", ex.Message);
             }
         }
@@ -338,8 +340,8 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         }
 
         var queueItem = await _queueRepository.GetByUuidAsync(uuid, CancellationToken.None);
-        await _queueRepository.UpdateStatusAsync(uuid, "canceled");
-        await UpdateWatchlistTrackStatusAsync(queueItem?.PayloadJson ?? string.Empty, "canceled", CancellationToken.None);
+        await _queueRepository.UpdateStatusAsync(uuid, CanceledStatus);
+        await UpdateWatchlistTrackStatusAsync(queueItem?.PayloadJson ?? string.Empty, CanceledStatus, CancellationToken.None);
         Listener?.Send("removedFromQueue", new { uuid });
         DeezSpoTagSpeedTracker.Clear(uuid);
     }
