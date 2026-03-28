@@ -219,17 +219,28 @@ public class SpotifyCacheApiController : ControllerBase
 
         var push = parsed.Push!;
         var warnings = BuildPushWarnings(push);
-        if (!HasPushPayload(push))
-        {
-            return BadRequest("Nothing to sync. Set avatar/background in this app visuals and/or load background info first.");
-        }
-
-        var visuals = await MaterializePushVisualsAsync(push, warnings, cancellationToken);
         var artist = await _libraryRepository.GetArtistAsync(push.ArtistId, cancellationToken);
         if (artist is null || string.IsNullOrWhiteSpace(artist.Name))
         {
             return NotFound("Artist not found.");
         }
+
+        if (!HasPushPayload(push))
+        {
+            warnings.Add("Nothing to sync yet. Configure visuals and/or background info, then push again.");
+            await TryRegisterManualPushAsync(push, artist.Name, warnings, cancellationToken);
+            return Ok(new
+            {
+                noOp = true,
+                updated = false,
+                avatarUpdated = false,
+                backgroundUpdated = false,
+                bioUpdated = false,
+                warnings
+            });
+        }
+
+        var visuals = await MaterializePushVisualsAsync(push, warnings, cancellationToken);
 
         await PersistArtistVisualPathsAsync(push.ArtistId, visuals, cancellationToken);
         var auth = await PlatformAuthService.LoadAsync();
@@ -262,18 +273,16 @@ public class SpotifyCacheApiController : ControllerBase
         var includeAvatar = request.IncludeAvatar ?? true;
         var includeBackground = request.IncludeBackground ?? true;
         var includeBio = request.IncludeBio == true;
-        var managedArtistVisualRoot = Path.GetFullPath(Path.Join(
+        var managedVisualRoot = Path.GetFullPath(Path.Join(
             AppDataPaths.GetDataRoot(_environment),
             LibraryArtistImagesPath,
-            SpotifySource,
-            "artists",
-            artistId.ToString()));
+            SpotifySource));
 
         var avatarVisual = includeAvatar
-            ? ResolveVisualSelection(managedArtistVisualRoot, request.AvatarImagePath, request.AvatarVisualUrl)
+            ? ResolveVisualSelection(managedVisualRoot, request.AvatarImagePath, request.AvatarVisualUrl)
             : null;
         var backgroundVisual = includeBackground
-            ? ResolveVisualSelection(managedArtistVisualRoot, request.BackgroundImagePath, request.BackgroundVisualUrl)
+            ? ResolveVisualSelection(managedVisualRoot, request.BackgroundImagePath, request.BackgroundVisualUrl)
             : null;
         var biography = includeBio ? (request.Biography ?? string.Empty).Trim() : null;
 
@@ -282,7 +291,7 @@ public class SpotifyCacheApiController : ControllerBase
             && string.IsNullOrWhiteSpace(request.AvatarImagePath)
             && string.IsNullOrWhiteSpace(request.AvatarVisualUrl))
         {
-            avatarVisual = ResolveVisualSelection(managedArtistVisualRoot, request.ImagePath, null);
+            avatarVisual = ResolveVisualSelection(managedVisualRoot, request.ImagePath, null);
         }
 
         return (

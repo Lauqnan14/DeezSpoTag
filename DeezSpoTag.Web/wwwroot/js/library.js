@@ -3315,10 +3315,10 @@ function initSpotifyCacheControls(artistId) {
         }
 
         if (missingItems.length > 0) {
-            showToast(`${missingItems.join(' and ')} not set in app visuals, pushing remaining items only.`, true);
+            showToast(`${missingItems.join(' and ')} not set in app visuals, pushing remaining items only.`, false);
         }
         if (selection.includeBio && !selection.biography) {
-            showToast('Background info is empty, so background info push will be skipped.', true);
+            showToast('Background info is empty, so background info push will be skipped.', false);
         }
 
         const { includeAvatar, includeBackground, includeBio, payload } = buildSpotifySyncPayload(
@@ -3326,10 +3326,6 @@ function initSpotifyCacheControls(artistId) {
             targetSelect.value,
             selection
         );
-        if (!includeAvatar && !includeBackground && !includeBio) {
-            showToast('Nothing to sync. Set avatar/background in Visuals or enable Background Info.', true);
-            return;
-        }
 
         try {
             console.debug('[push] payload', payload);
@@ -4340,19 +4336,14 @@ function getSpotifySyncMissingItems(selection) {
 
 function validateSpotifySyncSelection(selection, missingItems) {
     if (!selection.requestedAvatar && !selection.requestedBackground && !selection.includeBio) {
-        showToast('Select at least one item to sync.', true);
-        return false;
-    }
-    if (missingItems.length > 0 && !selection.includeBio) {
-        showToast(`Set ${missingItems.join(' and ')} in Visuals first, then push again.`, true);
-        return false;
+        showToast('No sync items selected. Sending a no-op push request.', false);
     }
     return true;
 }
 
 function buildSpotifySyncPayload(artistId, target, selection) {
-    const includeAvatar = selection.requestedAvatar && !!selection.avatarImagePath;
-    const includeBackground = selection.requestedBackground && !!selection.backgroundImagePath;
+    const includeAvatar = selection.requestedAvatar && (!!selection.avatarImagePath || !!selection.avatarVisualUrl);
+    const includeBackground = selection.requestedBackground && (!!selection.backgroundImagePath || !!selection.backgroundVisualUrl);
     return {
         includeAvatar,
         includeBackground,
@@ -4374,7 +4365,20 @@ function buildSpotifySyncPayload(artistId, target, selection) {
 
 function showSpotifySyncWarnings(result) {
     const warnings = Array.isArray(result?.warnings) ? result.warnings.filter(Boolean) : [];
-    warnings.forEach((warning) => showToast(warning, true));
+    warnings.forEach((warning) => showToast(warning, !isSpotifySyncInfoWarning(warning)));
+}
+
+function isSpotifySyncInfoWarning(warning) {
+    const value = String(warning || '').trim().toLowerCase();
+    if (!value) {
+        return true;
+    }
+
+    return value.includes('nothing to sync yet')
+        || value.includes('not set in app visuals')
+        || value.includes('background info is empty')
+        || value.includes('pushing remaining items only')
+        || value.includes('used remote source where possible');
 }
 
 function showSpotifySyncUpdateResult(result) {
@@ -4385,6 +4389,8 @@ function showSpotifySyncUpdateResult(result) {
 
     if (updatedParts.length > 0) {
         showToast(`Server updated: ${updatedParts.join(' + ')}.`, false);
+    } else if (result?.noOp) {
+        showToast('No sync changes were available yet. Update visuals/background info and push again when ready.', false);
     } else {
         showToast('Push incomplete — no items were updated on the media server.', true);
     }
