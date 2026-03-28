@@ -201,27 +201,6 @@ Use this if you want to validate the wrapper image locally before publishing it.
 - Restrict external access by network policy, IP rules, and/or upstream auth.
 - Use strong credentials and rotate tokens regularly.
 
-## License Recommendation
-
-Based on a folders-only scan of the reference projects under `References/` (no archive extraction), including AGPL-3.0, GPL-3.0, GPL-2.0-or-later, MIT, Apache-2.0, and ISC sources, the safest project license for DeezSpoTag is:
-
-- **GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`)**
-
-Why this is the safest fit:
-
-- It remains compatible with the strong-copyleft references already used during development.
-- It covers network/server use (relevant for self-hosted web deployments).
-- Permissive dependencies (MIT/Apache/ISC) remain compatible.
-- GPL-2.0-or-later references (such as Picard) can be consumed in AGPLv3-compatible form.
-
-Important note:
-
-- Some reference folders do not expose a clear root license in-place (for example: `cinemagoria-main`, `meloday`, `Quality Scaanner/whatsmybitrate-main`).
-- Treat unlicensed material as **all rights reserved** unless explicit permission is granted.
-- If direct code was copied from any unlicensed source, replace it or obtain written permission before release.
-
----
-
 ## Acknowledgements
 
 DeezSpoTag was informed by ideas, architecture patterns, and implementation approaches from many open-source projects. Thanks to the creators and maintainers behind these references:
