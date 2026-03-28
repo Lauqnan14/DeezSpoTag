@@ -99,6 +99,13 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         {
             await HandleCancellationAsync(next.QueueUuid, payload);
         }
+        catch (OperationCanceledException ex) when (!itemToken.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+        {
+            var timeoutException = new TimeoutException(
+                $"{EngineName} operation timed out or was canceled by an external provider.",
+                ex);
+            await HandleFailureAsync(next, payload, timeoutException, stoppingToken);
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             await HandleFailureAsync(next, payload, ex, stoppingToken);

@@ -228,6 +228,21 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         {
             await HandleCanceledQueueItemAsync(next.QueueUuid);
         }
+        catch (OperationCanceledException ex) when (!itemToken.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+        {
+            var timeoutException = new TimeoutException(
+                $"{EngineName} operation timed out or was canceled by an external provider.",
+                ex);
+            _logger.LogError(timeoutException, "Apple download timed out for {QueueUuid}", next.QueueUuid);
+            if (queueContext != null)
+            {
+                await HandleDownloadFailureAsync(next, queueContext.Payload, timeoutException.Message, stoppingToken, CancellationToken.None);
+                return;
+            }
+
+            await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, timeoutException.Message, cancellationToken: CancellationToken.None);
+            ScheduleRetryIfEligible(next.QueueUuid, timeoutException.Message);
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Apple download failed for {QueueUuid}", next.QueueUuid);

@@ -132,9 +132,13 @@ public sealed class EngineFallbackCoordinator
             TrySetIsrc(payloadForSerialization, resolvedIsrc);
         }
 
+        var matchedIndex = FindStepIndex(planSteps, request.CurrentEngine, request.Quality);
+        // Reconcile persisted auto-index with current engine/quality:
+        // some engines can internally step down quality before bubbling a failure.
+        // If that happened, prefer the furthest progressed index so fallback does not revisit already-attempted steps.
         var currentIndex = request.AutoIndex >= 0
-            ? request.AutoIndex
-            : FindStepIndex(planSteps, request.CurrentEngine, request.Quality);
+            ? Math.Max(request.AutoIndex, matchedIndex)
+            : matchedIndex;
         var nextIndex = currentIndex + 1;
         var userCountry = settings.DeezerCountry;
         var resolutionRequest = new SourceResolutionRequest(
@@ -165,9 +169,8 @@ public sealed class EngineFallbackCoordinator
             var resolvedUrl = await ResolveSourceUrlAsync(
                 resolutionRequest with { Engine = step.Source },
                 cancellationToken);
-            var allowIsrcOnly = string.Equals(step.Source, QobuzEngine, StringComparison.OrdinalIgnoreCase)
-                && !string.IsNullOrWhiteSpace(resolvedIsrc);
-            if (string.IsNullOrWhiteSpace(resolvedUrl) && !allowIsrcOnly)
+            var canAdvanceWithoutResolvedUrl = CanAdvanceWithoutResolvedUrl(step.Source, request, resolvedIsrc);
+            if (string.IsNullOrWhiteSpace(resolvedUrl) && !canAdvanceWithoutResolvedUrl)
             {
                 _activityLog.Warn($"Fallback skip: {request.QueueUuid} -> {step.Source} (no resolvable URL)");
                 nextIndex++;
@@ -421,6 +424,39 @@ public sealed class EngineFallbackCoordinator
             QobuzEngine => url.Contains("qobuz.com", StringComparison.OrdinalIgnoreCase),
             _ => false
         };
+    }
+
+    private static bool CanAdvanceWithoutResolvedUrl(
+        string engine,
+        FallbackAdvanceRequest request,
+        string? resolvedIsrc)
+    {
+        if (string.IsNullOrWhiteSpace(engine))
+        {
+            return false;
+        }
+
+        if (string.Equals(engine, QobuzEngine, StringComparison.OrdinalIgnoreCase))
+        {
+            // Qobuz path can proceed with ISRC-only resolution.
+            return !string.IsNullOrWhiteSpace(resolvedIsrc);
+        }
+
+        if (string.Equals(engine, "amazon", StringComparison.OrdinalIgnoreCase))
+        {
+            // Amazon path can resolve from Spotify ID when URL is missing.
+            return !string.IsNullOrWhiteSpace(request.SpotifyId);
+        }
+
+        if (string.Equals(engine, "tidal", StringComparison.OrdinalIgnoreCase))
+        {
+            // Tidal path can resolve from Spotify ID or from metadata in-engine.
+            return !string.IsNullOrWhiteSpace(request.SpotifyId)
+                || !string.IsNullOrWhiteSpace(resolvedIsrc)
+                || (!string.IsNullOrWhiteSpace(request.Title) && !string.IsNullOrWhiteSpace(request.Artist));
+        }
+
+        return false;
     }
 
     private static string? NormalizeDeezerTrackId(string? value)
