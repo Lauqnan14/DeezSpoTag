@@ -7,6 +7,7 @@ globalThis.DeezSpoTag = globalThis.DeezSpoTag || {};
 
 DeezSpoTag.Download = {
     APPLE_NOTIFICATION_MODE_KEY: 'apple-download-notification-mode',
+    csrfUnsafeMethods: new Set(['POST', 'PUT', 'PATCH', 'DELETE']),
     // Download queue management
     queue: {
         items: [],
@@ -73,6 +74,35 @@ DeezSpoTag.Download = {
             const bitrate = Number(form.querySelector('[name="bitrate"]')?.value || 0) || 0;
             this.addToQueue(url, bitrate);
         });
+    },
+    readCsrfRequestToken() {
+        const tokenMeta = document.querySelector('meta[name="deezspotag-csrf-token"]');
+        const token = tokenMeta?.getAttribute('content');
+        return typeof token === 'string' ? token.trim() : '';
+    },
+    buildCsrfFetchOptions(options) {
+        const requestOptions = options ? { ...options } : {};
+        const method = String(requestOptions.method || 'GET').toUpperCase();
+        if (!this.csrfUnsafeMethods.has(method)) {
+            return requestOptions;
+        }
+
+        const headers = new Headers(requestOptions.headers || {});
+        if (!headers.has('X-CSRF-TOKEN')) {
+            const csrfToken = this.readCsrfRequestToken();
+            if (csrfToken) {
+                headers.set('X-CSRF-TOKEN', csrfToken);
+            }
+        }
+
+        requestOptions.headers = headers;
+        if (!requestOptions.credentials) {
+            requestOptions.credentials = 'same-origin';
+        }
+        return requestOptions;
+    },
+    apiFetch(resource, options) {
+        return globalThis.fetch(resource, this.buildCsrfFetchOptions(options));
     },
     normalizeDestinationContentMode(contentMode) {
         const normalized = String(contentMode || '').trim().toLowerCase();
@@ -224,7 +254,7 @@ DeezSpoTag.Download = {
             if (normalizedMode !== 'all') {
                 params.set('contentType', normalizedMode);
             }
-            const response = await fetch(`/api/library/folders?${params.toString()}`);
+            const response = await this.apiFetch(`/api/library/folders?${params.toString()}`);
             if (!response.ok) {
                 throw new Error(`Failed to load folders (${response.status})`);
             }
@@ -249,7 +279,7 @@ DeezSpoTag.Download = {
 
         this.settingsPromise = (async () => {
             try {
-                const response = await fetch('/api/settings');
+                const response = await this.apiFetch('/api/settings');
                 if (!response.ok) {
                     throw new Error(`Failed to load settings (${response.status})`);
                 }
@@ -521,7 +551,7 @@ DeezSpoTag.Download = {
         logLabel,
         alreadyQueuedReturnsSuccess = false
     }) {
-        const response = await fetch(endpoint, {
+        const response = await this.apiFetch(endpoint, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -832,7 +862,7 @@ DeezSpoTag.Download = {
         const metadata = options?.metadata && typeof options.metadata === 'object'
             ? options.metadata
             : null;
-        const response = await fetch('/api/download/intent', {
+        const response = await this.apiFetch('/api/download/intent', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -1055,7 +1085,7 @@ DeezSpoTag.Download = {
         options,
         allowQualityUpgrade
     }) {
-        const response = await fetch('/api/apple/videos/download', {
+        const response = await this.apiFetch('/api/apple/videos/download', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -1157,7 +1187,7 @@ DeezSpoTag.Download = {
         };
     },
     async postDownloadIntent(payload) {
-        const response = await fetch('/api/download/intent', {
+        const response = await this.apiFetch('/api/download/intent', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -1257,7 +1287,7 @@ DeezSpoTag.Download = {
         return deezerMetadata;
     },
     async postDeezerAddWithSettings({ url, bitrate, destinationId, metadata }) {
-        return fetch('/api/deezer/download/add-with-settings', {
+        return this.apiFetch('/api/deezer/download/add-with-settings', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -1680,7 +1710,7 @@ DeezSpoTag.Download = {
     // Parse URL to get information
     async parseUrl(url) {
         try {
-            const response = await fetch('/api/deezer/download/parse', {
+            const response = await this.apiFetch('/api/deezer/download/parse', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1702,7 +1732,7 @@ DeezSpoTag.Download = {
     // Get download queue status
     async getQueueStatus() {
         try {
-            const response = await fetch(`/api/deezer/download/queue/status?_=${Date.now()}`, {
+            const response = await this.apiFetch(`/api/deezer/download/queue/status?_=${Date.now()}`, {
                 cache: 'no-store',
                 headers: {
                     'X-Requested-With': 'XMLHttpRequest'
@@ -1723,7 +1753,7 @@ DeezSpoTag.Download = {
     // Get active downloads
     async getActiveDownloads() {
         try {
-            const response = await fetch(`/api/deezer/download/queue/active?_=${Date.now()}`, {
+            const response = await this.apiFetch(`/api/deezer/download/queue/active?_=${Date.now()}`, {
                 cache: 'no-store',
                 headers: {
                     'X-Requested-With': 'XMLHttpRequest'
@@ -1875,7 +1905,7 @@ DeezSpoTag.Download = {
     // Cancel download
     async cancelDownload(downloadId) {
         try {
-            const response = await fetch(`/api/deezer/download/cancel/${downloadId}`, {
+            const response = await this.apiFetch(`/api/deezer/download/cancel/${downloadId}`, {
                 method: 'POST'
             });
 
