@@ -1304,6 +1304,7 @@ public class PlexApiClient
         string playlistName,
         IReadOnlyList<string> ratingKeys,
         string? existingTitlePrefix = null,
+        bool appendMissingOnly = false,
         CancellationToken cancellationToken = default)
     {
         if (ratingKeys.Count == 0)
@@ -1335,8 +1336,27 @@ public class PlexApiClient
             return playlistId;
         }
 
-        await ClearPlaylistItemsAsync(serverUrl, token, playlistId, cancellationToken);
-        await AddPlaylistItemsAsync(serverUrl, token, machineIdentifier, playlistId, ratingKeys, cancellationToken);
+        if (appendMissingOnly)
+        {
+            var existingItems = await GetPlaylistItemsAsync(serverUrl, token, playlistId, cancellationToken);
+            var existingRatingKeys = existingItems
+                .Select(item => item.Id)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var pending = ratingKeys
+                .Where(value => !string.IsNullOrWhiteSpace(value) && !existingRatingKeys.Contains(value))
+                .ToList();
+            if (pending.Count > 0)
+            {
+                await AddPlaylistItemsAsync(serverUrl, token, machineIdentifier, playlistId, pending, cancellationToken);
+            }
+        }
+        else
+        {
+            await ClearPlaylistItemsAsync(serverUrl, token, playlistId, cancellationToken);
+            await AddPlaylistItemsAsync(serverUrl, token, machineIdentifier, playlistId, ratingKeys, cancellationToken);
+        }
+
         return playlistId;
     }
 

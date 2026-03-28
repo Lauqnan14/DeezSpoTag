@@ -10,6 +10,7 @@ public class JellyfinApiClient
 {
     private const string EmbyTokenHeader = "X-Emby-Token";
     private const string OverviewProperty = "Overview";
+    private const int JellyfinTimeTicksPerMillisecond = 10_000;
     private readonly HttpClient _httpClient;
 
     public JellyfinApiClient(HttpClient httpClient)
@@ -181,6 +182,263 @@ public class JellyfinApiClient
         return payload?.Items?.FirstOrDefault()?.Id;
     }
 
+    public async Task<List<JellyfinAudioTrack>> SearchTracksAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string searchTerm,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(userId)
+            || string.IsNullOrWhiteSpace(searchTerm))
+        {
+            return new List<JellyfinAudioTrack>();
+        }
+
+        var query = new StringBuilder();
+        query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
+        query.Append("?Recursive=true");
+        query.Append("&IncludeItemTypes=Audio");
+        query.Append("&Fields=RunTimeTicks,AlbumArtists,Artists");
+        query.Append("&Limit=25");
+        query.Append($"&SearchTerm={Uri.EscapeDataString(searchTerm)}");
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new List<JellyfinAudioTrack>();
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
+        var items = payload?.Items ?? new List<JellyfinMediaItem>();
+        return items
+            .Where(static item => !string.IsNullOrWhiteSpace(item.Id))
+            .Select(static item => new JellyfinAudioTrack(
+                item.Id!,
+                item.Name ?? string.Empty,
+                ResolveArtistText(item),
+                item.RunTimeTicks.HasValue
+                    ? (int?)Math.Min(item.RunTimeTicks.Value / JellyfinTimeTicksPerMillisecond, int.MaxValue)
+                    : null))
+            .ToList();
+    }
+
+    public async Task<string?> FindPlaylistIdByNameAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string playlistName,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(userId)
+            || string.IsNullOrWhiteSpace(playlistName))
+        {
+            return null;
+        }
+
+        var query = new StringBuilder();
+        query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
+        query.Append("?Recursive=true");
+        query.Append("&IncludeItemTypes=Playlist");
+        query.Append("&Limit=200");
+        query.Append($"&SearchTerm={Uri.EscapeDataString(playlistName)}");
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
+        var items = payload?.Items ?? new List<JellyfinMediaItem>();
+        var exactMatch = items.FirstOrDefault(item =>
+            !string.IsNullOrWhiteSpace(item.Id)
+            && string.Equals(item.Name, playlistName, StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(exactMatch?.Id))
+        {
+            return exactMatch.Id;
+        }
+
+        return items.FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item.Id))?.Id;
+    }
+
+    public async Task<string?> CreatePlaylistAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string playlistName,
+        IReadOnlyCollection<string> itemIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(userId)
+            || string.IsNullOrWhiteSpace(playlistName))
+        {
+            return null;
+        }
+
+        var ids = string.Join(",",
+            itemIds
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .Select(static value => value.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase));
+
+        var query = new StringBuilder();
+        query.Append("/Playlists");
+        query.Append($"?UserId={Uri.EscapeDataString(userId)}");
+        query.Append($"&Name={Uri.EscapeDataString(playlistName)}");
+        query.Append("&MediaType=Audio");
+        if (!string.IsNullOrWhiteSpace(ids))
+        {
+            query.Append($"&Ids={Uri.EscapeDataString(ids)}");
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl(serverUrl, query.ToString()));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!string.IsNullOrWhiteSpace(json))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("Id", out var idElement)
+                    && idElement.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(idElement.GetString()))
+                {
+                    return idElement.GetString();
+                }
+            }
+            catch (JsonException)
+            {
+                // Ignore parse failures and fallback to list lookup.
+            }
+        }
+
+        return await FindPlaylistIdByNameAsync(serverUrl, apiKey, userId, playlistName, cancellationToken);
+    }
+
+    public async Task<List<JellyfinPlaylistEntry>> GetPlaylistEntriesAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string playlistId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(userId)
+            || string.IsNullOrWhiteSpace(playlistId))
+        {
+            return new List<JellyfinPlaylistEntry>();
+        }
+
+        var query = $"/Playlists/{Uri.EscapeDataString(playlistId)}/Items?UserId={Uri.EscapeDataString(userId)}";
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new List<JellyfinPlaylistEntry>();
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
+        var items = payload?.Items ?? new List<JellyfinMediaItem>();
+        return items
+            .Where(static item => !string.IsNullOrWhiteSpace(item.Id))
+            .Select(static item => new JellyfinPlaylistEntry(
+                item.Id!,
+                string.IsNullOrWhiteSpace(item.PlaylistItemId) ? item.Id! : item.PlaylistItemId!))
+            .ToList();
+    }
+
+    public async Task<bool> AddPlaylistItemsAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string playlistId,
+        IReadOnlyCollection<string> itemIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(userId)
+            || string.IsNullOrWhiteSpace(playlistId))
+        {
+            return false;
+        }
+
+        var ids = string.Join(",",
+            itemIds
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .Select(static value => value.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(ids))
+        {
+            return true;
+        }
+
+        var query = new StringBuilder();
+        query.Append($"/Playlists/{Uri.EscapeDataString(playlistId)}/Items");
+        query.Append($"?UserId={Uri.EscapeDataString(userId)}");
+        query.Append($"&Ids={Uri.EscapeDataString(ids)}");
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl(serverUrl, query.ToString()));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        return response.IsSuccessStatusCode;
+    }
+
+    public async Task<bool> RemovePlaylistEntriesAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string playlistId,
+        IReadOnlyCollection<string> entryIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(userId)
+            || string.IsNullOrWhiteSpace(playlistId))
+        {
+            return false;
+        }
+
+        var ids = string.Join(",",
+            entryIds
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .Select(static value => value.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase));
+
+        var query = new StringBuilder();
+        query.Append($"/Playlists/{Uri.EscapeDataString(playlistId)}/Items");
+        query.Append($"?UserId={Uri.EscapeDataString(userId)}");
+        if (!string.IsNullOrWhiteSpace(ids))
+        {
+            query.Append($"&EntryIds={Uri.EscapeDataString(ids)}");
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Delete, BuildUrl(serverUrl, query.ToString()));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        return response.IsSuccessStatusCode;
+    }
+
     public async Task<bool> UpdateArtistImageAsync(string serverUrl, string apiKey, string artistId, string imagePath, CancellationToken cancellationToken = default)
     {
         if (!CanUploadArtistAsset(serverUrl, apiKey, artistId, imagePath))
@@ -323,6 +581,21 @@ public class JellyfinApiClient
         return $"{baseUrl.TrimEnd('/')}{path}";
     }
 
+    private static string ResolveArtistText(JellyfinMediaItem item)
+    {
+        if (item.AlbumArtists is { Count: > 0 })
+        {
+            return string.Join(", ", item.AlbumArtists.Where(static value => !string.IsNullOrWhiteSpace(value)));
+        }
+
+        if (item.Artists is { Count: > 0 })
+        {
+            return string.Join(", ", item.Artists.Where(static value => !string.IsNullOrWhiteSpace(value)));
+        }
+
+        return string.Empty;
+    }
+
     private static string GetImageContentType(string path)
     {
         var extension = Path.GetExtension(path).ToLowerInvariant();
@@ -415,4 +688,26 @@ public sealed class JellyfinMediaItem
 
     [JsonPropertyName("ImageTags")]
     public Dictionary<string, string>? ImageTags { get; set; }
+
+    [JsonPropertyName("RunTimeTicks")]
+    public long? RunTimeTicks { get; set; }
+
+    [JsonPropertyName("Artists")]
+    public List<string>? Artists { get; set; }
+
+    [JsonPropertyName("AlbumArtists")]
+    public List<string>? AlbumArtists { get; set; }
+
+    [JsonPropertyName("PlaylistItemId")]
+    public string? PlaylistItemId { get; set; }
 }
+
+public sealed record JellyfinAudioTrack(
+    string Id,
+    string Name,
+    string Artist,
+    int? DurationMs);
+
+public sealed record JellyfinPlaylistEntry(
+    string ItemId,
+    string PlaylistEntryId);

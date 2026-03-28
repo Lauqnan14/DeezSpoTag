@@ -105,6 +105,7 @@ public sealed class LibraryRepository
         string? Service,
         string? PreferredEngine,
         string? DownloadVariantMode,
+        string? SyncMode,
         string? AutotagProfile,
         bool UpdateArtwork,
         bool ReuseSavedArtwork,
@@ -3393,13 +3394,13 @@ LIMIT @limit;";
 
     private static async Task<PlaylistWatchPreferenceDto> ReadPlaylistWatchPreferenceAsync(SqliteDataReader reader, CancellationToken cancellationToken)
     {
-        var updateArtwork = await reader.IsDBNullAsync(7, cancellationToken) || reader.GetInt32(7) != 0;
-        var reuseSavedArtwork = !await reader.IsDBNullAsync(8, cancellationToken) && reader.GetInt32(8) != 0;
-        var created = await reader.IsDBNullAsync(9, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(9));
-        var updated = await reader.IsDBNullAsync(10, cancellationToken) ? created : ParseDateTimeOffsetInvariant(reader.GetString(10));
-        var rulesJson = await reader.IsDBNullAsync(11, cancellationToken) ? null : reader.GetString(11);
+        var updateArtwork = await reader.IsDBNullAsync(8, cancellationToken) || reader.GetInt32(8) != 0;
+        var reuseSavedArtwork = !await reader.IsDBNullAsync(9, cancellationToken) && reader.GetInt32(9) != 0;
+        var created = await reader.IsDBNullAsync(10, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(10));
+        var updated = await reader.IsDBNullAsync(11, cancellationToken) ? created : ParseDateTimeOffsetInvariant(reader.GetString(11));
+        var rulesJson = await reader.IsDBNullAsync(12, cancellationToken) ? null : reader.GetString(12);
         var rules = rulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackRoutingRule>>(rulesJson);
-        var ignoreRulesJson = await reader.IsDBNullAsync(12, cancellationToken) ? null : reader.GetString(12);
+        var ignoreRulesJson = await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetString(13);
         var ignoreRules = ignoreRulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackBlockRule>>(ignoreRulesJson);
         return new PlaylistWatchPreferenceDto(
             reader.GetString(0),
@@ -3409,6 +3410,7 @@ LIMIT @limit;";
             await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
             await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
             await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetString(6),
+            await reader.IsDBNullAsync(7, cancellationToken) ? null : reader.GetString(7),
             updateArtwork,
             reuseSavedArtwork,
             created,
@@ -4658,6 +4660,7 @@ SELECT source,
        service,
        preferred_engine,
        download_variant_mode,
+       sync_mode,
        autotag_profile,
        update_artwork,
        reuse_saved_artwork,
@@ -4691,6 +4694,7 @@ SELECT source,
        service,
        preferred_engine,
        download_variant_mode,
+       sync_mode,
        autotag_profile,
        update_artwork,
        reuse_saved_artwork,
@@ -4719,13 +4723,14 @@ LIMIT 1;";
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-INSERT INTO playlist_watch_preferences (source, source_id, destination_folder_id, service, preferred_engine, download_variant_mode, autotag_profile, update_artwork, reuse_saved_artwork, routing_rules_json, ignore_rules_json)
-        VALUES (@source, @sourceId, @destinationFolderId, @service, @preferredEngine, @downloadVariantMode, @autotagProfile, @updateArtwork, @reuseSavedArtwork, @routingRulesJson, @ignoreRulesJson)
+INSERT INTO playlist_watch_preferences (source, source_id, destination_folder_id, service, preferred_engine, download_variant_mode, sync_mode, autotag_profile, update_artwork, reuse_saved_artwork, routing_rules_json, ignore_rules_json)
+        VALUES (@source, @sourceId, @destinationFolderId, @service, @preferredEngine, @downloadVariantMode, @syncMode, @autotagProfile, @updateArtwork, @reuseSavedArtwork, @routingRulesJson, @ignoreRulesJson)
 ON CONFLICT(source, source_id) DO UPDATE SET
     destination_folder_id = excluded.destination_folder_id,
     service = excluded.service,
     preferred_engine = excluded.preferred_engine,
     download_variant_mode = excluded.download_variant_mode,
+    sync_mode = excluded.sync_mode,
     autotag_profile = excluded.autotag_profile,
     update_artwork = excluded.update_artwork,
     reuse_saved_artwork = excluded.reuse_saved_artwork,
@@ -4739,6 +4744,7 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         command.Parameters.AddWithValue("service", (object?)input.Service ?? DBNull.Value);
         command.Parameters.AddWithValue("preferredEngine", (object?)input.PreferredEngine ?? DBNull.Value);
         command.Parameters.AddWithValue("downloadVariantMode", (object?)input.DownloadVariantMode ?? DBNull.Value);
+        command.Parameters.AddWithValue("syncMode", (object?)input.SyncMode ?? DBNull.Value);
         command.Parameters.AddWithValue("autotagProfile", (object?)input.AutotagProfile ?? DBNull.Value);
         command.Parameters.AddWithValue("updateArtwork", input.UpdateArtwork ? 1 : 0);
         command.Parameters.AddWithValue("reuseSavedArtwork", input.ReuseSavedArtwork ? 1 : 0);
