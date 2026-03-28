@@ -1181,11 +1181,22 @@ static async Task EnforceIdentityStartupStateAsync(IServiceProvider services, IC
         }
     }
 
+    var seedFromEnvironment = !string.IsNullOrWhiteSpace(bootstrapUserFromEnvironment)
+        && !string.IsNullOrWhiteSpace(bootstrapPassFromEnvironment);
+    var resetPasswordOnSeed = loginConfig.ResetPasswordOnSeed || seedFromEnvironment;
+
     if (seedEnabled &&
         !string.IsNullOrWhiteSpace(seedUsername) &&
         !string.IsNullOrWhiteSpace(seedPassword))
     {
-        await EnsureSeedUserAsync(userManager, logger, loginConfig, isSingleUserMode, seedUsername, seedPassword);
+        await EnsureSeedUserAsync(
+            userManager,
+            logger,
+            loginConfig,
+            isSingleUserMode,
+            seedUsername,
+            seedPassword,
+            resetPasswordOnSeed);
     }
 
     await RemoveDuplicatePasswordClaimsAsync(userManager, logger, seedUsername, seedPassword);
@@ -1211,7 +1222,8 @@ static async Task EnsureSeedUserAsync(
     LoginConfiguration loginConfig,
     bool isSingleUserMode,
     string seedUsername,
-    string seedPassword)
+    string seedPassword,
+    bool resetPasswordOnSeed)
 {
     var normalizedSeedUserName = userManager.NormalizeName(seedUsername);
     var existing = await userManager.Users
@@ -1219,6 +1231,11 @@ static async Task EnsureSeedUserAsync(
         .FirstOrDefaultAsync(u => u.NormalizedUserName == normalizedSeedUserName);
     if (existing != null)
     {
+        if (resetPasswordOnSeed)
+        {
+            await EnsureSeedUserPasswordAsync(userManager, logger, existing, seedPassword);
+        }
+
         return;
     }
 
@@ -1246,6 +1263,56 @@ static async Task EnsureSeedUserAsync(
     await userManager.SetLockoutEndDateAsync(existing, null);
     await userManager.ResetAccessFailedCountAsync(existing);
     logger.LogInformation("Bootstrap user '{User}' created and lockout cleared.", seedUsername);
+}
+
+static async Task EnsureSeedUserPasswordAsync(
+    UserManager<AppUser> userManager,
+    ILogger logger,
+    AppUser user,
+    string seedPassword)
+{
+    if (string.IsNullOrWhiteSpace(seedPassword))
+    {
+        return;
+    }
+
+    var hasPassword = await userManager.HasPasswordAsync(user);
+    if (hasPassword && await userManager.CheckPasswordAsync(user, seedPassword))
+    {
+        await userManager.SetLockoutEnabledAsync(user, true);
+        await userManager.SetLockoutEndDateAsync(user, null);
+        await userManager.ResetAccessFailedCountAsync(user);
+        return;
+    }
+
+    IdentityResult result;
+    if (hasPassword)
+    {
+        var resetToken = await userManager.GeneratePasswordResetTokenAsync(user);
+        result = await userManager.ResetPasswordAsync(user, resetToken, seedPassword);
+    }
+    else
+    {
+        result = await userManager.AddPasswordAsync(user, seedPassword);
+    }
+
+    if (!result.Succeeded)
+    {
+        logger.LogWarning(
+            "Bootstrap credential password reset failed for '{UserName}' ({UserId}): {Errors}",
+            user.UserName ?? UnknownValue,
+            user.Id,
+            string.Join("; ", result.Errors.Select(e => e.Description)));
+        return;
+    }
+
+    await userManager.SetLockoutEnabledAsync(user, true);
+    await userManager.SetLockoutEndDateAsync(user, null);
+    await userManager.ResetAccessFailedCountAsync(user);
+    logger.LogInformation(
+        "Bootstrap credential password enforced for '{UserName}' ({UserId}).",
+        user.UserName ?? UnknownValue,
+        user.Id);
 }
 
 static async Task RemoveDuplicatePasswordClaimsAsync(

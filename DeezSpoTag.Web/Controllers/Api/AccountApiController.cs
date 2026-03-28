@@ -1,3 +1,4 @@
+using DeezSpoTag.Web.Configuration;
 using DeezSpoTag.Web.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
@@ -6,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Linq;
 using System.Security.Claims;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 using System.IO;
 using System.Threading.Tasks;
 using SixLabors.ImageSharp;
@@ -25,16 +27,19 @@ public sealed class AccountApiController : ControllerBase
     private readonly UserManager<AppUser> _userManager;
     private readonly SignInManager<AppUser> _signInManager;
     private readonly IConfiguration _configuration;
+    private readonly LoginConfiguration _loginConfiguration;
     private readonly bool _isSingleUserMode;
 
     public AccountApiController(
         UserManager<AppUser> userManager,
         SignInManager<AppUser> signInManager,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        IOptions<LoginConfiguration> loginConfiguration)
     {
         _userManager = userManager;
         _signInManager = signInManager;
         _configuration = configuration;
+        _loginConfiguration = loginConfiguration.Value;
         _isSingleUserMode = configuration.GetValue<bool>("IsSingleUser", true);
     }
 
@@ -167,6 +172,14 @@ public sealed class AccountApiController : ControllerBase
             return BadRequest(new { message = "All fields are required." });
         }
 
+        if (IsDefaultBootstrapPassword(request.NewPassword))
+        {
+            return BadRequest(new
+            {
+                message = "Choose a password different from the default/bootstrap password."
+            });
+        }
+
         return await ExecuteWithUpdatedPasswordAsync(
             request.CurrentPassword,
             request.NewPassword,
@@ -196,6 +209,14 @@ public sealed class AccountApiController : ControllerBase
             string.IsNullOrWhiteSpace(request.NewPassword))
         {
             return BadRequest(new { message = "All fields are required." });
+        }
+
+        if (IsDefaultBootstrapPassword(request.NewPassword))
+        {
+            return BadRequest(new
+            {
+                message = "Choose a password different from the default/bootstrap password."
+            });
         }
 
         return await ExecuteWithUpdatedPasswordAsync(
@@ -317,6 +338,25 @@ public sealed class AccountApiController : ControllerBase
         await DeleteNonCanonicalAccountsAsync(user.Id);
         await _signInManager.RefreshSignInAsync(user);
         return Ok(new { message });
+    }
+
+    private bool IsDefaultBootstrapPassword(string passwordCandidate)
+    {
+        if (string.IsNullOrWhiteSpace(passwordCandidate))
+        {
+            return false;
+        }
+
+        var configuredPassword = _loginConfiguration.Password?.Trim();
+        if (!string.IsNullOrWhiteSpace(configuredPassword)
+            && string.Equals(passwordCandidate, configuredPassword, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var bootstrapPassword = Environment.GetEnvironmentVariable("DEEZSPOTAG_BOOTSTRAP_PASS")?.Trim();
+        return !string.IsNullOrWhiteSpace(bootstrapPassword)
+            && string.Equals(passwordCandidate, bootstrapPassword, StringComparison.Ordinal);
     }
 
     public sealed class ChangeCredentialsRequest
