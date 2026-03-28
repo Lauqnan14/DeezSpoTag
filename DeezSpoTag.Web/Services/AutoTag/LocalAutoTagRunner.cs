@@ -744,6 +744,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             : settings.AppleMusic.Storefront;
         var maxResolution = settings.Video?.AppleMusicVideoMaxResolution ?? 2160;
         var artist = track.Artists.FirstOrDefault();
+        var baseFileName = BuildAlbumArtworkBaseFileName(track, settings);
         var appleCatalogTrackId = await ResolveAppleCatalogTrackIdForExtrasAsync(track, storefront, token);
 
         try
@@ -757,6 +758,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     Title = track.Title,
                     Artist = artist,
                     Album = track.Album,
+                    BaseFileName = baseFileName,
                     Storefront = storefront,
                     MaxResolution = maxResolution,
                     OutputDir = outputDir,
@@ -774,6 +776,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                         Title = track.Title,
                         Artist = artist,
                         Album = track.Album,
+                        BaseFileName = baseFileName,
                         Storefront = storefront,
                         MaxResolution = maxResolution,
                         OutputDir = outputDir,
@@ -889,6 +892,28 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         var id = idEl.GetString();
         return string.IsNullOrWhiteSpace(id) ? null : id;
+    }
+
+    private static string BuildAlbumArtworkBaseFileName(AutoTagTrack track, DeezSpoTagSettings settings)
+    {
+        var albumTitle = string.IsNullOrWhiteSpace(track.Album) ? "Unknown Album" : track.Album.Trim();
+        var primaryArtist = track.Artists.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(primaryArtist))
+        {
+            primaryArtist = "Unknown Artist";
+        }
+
+        var albumModel = new DeezSpoTag.Core.Models.Album(albumTitle)
+        {
+            MainArtist = new DeezSpoTag.Core.Models.Artist(primaryArtist),
+            Artists = new List<string> { primaryArtist }
+        };
+
+        return PathTemplateGenerator.GenerateAlbumName(
+            settings.CoverImageTemplate,
+            albumModel,
+            settings,
+            playlist: null);
     }
 
     private static Track BuildSpotifyLyricsLookupTrack(AutoTagTrack track)

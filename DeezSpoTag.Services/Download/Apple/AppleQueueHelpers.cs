@@ -44,6 +44,7 @@ public static class AppleQueueHelpers
         public string? Title { get; init; }
         public string? Artist { get; init; }
         public string? Album { get; init; }
+        public string? BaseFileName { get; init; }
         public string Storefront { get; init; } = "us";
         public int MaxResolution { get; init; }
         public string OutputDir { get; init; } = string.Empty;
@@ -1158,7 +1159,7 @@ public static class AppleQueueHelpers
 
         Directory.CreateDirectory(outputDir);
         var anySaved = false;
-        var baseName = BuildAnimatedArtworkBaseName(request.Artist, request.Album);
+        var baseName = BuildAnimatedArtworkBaseName(request.BaseFileName, request.Artist, request.Album);
 
         if (!string.IsNullOrWhiteSpace(motion.SquareUrl))
         {
@@ -1243,6 +1244,8 @@ public static class AppleQueueHelpers
             appleCatalog,
             httpClientFactory,
             songId,
+            artist,
+            album,
             storefront,
             maxResolution,
             logger,
@@ -1354,6 +1357,8 @@ public static class AppleQueueHelpers
         AppleMusicCatalogService appleCatalog,
         IHttpClientFactory httpClientFactory,
         string songId,
+        string? expectedArtist,
+        string? expectedAlbum,
         string storefront,
         int maxResolution,
         ILogger logger,
@@ -1362,6 +1367,8 @@ public static class AppleQueueHelpers
         var albumId = await TryResolveAnimatedArtworkAlbumIdAsync(
             appleCatalog,
             songId,
+            expectedArtist,
+            expectedAlbum,
             storefront,
             logger,
             cancellationToken);
@@ -1394,6 +1401,8 @@ public static class AppleQueueHelpers
     private static async Task<string?> TryResolveAnimatedArtworkAlbumIdAsync(
         AppleMusicCatalogService appleCatalog,
         string songId,
+        string? expectedArtist,
+        string? expectedAlbum,
         string storefront,
         ILogger logger,
         CancellationToken cancellationToken)
@@ -1401,7 +1410,7 @@ public static class AppleQueueHelpers
         try
         {
             using var songDoc = await appleCatalog.GetSongAsync(songId, storefront, DefaultLanguage, cancellationToken);
-            return ExtractAlbumId(songDoc.RootElement);
+            return ExtractAlbumId(songDoc.RootElement, expectedArtist, expectedAlbum);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1445,10 +1454,6 @@ public static class AppleQueueHelpers
         CancellationToken cancellationToken)
     {
         var termParts = new List<string>();
-        if (!string.IsNullOrWhiteSpace(title))
-        {
-            termParts.Add(title);
-        }
         if (!string.IsNullOrWhiteSpace(artist))
         {
             termParts.Add(artist);
@@ -1457,6 +1462,10 @@ public static class AppleQueueHelpers
         {
             termParts.Add(album);
         }
+        else if (!string.IsNullOrWhiteSpace(title))
+        {
+            termParts.Add(title);
+        }
 
         if (termParts.Count == 0)
         {
@@ -1464,6 +1473,9 @@ public static class AppleQueueHelpers
         }
 
         var term = string.Join(" ", termParts);
+        var normalizedArtist = string.IsNullOrWhiteSpace(artist) ? string.Empty : NormalizeLookupToken(artist);
+        var normalizedAlbum = string.IsNullOrWhiteSpace(album) ? string.Empty : NormalizeLookupToken(album);
+        var normalizedTitle = string.IsNullOrWhiteSpace(title) ? string.Empty : NormalizeLookupToken(title);
         try
         {
             using var doc = await appleCatalog.SearchAsync(
@@ -1473,7 +1485,12 @@ public static class AppleQueueHelpers
                 language: DefaultLanguage,
                 cancellationToken,
                 new AppleMusicCatalogService.AppleSearchOptions(TypesOverride: "songs,albums"));
-            if (TryExtractIdFromSearch(doc.RootElement, "songs", out var songId))
+            if (TryExtractBestMatchingSongId(
+                    doc.RootElement,
+                    normalizedArtist,
+                    normalizedAlbum,
+                    normalizedTitle,
+                    out var songId))
             {
                 return songId;
             }
@@ -1484,6 +1501,134 @@ public static class AppleQueueHelpers
         }
 
         return null;
+    }
+
+    private static bool TryExtractBestMatchingSongId(
+        JsonElement root,
+        string normalizedArtist,
+        string normalizedAlbum,
+        string normalizedTitle,
+        out string? songId)
+    {
+        songId = null;
+        if (!root.TryGetProperty(ResultsKey, out var results) || results.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (!results.TryGetProperty("songs", out var songsObj) || songsObj.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (!songsObj.TryGetProperty("data", out var songs) || songs.ValueKind != JsonValueKind.Array || songs.GetArrayLength() == 0)
+        {
+            return false;
+        }
+
+        var hasArtistConstraint = !string.IsNullOrWhiteSpace(normalizedArtist);
+        var hasAlbumConstraint = !string.IsNullOrWhiteSpace(normalizedAlbum);
+        var hasTitleConstraint = !string.IsNullOrWhiteSpace(normalizedTitle);
+
+        var bestScore = int.MinValue;
+        string? bestId = null;
+        foreach (var entry in songs.EnumerateArray())
+        {
+            if (!entry.TryGetProperty("id", out var idEl) || idEl.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var candidateId = idEl.GetString();
+            if (string.IsNullOrWhiteSpace(candidateId))
+            {
+                continue;
+            }
+
+            var (artistRaw, albumRaw, titleRaw) = ReadSongCandidateFields(entry);
+            var candidateArtist = string.IsNullOrWhiteSpace(artistRaw) ? string.Empty : NormalizeLookupToken(artistRaw);
+            var candidateAlbum = string.IsNullOrWhiteSpace(albumRaw) ? string.Empty : NormalizeLookupToken(albumRaw);
+            var candidateTitle = string.IsNullOrWhiteSpace(titleRaw) ? string.Empty : NormalizeLookupToken(titleRaw);
+
+            var artistMatches = !hasArtistConstraint || IsLikelySameArtist(normalizedArtist, candidateArtist);
+            var albumMatches = !hasAlbumConstraint || IsLikelySameArtist(normalizedAlbum, candidateAlbum);
+            var titleMatches = !hasTitleConstraint || IsLikelySameArtist(normalizedTitle, candidateTitle);
+
+            if (hasArtistConstraint && !artistMatches)
+            {
+                continue;
+            }
+
+            if (hasAlbumConstraint && !albumMatches)
+            {
+                continue;
+            }
+
+            if (!hasAlbumConstraint && hasTitleConstraint && !titleMatches)
+            {
+                continue;
+            }
+
+            var score = 0;
+            if (artistMatches)
+            {
+                score += 100;
+            }
+            if (albumMatches)
+            {
+                score += 100;
+            }
+            if (titleMatches)
+            {
+                score += 50;
+            }
+
+            if (string.Equals(normalizedArtist, candidateArtist, StringComparison.Ordinal))
+            {
+                score += 30;
+            }
+            if (string.Equals(normalizedAlbum, candidateAlbum, StringComparison.Ordinal))
+            {
+                score += 30;
+            }
+            if (string.Equals(normalizedTitle, candidateTitle, StringComparison.Ordinal))
+            {
+                score += 20;
+            }
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestId = candidateId;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(bestId))
+        {
+            return false;
+        }
+
+        songId = bestId;
+        return true;
+    }
+
+    private static (string? Artist, string? Album, string? Title) ReadSongCandidateFields(JsonElement entry)
+    {
+        if (!entry.TryGetProperty(AttributesKey, out var attrs) || attrs.ValueKind != JsonValueKind.Object)
+        {
+            return (null, null, null);
+        }
+
+        var artist = attrs.TryGetProperty(ArtistNameKey, out var artistEl) && artistEl.ValueKind == JsonValueKind.String
+            ? artistEl.GetString()
+            : null;
+        var album = attrs.TryGetProperty("albumName", out var albumEl) && albumEl.ValueKind == JsonValueKind.String
+            ? albumEl.GetString()
+            : null;
+        var title = attrs.TryGetProperty("name", out var titleEl) && titleEl.ValueKind == JsonValueKind.String
+            ? titleEl.GetString()
+            : null;
+        return (artist, album, title);
     }
 
     private static bool IsCollectionType(string? collectionType)
@@ -1532,7 +1677,7 @@ public static class AppleQueueHelpers
         }
     }
 
-    private static string? ExtractAlbumId(JsonElement root)
+    private static string? ExtractAlbumId(JsonElement root, string? expectedArtist, string? expectedAlbum)
     {
         if (!root.TryGetProperty("data", out var dataArr) || dataArr.ValueKind != JsonValueKind.Array || dataArr.GetArrayLength() == 0)
         {
@@ -1540,6 +1685,11 @@ public static class AppleQueueHelpers
         }
 
         var data = dataArr[0];
+        if (!IsSongMetadataCompatible(data, expectedArtist, expectedAlbum))
+        {
+            return null;
+        }
+
         if (!data.TryGetProperty("relationships", out var rel) || rel.ValueKind != JsonValueKind.Object)
         {
             return null;
@@ -1556,6 +1706,46 @@ public static class AppleQueueHelpers
         }
 
         return dataEl[0].TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
+    }
+
+    private static bool IsSongMetadataCompatible(JsonElement songData, string? expectedArtist, string? expectedAlbum)
+    {
+        var normalizedExpectedArtist = string.IsNullOrWhiteSpace(expectedArtist)
+            ? string.Empty
+            : NormalizeLookupToken(expectedArtist);
+        var normalizedExpectedAlbum = string.IsNullOrWhiteSpace(expectedAlbum)
+            ? string.Empty
+            : NormalizeLookupToken(expectedAlbum);
+        if (string.IsNullOrWhiteSpace(normalizedExpectedArtist) && string.IsNullOrWhiteSpace(normalizedExpectedAlbum))
+        {
+            return true;
+        }
+
+        if (!songData.TryGetProperty(AttributesKey, out var attrs) || attrs.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        var candidateArtist = attrs.TryGetProperty(ArtistNameKey, out var artistEl) && artistEl.ValueKind == JsonValueKind.String
+            ? NormalizeLookupToken(artistEl.GetString() ?? string.Empty)
+            : string.Empty;
+        var candidateAlbum = attrs.TryGetProperty("albumName", out var albumEl) && albumEl.ValueKind == JsonValueKind.String
+            ? NormalizeLookupToken(albumEl.GetString() ?? string.Empty)
+            : string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(normalizedExpectedArtist)
+            && !IsLikelySameArtist(normalizedExpectedArtist, candidateArtist))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(normalizedExpectedAlbum)
+            && !IsLikelySameArtist(normalizedExpectedAlbum, candidateAlbum))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private static string? ExtractFirstTrackId(JsonElement root)
@@ -1886,34 +2076,6 @@ public static class AppleQueueHelpers
         return int.TryParse(parts[1], out height);
     }
 
-    private static bool TryExtractIdFromSearch(JsonElement root, string bucket, out string? id)
-    {
-        id = null;
-        if (!root.TryGetProperty(ResultsKey, out var results) || results.ValueKind != JsonValueKind.Object)
-        {
-            return false;
-        }
-
-        if (!results.TryGetProperty(bucket, out var dataObj) || dataObj.ValueKind != JsonValueKind.Object)
-        {
-            return false;
-        }
-
-        if (!dataObj.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array || data.GetArrayLength() == 0)
-        {
-            return false;
-        }
-
-        var entry = data[0];
-        if (!entry.TryGetProperty("id", out var idEl) || idEl.ValueKind != JsonValueKind.String)
-        {
-            return false;
-        }
-
-        id = idEl.GetString();
-        return !string.IsNullOrWhiteSpace(id);
-    }
-
     private static async Task<bool> RunFfmpegCopyAsync(
         string inputUrl,
         string outputPath,
@@ -1959,8 +2121,13 @@ public static class AppleQueueHelpers
     private static string? ResolveExecutablePath(IEnumerable<string> candidates)
         => DownloadFileUtilities.ResolveExecutablePath(candidates, "DEEZSPOTAG_FFMPEG_PATH");
 
-    private static string BuildAnimatedArtworkBaseName(string? artist, string? album)
+    private static string BuildAnimatedArtworkBaseName(string? baseFileName, string? artist, string? album)
     {
+        if (!string.IsNullOrWhiteSpace(baseFileName))
+        {
+            return SanitizeFileNameSegment(baseFileName.Trim());
+        }
+
         var safeArtist = SanitizeFileNameSegment(string.IsNullOrWhiteSpace(artist) ? "Unknown Artist" : artist.Trim());
         var safeAlbum = SanitizeFileNameSegment(string.IsNullOrWhiteSpace(album) ? "Unknown Album" : album.Trim());
         return $"{safeArtist} - {safeAlbum}";

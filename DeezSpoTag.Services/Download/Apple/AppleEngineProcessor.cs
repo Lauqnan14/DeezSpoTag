@@ -1132,14 +1132,15 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
     {
         try
         {
+            var coverName = context.PathProcessor.GenerateAlbumName(
+                context.Work.Settings.CoverImageTemplate,
+                context.Work.Context.Track.Album,
+                context.Work.Settings,
+                context.Work.Context.Track.Playlist);
+
             if (context.Work.AllowPlaylistCover && context.Work.Settings.SaveArtwork && !string.IsNullOrWhiteSpace(context.CoverUrl))
             {
                 Directory.CreateDirectory(context.Work.CoverPath);
-                var coverName = context.PathProcessor.GenerateAlbumName(
-                    context.Work.Settings.CoverImageTemplate,
-                    context.Work.Context.Track.Album,
-                    context.Work.Settings,
-                    context.Work.Context.Track.Playlist);
                 await SavePrefetchCoverArtworkAsync(
                     new CoverSaveContext(
                         context.Work.Settings,
@@ -1155,7 +1156,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
             if (context.Work.AllowPlaylistCover && context.Work.Settings.SaveAnimatedArtwork && context.AppleCatalog != null && context.HttpClientFactory != null)
             {
-                await SaveAnimatedPrefetchArtworkAsync(context.Work.Settings, context.Work.Payload, context.Work.CoverPath, context.AppleCatalog, context.HttpClientFactory, token);
+                await SaveAnimatedPrefetchArtworkAsync(context.Work.Settings, context.Work.Payload, context.Work.CoverPath, coverName, context.AppleCatalog, context.HttpClientFactory, token);
             }
 
             if (context.Work.Settings.SaveArtworkArtist)
@@ -1276,6 +1277,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         DeezSpoTagSettings settings,
         AppleQueueItem payload,
         string coverPath,
+        string coverName,
         AppleMusicCatalogService appleCatalog,
         IHttpClientFactory httpClientFactory,
         CancellationToken token)
@@ -1291,6 +1293,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                 Title = payload.Title,
                 Artist = payload.Artist,
                 Album = payload.Album,
+                BaseFileName = coverName,
                 Storefront = storefront,
                 MaxResolution = settings.Video.AppleMusicVideoMaxResolution,
                 OutputDir = coverPath,
