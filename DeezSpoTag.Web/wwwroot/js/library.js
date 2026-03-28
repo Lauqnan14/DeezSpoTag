@@ -10827,6 +10827,27 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     downloadModeSection.appendChild(downloadModeSelect);
     panel.appendChild(downloadModeSection);
 
+    const syncModeSection = document.createElement('div');
+    syncModeSection.className = 'playlist-settings-section';
+    const syncModeTitle = document.createElement('div');
+    syncModeTitle.className = 'playlist-settings-section-title';
+    syncModeTitle.textContent = 'Sync behavior';
+    const syncModeSelect = document.createElement('select');
+    syncModeSelect.className = 'form-select ps-sync-mode-select';
+    syncModeSelect.id = `ps-sync-mode-${source}-${sourceId}`;
+    [
+        { value: 'mirror', label: 'Mirror source playlist (replace tracks)' },
+        { value: 'append', label: 'Append new tracks only (keep existing)' }
+    ].forEach(({ value, label }) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        syncModeSelect.appendChild(option);
+    });
+    syncModeSection.appendChild(syncModeTitle);
+    syncModeSection.appendChild(syncModeSelect);
+    panel.appendChild(syncModeSection);
+
     const artworkSection = document.createElement('div');
     artworkSection.className = 'playlist-settings-section';
     const artworkTitle = document.createElement('div');
@@ -11206,12 +11227,14 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         const serviceSel = panel.querySelector('.ps-service-select');
         const engineSel = panel.querySelector('.ps-engine-select');
         const downloadModeSel = panel.querySelector('.ps-download-mode-select');
+        const syncModeSel = panel.querySelector('.ps-sync-mode-select');
         const artworkToggle = panel.querySelector('.ps-update-artwork');
         const artworkReuseToggle = panel.querySelector('.ps-reuse-saved-artwork');
         if (folderSel && stored.folderId) folderSel.value = String(stored.folderId);
         if (serviceSel && stored.service) serviceSel.value = stored.service;
         if (engineSel) engineSel.value = stored.preferredEngine || '';
         if (downloadModeSel) downloadModeSel.value = stored.downloadVariantMode || 'standard';
+        if (syncModeSel) syncModeSel.value = stored.syncMode || 'mirror';
         if (artworkToggle) artworkToggle.checked = stored.updateArtwork !== false;
         if (artworkReuseToggle) artworkReuseToggle.checked = stored.reuseSavedArtwork === true;
     }, 0);
@@ -11234,12 +11257,14 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     const serviceSel = panel.querySelector('.ps-service-select');
     const engineSel = panel.querySelector('.ps-engine-select');
     const downloadModeSel = panel.querySelector('.ps-download-mode-select');
+    const syncModeSel = panel.querySelector('.ps-sync-mode-select');
     const artworkToggle = panel.querySelector('.ps-update-artwork');
     const artworkReuseToggle = panel.querySelector('.ps-reuse-saved-artwork');
     const folderId = folderSel?.value ? Number(folderSel.value) : null;
     const service = serviceSel?.value || 'plex';
     const preferredEngine = engineSel?.value || '';
     const downloadVariantMode = downloadModeSel?.value || 'standard';
+    const syncMode = syncModeSel?.value || 'mirror';
     const updateArtwork = artworkToggle?.checked !== false;
     const reuseSavedArtwork = artworkReuseToggle?.checked === true;
 
@@ -11294,7 +11319,7 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         await fetchJson('/api/library/playlists/preferences', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify([{ source, sourceId, folderId, service, preferredEngine, downloadVariantMode, updateArtwork, reuseSavedArtwork }])
+            body: JSON.stringify([{ source, sourceId, folderId, service, preferredEngine, downloadVariantMode, syncMode, updateArtwork, reuseSavedArtwork }])
         });
         // Save routing rules
         await fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/routing-rules`, {
@@ -11309,7 +11334,7 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
             body: JSON.stringify(blockRules)
         });
         // Update local prefs
-        const updatedPref = { folderId: folderId ? String(folderId) : '', service, preferredEngine, downloadVariantMode, updateArtwork, reuseSavedArtwork };
+        const updatedPref = { folderId: folderId ? String(folderId) : '', service, preferredEngine, downloadVariantMode, syncMode, updateArtwork, reuseSavedArtwork };
         storePlaylistPreference(source, sourceId, updatedPref);
         if (playlistPrefs && typeof playlistPrefs === 'object') {
             playlistPrefs[prefKey] = {
@@ -11365,6 +11390,7 @@ async function hydratePlaylistPreferences() {
             service: item.service || merged[key]?.service || 'plex',
             preferredEngine: item.preferredEngine || merged[key]?.preferredEngine || '',
             downloadVariantMode: item.downloadVariantMode || merged[key]?.downloadVariantMode || 'standard',
+            syncMode: item.syncMode || merged[key]?.syncMode || 'mirror',
             updateArtwork: item.updateArtwork !== false,
             reuseSavedArtwork: item.reuseSavedArtwork === true
         };
@@ -11388,6 +11414,7 @@ async function persistPlaylistPreference(container, source, sourceId) {
     const service = serviceSelect?.value || 'plex';
     const preferredEngine = engineSelect?.value || '';
     const downloadVariantMode = downloadModeSelect?.value || 'standard';
+    const syncMode = container.querySelector(`[data-playlist-sync-mode="${source}"][data-playlist-id="${sourceId}"]`)?.value || 'mirror';
     const updateArtwork = container.querySelector(`[data-playlist-update-artwork="${source}"][data-playlist-id="${sourceId}"]`)?.checked !== false;
     const reuseSavedArtwork = container.querySelector(`[data-playlist-reuse-artwork="${source}"][data-playlist-id="${sourceId}"]`)?.checked === true;
     storePlaylistPreference(source, sourceId, {
@@ -11395,6 +11422,7 @@ async function persistPlaylistPreference(container, source, sourceId) {
         service,
         preferredEngine,
         downloadVariantMode,
+        syncMode,
         updateArtwork,
         reuseSavedArtwork
     });
@@ -11405,6 +11433,7 @@ async function persistPlaylistPreference(container, source, sourceId) {
         service,
         preferredEngine,
         downloadVariantMode,
+        syncMode,
         updateArtwork,
         reuseSavedArtwork
     }];

@@ -148,6 +148,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         string? Service,
         string? PreferredEngine,
         string? DownloadVariantMode,
+        string? SyncMode,
         string? AutotagProfile,
         bool? UpdateArtwork,
         bool? ReuseSavedArtwork,
@@ -226,6 +227,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 string.IsNullOrWhiteSpace(request.Service) ? null : request.Service.Trim(),
                 string.IsNullOrWhiteSpace(request.PreferredEngine) ? null : request.PreferredEngine.Trim().ToLowerInvariant(),
                 string.IsNullOrWhiteSpace(request.DownloadVariantMode) ? existing?.DownloadVariantMode : request.DownloadVariantMode.Trim().ToLowerInvariant(),
+                string.IsNullOrWhiteSpace(request.SyncMode) ? existing?.SyncMode : request.SyncMode.Trim().ToLowerInvariant(),
                 string.IsNullOrWhiteSpace(request.AutotagProfile) ? null : request.AutotagProfile.Trim(),
                 request.UpdateArtwork ?? existing?.UpdateArtwork ?? true,
                 request.ReuseSavedArtwork ?? existing?.ReuseSavedArtwork ?? false,
@@ -297,15 +299,15 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return NotFound("Playlist watchlist entry not found.");
         }
 
-        if (!string.Equals(item.Source, "spotify", StringComparison.OrdinalIgnoreCase))
-        {
-            return BadRequest("Only Spotify playlist sync is supported right now.");
-        }
-
         var preference = await _repository.GetPlaylistWatchPreferenceAsync(item.Source, item.SourceId, cancellationToken);
-        var result = await _playlistSyncService.SyncSpotifyPlaylistAsync(
+        var candidates = await _playlistWatchService.GetPlaylistTrackCandidatesAsync(
+            item.Source,
+            item.SourceId,
+            cancellationToken);
+        var result = await _playlistSyncService.SyncPlaylistAsync(
             item,
             preference,
+            candidates,
             force: true,
             cancellationToken);
         return Ok(new { result.Success, result.Message, result.PlaylistId, result.SyncedTracks });
@@ -556,6 +558,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 existing?.Service,
                 existing?.PreferredEngine,
                 existing?.DownloadVariantMode,
+                existing?.SyncMode,
                 existing?.AutotagProfile,
                 existing?.UpdateArtwork ?? true,
                 existing?.ReuseSavedArtwork ?? false,

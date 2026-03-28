@@ -481,6 +481,7 @@ public sealed record PlaylistWatchPreferenceDto(
     string? Service,
     string? PreferredEngine,
     string? DownloadVariantMode,
+    string? SyncMode,
     string? AutotagProfile,
     bool UpdateArtwork,
     bool ReuseSavedArtwork,

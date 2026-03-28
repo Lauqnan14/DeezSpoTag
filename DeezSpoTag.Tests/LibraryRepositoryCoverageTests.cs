@@ -353,6 +353,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                 Service: "spotify",
                 PreferredEngine: "native",
                 DownloadVariantMode: "default",
+                SyncMode: "mirror",
                 AutotagProfile: "profile-1",
                 UpdateArtwork: true,
                 ReuseSavedArtwork: false,
@@ -366,6 +367,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                 }));
         Assert.NotNull(pref);
         Assert.Equal("profile-1", pref!.AutotagProfile);
+        Assert.Equal("mirror", pref.SyncMode);
         Assert.Single(pref.RoutingRules!);
         Assert.Single(pref.IgnoreRules!);
 

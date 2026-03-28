@@ -707,9 +707,10 @@ public sealed class PlaylistWatchService
             var field = (rule.ConditionField ?? string.Empty).Trim();
             var op = (rule.ConditionOperator ?? string.Empty).Trim();
             var value = (rule.ConditionValue ?? string.Empty).Trim();
+            var isExplicitRule = string.Equals(field, "explicit", StringComparison.OrdinalIgnoreCase);
             if (string.IsNullOrWhiteSpace(field)
                 || string.IsNullOrWhiteSpace(op)
-                || string.IsNullOrWhiteSpace(value))
+                || (!isExplicitRule && string.IsNullOrWhiteSpace(value)))
             {
                 continue;
             }
@@ -767,9 +768,10 @@ public sealed class PlaylistWatchService
         var field = (rule.ConditionField ?? string.Empty).Trim();
         var op = (rule.ConditionOperator ?? string.Empty).Trim();
         var value = (rule.ConditionValue ?? string.Empty).Trim();
+        var isExplicitRule = string.Equals(field, "explicit", StringComparison.OrdinalIgnoreCase);
         if (string.IsNullOrWhiteSpace(field)
             || string.IsNullOrWhiteSpace(op)
-            || string.IsNullOrWhiteSpace(value))
+            || (!isExplicitRule && string.IsNullOrWhiteSpace(value)))
         {
             return;
         }
