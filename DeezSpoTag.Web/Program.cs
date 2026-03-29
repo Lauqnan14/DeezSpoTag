@@ -1202,9 +1202,9 @@ static async Task EnforceIdentityStartupStateAsync(IServiceProvider services, IC
         }
     }
 
-    var seedFromEnvironment = !string.IsNullOrWhiteSpace(bootstrapUserFromEnvironment)
-        && !string.IsNullOrWhiteSpace(bootstrapPassFromEnvironment);
-    var resetPasswordOnSeed = loginConfig.ResetPasswordOnSeed || seedFromEnvironment;
+    // Do not auto-reset passwords just because bootstrap env vars are present.
+    // Bootstrap creds are for first-run seeding; explicit reset must be opt-in.
+    var resetPasswordOnSeed = loginConfig.ResetPasswordOnSeed;
 
     if (seedEnabled &&
         !string.IsNullOrWhiteSpace(seedUsername) &&
