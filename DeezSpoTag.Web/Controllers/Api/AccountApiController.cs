@@ -172,11 +172,18 @@ public sealed class AccountApiController : ControllerBase
             return BadRequest(new { message = "All fields are required." });
         }
 
-        if (IsDefaultBootstrapPassword(request.NewPassword))
+        var user = await _userManager.GetUserAsync(User);
+        if (user == null)
+        {
+            return Unauthorized();
+        }
+
+        if (await RequiresFirstLoginCredentialChangeAsync(user) &&
+            IsDefaultBootstrapPassword(request.NewPassword))
         {
             return BadRequest(new
             {
-                message = "Choose a password different from the default/bootstrap password."
+                message = "During first login setup, choose a password different from the default/bootstrap password."
             });
         }
 
@@ -189,13 +196,6 @@ public sealed class AccountApiController : ControllerBase
                 if (usernameUpdateError != null)
                 {
                     return usernameUpdateError;
-                }
-
-                var claims = await _userManager.GetClaimsAsync(user);
-                var mustChangeClaims = claims.Where(c => c.Type == MustChangePasswordClaim).ToList();
-                foreach (var mustChange in mustChangeClaims)
-                {
-                    await _userManager.RemoveClaimAsync(user, mustChange);
                 }
 
                 return await CompleteCredentialsUpdateAsync(user, "Credentials updated.");
@@ -211,11 +211,18 @@ public sealed class AccountApiController : ControllerBase
             return BadRequest(new { message = "All fields are required." });
         }
 
-        if (IsDefaultBootstrapPassword(request.NewPassword))
+        var user = await _userManager.GetUserAsync(User);
+        if (user == null)
+        {
+            return Unauthorized();
+        }
+
+        if (await RequiresFirstLoginCredentialChangeAsync(user) &&
+            IsDefaultBootstrapPassword(request.NewPassword))
         {
             return BadRequest(new
             {
-                message = "Choose a password different from the default/bootstrap password."
+                message = "During first login setup, choose a password different from the default/bootstrap password."
             });
         }
 
@@ -335,9 +342,30 @@ public sealed class AccountApiController : ControllerBase
 
     private async Task<IActionResult> CompleteCredentialsUpdateAsync(AppUser user, string message)
     {
+        await ClearMustChangePasswordClaimsAsync(user);
         await DeleteNonCanonicalAccountsAsync(user.Id);
         await _signInManager.RefreshSignInAsync(user);
         return Ok(new { message });
+    }
+
+    private async Task<bool> RequiresFirstLoginCredentialChangeAsync(AppUser user)
+    {
+        var claims = await _userManager.GetClaimsAsync(user);
+        return claims.Any(c =>
+            c.Type == MustChangePasswordClaim &&
+            string.Equals(c.Value, "true", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task ClearMustChangePasswordClaimsAsync(AppUser user)
+    {
+        var claims = await _userManager.GetClaimsAsync(user);
+        var mustChangeClaims = claims
+            .Where(c => c.Type == MustChangePasswordClaim)
+            .ToList();
+        foreach (var mustChangeClaim in mustChangeClaims)
+        {
+            await _userManager.RemoveClaimAsync(user, mustChangeClaim);
+        }
     }
 
     private bool IsDefaultBootstrapPassword(string passwordCandidate)

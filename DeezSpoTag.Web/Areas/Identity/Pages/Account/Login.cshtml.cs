@@ -95,6 +95,16 @@ public class LoginModel : PageModel
         var attemptedUser = await _userManager.FindByNameAsync(attemptedUsername);
         if (attemptedUser == null)
         {
+            if (_isSingleUserMode)
+            {
+                var fallbackUser = await TryResolveSingleUserFallbackAsync(attemptedUsername, Input.Password);
+                if (fallbackUser != null)
+                {
+                    await _signInManager.SignInAsync(fallbackUser, isPersistent: true);
+                    return await CompleteSuccessfulSignInAsync(fallbackUser);
+                }
+            }
+
             ModelState.AddModelError(string.Empty, "No account found for that username.");
             return Page();
         }
@@ -110,7 +120,7 @@ public class LoginModel : PageModel
             attemptedUser = await _userManager.FindByNameAsync(attemptedUsername) ?? attemptedUser;
 
             if (_isSingleUserMode &&
-                await TryRecoverSingleUserPolicyLockoutAsync(attemptedUser, Input.Password))
+                await TryRecoverSingleUserLockoutAsync(attemptedUser, Input.Password))
             {
                 return await CompleteSuccessfulSignInAsync(attemptedUser);
             }
@@ -200,17 +210,10 @@ public class LoginModel : PageModel
         return LocalRedirect(ReturnUrl);
     }
 
-    private async Task<bool> TryRecoverSingleUserPolicyLockoutAsync(AppUser attemptedUser, string password)
+    private async Task<bool> TryRecoverSingleUserLockoutAsync(AppUser attemptedUser, string password)
     {
-        if (!IsPolicyLockout(attemptedUser))
+        if (string.IsNullOrWhiteSpace(password))
         {
-            return false;
-        }
-
-        var preferredUserName = ResolvePreferredSingleUserName();
-        if (!string.IsNullOrWhiteSpace(preferredUserName))
-        {
-            // Explicit canonical user configured: do not bypass lockout policy.
             return false;
         }
 
@@ -220,15 +223,61 @@ public class LoginModel : PageModel
             return false;
         }
 
+        var lockoutEnd = attemptedUser.LockoutEnd;
+        if (!attemptedUser.LockoutEnabled || !lockoutEnd.HasValue || lockoutEnd.Value <= DateTimeOffset.UtcNow)
+        {
+            return false;
+        }
+
         await _userManager.SetLockoutEnabledAsync(attemptedUser, true);
         await _userManager.SetLockoutEndDateAsync(attemptedUser, null);
         await _userManager.ResetAccessFailedCountAsync(attemptedUser);
         await _signInManager.SignInAsync(attemptedUser, isPersistent: true);
         _logger.LogInformation(
-            "Recovered single-user policy lockout for {UserName} ({UserId}) after valid credential check.",
+            "Recovered single-user lockout for {UserName} ({UserId}) after valid credential check.",
             attemptedUser.UserName ?? UnknownValue,
             attemptedUser.Id);
         return true;
+    }
+
+    private async Task<AppUser?> TryResolveSingleUserFallbackAsync(string attemptedUsername, string password)
+    {
+        if (string.IsNullOrWhiteSpace(password))
+        {
+            return null;
+        }
+
+        var users = await _userManager.Users
+            .OrderBy(u => u.Id)
+            .ToListAsync();
+        if (users.Count != 1)
+        {
+            return null;
+        }
+
+        var user = users[0];
+        if (!await _userManager.CheckPasswordAsync(user, password))
+        {
+            return null;
+        }
+
+        if (user.LockoutEnabled && user.LockoutEnd.HasValue && user.LockoutEnd.Value > DateTimeOffset.UtcNow)
+        {
+            await _userManager.SetLockoutEnabledAsync(user, true);
+            await _userManager.SetLockoutEndDateAsync(user, null);
+            await _userManager.ResetAccessFailedCountAsync(user);
+            _logger.LogInformation(
+                "Single-user fallback unlocked canonical account {UserName} ({UserId}) during login recovery.",
+                user.UserName ?? UnknownValue,
+                user.Id);
+        }
+
+        _logger.LogInformation(
+            "Single-user fallback matched canonical account {UserName} ({UserId}) for attempted username {AttemptedUser}.",
+            user.UserName ?? UnknownValue,
+            user.Id,
+            string.IsNullOrWhiteSpace(attemptedUsername) ? UnknownValue : attemptedUsername);
+        return user;
     }
 
     private async Task EnsureSingleUserSeededAsync()
@@ -418,16 +467,6 @@ public class LoginModel : PageModel
         }
 
         return user.LockoutEnd.Value <= DateTimeOffset.UtcNow;
-    }
-
-    private static bool IsPolicyLockout(AppUser user)
-    {
-        if (!user.LockoutEnabled || !user.LockoutEnd.HasValue)
-        {
-            return false;
-        }
-
-        return user.LockoutEnd.Value > DateTimeOffset.UtcNow.AddYears(50);
     }
 
     private string? ResolvePreferredSingleUserName()
