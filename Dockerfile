@@ -37,7 +37,16 @@ LABEL org.opencontainers.image.source="https://github.com/Lauqnan14/DeezSpoTag" 
       org.opencontainers.image.title="deezspotag"
 
 RUN apt-get update -o Acquire::Retries=5 \
-    && apt-get install -y --no-install-recommends openssl ca-certificates python3 python3-venv python3-pip curl aria2 ffmpeg unzip \
+    && apt-get install -y --no-install-recommends \
+       openssl \
+       ca-certificates \
+       python3 \
+       python3-venv \
+       python3-pip \
+       curl \
+       aria2 \
+       ffmpeg \
+       unzip \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl --fail --show-error --silent --location \
        --retry 8 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 120 \
@@ -69,11 +78,10 @@ RUN apt-get update -o Acquire::Retries=5 \
          if [ -n "$mp4decrypt_path" ]; then install -m 0755 "$mp4decrypt_path" /usr/local/bin/mp4decrypt; fi; \
          rm -rf /tmp/bento4 /tmp/bento4.zip; \
        else \
-         echo "Skipping mp4decrypt install for TARGETARCH=${TARGETARCH:-unknown}: no official Bento4 arm64 binary URL is configured."; \
+         echo "Skipping mp4decrypt install for TARGETARCH=${TARGETARCH:-unknown}:" \
+              "no official Bento4 arm64 binary URL is configured."; \
        fi \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN cat > /etc/ssl/openssl-legacy.cnf <<'EOF'
+    && cat > /etc/ssl/openssl-legacy.cnf <<'EOF'
 openssl_conf = openssl_init
 
 .include /etc/ssl/openssl.cnf
@@ -91,6 +99,7 @@ activate = 1
 [legacy_sect]
 activate = 1
 EOF
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
@@ -100,7 +109,8 @@ RUN set -eux; \
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip; \
     /opt/venv/bin/pip install --no-cache-dir "numpy>=1.25" pyyaml six; \
     if ! /opt/venv/bin/pip install --no-cache-dir "${ESSENTIA_TF_PACKAGE}"; then \
-      echo "essentia-tensorflow install failed for TARGETARCH=${TARGETARCH:-unknown}; continuing with degraded analysis support."; \
+      echo "essentia-tensorflow install failed for TARGETARCH=${TARGETARCH:-unknown};" \
+           "continuing with degraded analysis support."; \
     fi
 
 ENV OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf \
@@ -133,11 +143,9 @@ COPY --from=apple-wrapper-build /out/apple-wrapper-runv2 /app/Tools/AppleMusicWr
 RUN set -eux; \
     python3 -m venv /opt/shazam-venv; \
     /opt/shazam-venv/bin/pip install --no-cache-dir --upgrade pip; \
-    /opt/shazam-venv/bin/pip install --no-cache-dir -r /app/Tools/shazam_port/requirements-modern.txt
-
-# Ensure all analyzer models required by current code paths are present.
-# Bundled repository models are used first; any missing files are fetched at build time.
-RUN set -eux; \
+    /opt/shazam-venv/bin/pip install --no-cache-dir -r /app/Tools/shazam_port/requirements-modern.txt; \
+    # Ensure all analyzer models required by current code paths are present. \
+    # Bundled repository models are used first; any missing files are fetched at build time. \
     models_dir=/app/Tools/models; \
     mkdir -p "${models_dir}"; \
     fetch_if_missing() { \
