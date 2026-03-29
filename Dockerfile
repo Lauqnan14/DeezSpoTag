@@ -145,9 +145,11 @@ RUN set -eux; \
     /opt/shazam-venv/bin/pip install --no-cache-dir --upgrade pip; \
     /opt/shazam-venv/bin/pip install --no-cache-dir -r /app/Tools/shazam_port/requirements-modern.txt; \
     # Ensure all analyzer models required by current code paths are present. \
-    # Bundled repository models are used first; any missing files are fetched at build time. \
+    # Bundled repository models are used first; any missing files are fetched best-effort. \
+    # Runtime provisioning in TrackAnalysisBackgroundService will retry missing models. \
     models_dir=/app/Tools/models; \
     mkdir -p "${models_dir}"; \
+    model_fetch_failures=0; \
     fetch_if_missing() { \
       file="$1"; \
       url="$2"; \
@@ -163,8 +165,9 @@ RUN set -eux; \
           fi; \
           rm -f "${tmp}"; \
           if [ "${attempt}" -eq "${max_attempts}" ]; then \
-            echo "Failed to download ${file} from ${url} after ${max_attempts} attempts." >&2; \
-            return 1; \
+            echo "WARNING: Failed to download ${file} from ${url} after ${max_attempts} attempts." >&2; \
+            model_fetch_failures=$((model_fetch_failures + 1)); \
+            return 0; \
           fi; \
           sleep_seconds=$((attempt * 3)); \
           echo "Retry ${attempt}/${max_attempts} for ${file} in ${sleep_seconds}s..." >&2; \
@@ -189,7 +192,10 @@ RUN set -eux; \
     fetch_if_missing "approachability_regression-discogs-effnet-1.pb" "https://essentia.upf.edu/models/classification-heads/approachability/approachability_regression-discogs-effnet-1.pb"; \
     fetch_if_missing "engagement_regression-discogs-effnet-1.pb" "https://essentia.upf.edu/models/classification-heads/engagement/engagement_regression-discogs-effnet-1.pb"; \
     fetch_if_missing "genre_discogs400-discogs-effnet-1.pb" "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.pb"; \
-    fetch_if_missing "genre_discogs400-discogs-effnet-1.json" "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.json"
+    fetch_if_missing "genre_discogs400-discogs-effnet-1.json" "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.json"; \
+    if [ "${model_fetch_failures}" -gt 0 ]; then \
+      echo "WARNING: ${model_fetch_failures} model file(s) were not fetched during image build. Runtime will retry provisioning." >&2; \
+    fi
 
 EXPOSE 8668
 
