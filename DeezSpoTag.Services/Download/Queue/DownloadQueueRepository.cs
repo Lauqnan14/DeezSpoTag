@@ -432,6 +432,7 @@ WHERE queue_uuid = @queueUuid;";
         string queueUuid,
         int? qualityRank,
         string? contentType,
+        long? destinationFolderId,
         CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);
@@ -440,11 +441,13 @@ WHERE queue_uuid = @queueUuid;";
 UPDATE download_task
 SET quality_rank = @qualityRank,
     content_type = COALESCE(@contentType, content_type),
+    destination_folder_id = @destinationFolderId,
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("qualityRank", (object?)qualityRank ?? DBNull.Value);
         command.Parameters.AddWithValue("contentType", NormalizeId(contentType) ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("destinationFolderId", (object?)destinationFolderId ?? DBNull.Value);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

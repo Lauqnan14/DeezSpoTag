@@ -5,7 +5,6 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System;
@@ -26,7 +25,7 @@ public class LoginModel : PageModel
     private readonly UserManager<AppUser> _userManager;
     private readonly LoginConfiguration _loginConfig;
     private readonly AppIdentityDbContext _identityDb;
-    private readonly bool _isSingleUserMode;
+    private const bool IsSingleUserMode = true;
     private const string MustChangePasswordClaim = "must_change_password";
     private const string UnknownValue = "unknown";
     private const string InvalidSignInSessionMessage = "Sign-in session expired or invalid. Refresh this page and try again.";
@@ -35,14 +34,12 @@ public class LoginModel : PageModel
         SignInManager<AppUser> signInManager,
         UserManager<AppUser> userManager,
         IOptions<LoginConfiguration> loginOptions,
-        IConfiguration configuration,
         ILogger<LoginModel> logger,
         AppIdentityDbContext identityDb)
     {
         _signInManager = signInManager;
         _userManager = userManager;
         _loginConfig = loginOptions.Value;
-        _isSingleUserMode = configuration.GetValue<bool>("IsSingleUser", true);
         _logger = logger;
         _identityDb = identityDb;
     }
@@ -121,7 +118,7 @@ public class LoginModel : PageModel
             return (attemptedUser, null);
         }
 
-        if (_isSingleUserMode)
+        if (IsSingleUserMode)
         {
             var fallbackUser = await TryResolveSingleUserFallbackAsync(attemptedUsername, password);
             if (fallbackUser != null)
@@ -171,7 +168,7 @@ public class LoginModel : PageModel
     private async Task<IActionResult> HandleLockedOutSignInAsync(AppUser attemptedUser, string attemptedUsername, string password)
     {
         var refreshedUser = await _userManager.FindByNameAsync(attemptedUsername) ?? attemptedUser;
-        if (_isSingleUserMode &&
+        if (IsSingleUserMode &&
             await TryRecoverSingleUserLockoutAsync(refreshedUser, password))
         {
             return await CompleteSuccessfulSignInAsync(refreshedUser);
@@ -207,7 +204,7 @@ public class LoginModel : PageModel
     {
         if (user != null)
         {
-            if (_isSingleUserMode)
+            if (IsSingleUserMode)
             {
                 var canonicalUser = await ResolveCanonicalSingleUserAsync(user);
                 if (canonicalUser != null &&
@@ -379,7 +376,7 @@ public class LoginModel : PageModel
 
     private async Task<bool> IsSeedCreationBlockedAsync(string seedUsername)
     {
-        if (!_isSingleUserMode || !await _userManager.Users.AnyAsync())
+        if (!IsSingleUserMode || !await _userManager.Users.AnyAsync())
         {
             return false;
         }

@@ -5007,7 +5007,7 @@ public sealed class DownloadIntentService
         var status = existing.Status ?? string.Empty;
         if (IsRetryableFailedQueueStatus(status))
         {
-            var decision = await RequeueFailedDuplicateAsync(payload, context.Identity, existing, cancellationToken);
+            var decision = await RequeueFailedDuplicateAsync(payload, context, existing, cancellationToken);
             return new QueueDuplicateResolution(decision, false);
         }
 
@@ -5095,6 +5095,7 @@ public sealed class DownloadIntentService
             existing.QueueUuid,
             context.RequestedQualityRank,
             context.Identity.ContentType,
+            context.Identity.DestinationFolderId,
             cancellationToken);
         await _queueRepository.UpdatePayloadAsync(existing.QueueUuid, replacementJson, cancellationToken);
         await _queueRepository.UpdateStatusAsync(
@@ -5111,13 +5112,23 @@ public sealed class DownloadIntentService
 
     private async Task<EnqueueItemDecision> RequeueFailedDuplicateAsync<TPayload>(
         TPayload payload,
-        PayloadIdentity identity,
+        EnqueueItemContext context,
         DownloadQueueItem existing,
         CancellationToken cancellationToken)
         where TPayload : class
     {
+        SetPayloadId(payload, existing.QueueUuid);
+        var replacementJson = JsonSerializer.Serialize(payload);
+        await _queueRepository.UpdateEngineAsync(existing.QueueUuid, context.Identity.Engine, cancellationToken);
+        await _queueRepository.UpdateQueueMetadataAsync(
+            existing.QueueUuid,
+            context.RequestedQualityRank,
+            context.Identity.ContentType,
+            context.Identity.DestinationFolderId,
+            cancellationToken);
+        await _queueRepository.UpdatePayloadAsync(existing.QueueUuid, replacementJson, cancellationToken);
         await _queueRepository.RequeueAsync(existing.QueueUuid, cancellationToken);
-        _activityLog.Info($"Duplicate triggered retry (engine={identity.Engine}): {existing.QueueUuid}");
+        _activityLog.Info($"Duplicate triggered retry (engine={context.Identity.Engine}): {existing.QueueUuid}");
         _deezspotagListener.Send("updateQueue", new
         {
             uuid = existing.QueueUuid,
@@ -5127,7 +5138,6 @@ public sealed class DownloadIntentService
             failed = 0,
             error = default(string)
         });
-        SetPayloadId(payload, existing.QueueUuid);
         return EnqueueItemDecision.Ok(existing.QueueUuid);
     }
 
