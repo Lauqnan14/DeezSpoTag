@@ -753,12 +753,29 @@ body.autotag-col-resizing * {
     gap: 8px;
     max-height: 260px;
     overflow-y: auto;
+    /* Reserve room for scrollbar so right-side counts are never clipped. */
+    scrollbar-gutter: stable;
+    padding-right: 10px;
+    box-sizing: border-box;
 }
 
 .technical-profile-options .fallback-source-toggle {
     display: flex;
     width: 100%;
     align-items: center;
+}
+
+.technical-profile-options .checkbox-group {
+    width: 100%;
+    box-sizing: border-box;
+    gap: 8px;
+}
+
+.technical-profile-options .checkbox-group .helper {
+    margin-left: auto;
+    flex: 0 0 auto;
+    min-width: 3ch;
+    text-align: right;
 }
 
 .lyrics-type-dropdown .dropdown-menu {
