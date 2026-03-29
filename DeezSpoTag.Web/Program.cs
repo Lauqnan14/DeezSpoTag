@@ -467,7 +467,7 @@ static void ConfigurePipeline(WebApplication app, IConfiguration configuration)
     ConfigureApiAntiforgeryMiddleware(app);
     ConfigureLoginStatusCodePages(app);
     ConfigurePasswordChangeMiddleware(app);
-    ConfigureIdentityRouteGuardsMiddleware(app, configuration.GetValue<bool>("IsSingleUser", true));
+    ConfigureIdentityRouteGuardsMiddleware(app);
 }
 
 static void ConfigureSecurityHeadersMiddleware(WebApplication app)
@@ -675,14 +675,13 @@ static void ConfigurePasswordChangeMiddleware(WebApplication app)
     });
 }
 
-static void ConfigureIdentityRouteGuardsMiddleware(WebApplication app, bool identitySingleUserMode)
+static void ConfigureIdentityRouteGuardsMiddleware(WebApplication app)
 {
     app.Use(async (context, next) =>
     {
         var path = context.Request.Path.Value ?? string.Empty;
-        if (identitySingleUserMode
-            && (path.StartsWith("/Identity/Account/Register", StringComparison.OrdinalIgnoreCase)
-                || path.StartsWith("/Identity/Account/RegisterConfirmation", StringComparison.OrdinalIgnoreCase)))
+        if (path.StartsWith("/Identity/Account/Register", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith("/Identity/Account/RegisterConfirmation", StringComparison.OrdinalIgnoreCase))
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             return;
@@ -1164,7 +1163,7 @@ static async Task InitializeApplicationAsync(WebApplication app, IConfiguration 
     var identityDb = scope.ServiceProvider.GetRequiredService<AppIdentityDbContext>();
     await identityDb.Database.EnsureCreatedAsync();
 
-    await EnforceIdentityStartupStateAsync(scope.ServiceProvider, configuration);
+    await EnforceIdentityStartupStateAsync(scope.ServiceProvider);
 }
 
 static async Task RunStartupMigrationsAsync(IServiceProvider services, ILogger logger)
@@ -1180,12 +1179,12 @@ static async Task RunStartupMigrationsAsync(IServiceProvider services, ILogger l
     }
 }
 
-static async Task EnforceIdentityStartupStateAsync(IServiceProvider services, IConfiguration configuration)
+static async Task EnforceIdentityStartupStateAsync(IServiceProvider services)
 {
     var loginConfig = services.GetRequiredService<IOptions<LoginConfiguration>>().Value;
     var userManager = services.GetRequiredService<UserManager<AppUser>>();
     var logger = services.GetRequiredService<ILogger<Program>>();
-    var isSingleUserMode = configuration.GetValue<bool>("IsSingleUser", true);
+    const bool isSingleUserMode = true;
     var bootstrapUserFromEnvironment = Environment.GetEnvironmentVariable("DEEZSPOTAG_BOOTSTRAP_USER");
     var bootstrapPassFromEnvironment = Environment.GetEnvironmentVariable("DEEZSPOTAG_BOOTSTRAP_PASS");
     var seedUsername = loginConfig.Username;
@@ -1505,12 +1504,12 @@ static AppUser? ResolveCanonicalFallbackUser(List<AppUser> orderedUsers)
            user.LockoutEnd.Value <= DateTimeOffset.UtcNow;
 
     var activeUsers = orderedUsers.Where(IsSignInEnabled).ToList();
-    if (activeUsers.Count == 1)
+    if (activeUsers.Count > 0)
     {
         return activeUsers[0];
     }
 
-    return orderedUsers.Count == 1 ? orderedUsers[0] : null;
+    return orderedUsers.Count > 0 ? orderedUsers[0] : null;
 }
 
 static void LogDeferredSingleUserMode(ILogger logger, int userCount)

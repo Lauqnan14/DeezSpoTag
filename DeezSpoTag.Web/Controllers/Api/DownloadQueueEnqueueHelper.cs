@@ -96,6 +96,13 @@ internal static class DownloadQueueEnqueueHelper
 
             payload.Id = existing.QueueUuid;
             var payloadJson = JsonSerializer.Serialize(payload);
+            await queueRepository.UpdateEngineAsync(existing.QueueUuid, payload.Engine, cancellationToken);
+            await queueRepository.UpdateQueueMetadataAsync(
+                existing.QueueUuid,
+                null,
+                payload.ContentType,
+                payload.DestinationFolderId,
+                cancellationToken);
             await queueRepository.UpdatePayloadAsync(existing.QueueUuid, payloadJson, cancellationToken);
             await queueRepository.UpdateStatusAsync(
                 existing.QueueUuid,

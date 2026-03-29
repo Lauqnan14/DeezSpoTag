@@ -1628,23 +1628,45 @@ public sealed class AutoTagDownloadMoveService
         AddRootFromProperty(roots, rootPath, root, "artistPath");
         AddRootFromProperty(roots, rootPath, root, "extrasPath");
 
-        if (!TryGetPropertyIgnoreCase(root, FilesProperty, out var filesElement)
-            || filesElement.ValueKind != JsonValueKind.Array)
+        if (TryGetPropertyIgnoreCase(root, FilesProperty, out var filesElement)
+            && filesElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var fileElement in filesElement.EnumerateArray())
+            {
+                if (fileElement.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                AddFileFromProperty(files, rootPath, fileElement, "path");
+                AddRootFromProperty(roots, rootPath, fileElement, "path");
+                AddRootFromProperty(roots, rootPath, fileElement, "albumPath");
+                AddRootFromProperty(roots, rootPath, fileElement, "artistPath");
+            }
+        }
+
+        // Payloads always maintain final destination/source maps after completion.
+        // Use the map keys as an additional source list so move pass stays robust
+        // even when legacy payloads miss filePath/files arrays.
+        CollectFinalDestinationSourcePaths(rootPath, root, files, roots);
+    }
+
+    private static void CollectFinalDestinationSourcePaths(
+        string rootPath,
+        JsonElement root,
+        HashSet<string> files,
+        HashSet<string> roots)
+    {
+        if (!TryGetPropertyIgnoreCase(root, "finalDestinations", out var finalDestinationsElement)
+            || finalDestinationsElement.ValueKind != JsonValueKind.Object)
         {
             return;
         }
 
-        foreach (var fileElement in filesElement.EnumerateArray())
+        foreach (var pathEntry in finalDestinationsElement.EnumerateObject())
         {
-            if (fileElement.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
-
-            AddFileFromProperty(files, rootPath, fileElement, "path");
-            AddRootFromProperty(roots, rootPath, fileElement, "path");
-            AddRootFromProperty(roots, rootPath, fileElement, "albumPath");
-            AddRootFromProperty(roots, rootPath, fileElement, "artistPath");
+            AddFileFromRawPath(files, rootPath, pathEntry.Name);
+            AddRootFromRawPath(roots, rootPath, pathEntry.Name);
         }
     }
 
@@ -1709,7 +1731,14 @@ public sealed class AutoTagDownloadMoveService
         JsonElement source,
         string propertyName)
     {
-        var value = ReadStringProperty(source, propertyName);
+        AddFileFromRawPath(files, rootPath, ReadStringProperty(source, propertyName));
+    }
+
+    private static void AddFileFromRawPath(
+        HashSet<string> files,
+        string rootPath,
+        string? value)
+    {
         if (string.IsNullOrWhiteSpace(value))
         {
             return;
@@ -1741,7 +1770,14 @@ public sealed class AutoTagDownloadMoveService
         JsonElement source,
         string propertyName)
     {
-        var value = ReadStringProperty(source, propertyName);
+        AddRootFromRawPath(roots, rootPath, ReadStringProperty(source, propertyName));
+    }
+
+    private static void AddRootFromRawPath(
+        HashSet<string> roots,
+        string rootPath,
+        string? value)
+    {
         if (string.IsNullOrWhiteSpace(value))
         {
             return;

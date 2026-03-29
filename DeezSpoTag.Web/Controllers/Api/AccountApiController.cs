@@ -28,7 +28,6 @@ public sealed class AccountApiController : ControllerBase
     private readonly SignInManager<AppUser> _signInManager;
     private readonly IConfiguration _configuration;
     private readonly LoginConfiguration _loginConfiguration;
-    private readonly bool _isSingleUserMode;
 
     public AccountApiController(
         UserManager<AppUser> userManager,
@@ -40,7 +39,6 @@ public sealed class AccountApiController : ControllerBase
         _signInManager = signInManager;
         _configuration = configuration;
         _loginConfiguration = loginConfiguration.Value;
-        _isSingleUserMode = configuration.GetValue<bool>("IsSingleUser", true);
     }
 
     [HttpGet("profile")]
@@ -266,7 +264,7 @@ public sealed class AccountApiController : ControllerBase
 
     private async Task DeleteNonCanonicalAccountsAsync(string canonicalUserId)
     {
-        if (!_isSingleUserMode || string.IsNullOrWhiteSpace(canonicalUserId))
+        if (string.IsNullOrWhiteSpace(canonicalUserId))
         {
             return;
         }
