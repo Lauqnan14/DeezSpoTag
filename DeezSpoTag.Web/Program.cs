@@ -30,6 +30,7 @@ using DeezSpoTag.Web.Configuration;
 using Microsoft.Net.Http.Headers;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.WebUtilities;
 using System.Threading.RateLimiting;
 using System.Reflection;
 
@@ -464,6 +465,7 @@ static void ConfigurePipeline(WebApplication app, IConfiguration configuration)
     ConfigureApiTokenMiddleware(app);
     app.UseAuthorization();
     ConfigureApiAntiforgeryMiddleware(app);
+    ConfigureLoginStatusCodePages(app);
     ConfigurePasswordChangeMiddleware(app);
     ConfigureIdentityRouteGuardsMiddleware(app, configuration.GetValue<bool>("IsSingleUser", true));
 }
@@ -618,6 +620,25 @@ static void ConfigureApiAntiforgeryMiddleware(WebApplication app)
         }
 
         await next();
+    });
+}
+
+static void ConfigureLoginStatusCodePages(WebApplication app)
+{
+    app.UseStatusCodePages(context =>
+    {
+        var http = context.HttpContext;
+        if (http.Response.StatusCode != StatusCodes.Status400BadRequest
+            || !HttpMethods.IsPost(http.Request.Method)
+            || !http.Request.Path.StartsWithSegments("/Identity/Account/Login", StringComparison.OrdinalIgnoreCase)
+            || http.Response.HasStarted)
+        {
+            return Task.CompletedTask;
+        }
+
+        var targetUrl = QueryHelpers.AddQueryString("/Identity/Account/Login", "csrfError", "1");
+        http.Response.Redirect(targetUrl);
+        return Task.CompletedTask;
     });
 }
 

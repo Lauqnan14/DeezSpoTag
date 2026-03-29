@@ -1,6 +1,5 @@
 using DeezSpoTag.Web.Configuration;
 using DeezSpoTag.Web.Models;
-using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
@@ -20,13 +19,11 @@ using DeezSpoTag.Web.Data;
 namespace DeezSpoTag.Web.Areas.Identity.Pages.Account;
 
 [AllowAnonymous]
-[IgnoreAntiforgeryToken]
 public class LoginModel : PageModel
 {
     private readonly SignInManager<AppUser> _signInManager;
     private readonly ILogger<LoginModel> _logger;
     private readonly UserManager<AppUser> _userManager;
-    private readonly IAntiforgery _antiforgery;
     private readonly LoginConfiguration _loginConfig;
     private readonly AppIdentityDbContext _identityDb;
     private readonly bool _isSingleUserMode;
@@ -37,7 +34,6 @@ public class LoginModel : PageModel
     public LoginModel(
         SignInManager<AppUser> signInManager,
         UserManager<AppUser> userManager,
-        IAntiforgery antiforgery,
         IOptions<LoginConfiguration> loginOptions,
         IConfiguration configuration,
         ILogger<LoginModel> logger,
@@ -45,7 +41,6 @@ public class LoginModel : PageModel
     {
         _signInManager = signInManager;
         _userManager = userManager;
-        _antiforgery = antiforgery;
         _loginConfig = loginOptions.Value;
         _isSingleUserMode = configuration.GetValue<bool>("IsSingleUser", true);
         _logger = logger;
@@ -75,6 +70,10 @@ public class LoginModel : PageModel
     {
         await EnsureSingleUserSeededAsync();
         ReturnUrl = returnUrl ?? Url.Content("~/");
+        if (IsCsrfErrorQueryFlagEnabled())
+        {
+            ModelState.AddModelError(string.Empty, InvalidSignInSessionMessage);
+        }
 
         await HttpContext.SignOutAsync(IdentityConstants.ExternalScheme);
         ExternalLogins = (await _signInManager.GetExternalAuthenticationSchemesAsync()).ToList();
@@ -87,11 +86,6 @@ public class LoginModel : PageModel
         ReturnUrl = returnUrl ?? Url.Content("~/");
 
         await EnsureSingleUserSeededAsync();
-        if (!await ValidateSignInAntiforgeryAsync())
-        {
-            return Page();
-        }
-
         if (!ModelState.IsValid)
         {
             return Page();
@@ -158,19 +152,12 @@ public class LoginModel : PageModel
         return Page();
     }
 
-    private async Task<bool> ValidateSignInAntiforgeryAsync()
+    private bool IsCsrfErrorQueryFlagEnabled()
     {
-        try
-        {
-            await _antiforgery.ValidateRequestAsync(HttpContext);
-            return true;
-        }
-        catch (AntiforgeryValidationException ex)
-        {
-            _logger.LogWarning(ex, "Rejected login POST due to invalid or expired anti-forgery token.");
-            ModelState.AddModelError(string.Empty, InvalidSignInSessionMessage);
-            return false;
-        }
+        return string.Equals(
+            Request.Query["csrfError"],
+            "1",
+            StringComparison.Ordinal);
     }
 
     private async Task<IActionResult> CompleteSuccessfulSignInAsync(AppUser? user)
