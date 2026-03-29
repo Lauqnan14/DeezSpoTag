@@ -16,7 +16,7 @@
     </div>
 
     <!-- Main Navigation Tabs -->
-    <ul class="nav nav-tabs nav-fill mb-4" id="mediaManagementTabs">
+    <ul class="nav nav-tabs nav-fill mb-4 ds-mobile-tabs" id="mediaManagementTabs">
         <li class="nav-item">
             <button class="nav-link active" id="recommendations-tab" data-bs-toggle="tab" data-bs-target="#recommendations-content" type="button" role="tab">
                 <i class="fas fa-broadcast-tower me-2"></i>Recommendations
@@ -68,7 +68,7 @@
 
         <!-- Watchlist Tab -->
         <div class="tab-pane fade" id="watchlist-content" role="tabpanel">
-            <ul class="nav nav-tabs nav-fill mb-3" id="watchlistSubTabs">
+            <ul class="nav nav-tabs nav-fill mb-3 ds-mobile-tabs" id="watchlistSubTabs">
                 <li class="nav-item">
                     <button class="nav-link active" id="watchlist-playlists-tab" data-bs-toggle="tab" data-bs-target="#watchlist-playlists-content" type="button" role="tab" aria-selected="true">
                         Playlists
@@ -124,7 +124,7 @@
 
         <!-- Soundtracks Tab -->
         <div class="tab-pane fade" id="soundtracks-content" role="tabpanel">
-            <ul class="nav nav-tabs nav-fill mb-3" id="soundtrackSubTabs">
+            <ul class="nav nav-tabs nav-fill mb-3 ds-mobile-tabs" id="soundtrackSubTabs">
                 <li class="nav-item">
                     <button class="nav-link active" id="soundtrack-movies-tab" type="button" role="tab" data-soundtrack-category="movie" aria-selected="true">
                         Movies
@@ -896,8 +896,9 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 
 .soundtrack-grid {
+    --soundtrack-card-min: 208px;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(208px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(var(--soundtrack-card-min), 1fr));
     gap: 14px;
     padding-right: 52px;
 }
@@ -1214,6 +1215,11 @@ document.addEventListener('DOMContentLoaded', function() {
         grid-template-columns: 1fr;
     }
 
+    .soundtrack-grid {
+        --soundtrack-card-min: 186px;
+        gap: 12px;
+    }
+
 }
 
 @@media (max-width: 900px) {
@@ -1243,6 +1249,25 @@ document.addEventListener('DOMContentLoaded', function() {
     .welcome-title {
         font-size: 28px;
     }
+
+    .soundtrack-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        padding-right: 0;
+    }
+
+    .soundtrack-card-body {
+        padding: 10px;
+        gap: 5px;
+    }
+
+    .soundtrack-card-title {
+        font-size: 14px;
+    }
+
+    .soundtrack-card-meta {
+        font-size: 11px;
+    }
 }
 
 @@media (max-width: 640px) {
@@ -1263,5 +1288,15 @@ document.addEventListener('DOMContentLoaded', function() {
         font-size: 0.95rem;
     }
 
+}
+
+@@media (max-width: 420px) {
+    .soundtrack-grid {
+        gap: 10px;
+    }
+
+    .soundtrack-card-title {
+        font-size: 13px;
+    }
 }
 </style>

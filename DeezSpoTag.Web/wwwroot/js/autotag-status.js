@@ -596,7 +596,7 @@
                 classes.push("is-selected");
             }
 
-            let runCountLabel = " ";
+            let runCountLabel = "";
             if (info?.runCount) {
                 const runSuffix = info.runCount === 1 ? "" : "s";
                 runCountLabel = `${info.runCount} run${runSuffix}`;

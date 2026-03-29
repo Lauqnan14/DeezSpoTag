@@ -1632,6 +1632,46 @@ body.autotag-col-resizing * {
 }
 
 @media (max-width: 640px) {
+    .autotag-page #autotagTabs.ds-mobile-tabs {
+        flex-wrap: nowrap !important;
+        overflow-x: auto;
+        overflow-y: hidden;
+        gap: 8px;
+        padding-bottom: 6px;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+
+    .autotag-page #autotagTabs.ds-mobile-tabs::-webkit-scrollbar {
+        display: none;
+    }
+
+    .autotag-page #autotagTabs.ds-mobile-tabs .nav-item {
+        flex: 0 0 auto !important;
+    }
+
+    .autotag-page #autotagTabs.ds-mobile-tabs .nav-link {
+        width: auto !important;
+        min-width: max-content !important;
+        min-height: 36px !important;
+        white-space: nowrap;
+        padding: 8px 12px !important;
+        font-size: 13px !important;
+        line-height: 1;
+        border-radius: 8px 8px 0 0 !important;
+        margin-bottom: 0 !important;
+        box-shadow: none !important;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+    }
+
+    .autotag-page #autotagTabs.ds-mobile-tabs .nav-link i {
+        font-size: 13px;
+        margin-right: 0 !important;
+    }
+
     .autotag-panel {
         padding: 16px;
     }

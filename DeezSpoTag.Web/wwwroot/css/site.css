@@ -281,6 +281,39 @@ body {
     }
 }
 
+/* Unified mobile tab navigation (Activities-style) for all tabbed pages that opt in */
+@media (max-width: 640px) {
+    .ds-mobile-tabs {
+        flex-wrap: nowrap !important;
+        overflow-x: auto;
+        overflow-y: hidden;
+        gap: 8px;
+        padding-bottom: 6px;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+
+    .ds-mobile-tabs::-webkit-scrollbar {
+        display: none;
+    }
+
+    .ds-mobile-tabs .nav-item {
+        flex: 0 0 auto !important;
+    }
+
+    .ds-mobile-tabs .nav-link {
+        width: auto !important;
+        min-width: max-content !important;
+        white-space: nowrap;
+        padding: 8px 12px !important;
+        font-size: 13px !important;
+        min-height: auto !important;
+        border-radius: 8px 8px 0 0 !important;
+        margin-bottom: 0 !important;
+        box-shadow: none !important;
+    }
+}
+
 @media (max-width: 768px) {
     body {
         line-height: 1.5;
