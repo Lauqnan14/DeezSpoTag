@@ -81,24 +81,24 @@ RUN apt-get update -o Acquire::Retries=5 \
          echo "Skipping mp4decrypt install for TARGETARCH=${TARGETARCH:-unknown}:" \
               "no official Bento4 arm64 binary URL is configured."; \
        fi \
-    && cat > /etc/ssl/openssl-legacy.cnf <<'EOF'
-openssl_conf = openssl_init
-
-.include /etc/ssl/openssl.cnf
-
-[openssl_init]
-providers = provider_sect
-
-[provider_sect]
-default = default_sect
-legacy = legacy_sect
-
-[default_sect]
-activate = 1
-
-[legacy_sect]
-activate = 1
-EOF
+    && printf '%s\n' \
+      'openssl_conf = openssl_init' \
+      '' \
+      '.include /etc/ssl/openssl.cnf' \
+      '' \
+      '[openssl_init]' \
+      'providers = provider_sect' \
+      '' \
+      '[provider_sect]' \
+      'default = default_sect' \
+      'legacy = legacy_sect' \
+      '' \
+      '[default_sect]' \
+      'activate = 1' \
+      '' \
+      '[legacy_sect]' \
+      'activate = 1' \
+      > /etc/ssl/openssl-legacy.cnf \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
