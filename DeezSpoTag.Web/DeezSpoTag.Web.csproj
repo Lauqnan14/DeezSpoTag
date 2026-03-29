@@ -17,7 +17,7 @@
     <PackageReference Include="Microsoft.AspNetCore.Identity.UI" Version="8.0.24" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.13" />
     <PackageReference Include="Microsoft.Playwright" Version="1.50.0" />
-    <PackageReference Include="NLayer" Version="1.13.0" />
+    <PackageReference Include="NLayer" Version="1.16.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="SixLabors.Fonts" Version="1.0.1" />
     <PackageReference Include="SixLabors.ImageSharp.Drawing" Version="1.0.0" />

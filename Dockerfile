@@ -15,7 +15,7 @@ RUN dotnet publish DeezSpoTag.Web/DeezSpoTag.Web.csproj -c Release -o /app/publi
 
 FROM docker:27-cli AS docker-cli
 
-FROM golang:1.23-bookworm AS apple-wrapper-build
+FROM golang:1.25-bookworm AS apple-wrapper-build
 WORKDIR /work
 ARG TARGETARCH
 
