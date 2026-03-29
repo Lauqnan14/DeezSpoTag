@@ -13,8 +13,8 @@
     <!-- Centralized versioning:
          - VersionPrefix tracks major.minor.patch
          - VersionRevision tracks per-change revision (0-9), then rolls patch -->
-    <VersionPrefix>0.1.5</VersionPrefix>
-    <VersionRevision>9</VersionRevision>
+    <VersionPrefix>0.1.6</VersionPrefix>
+    <VersionRevision>0</VersionRevision>
     <Version>$(VersionPrefix)</Version>
     <AssemblyVersion>$(VersionPrefix).$(VersionRevision)</AssemblyVersion>
     <FileVersion>$(VersionPrefix).$(VersionRevision)</FileVersion>
