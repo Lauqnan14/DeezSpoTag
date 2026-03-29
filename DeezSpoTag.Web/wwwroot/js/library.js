@@ -743,6 +743,12 @@ async function fetchJsonOptional(url, options) {
 }
 
 async function parseJsonResponse(response, url) {
+    if (isAuthHtmlResponse(response)) {
+        const error = new Error('Session expired or invalid security token. Refresh the page and sign in again.');
+        error.libraryUrl = url;
+        throw error;
+    }
+
     if (!response.ok) {
         const raw = await response.text();
         const message = parseLibraryErrorMessage(raw);
@@ -758,6 +764,10 @@ function parseLibraryErrorMessage(raw) {
     const trimmed = String(raw || '').trim();
     if (!trimmed) {
         return '';
+    }
+
+    if (isHtmlPayload(trimmed)) {
+        return 'Session expired or invalid security token. Refresh the page and sign in again.';
     }
 
     try {
@@ -786,6 +796,11 @@ async function parseLibrarySuccessResponse(response, url) {
     const contentType = response.headers.get('content-type') || '';
     const raw = await response.text();
     const trimmed = raw.trim();
+    if (isHtmlPayload(trimmed) || contentType.toLowerCase().includes('text/html')) {
+        const error = new Error('Session expired or invalid security token. Refresh the page and sign in again.');
+        error.libraryUrl = url;
+        throw error;
+    }
     if (!trimmed || trimmed === 'undefined') {
         const error = new Error(`Invalid JSON response from ${url}: ${trimmed || '<empty>'}`);
         error.libraryUrl = url;
@@ -799,9 +814,36 @@ function parseLibraryJsonBody(raw, trimmed, url, contentType) {
     try {
         return JSON.parse(raw);
     } catch {
-        const error = new Error(`Invalid JSON response from ${url}: ${trimmed.slice(0, 200)}`);
+        const error = new Error('Unexpected response from server. Refresh the page and try again.');
         error.libraryUrl = url;
         throw error;
+    }
+}
+
+function isHtmlPayload(text) {
+    const sample = String(text || '').trimStart().slice(0, 64).toLowerCase();
+    return sample.startsWith('<!doctype html') || sample.startsWith('<html');
+}
+
+function isAuthHtmlResponse(response) {
+    if (!response) {
+        return false;
+    }
+
+    if (response.status === 401 || response.status === 403) {
+        return true;
+    }
+
+    if (!response.redirected) {
+        return false;
+    }
+
+    try {
+        const redirectedUrl = new URL(response.url, globalThis.location.origin);
+        const path = redirectedUrl.pathname.toLowerCase();
+        return path.startsWith('/identity/account/login');
+    } catch {
+        return false;
     }
 }
 
