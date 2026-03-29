@@ -7,7 +7,6 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 namespace DeezSpoTag.Web.Areas.Identity.Pages.Account;
 
 [AllowAnonymous]
-[IgnoreAntiforgeryToken]
 public sealed class LogoutModel : PageModel
 {
     private readonly SignInManager<AppUser> _signInManager;
@@ -21,7 +20,7 @@ public sealed class LogoutModel : PageModel
 
     public Task<IActionResult> OnGetAsync(string? returnUrl = null)
     {
-        return SignOutAndRedirectAsync(returnUrl);
+        return Task.FromResult<IActionResult>(LocalRedirect(ResolveReturnUrl(returnUrl)));
     }
 
     public Task<IActionResult> OnPostAsync(string? returnUrl = null)

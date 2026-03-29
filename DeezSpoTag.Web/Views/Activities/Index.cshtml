@@ -182,6 +182,7 @@
     display: grid;
     gap: 20px;
     grid-template-columns: minmax(250px, 300px) minmax(0, 1fr);
+    min-width: 0;
 }
 
 .autotag-history-sidebar,
@@ -189,6 +190,7 @@
     display: grid;
     gap: 16px;
     align-content: start;
+    min-width: 0;
 }
 
 .autotag-calendar-card,
@@ -198,6 +200,10 @@
     border: 1px solid var(--border-secondary);
     border-radius: 14px;
     padding: 16px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
 }
 
 .autotag-calendar-toolbar {
@@ -218,6 +224,9 @@
     display: grid;
     grid-template-columns: repeat(7, minmax(0, 1fr));
     gap: 8px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
 }
 
 .autotag-calendar-weekday,
@@ -246,6 +255,7 @@
     justify-items: start;
     padding: 8px;
     cursor: pointer;
+    overflow: hidden;
 }
 
 .autotag-calendar-day.is-empty {
@@ -270,6 +280,14 @@
 .autotag-calendar-day-count {
     font-size: 10px;
     color: var(--accent-color);
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.autotag-calendar-day-count:empty {
+    display: none;
 }
 
 .autotag-run-list {
@@ -356,6 +374,92 @@
 @@media (max-width: 991.98px) {
     .autotag-history-layout {
         grid-template-columns: 1fr;
+    }
+}
+
+@@media (max-width: 768px) {
+    .tab-pane#history-content .card-body {
+        overflow-x: hidden;
+    }
+
+    .autotag-calendar-card {
+        padding: 12px;
+    }
+
+    .autotag-calendar-toolbar {
+        gap: 8px;
+        margin-bottom: 10px;
+    }
+
+    .autotag-calendar-toolbar .btn {
+        width: 32px;
+        height: 32px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 32px;
+    }
+
+    .autotag-calendar-title {
+        font-size: 14px;
+        text-align: center;
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+
+    .autotag-calendar-grid {
+        gap: 6px;
+    }
+
+    .autotag-calendar-weekday {
+        font-size: 10px;
+        letter-spacing: 0.05em;
+    }
+
+    .autotag-calendar-day {
+        min-height: 50px;
+        padding: 6px;
+        border-radius: 10px;
+    }
+
+    .autotag-calendar-day-number {
+        font-size: 12px;
+    }
+
+    .autotag-calendar-day-count {
+        font-size: 9px;
+    }
+}
+
+@@media (max-width: 480px) {
+    .autotag-calendar-card,
+    .autotag-run-list-card,
+    .autotag-run-detail-card {
+        padding: 10px;
+    }
+
+    .autotag-calendar-grid {
+        gap: 4px;
+    }
+
+    .autotag-calendar-weekday,
+    .autotag-calendar-day {
+        border-radius: 8px;
+    }
+
+    .autotag-calendar-weekday {
+        font-size: 8px;
+        letter-spacing: 0.03em;
+    }
+
+    .autotag-calendar-day {
+        min-height: 44px;
+        padding: 5px 4px;
+    }
+
+    .autotag-calendar-day-count {
+        font-size: 8px;
     }
 }
 
@@ -2213,7 +2317,7 @@
         </div>
     </div>
 
-    <ul class="nav nav-tabs nav-fill mb-4" id="activitiesTabs">
+    <ul class="nav nav-tabs nav-fill mb-4 ds-mobile-tabs" id="activitiesTabs">
         <li class="nav-item">
             <button class="nav-link active" id="activities-downloads-tab" data-bs-toggle="tab" data-bs-target="#downloads-content" type="button" role="tab">
                 <i class="fas fa-download me-2"></i>Downloads

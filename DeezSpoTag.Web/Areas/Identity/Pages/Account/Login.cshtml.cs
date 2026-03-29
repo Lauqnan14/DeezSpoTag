@@ -92,19 +92,14 @@ public class LoginModel : PageModel
         }
 
         var attemptedUsername = Input.Username?.Trim() ?? string.Empty;
-        var attemptedUser = await _userManager.FindByNameAsync(attemptedUsername);
+        var (attemptedUser, earlyResult) = await ResolveAttemptedUserAsync(attemptedUsername, Input.Password);
+        if (earlyResult != null)
+        {
+            return earlyResult;
+        }
+
         if (attemptedUser == null)
         {
-            if (_isSingleUserMode)
-            {
-                var fallbackUser = await TryResolveSingleUserFallbackAsync(attemptedUsername, Input.Password);
-                if (fallbackUser != null)
-                {
-                    await _signInManager.SignInAsync(fallbackUser, isPersistent: true);
-                    return await CompleteSuccessfulSignInAsync(fallbackUser);
-                }
-            }
-
             ModelState.AddModelError(string.Empty, "No account found for that username.");
             return Page();
         }
@@ -115,29 +110,40 @@ public class LoginModel : PageModel
             return await CompleteSuccessfulSignInAsync(attemptedUser);
         }
 
+        return await HandleFailedSignInAsync(result, attemptedUser, attemptedUsername, Input.Password);
+    }
+
+    private async Task<(AppUser? User, IActionResult? EarlyResult)> ResolveAttemptedUserAsync(string attemptedUsername, string password)
+    {
+        var attemptedUser = await _userManager.FindByNameAsync(attemptedUsername);
+        if (attemptedUser != null)
+        {
+            return (attemptedUser, null);
+        }
+
+        if (_isSingleUserMode)
+        {
+            var fallbackUser = await TryResolveSingleUserFallbackAsync(attemptedUsername, password);
+            if (fallbackUser != null)
+            {
+                await _signInManager.SignInAsync(fallbackUser, isPersistent: true);
+                return (fallbackUser, await CompleteSuccessfulSignInAsync(fallbackUser));
+            }
+        }
+
+        ModelState.AddModelError(string.Empty, "No account found for that username.");
+        return (null, Page());
+    }
+
+    private async Task<IActionResult> HandleFailedSignInAsync(
+        Microsoft.AspNetCore.Identity.SignInResult result,
+        AppUser attemptedUser,
+        string attemptedUsername,
+        string password)
+    {
         if (result.IsLockedOut)
         {
-            attemptedUser = await _userManager.FindByNameAsync(attemptedUsername) ?? attemptedUser;
-
-            if (_isSingleUserMode &&
-                await TryRecoverSingleUserLockoutAsync(attemptedUser, Input.Password))
-            {
-                return await CompleteSuccessfulSignInAsync(attemptedUser);
-            }
-
-            _logger.LogWarning("User account locked out.");
-            var lockoutEndUtc = attemptedUser.LockoutEnd?.UtcDateTime;
-            if (lockoutEndUtc.HasValue && lockoutEndUtc.Value > DateTime.UtcNow)
-            {
-                ModelState.AddModelError(
-                    string.Empty,
-                    $"Account locked due to too many failed attempts. Try again after {lockoutEndUtc.Value:yyyy-MM-dd HH:mm:ss} UTC.");
-            }
-            else
-            {
-                ModelState.AddModelError(string.Empty, "Account locked due to too many failed attempts.");
-            }
-            return Page();
+            return await HandleLockedOutSignInAsync(attemptedUser, attemptedUsername, password);
         }
 
         if (result.RequiresTwoFactor)
@@ -152,7 +158,7 @@ public class LoginModel : PageModel
             return Page();
         }
 
-        if (!await _userManager.CheckPasswordAsync(attemptedUser, Input.Password))
+        if (!await _userManager.CheckPasswordAsync(attemptedUser, password))
         {
             ModelState.AddModelError(string.Empty, "Incorrect password.");
             return Page();
@@ -160,6 +166,33 @@ public class LoginModel : PageModel
 
         ModelState.AddModelError(string.Empty, "Login failed for an unknown reason.");
         return Page();
+    }
+
+    private async Task<IActionResult> HandleLockedOutSignInAsync(AppUser attemptedUser, string attemptedUsername, string password)
+    {
+        var refreshedUser = await _userManager.FindByNameAsync(attemptedUsername) ?? attemptedUser;
+        if (_isSingleUserMode &&
+            await TryRecoverSingleUserLockoutAsync(refreshedUser, password))
+        {
+            return await CompleteSuccessfulSignInAsync(refreshedUser);
+        }
+
+        _logger.LogWarning("User account locked out.");
+        AddLockoutError(refreshedUser.LockoutEnd?.UtcDateTime);
+        return Page();
+    }
+
+    private void AddLockoutError(DateTime? lockoutEndUtc)
+    {
+        if (lockoutEndUtc.HasValue && lockoutEndUtc.Value > DateTime.UtcNow)
+        {
+            ModelState.AddModelError(
+                string.Empty,
+                $"Account locked due to too many failed attempts. Try again after {lockoutEndUtc.Value:yyyy-MM-dd HH:mm:ss} UTC.");
+            return;
+        }
+
+        ModelState.AddModelError(string.Empty, "Account locked due to too many failed attempts.");
     }
 
     private bool IsCsrfErrorQueryFlagEnabled()
