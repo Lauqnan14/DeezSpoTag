@@ -9,6 +9,7 @@ public sealed class BandcampClient
 {
     private const string BandcampHost = "bandcamp.com";
     private const string SearchPath = "api/bcsearch_public_api/1/autocomplete_elastic";
+    private const int MaxRateLimitRetries = 8;
 
     private readonly HttpClient _httpClient;
     private readonly ILogger<BandcampClient> _logger;
@@ -60,13 +61,20 @@ public sealed class BandcampClient
             Path = SearchPath
         }.Uri;
 
-        while (true)
+        for (var attempt = 1; attempt <= MaxRateLimitRetries; attempt++)
         {
             var response = await _httpClient.PostAsJsonAsync(searchUri, payload, cancellationToken);
             if (response.StatusCode == HttpStatusCode.TooManyRequests || response.StatusCode == HttpStatusCode.Forbidden)
             {
-                _logger.LogWarning("Bandcamp rate limit hit; waiting 3s.");
-                await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+                if (attempt == MaxRateLimitRetries)
+                {
+                    _logger.LogWarning(
+                        "Bandcamp search hit rate limits and exceeded {MaxRetries} retries; skipping.",
+                        MaxRateLimitRetries);
+                    return new List<BandcampSearchResult>();
+                }
+
+                await DelayForRetryAsync(response, attempt, cancellationToken);
                 continue;
             }
 
@@ -89,17 +97,27 @@ public sealed class BandcampClient
                 .Select(static result => result!)
                 .ToList();
         }
+
+        return new List<BandcampSearchResult>();
     }
 
     public async Task<BandcampTrack?> GetTrackAsync(string url, CancellationToken cancellationToken)
     {
-        while (true)
+        for (var attempt = 1; attempt <= MaxRateLimitRetries; attempt++)
         {
             var response = await _httpClient.GetAsync(url, cancellationToken);
             if (response.StatusCode == HttpStatusCode.TooManyRequests || response.StatusCode == HttpStatusCode.Forbidden)
             {
-                _logger.LogWarning("Bandcamp track page rate limit hit; waiting 3s.");
-                await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+                if (attempt == MaxRateLimitRetries)
+                {
+                    _logger.LogWarning(
+                        "Bandcamp track page hit rate limits and exceeded {MaxRetries} retries; skipping {Url}.",
+                        MaxRateLimitRetries,
+                        url);
+                    return null;
+                }
+
+                await DelayForRetryAsync(response, attempt, cancellationToken);
                 continue;
             }
 
@@ -123,5 +141,17 @@ public sealed class BandcampClient
             var json = HtmlEntity.DeEntitize(script.InnerText);
             return JsonSerializer.Deserialize<BandcampTrack>(json, _jsonOptions);
         }
+
+        return null;
+    }
+
+    private async Task DelayForRetryAsync(HttpResponseMessage response, int attempt, CancellationToken cancellationToken)
+    {
+        var retryAfter = response.Headers.RetryAfter?.Delta;
+        var delay = retryAfter.HasValue && retryAfter.Value > TimeSpan.Zero
+            ? retryAfter.Value
+            : TimeSpan.FromSeconds(Math.Min(3 * attempt, 24));
+        _logger.LogWarning("Bandcamp rate limit hit; retry {Attempt}/{MaxRetries} in {DelaySeconds}s.", attempt, MaxRateLimitRetries, Math.Max(1, (int)delay.TotalSeconds));
+        await Task.Delay(delay, cancellationToken);
     }
 }
