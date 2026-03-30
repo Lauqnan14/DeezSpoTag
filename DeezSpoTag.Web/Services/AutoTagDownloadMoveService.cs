@@ -177,7 +177,7 @@ public sealed class AutoTagDownloadMoveService
 
         if (!options.DryRun && options.RemoveEmptyFolders)
         {
-            DeleteEmptyDirectories(normalizedRootPath);
+            DeleteEmptyDirectories(normalizedRootPath, BuildProtectedQualityBucketDirectories(normalizedRootPath));
         }
     }
 
@@ -419,7 +419,7 @@ public sealed class AutoTagDownloadMoveService
 
         if (!runtime.Options.OrganizerOptions.DryRun && runtime.Options.OrganizerOptions.RemoveEmptyFolders)
         {
-            DeleteEmptyDirectories(runtime.Paths.RootIo);
+            DeleteEmptyDirectories(runtime.Paths.RootIo, BuildProtectedQualityBucketDirectories(runtime.Paths.RootIo));
         }
 
         return moved;
@@ -451,7 +451,7 @@ public sealed class AutoTagDownloadMoveService
         {
             if (!context.Options.DryRun && context.Options.RemoveEmptyFolders)
             {
-                DeleteEmptyDirectories(paths.RootIo);
+                DeleteEmptyDirectories(paths.RootIo, BuildProtectedQualityBucketDirectories(paths.RootIo));
             }
 
             return null;
@@ -1413,7 +1413,7 @@ public sealed class AutoTagDownloadMoveService
         var destinationIds = new HashSet<long>();
         foreach (var item in items)
         {
-            if (!IsCompletedStatus(item.Status) || !item.DestinationFolderId.HasValue)
+            if (!IsCompletedStatus(item.Status))
             {
                 continue;
             }
@@ -1423,10 +1423,31 @@ public sealed class AutoTagDownloadMoveService
                 continue;
             }
 
-            destinationIds.Add(item.DestinationFolderId.Value);
+            var resolvedDestinationId = item.DestinationFolderId ?? TryReadDestinationFolderId(item.PayloadJson);
+            if (resolvedDestinationId.HasValue && resolvedDestinationId.Value > 0)
+            {
+                destinationIds.Add(resolvedDestinationId.Value);
+            }
         }
 
         return destinationIds.Count == 1 ? destinationIds.First() : null;
+    }
+
+    private static long? TryReadDestinationFolderId(string? payloadJson)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            return ReadInt64Property(document.RootElement, "destinationFolderId");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) {
+            return null;
+        }
     }
 
     private static bool PayloadMentionsRoot(string? payloadJson, string rootPath)
@@ -1559,7 +1580,7 @@ public sealed class AutoTagDownloadMoveService
         return $"{dir}|{baseName}";
     }
 
-    private static void DeleteEmptyDirectories(string rootPath)
+    private static void DeleteEmptyDirectories(string rootPath, IReadOnlySet<string>? protectedDirectories = null)
     {
         if (!Directory.Exists(rootPath))
         {
@@ -1568,6 +1589,11 @@ public sealed class AutoTagDownloadMoveService
 
         foreach (var dir in Directory.EnumerateDirectories(rootPath, "*", SearchOption.AllDirectories).OrderByDescending(d => d.Length))
         {
+            if (IsProtectedDirectory(dir, protectedDirectories))
+            {
+                continue;
+            }
+
             if (Directory.EnumerateFileSystemEntries(dir).Any())
             {
                 continue;
@@ -1575,6 +1601,55 @@ public sealed class AutoTagDownloadMoveService
 
             Directory.Delete(dir, false);
         }
+    }
+
+    private static bool IsProtectedDirectory(string path, IReadOnlySet<string>? protectedDirectories)
+    {
+        if (protectedDirectories is null || protectedDirectories.Count == 0)
+        {
+            return false;
+        }
+
+        return protectedDirectories.Contains(Path.GetFullPath(path));
+    }
+
+    private static bool IsQualityBucketDirectoryName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return string.Equals(value, "Atmos", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "Stereo", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static HashSet<string> BuildProtectedQualityBucketDirectories(string rootPath)
+    {
+        var protectedDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(rootPath))
+        {
+            return protectedDirectories;
+        }
+
+        var rootIo = DownloadPathResolver.ResolveIoPath(rootPath);
+        if (string.IsNullOrWhiteSpace(rootIo)
+            || DownloadPathResolver.IsSmbPath(rootIo)
+            || !Directory.Exists(rootIo))
+        {
+            return protectedDirectories;
+        }
+
+        foreach (var bucket in new[] { "Atmos", "Stereo" })
+        {
+            var bucketPath = Path.Join(rootIo, bucket);
+            if (Directory.Exists(bucketPath))
+            {
+                protectedDirectories.Add(Path.GetFullPath(bucketPath));
+            }
+        }
+
+        return protectedDirectories;
     }
 
     private static void AddGenericPayloadSources(
@@ -1606,14 +1681,20 @@ public sealed class AutoTagDownloadMoveService
             }
 
             var qualityBucket = NormalizeQualityBucket(ReadStringProperty(root, "qualityBucket"));
-            var destinationKey = item.DestinationFolderId
-                ?? ReadInt64Property(root, "destinationFolderId")
-                ?? 0;
+            var destinationKey = ResolveDestinationKey(item, root);
             AddPathsToPayloadMaps(maps, item.QueueUuid, destinationKey, qualityBucket, files, roots);
         }
         catch (Exception ex) when (ex is not OperationCanceledException) {
             // Ignore malformed payloads; move pass should stay best-effort.
         }
+    }
+
+    private static long ResolveDestinationKey(DownloadQueueItem item, JsonElement payloadRoot)
+    {
+        // Queue metadata is authoritative. Payload destination is fallback for legacy rows.
+        return item.DestinationFolderId
+            ?? ReadInt64Property(payloadRoot, "destinationFolderId")
+            ?? 0;
     }
 
     private static void CollectPayloadPaths(
@@ -2067,8 +2148,15 @@ public sealed class AutoTagDownloadMoveService
 
         if (Directory.Exists(moveRootIo))
         {
-            DeleteEmptyDirectories(moveRootIo);
-            if (!Directory.EnumerateFileSystemEntries(moveRootIo).Any())
+            var protectedDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (TryShouldPreserveMoveRoot(stagingIo, moveRootIo))
+            {
+                protectedDirectories.Add(Path.GetFullPath(moveRootIo));
+            }
+
+            DeleteEmptyDirectories(moveRootIo, protectedDirectories);
+            if (!Directory.EnumerateFileSystemEntries(moveRootIo).Any()
+                && !IsProtectedDirectory(moveRootIo, protectedDirectories))
             {
                 Directory.Delete(moveRootIo, false);
             }
@@ -2685,5 +2773,23 @@ public sealed class AutoTagDownloadMoveService
         }
 
         return Path.Join(parts.Skip(1).ToArray());
+    }
+
+    private static bool TryShouldPreserveMoveRoot(string stagingIo, string moveRootIo)
+    {
+        var normalizedStaging = Path.GetFullPath(stagingIo);
+        var normalizedMoveRoot = Path.GetFullPath(moveRootIo);
+        var parent = Path.GetDirectoryName(normalizedMoveRoot);
+        if (string.IsNullOrWhiteSpace(parent))
+        {
+            return false;
+        }
+
+        if (!string.Equals(Path.GetFullPath(parent), normalizedStaging, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return IsQualityBucketDirectoryName(Path.GetFileName(normalizedMoveRoot));
     }
 }

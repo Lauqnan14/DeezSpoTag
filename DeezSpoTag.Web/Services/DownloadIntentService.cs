@@ -5095,7 +5095,7 @@ public sealed class DownloadIntentService
             existing.QueueUuid,
             context.RequestedQualityRank,
             context.Identity.ContentType,
-            context.Identity.DestinationFolderId,
+            context.Identity.DestinationFolderId ?? existing.DestinationFolderId,
             cancellationToken);
         await _queueRepository.UpdatePayloadAsync(existing.QueueUuid, replacementJson, cancellationToken);
         await _queueRepository.UpdateStatusAsync(
@@ -5124,7 +5124,7 @@ public sealed class DownloadIntentService
             existing.QueueUuid,
             context.RequestedQualityRank,
             context.Identity.ContentType,
-            context.Identity.DestinationFolderId,
+            context.Identity.DestinationFolderId ?? existing.DestinationFolderId,
             cancellationToken);
         await _queueRepository.UpdatePayloadAsync(existing.QueueUuid, replacementJson, cancellationToken);
         await _queueRepository.RequeueAsync(existing.QueueUuid, cancellationToken);

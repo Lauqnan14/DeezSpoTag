@@ -101,7 +101,7 @@ internal static class DownloadQueueEnqueueHelper
                 existing.QueueUuid,
                 null,
                 payload.ContentType,
-                payload.DestinationFolderId,
+                payload.DestinationFolderId ?? existing.DestinationFolderId,
                 cancellationToken);
             await queueRepository.UpdatePayloadAsync(existing.QueueUuid, payloadJson, cancellationToken);
             await queueRepository.UpdateStatusAsync(
