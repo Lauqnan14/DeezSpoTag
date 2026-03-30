@@ -1298,6 +1298,12 @@ public sealed class AutoTagDownloadMoveService
             return false;
         }
 
+        relative = StripLeadingKnownQualityBucket(relative);
+        if (string.IsNullOrWhiteSpace(relative))
+        {
+            return false;
+        }
+
         destinationPath = Path.Join(destinationRoot, relative);
         destinationDir = Path.GetDirectoryName(destinationPath);
         if (!string.IsNullOrWhiteSpace(destinationDir))
@@ -1983,6 +1989,7 @@ public sealed class AutoTagDownloadMoveService
         }
 
         relative = StripLeadingQualityBucket(relative, qualityBucket);
+        relative = StripLeadingKnownQualityBucket(relative);
         if (string.IsNullOrWhiteSpace(relative))
         {
             return null;
@@ -2770,6 +2777,29 @@ public sealed class AutoTagDownloadMoveService
         if (parts.Length == 1)
         {
             return string.Empty;
+        }
+
+        return Path.Join(parts.Skip(1).ToArray());
+    }
+
+    private static string StripLeadingKnownQualityBucket(string relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath))
+        {
+            return relativePath;
+        }
+
+        var parts = relativePath.Split(
+            new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+            StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length <= 1)
+        {
+            return relativePath;
+        }
+
+        if (!IsQualityBucketDirectoryName(parts[0]))
+        {
+            return relativePath;
         }
 
         return Path.Join(parts.Skip(1).ToArray());
