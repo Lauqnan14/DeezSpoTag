@@ -100,6 +100,14 @@ const analysisState = {
     lastRunUtc: null
 };
 
+const cleanupState = {
+    running: false,
+    timerId: 0,
+    startedAtMs: 0,
+    labelElement: null,
+    originalLabel: 'Cleanup Missing'
+};
+
 const soundtrackState = {
     category: 'movie',
     selectedServerType: '',
@@ -12746,6 +12754,11 @@ async function downloadAppleVideo(appleUrl, options = null) {
 }
 
 async function cleanupMissingLibraryFiles() {
+    if (cleanupState.running) {
+        showToast('Cleanup Missing is already running.');
+        return;
+    }
+
     const selectedFolder = getSelectedLibraryViewFolder();
     const selectedFolderId = selectedFolder ? Number(selectedFolder.id) : null;
     const scopeLabel = selectedFolder?.displayName || 'Library';
@@ -12755,6 +12768,41 @@ async function cleanupMissingLibraryFiles() {
     if (!await DeezSpoTag.ui.confirm(confirmMessage, { title: selectedFolder ? `Cleanup ${scopeLabel}` : 'Cleanup Missing Files' })) {
         return;
     }
+
+    const cleanupButton = document.getElementById('cleanupLibrary');
+    const cleanupLabel = cleanupButton?.querySelector?.('span') || null;
+    const runLabel = selectedFolder
+        ? `Cleanup ${scopeLabel}`
+        : 'Cleanup Missing';
+
+    cleanupState.running = true;
+    cleanupState.labelElement = cleanupLabel;
+    cleanupState.originalLabel = (cleanupLabel?.textContent || 'Cleanup Missing').trim() || 'Cleanup Missing';
+    cleanupState.startedAtMs = Date.now();
+
+    if (cleanupButton instanceof HTMLButtonElement) {
+        cleanupButton.disabled = true;
+        cleanupButton.setAttribute('aria-busy', 'true');
+    }
+
+    if (cleanupState.labelElement) {
+        cleanupState.labelElement.textContent = `${runLabel} (0s)`;
+    }
+
+    cleanupState.timerId = globalThis.setInterval(() => {
+        if (!cleanupState.running) {
+            return;
+        }
+        const elapsedSeconds = Math.max(0, Math.floor((Date.now() - cleanupState.startedAtMs) / 1000));
+        if (cleanupState.labelElement) {
+            cleanupState.labelElement.textContent = `${runLabel} (${elapsedSeconds}s)`;
+        }
+    }, 1000);
+
+    showToast(selectedFolder
+        ? `${runLabel} started...`
+        : 'Cleanup Missing started...');
+
     try {
         const params = new URLSearchParams();
         if (selectedFolderId !== null) {
@@ -12776,6 +12824,21 @@ async function cleanupMissingLibraryFiles() {
         await Promise.all([loadLibraryScanStatus(), loadArtists()]);
     } catch (error) {
         showToast(`Cleanup failed: ${error.message}`, true);
+    } finally {
+        cleanupState.running = false;
+        if (cleanupState.timerId) {
+            globalThis.clearInterval(cleanupState.timerId);
+            cleanupState.timerId = 0;
+        }
+
+        if (cleanupButton instanceof HTMLButtonElement) {
+            cleanupButton.disabled = false;
+            cleanupButton.removeAttribute('aria-busy');
+        }
+
+        if (cleanupState.labelElement) {
+            cleanupState.labelElement.textContent = cleanupState.originalLabel;
+        }
     }
 }
 
