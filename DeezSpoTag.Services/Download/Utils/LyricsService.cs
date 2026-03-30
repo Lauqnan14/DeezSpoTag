@@ -112,7 +112,10 @@ public class LyricsService
     /// <summary>
     /// Resolve lyrics for a track using current settings and authentication.
     /// </summary>
-    public async Task<LyricsBase?> ResolveLyricsAsync(Track track, DeezSpoTagSettings settings, CancellationToken cancellationToken = default)
+    public async Task<LyricsBase?> ResolveLyricsAsync(
+        Track track,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken = default)
     {
         if (track == null)
         {
@@ -2139,7 +2142,11 @@ public class LyricsService
     /// Save lyrics to file using priority implementation
     /// Priority: .lrc for synchronized lyrics, .txt for unsynchronized lyrics as fallback
     /// </summary>
-    public async Task SaveLyricsAsync(Track track, (string FilePath, string Filename, string ExtrasPath, string CoverPath, string ArtistPath) paths, DeezSpoTagSettings settings, CancellationToken cancellationToken = default)
+    public async Task SaveLyricsAsync(
+        Track track,
+        (string FilePath, string Filename, string ExtrasPath, string CoverPath, string ArtistPath) paths,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken = default)
     {
         _logger.LogDebug("SaveLyricsAsync called for track {TrackId}, SaveLyrics: {SaveLyrics}, SyncedLyrics: {SyncedLyrics}", 
             track.Id, settings.SaveLyrics, settings.SyncedLyrics);
@@ -2171,7 +2178,12 @@ public class LyricsService
     /// <summary>
     /// Save lyrics to file using already-fetched lyrics data.
     /// </summary>
-    public async Task SaveLyricsAsync(LyricsBase lyrics, Track track, (string FilePath, string Filename, string ExtrasPath, string CoverPath, string ArtistPath) paths, DeezSpoTagSettings settings, CancellationToken cancellationToken = default)
+    public async Task SaveLyricsAsync(
+        LyricsBase lyrics,
+        Track track,
+        (string FilePath, string Filename, string ExtrasPath, string CoverPath, string ArtistPath) paths,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken = default)
     {
         _logger.LogDebug("SaveLyricsAsync (prefetched) called for track {TrackId}, SaveLyrics: {SaveLyrics}, SyncedLyrics: {SyncedLyrics}", 
             track.Id, settings.SaveLyrics, settings.SyncedLyrics);
