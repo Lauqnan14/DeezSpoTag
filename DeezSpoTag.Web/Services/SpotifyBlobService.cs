@@ -30,7 +30,6 @@ public sealed class SpotifyBlobService
     private const string SpotifyDcCookie = "sp_dc";
     private const string SpotifyLibrespotFolder = "spotify_librespot";
     private const string SpotizerrPhoenixFolder = "spotizerr-phoenix";
-    private const string DeezspotSpotizerrPhoenixFolder = "deezspot-spotizerr-phoenix";
     private const string ZeroconfAuthScript = "spotify_zeroconf_auth.py";
     private const string LibrespotTokenScript = "spotify_librespot_token.py";
     private const string LibrespotPlaylistScript = "spotify_librespot_playlist.py";
@@ -895,10 +894,18 @@ public sealed class SpotifyBlobService
     public async Task<string> EnsureSpotifyAuthEnvironmentAsync(CancellationToken cancellationToken)
     {
         var repoRoot = ResolveRepoRoot();
+        var vendorRoot = ResolveSpotifyAuthVendorRoot(repoRoot);
+        if (vendorRoot == null)
+        {
+            throw new FileNotFoundException(
+                "Spotify auth vendor folder not found.",
+                Path.Join(repoRoot, ProjectWebFolder, ToolsFolder, SpotifyLibrespotFolder, SpotizerrPhoenixFolder));
+        }
+
         var configRoot = GetConfigRoot();
         var venvPath = Path.Join(configRoot, "spotify", ".venv");
         var pythonPath = Path.Join(venvPath, "bin", "python");
-        if (File.Exists(pythonPath) && await DependenciesReadyAsync(pythonPath, cancellationToken))
+        if (File.Exists(pythonPath) && await DependenciesReadyAsync(pythonPath, vendorRoot, cancellationToken))
         {
             return pythonPath;
         }
@@ -908,22 +915,6 @@ public sealed class SpotifyBlobService
         if (!createResult.Success)
         {
             throw new InvalidOperationException($"Failed to create Spotify auth venv: {createResult.Error}");
-        }
-
-        var vendorRoot = ResolveSpotifyAuthVendorRoot(repoRoot);
-        if (vendorRoot == null)
-        {
-            throw new FileNotFoundException(
-                "Spotify auth vendor folder not found.",
-                Path.Join(repoRoot, ProjectWebFolder, ToolsFolder, SpotifyLibrespotFolder, SpotizerrPhoenixFolder));
-        }
-
-        var deezspotVendorRoot = ResolveDeezspotVendorRoot(repoRoot);
-        if (deezspotVendorRoot == null)
-        {
-            throw new FileNotFoundException(
-                "Spotify deezspot vendor folder not found.",
-                Path.Join(repoRoot, ProjectWebFolder, ToolsFolder, SpotifyLibrespotFolder, DeezspotSpotizerrPhoenixFolder));
         }
 
         var requirementsPath = Path.Join(vendorRoot, "requirements.txt");
@@ -946,34 +937,7 @@ public sealed class SpotifyBlobService
             throw new InvalidOperationException($"Failed to install Spotify auth requirements: {installResult.Error}");
         }
 
-        // Ensure legacy setup.py-based vendor packages can build wheels in runtime containers.
-        var wheelInstallResult = await RunProcessAsync(
-            pythonPath,
-            configRoot,
-            cancellationToken,
-            "-m",
-            "pip",
-            "install",
-            "wheel");
-        if (!wheelInstallResult.Success)
-        {
-            throw new InvalidOperationException($"Failed to install Python wheel tooling for Spotify auth: {wheelInstallResult.Error}");
-        }
-
-        var packageInstallResult = await RunProcessAsync(
-            pythonPath,
-            configRoot,
-            cancellationToken,
-            "-m",
-            "pip",
-            "install",
-            vendorRoot);
-        if (!packageInstallResult.Success)
-        {
-            throw new InvalidOperationException($"Failed to install vendored Spotify auth package: {packageInstallResult.Error}");
-        }
-
-        if (!await DependenciesReadyAsync(pythonPath, cancellationToken))
+        if (!await DependenciesReadyAsync(pythonPath, vendorRoot, cancellationToken))
         {
             throw new InvalidOperationException("Spotify auth dependencies are not available after installation.");
         }
@@ -981,14 +945,15 @@ public sealed class SpotifyBlobService
         return pythonPath;
     }
 
-    private async Task<bool> DependenciesReadyAsync(string pythonExecutable, CancellationToken cancellationToken)
+    private async Task<bool> DependenciesReadyAsync(string pythonExecutable, string vendorRoot, CancellationToken cancellationToken)
     {
+        var vendorRootLiteral = JsonSerializer.Serialize(vendorRoot);
         var checkResult = await RunProcessAsync(
             pythonExecutable,
             GetConfigRoot(),
             cancellationToken,
             "-c",
-            "import librespot, zeroconf, Cryptodome");
+            $"import sys; sys.path.insert(0, {vendorRootLiteral}); import librespot, zeroconf, Cryptodome");
         return checkResult.Success;
     }
 
@@ -1097,9 +1062,6 @@ public sealed class SpotifyBlobService
 
     private string? ResolveSpotifyAuthVendorRoot(string repoRoot)
         => ResolveToolDirectoryPath(repoRoot, SpotifyLibrespotFolder, SpotizerrPhoenixFolder);
-
-    private string? ResolveDeezspotVendorRoot(string repoRoot)
-        => ResolveToolDirectoryPath(repoRoot, SpotifyLibrespotFolder, DeezspotSpotizerrPhoenixFolder);
 
     private string? ResolveLibrespotTokenScriptPath(string repoRoot)
         => ResolveToolFilePath(repoRoot, LibrespotTokenScript);
