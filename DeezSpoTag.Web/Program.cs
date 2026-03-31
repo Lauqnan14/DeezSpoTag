@@ -114,13 +114,40 @@ static string ConfigureDataDirectories()
 
 static void ConfigureDataProtection(IServiceCollection services, string dataDir)
 {
-    var keyDirectory = Path.GetFullPath(Path.Combine(dataDir, "security", "data-protection-keys"));
+    var configuredKeyDirectory = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_PROTECTION_KEYS_DIR");
+    var keyDirectory = string.IsNullOrWhiteSpace(configuredKeyDirectory)
+        ? Path.GetFullPath(Path.Combine(dataDir, "security", "data-protection-keys"))
+        : Path.GetFullPath(configuredKeyDirectory.Trim());
     Directory.CreateDirectory(keyDirectory);
+    HardenDataProtectionKeyDirectoryPermissions(keyDirectory);
+    Environment.SetEnvironmentVariable("DEEZSPOTAG_DATA_PROTECTION_KEYS_DIR", keyDirectory);
+    Console.WriteLine($"Data Protection Keys: {keyDirectory}");
 
     services
         .AddDataProtection()
         .SetApplicationName("DeezSpoTag")
         .PersistKeysToFileSystem(new DirectoryInfo(keyDirectory));
+}
+
+static void HardenDataProtectionKeyDirectoryPermissions(string keyDirectory)
+{
+    if (OperatingSystem.IsWindows())
+    {
+        return;
+    }
+
+    try
+    {
+        File.SetUnixFileMode(
+            keyDirectory,
+            UnixFileMode.UserRead |
+            UnixFileMode.UserWrite |
+            UnixFileMode.UserExecute);
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        Console.WriteLine($"Warning: Failed to restrict Data Protection key directory permissions for '{keyDirectory}': {ex.Message}");
+    }
 }
 
 static void ConfigureTlsRuntime(IConfiguration configuration)
