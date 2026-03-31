@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
@@ -293,7 +294,8 @@ public class AutoTagEnhancementController : ControllerBase
         CancellationToken cancellationToken)
     {
         request ??= new EnhancementFolderUniformityRequest();
-        ApplyFolderUniformityDefaultsFromSettings(request, _settingsService.LoadSettings());
+        var settings = _settingsService.LoadSettings();
+        ApplyFolderUniformityDefaultsFromSettings(request, settings);
         var runOrganizer = request.EnforceFolderStructure != false;
         var runDedupe = request.RunDedupe != false;
         var organizerOptions = BuildFolderUniformityOrganizerOptions(request);
@@ -332,7 +334,7 @@ public class AutoTagEnhancementController : ControllerBase
 
         if (runDedupe)
         {
-            await RunDedupeStageAsync(request, runState?.JobId, runOrganizer, enabledFolders, execution, cancellationToken);
+            await RunDedupeStageAsync(request, settings, runState?.JobId, runOrganizer, enabledFolders, execution, cancellationToken);
         }
 
         return BuildFolderUniformityCompletedResult(options, execution);
@@ -964,6 +966,7 @@ public class AutoTagEnhancementController : ControllerBase
 
     private async Task RunDedupeStageAsync(
         EnhancementFolderUniformityRequest request,
+        DeezSpoTagSettings settings,
         string? jobId,
         bool ranOrganizer,
         IReadOnlyList<FolderDto> enabledFolders,
@@ -980,8 +983,35 @@ public class AutoTagEnhancementController : ControllerBase
 
         try
         {
+            var dedupeFolders = FilterUnsafeMusicDownloadRoots(enabledFolders, settings, out var skippedRoots);
+            foreach (var skipped in skippedRoots)
+            {
+                var warning = $"[dedupe] skipped download-root music folder: {skipped}";
+                AddFolderUniformityLog(execution.Logs, warning);
+                AppendFolderUniformityLog(jobId, warning);
+            }
+
+            if (dedupeFolders.Count == 0)
+            {
+                execution.Dedupe = new
+                {
+                    filesScanned = 0,
+                    duplicatesFound = 0,
+                    deleted = 0,
+                    spaceFreedBytes = 0L,
+                    duplicatesFolderName = request.DuplicatesFolderName ?? DuplicateCleanerService.DuplicatesFolderName,
+                    usedShazamForIdentity = request.UseShazamForDedupe == true
+                };
+
+                UpdateFolderUniformityState(jobId, state =>
+                {
+                    state.Dedupe = execution.Dedupe;
+                });
+                return;
+            }
+
             var dedupeResult = await _duplicateCleanerService.ScanAsync(
-                enabledFolders.ToList(),
+                dedupeFolders,
                 new DuplicateCleanerOptions
                 {
                     UseDuplicatesFolder = true,
@@ -1138,6 +1168,65 @@ public class AutoTagEnhancementController : ControllerBase
     {
         var mode = folder.DesiredQuality?.Trim().ToLowerInvariant();
         return mode is not "video" and not "podcast";
+    }
+
+    private static List<FolderDto> FilterUnsafeMusicDownloadRoots(
+        IReadOnlyList<FolderDto> folders,
+        DeezSpoTagSettings settings,
+        out List<string> skippedRoots)
+    {
+        skippedRoots = new List<string>();
+        if (folders.Count == 0 || string.IsNullOrWhiteSpace(settings.DownloadLocation))
+        {
+            return folders.ToList();
+        }
+
+        var filtered = new List<FolderDto>(folders.Count);
+        foreach (var folder in folders)
+        {
+            if (!IsMusicFolder(folder) || string.IsNullOrWhiteSpace(folder.RootPath))
+            {
+                filtered.Add(folder);
+                continue;
+            }
+
+            if (IsSameOrDescendantPath(folder.RootPath, settings.DownloadLocation))
+            {
+                skippedRoots.Add(folder.RootPath);
+                continue;
+            }
+
+            filtered.Add(folder);
+        }
+
+        return filtered;
+    }
+
+    private static bool IsSameOrDescendantPath(string candidatePath, string rootPath)
+    {
+        var normalizedRoot = NormalizeRootPath(rootPath);
+        var normalizedCandidate = NormalizeRootPath(candidatePath);
+        if (string.Equals(normalizedRoot, normalizedCandidate, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var rootWithSeparator = normalizedRoot.EndsWith("/", StringComparison.Ordinal)
+            || normalizedRoot.EndsWith("\\", StringComparison.Ordinal)
+            ? normalizedRoot
+            : normalizedRoot + Path.DirectorySeparatorChar;
+        return normalizedCandidate.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeRootPath(string path)
+    {
+        if (DownloadPathResolver.IsSmbPath(path))
+        {
+            return path.TrimEnd('/');
+        }
+
+        return Path.GetFullPath(path)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
     private static bool TryParseSourceFolderProgress(
@@ -1632,7 +1721,9 @@ public class AutoTagEnhancementController : ControllerBase
         IReadOnlyList<FolderDto> enabledFolders,
         CancellationToken cancellationToken)
     {
-        if (enabledFolders.Count == 0)
+        var settings = _settingsService.LoadSettings();
+        var dedupeFolders = FilterUnsafeMusicDownloadRoots(enabledFolders, settings, out _);
+        if (dedupeFolders.Count == 0)
         {
             return new
             {
@@ -1646,7 +1737,7 @@ public class AutoTagEnhancementController : ControllerBase
         }
 
         var result = await _duplicateCleanerService.ScanAsync(
-            enabledFolders.ToList(),
+            dedupeFolders,
             new DuplicateCleanerOptions
             {
                 UseDuplicatesFolder = request.UseDuplicatesFolder ?? true,
