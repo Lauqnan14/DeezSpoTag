@@ -1,6 +1,9 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Settings;
 using TagLib;
 using IOFile = System.IO.File;
 
@@ -133,6 +136,7 @@ public class DuplicateCleanerService
         RegexTimeout);
     private readonly object _lastRunLock = new();
     private readonly ShazamRecognitionService _shazamRecognitionService;
+    private readonly DeezSpoTagSettingsService _settingsService;
     private readonly ILogger<DuplicateCleanerService> _logger;
     private DuplicateCleanerRunSummary _lastRun = DuplicateCleanerRunSummary.Idle();
 
@@ -175,9 +179,11 @@ public class DuplicateCleanerService
 
     public DuplicateCleanerService(
         ShazamRecognitionService shazamRecognitionService,
+        DeezSpoTagSettingsService settingsService,
         ILogger<DuplicateCleanerService> logger)
     {
         _shazamRecognitionService = shazamRecognitionService;
+        _settingsService = settingsService;
         _logger = logger;
     }
 
@@ -317,7 +323,10 @@ public class DuplicateCleanerService
         DuplicateCleanResult result,
         CancellationToken cancellationToken)
     {
+        var settings = _settingsService.LoadSettings();
+        var downloadRoot = settings.DownloadLocation;
         var roots = folders
+            .Where(folder => !ShouldSkipFolderForDedupe(folder, downloadRoot))
             .Select(folder => folder.RootPath?.Trim())
             .Where(static root => !string.IsNullOrWhiteSpace(root))
             .Cast<string>()
@@ -328,6 +337,63 @@ public class DuplicateCleanerService
             cancellationToken.ThrowIfCancellationRequested();
             await ScanFolderAsync(root, options, result, cancellationToken);
         }
+    }
+
+    private bool ShouldSkipFolderForDedupe(FolderDto folder, string? downloadRoot)
+    {
+        if (string.IsNullOrWhiteSpace(folder.RootPath))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(downloadRoot) || !IsMusicFolder(folder))
+        {
+            return false;
+        }
+
+        if (!IsSameOrDescendantPath(folder.RootPath, downloadRoot))
+        {
+            return false;
+        }
+
+        _logger.LogWarning(
+            "Skipping dedupe for music folder under download root. folderRoot={FolderRoot} downloadRoot={DownloadRoot}",
+            folder.RootPath,
+            downloadRoot);
+        return true;
+    }
+
+    private static bool IsMusicFolder(FolderDto folder)
+    {
+        var mode = folder.DesiredQuality?.Trim().ToLowerInvariant();
+        return mode is not "video" and not "podcast";
+    }
+
+    private static bool IsSameOrDescendantPath(string candidatePath, string rootPath)
+    {
+        var normalizedRoot = NormalizeRootPath(rootPath);
+        var normalizedCandidate = NormalizeRootPath(candidatePath);
+        if (string.Equals(normalizedRoot, normalizedCandidate, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var rootWithSeparator = normalizedRoot.EndsWith("/", StringComparison.Ordinal)
+            || normalizedRoot.EndsWith("\\", StringComparison.Ordinal)
+            ? normalizedRoot
+            : normalizedRoot + Path.DirectorySeparatorChar;
+        return normalizedCandidate.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeRootPath(string path)
+    {
+        if (DownloadPathResolver.IsSmbPath(path))
+        {
+            return path.TrimEnd('/');
+        }
+
+        return Path.GetFullPath(path)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
     private async Task ScanFolderAsync(
