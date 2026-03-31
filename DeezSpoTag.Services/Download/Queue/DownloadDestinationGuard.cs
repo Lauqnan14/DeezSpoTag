@@ -63,19 +63,28 @@ public static class DownloadDestinationGuard
             return (false, "Destination folder path is missing.");
         }
 
-        if (PathsMatch(downloadRoot, destinationRoot))
+        if (requiresAutoTagFolder && IsSameOrDescendantPath(destinationRoot, downloadRoot))
         {
-            return (false, "Destination folder cannot match the download location.");
+            return (false, "Destination music folder cannot be the download location or a subfolder of it.");
         }
 
         return (true, null);
     }
 
-    private static bool PathsMatch(string downloadRoot, string destinationRoot)
+    private static bool IsSameOrDescendantPath(string candidatePath, string rootPath)
     {
-        var normalizedDownload = NormalizeRoot(downloadRoot);
-        var normalizedDestination = NormalizeRoot(destinationRoot);
-        return string.Equals(normalizedDownload, normalizedDestination, StringComparison.OrdinalIgnoreCase);
+        var normalizedRoot = NormalizeRoot(rootPath);
+        var normalizedCandidate = NormalizeRoot(candidatePath);
+        if (string.Equals(normalizedRoot, normalizedCandidate, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var rootWithSeparator = normalizedRoot.EndsWith(Path.DirectorySeparatorChar)
+            || normalizedRoot.EndsWith(Path.AltDirectorySeparatorChar)
+            ? normalizedRoot
+            : normalizedRoot + Path.DirectorySeparatorChar;
+        return normalizedCandidate.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeRoot(string path)
