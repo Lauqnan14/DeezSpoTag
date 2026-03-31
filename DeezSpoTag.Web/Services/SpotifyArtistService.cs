@@ -1341,7 +1341,6 @@ public sealed class SpotifyArtistService
         long? localArtistId,
         CancellationToken cancellationToken)
     {
-        _ = localArtistId;
         if (string.IsNullOrWhiteSpace(artistName))
         {
             return null;
@@ -1360,6 +1359,7 @@ public sealed class SpotifyArtistService
             var exactCandidates = candidates
                 .Where(candidate => IsEquivalentArtistName(candidate.Name, artistName))
                 .ToList();
+            var localAlbumTitleSet = await TryGetLocalAlbumTitleSetAsync(localArtistId, cancellationToken);
 
             if (exactCandidates.Count == 0)
             {
@@ -1367,13 +1367,13 @@ public sealed class SpotifyArtistService
                 return null;
             }
 
-            var best = await SelectBestExactArtistCandidateAsync(exactCandidates, cancellationToken);
+            var best = await SelectBestExactArtistCandidateAsync(exactCandidates, localAlbumTitleSet, cancellationToken);
             if (best is not null)
             {
                 AddActivity("info",
-                    $"[spotify] candidate {best.Id} selected for {artistName} " +
-                    $"(exact_name=true).");
-                return best.Id;
+                    $"[spotify] candidate {best.Candidate.Id} selected for {artistName} " +
+                    $"(exact_name=true, local_album_overlap={best.LocalAlbumOverlap}).");
+                return best.Candidate.Id;
             }
 
             AddActivity("warn", $"[spotify] artist ID resolve failed: no suitable exact-name candidate for {artistName}.");
@@ -1387,36 +1387,63 @@ public sealed class SpotifyArtistService
         }
     }
 
-    private async Task<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate?> SelectBestExactArtistCandidateAsync(
+    private sealed record ExactArtistCandidateSelection(
+        SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate Candidate,
+        int LocalAlbumOverlap);
+
+    private async Task<ExactArtistCandidateSelection?> SelectBestExactArtistCandidateAsync(
         IReadOnlyList<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> exactCandidates,
+        HashSet<string> localAlbumTitleSet,
         CancellationToken cancellationToken)
     {
-        SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate? best = null;
+        ExactArtistCandidateSelection? best = null;
         var bestScore = int.MinValue;
+        var requireLocalAlbumOverlap = localAlbumTitleSet.Count > 0;
 
         foreach (var candidate in exactCandidates)
         {
+            var localAlbumOverlap = 0;
+            if (requireLocalAlbumOverlap)
+            {
+                var candidateAlbumTitles = await FetchCandidateAlbumTitlesAsync(candidate.Id, cancellationToken);
+                localAlbumOverlap = ComputeLocalAlbumOverlap(localAlbumTitleSet, candidateAlbumTitles);
+                if (localAlbumOverlap <= 0)
+                {
+                    continue;
+                }
+            }
+
             var info = await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidate.Id, cancellationToken);
+            var baseScore = localAlbumOverlap * 10_000;
             if (info is null)
             {
                 if (best is null)
                 {
-                    best = candidate;
-                    bestScore = 0;
+                    best = new ExactArtistCandidateSelection(candidate, localAlbumOverlap);
+                    bestScore = baseScore;
                 }
 
                 continue;
             }
 
-            var score = (info.Verified ? 1000 : 0) + Math.Max(0, info.TotalAlbums);
+            var score = baseScore + (info.Verified ? 1000 : 0) + Math.Max(0, info.TotalAlbums);
             if (score > bestScore)
             {
-                best = candidate;
+                best = new ExactArtistCandidateSelection(candidate, localAlbumOverlap);
                 bestScore = score;
             }
         }
 
-        return best ?? exactCandidates.FirstOrDefault();
+        if (best is not null)
+        {
+            return best;
+        }
+
+        return requireLocalAlbumOverlap
+            ? null
+            : exactCandidates
+                .Select(candidate => new ExactArtistCandidateSelection(candidate, 0))
+                .FirstOrDefault();
     }
 
     private static List<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> BuildArtistSearchCandidates(
