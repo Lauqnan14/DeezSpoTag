@@ -14,6 +14,7 @@ using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.IO;
+using TagLib;
 using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 
 namespace DeezSpoTag.Services.Download.Qobuz;
@@ -124,11 +125,16 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
     {
         var context = BuildTrackContext(payload, settings);
         var request = BuildRequest(payload, settings, context);
+        payload.QobuzRequestedQuality = request.Quality;
         var progressReporter = CreateProgressReporter(next.QueueUuid, itemToken);
         _activityLog.Info($"Download start: {next.QueueUuid} engine={EngineName} quality={request.Quality}");
 
         var resolvedIsrc = await ResolveIsrcAsync(payload, itemToken);
-        await ResolveAndPersistPreferredTrackAsync(next.QueueUuid, payload, resolvedIsrc, itemToken);
+        var resolvedTrack = await ResolveAndPersistPreferredTrackAsync(next.QueueUuid, payload, resolvedIsrc, itemToken);
+        request.Quality = CapRequestedQualityByTrackCapabilities(request.Quality, resolvedTrack?.Track);
+        payload.QobuzResolvedQuality = request.Quality;
+        payload.Quality = request.Quality;
+        await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, next.QueueUuid, payload, cancellationToken: itemToken);
 
         var sourceSelection = ResolveQobuzSource(payload);
         await QueuePrefetchAsync(next.QueueUuid, context, payload, settings);
@@ -141,14 +147,27 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             sourceSelection,
             progressReporter,
             itemToken);
+        outputPath = await TryApplyPostDownloadSettingsAsync(next.QueueUuid, context, payload, outputPath, settings, itemToken);
+        var actualQuality = TryInferActualQobuzQuality(outputPath);
+        payload.QobuzActualQuality = actualQuality ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(actualQuality)
+            && !string.Equals(actualQuality, request.Quality, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogWarning(
+                "Qobuz output quality differs from resolved quality for {QueueUuid}: resolved={Resolved} actual={Actual} file={FilePath}",
+                next.QueueUuid,
+                request.Quality,
+                actualQuality,
+                outputPath);
+        }
+
         await EngineQueueQualitySyncHelper.SyncQualityAsync(
             _queueRepository,
             _deezspotagListener,
             next.QueueUuid,
             payload,
-            request.Quality,
+            actualQuality ?? request.Quality,
             itemToken);
-        outputPath = await TryApplyPostDownloadSettingsAsync(next.QueueUuid, context, payload, outputPath, settings, itemToken);
 
         await CompleteDownloadAsync(next.QueueUuid, payload, outputPath, itemToken);
     }
@@ -219,7 +238,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             cancellationToken);
     }
 
-    private async Task ResolveAndPersistPreferredTrackAsync(
+    private async Task<QobuzTrackResolution?> ResolveAndPersistPreferredTrackAsync(
         string queueUuid,
         QobuzQueueItem payload,
         string? resolvedIsrc,
@@ -228,7 +247,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         var resolvedTrack = await ResolvePreferredQobuzTrackAsync(payload, resolvedIsrc, cancellationToken);
         if (resolvedTrack == null)
         {
-            return;
+            return null;
         }
 
         payload.QobuzId = resolvedTrack.Track.Id.ToString();
@@ -236,6 +255,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         payload.QobuzResolutionScore = resolvedTrack.Score;
         payload.SourceUrl = $"https://play.qobuz.com/track/{resolvedTrack.Track.Id}";
         await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
+        return resolvedTrack;
     }
 
     private static QobuzSourceSelection ResolveQobuzSource(QobuzQueueItem payload)
@@ -366,6 +386,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             SpotifyTrackNumber = request.SpotifyTrackNumber,
             SpotifyDiscNumber = request.SpotifyDiscNumber,
             SpotifyTotalTracks = request.SpotifyTotalTracks,
+            AllowQualityFallback = request.AllowQualityFallback,
             TagSettings = settings.Tags,
             ProgressCallback = progressReporter
         };
@@ -671,6 +692,72 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         return await EngineAudioPostDownloadHelper.ApplyPostDownloadSettingsAsync(
             request,
             cancellationToken);
+    }
+
+    private static string CapRequestedQualityByTrackCapabilities(string requestedQuality, DeezSpoTag.Core.Models.Qobuz.QobuzTrack? resolvedTrack)
+    {
+        var normalizedRequested = QobuzQualityCodeNormalizer.Normalize(requestedQuality, "6");
+        if (resolvedTrack == null)
+        {
+            return normalizedRequested;
+        }
+
+        var availableMax = InferMaxAvailableQobuzQuality(resolvedTrack);
+        return QobuzQualityRank(normalizedRequested) > QobuzQualityRank(availableMax)
+            ? availableMax
+            : normalizedRequested;
+    }
+
+    private static string InferMaxAvailableQobuzQuality(DeezSpoTag.Core.Models.Qobuz.QobuzTrack track)
+    {
+        var bitDepth = Math.Max(0, track.MaximumBitDepth);
+        var sampleRate = Math.Max(0d, track.MaximumSamplingRate);
+        if (bitDepth >= 24)
+        {
+            return sampleRate >= 96d ? "27" : "7";
+        }
+
+        return "6";
+    }
+
+    private static int QobuzQualityRank(string qualityCode)
+        => qualityCode switch
+        {
+            "27" => 3,
+            "7" => 2,
+            "6" => 1,
+            _ => 0
+        };
+
+    private string? TryInferActualQobuzQuality(string filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || !System.IO.File.Exists(filePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var mediaFile = TagLib.File.Create(filePath);
+            var bitsPerSample = mediaFile.Properties.BitsPerSample;
+            if (bitsPerSample <= 0)
+            {
+                return null;
+            }
+
+            var sampleRate = mediaFile.Properties.AudioSampleRate;
+            if (bitsPerSample >= 24)
+            {
+                return sampleRate >= 96000 ? "27" : "7";
+            }
+
+            return "6";
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to infer Qobuz output quality from file {FilePath}", filePath);
+            return null;
+        }
     }
 
 }

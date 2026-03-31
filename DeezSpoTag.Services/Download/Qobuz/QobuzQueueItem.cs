@@ -15,6 +15,9 @@ public sealed class QobuzQueueItem : EngineQueueItemBase
     public string QobuzId { get; set; } = "";
     public string QobuzResolutionSource { get; set; } = "";
     public int? QobuzResolutionScore { get; set; }
+    public string QobuzRequestedQuality { get; set; } = "";
+    public string QobuzResolvedQuality { get; set; } = "";
+    public string QobuzActualQuality { get; set; } = "";
 
     [JsonIgnore]
     public QobuzDownloadStatus Status { get; set; } = QobuzDownloadStatus.Queued;
@@ -26,7 +29,10 @@ public sealed class QobuzQueueItem : EngineQueueItemBase
             {
                 ["qobuzId"] = QobuzId,
                 ["qobuzResolutionSource"] = QobuzResolutionSource,
-                ["qobuzResolutionScore"] = QobuzResolutionScore
+                ["qobuzResolutionScore"] = QobuzResolutionScore,
+                ["qobuzRequestedQuality"] = QobuzRequestedQuality,
+                ["qobuzResolvedQuality"] = QobuzResolvedQuality,
+                ["qobuzActualQuality"] = QobuzActualQuality
             });
 
     private static string MapStatusForUi(QobuzDownloadStatus status)
