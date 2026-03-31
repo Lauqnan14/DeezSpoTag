@@ -87,6 +87,7 @@ If your host uses Compose v1, replace `docker compose` with `docker-compose`.
 ### Common `.env` Values
 
 - `DEEZSPOTAG_DATA_PATH`
+- `DEEZSPOTAG_DATA_PROTECTION_KEYS_DIR` (for multi-instance deployments, this must point to the same shared directory in every app instance)
 - `APPLE_WRAPPER_DATA_PATH`
 - `APPLE_WRAPPER_SESSION_PATH`
 - `DEEZSPOTAG_APPLE_WRAPPER_CONTROL_MODE` (`shared` recommended)

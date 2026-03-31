@@ -16,6 +16,7 @@ services:
       DEEZSPOTAG_APPLE_WRAPPER_SHARED_SESSION_DIR: /apple-wrapper/session
       DEEZSPOTAG_DATA_DIR: /data
       DEEZSPOTAG_CONFIG_DIR: /data
+      DEEZSPOTAG_DATA_PROTECTION_KEYS_DIR: ${DEEZSPOTAG_DATA_PROTECTION_KEYS_DIR:-/data/security/data-protection-keys}
     volumes:
       # Auto-create app state folder if missing.
       - type: bind
