@@ -1341,6 +1341,7 @@ public sealed class SpotifyArtistService
         long? localArtistId,
         CancellationToken cancellationToken)
     {
+        _ = localArtistId;
         if (string.IsNullOrWhiteSpace(artistName))
         {
             return null;
@@ -1355,22 +1356,27 @@ public sealed class SpotifyArtistService
                 return null;
             }
 
-            var localAlbumTitleSet = await TryGetLocalAlbumTitleSetAsync(localArtistId, cancellationToken);
             var candidates = BuildArtistSearchCandidates(results, artistName);
-            var ranked = await RankArtistSearchCandidatesAsync(candidates, artistName, localAlbumTitleSet, cancellationToken);
+            var exactCandidates = candidates
+                .Where(candidate => IsEquivalentArtistName(candidate.Name, artistName))
+                .ToList();
 
-            if (ranked.Count > 0)
+            if (exactCandidates.Count == 0)
             {
-                var best = SelectBestCandidate(ranked);
-                await StoreEarlyDeezerArtistIdAsync(localArtistId, best.Validation.DeezerArtistId, artistName, cancellationToken);
-
-                AddActivity("info",
-                    $"[spotify] candidate {best.Candidate.Id} selected for {artistName} " +
-                    $"(score={best.Score}, local_overlap={best.LocalOverlap}, deezer={best.Validation.Status}).");
-                return best.Candidate.Id;
+                AddActivity("warn", $"[spotify] artist ID resolve failed: no exact artist-name match for {artistName}.");
+                return null;
             }
 
-            AddActivity("warn", $"[spotify] artist ID resolve failed: no artist with albums for {artistName}.");
+            var best = await SelectBestExactArtistCandidateAsync(exactCandidates, cancellationToken);
+            if (best is not null)
+            {
+                AddActivity("info",
+                    $"[spotify] candidate {best.Id} selected for {artistName} " +
+                    $"(exact_name=true).");
+                return best.Id;
+            }
+
+            AddActivity("warn", $"[spotify] artist ID resolve failed: no suitable exact-name candidate for {artistName}.");
             return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1379,6 +1385,38 @@ public sealed class SpotifyArtistService
             AddActivity("warn", $"[spotify] artist ID resolve failed: pathfinder search error for {artistName}.");
             return null;
         }
+    }
+
+    private async Task<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate?> SelectBestExactArtistCandidateAsync(
+        IReadOnlyList<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> exactCandidates,
+        CancellationToken cancellationToken)
+    {
+        SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate? best = null;
+        var bestScore = int.MinValue;
+
+        foreach (var candidate in exactCandidates)
+        {
+            var info = await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidate.Id, cancellationToken);
+            if (info is null)
+            {
+                if (best is null)
+                {
+                    best = candidate;
+                    bestScore = 0;
+                }
+
+                continue;
+            }
+
+            var score = (info.Verified ? 1000 : 0) + Math.Max(0, info.TotalAlbums);
+            if (score > bestScore)
+            {
+                best = candidate;
+                bestScore = score;
+            }
+        }
+
+        return best ?? exactCandidates.FirstOrDefault();
     }
 
     private static List<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> BuildArtistSearchCandidates(
