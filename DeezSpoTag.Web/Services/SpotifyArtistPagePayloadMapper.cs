@@ -184,11 +184,19 @@ public static class SpotifyArtistPagePayloadMapper
 
     private static object MapSpotifyRelease(SpotifyAlbum album)
     {
+        var coverXl = SelectBestSpotifyImageUrl(album.Images);
+        var coverMedium = SelectSpotifyImageUrl(album.Images, 300, coverXl);
+        var coverSmall = SelectSpotifyImageUrl(album.Images, 64, coverMedium);
+
         return new
         {
             id = album.Id,
             title = album.Name,
-            cover_medium = SelectBestSpotifyImageUrl(album.Images),
+            cover = coverXl,
+            cover_xl = coverXl,
+            cover_big = coverXl,
+            cover_medium = coverMedium,
+            cover_small = coverSmall,
             release_date = album.ReleaseDate,
             nb_tracks = album.TotalTracks,
             record_type = string.IsNullOrWhiteSpace(album.AlbumGroup) ? "album" : album.AlbumGroup,
@@ -208,6 +216,28 @@ public static class SpotifyArtistPagePayloadMapper
             label = album.Label ?? string.Empty,
             popularity = album.Popularity ?? 0
         };
+    }
+
+    private static string SelectSpotifyImageUrl(IEnumerable<SpotifyImage>? images, int minWidth, string fallback)
+    {
+        if (images is null)
+        {
+            return fallback;
+        }
+
+        var ordered = images
+            .Where(image => !string.IsNullOrWhiteSpace(image.Url))
+            .OrderBy(image => image.Width ?? int.MaxValue)
+            .ThenBy(image => image.Height ?? int.MaxValue)
+            .ToList();
+
+        var preferred = ordered.FirstOrDefault(image => (image.Width ?? 0) >= minWidth)?.Url;
+        if (!string.IsNullOrWhiteSpace(preferred))
+        {
+            return preferred;
+        }
+
+        return ordered.LastOrDefault()?.Url ?? fallback;
     }
 
     private static string SelectBestSpotifyImageUrl(IEnumerable<SpotifyImage>? images)
