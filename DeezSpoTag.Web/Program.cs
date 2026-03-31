@@ -65,7 +65,7 @@ public static async Task Main(string[] args)
 
     var app = builder.Build();
     LogBuildDetails(app);
-    await InitializeApplicationAsync(app, builder.Configuration);
+    await InitializeApplicationAsync(app);
     ConfigurePipeline(app, builder.Configuration);
     MapApplicationEndpoints(app);
 
@@ -1174,7 +1174,7 @@ static void RegisterDeezerServices(IServiceCollection services, IConfiguration c
         });
 }
 
-static async Task InitializeApplicationAsync(WebApplication app, IConfiguration configuration)
+static async Task InitializeApplicationAsync(WebApplication app)
 {
     using var scope = app.Services.CreateScope();
     var dbService = scope.ServiceProvider.GetRequiredService<DeezSpoTag.Services.Library.LibraryDbService>();
