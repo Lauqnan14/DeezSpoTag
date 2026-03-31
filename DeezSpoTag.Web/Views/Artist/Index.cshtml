@@ -402,6 +402,21 @@
     background: var(--bg-quaternary);
 }
 
+.discography-cover-placeholder {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: 12px;
+    border: 1px solid var(--border-primary);
+    background: color-mix(in srgb, var(--bg-quaternary) 84%, #000 16%);
+    color: var(--text-secondary);
+    display: grid;
+    place-items: center;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
 .discography-title {
     font-size: 14px;
     font-weight: 600;
@@ -754,7 +769,7 @@ function formatArtistData(data) {
             if (data.releases[tabKey] && Array.isArray(data.releases[tabKey])) {
                 const formattedReleases = data.releases[tabKey].map(release => ({
                     releaseID: release.id,
-                    releaseCover: release.cover_medium || release.cover_small || release.cover || '',
+                    releaseCover: resolveReleaseCover(release),
                     releaseTitle: release.title || '',
                     releaseDate: release.release_date || '',
                     releaseTracksNumber: release.nb_tracks || 0,
@@ -1689,14 +1704,56 @@ function renderDiscography(releases) {
     return releases.map(release => {
         const year = release.releaseDate ? String(release.releaseDate).slice(0, 4) : '';
         const link = `/Tracklist?id=${release.releaseID}&type=album${release.releaseSource && release.releaseSource !== 'deezer' ? `&source=${release.releaseSource}` : ''}`;
+        const coverMarkup = release.releaseCover
+            ? `<img src="${release.releaseCover}" alt="${escapeHtml(release.releaseTitle)}" loading="lazy" decoding="async" onerror="handleDiscographyCoverError(this)">`
+            : '<div class="discography-cover-placeholder">No Art</div>';
         return `
             <a class="discography-card" href="${link}">
-                <img src="${release.releaseCover}" alt="${escapeHtml(release.releaseTitle)}">
+                ${coverMarkup}
                 <div class="discography-title">${escapeHtml(release.releaseTitle)}</div>
                 <div class="discography-meta">${year}${release.releaseType ? ` • ${escapeHtml(release.releaseType)}` : ''}</div>
             </a>
         `;
     }).join('');
+}
+
+function resolveReleaseCover(release) {
+    const candidates = [
+        release?.cover_medium,
+        release?.cover_big,
+        release?.cover_xl,
+        release?.cover_small,
+        release?.cover
+    ];
+
+    for (const candidate of candidates) {
+        if (typeof candidate === 'string' && candidate.trim().length > 0) {
+            return candidate.trim();
+        }
+    }
+
+    return '';
+}
+
+function handleDiscographyCoverError(imageElement) {
+    if (!imageElement) {
+        return;
+    }
+
+    if (imageElement.dataset.fallbackApplied === '1') {
+        imageElement.replaceWith(createDiscographyCoverPlaceholder());
+        return;
+    }
+
+    imageElement.dataset.fallbackApplied = '1';
+    imageElement.src = '/images/logo.svg';
+}
+
+function createDiscographyCoverPlaceholder() {
+    const placeholder = document.createElement('div');
+    placeholder.className = 'discography-cover-placeholder';
+    placeholder.textContent = 'No Art';
+    return placeholder;
 }
 
 function renderRelatedArtists(artists) {
