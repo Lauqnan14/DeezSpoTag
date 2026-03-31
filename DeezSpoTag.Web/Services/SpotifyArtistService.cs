@@ -993,12 +993,6 @@ public sealed class SpotifyArtistService
         Dictionary<string, string> GroupByAlbumId,
         Dictionary<string, string> TypeByAlbumId);
 
-    private sealed record RankedSpotifyCandidate(
-        SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate Candidate,
-        int Score,
-        DeezerValidationResult Validation,
-        int LocalOverlap);
-
     private async Task<T?> TryFetchSpotifyAsync<T>(
         Func<CancellationToken, Task<T?>> fetch,
         string artistName,
@@ -1391,52 +1385,42 @@ public sealed class SpotifyArtistService
         SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate Candidate,
         int LocalAlbumOverlap);
 
+    private sealed record ExactArtistCandidateScore(
+        SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate Candidate,
+        int LocalAlbumOverlap,
+        int Score);
+
     private async Task<ExactArtistCandidateSelection?> SelectBestExactArtistCandidateAsync(
         IReadOnlyList<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> exactCandidates,
         HashSet<string> localAlbumTitleSet,
         CancellationToken cancellationToken)
     {
-        ExactArtistCandidateSelection? best = null;
+        ExactArtistCandidateScore? best = null;
         var bestScore = int.MinValue;
         var requireLocalAlbumOverlap = localAlbumTitleSet.Count > 0;
 
         foreach (var candidate in exactCandidates)
         {
-            var localAlbumOverlap = 0;
-            if (requireLocalAlbumOverlap)
+            var scoredCandidate = await ScoreExactArtistCandidateAsync(
+                candidate,
+                requireLocalAlbumOverlap,
+                localAlbumTitleSet,
+                cancellationToken);
+            if (scoredCandidate is null)
             {
-                var candidateAlbumTitles = await FetchCandidateAlbumTitlesAsync(candidate.Id, cancellationToken);
-                localAlbumOverlap = ComputeLocalAlbumOverlap(localAlbumTitleSet, candidateAlbumTitles);
-                if (localAlbumOverlap <= 0)
-                {
-                    continue;
-                }
-            }
-
-            var info = await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidate.Id, cancellationToken);
-            var baseScore = localAlbumOverlap * 10_000;
-            if (info is null)
-            {
-                if (best is null)
-                {
-                    best = new ExactArtistCandidateSelection(candidate, localAlbumOverlap);
-                    bestScore = baseScore;
-                }
-
                 continue;
             }
 
-            var score = baseScore + (info.Verified ? 1000 : 0) + Math.Max(0, info.TotalAlbums);
-            if (score > bestScore)
+            if (scoredCandidate.Score > bestScore)
             {
-                best = new ExactArtistCandidateSelection(candidate, localAlbumOverlap);
-                bestScore = score;
+                best = scoredCandidate;
+                bestScore = scoredCandidate.Score;
             }
         }
 
         if (best is not null)
         {
-            return best;
+            return new ExactArtistCandidateSelection(best.Candidate, best.LocalAlbumOverlap);
         }
 
         return requireLocalAlbumOverlap
@@ -1444,6 +1428,55 @@ public sealed class SpotifyArtistService
             : exactCandidates
                 .Select(candidate => new ExactArtistCandidateSelection(candidate, 0))
                 .FirstOrDefault();
+    }
+
+    private async Task<ExactArtistCandidateScore?> ScoreExactArtistCandidateAsync(
+        SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate candidate,
+        bool requireLocalAlbumOverlap,
+        HashSet<string> localAlbumTitleSet,
+        CancellationToken cancellationToken)
+    {
+        var localAlbumOverlap = await ResolveLocalAlbumOverlapAsync(
+            candidate.Id,
+            requireLocalAlbumOverlap,
+            localAlbumTitleSet,
+            cancellationToken);
+        if (requireLocalAlbumOverlap && localAlbumOverlap <= 0)
+        {
+            return null;
+        }
+
+        var info = await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidate.Id, cancellationToken);
+        var score = ComputeExactCandidateScore(localAlbumOverlap, info);
+        return new ExactArtistCandidateScore(candidate, localAlbumOverlap, score);
+    }
+
+    private async Task<int> ResolveLocalAlbumOverlapAsync(
+        string candidateId,
+        bool requireLocalAlbumOverlap,
+        HashSet<string> localAlbumTitleSet,
+        CancellationToken cancellationToken)
+    {
+        if (!requireLocalAlbumOverlap)
+        {
+            return 0;
+        }
+
+        var candidateAlbumTitles = await FetchCandidateAlbumTitlesAsync(candidateId, cancellationToken);
+        return ComputeLocalAlbumOverlap(localAlbumTitleSet, candidateAlbumTitles);
+    }
+
+    private static int ComputeExactCandidateScore(
+        int localAlbumOverlap,
+        SpotifyPathfinderMetadataClient.SpotifyArtistCandidateInfo? info)
+    {
+        var baseScore = localAlbumOverlap * 10_000;
+        if (info is null)
+        {
+            return baseScore;
+        }
+
+        return baseScore + (info.Verified ? 1000 : 0) + Math.Max(0, info.TotalAlbums);
     }
 
     private static List<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> BuildArtistSearchCandidates(
@@ -1455,58 +1488,6 @@ public sealed class SpotifyArtistService
             .Concat(results)
             .DistinctBy(candidate => candidate.Id)
             .ToList();
-    }
-
-    private async Task<List<RankedSpotifyCandidate>> RankArtistSearchCandidatesAsync(
-        IReadOnlyList<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> candidates,
-        string artistName,
-        HashSet<string> localAlbumTitleSet,
-        CancellationToken cancellationToken)
-    {
-        var ranked = new List<RankedSpotifyCandidate>(candidates.Count);
-        foreach (var candidate in candidates)
-        {
-            var rankedCandidate = await TryRankArtistCandidateAsync(candidate, artistName, localAlbumTitleSet, cancellationToken);
-            if (rankedCandidate is not null)
-            {
-                ranked.Add(rankedCandidate);
-            }
-        }
-
-        return ranked;
-    }
-
-    private async Task<RankedSpotifyCandidate?> TryRankArtistCandidateAsync(
-        SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate candidate,
-        string artistName,
-        HashSet<string> localAlbumTitleSet,
-        CancellationToken cancellationToken)
-    {
-        var info = await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidate.Id, cancellationToken);
-        if (info is null || info.TotalAlbums <= 0)
-        {
-            return null;
-        }
-
-        var spotifyAlbumTitles = await FetchCandidateAlbumTitlesAsync(candidate.Id, cancellationToken);
-        var localOverlap = ComputeLocalAlbumOverlap(localAlbumTitleSet, spotifyAlbumTitles);
-        var validation = await _deezerLinkService.ValidateSpotifyCandidateAsync(
-            spotifyAlbumTitles,
-            artistName,
-            0.80,
-            cancellationToken);
-
-        var isExactName = IsEquivalentArtistName(candidate.Name, artistName);
-        if (ShouldRejectCandidate(validation, isExactName, localOverlap))
-        {
-            AddActivity("warn",
-                $"[spotify] candidate {candidate.Id} rejected for {artistName}: " +
-                $"{validation.OverlapPercentage:P0} album overlap with Deezer (need 80%).");
-            return null;
-        }
-
-        var score = CalculateCandidateScore(info.TotalAlbums, localOverlap, validation.Status, isExactName);
-        return new RankedSpotifyCandidate(candidate, score, validation, localOverlap);
     }
 
     private async Task<List<string>> FetchCandidateAlbumTitlesAsync(string candidateId, CancellationToken cancellationToken)
@@ -1532,54 +1513,6 @@ public sealed class SpotifyArtistService
             .Where(title => !string.IsNullOrWhiteSpace(title))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         return localAlbumTitleSet.Count(title => normalizedSpotifyTitles.Contains(title));
-    }
-
-    private static bool ShouldRejectCandidate(DeezerValidationResult validation, bool isExactName, int localOverlap)
-    {
-        return validation.Status == DeezerValidationStatus.Invalid
-               && !isExactName
-               && localOverlap == 0;
-    }
-
-    private static int CalculateCandidateScore(
-        int totalAlbums,
-        int localOverlap,
-        DeezerValidationStatus validationStatus,
-        bool isExactName)
-    {
-        var score = isExactName ? 100 : 0;
-        score += Math.Min(totalAlbums, 80);
-        score += localOverlap * 8;
-        score += validationStatus switch
-        {
-            DeezerValidationStatus.Valid => 25,
-            DeezerValidationStatus.SkipValidation => 10,
-            _ => 0
-        };
-        return score;
-    }
-
-    private static RankedSpotifyCandidate SelectBestCandidate(IReadOnlyList<RankedSpotifyCandidate> ranked)
-    {
-        return ranked
-            .OrderByDescending(item => item.Score)
-            .ThenByDescending(item => item.LocalOverlap)
-            .First();
-    }
-
-    private async Task StoreEarlyDeezerArtistIdAsync(
-        long? localArtistId,
-        string? deezerArtistId,
-        string artistName,
-        CancellationToken cancellationToken)
-    {
-        if (!localArtistId.HasValue || string.IsNullOrWhiteSpace(deezerArtistId))
-        {
-            return;
-        }
-
-        await _libraryRepository.UpsertArtistSourceIdAsync(localArtistId.Value, "deezer", deezerArtistId, cancellationToken);
-        AddActivity("info", $"[spotify] Deezer ID {deezerArtistId} stored early for {artistName}.");
     }
 
     private async Task<HashSet<string>> TryGetLocalAlbumTitleSetAsync(long? localArtistId, CancellationToken cancellationToken)
