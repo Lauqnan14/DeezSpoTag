@@ -200,7 +200,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             }
 
             await QueuePrefetchIfNeededAsync(next.QueueUuid, queueContext, requestContext.TrackContext);
-            var result = await ExecuteDownloadWithFallbackAsync(next.QueueUuid, requestContext.Request, itemToken);
+            var result = await ExecuteDownloadWithFallbackAsync(next.QueueUuid, queueContext.Payload, requestContext.Request, itemToken);
             if (!result.Success)
             {
                 await HandleDownloadFailureAsync(next, queueContext.Payload, result.Message, stoppingToken, itemToken);
@@ -460,7 +460,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         }
 
         var isVideoWrapperCheck = request.IsVideo || queueContext.VideoPayload;
-        if (!isVideoWrapperCheck && CanFallbackToAacStereo(request))
+        if (!isVideoWrapperCheck && CanFallbackToAacStereo(request) && ShouldUseInEngineAppleAacFallback(queueContext.Payload))
         {
             ApplyAacStereoFallback(request);
             _logger.LogInformation(
@@ -507,11 +507,12 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
     private async Task<AppleDownloadResult> ExecuteDownloadWithFallbackAsync(
         string queueUuid,
+        AppleQueueItem payload,
         AppleDownloadRequest request,
         CancellationToken itemToken)
     {
         var result = await _downloadService.DownloadAsync(request, itemToken);
-        if (!result.Success && CanFallbackToAacStereo(request))
+        if (!result.Success && CanFallbackToAacStereo(request) && ShouldUseInEngineAppleAacFallback(payload))
         {
             _logger.LogWarning("Apple download failed for {QueueUuid}, retrying with AAC stereo. Error: {Message}", queueUuid, result.Message);
             ApplyAacStereoFallback(request);
@@ -922,6 +923,27 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
         return profile.Contains(AacKeyword, StringComparison.OrdinalIgnoreCase)
                || profile.Contains(AlacKeyword, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ShouldUseInEngineAppleAacFallback(AppleQueueItem payload)
+    {
+        IEnumerable<string> plannedEngines = Enumerable.Empty<string>();
+        if (payload.FallbackPlan != null && payload.FallbackPlan.Count > 0)
+        {
+            plannedEngines = payload.FallbackPlan
+                .Select(step => step.Engine)
+                .Where(engine => !string.IsNullOrWhiteSpace(engine));
+        }
+        else if (payload.AutoSources != null && payload.AutoSources.Count > 0)
+        {
+            plannedEngines = payload.AutoSources
+                .Select(DownloadSourceOrder.DecodeAutoSource)
+                .Select(step => step.Source)
+                .Where(engine => !string.IsNullOrWhiteSpace(engine));
+        }
+
+        // Preserve global AUTO fallback order when multiple engines are present.
+        return !plannedEngines.Any(engine => !string.Equals(engine, EngineName, StringComparison.OrdinalIgnoreCase));
     }
 
     private static void ApplyAacStereoFallback(AppleDownloadRequest request)
