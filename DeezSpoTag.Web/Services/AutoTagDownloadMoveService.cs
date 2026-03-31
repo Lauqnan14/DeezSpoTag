@@ -1750,10 +1750,10 @@ public sealed class AutoTagDownloadMoveService
             return;
         }
 
-        foreach (var pathEntry in finalDestinationsElement.EnumerateObject())
+        foreach (var rawPath in finalDestinationsElement.EnumerateObject().Select(pathEntry => pathEntry.Name))
         {
-            AddFileFromRawPath(files, rootPath, pathEntry.Name);
-            AddRootFromRawPath(roots, rootPath, pathEntry.Name);
+            AddFileFromRawPath(files, rootPath, rawPath);
+            AddRootFromRawPath(roots, rootPath, rawPath);
         }
     }
 

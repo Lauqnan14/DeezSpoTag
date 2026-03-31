@@ -12753,28 +12753,28 @@ async function downloadAppleVideo(appleUrl, options = null) {
     }
 }
 
-async function cleanupMissingLibraryFiles() {
-    if (cleanupState.running) {
-        showToast('Cleanup Missing is already running.');
-        return;
-    }
-
+function resolveCleanupScopeContext() {
     const selectedFolder = getSelectedLibraryViewFolder();
     const selectedFolderId = selectedFolder ? Number(selectedFolder.id) : null;
     const scopeLabel = selectedFolder?.displayName || 'Library';
-    const confirmMessage = selectedFolder
-        ? `Remove missing-file entries only for ${scopeLabel}?`
-        : 'Remove entries for files that no longer exist on disk?';
-    if (!await DeezSpoTag.ui.confirm(confirmMessage, { title: selectedFolder ? `Cleanup ${scopeLabel}` : 'Cleanup Missing Files' })) {
-        return;
-    }
-
-    const cleanupButton = document.getElementById('cleanupLibrary');
-    const cleanupLabel = cleanupButton?.querySelector?.('span') || null;
     const runLabel = selectedFolder
         ? `Cleanup ${scopeLabel}`
         : 'Cleanup Missing';
+    const confirmMessage = selectedFolder
+        ? `Remove missing-file entries only for ${scopeLabel}?`
+        : 'Remove entries for files that no longer exist on disk?';
 
+    return {
+        selectedFolder,
+        selectedFolderId,
+        scopeLabel,
+        runLabel,
+        confirmMessage
+    };
+}
+
+function setCleanupMissingRunningState(cleanupButton, runLabel) {
+    const cleanupLabel = cleanupButton?.querySelector?.('span') || null;
     cleanupState.running = true;
     cleanupState.labelElement = cleanupLabel;
     cleanupState.originalLabel = (cleanupLabel?.textContent || 'Cleanup Missing').trim() || 'Cleanup Missing';
@@ -12798,20 +12798,66 @@ async function cleanupMissingLibraryFiles() {
             cleanupState.labelElement.textContent = `${runLabel} (${elapsedSeconds}s)`;
         }
     }, 1000);
+}
+
+function resetCleanupMissingRunningState(cleanupButton) {
+    cleanupState.running = false;
+    if (cleanupState.timerId) {
+        globalThis.clearInterval(cleanupState.timerId);
+        cleanupState.timerId = 0;
+    }
+
+    if (cleanupButton instanceof HTMLButtonElement) {
+        cleanupButton.disabled = false;
+        cleanupButton.removeAttribute('aria-busy');
+    }
+
+    if (cleanupState.labelElement) {
+        cleanupState.labelElement.textContent = cleanupState.originalLabel;
+    }
+}
+
+function buildCleanupMissingUrl(selectedFolderId) {
+    const params = new URLSearchParams();
+    if (selectedFolderId !== null) {
+        params.set('folderId', String(selectedFolderId));
+    }
+    const suffix = params.toString();
+    return suffix
+        ? `/api/library/maintenance/cleanup-missing?${suffix}`
+        : '/api/library/maintenance/cleanup-missing';
+}
+
+async function cleanupMissingLibraryFiles() {
+    if (cleanupState.running) {
+        showToast('Cleanup Missing is already running.');
+        return;
+    }
+
+    const {
+        selectedFolder,
+        selectedFolderId,
+        scopeLabel,
+        runLabel,
+        confirmMessage
+    } = resolveCleanupScopeContext();
+    const isConfirmed = await DeezSpoTag.ui.confirm(
+        confirmMessage,
+        { title: selectedFolder ? `Cleanup ${scopeLabel}` : 'Cleanup Missing Files' }
+    );
+    if (!isConfirmed) {
+        return;
+    }
+
+    const cleanupButton = document.getElementById('cleanupLibrary');
+    setCleanupMissingRunningState(cleanupButton, runLabel);
 
     showToast(selectedFolder
         ? `${runLabel} started...`
         : 'Cleanup Missing started...');
 
     try {
-        const params = new URLSearchParams();
-        if (selectedFolderId !== null) {
-            params.set('folderId', String(selectedFolderId));
-        }
-        const suffix = params.toString();
-        const url = suffix
-            ? `/api/library/maintenance/cleanup-missing?${suffix}`
-            : '/api/library/maintenance/cleanup-missing';
+        const url = buildCleanupMissingUrl(selectedFolderId);
         const result = await fetchJson(url, { method: 'POST' });
         if (result?.ok === false) {
             showToast('Library DB not configured.', true);
@@ -12825,20 +12871,7 @@ async function cleanupMissingLibraryFiles() {
     } catch (error) {
         showToast(`Cleanup failed: ${error.message}`, true);
     } finally {
-        cleanupState.running = false;
-        if (cleanupState.timerId) {
-            globalThis.clearInterval(cleanupState.timerId);
-            cleanupState.timerId = 0;
-        }
-
-        if (cleanupButton instanceof HTMLButtonElement) {
-            cleanupButton.disabled = false;
-            cleanupButton.removeAttribute('aria-busy');
-        }
-
-        if (cleanupState.labelElement) {
-            cleanupState.labelElement.textContent = cleanupState.originalLabel;
-        }
+        resetCleanupMissingRunningState(cleanupButton);
     }
 }
 
