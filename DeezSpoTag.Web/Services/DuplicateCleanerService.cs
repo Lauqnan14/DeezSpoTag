@@ -378,8 +378,8 @@ public class DuplicateCleanerService
             return true;
         }
 
-        var rootWithSeparator = normalizedRoot.EndsWith("/", StringComparison.Ordinal)
-            || normalizedRoot.EndsWith("\\", StringComparison.Ordinal)
+        var rootWithSeparator = normalizedRoot.EndsWith('/')
+            || normalizedRoot.EndsWith('\\')
             ? normalizedRoot
             : normalizedRoot + Path.DirectorySeparatorChar;
         return normalizedCandidate.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase);
