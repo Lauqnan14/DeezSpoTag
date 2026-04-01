@@ -20,6 +20,7 @@ public sealed class SpotifyArtistService
     private static readonly TimeSpan DeezerEnrichmentTimeout = TimeSpan.FromSeconds(15);
     private const int ShazamArtistSampleTrackLimit = 3;
     private const int ShazamArtistCandidateTrackWindow = 5;
+    private const int ShazamStrongVoteThreshold = 2;
     private static readonly string[] AliasSuffixes =
     {
         " tell em",
@@ -73,6 +74,7 @@ public sealed class SpotifyArtistService
         if (!string.IsNullOrWhiteSpace(spotifyId))
         {
             await _libraryRepository.UpsertArtistSourceIdAsync(artistId, SpotifySource, spotifyId, cancellationToken);
+            await TryRewriteArtistFoldersToCanonicalNameAsync(artistId, artistName, spotifyId, cancellationToken);
             AddActivity("info", $"[spotify] artist id resolved: {artistName} -> {spotifyId}.");
             return spotifyId;
         }
@@ -170,6 +172,7 @@ public sealed class SpotifyArtistService
         if (!string.Equals(rematchedSpotifyId, spotifyId, StringComparison.Ordinal))
         {
             await _libraryRepository.UpsertArtistSourceIdAsync(artistId, SpotifySource, rematchedSpotifyId, cancellationToken);
+            await TryRewriteArtistFoldersToCanonicalNameAsync(artistId, artistName, rematchedSpotifyId, cancellationToken);
             AddActivity("info", $"[spotify] rematched artist id: {artistName} -> {rematchedSpotifyId} (was {spotifyId}).");
         }
 
@@ -1407,19 +1410,31 @@ public sealed class SpotifyArtistService
 
         try
         {
+            var localAlbumTitleSet = await TryGetLocalAlbumTitleSetAsync(localArtistId, cancellationToken);
+            var aliasTargets = BuildArtistAliasTargets(artistName);
             var results = await _pathfinderMetadataClient.SearchArtistsAsync(artistName, 10, cancellationToken);
             if (results.Count == 0)
             {
+                var shazamResolved = await TryResolveArtistIdViaShazamEvidenceAsync(
+                    artistName,
+                    localArtistId,
+                    localAlbumTitleSet,
+                    aliasTargets,
+                    cancellationToken);
+                if (!string.IsNullOrWhiteSpace(shazamResolved))
+                {
+                    AddActivity("info", $"[spotify] artist id resolved via shazam evidence (pathfinder unavailable): {artistName} -> {shazamResolved}.");
+                    return shazamResolved;
+                }
+
                 AddActivity("warn", $"[spotify] artist ID resolve failed: pathfinder search unavailable for {artistName}.");
                 return null;
             }
 
             var candidates = BuildArtistSearchCandidates(results, artistName);
-            var aliasTargets = BuildArtistAliasTargets(artistName);
             var exactCandidates = candidates
                 .Where(candidate => aliasTargets.Any(target => IsEquivalentArtistName(candidate.Name, target)))
                 .ToList();
-            var localAlbumTitleSet = await TryGetLocalAlbumTitleSetAsync(localArtistId, cancellationToken);
 
             if (exactCandidates.Count == 0)
             {
@@ -1466,6 +1481,27 @@ public sealed class SpotifyArtistService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Spotify Pathfinder artist search failed.");
+            try
+            {
+                var localAlbumTitleSet = await TryGetLocalAlbumTitleSetAsync(localArtistId, cancellationToken);
+                var aliasTargets = BuildArtistAliasTargets(artistName);
+                var shazamResolved = await TryResolveArtistIdViaShazamEvidenceAsync(
+                    artistName,
+                    localArtistId,
+                    localAlbumTitleSet,
+                    aliasTargets,
+                    cancellationToken);
+                if (!string.IsNullOrWhiteSpace(shazamResolved))
+                {
+                    AddActivity("info", $"[spotify] artist id resolved via shazam evidence (pathfinder error): {artistName} -> {shazamResolved}.");
+                    return shazamResolved;
+                }
+            }
+            catch (Exception fallbackEx) when (fallbackEx is not OperationCanceledException)
+            {
+                _logger.LogDebug(fallbackEx, "Shazam fallback after Pathfinder failure also failed for {ArtistName}.", artistName);
+            }
+
             AddActivity("warn", $"[spotify] artist ID resolve failed: pathfinder search error for {artistName}.");
             return null;
         }
@@ -1652,6 +1688,14 @@ public sealed class SpotifyArtistService
     {
         if (!localArtistId.HasValue || !_shazamRecognitionService.IsAvailable)
         {
+            if (!localArtistId.HasValue)
+            {
+                AddActivity("debug", $"[spotify] shazam skipped for {artistName}: missing local artist id.");
+            }
+            else
+            {
+                AddActivity("debug", $"[spotify] shazam skipped for {artistName}: shazam runtime unavailable.");
+            }
             return null;
         }
 
@@ -1661,6 +1705,7 @@ public sealed class SpotifyArtistService
             cancellationToken);
         if (sampleTrackPaths.Count == 0)
         {
+            AddActivity("debug", $"[spotify] shazam skipped for {artistName}: no sample track paths.");
             return null;
         }
 
@@ -1668,6 +1713,7 @@ public sealed class SpotifyArtistService
 
         if (candidateVotes.Count == 0)
         {
+            AddActivity("debug", $"[spotify] shazam produced no spotify candidates for {artistName}.");
             return null;
         }
 
@@ -1681,6 +1727,7 @@ public sealed class SpotifyArtistService
             return bestId;
         }
 
+        AddActivity("debug", $"[spotify] shazam candidates rejected for {artistName}: no candidate passed acceptance checks.");
         return null;
     }
 
@@ -1754,17 +1801,25 @@ public sealed class SpotifyArtistService
             var candidateName = await TryFetchSpotifyArtistNameAsync(candidateId, cancellationToken);
             var matchesAlias = !string.IsNullOrWhiteSpace(candidateName)
                 && aliasTargets.Any(alias => IsEquivalentArtistName(candidateName, alias));
-            if (!matchesAlias)
-            {
-                continue;
-            }
-
             var localAlbumOverlap = await ResolveLocalAlbumOverlapAsync(
                 candidateId,
                 requireLocalAlbumOverlap,
                 localAlbumTitleSet,
                 cancellationToken);
-            if (requireLocalAlbumOverlap && localAlbumOverlap <= 0)
+            var hasStrongVotes = votes >= ShazamStrongVoteThreshold;
+
+            var accepted = matchesAlias;
+            if (!accepted && localAlbumOverlap > 0)
+            {
+                accepted = true;
+            }
+
+            if (!accepted && hasStrongVotes)
+            {
+                accepted = true;
+            }
+
+            if (!accepted)
             {
                 continue;
             }
@@ -1923,6 +1978,232 @@ public sealed class SpotifyArtistService
                 .Where(alias => !string.IsNullOrWhiteSpace(alias)));
 
         return variants;
+    }
+
+    private async Task TryRewriteArtistFoldersToCanonicalNameAsync(
+        long localArtistId,
+        string currentArtistName,
+        string spotifyArtistId,
+        CancellationToken cancellationToken)
+    {
+        if (localArtistId <= 0 || string.IsNullOrWhiteSpace(spotifyArtistId))
+        {
+            return;
+        }
+
+        string? canonicalArtistName = null;
+        try
+        {
+            var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(
+                $"https://open.spotify.com/artist/{spotifyArtistId}",
+                cancellationToken);
+            canonicalArtistName = metadata?.Name?.Trim();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to fetch canonical Spotify artist name for {SpotifyArtistId}.", spotifyArtistId);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(canonicalArtistName))
+        {
+            return;
+        }
+
+        var sourceNameNormalized = NormalizeTitle(currentArtistName ?? string.Empty);
+        var targetNameNormalized = NormalizeTitle(canonicalArtistName);
+        if (string.IsNullOrWhiteSpace(targetNameNormalized)
+            || string.Equals(sourceNameNormalized, targetNameNormalized, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var targetArtistSegment = SanitizePathSegment(canonicalArtistName);
+        if (string.IsNullOrWhiteSpace(targetArtistSegment))
+        {
+            return;
+        }
+
+        var folders = await _libraryRepository.GetFoldersAsync(cancellationToken);
+        var enabledRoots = folders
+            .Where(folder => folder.Enabled && !string.IsNullOrWhiteSpace(folder.RootPath))
+            .Select(folder => Path.GetFullPath(folder.RootPath))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (enabledRoots.Count == 0)
+        {
+            return;
+        }
+
+        var trackIds = await _libraryRepository.GetTrackIdsByArtistAsync(localArtistId, 0, 200_000, cancellationToken);
+        if (trackIds.Count == 0)
+        {
+            return;
+        }
+
+        var movedAlbumDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var moveConflicts = 0;
+        var moveFailures = 0;
+        var sourceArtistDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var trackId in trackIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var path = await _libraryRepository.GetTrackPrimaryFilePathAsync(trackId, cancellationToken);
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                continue;
+            }
+
+            var fullPath = Path.GetFullPath(path);
+            var root = enabledRoots.FirstOrDefault(candidateRoot => IsPathUnderRoot(fullPath, candidateRoot));
+            if (root is null)
+            {
+                continue;
+            }
+
+            var relative = Path.GetRelativePath(root, fullPath);
+            if (relative.StartsWith("..", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var segments = relative.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+            if (segments.Length < 3)
+            {
+                continue;
+            }
+
+            var sourceArtistSegment = segments[0].Trim();
+            var albumSegment = segments[1].Trim();
+            if (string.IsNullOrWhiteSpace(sourceArtistSegment)
+                || string.IsNullOrWhiteSpace(albumSegment)
+                || string.Equals(sourceArtistSegment, targetArtistSegment, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var sourceAlbumDir = Path.Combine(root, sourceArtistSegment, albumSegment);
+            if (!Directory.Exists(sourceAlbumDir))
+            {
+                continue;
+            }
+
+            if (!movedAlbumDirs.Add(sourceAlbumDir))
+            {
+                continue;
+            }
+
+            var targetArtistDir = Path.Combine(root, targetArtistSegment);
+            var targetAlbumDir = Path.Combine(targetArtistDir, albumSegment);
+            if (Directory.Exists(targetAlbumDir))
+            {
+                moveConflicts++;
+                continue;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(targetArtistDir);
+                Directory.Move(sourceAlbumDir, targetAlbumDir);
+                sourceArtistDirs.Add(Path.Combine(root, sourceArtistSegment));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                moveFailures++;
+                _logger.LogWarning(ex,
+                    "Failed moving album directory during artist canonicalization: {SourceAlbumDir} -> {TargetAlbumDir}",
+                    sourceAlbumDir,
+                    targetAlbumDir);
+            }
+        }
+
+        foreach (var sourceArtistDir in sourceArtistDirs)
+        {
+            try
+            {
+                if (Directory.Exists(sourceArtistDir)
+                    && !Directory.EnumerateFileSystemEntries(sourceArtistDir).Any())
+                {
+                    Directory.Delete(sourceArtistDir, false);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _logger.LogDebug(ex, "Failed deleting empty source artist directory {SourceArtistDir}.", sourceArtistDir);
+            }
+        }
+
+        if (movedAlbumDirs.Count > 0 || moveConflicts > 0 || moveFailures > 0)
+        {
+            AddActivity(
+                moveFailures > 0 ? "warn" : "info",
+                $"[spotify] canonical artist folder rewrite for {currentArtistName} -> {canonicalArtistName}: moved_albums={movedAlbumDirs.Count - moveConflicts - moveFailures}, conflicts={moveConflicts}, failures={moveFailures}.");
+        }
+    }
+
+    private static bool IsPathUnderRoot(string fullPath, string rootPath)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath) || string.IsNullOrWhiteSpace(rootPath))
+        {
+            return false;
+        }
+
+        var normalizedPath = Path.GetFullPath(fullPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var normalizedRoot = Path.GetFullPath(rootPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (string.Equals(normalizedPath, normalizedRoot, comparison))
+        {
+            return true;
+        }
+
+        var rootWithSep = normalizedRoot + Path.DirectorySeparatorChar;
+        return normalizedPath.StartsWith(rootWithSep, comparison);
+    }
+
+    private static string SanitizePathSegment(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "Unknown Artist";
+        }
+
+        var invalid = Path.GetInvalidFileNameChars();
+        var buffer = new char[value.Length];
+        var index = 0;
+        var previousSpace = false;
+        foreach (var ch in value.Trim())
+        {
+            if (invalid.Contains(ch) || ch == Path.DirectorySeparatorChar || ch == Path.AltDirectorySeparatorChar)
+            {
+                if (!previousSpace)
+                {
+                    buffer[index++] = ' ';
+                    previousSpace = true;
+                }
+
+                continue;
+            }
+
+            if (char.IsWhiteSpace(ch))
+            {
+                if (!previousSpace)
+                {
+                    buffer[index++] = ' ';
+                    previousSpace = true;
+                }
+            }
+            else
+            {
+                buffer[index++] = ch;
+                previousSpace = false;
+            }
+        }
+
+        var sanitized = new string(buffer, 0, index).Trim().TrimEnd('.', ' ');
+        return string.IsNullOrWhiteSpace(sanitized) ? "Unknown Artist" : sanitized;
     }
 
 
