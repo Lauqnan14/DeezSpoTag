@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Collections.Concurrent;
 using DeezSpoTag.Services.Library;
 using System.Linq;
 
@@ -21,6 +22,10 @@ public sealed class SpotifyArtistService
     private const int ShazamArtistSampleTrackLimit = 3;
     private const int ShazamArtistCandidateTrackWindow = 5;
     private const int ShazamStrongVoteThreshold = 2;
+    private const int ExactCandidateScoreParallelism = 4;
+    private const int ShazamCandidateScoreParallelism = 4;
+    private static readonly TimeSpan LocalAlbumCacheTtl = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan SampleTrackPathCacheTtl = TimeSpan.FromMinutes(2);
     private static readonly string[] AliasSuffixes =
     {
         " tell em",
@@ -48,6 +53,8 @@ public sealed class SpotifyArtistService
     private readonly ShazamRecognitionService _shazamRecognitionService;
     private readonly ILogger<SpotifyArtistService> _logger;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly ConcurrentDictionary<long, (DateTimeOffset Stamp, HashSet<string> Titles)> _localAlbumTitleSetCache = new();
+    private readonly ConcurrentDictionary<long, (DateTimeOffset Stamp, IReadOnlyList<string> Paths)> _sampleTrackPathsCache = new();
     private static string ReplaceWithTimeout(string input, string pattern, string replacement, System.Text.RegularExpressions.RegexOptions options = System.Text.RegularExpressions.RegexOptions.None)
         => System.Text.RegularExpressions.Regex.Replace(input, pattern, replacement, options, RegexTimeout);
 
@@ -1534,28 +1541,36 @@ public sealed class SpotifyArtistService
         HashSet<string> localAlbumTitleSet,
         CancellationToken cancellationToken)
     {
-        ExactArtistCandidateScore? best = null;
-        var bestScore = int.MinValue;
         var requireLocalAlbumOverlap = ShouldRequireLocalAlbumOverlap(localAlbumTitleSet);
+        var scoredCandidates = new ConcurrentBag<ExactArtistCandidateScore>();
+        using var gate = new SemaphoreSlim(ExactCandidateScoreParallelism);
 
-        foreach (var candidate in exactCandidates)
+        var tasks = exactCandidates.Select(async candidate =>
         {
-            var scoredCandidate = await ScoreExactArtistCandidateAsync(
-                candidate,
-                requireLocalAlbumOverlap,
-                localAlbumTitleSet,
-                cancellationToken);
-            if (scoredCandidate is null)
+            await gate.WaitAsync(cancellationToken);
+            try
             {
-                continue;
+                var scoredCandidate = await ScoreExactArtistCandidateAsync(
+                    candidate,
+                    requireLocalAlbumOverlap,
+                    localAlbumTitleSet,
+                    cancellationToken);
+                if (scoredCandidate is not null)
+                {
+                    scoredCandidates.Add(scoredCandidate);
+                }
             }
+            finally
+            {
+                gate.Release();
+            }
+        });
 
-            if (scoredCandidate.Score > bestScore)
-            {
-                best = scoredCandidate;
-                bestScore = scoredCandidate.Score;
-            }
-        }
+        await Task.WhenAll(tasks);
+
+        var best = scoredCandidates
+            .OrderByDescending(item => item.Score)
+            .FirstOrDefault();
 
         if (best is not null)
         {
@@ -1662,6 +1677,12 @@ public sealed class SpotifyArtistService
             return titles;
         }
 
+        if (_localAlbumTitleSetCache.TryGetValue(localArtistId.Value, out var cached)
+            && (DateTimeOffset.UtcNow - cached.Stamp) <= LocalAlbumCacheTtl)
+        {
+            return new HashSet<string>(cached.Titles, StringComparer.OrdinalIgnoreCase);
+        }
+
         try
         {
             var localAlbums = await _libraryRepository.GetArtistAlbumsAsync(localArtistId.Value, cancellationToken);
@@ -1671,6 +1692,9 @@ public sealed class SpotifyArtistService
             {
                 titles.Add(normalized);
             }
+            _localAlbumTitleSetCache[localArtistId.Value] = (
+                DateTimeOffset.UtcNow,
+                new HashSet<string>(titles, StringComparer.OrdinalIgnoreCase));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1803,49 +1827,62 @@ public sealed class SpotifyArtistService
         IReadOnlyCollection<string> aliasTargets,
         CancellationToken cancellationToken)
     {
-        string? bestId = null;
-        var bestScore = int.MinValue;
         var requireLocalAlbumOverlap = ShouldRequireLocalAlbumOverlap(localAlbumTitleSet);
+        var candidates = new ConcurrentBag<(string Id, int Score)>();
+        using var gate = new SemaphoreSlim(ShazamCandidateScoreParallelism);
 
-        foreach (var (candidateId, votes) in candidateVotes.OrderByDescending(entry => entry.Value))
+        var tasks = candidateVotes
+            .OrderByDescending(entry => entry.Value)
+            .Select(async entry =>
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var candidateName = await TryFetchSpotifyArtistNameAsync(candidateId, cancellationToken);
-            var matchesAlias = !string.IsNullOrWhiteSpace(candidateName)
-                && aliasTargets.Any(alias => IsEquivalentArtistName(candidateName, alias));
-            var localAlbumOverlap = await ResolveLocalAlbumOverlapAsync(
-                candidateId,
-                requireLocalAlbumOverlap,
-                localAlbumTitleSet,
-                cancellationToken);
-            var hasStrongVotes = votes >= ShazamStrongVoteThreshold;
-
-            var accepted = matchesAlias;
-            if (!accepted && localAlbumOverlap > 0)
+            await gate.WaitAsync(cancellationToken);
+            try
             {
-                accepted = true;
-            }
+                cancellationToken.ThrowIfCancellationRequested();
+                var candidateId = entry.Key;
+                var votes = entry.Value;
 
-            if (!accepted && hasStrongVotes)
+                var candidateName = await TryFetchSpotifyArtistNameAsync(candidateId, cancellationToken);
+                var matchesAlias = !string.IsNullOrWhiteSpace(candidateName)
+                    && aliasTargets.Any(alias => IsEquivalentArtistName(candidateName, alias));
+                var localAlbumOverlap = await ResolveLocalAlbumOverlapAsync(
+                    candidateId,
+                    requireLocalAlbumOverlap,
+                    localAlbumTitleSet,
+                    cancellationToken);
+                var hasStrongVotes = votes >= ShazamStrongVoteThreshold;
+
+                var accepted = matchesAlias;
+                if (!accepted && localAlbumOverlap > 0)
+                {
+                    accepted = true;
+                }
+
+                if (!accepted && hasStrongVotes)
+                {
+                    accepted = true;
+                }
+
+                if (!accepted)
+                {
+                    return;
+                }
+
+                var score = (votes * 100) + (localAlbumOverlap * 25);
+                candidates.Add((candidateId, score));
+            }
+            finally
             {
-                accepted = true;
+                gate.Release();
             }
+        });
 
-            if (!accepted)
-            {
-                continue;
-            }
+        await Task.WhenAll(tasks);
 
-            var score = (votes * 100) + (localAlbumOverlap * 25);
-            if (score > bestScore)
-            {
-                bestScore = score;
-                bestId = candidateId;
-            }
-        }
-
-        return bestId;
+        return candidates
+            .OrderByDescending(item => item.Score)
+            .Select(item => item.Id)
+            .FirstOrDefault();
     }
 
     private async Task<string?> TryFetchSpotifyArtistNameAsync(string spotifyArtistId, CancellationToken cancellationToken)
@@ -2072,6 +2109,12 @@ public sealed class SpotifyArtistService
         CancellationToken cancellationToken)
     {
         var safeLimit = Math.Clamp(limit, 1, 10);
+        if (_sampleTrackPathsCache.TryGetValue(localArtistId, out var cached)
+            && (DateTimeOffset.UtcNow - cached.Stamp) <= SampleTrackPathCacheTtl)
+        {
+            return cached.Paths.Take(safeLimit).ToList();
+        }
+
         var trackIds = await _libraryRepository.GetTrackIdsByArtistAsync(localArtistId, 0, safeLimit * 4, cancellationToken);
         if (trackIds.Count == 0)
         {
@@ -2095,6 +2138,10 @@ public sealed class SpotifyArtistService
             }
         }
 
+        if (paths.Count > 0)
+        {
+            _sampleTrackPathsCache[localArtistId] = (DateTimeOffset.UtcNow, paths.ToList());
+        }
         return paths;
     }
 
