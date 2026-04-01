@@ -10,8 +10,10 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
     private const int DefaultBatchSize = 25;
     private const int MinBatchSize = 1;
     private const int MaxBatchSize = 500;
+    private const int DefaultParallelWorkers = 4;
+    private const int MaxParallelWorkers = 8;
     private const int MaxRetries = 3;
-    private static readonly TimeSpan[] RetryDelays = { TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(30) };
+    private static readonly TimeSpan[] RetryDelays = { TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(5) };
     private static readonly TimeSpan BatchInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan DispatchInterval = TimeSpan.FromMilliseconds(120);
     private readonly LibraryRepository _repository;
@@ -105,10 +107,10 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var configuredBatchSize = ResolveConfiguredBatchSize();
-        _logger.LogInformation(
-            "Spotify artist metadata queue started with batch size {BatchSize} and interval {BatchIntervalSeconds}s.",
-            configuredBatchSize,
-            BatchInterval.TotalSeconds);
+            _logger.LogInformation(
+                "Spotify artist metadata queue started with batch size {BatchSize} and interval {BatchIntervalSeconds}s.",
+                configuredBatchSize,
+                BatchInterval.TotalSeconds);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -133,10 +135,18 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
                 batch.Add(nextItem);
             }
 
-            foreach (var item in batch)
-            {
-                await ProcessQueueItemAsync(item, stoppingToken);
-            }
+            var parallelWorkers = ResolveParallelWorkers(configuredBatchSize);
+            await Parallel.ForEachAsync(
+                batch,
+                new ParallelOptions
+                {
+                    CancellationToken = stoppingToken,
+                    MaxDegreeOfParallelism = parallelWorkers
+                },
+                async (item, token) =>
+                {
+                    await ProcessQueueItemAsync(item, token);
+                });
 
             await Task.Delay(BatchInterval, stoppingToken);
         }
@@ -306,6 +316,17 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
             _logger.LogWarning(ex, "Failed to read Spotify artist metadata batch size setting; using default.");
             return DefaultBatchSize;
         }
+    }
+
+    private static int ResolveParallelWorkers(int batchSize)
+    {
+        if (batchSize <= 1)
+        {
+            return 1;
+        }
+
+        // Keep concurrency bounded while still allowing parallel in-flight fetches.
+        return Math.Clamp(Math.Min(DefaultParallelWorkers, batchSize), 1, MaxParallelWorkers);
     }
 
     private sealed record QueueItem(long ArtistId, string ArtistName, int Retry = 0);

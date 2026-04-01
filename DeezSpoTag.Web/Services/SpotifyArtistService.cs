@@ -1432,7 +1432,7 @@ public sealed class SpotifyArtistService
             var localAlbumTitleSet = FilterResolvableAlbumTitles(
                 await TryGetLocalAlbumTitleSetAsync(localArtistId, cancellationToken));
             var aliasTargets = BuildArtistAliasTargets(artistName);
-            var results = await _pathfinderMetadataClient.SearchArtistsAsync(artistName, 10, cancellationToken);
+            var results = await SearchArtistCandidatesWithFallbackQueryAsync(artistName, cancellationToken);
             if (results.Count == 0)
             {
                 var shazamResolved = await TryResolveArtistIdViaShazamEvidenceAsync(
@@ -2162,6 +2162,38 @@ public sealed class SpotifyArtistService
         return variants;
     }
 
+    private async Task<List<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate>> SearchArtistCandidatesWithFallbackQueryAsync(
+        string artistName,
+        CancellationToken cancellationToken)
+    {
+        var combined = new List<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var primary = await _pathfinderMetadataClient.SearchArtistsAsync(artistName, 10, cancellationToken);
+        AddCandidates(primary);
+
+        var simplifiedQuery = BuildPrimaryArtistQuery(artistName);
+        if (!string.IsNullOrWhiteSpace(simplifiedQuery)
+            && !string.Equals(simplifiedQuery, artistName, StringComparison.OrdinalIgnoreCase))
+        {
+            var fallback = await _pathfinderMetadataClient.SearchArtistsAsync(simplifiedQuery, 10, cancellationToken);
+            AddCandidates(fallback);
+        }
+
+        return combined;
+
+        void AddCandidates(IReadOnlyList<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> candidates)
+        {
+            foreach (var candidate in candidates)
+            {
+                if (seen.Add(candidate.Id))
+                {
+                    combined.Add(candidate);
+                }
+            }
+        }
+    }
+
     private static HashSet<string> ExpandArtistNameVariants(string? artistName)
     {
         var variants = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -2184,6 +2216,36 @@ public sealed class SpotifyArtistService
                 .Where(alias => !string.IsNullOrWhiteSpace(alias)));
 
         return variants;
+    }
+
+    private static string BuildPrimaryArtistQuery(string artistName)
+    {
+        if (string.IsNullOrWhiteSpace(artistName))
+        {
+            return string.Empty;
+        }
+
+        var query = artistName.Trim();
+        query = ReplaceWithTimeout(
+            query,
+            @"\b(feat(?:uring)?|ft|with)\b.*$",
+            string.Empty,
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        var delimiters = new[] { " & ", " x ", ",", ";", "/", "|", "+", " _ ", " and " };
+        foreach (var delimiter in delimiters)
+        {
+            var index = query.IndexOf(delimiter, StringComparison.OrdinalIgnoreCase);
+            if (index > 0)
+            {
+                query = query[..index];
+                break;
+            }
+        }
+
+        query = ReplaceWithTimeout(query, @"\s+", " ");
+        query = query.Trim(' ', '-', '_', '.', ',', '\'', '"', '!', '?', '(', ')', '[', ']');
+        return query;
     }
 
     private static HashSet<string> FilterResolvableAlbumTitles(HashSet<string> source)
