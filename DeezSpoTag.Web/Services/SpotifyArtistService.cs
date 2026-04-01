@@ -27,6 +27,18 @@ public sealed class SpotifyArtistService
         " tell'em",
         " tell em official"
     };
+    private static readonly string[] CompilationAlbumMarkers =
+    {
+        "greatest hits",
+        "best of",
+        "anthology",
+        "collection",
+        "essentials",
+        "now that's what i call",
+        "top hits",
+        "compilation",
+        "various artists"
+    };
     private readonly LibraryRepository _libraryRepository;
     private readonly ArtistPageCacheRepository _cacheRepository;
     private readonly LibraryConfigStore _configStore;
@@ -1410,7 +1422,8 @@ public sealed class SpotifyArtistService
 
         try
         {
-            var localAlbumTitleSet = await TryGetLocalAlbumTitleSetAsync(localArtistId, cancellationToken);
+            var localAlbumTitleSet = FilterResolvableAlbumTitles(
+                await TryGetLocalAlbumTitleSetAsync(localArtistId, cancellationToken));
             var aliasTargets = BuildArtistAliasTargets(artistName);
             var results = await _pathfinderMetadataClient.SearchArtistsAsync(artistName, 10, cancellationToken);
             if (results.Count == 0)
@@ -1523,7 +1536,7 @@ public sealed class SpotifyArtistService
     {
         ExactArtistCandidateScore? best = null;
         var bestScore = int.MinValue;
-        var requireLocalAlbumOverlap = localAlbumTitleSet.Count > 0;
+        var requireLocalAlbumOverlap = ShouldRequireLocalAlbumOverlap(localAlbumTitleSet);
 
         foreach (var candidate in exactCandidates)
         {
@@ -1792,7 +1805,7 @@ public sealed class SpotifyArtistService
     {
         string? bestId = null;
         var bestScore = int.MinValue;
-        var requireLocalAlbumOverlap = localAlbumTitleSet.Count > 0;
+        var requireLocalAlbumOverlap = ShouldRequireLocalAlbumOverlap(localAlbumTitleSet);
 
         foreach (var (candidateId, votes) in candidateVotes.OrderByDescending(entry => entry.Value))
         {
@@ -1864,37 +1877,118 @@ public sealed class SpotifyArtistService
         ShazamRecognitionInfo recognition,
         CancellationToken cancellationToken)
     {
+        var artistIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var spotifyUrl = (recognition.SpotifyUrl ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(spotifyUrl))
+
+        if (!string.IsNullOrWhiteSpace(spotifyUrl)
+            && SpotifyMetadataService.TryParseSpotifyUrl(spotifyUrl, out var type, out var id)
+            && !string.IsNullOrWhiteSpace(id))
         {
-            return Array.Empty<string>();
+            if (string.Equals(type, "artist", StringComparison.OrdinalIgnoreCase))
+            {
+                if (LooksLikeSpotifyEntityId(id))
+                {
+                    artistIds.Add(id);
+                }
+            }
+            else
+            {
+                try
+                {
+                    var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(spotifyUrl, cancellationToken);
+                    if (metadata?.TrackList is { Count: > 0 } trackList)
+                    {
+                        foreach (var artistId in trackList
+                                     .Take(ShazamArtistCandidateTrackWindow)
+                                     .SelectMany(track => track.ArtistIds ?? Array.Empty<string>())
+                                     .Where(LooksLikeSpotifyEntityId))
+                        {
+                            artistIds.Add(artistId);
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Failed resolving Spotify artist ids from Shazam URL {SpotifyUrl}.", spotifyUrl);
+                }
+            }
         }
 
-        if (!SpotifyMetadataService.TryParseSpotifyUrl(spotifyUrl, out var type, out var id)
-            || string.IsNullOrWhiteSpace(id))
+        if (artistIds.Count > 0)
         {
-            return Array.Empty<string>();
+            return artistIds.ToList();
         }
 
-        if (string.Equals(type, "artist", StringComparison.OrdinalIgnoreCase))
+        var metadataDerived = await ResolveSpotifyArtistIdsFromShazamMetadataAsync(recognition, cancellationToken);
+        if (metadataDerived.Count > 0)
         {
-            return LooksLikeSpotifyEntityId(id) ? new[] { id } : Array.Empty<string>();
+            foreach (var candidate in metadataDerived.Where(LooksLikeSpotifyEntityId))
+            {
+                artistIds.Add(candidate);
+            }
+        }
+
+        return artistIds.ToList();
+    }
+
+    private async Task<IReadOnlyList<string>> ResolveSpotifyArtistIdsFromShazamMetadataAsync(
+        ShazamRecognitionInfo recognition,
+        CancellationToken cancellationToken)
+    {
+        var query = BuildShazamMetadataTrackQuery(recognition);
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return Array.Empty<string>();
         }
 
         try
         {
-            var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(spotifyUrl, cancellationToken);
-            if (metadata?.TrackList is not { Count: > 0 } trackList)
+            var tracks = await _pathfinderMetadataClient.SearchTracksAsync(query, 15, cancellationToken);
+            if (tracks.Count == 0)
             {
                 return Array.Empty<string>();
             }
 
-            return trackList
-                .Take(ShazamArtistCandidateTrackWindow)
-                .SelectMany(track => track.ArtistIds ?? Array.Empty<string>())
-                .Where(LooksLikeSpotifyEntityId)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
+            var recognizedIsrc = (recognition.Isrc ?? string.Empty).Trim();
+            var recognizedTitle = NormalizeTitle(recognition.Title ?? string.Empty);
+            var recognizedArtist = NormalizeTitle(
+                recognition.Artist
+                ?? recognition.Artists?.FirstOrDefault()
+                ?? string.Empty);
+
+            var candidates = tracks
+                .Select(track => new
+                {
+                    Track = track,
+                    Score = ScoreShazamMetadataCandidate(track, recognizedIsrc, recognizedTitle, recognizedArtist)
+                })
+                .Where(item => item.Score > 0 && item.Track.ArtistIds is { Count: > 0 })
+                .OrderByDescending(item => item.Score)
+                .Take(5)
                 .ToList();
+
+            if (candidates.Count == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            var resolved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var candidate in candidates)
+            {
+                foreach (var artistId in candidate.Track.ArtistIds ?? Array.Empty<string>())
+                {
+                    if (LooksLikeSpotifyEntityId(artistId))
+                    {
+                        resolved.Add(artistId);
+                    }
+                }
+            }
+
+            return resolved.ToList();
         }
         catch (OperationCanceledException)
         {
@@ -1902,9 +1996,74 @@ public sealed class SpotifyArtistService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Failed resolving Spotify artist ids from Shazam URL {SpotifyUrl}.", spotifyUrl);
+            _logger.LogDebug(ex, "Failed resolving Spotify artist ids from Shazam metadata query.");
             return Array.Empty<string>();
         }
+    }
+
+    private static int ScoreShazamMetadataCandidate(
+        SpotifyTrackSummary track,
+        string recognizedIsrc,
+        string recognizedTitle,
+        string recognizedArtist)
+    {
+        var score = 0;
+
+        if (!string.IsNullOrWhiteSpace(recognizedIsrc)
+            && string.Equals(track.Isrc, recognizedIsrc, StringComparison.OrdinalIgnoreCase))
+        {
+            score += 10_000;
+        }
+
+        var candidateTitle = NormalizeTitle(track.Name ?? string.Empty);
+        if (!string.IsNullOrWhiteSpace(recognizedTitle) && !string.IsNullOrWhiteSpace(candidateTitle))
+        {
+            if (string.Equals(candidateTitle, recognizedTitle, StringComparison.OrdinalIgnoreCase))
+            {
+                score += 800;
+            }
+            else if (candidateTitle.Contains(recognizedTitle, StringComparison.OrdinalIgnoreCase)
+                     || recognizedTitle.Contains(candidateTitle, StringComparison.OrdinalIgnoreCase))
+            {
+                score += 250;
+            }
+        }
+
+        var candidateArtists = NormalizeTitle(track.Artists ?? string.Empty);
+        if (!string.IsNullOrWhiteSpace(recognizedArtist) && !string.IsNullOrWhiteSpace(candidateArtists))
+        {
+            if (candidateArtists.Contains(recognizedArtist, StringComparison.OrdinalIgnoreCase))
+            {
+                score += 700;
+            }
+            else if (recognizedArtist.Contains(candidateArtists, StringComparison.OrdinalIgnoreCase))
+            {
+                score += 250;
+            }
+        }
+
+        return score;
+    }
+
+    private static string BuildShazamMetadataTrackQuery(ShazamRecognitionInfo recognition)
+    {
+        var title = (recognition.Title ?? string.Empty).Trim();
+        var artist = (
+            recognition.Artist
+            ?? recognition.Artists?.FirstOrDefault()
+            ?? string.Empty).Trim();
+
+        if (!string.IsNullOrWhiteSpace(title) && !string.IsNullOrWhiteSpace(artist))
+        {
+            return $"{artist} {title}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            return title;
+        }
+
+        return artist;
     }
 
     private async Task<IReadOnlyList<string>> GetLocalArtistSampleTrackPathsAsync(
@@ -1978,6 +2137,37 @@ public sealed class SpotifyArtistService
                 .Where(alias => !string.IsNullOrWhiteSpace(alias)));
 
         return variants;
+    }
+
+    private static HashSet<string> FilterResolvableAlbumTitles(HashSet<string> source)
+    {
+        if (source.Count == 0)
+        {
+            return source;
+        }
+
+        var filtered = source
+            .Where(title => !IsLikelyCompilationAlbumTitle(title))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return filtered.Count > 0 ? filtered : source;
+    }
+
+    private static bool ShouldRequireLocalAlbumOverlap(HashSet<string> localAlbumTitleSet)
+    {
+        // Single-track libraries or compilation-only local albums should not hard-block artist resolution.
+        return localAlbumTitleSet.Count >= 2;
+    }
+
+    private static bool IsLikelyCompilationAlbumTitle(string normalizedAlbumTitle)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedAlbumTitle))
+        {
+            return false;
+        }
+
+        return CompilationAlbumMarkers.Any(marker =>
+            normalizedAlbumTitle.Contains(marker, StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task TryRewriteArtistFoldersToCanonicalNameAsync(
