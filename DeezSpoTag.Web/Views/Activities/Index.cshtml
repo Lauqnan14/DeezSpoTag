@@ -5389,22 +5389,41 @@ if (document.readyState === 'loading') {
     }
     window.__deezspTagDownloadLogsInitDone = true;
 
+    function tryLegacyClipboardCopy(text) {
+        const value = String(text || '');
+        if (!value) {
+            return false;
+        }
+
+        const textArea = document.createElement('textarea');
+        textArea.value = value;
+        textArea.setAttribute('readonly', '');
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-9999px';
+        textArea.style.top = '0';
+        textArea.style.opacity = '0';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+
+        let copied = false;
+        try {
+            copied = document.execCommand('copy');
+        } catch {
+            copied = false;
+        } finally {
+            textArea.remove();
+        }
+
+        return copied;
+    }
+
     const copyButton = document.getElementById('download-logs-copy');
     if (copyButton) {
         copyButton.addEventListener('click', async () => {
             const logger = window.DeezSpoTag?.DownloadLogger;
             const status = document.getElementById('download-logs-status');
             if (!logger || !status) return;
-
-            if (!window.isSecureContext) {
-                status.textContent = 'Copy blocked: page is not in a secure context (HTTPS required).';
-                return;
-            }
-
-            if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
-                status.textContent = 'Copy blocked: Clipboard API is unavailable in this browser.';
-                return;
-            }
 
             const content = logger.getLogs()
                 .map((entry) => {
@@ -5425,12 +5444,29 @@ if (document.readyState === 'loading') {
                     await new Promise((resolve) => window.requestAnimationFrame(resolve));
                 }
 
-                await navigator.clipboard.writeText(content);
-                status.textContent = 'Logs copied to clipboard.';
+                if (window.isSecureContext
+                    && navigator.clipboard
+                    && typeof navigator.clipboard.writeText === 'function') {
+                    await navigator.clipboard.writeText(content);
+                    status.textContent = 'Logs copied to clipboard.';
+                    return;
+                }
+
+                if (tryLegacyClipboardCopy(content)) {
+                    status.textContent = 'Logs copied to clipboard.';
+                    return;
+                }
+
+                status.textContent = 'Failed to copy logs.';
             } catch (error) {
                 const message = error && typeof error.message === 'string'
                     ? error.message
                     : 'Browser denied clipboard access.';
+                if (tryLegacyClipboardCopy(content)) {
+                    status.textContent = 'Logs copied to clipboard.';
+                    return;
+                }
+
                 status.textContent = `Failed to copy logs: ${message}`;
             }
         });
