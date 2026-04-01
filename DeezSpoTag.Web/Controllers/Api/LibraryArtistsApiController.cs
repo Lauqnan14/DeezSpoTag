@@ -141,6 +141,82 @@ public class LibraryArtistsApiController : ControllerBase
         return Ok(dbArtist);
     }
 
+    [HttpGet("unmatched-spotify")]
+    public async Task<IActionResult> GetUnmatchedSpotifyArtists(
+        [FromQuery] int limit = 50,
+        [FromQuery] string? search = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return Ok(Array.Empty<object>());
+        }
+
+        var safeLimit = Math.Clamp(limit, 1, 200);
+        var searchText = (search ?? string.Empty).Trim();
+        var artists = await _repository.GetArtistsAsync("local", cancellationToken);
+        if (artists.Count == 0)
+        {
+            return Ok(Array.Empty<object>());
+        }
+
+        var unmatched = new List<UnmatchedSpotifyArtistDto>(safeLimit);
+        foreach (var artist in artists)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(artist.Name))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(searchText)
+                && artist.Name.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                continue;
+            }
+
+            var spotifyId = await _repository.GetArtistSourceIdAsync(artist.Id, SpotifySource, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(spotifyId))
+            {
+                continue;
+            }
+
+            unmatched.Add(new UnmatchedSpotifyArtistDto(artist.Id, artist.Name));
+            if (unmatched.Count >= safeLimit)
+            {
+                break;
+            }
+        }
+
+        return Ok(unmatched);
+    }
+
+    [HttpGet("{id:long}/spotify-suggestions")]
+    public async Task<IActionResult> GetSpotifyMatchSuggestions(
+        long id,
+        [FromQuery] int limit = 8,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return Ok(Array.Empty<object>());
+        }
+
+        var artist = await _repository.GetArtistAsync(id, cancellationToken);
+        if (artist is null || string.IsNullOrWhiteSpace(artist.Name))
+        {
+            return NotFound();
+        }
+
+        var suggestions = await _spotifyArtistService.GetArtistMatchSuggestionsAsync(
+            id,
+            artist.Name,
+            limit,
+            cancellationToken);
+
+        return Ok(suggestions);
+    }
+
     private async Task<LocalArtistAlbumsContext?> ResolveLocalArtistAlbumsContextAsync(long id, CancellationToken cancellationToken)
     {
         if (_repository.IsConfigured)
@@ -781,6 +857,7 @@ public class LibraryArtistsApiController : ControllerBase
     }
 
     private sealed record DeezerArtistCandidate(long Id, string Name, long Fans);
+    private sealed record UnmatchedSpotifyArtistDto(long ArtistId, string ArtistName);
 
     private sealed record SelectedDeezerArtist(DeezerArtistCandidate Artist, IReadOnlyList<DeezerAlbumCandidate>? PrefetchedAlbums);
 

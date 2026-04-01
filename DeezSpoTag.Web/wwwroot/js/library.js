@@ -76,7 +76,14 @@ const libraryState = {
     localTopSongTrackIndex: null,
     localTopSongTrackArtistId: null,
     localTopSongTrackIndexPromise: null,
-    folderSaveInProgress: false
+    folderSaveInProgress: false,
+    unmatchedArtistResolver: {
+        items: [],
+        suggestions: new Map(),
+        loading: false,
+        initialized: false,
+        filter: ''
+    }
 };
 
 const libraryTrackSummaryCache = new Map();
@@ -7021,12 +7028,14 @@ function bindFolderChangeInput(input, action) {
 
 function getLibraryBootstrapElements() {
     const folderModal = document.getElementById('folderModal');
+    const unmatchedModal = document.getElementById('unmatchedArtistsModal');
     return {
         refreshButton: document.getElementById('refreshLibrary'),
         scanButton: document.getElementById('scanLibrary'),
         cancelScanButton: document.getElementById('cancelLibraryScan'),
         refreshImagesButton: document.getElementById('refreshImages'),
         cleanupButton: document.getElementById('cleanupLibrary'),
+        resolveUnmatchedArtistsButton: document.getElementById('resolveUnmatchedArtists'),
         saveButton: document.getElementById('saveSettings'),
         chooseFolderButton: document.getElementById('chooseFolder'),
         saveFolderButton: document.getElementById('saveFolder'),
@@ -7035,6 +7044,14 @@ function getLibraryBootstrapElements() {
         folderModalCancelButton: document.getElementById('folderModalCancel'),
         folderModal,
         folderModalBackdrop: folderModal?.querySelector('.folder-modal-backdrop'),
+        unmatchedModal,
+        unmatchedModalCloseButton: document.getElementById('closeUnmatchedArtistsModal'),
+        unmatchedModalBackdrop: unmatchedModal?.querySelector('[data-close-unmatched-modal]'),
+        unmatchedModalList: document.getElementById('unmatchedArtistsList'),
+        unmatchedModalStatus: document.getElementById('unmatchedArtistsStatus'),
+        unmatchedModalRefreshButton: document.getElementById('refreshUnmatchedArtists'),
+        unmatchedModalApplyHighConfidenceButton: document.getElementById('applyHighConfidenceUnmatchedArtists'),
+        unmatchedModalSearchInput: document.getElementById('unmatchedArtistsSearch'),
         browseLibraryFolderPathButton: document.getElementById('browseLibraryFolderPath'),
         folderPathInput: document.getElementById('folderPath'),
         folderConvertEnabledInput: document.getElementById('folderConvertEnabled'),
@@ -13005,7 +13022,287 @@ function bindBootstrapScanActions(elements) {
         await Promise.all([loadLibrarySettings(), loadFolders(), loadArtists(), loadLibraryScanStatus()]);
     });
     bindLibraryAction(elements.cleanupButton, cleanupMissingLibraryFiles);
+    bindUnmatchedArtistResolverActions(elements);
     bindLibraryAction(elements.saveButton, saveLibrarySettings);
+}
+
+function bindUnmatchedArtistResolverActions(elements) {
+    bindLibraryAction(elements.resolveUnmatchedArtistsButton, async () => {
+        await openUnmatchedArtistsModal(elements);
+    });
+    bindLibraryAction(elements.unmatchedModalCloseButton, () => closeUnmatchedArtistsModal(elements));
+    bindLibraryAction(elements.unmatchedModalBackdrop, () => closeUnmatchedArtistsModal(elements));
+    bindLibraryAction(elements.unmatchedModalRefreshButton, async () => {
+        await loadUnmatchedArtistsForResolver(elements, true);
+    });
+    bindLibraryAction(elements.unmatchedModalApplyHighConfidenceButton, async () => {
+        await applyBestSuggestionsForHighConfidence(elements);
+    });
+    if (elements.unmatchedModalSearchInput && !elements.unmatchedModalSearchInput.dataset.bound) {
+        elements.unmatchedModalSearchInput.dataset.bound = 'true';
+        elements.unmatchedModalSearchInput.addEventListener('input', () => {
+            libraryState.unmatchedArtistResolver.filter = elements.unmatchedModalSearchInput?.value?.trim() || '';
+            renderUnmatchedArtistsResolverList(elements);
+        });
+    }
+}
+
+async function openUnmatchedArtistsModal(elements) {
+    if (!elements.unmatchedModal) {
+        return;
+    }
+
+    elements.unmatchedModal.hidden = false;
+    document.body.classList.add('modal-open');
+    await loadUnmatchedArtistsForResolver(elements, false);
+}
+
+function closeUnmatchedArtistsModal(elements) {
+    if (!elements.unmatchedModal) {
+        return;
+    }
+
+    elements.unmatchedModal.hidden = true;
+    document.body.classList.remove('modal-open');
+}
+
+async function loadUnmatchedArtistsForResolver(elements, forceRefresh) {
+    const state = libraryState.unmatchedArtistResolver;
+    if (state.loading) {
+        return;
+    }
+
+    if (state.initialized && !forceRefresh) {
+        renderUnmatchedArtistsResolverList(elements);
+        return;
+    }
+
+    state.loading = true;
+    if (elements.unmatchedModalStatus) {
+        elements.unmatchedModalStatus.textContent = 'Loading unmatched artists...';
+    }
+    if (elements.unmatchedModalList) {
+        elements.unmatchedModalList.innerHTML = '';
+    }
+
+    try {
+        const payload = await fetchJson('/api/library/artists/unmatched-spotify?limit=200');
+        const items = Array.isArray(payload) ? payload : [];
+        state.items = items.map(item => ({
+            artistId: Number(item.artistId ?? item.id ?? 0),
+            artistName: String(item.artistName ?? item.name ?? '').trim()
+        })).filter(item => item.artistId > 0 && item.artistName);
+        state.suggestions.clear();
+        state.initialized = true;
+        renderUnmatchedArtistsResolverList(elements);
+    } catch (error) {
+        if (elements.unmatchedModalStatus) {
+            elements.unmatchedModalStatus.textContent = `Failed to load unmatched artists: ${error.message}`;
+        }
+    } finally {
+        state.loading = false;
+    }
+}
+
+function renderUnmatchedArtistsResolverList(elements) {
+    const state = libraryState.unmatchedArtistResolver;
+    if (!elements.unmatchedModalList || !elements.unmatchedModalStatus) {
+        return;
+    }
+
+    const filter = (state.filter || '').trim().toLowerCase();
+    const rows = state.items
+        .filter(item => !filter || item.artistName.toLowerCase().includes(filter));
+
+    if (rows.length === 0) {
+        elements.unmatchedModalStatus.textContent = state.items.length === 0
+            ? 'No unmatched artists found.'
+            : 'No artists match your filter.';
+        elements.unmatchedModalList.innerHTML = '';
+        return;
+    }
+
+    elements.unmatchedModalStatus.textContent = `${rows.length.toLocaleString()} unmatched artist(s).`;
+    elements.unmatchedModalList.innerHTML = rows.map(item => {
+        const suggestions = state.suggestions.get(item.artistId) || [];
+        const options = suggestions.length > 0
+            ? suggestions.map(suggestion => {
+                const overlapText = Number(suggestion.localAlbumOverlap || 0) > 0
+                    ? ` • overlap ${suggestion.localAlbumOverlap}`
+                    : '';
+                const verifiedText = suggestion.verified ? ' • verified' : '';
+                return `<option value="${escapeHtml(suggestion.spotifyId)}">${escapeHtml(suggestion.name)}${overlapText}${verifiedText}</option>`;
+            }).join('')
+            : '<option value="">Load suggestions first</option>';
+
+        return `
+            <div class="unmatched-artist-row" data-artist-id="${item.artistId}">
+                <div class="unmatched-artist-row__name">${escapeHtml(item.artistName)}</div>
+                <div class="unmatched-artist-row__suggestions">
+                    <select data-suggestion-select ${suggestions.length === 0 ? 'disabled' : ''}>${options}</select>
+                </div>
+                <div class="unmatched-artist-row__actions">
+                    <button type="button" class="btn-secondary action-btn action-btn-sm" data-load-suggestions>Suggestions</button>
+                    <button type="button" class="btn-primary action-btn action-btn-sm" data-apply-suggestion ${suggestions.length === 0 ? 'disabled' : ''}>Apply</button>
+                </div>
+            </div>`;
+    }).join('');
+
+    elements.unmatchedModalList.querySelectorAll('[data-load-suggestions]').forEach(button => {
+        button.addEventListener('click', async event => {
+            const row = event.currentTarget.closest('.unmatched-artist-row');
+            const artistId = Number(row?.dataset.artistId || 0);
+            if (!Number.isFinite(artistId) || artistId <= 0) {
+                return;
+            }
+            await loadSuggestionsForUnmatchedArtist(elements, artistId);
+        });
+    });
+
+    elements.unmatchedModalList.querySelectorAll('[data-apply-suggestion]').forEach(button => {
+        button.addEventListener('click', async event => {
+            const row = event.currentTarget.closest('.unmatched-artist-row');
+            const artistId = Number(row?.dataset.artistId || 0);
+            const select = row?.querySelector('[data-suggestion-select]');
+            const spotifyId = String(select?.value || '').trim();
+            if (!artistId || !spotifyId) {
+                return;
+            }
+            await applyUnmatchedArtistSuggestion(elements, artistId, spotifyId);
+        });
+    });
+}
+
+async function loadSuggestionsForUnmatchedArtist(elements, artistId) {
+    try {
+        const suggestions = await fetchUnmatchedArtistSuggestions(artistId);
+        libraryState.unmatchedArtistResolver.suggestions.set(artistId, suggestions);
+        renderUnmatchedArtistsResolverList(elements);
+    } catch (error) {
+        showToast(`Suggestion load failed: ${error.message}`, true);
+    }
+}
+
+async function applyUnmatchedArtistSuggestion(elements, artistId, spotifyId) {
+    try {
+        await fetchJson(`/api/library/artists/${artistId}/spotify-id`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ spotifyId })
+        });
+        const state = libraryState.unmatchedArtistResolver;
+        state.items = state.items.filter(item => item.artistId !== artistId);
+        state.suggestions.delete(artistId);
+        renderUnmatchedArtistsResolverList(elements);
+        showToast('Spotify artist match updated.');
+        if (document.getElementById('artistsGrid')) {
+            await loadArtists();
+        }
+    } catch (error) {
+        showToast(`Failed to apply match: ${error.message}`, true);
+    }
+}
+
+async function fetchUnmatchedArtistSuggestions(artistId) {
+    const suggestions = await fetchJson(`/api/library/artists/${artistId}/spotify-suggestions?limit=8`);
+    return (Array.isArray(suggestions) ? suggestions : []).map(item => ({
+        spotifyId: String(item.spotifyId || '').trim(),
+        name: String(item.name || '').trim(),
+        verified: item.verified === true,
+        localAlbumOverlap: Number(item.localAlbumOverlap || 0),
+        totalAlbums: Number(item.totalAlbums || 0),
+        score: Number(item.score || 0),
+        nameMatchesAlias: item.nameMatchesAlias === true
+    })).filter(item => item.spotifyId && item.name);
+}
+
+function getFilteredUnmatchedArtistItems() {
+    const state = libraryState.unmatchedArtistResolver;
+    const filter = (state.filter || '').trim().toLowerCase();
+    return state.items.filter(item => !filter || item.artistName.toLowerCase().includes(filter));
+}
+
+function isHighConfidenceUnmatchedSuggestion(suggestion) {
+    if (!suggestion || !suggestion.spotifyId) {
+        return false;
+    }
+
+    if (!suggestion.nameMatchesAlias) {
+        return false;
+    }
+
+    if (suggestion.localAlbumOverlap > 0) {
+        return true;
+    }
+
+    return suggestion.verified && suggestion.totalAlbums >= 3 && suggestion.score >= 100_000;
+}
+
+async function applyBestSuggestionsForHighConfidence(elements) {
+    const button = elements.unmatchedModalApplyHighConfidenceButton;
+    if (button) {
+        button.disabled = true;
+    }
+
+    try {
+        const visibleItems = getFilteredUnmatchedArtistItems();
+        if (visibleItems.length === 0) {
+            showToast('No unmatched artists available in current filter.', true);
+            return;
+        }
+
+        let applied = 0;
+        let skipped = 0;
+        let failed = 0;
+        const appliedArtistIds = new Set();
+        const state = libraryState.unmatchedArtistResolver;
+
+        for (const item of visibleItems) {
+            let suggestions = state.suggestions.get(item.artistId);
+            if (!Array.isArray(suggestions) || suggestions.length === 0) {
+                try {
+                    suggestions = await fetchUnmatchedArtistSuggestions(item.artistId);
+                    state.suggestions.set(item.artistId, suggestions);
+                } catch {
+                    failed++;
+                    continue;
+                }
+            }
+
+            const best = suggestions[0];
+            if (!isHighConfidenceUnmatchedSuggestion(best)) {
+                skipped++;
+                continue;
+            }
+
+            try {
+                await fetchJson(`/api/library/artists/${item.artistId}/spotify-id`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ spotifyId: best.spotifyId })
+                });
+                applied++;
+                appliedArtistIds.add(item.artistId);
+                state.suggestions.delete(item.artistId);
+            } catch {
+                failed++;
+            }
+        }
+
+        if (appliedArtistIds.size > 0) {
+            state.items = state.items.filter(item => !appliedArtistIds.has(item.artistId));
+            renderUnmatchedArtistsResolverList(elements);
+            if (document.getElementById('artistsGrid')) {
+                await loadArtists();
+            }
+        }
+
+        showToast(`Applied ${applied} high-confidence match(es). Skipped ${skipped}. Failed ${failed}.`, failed > 0);
+    } finally {
+        if (button) {
+            button.disabled = false;
+        }
+    }
 }
 
 function getLibraryLoadTargets() {

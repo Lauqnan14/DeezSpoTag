@@ -18,12 +18,21 @@ public sealed class SpotifyArtistService
     private const string AlbumsSection = "albums";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan DeezerEnrichmentTimeout = TimeSpan.FromSeconds(15);
+    private const int ShazamArtistSampleTrackLimit = 3;
+    private const int ShazamArtistCandidateTrackWindow = 5;
+    private static readonly string[] AliasSuffixes =
+    {
+        " tell em",
+        " tell'em",
+        " tell em official"
+    };
     private readonly LibraryRepository _libraryRepository;
     private readonly ArtistPageCacheRepository _cacheRepository;
     private readonly LibraryConfigStore _configStore;
     private readonly SpotifyPathfinderMetadataClient _pathfinderMetadataClient;
     private readonly SpotifyMetadataService _metadataService;
     private readonly SpotifyDeezerLinkService _deezerLinkService;
+    private readonly ShazamRecognitionService _shazamRecognitionService;
     private readonly ILogger<SpotifyArtistService> _logger;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private static string ReplaceWithTimeout(string input, string pattern, string replacement, System.Text.RegularExpressions.RegexOptions options = System.Text.RegularExpressions.RegexOptions.None)
@@ -33,17 +42,16 @@ public sealed class SpotifyArtistService
         LibraryRepository libraryRepository,
         ArtistPageCacheRepository cacheRepository,
         LibraryConfigStore configStore,
-        SpotifyPathfinderMetadataClient pathfinderMetadataClient,
-        SpotifyMetadataService metadataService,
-        SpotifyDeezerLinkService deezerLinkService,
+        SpotifyArtistServiceDependencies dependencies,
         ILogger<SpotifyArtistService> logger)
     {
         _libraryRepository = libraryRepository;
         _cacheRepository = cacheRepository;
         _configStore = configStore;
-        _pathfinderMetadataClient = pathfinderMetadataClient;
-        _metadataService = metadataService;
-        _deezerLinkService = deezerLinkService;
+        _pathfinderMetadataClient = dependencies.PathfinderMetadataClient;
+        _metadataService = dependencies.MetadataService;
+        _deezerLinkService = dependencies.DeezerLinkService;
+        _shazamRecognitionService = dependencies.ShazamRecognitionService;
         _logger = logger;
     }
 
@@ -188,6 +196,63 @@ public sealed class SpotifyArtistService
         }
 
         return await GetArtistPageBySpotifyIdInternalAsync(spotifyId, artistName, true, null, includeDeezerLinking: true, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<SpotifyArtistMatchSuggestion>> GetArtistMatchSuggestionsAsync(
+        long artistId,
+        string artistName,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(artistName))
+        {
+            return Array.Empty<SpotifyArtistMatchSuggestion>();
+        }
+
+        var safeLimit = Math.Clamp(limit, 1, 25);
+        var localAlbumTitleSet = await TryGetLocalAlbumTitleSetAsync(artistId, cancellationToken);
+        var requireLocalAlbumOverlap = localAlbumTitleSet.Count > 0;
+        var aliasTargets = BuildArtistAliasTargets(artistName);
+
+        var results = await _pathfinderMetadataClient.SearchArtistsAsync(artistName, Math.Max(10, safeLimit), cancellationToken);
+        if (results.Count == 0)
+        {
+            return Array.Empty<SpotifyArtistMatchSuggestion>();
+        }
+
+        var suggestions = new List<SpotifyArtistMatchSuggestion>(safeLimit);
+        foreach (var candidate in results.DistinctBy(item => item.Id).Take(Math.Max(safeLimit * 2, 10)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var nameMatchesAlias = aliasTargets.Any(alias => IsEquivalentArtistName(candidate.Name, alias));
+            var localAlbumOverlap = await ResolveLocalAlbumOverlapAsync(
+                candidate.Id,
+                requireLocalAlbumOverlap,
+                localAlbumTitleSet,
+                cancellationToken);
+            var info = await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidate.Id, cancellationToken);
+            var score = ComputeExactCandidateScore(localAlbumOverlap, info) + (nameMatchesAlias ? 100_000 : 0);
+
+            suggestions.Add(new SpotifyArtistMatchSuggestion(
+                candidate.Id,
+                candidate.Name,
+                candidate.ImageUrl,
+                score,
+                localAlbumOverlap,
+                nameMatchesAlias,
+                info?.Verified == true,
+                info?.TotalAlbums ?? 0));
+        }
+
+        return suggestions
+            .OrderByDescending(suggestion => suggestion.NameMatchesAlias)
+            .ThenByDescending(suggestion => suggestion.LocalAlbumOverlap)
+            .ThenByDescending(suggestion => suggestion.Verified)
+            .ThenByDescending(suggestion => suggestion.TotalAlbums)
+            .ThenByDescending(suggestion => suggestion.Score)
+            .Take(safeLimit)
+            .ToList();
     }
 
     public async Task<SpotifyArtistPageResult?> GetArtistPageBySpotifyIdAsync(
@@ -1350,13 +1415,26 @@ public sealed class SpotifyArtistService
             }
 
             var candidates = BuildArtistSearchCandidates(results, artistName);
+            var aliasTargets = BuildArtistAliasTargets(artistName);
             var exactCandidates = candidates
-                .Where(candidate => IsEquivalentArtistName(candidate.Name, artistName))
+                .Where(candidate => aliasTargets.Any(target => IsEquivalentArtistName(candidate.Name, target)))
                 .ToList();
             var localAlbumTitleSet = await TryGetLocalAlbumTitleSetAsync(localArtistId, cancellationToken);
 
             if (exactCandidates.Count == 0)
             {
+                var shazamResolved = await TryResolveArtistIdViaShazamEvidenceAsync(
+                    artistName,
+                    localArtistId,
+                    localAlbumTitleSet,
+                    aliasTargets,
+                    cancellationToken);
+                if (!string.IsNullOrWhiteSpace(shazamResolved))
+                {
+                    AddActivity("info", $"[spotify] artist id resolved via shazam evidence: {artistName} -> {shazamResolved}.");
+                    return shazamResolved;
+                }
+
                 AddActivity("warn", $"[spotify] artist ID resolve failed: no exact artist-name match for {artistName}.");
                 return null;
             }
@@ -1368,6 +1446,18 @@ public sealed class SpotifyArtistService
                     $"[spotify] candidate {best.Candidate.Id} selected for {artistName} " +
                     $"(exact_name=true, local_album_overlap={best.LocalAlbumOverlap}).");
                 return best.Candidate.Id;
+            }
+
+            var shazamFallback = await TryResolveArtistIdViaShazamEvidenceAsync(
+                artistName,
+                localArtistId,
+                localAlbumTitleSet,
+                aliasTargets,
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(shazamFallback))
+            {
+                AddActivity("info", $"[spotify] artist id resolved via shazam fallback: {artistName} -> {shazamFallback}.");
+                return shazamFallback;
             }
 
             AddActivity("warn", $"[spotify] artist ID resolve failed: no suitable exact-name candidate for {artistName}.");
@@ -1548,10 +1638,291 @@ public sealed class SpotifyArtistService
             return true;
         }
 
-        var normalizedCandidate = NormalizeTitle(candidate);
-        var normalizedTarget = NormalizeTitle(target);
-        return !string.IsNullOrWhiteSpace(normalizedCandidate)
-            && string.Equals(normalizedCandidate, normalizedTarget, StringComparison.OrdinalIgnoreCase);
+        var candidateVariants = ExpandArtistNameVariants(candidate);
+        var targetVariants = ExpandArtistNameVariants(target);
+        return candidateVariants.Overlaps(targetVariants);
+    }
+
+    private async Task<string?> TryResolveArtistIdViaShazamEvidenceAsync(
+        string artistName,
+        long? localArtistId,
+        HashSet<string> localAlbumTitleSet,
+        IReadOnlyCollection<string> aliasTargets,
+        CancellationToken cancellationToken)
+    {
+        if (!localArtistId.HasValue || !_shazamRecognitionService.IsAvailable)
+        {
+            return null;
+        }
+
+        var sampleTrackPaths = await GetLocalArtistSampleTrackPathsAsync(
+            localArtistId.Value,
+            ShazamArtistSampleTrackLimit,
+            cancellationToken);
+        if (sampleTrackPaths.Count == 0)
+        {
+            return null;
+        }
+
+        var candidateVotes = await CollectShazamSpotifyArtistVotesAsync(sampleTrackPaths, artistName, cancellationToken);
+
+        if (candidateVotes.Count == 0)
+        {
+            return null;
+        }
+
+        var bestId = await SelectBestShazamEvidenceCandidateAsync(
+            candidateVotes,
+            localAlbumTitleSet,
+            aliasTargets,
+            cancellationToken);
+        if (!string.IsNullOrWhiteSpace(bestId))
+        {
+            return bestId;
+        }
+
+        return null;
+    }
+
+    private async Task<Dictionary<string, int>> CollectShazamSpotifyArtistVotesAsync(
+        IReadOnlyList<string> sampleTrackPaths,
+        string artistName,
+        CancellationToken cancellationToken)
+    {
+        var candidateVotes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var trackPath in sampleTrackPaths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var recognition = TryRecognizeTrackWithShazam(trackPath, artistName);
+            if (recognition is null)
+            {
+                continue;
+            }
+
+            var spotifyArtistIds = await ResolveSpotifyArtistIdsFromShazamRecognitionAsync(recognition, cancellationToken);
+            AddSpotifyArtistVotes(candidateVotes, spotifyArtistIds);
+        }
+
+        return candidateVotes;
+    }
+
+    private ShazamRecognitionInfo? TryRecognizeTrackWithShazam(string trackPath, string artistName)
+    {
+        try
+        {
+            return _shazamRecognitionService.Recognize(trackPath, CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Shazam recognition failed while resolving Spotify artist id for {ArtistName}.", artistName);
+            return null;
+        }
+    }
+
+    private static void AddSpotifyArtistVotes(
+        Dictionary<string, int> candidateVotes,
+        IEnumerable<string> spotifyArtistIds)
+    {
+        foreach (var spotifyArtistId in spotifyArtistIds)
+        {
+            if (candidateVotes.TryGetValue(spotifyArtistId, out var current))
+            {
+                candidateVotes[spotifyArtistId] = current + 1;
+            }
+            else
+            {
+                candidateVotes[spotifyArtistId] = 1;
+            }
+        }
+    }
+
+    private async Task<string?> SelectBestShazamEvidenceCandidateAsync(
+        IReadOnlyDictionary<string, int> candidateVotes,
+        HashSet<string> localAlbumTitleSet,
+        IReadOnlyCollection<string> aliasTargets,
+        CancellationToken cancellationToken)
+    {
+        string? bestId = null;
+        var bestScore = int.MinValue;
+        var requireLocalAlbumOverlap = localAlbumTitleSet.Count > 0;
+
+        foreach (var (candidateId, votes) in candidateVotes.OrderByDescending(entry => entry.Value))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var candidateName = await TryFetchSpotifyArtistNameAsync(candidateId, cancellationToken);
+            var matchesAlias = !string.IsNullOrWhiteSpace(candidateName)
+                && aliasTargets.Any(alias => IsEquivalentArtistName(candidateName, alias));
+            if (!matchesAlias)
+            {
+                continue;
+            }
+
+            var localAlbumOverlap = await ResolveLocalAlbumOverlapAsync(
+                candidateId,
+                requireLocalAlbumOverlap,
+                localAlbumTitleSet,
+                cancellationToken);
+            if (requireLocalAlbumOverlap && localAlbumOverlap <= 0)
+            {
+                continue;
+            }
+
+            var score = (votes * 100) + (localAlbumOverlap * 25);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestId = candidateId;
+            }
+        }
+
+        return bestId;
+    }
+
+    private async Task<string?> TryFetchSpotifyArtistNameAsync(string spotifyArtistId, CancellationToken cancellationToken)
+    {
+        if (!LooksLikeSpotifyEntityId(spotifyArtistId))
+        {
+            return null;
+        }
+
+        try
+        {
+            var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(
+                $"https://open.spotify.com/artist/{spotifyArtistId}",
+                cancellationToken);
+            return string.IsNullOrWhiteSpace(metadata?.Name) ? null : metadata.Name.Trim();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed fetching Spotify artist profile for id {SpotifyArtistId}.", spotifyArtistId);
+            return null;
+        }
+    }
+
+    private async Task<IReadOnlyList<string>> ResolveSpotifyArtistIdsFromShazamRecognitionAsync(
+        ShazamRecognitionInfo recognition,
+        CancellationToken cancellationToken)
+    {
+        var spotifyUrl = (recognition.SpotifyUrl ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(spotifyUrl))
+        {
+            return Array.Empty<string>();
+        }
+
+        if (!SpotifyMetadataService.TryParseSpotifyUrl(spotifyUrl, out var type, out var id)
+            || string.IsNullOrWhiteSpace(id))
+        {
+            return Array.Empty<string>();
+        }
+
+        if (string.Equals(type, "artist", StringComparison.OrdinalIgnoreCase))
+        {
+            return LooksLikeSpotifyEntityId(id) ? new[] { id } : Array.Empty<string>();
+        }
+
+        try
+        {
+            var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(spotifyUrl, cancellationToken);
+            if (metadata?.TrackList is not { Count: > 0 } trackList)
+            {
+                return Array.Empty<string>();
+            }
+
+            return trackList
+                .Take(ShazamArtistCandidateTrackWindow)
+                .SelectMany(track => track.ArtistIds ?? Array.Empty<string>())
+                .Where(LooksLikeSpotifyEntityId)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed resolving Spotify artist ids from Shazam URL {SpotifyUrl}.", spotifyUrl);
+            return Array.Empty<string>();
+        }
+    }
+
+    private async Task<IReadOnlyList<string>> GetLocalArtistSampleTrackPathsAsync(
+        long localArtistId,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var safeLimit = Math.Clamp(limit, 1, 10);
+        var trackIds = await _libraryRepository.GetTrackIdsByArtistAsync(localArtistId, 0, safeLimit * 4, cancellationToken);
+        if (trackIds.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var paths = new List<string>(safeLimit);
+        foreach (var trackId in trackIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var path = await _libraryRepository.GetTrackPrimaryFilePathAsync(trackId, cancellationToken);
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                continue;
+            }
+
+            paths.Add(path);
+            if (paths.Count >= safeLimit)
+            {
+                break;
+            }
+        }
+
+        return paths;
+    }
+
+    private static bool LooksLikeSpotifyEntityId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length != 22)
+        {
+            return false;
+        }
+
+        return value.All(char.IsLetterOrDigit);
+    }
+
+    private static HashSet<string> BuildArtistAliasTargets(string artistName)
+    {
+        var variants = ExpandArtistNameVariants(artistName);
+        variants.Add((artistName ?? string.Empty).Trim());
+        return variants;
+    }
+
+    private static HashSet<string> ExpandArtistNameVariants(string? artistName)
+    {
+        var variants = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var normalized = NormalizeTitle(artistName ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return variants;
+        }
+
+        variants.Add(normalized);
+        if (normalized.StartsWith("the ", StringComparison.OrdinalIgnoreCase))
+        {
+            variants.Add(normalized[4..].Trim());
+        }
+
+        variants.UnionWith(
+            AliasSuffixes
+                .Where(suffix => normalized.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                .Select(suffix => normalized[..^suffix.Length].Trim())
+                .Where(alias => !string.IsNullOrWhiteSpace(alias)));
+
+        return variants;
     }
 
 
@@ -1660,3 +2031,19 @@ public sealed record SpotifyAlbumPage(
 public sealed record SpotifyArtistCacheEnvelope(
     int Version,
     SpotifyArtistPageResult Payload);
+
+public sealed record SpotifyArtistServiceDependencies(
+    SpotifyPathfinderMetadataClient PathfinderMetadataClient,
+    SpotifyMetadataService MetadataService,
+    SpotifyDeezerLinkService DeezerLinkService,
+    ShazamRecognitionService ShazamRecognitionService);
+
+public sealed record SpotifyArtistMatchSuggestion(
+    string SpotifyId,
+    string Name,
+    string? ImageUrl,
+    int Score,
+    int LocalAlbumOverlap,
+    bool NameMatchesAlias,
+    bool Verified,
+    int TotalAlbums);

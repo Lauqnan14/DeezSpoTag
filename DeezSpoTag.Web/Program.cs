@@ -912,6 +912,12 @@ static void RegisterCoreApplicationServices(IServiceCollection services, IConfig
     services.AddSingleton<DeezSpoTag.Web.Services.SpotifyBlobService>();
     services.AddSingleton<DeezSpoTag.Web.Services.SpotifyAppTokenService>();
     services.AddSingleton<DeezSpoTag.Web.Services.SpotifyPathfinderMetadataClient>();
+    services.AddSingleton<DeezSpoTag.Web.Services.SpotifyArtistServiceDependencies>(sp =>
+        new DeezSpoTag.Web.Services.SpotifyArtistServiceDependencies(
+            sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyPathfinderMetadataClient>(),
+            sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyMetadataService>(),
+            sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyDeezerLinkService>(),
+            sp.GetRequiredService<DeezSpoTag.Web.Services.ShazamRecognitionService>()));
     services.AddSingleton<DeezSpoTag.Web.Services.SpotifyDeezerAlbumResolver>();
     services.AddSingleton<DeezSpoTag.Web.Services.SpotifyCentralMetadataService>();
     services.AddSingleton<DeezSpoTag.Web.Services.SpotifyArtistService>();
