@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using DeezSpoTag.Core.Models;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
@@ -17,6 +18,11 @@ namespace DeezSpoTag.Workers;
 public sealed class FileTaggingWorker : BackgroundService, ITaggingJobQueue
 {
     private static readonly char[] MultiValueSeparators = [';', '|', ','];
+    private static readonly HashSet<string> BlockedGenres = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "other",
+        "others"
+    };
 
     private readonly ILogger<FileTaggingWorker> _logger;
     private readonly TaggingJobStore _jobStore;
@@ -30,6 +36,7 @@ public sealed class FileTaggingWorker : BackgroundService, ITaggingJobQueue
     private readonly int _defaultMaxAttempts;
     private readonly int _baseRetryDelaySeconds;
     private readonly int _maxRetryDelaySeconds;
+    private bool _genreTagNormalizationEnabled;
 
     public FileTaggingWorker(
         ILogger<FileTaggingWorker> logger,
@@ -400,7 +407,7 @@ LIMIT 1;";
         return await reader.IsDBNullAsync(ordinal, cancellationToken) ? null : reader.GetInt32(ordinal);
     }
 
-    private static async Task<IReadOnlyList<string>> LoadTrackGenresAsync(
+    private async Task<IReadOnlyList<string>> LoadTrackGenresAsync(
         SqliteConnection connection,
         long trackId,
         string? fallbackTagGenre,
@@ -431,22 +438,43 @@ ORDER BY value;";
             }
         }
 
-        if (values.Count > 0)
+        if (values.Count == 0 && !string.IsNullOrWhiteSpace(fallbackTagGenre))
         {
-            return values.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            values.AddRange(fallbackTagGenre
+                .Split(MultiValueSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(value => !string.IsNullOrWhiteSpace(value)));
         }
 
-        if (string.IsNullOrWhiteSpace(fallbackTagGenre))
-        {
-            return Array.Empty<string>();
-        }
+        return NormalizeGenres(values);
+    }
 
-        var split = fallbackTagGenre
-            .Split(MultiValueSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
+    private IReadOnlyList<string> NormalizeGenres(IEnumerable<string> values)
+    {
+        var aliasMap = GetGenreAliasMap();
+        var splitComposite = _genreTagNormalizationEnabled;
+
+        return GenreTagAliasNormalizer.NormalizeAndExpandValues(values, aliasMap, splitComposite)
+            .Where(value => !BlockedGenres.Contains(value))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        return split;
+    }
+
+    private IReadOnlyDictionary<string, string> GetGenreAliasMap()
+    {
+        try
+        {
+            var settings = _settingsService.LoadSettings();
+            _genreTagNormalizationEnabled = settings.NormalizeGenreTags;
+            return settings.NormalizeGenreTags
+                ? GenreTagAliasNormalizer.BuildAliasMap(settings.GenreTagAliasRules)
+                : new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to load settings for genre normalization in file tagging worker.");
+            _genreTagNormalizationEnabled = false;
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+        }
     }
 
     private async Task UpdateTaggedDateAsync(long trackId, CancellationToken cancellationToken)
