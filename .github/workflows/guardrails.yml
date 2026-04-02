@@ -1,0 +1,44 @@
+name: Guardrails
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guardrails:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Resolve base reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch origin "${{ github.base_ref }}" --depth=1
+            echo "GUARDRAILS_BASE_REF=origin/${{ github.base_ref }}" >> "$GITHUB_ENV"
+            echo "GUARDRAILS_MODE=changed" >> "$GITHUB_ENV"
+          else
+            echo "GUARDRAILS_MODE=full" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/guardrails.sh
+          ./scripts/guardrails.sh
