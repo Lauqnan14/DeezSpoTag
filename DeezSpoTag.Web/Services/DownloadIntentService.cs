@@ -196,6 +196,7 @@ public sealed class DownloadIntentService
     private const string EnglishUsLocale = "en-US";
     private const string SongsField = "songs";
     private const string SonglinkSpotifyKey = "songlink-spotify";
+    private const string DefaultDownloadMetadataSource = DeezerPlatform;
     private const string AppleMusicDomain = "music.apple.com";
     private const string DeezerDomain = "deezer.com";
     private const string QobuzDomain = "qobuz.com";
@@ -832,7 +833,7 @@ public sealed class DownloadIntentService
         long? destinationFolderId,
         CancellationToken cancellationToken)
     {
-        settings.MetadataSource = string.Empty;
+        settings.MetadataSource = DefaultDownloadMetadataSource;
 
         try
         {
@@ -842,11 +843,7 @@ public sealed class DownloadIntentService
                 return (false, "Destination music folder requires a valid AutoTag profile.");
             }
 
-            var normalizedSource = NormalizeMetadataSource(profile.DownloadTagSource);
-            if (string.IsNullOrWhiteSpace(normalizedSource))
-            {
-                return (false, "Destination AutoTag profile is missing a valid download metadata source.");
-            }
+            var normalizedSource = NormalizeMetadataSource(profile.DownloadTagSource) ?? DefaultDownloadMetadataSource;
 
             DownloadEngineSettingsHelper.ApplyResolvedProfileToSettings(settings, profile, normalizedSource);
             return (true, null);
@@ -1058,7 +1055,9 @@ public sealed class DownloadIntentService
             settings.FallbackBitrate = true;
         }
 
-        settings.MetadataSource = string.Empty;
+        settings.MetadataSource = string.IsNullOrWhiteSpace(settings.MetadataSource)
+            ? DefaultDownloadMetadataSource
+            : settings.MetadataSource;
     }
 
     private static bool NormalizeIntentContentType(DownloadIntent intent)
@@ -2465,11 +2464,8 @@ public sealed class DownloadIntentService
         var isBoomplaySource = BoomplayMetadataService.IsBoomplayUrl(sourceUrl)
             || string.Equals(intent.SourceService, "boomplay", StringComparison.OrdinalIgnoreCase);
 
-        var metadataSource = NormalizeMetadataSource(settings.MetadataSource);
-        if (!string.IsNullOrWhiteSpace(metadataSource))
-        {
-            await PopulatePreferredMetadataSourceAsync(intent, metadataSource, sourceUrl, cancellationToken);
-        }
+        var metadataSource = NormalizeMetadataSource(settings.MetadataSource) ?? DefaultDownloadMetadataSource;
+        await PopulatePreferredMetadataSourceAsync(intent, metadataSource, sourceUrl, cancellationToken);
 
         if (isBoomplaySource)
         {

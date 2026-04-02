@@ -87,7 +87,7 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
         {
             "deezer" => "deezer",
             "spotify" => "spotify",
-            _ => null
+            _ => "deezer"
         };
     }
 

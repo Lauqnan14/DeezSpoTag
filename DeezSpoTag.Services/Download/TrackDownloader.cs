@@ -582,7 +582,7 @@ public class TrackDownloader
 
     private async Task<TagSettings> ResolveTagSettingsAsync(long? destinationFolderId, DeezSpoTagSettings settings, CancellationToken cancellationToken)
     {
-        settings.MetadataSource = string.Empty;
+        settings.MetadataSource = DeezerSource;
 
         try
         {
@@ -592,7 +592,7 @@ public class TrackDownloader
                 if (!string.IsNullOrWhiteSpace(profile.DownloadTagSource))
                 {
                     var normalizedSource = profile.DownloadTagSource.Trim().ToLowerInvariant();
-                    settings.MetadataSource = normalizedSource is "spotify" or DeezerSource ? normalizedSource : string.Empty;
+                    settings.MetadataSource = normalizedSource is "spotify" or DeezerSource ? normalizedSource : DeezerSource;
                 }
 
                 TechnicalLyricsSettingsApplier.Apply(settings, profile.Technical);
