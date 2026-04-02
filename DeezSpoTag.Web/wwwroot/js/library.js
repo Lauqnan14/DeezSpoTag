@@ -10534,6 +10534,7 @@ async function loadPlaylistBlockedRules() {
 async function loadPlaylistWatchlist() {
     const container = document.getElementById('playlistWatchlistContainer');
     if (!container) return;
+    container.innerHTML = '<div class="watchlist-empty-state">Loading monitored playlists...</div>';
     const mergeButton = document.getElementById('mergePlaylistWatchlistBtn');
     if (mergeButton) {
         mergeButton.disabled = true;
@@ -10563,7 +10564,7 @@ async function loadPlaylistWatchlist() {
             };
         }
 
-        const playlistPrefs = await hydratePlaylistPreferences();
+        const playlistPrefsPromise = hydratePlaylistPreferences();
 
         container.innerHTML = items.map(item => {
             const artContent = item.imageUrl
@@ -10698,11 +10699,16 @@ async function loadPlaylistWatchlist() {
                 const sourceId = button.dataset.playlistId;
                 const playlistName = button.dataset.playlistName || 'Playlist';
                 if (!source || !sourceId) return;
+                const playlistPrefs = await playlistPrefsPromise;
                 await openPlaylistSettingsPanel(source, sourceId, playlistName, playlistPrefs);
             });
         });
 
-        tryOpenPendingPlaylistSettings(playlistPrefs);
+        playlistPrefsPromise.then((playlistPrefs) => {
+            tryOpenPendingPlaylistSettings(playlistPrefs);
+        }).catch(() => {
+            // Ignore preference hydration failures here; settings panel handles missing prefs.
+        });
     } catch (error) {
         container.innerHTML = `<div class="watchlist-empty-state">Failed to load playlists: ${escapeHtml(error?.message || 'Unknown error')}</div>`;
     }
@@ -11813,10 +11819,20 @@ async function refreshWatchlistToggle(button, artistIdValue) {
     } catch {
         // Allow toggling even if status lookup fails.
     }
+    applyWatchlistToggleState(button, watching);
+}
+
+function applyWatchlistToggleState(button, watching, pending = false) {
+    if (!button) {
+        return;
+    }
+
     button.textContent = watching ? 'Monitoring Artist' : 'Monitor Artist';
     button.classList.toggle('btn-secondary', watching);
     button.classList.toggle('btn-primary', !watching);
+    button.classList.toggle('is-busy', pending);
     button.dataset.watching = watching ? 'true' : 'false';
+    button.disabled = pending;
 }
 
 async function resolveWatchlistArtistName(artistIdValue) {
@@ -11842,11 +11858,11 @@ async function initWatchlistToggle() {
 
     globalThis.DeezSpoTag = globalThis.DeezSpoTag || {};
     const toggle = async () => {
-            button.disabled = true;
+            const currentlyWatching = button.dataset.watching === 'true';
+            const nextWatching = !currentlyWatching;
+            applyWatchlistToggleState(button, nextWatching, true);
             try {
-                const status = await fetchJson(`/api/library/watchlist/${artistIdValue}`);
-                const watching = status?.watching === true;
-                if (watching) {
+                if (currentlyWatching) {
                     await fetchJson(`/api/library/watchlist/${artistIdValue}`, { method: 'DELETE' });
                     showToast('Artist removed from watchlist.');
                 } else {
@@ -11858,17 +11874,16 @@ async function initWatchlistToggle() {
                     });
                     showToast('Artist added to watchlist.');
                 }
-                await refreshWatchlistToggle(button, artistIdValue);
+                applyWatchlistToggleState(button, nextWatching, false);
             } catch (error) {
+                applyWatchlistToggleState(button, currentlyWatching, false);
                 showToast(`Watchlist update failed: ${error.message}`, true);
-            } finally {
-                button.disabled = false;
             }
         };
     globalThis.DeezSpoTag.LibraryWatchlist = { toggle };
 
     button.style.cursor = 'pointer';
-    button.disabled = false;
+    applyWatchlistToggleState(button, false, true);
     button.addEventListener('click', toggle);
     await refreshWatchlistToggle(button, artistIdValue);
 }
