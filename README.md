@@ -179,6 +179,34 @@ This checks:
 - application HTTP startup on localhost
 - clean-start bootstrap with temporary writable app data
 
+### Guardrail Stack (Regression Protection)
+
+DeezSpoTag includes an impact-aware guardrail runner to reduce cross-area regressions.
+
+Run manually:
+
+```bash
+./scripts/guardrails.sh
+```
+
+Behavior:
+
+- always runs a build gate
+- detects changed files against `origin/main`
+- runs mapped regression suites for impacted domains (download, library, Spotify matching)
+- falls back to a smoke suite if no mapping is hit
+
+Local push enforcement:
+
+- `.githooks/pre-push` runs guardrails when pushing `main`
+- to bypass only when absolutely necessary: `DEEZSPOTAG_SKIP_GUARDRAILS=1 git push`
+
+CI enforcement:
+
+- `.github/workflows/guardrails.yml` runs on PRs and pushes to `main`
+- PRs run in changed-file mode against the base branch
+- pushes to `main` run in full mode
+
 ### Local Wrapper Image Build
 
 Build the wrapper image that matches the supported `linux/amd64` release path:

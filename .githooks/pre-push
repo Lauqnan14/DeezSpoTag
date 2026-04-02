@@ -2,10 +2,14 @@
 set -euo pipefail
 
 zero40="0000000000000000000000000000000000000000"
+run_guardrails="0"
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
     refs/heads/main)
+      if [ "$local_sha" != "$zero40" ]; then
+        run_guardrails="1"
+      fi
       ;;
     refs/heads/*)
       # Allow deleting non-main branches, block creating/updating them.
@@ -21,3 +25,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       ;;
   esac
 done
+
+if [ "$run_guardrails" = "1" ] && [ "${DEEZSPOTAG_SKIP_GUARDRAILS:-0}" != "1" ]; then
+  repo_root="$(git rev-parse --show-toplevel)"
+  "$repo_root/scripts/guardrails.sh"
+fi

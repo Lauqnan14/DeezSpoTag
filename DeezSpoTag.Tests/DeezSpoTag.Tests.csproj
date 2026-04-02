@@ -20,5 +20,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DeezSpoTag.Services\DeezSpoTag.Services.csproj" />
+    <ProjectReference Include="..\DeezSpoTag.Web\DeezSpoTag.Web.csproj" />
   </ItemGroup>
 </Project>
