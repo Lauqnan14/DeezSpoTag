@@ -22,6 +22,8 @@ public sealed class SpotifyArtistService
     private const int ShazamArtistSampleTrackLimit = 3;
     private const int ShazamArtistCandidateTrackWindow = 5;
     private const int ShazamStrongVoteThreshold = 2;
+    private const int CanonicalFallbackMinScore = 2_030;
+    private const int CanonicalFallbackMinLead = 250;
     private const int ExactCandidateScoreParallelism = 4;
     private const int ShazamCandidateScoreParallelism = 4;
     private static readonly TimeSpan LocalAlbumCacheTtl = TimeSpan.FromMinutes(5);
@@ -1483,6 +1485,18 @@ public sealed class SpotifyArtistService
                 return best.Candidate.Id;
             }
 
+            var canonicalFallback = await TrySelectCanonicalFallbackExactCandidateAsync(
+                exactCandidates,
+                aliasTargets,
+                cancellationToken);
+            if (canonicalFallback is not null)
+            {
+                AddActivity("info",
+                    $"[spotify] candidate {canonicalFallback.Candidate.Id} selected for {artistName} " +
+                    $"(exact_name=true, local_album_overlap=0, canonical_fallback=true).");
+                return canonicalFallback.Candidate.Id;
+            }
+
             var shazamFallback = await TryResolveArtistIdViaShazamEvidenceAsync(
                 artistName,
                 localArtistId,
@@ -1534,6 +1548,10 @@ public sealed class SpotifyArtistService
     private sealed record ExactArtistCandidateScore(
         SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate Candidate,
         int LocalAlbumOverlap,
+        int Score);
+
+    private sealed record CanonicalFallbackCandidateScore(
+        SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate Candidate,
         int Score);
 
     private async Task<ExactArtistCandidateSelection?> SelectBestExactArtistCandidateAsync(
@@ -1605,6 +1623,66 @@ public sealed class SpotifyArtistService
         return new ExactArtistCandidateScore(candidate, localAlbumOverlap, score);
     }
 
+    private async Task<CanonicalFallbackCandidateScore?> ScoreCanonicalFallbackCandidateAsync(
+        SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate candidate,
+        IReadOnlyCollection<string> aliasTargets,
+        int index,
+        CancellationToken cancellationToken)
+    {
+        if (!IsCanonicalArtistNameEquivalent(candidate.Name, aliasTargets))
+        {
+            return null;
+        }
+
+        var info = await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidate.Id, cancellationToken);
+        var score = ComputeCanonicalFallbackScore(info, index);
+        return new CanonicalFallbackCandidateScore(candidate, score);
+    }
+
+    private async Task<CanonicalFallbackCandidateScore?> TrySelectCanonicalFallbackExactCandidateAsync(
+        IReadOnlyList<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> exactCandidates,
+        IReadOnlyCollection<string> aliasTargets,
+        CancellationToken cancellationToken)
+    {
+        var scored = new List<CanonicalFallbackCandidateScore>(exactCandidates.Count);
+        for (var index = 0; index < exactCandidates.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var candidate = exactCandidates[index];
+            var scoredCandidate = await ScoreCanonicalFallbackCandidateAsync(
+                candidate,
+                aliasTargets,
+                index,
+                cancellationToken);
+            if (scoredCandidate is not null)
+            {
+                scored.Add(scoredCandidate);
+            }
+        }
+
+        if (scored.Count == 0)
+        {
+            return null;
+        }
+
+        var ordered = scored
+            .OrderByDescending(item => item.Score)
+            .ToList();
+        var best = ordered[0];
+        if (best.Score < CanonicalFallbackMinScore)
+        {
+            return null;
+        }
+
+        var nextBestScore = ordered.Count > 1 ? ordered[1].Score : int.MinValue;
+        if (nextBestScore != int.MinValue && (best.Score - nextBestScore) < CanonicalFallbackMinLead)
+        {
+            return null;
+        }
+
+        return best;
+    }
+
     private async Task<int> ResolveLocalAlbumOverlapAsync(
         string candidateId,
         bool requireLocalAlbumOverlap,
@@ -1631,6 +1709,16 @@ public sealed class SpotifyArtistService
         }
 
         return baseScore + (info.Verified ? 1000 : 0) + Math.Max(0, info.TotalAlbums);
+    }
+
+    private static int ComputeCanonicalFallbackScore(
+        SpotifyPathfinderMetadataClient.SpotifyArtistCandidateInfo? info,
+        int rankIndex)
+    {
+        var verifiedBoost = info?.Verified == true ? 2_000 : 0;
+        var albumBoost = Math.Max(0, info?.TotalAlbums ?? 0) * 2;
+        var rankBoost = Math.Max(0, 30 - Math.Max(0, rankIndex));
+        return verifiedBoost + albumBoost + rankBoost;
     }
 
     private static List<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> BuildArtistSearchCandidates(
@@ -1714,6 +1802,29 @@ public sealed class SpotifyArtistService
         var candidateVariants = ExpandArtistNameVariants(candidate);
         var targetVariants = ExpandArtistNameVariants(target);
         return candidateVariants.Overlaps(targetVariants);
+    }
+
+    private static bool IsCanonicalArtistNameEquivalent(string candidate, IReadOnlyCollection<string> aliasTargets)
+    {
+        var candidateVariants = ExpandArtistNameVariants(candidate)
+            .Select(NormalizeArtistCanonicalKey)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (candidateVariants.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var alias in aliasTargets)
+        {
+            var aliasCanonical = NormalizeArtistCanonicalKey(alias);
+            if (!string.IsNullOrWhiteSpace(aliasCanonical) && candidateVariants.Contains(aliasCanonical))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private async Task<string?> TryResolveArtistIdViaShazamEvidenceAsync(
@@ -2204,6 +2315,8 @@ public sealed class SpotifyArtistService
         }
 
         variants.Add(normalized);
+        variants.Add(NormalizeArtistCanonicalKey(normalized));
+        variants.Add(RemoveConnectorWords(normalized));
         if (normalized.StartsWith("the ", StringComparison.OrdinalIgnoreCase))
         {
             variants.Add(normalized[4..].Trim());
@@ -2215,7 +2328,44 @@ public sealed class SpotifyArtistService
                 .Select(suffix => normalized[..^suffix.Length].Trim())
                 .Where(alias => !string.IsNullOrWhiteSpace(alias)));
 
+        variants.RemoveWhere(static item => string.IsNullOrWhiteSpace(item));
         return variants;
+    }
+
+    private static string RemoveConnectorWords(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        return string.Join(
+            ' ',
+            value
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .Where(token => !token.Equals("and", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static string NormalizeArtistCanonicalKey(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var buffer = new char[value.Length];
+        var index = 0;
+        foreach (var ch in value)
+        {
+            if (!char.IsLetterOrDigit(ch))
+            {
+                continue;
+            }
+
+            buffer[index++] = char.ToLowerInvariant(ch);
+        }
+
+        return index == 0 ? string.Empty : new string(buffer, 0, index);
     }
 
     private static string BuildPrimaryArtistQuery(string artistName)
