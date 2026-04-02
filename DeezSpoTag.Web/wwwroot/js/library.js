@@ -2236,7 +2236,7 @@ function resolveLibraryScanCount(runningValue, totalsValue, lastCountValue, runn
     return lastCountValue ?? 0;
 }
 
-function applyLibraryScanStatusSuccess(elements, status, stats) {
+function applyLibraryScanStatusSuccess(elements, status, stats, selectedFolderId) {
     const { lastScanEl, artistEl, albumEl, trackEl, cancelButton, indicator } = elements;
     if (cancelButton) {
         cancelButton.disabled = !status?.running;
@@ -2259,11 +2259,12 @@ function applyLibraryScanStatusSuccess(elements, status, stats) {
     }
     const totals = stats?.totals || null;
     const running = !!status?.running;
+    const useRunningProgressCounts = running && selectedFolderId === null;
     const progress = status?.progress || null;
     const counts = {
-        artists: resolveLibraryScanCount(progress?.artistsDetected, totals?.artists, status?.lastCounts?.artists, running),
-        albums: resolveLibraryScanCount(progress?.albumsDetected, totals?.albums, status?.lastCounts?.albums, running),
-        tracks: resolveLibraryScanCount(progress?.tracksDetected, totals?.tracks, status?.lastCounts?.tracks, running)
+        artists: resolveLibraryScanCount(progress?.artistsDetected, totals?.artists, status?.lastCounts?.artists, useRunningProgressCounts),
+        albums: resolveLibraryScanCount(progress?.albumsDetected, totals?.albums, status?.lastCounts?.albums, useRunningProgressCounts),
+        tracks: resolveLibraryScanCount(progress?.tracksDetected, totals?.tracks, status?.lastCounts?.tracks, useRunningProgressCounts)
     };
     if (artistEl) {
         artistEl.textContent = counts.artists.toLocaleString();
@@ -2364,11 +2365,15 @@ async function loadLibraryScanStatus() {
         return null;
     }
     try {
+        const selectedFolderId = getSelectedLibraryViewFolderId();
+        const statsUrl = selectedFolderId === null
+            ? '/api/library/stats'
+            : `/api/library/stats?folderId=${encodeURIComponent(String(selectedFolderId))}`;
         const [status, stats] = await Promise.all([
             fetchJson('/api/library/scan/status'),
-            fetchJsonOptional('/api/library/stats')
+            fetchJsonOptional(statsUrl)
         ]);
-        applyLibraryScanStatusSuccess(elements, status, stats);
+        applyLibraryScanStatusSuccess(elements, status, stats, selectedFolderId);
         await refreshArtistsDuringActiveScan(status);
         return status;
     } catch (error) {

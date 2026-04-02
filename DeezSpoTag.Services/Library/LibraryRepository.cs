@@ -546,6 +546,57 @@ WHERE EXISTS (
             detail);
     }
 
+    public async Task<(int Artists, int Albums, int Tracks, int VideoItems, int PodcastItems)> GetFolderStatsTotalsAsync(
+        long folderId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+
+        const string sql = @"
+WITH folder_tracks AS (
+    SELECT CASE
+               WHEN LOWER(COALESCE(f.desired_quality_value, '')) = 'video'
+                    OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%video%' THEN 'video'
+               WHEN LOWER(COALESCE(f.desired_quality_value, '')) = 'podcast'
+                    OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%podcast%' THEN 'podcast'
+               ELSE 'music'
+           END AS media_mode,
+           ar.id AS artist_id,
+           a.id AS album_id,
+           t.id AS track_id
+    FROM folder f
+    LEFT JOIN audio_file af ON af.folder_id = f.id
+    LEFT JOIN track_local tl ON tl.audio_file_id = af.id
+    LEFT JOIN track t ON t.id = tl.track_id
+    LEFT JOIN album a ON a.id = t.album_id
+    LEFT JOIN artist ar ON ar.id = a.artist_id
+    WHERE f.enabled = TRUE
+      AND f.id = @folderId
+)
+SELECT COUNT(DISTINCT CASE WHEN media_mode = 'music' THEN artist_id END) AS artist_count,
+       COUNT(DISTINCT CASE WHEN media_mode = 'music' THEN album_id END) AS album_count,
+       COUNT(DISTINCT CASE WHEN media_mode = 'music' THEN track_id END) AS track_count,
+       COUNT(DISTINCT CASE WHEN media_mode = 'video' THEN track_id END) AS video_item_count,
+       COUNT(DISTINCT CASE WHEN media_mode = 'podcast' THEN track_id END) AS podcast_item_count
+FROM folder_tracks;";
+
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("folderId", folderId);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return (0, 0, 0, 0, 0);
+        }
+
+        return (
+            await ReadNullableIntAsync(reader, 0, cancellationToken) ?? 0,
+            await ReadNullableIntAsync(reader, 1, cancellationToken) ?? 0,
+            await ReadNullableIntAsync(reader, 2, cancellationToken) ?? 0,
+            await ReadNullableIntAsync(reader, 3, cancellationToken) ?? 0,
+            await ReadNullableIntAsync(reader, 4, cancellationToken) ?? 0);
+    }
+
     private sealed record LibraryTotals(
         int TotalArtists,
         int TotalAlbums,

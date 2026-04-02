@@ -20,7 +20,7 @@ public class LibraryStatsApiController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> Get(CancellationToken cancellationToken)
+    public async Task<IActionResult> Get([FromQuery] long? folderId, CancellationToken cancellationToken)
     {
         LibraryScanInfo scanInfo;
         LibraryStatsDto stats;
@@ -28,7 +28,22 @@ public class LibraryStatsApiController : ControllerBase
         if (_repository.IsConfigured)
         {
             scanInfo = await _repository.GetScanInfoAsync(cancellationToken);
-            stats = await _repository.GetLibraryStatsAsync(cancellationToken);
+            if (folderId.HasValue)
+            {
+                var totals = await _repository.GetFolderStatsTotalsAsync(folderId.Value, cancellationToken);
+                stats = new LibraryStatsDto(
+                    totals.Artists,
+                    totals.Albums,
+                    totals.Tracks,
+                    Array.Empty<LibraryStatsLibraryDto>(),
+                    totals.VideoItems,
+                    totals.PodcastItems,
+                    null);
+            }
+            else
+            {
+                stats = await _repository.GetLibraryStatsAsync(cancellationToken);
+            }
         }
         else
         {
