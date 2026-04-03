@@ -3,6 +3,23 @@
 
     const sharedContextCache = new Map();
     const sharedRequestCache = new Map();
+    const DEFAULT_CONTEXT_TIMEOUT_MS = 5000;
+
+    function buildTimeoutSignal(timeoutMs) {
+        if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || typeof AbortController === 'undefined') {
+            return { signal: undefined, clear: () => {} };
+        }
+
+        const controller = new AbortController();
+        const timer = setTimeout(() => {
+            controller.abort(new DOMException('Request timeout', 'AbortError'));
+        }, timeoutMs);
+
+        return {
+            signal: controller.signal,
+            clear: () => clearTimeout(timer)
+        };
+    }
 
     function normalize(payload) {
         if (!payload || typeof payload !== 'object') {
@@ -136,8 +153,15 @@
         }
 
         const request = (async function () {
+            const timeout = buildTimeoutSignal(
+                Number.isFinite(options.timeoutMs)
+                    ? Number(options.timeoutMs)
+                    : DEFAULT_CONTEXT_TIMEOUT_MS
+            );
             try {
-                const response = await fetch('/api/deezer/stream/context/' + encodeURIComponent(normalizedId));
+                const response = await fetch('/api/deezer/stream/context/' + encodeURIComponent(normalizedId), {
+                    signal: timeout.signal
+                });
                 if (!response.ok) {
                     return null;
                 }
@@ -154,6 +178,7 @@
             } catch {
                 return null;
             } finally {
+                timeout.clear();
                 requestCache.delete(normalizedId);
             }
         })();
