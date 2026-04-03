@@ -1508,7 +1508,7 @@ public class AutoTagService
         IReadOnlyList<string> rootPaths,
         DeezSpoTagSettings settings,
         AutoTagProfileResolutionService.ResolvedState? profileState,
-        IReadOnlyDictionary<string, FolderDto> scopedFoldersByPath,
+        Dictionary<string, FolderDto> scopedFoldersByPath,
         CancellationToken cancellationToken)
     {
         foreach (var path in rootPaths)
