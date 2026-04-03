@@ -13,6 +13,11 @@ namespace DeezSpoTag.Tests;
 
 public sealed class FallbackPayloadNormalizerTests
 {
+    private static readonly string[] ExpectedAppleVideoSource = { "apple|video" };
+    private static readonly string[] ExpectedAppleAtmosSource = { "apple|ATMOS" };
+    private static readonly string[] ExpectedPlanSources = { "qobuz|27", "tidal|LOSSLESS" };
+    private static readonly string[] ExpectedCanonicalSources = { "qobuz|27", "tidal|LOSSLESS" };
+
     [Fact]
     public void ResolveCanonicalState_UsesSingleAppleVideoStep_ForVideoPayload()
     {
@@ -24,7 +29,7 @@ public sealed class FallbackPayloadNormalizerTests
 
         var state = FallbackPayloadNormalizer.ResolveCanonicalState(item, new DeezSpoTagSettings(), payload);
 
-        Assert.Equal(new[] { "apple|video" }, state.AutoSources);
+        Assert.Equal(ExpectedAppleVideoSource, state.AutoSources);
         var step = Assert.Single(state.FallbackPlan);
         Assert.Equal("apple", step.Engine);
         Assert.Equal(DownloadContentTypes.Video, step.Quality);
@@ -44,7 +49,7 @@ public sealed class FallbackPayloadNormalizerTests
 
         var state = FallbackPayloadNormalizer.ResolveCanonicalState(item, new DeezSpoTagSettings(), payload);
 
-        Assert.Equal(new[] { "apple|ATMOS" }, state.AutoSources);
+        Assert.Equal(ExpectedAppleAtmosSource, state.AutoSources);
         var step = Assert.Single(state.FallbackPlan);
         Assert.Equal("apple", step.Engine);
         Assert.Equal("ATMOS", step.Quality);
@@ -81,7 +86,7 @@ public sealed class FallbackPayloadNormalizerTests
 
         var state = FallbackPayloadNormalizer.ResolveCanonicalState(item, new DeezSpoTagSettings(), payload);
 
-        Assert.Equal(new[] { "qobuz|27", "tidal|LOSSLESS" }, state.AutoSources);
+        Assert.Equal(ExpectedPlanSources, state.AutoSources);
         Assert.Equal(2, state.FallbackPlan.Count);
         Assert.Equal("qobuz", state.FirstStep.Source);
         Assert.Equal("27", state.FirstStep.Quality);
@@ -112,7 +117,7 @@ public sealed class FallbackPayloadNormalizerTests
         var changed = FallbackPayloadNormalizer.ApplyCanonicalState(payload, state, resetIndexAndHistory: true);
 
         Assert.True(changed);
-        Assert.Equal(new[] { "qobuz|27", "tidal|LOSSLESS" }, ReadStringArray(payload, "AutoSources"));
+        Assert.Equal(ExpectedCanonicalSources, ReadStringArray(payload, "AutoSources"));
         Assert.Equal(0, payload["AutoIndex"]!.GetValue<int>());
         Assert.Equal("qobuz", payload["Engine"]!.GetValue<string>());
         Assert.Equal("qobuz", payload["SourceService"]!.GetValue<string>());
@@ -181,7 +186,7 @@ public sealed class FallbackPayloadNormalizerTests
             UpdatedAt: now);
     }
 
-    private static IReadOnlyList<string> ReadStringArray(JsonObject payload, string key)
+    private static string[] ReadStringArray(JsonObject payload, string key)
     {
         if (payload[key] is not JsonArray array)
         {

@@ -10,6 +10,13 @@ namespace DeezSpoTag.Tests;
 
 public sealed class AutoTagConfigBuilderTests
 {
+    private static readonly string[] ExpectedDownloadTagsFromConfig = { "title", "genre" };
+    private static readonly string[] ExpectedAutoTagsFromConfig = { "genre", "style" };
+    private static readonly string[] LegacyDownloadTags = { "artist" };
+    private static readonly string[] LegacyAutoTags = { "label" };
+    private static readonly string[] ExpectedTitleOnlyDownloadTags = { "title" };
+    private static readonly string[] ExpectedReleaseDateOnlyTags = { "releaseDate" };
+
     [Fact]
     public void BuildConfigJson_DerivesTagArraysFromTagConfig_WhenAutoTagDataIsEmpty()
     {
@@ -35,10 +42,10 @@ public sealed class AutoTagConfigBuilderTests
         var root = document.RootElement;
 
         Assert.Equal(
-            new[] { "title", "genre" },
+            ExpectedDownloadTagsFromConfig,
             ReadStringArray(root.GetProperty("downloadTags")));
         Assert.Equal(
-            new[] { "genre", "style" },
+            ExpectedAutoTagsFromConfig,
             ReadStringArray(root.GetProperty("tags")));
     }
 
@@ -52,8 +59,8 @@ public sealed class AutoTagConfigBuilderTests
             {
                 Data = new Dictionary<string, JsonElement>
                 {
-                    ["downloadTags"] = JsonSerializer.SerializeToElement(new[] { "artist" }),
-                    ["tags"] = JsonSerializer.SerializeToElement(new[] { "label" }),
+                    ["downloadTags"] = JsonSerializer.SerializeToElement(LegacyDownloadTags),
+                    ["tags"] = JsonSerializer.SerializeToElement(LegacyAutoTags),
                     ["downloadTagSource"] = JsonSerializer.SerializeToElement("spotify")
                 }
             }
@@ -70,8 +77,8 @@ public sealed class AutoTagConfigBuilderTests
         using var document = JsonDocument.Parse(json!);
         var root = document.RootElement;
 
-        Assert.Equal(new[] { "title" }, ReadStringArray(root.GetProperty("downloadTags")));
-        Assert.Equal(new[] { "releaseDate" }, ReadStringArray(root.GetProperty("tags")));
+        Assert.Equal(ExpectedTitleOnlyDownloadTags, ReadStringArray(root.GetProperty("downloadTags")));
+        Assert.Equal(ExpectedReleaseDateOnlyTags, ReadStringArray(root.GetProperty("tags")));
         Assert.Equal("spotify", root.GetProperty("downloadTagSource").GetString());
     }
 
