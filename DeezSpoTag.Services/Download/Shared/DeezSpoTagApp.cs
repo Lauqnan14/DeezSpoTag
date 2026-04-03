@@ -126,31 +126,6 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         return result;
     }
 
-    public async Task<List<Dictionary<string, object>>> AddToQueueAsync(string[] urls, int bitrate, bool retry = false, long? destinationFolderId = null)
-    {
-        using var scope = _serviceProvider.CreateScope();
-        var queueService = scope.ServiceProvider.GetRequiredService<DeezSpoTag.Services.Download.Deezer.DeezerQueueService>();
-        var result = await queueService.AddToQueueAsync(urls, bitrate, retry, destinationFolderId);
-        if (result.Count > 0)
-        {
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await Task.Delay(100);
-                    await EnsureQueueProcessorRunningAsync();
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    _logger.LogError(ex, "Error ensuring queue processor is running");
-                }
-            });
-        }
-
-        return result;
-    }
-
-
     private readonly object _queueLock = new object();
     private bool _isProcessingQueue = false;
     private bool _stopRequested = false;
