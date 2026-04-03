@@ -3972,24 +3972,57 @@ async function resolveExternalRequestToDeezer(current, source, row, options = {}
             }
 
             const isHighPriority = priority === 'high';
-            const data = await window.DeezerResolver.resolveTrack(
-                {
-                    source,
-                    url: current.link,
-                    title: current.title,
-                    artist: current.artist,
-                    album: current.album,
-                    isrc: current.isrc,
-                    durationMs: current.durationMs,
-                    includeMeta: shouldHydrateDeezerMetadata(source)
-                },
-                {
-                    attempts: isHighPriority ? 2 : 3,
-                    baseDelayMs: isHighPriority ? 250 : 350,
-                    timeoutMs: isHighPriority ? 4500 : 8000,
-                    spotifyResolverFirst: true
+            const normalizedSource = String(source || '').trim().toLowerCase();
+            const isBoomplay = normalizedSource === 'boomplay';
+            let data = null;
+            if (isBoomplay) {
+                // Restore the proven Boomplay resolve path (pre-unification behavior):
+                // generic resolver with title/artist/isrc hints and retry semantics.
+                const qs = new URLSearchParams();
+                qs.set('url', current.link);
+                if (current.title) {
+                    qs.set('title', current.title);
                 }
-            );
+                if (current.artist) {
+                    qs.set('artist', current.artist);
+                }
+                if (current.album) {
+                    qs.set('album', current.album);
+                }
+                if (current.isrc) {
+                    qs.set('isrc', current.isrc);
+                }
+                if (current.durationMs && Number.isFinite(current.durationMs) && current.durationMs > 0) {
+                    qs.set('durationMs', String(current.durationMs));
+                }
+                if (shouldHydrateDeezerMetadata(source)) {
+                    qs.set('includeMeta', 'true');
+                }
+
+                data = await fetchJsonWithRetry(`/api/resolve/deezer?${qs.toString()}`, 3);
+            } else {
+                const dataAttempts = isHighPriority ? 2 : 3;
+                const dataBaseDelayMs = isHighPriority ? 250 : 350;
+                const dataTimeoutMs = isHighPriority ? 4500 : 8000;
+                data = await window.DeezerResolver.resolveTrack(
+                    {
+                        source,
+                        url: current.link,
+                        title: current.title,
+                        artist: current.artist,
+                        album: current.album,
+                        isrc: current.isrc,
+                        durationMs: current.durationMs,
+                        includeMeta: shouldHydrateDeezerMetadata(source)
+                    },
+                    {
+                        attempts: dataAttempts,
+                        baseDelayMs: dataBaseDelayMs,
+                        timeoutMs: dataTimeoutMs,
+                        spotifyResolverFirst: normalizedSource === 'spotify'
+                    }
+                );
+            }
             resolvePayload = data;
             deezerId = data?.deezerId || '';
 
