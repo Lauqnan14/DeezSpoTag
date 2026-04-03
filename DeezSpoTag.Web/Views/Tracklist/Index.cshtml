@@ -3409,7 +3409,7 @@ function renderSpotifyRecommendationItem(item) {
     const subtitle = subtitleIsGeneric ? '' : escapeHtml(rawSubtitle);
     const cover = item.coverUrl || item.imageUrl || item.image_url || '';
     const type = escapeHtml(item.type || '');
-    const hideGenericPlaylistMeta = source === 'spotify' && sourceType === 'playlist';
+    const hideGenericPlaylistMeta = (source === 'spotify' || source === 'boomplay') && sourceType === 'playlist';
     const meta = hideGenericPlaylistMeta ? '' : (type ? `${type}` : '');
     const artStyle = cover ? `style="background-image: url('${cover}');"` : '';
     return `
