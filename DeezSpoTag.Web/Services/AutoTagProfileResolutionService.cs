@@ -140,8 +140,16 @@ public sealed class AutoTagProfileResolutionService
         var defaultFileProfile = NormalizeProfileReference(profiles, defaults.DefaultFileProfile, out var defaultChanged);
         changed |= defaultChanged;
 
-        var libraryProfiles = NormalizeLibraryProfiles(defaults.LibraryProfiles, profiles, ref changed);
-        var librarySchedules = NormalizeLibrarySchedules(defaults.LibrarySchedules, libraryProfiles, ref changed);
+        // Folder profile assignment is authoritative in the library DB (`folder.auto_tag_profile_id`).
+        // We keep defaults.libraryProfiles as a generated mirror only.
+        var libraryProfiles = _libraryRepository.IsConfigured
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            : NormalizeLibraryProfiles(defaults.LibraryProfiles, profiles, ref changed);
+        if (_libraryRepository.IsConfigured && defaults.LibraryProfiles is { Count: > 0 })
+        {
+            changed = true;
+        }
+        var librarySchedules = NormalizeLibrarySchedules(defaults.LibrarySchedules, ref changed);
 
         var normalized = new AutoTagDefaultsDto(defaultFileProfile, libraryProfiles, librarySchedules);
         if (changed)
@@ -241,7 +249,6 @@ public sealed class AutoTagProfileResolutionService
 
     private static Dictionary<string, string> NormalizeLibrarySchedules(
         IReadOnlyDictionary<string, string>? librarySchedules,
-        Dictionary<string, string> libraryProfiles,
         ref bool changed)
     {
         var normalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -266,7 +273,8 @@ public sealed class AutoTagProfileResolutionService
                 changed = true;
             }
 
-            if (!libraryProfiles.ContainsKey(folderId))
+            if (!long.TryParse(folderId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedFolderId)
+                || parsedFolderId <= 0)
             {
                 changed = true;
                 continue;

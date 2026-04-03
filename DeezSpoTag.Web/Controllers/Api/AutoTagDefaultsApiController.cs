@@ -1,6 +1,7 @@
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
+using DeezSpoTag.Services.Library;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -10,17 +11,24 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public sealed class AutoTagDefaultsApiController : ControllerBase
 {
     private readonly AutoTagDefaultsStore _store;
+    private readonly AutoTagProfileResolutionService _profileResolutionService;
+    private readonly LibraryRepository _libraryRepository;
 
-    public AutoTagDefaultsApiController(AutoTagDefaultsStore store)
+    public AutoTagDefaultsApiController(
+        AutoTagDefaultsStore store,
+        AutoTagProfileResolutionService profileResolutionService,
+        LibraryRepository libraryRepository)
     {
         _store = store;
+        _profileResolutionService = profileResolutionService;
+        _libraryRepository = libraryRepository;
     }
 
     [HttpGet]
-    public async Task<IActionResult> Get()
+    public async Task<IActionResult> Get(CancellationToken cancellationToken)
     {
-        var defaults = await _store.LoadAsync();
-        return Ok(defaults);
+        var state = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
+        return Ok(state.Defaults);
     }
 
     public sealed record UpdateDefaultsRequest(
@@ -29,21 +37,27 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
         Dictionary<string, string>? LibrarySchedules);
 
     [HttpPost]
-    public async Task<IActionResult> Update([FromBody] UpdateDefaultsRequest request)
+    public async Task<IActionResult> Update([FromBody] UpdateDefaultsRequest request, CancellationToken cancellationToken)
     {
-        var cleaned = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (request.LibraryProfiles != null)
+        var state = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
+        var profiles = state.Profiles;
+
+        var requestedDefaultReference = request.DefaultFileProfile?.Trim();
+        var defaultProfile = TaggingProfileService.FindByIdOrName(profiles, requestedDefaultReference);
+        if (!string.IsNullOrWhiteSpace(requestedDefaultReference) && defaultProfile is null)
         {
-            foreach (var (key, value) in request.LibraryProfiles)
-            {
-                if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
-                {
-                    continue;
-                }
-                cleaned[key.Trim()] = value.Trim();
-            }
+            return BadRequest("Selected default AutoTag profile does not exist.");
         }
 
+        var mirroredLibraryProfiles = state.Defaults.LibraryProfiles is { Count: > 0 }
+            ? new Dictionary<string, string>(state.Defaults.LibraryProfiles, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        // DB is authoritative for folder->profile links. Ignore writable libraryProfiles payload.
+        // This endpoint only persists defaultFileProfile and per-folder schedules.
+        var allowedScheduleFolderIds = _libraryRepository.IsConfigured
+            ? new HashSet<string>(mirroredLibraryProfiles.Keys, StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var scheduleCleaned = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (request.LibrarySchedules != null)
         {
@@ -53,21 +67,30 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
                 {
                     continue;
                 }
+
+                var folderId = key.Trim();
+                if (_libraryRepository.IsConfigured && !allowedScheduleFolderIds.Contains(folderId))
+                {
+                    continue;
+                }
+
                 var schedule = value?.Trim();
                 if (string.IsNullOrWhiteSpace(schedule))
                 {
                     continue;
                 }
-                scheduleCleaned[key.Trim()] = schedule;
+
+                scheduleCleaned[folderId] = schedule;
             }
         }
 
         var defaults = new AutoTagDefaultsDto(
-            string.IsNullOrWhiteSpace(request.DefaultFileProfile) ? null : request.DefaultFileProfile.Trim(),
-            cleaned,
+            defaultProfile?.Id,
+            mirroredLibraryProfiles,
             scheduleCleaned);
+        await _store.SaveAsync(defaults);
 
-        var saved = await _store.SaveAsync(defaults);
-        return Ok(saved);
+        var normalizedState = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
+        return Ok(normalizedState.Defaults);
     }
 }

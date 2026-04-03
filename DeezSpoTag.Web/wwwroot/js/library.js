@@ -2609,26 +2609,22 @@ async function loadAutoTagFolderDefaults() {
 async function saveAutoTagFolderDefault(folderId, profileId, schedule) {
     const defaults = normalizeAutoTagDefaults(libraryState.autotagDefaults);
     const idKey = String(folderId);
-    const nextProfile = (profileId || '').trim();
     const nextSchedule = (schedule || '7d').trim();
-
-    if (nextProfile) {
-        defaults.libraryProfiles[idKey] = nextProfile;
-    } else {
-        delete defaults.libraryProfiles[idKey];
-    }
     if (nextSchedule) {
         defaults.librarySchedules[idKey] = nextSchedule;
     } else {
         delete defaults.librarySchedules[idKey];
     }
 
-    await fetchJson('/api/autotag/defaults', {
+    const saved = await fetchJson('/api/autotag/defaults', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(defaults)
+        body: JSON.stringify({
+            defaultFileProfile: defaults.defaultFileProfile,
+            librarySchedules: defaults.librarySchedules
+        })
     });
-    libraryState.autotagDefaults = defaults;
+    libraryState.autotagDefaults = normalizeAutoTagDefaults(saved);
 }
 
 async function startFolderEnhancement(folder, profileReference) {
