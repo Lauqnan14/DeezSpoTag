@@ -175,6 +175,7 @@ public class AutoTagService
     private readonly DuplicateCleanerService _duplicateCleanerService;
     private readonly LyricsRefreshQueueService _lyricsRefreshQueueService;
     private readonly CoverLibraryMaintenanceService _coverMaintenanceService;
+    private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly string _jobsDir;
     private readonly string _historyDir;
     private readonly string _workersHistoryDir;
@@ -317,6 +318,7 @@ public class AutoTagService
         public required DuplicateCleanerService DuplicateCleanerService { get; init; }
         public required LyricsRefreshQueueService LyricsRefreshQueueService { get; init; }
         public required CoverLibraryMaintenanceService CoverMaintenanceService { get; init; }
+        public required AutoTagProfileResolutionService ProfileResolutionService { get; init; }
     }
 
     public event Action<AutoTagJob>? JobCompleted;
@@ -345,6 +347,7 @@ public class AutoTagService
         _duplicateCleanerService = collaborators.DuplicateCleanerService;
         _lyricsRefreshQueueService = collaborators.LyricsRefreshQueueService;
         _coverMaintenanceService = collaborators.CoverMaintenanceService;
+        _profileResolutionService = collaborators.ProfileResolutionService;
         var appDataRoot = AppDataPaths.GetDataRoot(env);
         var autoTagRoot = Path.Join(appDataRoot, AutoTagFolderName);
         _jobsDir = Path.Join(autoTagRoot, "jobs");
@@ -1442,7 +1445,15 @@ public class AutoTagService
             return;
         }
 
-        var rootPaths = ResolveRootPathsForWorkflow(rootPath, folderUniformity, enabledFolders);
+        var scopedFolders = ResolveScopedFolders(rootPath, folderUniformity, enabledFolders);
+        var rootPaths = scopedFolders.Count > 0
+            ? scopedFolders
+                .Select(folder => folder.RootPath)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Select(Path.GetFullPath)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList()
+            : ResolveRootPathsForWorkflow(rootPath, folderUniformity, enabledFolders);
         if (rootPaths.Count == 0)
         {
             AppendLog(job, "enhancement workflow: folder uniformity skipped (no eligible folders/paths).");
@@ -1450,7 +1461,16 @@ public class AutoTagService
         }
 
         var settings = _settingsService.LoadSettings();
-        var options = BuildFolderUniformityOptions(folderUniformity, settings);
+        AutoTagProfileResolutionService.ResolvedState? profileState = null;
+        if (scopedFolders.Count > 0)
+        {
+            profileState = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
+        }
+
+        var scopedFoldersByPath = scopedFolders
+            .Where(folder => !string.IsNullOrWhiteSpace(folder.RootPath))
+            .GroupBy(folder => Path.GetFullPath(folder.RootPath.Trim()), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
         AppendLog(job, $"enhancement workflow: folder uniformity starting ({rootPaths.Count} path(s)).");
         foreach (var path in rootPaths)
@@ -1461,6 +1481,22 @@ public class AutoTagService
             }
 
             cancellationToken.ThrowIfCancellationRequested();
+            var options = BuildFolderUniformityOptions(folderUniformity, settings);
+            if (profileState != null && scopedFoldersByPath.TryGetValue(path, out var folder))
+            {
+                var profile = AutoTagProfileResolutionService.ResolveFolderProfile(
+                    profileState,
+                    folder.Id,
+                    folder.AutoTagProfileId);
+                if (profile == null)
+                {
+                    AppendLog(job, $"enhancement workflow: folder uniformity skipped for '{path}' (missing AutoTag profile).");
+                    continue;
+                }
+
+                AutoTagOrganizerProfileOverlay.ApplyTaggingProfileOverrides(options, profile);
+            }
+
             var organizerReport = options.GenerateReconciliationReport
                 ? new AutoTagLibraryOrganizer.AutoTagOrganizerReport()
                 : null;
@@ -1474,14 +1510,16 @@ public class AutoTagService
 
         if (ReadBool(folderUniformity, "runDedupe") != false)
         {
-            var scopedFolders = enabledFolders
-                .Where(folder => !string.IsNullOrWhiteSpace(folder.RootPath)
-                    && rootPaths.Contains(folder.RootPath.Trim(), StringComparer.OrdinalIgnoreCase))
-                .ToList();
-            if (scopedFolders.Count > 0)
+            var dedupeFolders = scopedFolders.Count > 0
+                ? scopedFolders
+                : enabledFolders
+                    .Where(folder => !string.IsNullOrWhiteSpace(folder.RootPath)
+                        && rootPaths.Any(path => PathsOverlap(path, folder.RootPath)))
+                    .ToList();
+            if (dedupeFolders.Count > 0)
             {
                 var duplicateResult = await _duplicateCleanerService.ScanAsync(
-                    scopedFolders,
+                    dedupeFolders,
                     new DuplicateCleanerOptions
                     {
                         UseDuplicatesFolder = true,
