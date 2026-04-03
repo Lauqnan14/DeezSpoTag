@@ -1691,28 +1691,18 @@
         folderUniformity.duplicatesFolderName = String(
             folderUniformity.duplicatesFolderName || DEFAULT_CONFIG.enhancement.folderUniformity.duplicatesFolderName
         ).trim() || DEFAULT_CONFIG.enhancement.folderUniformity.duplicatesFolderName;
-        folderUniformity.usePrimaryArtistFolders = folderUniformity.usePrimaryArtistFolders !== false;
-        folderUniformity.multiArtistSeparator = String(
-            folderUniformity.multiArtistSeparator || DEFAULT_CONFIG.enhancement.folderUniformity.multiArtistSeparator
-        ).trim() || DEFAULT_CONFIG.enhancement.folderUniformity.multiArtistSeparator;
-        folderUniformity.createArtistFolder = folderUniformity.createArtistFolder !== false;
-        folderUniformity.artistNameTemplate = String(
-            folderUniformity.artistNameTemplate || DEFAULT_CONFIG.enhancement.folderUniformity.artistNameTemplate
-        ).trim() || DEFAULT_CONFIG.enhancement.folderUniformity.artistNameTemplate;
-        folderUniformity.createAlbumFolder = folderUniformity.createAlbumFolder !== false;
-        folderUniformity.albumNameTemplate = String(
-            folderUniformity.albumNameTemplate || DEFAULT_CONFIG.enhancement.folderUniformity.albumNameTemplate
-        ).trim() || DEFAULT_CONFIG.enhancement.folderUniformity.albumNameTemplate;
-        folderUniformity.createCDFolder = folderUniformity.createCDFolder === true;
-        folderUniformity.createStructurePlaylist = folderUniformity.createStructurePlaylist === true;
-        folderUniformity.createSingleFolder = folderUniformity.createSingleFolder === true;
-        folderUniformity.createPlaylistFolder = folderUniformity.createPlaylistFolder !== false;
-        folderUniformity.playlistNameTemplate = String(
-            folderUniformity.playlistNameTemplate || DEFAULT_CONFIG.enhancement.folderUniformity.playlistNameTemplate
-        ).trim() || DEFAULT_CONFIG.enhancement.folderUniformity.playlistNameTemplate;
-        folderUniformity.illegalCharacterReplacer = String(
-            folderUniformity.illegalCharacterReplacer || DEFAULT_CONFIG.enhancement.folderUniformity.illegalCharacterReplacer
-        ).trim() || DEFAULT_CONFIG.enhancement.folderUniformity.illegalCharacterReplacer;
+        delete folderUniformity.usePrimaryArtistFolders;
+        delete folderUniformity.multiArtistSeparator;
+        delete folderUniformity.createArtistFolder;
+        delete folderUniformity.artistNameTemplate;
+        delete folderUniformity.createAlbumFolder;
+        delete folderUniformity.albumNameTemplate;
+        delete folderUniformity.createCDFolder;
+        delete folderUniformity.createStructurePlaylist;
+        delete folderUniformity.createSingleFolder;
+        delete folderUniformity.createPlaylistFolder;
+        delete folderUniformity.playlistNameTemplate;
+        delete folderUniformity.illegalCharacterReplacer;
         delete folderUniformity.preferredExtensions;
 
         const coverMaintenance = enhancement.coverMaintenance;
@@ -3402,19 +3392,6 @@
             "folderUniformityDuplicatesFolderName",
             folderUniformity.duplicatesFolderName || "%duplicates%"
         ).trim() || "%duplicates%";
-        folderUniformity.usePrimaryArtistFolders = getChecked("singleAlbumArtist", folderUniformity.usePrimaryArtistFolders !== false);
-        folderUniformity.multiArtistSeparator = getValue("multiArtistSeparator", folderUniformity.multiArtistSeparator || "default").trim() || "default";
-        const folderStructure = readFolderStructureFromUI();
-        folderUniformity.createArtistFolder = folderStructure.createArtistFolder;
-        folderUniformity.artistNameTemplate = folderStructure.artistNameTemplate;
-        folderUniformity.createAlbumFolder = folderStructure.createAlbumFolder;
-        folderUniformity.albumNameTemplate = folderStructure.albumNameTemplate;
-        folderUniformity.createCDFolder = folderStructure.createCDFolder;
-        folderUniformity.createStructurePlaylist = folderStructure.createStructurePlaylist;
-        folderUniformity.createSingleFolder = folderStructure.createSingleFolder;
-        folderUniformity.createPlaylistFolder = folderStructure.createPlaylistFolder;
-        folderUniformity.playlistNameTemplate = folderStructure.playlistNameTemplate;
-        folderUniformity.illegalCharacterReplacer = folderStructure.illegalCharacterReplacer;
         delete folderUniformity.preferredExtensions;
 
         const coverMaintenance = state.config.enhancement.coverMaintenance;
@@ -4007,18 +3984,6 @@
                     runDedupe: options.runDedupe,
                     useShazamForDedupe: options.useShazamForDedupe,
                     duplicatesFolderName: options.duplicatesFolderName,
-                    usePrimaryArtistFolders: options.usePrimaryArtistFolders,
-                    multiArtistSeparator: options.multiArtistSeparator,
-                    createArtistFolder: options.createArtistFolder,
-                    artistNameTemplate: options.artistNameTemplate,
-                    createAlbumFolder: options.createAlbumFolder,
-                    albumNameTemplate: options.albumNameTemplate,
-                    createCDFolder: options.createCDFolder,
-                    createStructurePlaylist: options.createStructurePlaylist,
-                    createSingleFolder: options.createSingleFolder,
-                    createPlaylistFolder: options.createPlaylistFolder,
-                    playlistNameTemplate: options.playlistNameTemplate,
-                    illegalCharacterReplacer: options.illegalCharacterReplacer,
                     includeSubfolders: options.includeSubfolders !== false
                 })
             });
