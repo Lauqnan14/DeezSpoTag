@@ -4,6 +4,7 @@
     const TRANSIENT_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
     const DEFAULT_ATTEMPTS = 3;
     const DEFAULT_BASE_DELAY_MS = 250;
+    const DEFAULT_TIMEOUT_MS = 8000;
     const MAX_DELAY_MS = 2000;
 
     function delay(ms) {
@@ -22,6 +23,22 @@
         }
     }
 
+    function buildTimeoutSignal(timeoutMs) {
+        if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || typeof AbortController === 'undefined') {
+            return { signal: undefined, clear: () => {} };
+        }
+
+        const controller = new AbortController();
+        const timer = setTimeout(() => {
+            controller.abort(new DOMException('Request timeout', 'AbortError'));
+        }, timeoutMs);
+
+        return {
+            signal: controller.signal,
+            clear: () => clearTimeout(timer)
+        };
+    }
+
     async function fetchJsonWithRetry(url, options = {}) {
         const attempts = Number.isFinite(options.attempts)
             ? Math.max(1, Math.trunc(options.attempts))
@@ -29,12 +46,19 @@
         const baseDelayMs = Number.isFinite(options.baseDelayMs)
             ? Math.max(0, Math.trunc(options.baseDelayMs))
             : DEFAULT_BASE_DELAY_MS;
+        const timeoutMs = Number.isFinite(options.timeoutMs)
+            ? Math.max(1, Math.trunc(options.timeoutMs))
+            : DEFAULT_TIMEOUT_MS;
         const fetchOptions = options.fetchOptions || {};
 
         let lastResponse = null;
         for (let attempt = 1; attempt <= attempts; attempt += 1) {
+            const timeout = buildTimeoutSignal(timeoutMs);
             try {
-                const response = await fetch(url, fetchOptions);
+                const response = await fetch(url, {
+                    ...fetchOptions,
+                    signal: fetchOptions.signal || timeout.signal
+                });
                 lastResponse = response;
                 if (response.ok) {
                     const payload = parseJsonText(await response.text());
@@ -66,6 +90,8 @@
                         error
                     };
                 }
+            } finally {
+                timeout.clear();
             }
 
             await delay(Math.min(MAX_DELAY_MS, baseDelayMs * attempt));
