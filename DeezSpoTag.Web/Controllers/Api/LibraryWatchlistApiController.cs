@@ -57,7 +57,8 @@ public class LibraryWatchlistApiController : ControllerBase
     [HttpGet("spotify/{spotifyId}")]
     public async Task<IActionResult> GetSpotifyStatus(string spotifyId, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(spotifyId))
+        var normalizedSpotifyId = NormalizeSpotifyId(spotifyId);
+        if (string.IsNullOrWhiteSpace(normalizedSpotifyId))
         {
             return BadRequest("Spotify ID is required.");
         }
@@ -67,10 +68,10 @@ public class LibraryWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var watching = await _repository.IsWatchlistedBySpotifyIdAsync(spotifyId, cancellationToken);
+        var watching = await _repository.IsWatchlistedBySpotifyIdAsync(normalizedSpotifyId, cancellationToken);
         if (!watching)
         {
-            var artistId = await _repository.GetArtistIdBySourceIdAsync(SpotifySource, spotifyId, cancellationToken);
+            var artistId = await _repository.GetArtistIdBySourceIdAsync(SpotifySource, normalizedSpotifyId, cancellationToken);
             if (artistId.HasValue)
             {
                 watching = await _repository.IsWatchlistedAsync(artistId.Value, cancellationToken);
@@ -83,7 +84,8 @@ public class LibraryWatchlistApiController : ControllerBase
     [HttpGet("apple/{appleId}")]
     public async Task<IActionResult> GetAppleStatus(string appleId, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(appleId))
+        var normalizedAppleId = NormalizeIncomingId(appleId);
+        if (string.IsNullOrWhiteSpace(normalizedAppleId))
         {
             return BadRequest("Apple ID is required.");
         }
@@ -93,7 +95,7 @@ public class LibraryWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var artistId = await _repository.GetArtistIdBySourceIdAsync(AppleSource, appleId, cancellationToken);
+        var artistId = await _repository.GetArtistIdBySourceIdAsync(AppleSource, normalizedAppleId, cancellationToken);
         var watching = artistId.HasValue && await _repository.IsWatchlistedAsync(artistId.Value, cancellationToken);
         return Ok(new { watching });
     }
@@ -101,7 +103,8 @@ public class LibraryWatchlistApiController : ControllerBase
     [HttpGet("deezer/{deezerId}")]
     public async Task<IActionResult> GetDeezerStatus(string deezerId, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(deezerId))
+        var normalizedDeezerId = NormalizeIncomingId(deezerId);
+        if (string.IsNullOrWhiteSpace(normalizedDeezerId))
         {
             return BadRequest("Deezer ID is required.");
         }
@@ -111,7 +114,7 @@ public class LibraryWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var artistId = await _repository.GetArtistIdBySourceIdAsync(DeezerSource, deezerId, cancellationToken);
+        var artistId = await _repository.GetArtistIdBySourceIdAsync(DeezerSource, normalizedDeezerId, cancellationToken);
         var watching = artistId.HasValue && await _repository.IsWatchlistedAsync(artistId.Value, cancellationToken);
         return Ok(new { watching });
     }
@@ -149,7 +152,10 @@ public class LibraryWatchlistApiController : ControllerBase
     [HttpPost("spotify")]
     public async Task<IActionResult> AddSpotify([FromBody] SpotifyWatchlistRequest request, CancellationToken cancellationToken)
     {
-        if (request is null || string.IsNullOrWhiteSpace(request.SpotifyId) || string.IsNullOrWhiteSpace(request.ArtistName))
+        var normalizedSpotifyId = NormalizeSpotifyId(request?.SpotifyId);
+        var normalizedArtistName = NormalizeIncomingText(request?.ArtistName);
+        var normalizedDeezerId = NormalizeIncomingId(request?.DeezerId);
+        if (request is null || string.IsNullOrWhiteSpace(normalizedSpotifyId) || string.IsNullOrWhiteSpace(normalizedArtistName))
         {
             return BadRequest("Spotify ID and artist name are required.");
         }
@@ -159,20 +165,24 @@ public class LibraryWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var artistId = await ResolveArtistIdForSpotifyAsync(request.SpotifyId, request.DeezerId, cancellationToken);
+        var artistId = await ResolveArtistIdForSpotifyAsync(normalizedSpotifyId, normalizedDeezerId, cancellationToken);
         var added = await _repository.AddWatchlistAsync(
             artistId,
-            request.ArtistName,
-            request.SpotifyId,
-            string.IsNullOrWhiteSpace(request.DeezerId) ? null : request.DeezerId,
+            normalizedArtistName,
+            normalizedSpotifyId,
+            normalizedDeezerId,
             cancellationToken);
-        return CreateAddedResponse(request.ArtistName, added);
+        return CreateAddedResponse(normalizedArtistName, added);
     }
 
     [HttpPost("apple")]
     public async Task<IActionResult> AddApple([FromBody] AppleWatchlistRequest request, CancellationToken cancellationToken)
     {
-        if (request is null || string.IsNullOrWhiteSpace(request.AppleId) || string.IsNullOrWhiteSpace(request.ArtistName))
+        var normalizedAppleId = NormalizeIncomingId(request?.AppleId);
+        var normalizedArtistName = NormalizeIncomingText(request?.ArtistName);
+        var normalizedSpotifyId = NormalizeSpotifyId(request?.SpotifyId);
+        var normalizedDeezerId = NormalizeIncomingId(request?.DeezerId);
+        if (request is null || string.IsNullOrWhiteSpace(normalizedAppleId) || string.IsNullOrWhiteSpace(normalizedArtistName))
         {
             return BadRequest("Apple ID and artist name are required.");
         }
@@ -182,39 +192,42 @@ public class LibraryWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var artistId = await ResolveArtistIdForAppleAsync(request.AppleId, request.DeezerId, request.SpotifyId, cancellationToken);
-        await _repository.UpsertArtistSourceIdAsync(artistId, AppleSource, request.AppleId, cancellationToken);
+        var artistId = await ResolveArtistIdForAppleAsync(normalizedAppleId, normalizedDeezerId, normalizedSpotifyId, cancellationToken);
+        await _repository.UpsertArtistSourceIdAsync(artistId, AppleSource, normalizedAppleId, cancellationToken);
 
-        if (!string.IsNullOrWhiteSpace(request.SpotifyId))
+        if (!string.IsNullOrWhiteSpace(normalizedSpotifyId))
         {
-            await _repository.UpsertArtistSourceIdAsync(artistId, SpotifySource, request.SpotifyId, cancellationToken);
+            await _repository.UpsertArtistSourceIdAsync(artistId, SpotifySource, normalizedSpotifyId, cancellationToken);
         }
 
-        if (!string.IsNullOrWhiteSpace(request.DeezerId))
+        if (!string.IsNullOrWhiteSpace(normalizedDeezerId))
         {
-            await _repository.UpsertArtistSourceIdAsync(artistId, DeezerSource, request.DeezerId, cancellationToken);
+            await _repository.UpsertArtistSourceIdAsync(artistId, DeezerSource, normalizedDeezerId, cancellationToken);
         }
 
-        var spotifyId = !string.IsNullOrWhiteSpace(request.SpotifyId)
-            ? request.SpotifyId
+        var spotifyId = !string.IsNullOrWhiteSpace(normalizedSpotifyId)
+            ? normalizedSpotifyId
             : await _repository.GetArtistSourceIdAsync(artistId, SpotifySource, cancellationToken);
-        var deezerId = !string.IsNullOrWhiteSpace(request.DeezerId)
-            ? request.DeezerId
+        var deezerId = !string.IsNullOrWhiteSpace(normalizedDeezerId)
+            ? normalizedDeezerId
             : await _repository.GetArtistSourceIdAsync(artistId, DeezerSource, cancellationToken);
 
         var added = await _repository.AddWatchlistAsync(
             artistId,
-            request.ArtistName,
+            normalizedArtistName,
             spotifyId,
             deezerId,
             cancellationToken);
-        return CreateAddedResponse(request.ArtistName, added);
+        return CreateAddedResponse(normalizedArtistName, added);
     }
 
     [HttpPost("deezer")]
     public async Task<IActionResult> AddDeezer([FromBody] DeezerWatchlistRequest request, CancellationToken cancellationToken)
     {
-        if (request is null || string.IsNullOrWhiteSpace(request.DeezerId) || string.IsNullOrWhiteSpace(request.ArtistName))
+        var normalizedDeezerId = NormalizeIncomingId(request?.DeezerId);
+        var normalizedArtistName = NormalizeIncomingText(request?.ArtistName);
+        var normalizedSpotifyId = NormalizeSpotifyId(request?.SpotifyId);
+        if (request is null || string.IsNullOrWhiteSpace(normalizedDeezerId) || string.IsNullOrWhiteSpace(normalizedArtistName))
         {
             return BadRequest("Deezer ID and artist name are required.");
         }
@@ -224,25 +237,25 @@ public class LibraryWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var artistId = await ResolveArtistIdForDeezerAsync(request.DeezerId, request.SpotifyId, cancellationToken);
-        await _repository.UpsertArtistSourceIdAsync(artistId, DeezerSource, request.DeezerId, cancellationToken);
+        var artistId = await ResolveArtistIdForDeezerAsync(normalizedDeezerId, normalizedSpotifyId, cancellationToken);
+        await _repository.UpsertArtistSourceIdAsync(artistId, DeezerSource, normalizedDeezerId, cancellationToken);
 
-        if (!string.IsNullOrWhiteSpace(request.SpotifyId))
+        if (!string.IsNullOrWhiteSpace(normalizedSpotifyId))
         {
-            await _repository.UpsertArtistSourceIdAsync(artistId, SpotifySource, request.SpotifyId, cancellationToken);
+            await _repository.UpsertArtistSourceIdAsync(artistId, SpotifySource, normalizedSpotifyId, cancellationToken);
         }
 
-        var spotifyId = !string.IsNullOrWhiteSpace(request.SpotifyId)
-            ? request.SpotifyId
+        var spotifyId = !string.IsNullOrWhiteSpace(normalizedSpotifyId)
+            ? normalizedSpotifyId
             : await _repository.GetArtistSourceIdAsync(artistId, SpotifySource, cancellationToken);
 
         var added = await _repository.AddWatchlistAsync(
             artistId,
-            request.ArtistName,
+            normalizedArtistName,
             spotifyId,
-            request.DeezerId,
+            normalizedDeezerId,
             cancellationToken);
-        return CreateAddedResponse(request.ArtistName, added);
+        return CreateAddedResponse(normalizedArtistName, added);
     }
 
     [HttpDelete("{artistId:long}")]
@@ -260,7 +273,8 @@ public class LibraryWatchlistApiController : ControllerBase
     [HttpDelete("spotify/{spotifyId}")]
     public async Task<IActionResult> RemoveSpotify(string spotifyId, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(spotifyId))
+        var normalizedSpotifyId = NormalizeSpotifyId(spotifyId);
+        if (string.IsNullOrWhiteSpace(normalizedSpotifyId))
         {
             return BadRequest("Spotify ID is required.");
         }
@@ -270,10 +284,10 @@ public class LibraryWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var removed = await _repository.RemoveWatchlistBySpotifyIdAsync(spotifyId, cancellationToken);
+        var removed = await _repository.RemoveWatchlistBySpotifyIdAsync(normalizedSpotifyId, cancellationToken);
         if (!removed)
         {
-            var artistId = await _repository.GetArtistIdBySourceIdAsync(SpotifySource, spotifyId, cancellationToken);
+            var artistId = await _repository.GetArtistIdBySourceIdAsync(SpotifySource, normalizedSpotifyId, cancellationToken);
             if (artistId.HasValue)
             {
                 removed = await _repository.RemoveWatchlistAsync(artistId.Value, cancellationToken);
@@ -286,7 +300,8 @@ public class LibraryWatchlistApiController : ControllerBase
     [HttpDelete("apple/{appleId}")]
     public async Task<IActionResult> RemoveApple(string appleId, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(appleId))
+        var normalizedAppleId = NormalizeIncomingId(appleId);
+        if (string.IsNullOrWhiteSpace(normalizedAppleId))
         {
             return BadRequest("Apple ID is required.");
         }
@@ -296,7 +311,7 @@ public class LibraryWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var artistId = await _repository.GetArtistIdBySourceIdAsync(AppleSource, appleId, cancellationToken);
+        var artistId = await _repository.GetArtistIdBySourceIdAsync(AppleSource, normalizedAppleId, cancellationToken);
         var removed = artistId.HasValue && await _repository.RemoveWatchlistAsync(artistId.Value, cancellationToken);
         return Ok(new { removed });
     }
@@ -304,7 +319,8 @@ public class LibraryWatchlistApiController : ControllerBase
     [HttpDelete("deezer/{deezerId}")]
     public async Task<IActionResult> RemoveDeezer(string deezerId, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(deezerId))
+        var normalizedDeezerId = NormalizeIncomingId(deezerId);
+        if (string.IsNullOrWhiteSpace(normalizedDeezerId))
         {
             return BadRequest("Deezer ID is required.");
         }
@@ -314,7 +330,7 @@ public class LibraryWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var artistId = await _repository.GetArtistIdBySourceIdAsync(DeezerSource, deezerId, cancellationToken);
+        var artistId = await _repository.GetArtistIdBySourceIdAsync(DeezerSource, normalizedDeezerId, cancellationToken);
         var removed = artistId.HasValue && await _repository.RemoveWatchlistAsync(artistId.Value, cancellationToken);
         return Ok(new { removed });
     }
@@ -483,4 +499,18 @@ public class LibraryWatchlistApiController : ControllerBase
         }
         return value;
     }
+
+    private static string? NormalizeIncomingId(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string? NormalizeSpotifyId(string? value)
+    {
+        var normalized = NormalizeIncomingId(value);
+        return string.IsNullOrWhiteSpace(normalized)
+            ? null
+            : normalized.ToLowerInvariant();
+    }
+
+    private static string? NormalizeIncomingText(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }

@@ -1436,6 +1436,8 @@ let librespotHydratedIds = new Set();
 let externalBatchMatchTimer = null;
 let externalBatchMatchSessionId = 0;
 const externalMatchInitialBatchSize = 24;
+let monitorStatusRequestSeq = 0;
+let monitorMutationInFlight = false;
 const externalMatchBackgroundBatchSize = 96;
 const externalMatchMaxConcurrent = 4;
 const externalMatchLowConcurrencyCap = 2;
@@ -4485,6 +4487,10 @@ async function resolveExternalTracklistMatches(tracks, source, options = {}) {
 }
 
 async function updateMonitorButtonState() {
+    if (monitorMutationInFlight) {
+        return;
+    }
+
     const isMonitorable = tracklistType === 'playlist'
         || tracklistType === 'trending'
         || tracklistType === 'smarttracklist'
@@ -4536,8 +4542,12 @@ async function updateMonitorButtonState() {
         return;
     }
 
+    const requestSeq = ++monitorStatusRequestSeq;
     try {
         const status = await fetchJson(`/api/library/playlists/${encodeURIComponent(currentTracklistMeta.source)}/${encodeURIComponent(currentTracklistMeta.sourceId)}`);
+        if (requestSeq !== monitorStatusRequestSeq || monitorMutationInFlight) {
+            return;
+        }
         if (status?.watching) {
             if (monitorLabel) {
                 monitorLabel.textContent = 'Monitored';
@@ -4554,6 +4564,9 @@ async function updateMonitorButtonState() {
             applyDefaultMonitorState(false);
         }
     } catch {
+        if (requestSeq !== monitorStatusRequestSeq || monitorMutationInFlight) {
+            return;
+        }
         applyDefaultMonitorState(false);
     }
 }
@@ -4954,13 +4967,45 @@ if (monitorRemoveButton) {
         if (!currentTracklistMeta?.source || !currentTracklistMeta?.sourceId) {
             return;
         }
+        if (monitorMutationInFlight) {
+            return;
+        }
         closeMonitorMenu();
+        monitorMutationInFlight = true;
+        monitorStatusRequestSeq++;
+        if (monitorLabel) {
+            monitorLabel.textContent = 'Updating...';
+        }
+        monitorButton.disabled = true;
         try {
             await fetchJson(`/api/library/playlists/${encodeURIComponent(currentTracklistMeta.source)}/${encodeURIComponent(currentTracklistMeta.sourceId)}`, { method: 'DELETE' });
-            await updateMonitorButtonState();
+            if (monitorLabel) {
+                const isPodcastShow = String(tracklistType || '').toLowerCase() === 'show';
+                monitorLabel.textContent = isSpotifyArtistTopTracksView()
+                    ? 'Monitor Top Songs'
+                    : (isSpotifyHomeTrendingTracklistView()
+                        ? 'Monitor Trending Songs'
+                        : (String(tracklistType || '').toLowerCase() === 'recommendation'
+                            ? 'Monitor Recommendations'
+                            : (isPodcastShow ? 'Monitor Podcast' : 'Monitor Playlist')));
+            }
+            monitorButton.disabled = false;
+            if (monitorMenu) {
+                monitorMenu.style.display = 'none';
+            }
+            const headerActions = document.getElementById('tracklist-header-actions');
+            if (headerActions) {
+                headerActions.style.display = 'none';
+            }
+            setIgnoreVisibility(false);
             DeezSpoTag.ui.showToast('Playlist removed from monitoring.');
         } catch (error) {
+            monitorMutationInFlight = false;
+            await updateMonitorButtonState();
             DeezSpoTag.ui.alert(`Remove failed: ${error.message}`, { title: 'Monitor Playlist' });
+            return;
+        } finally {
+            monitorMutationInFlight = false;
         }
     });
 }
@@ -4970,6 +5015,15 @@ if (monitorButton) {
         if (!currentTracklistMeta) {
             return;
         }
+        if (monitorMutationInFlight) {
+            return;
+        }
+        monitorMutationInFlight = true;
+        monitorStatusRequestSeq++;
+        if (monitorLabel) {
+            monitorLabel.textContent = 'Updating...';
+        }
+        monitorButton.disabled = true;
         try {
             await fetchJson('/api/library/playlists', {
                 method: 'POST',
@@ -4983,9 +5037,25 @@ if (monitorButton) {
                     trackCount: currentTracklistMeta.trackCount
                 })
             });
-            await updateMonitorButtonState();
+            if (monitorLabel) {
+                monitorLabel.textContent = 'Monitored';
+            }
+            monitorButton.disabled = true;
+            if (monitorMenu) {
+                monitorMenu.style.display = '';
+            }
+            const headerActions = document.getElementById('tracklist-header-actions');
+            if (headerActions) {
+                headerActions.style.display = '';
+            }
+            setIgnoreVisibility(true);
         } catch (error) {
+            monitorMutationInFlight = false;
+            await updateMonitorButtonState();
             DeezSpoTag.ui.alert(`Monitor failed: ${error.message}`, { title: 'Monitor Playlist' });
+            return;
+        } finally {
+            monitorMutationInFlight = false;
         }
     });
 }

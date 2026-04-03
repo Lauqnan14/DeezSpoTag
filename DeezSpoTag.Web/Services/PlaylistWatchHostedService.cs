@@ -3,6 +3,7 @@ using Microsoft.Extensions.Hosting;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Diagnostics;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Library;
 
@@ -92,6 +93,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             var items = BuildWatchItems(playlists, artists);
             if (items.Count == 0)
             {
+                CleanupStaleState(Array.Empty<WatchItem>());
                 return;
             }
 
@@ -118,10 +120,12 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         IServiceProvider serviceProvider,
         CancellationToken stoppingToken)
     {
+        var runStartedUtc = DateTimeOffset.UtcNow;
         var maxItemsPerRun = Math.Clamp(settings.WatchMaxItemsPerRun, 1, items.Count);
         var startIndex = _roundRobinIndex % items.Count;
         var processed = 0;
         var lastVisitedIndex = -1;
+        var metrics = new WatchRunMetrics(items.Count, maxItemsPerRun, startIndex);
 
         for (var offset = 0; offset < items.Count && processed < maxItemsPerRun; offset++)
         {
@@ -130,24 +134,55 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             var index = (startIndex + offset) % items.Count;
             lastVisitedIndex = index;
             var item = items[index];
-            if (!IsEligible(item, settings))
+            var eligibility = GetEligibility(item, settings);
+            switch (eligibility)
             {
-                continue;
+                case WatchItemEligibility.Backoff:
+                    metrics.SkippedByBackoff++;
+                    continue;
+                case WatchItemEligibility.DelayWindow:
+                    metrics.SkippedByDelayWindow++;
+                    continue;
             }
 
-            var wasProcessed = await TryProcessItemAsync(item, settings, serviceProvider, stoppingToken);
-            if (wasProcessed)
+            var outcome = await TryProcessItemAsync(item, settings, serviceProvider, stoppingToken);
+            switch (outcome)
             {
-                processed++;
+                case WatchItemRunOutcome.Success:
+                    processed++;
+                    metrics.Processed++;
+                    metrics.Succeeded++;
+                    break;
+                case WatchItemRunOutcome.Failure:
+                    processed++;
+                    metrics.Processed++;
+                    metrics.Failed++;
+                    break;
+                case WatchItemRunOutcome.LockBusy:
+                    metrics.SkippedByLockBusy++;
+                    break;
             }
         }
 
         _roundRobinIndex = lastVisitedIndex >= 0
             ? (lastVisitedIndex + 1) % items.Count
             : (startIndex + 1) % items.Count;
+
+        var elapsedMs = (DateTimeOffset.UtcNow - runStartedUtc).TotalMilliseconds;
+        _logger.LogInformation(
+            "Watchlist run summary: total={TotalItems}, cap={RunCap}, processed={Processed}, ok={Succeeded}, failed={Failed}, skipBackoff={SkippedBackoff}, skipCooldown={SkippedCooldown}, skipLock={SkippedLock}, elapsedMs={ElapsedMs:0}",
+            metrics.TotalItems,
+            metrics.MaxItemsPerRun,
+            metrics.Processed,
+            metrics.Succeeded,
+            metrics.Failed,
+            metrics.SkippedByBackoff,
+            metrics.SkippedByDelayWindow,
+            metrics.SkippedByLockBusy,
+            elapsedMs);
     }
 
-    private async Task<bool> TryProcessItemAsync(
+    private async Task<WatchItemRunOutcome> TryProcessItemAsync(
         WatchItem item,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         IServiceProvider serviceProvider,
@@ -156,16 +191,24 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         var itemLock = _itemLocks.GetOrAdd(item.Key, _ => new SemaphoreSlim(1, 1));
         if (!await itemLock.WaitAsync(0, stoppingToken))
         {
-            return false;
+            return WatchItemRunOutcome.LockBusy;
         }
 
+        var startedUtc = DateTimeOffset.UtcNow;
+        var stopwatch = Stopwatch.StartNew();
         try
         {
             await RunItemAsync(item, serviceProvider, stoppingToken);
             _lastRun[item.Key] = DateTimeOffset.UtcNow;
             _consecutiveFailures.TryRemove(item.Key, out _);
             _nextAllowedRun.TryRemove(item.Key, out _);
-            return true;
+            _logger.LogDebug(
+                "Watchlist item succeeded: key={WatchItemKey}, kind={Kind}, source={Source}, elapsedMs={ElapsedMs:0}",
+                item.Key,
+                item.Kind,
+                item.Source,
+                stopwatch.Elapsed.TotalMilliseconds);
+            return WatchItemRunOutcome.Success;
         }
         catch (OperationCanceledException)
         {
@@ -180,9 +223,19 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             var backoffSeconds = Math.Min(
                 600,
                 baseDelaySeconds * (int)Math.Pow(2, Math.Min(failures - 1, 6)));
-            _nextAllowedRun[item.Key] = DateTimeOffset.UtcNow.AddSeconds(backoffSeconds);
-            _logger.LogWarning(ex, "Playlist watch item run failed for {WatchItemKey}", item.Key);
-            return false;
+            var nextRunUtc = startedUtc.AddSeconds(backoffSeconds);
+            _nextAllowedRun[item.Key] = nextRunUtc;
+            _logger.LogWarning(
+                ex,
+                "Watchlist item failed: key={WatchItemKey}, kind={Kind}, source={Source}, failures={Failures}, backoffSeconds={BackoffSeconds}, nextRunUtc={NextRunUtc}, elapsedMs={ElapsedMs:0}",
+                item.Key,
+                item.Kind,
+                item.Source,
+                failures,
+                backoffSeconds,
+                nextRunUtc,
+                stopwatch.Elapsed.TotalMilliseconds);
+            return WatchItemRunOutcome.Failure;
         }
         finally
         {
@@ -202,35 +255,37 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                 continue;
             }
             var key = $"playlist:{playlist.Source}:{playlist.SourceId}";
-            items.Add(new WatchItem("playlist", key, playlist, null));
+            items.Add(new WatchItem("playlist", key, NormalizeSource(playlist.Source), playlist, null));
         }
 
         foreach (var artist in artists)
         {
             var key = $"artist:{artist.ArtistId}";
-            items.Add(new WatchItem("artist", key, null, artist));
+            items.Add(new WatchItem("artist", key, "artist", null, artist));
         }
 
         return items;
     }
 
-    private bool IsEligible(WatchItem item, DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
+    private WatchItemEligibility GetEligibility(WatchItem item, DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
     {
         if (_nextAllowedRun.TryGetValue(item.Key, out var nextAllowedUtc) && DateTimeOffset.UtcNow < nextAllowedUtc)
         {
-            return false;
+            return WatchItemEligibility.Backoff;
         }
 
         if (!_lastRun.TryGetValue(item.Key, out var lastRunUtc))
         {
-            return true;
+            return WatchItemEligibility.Eligible;
         }
 
         var delaySeconds = item.Kind == "artist"
             ? settings.WatchDelayBetweenArtistsSeconds
             : settings.WatchDelayBetweenPlaylistsSeconds;
         var delay = TimeSpan.FromSeconds(Math.Max(1, delaySeconds));
-        return DateTimeOffset.UtcNow - lastRunUtc >= delay;
+        return DateTimeOffset.UtcNow - lastRunUtc >= delay
+            ? WatchItemEligibility.Eligible
+            : WatchItemEligibility.DelayWindow;
     }
 
     private void CleanupStaleState(IReadOnlyList<WatchItem> items)
@@ -287,6 +342,44 @@ public sealed class PlaylistWatchHostedService : BackgroundService
     private sealed record WatchItem(
         string Kind,
         string Key,
+        string Source,
         PlaylistWatchlistDto? Playlist,
         WatchlistArtistDto? Artist);
+
+    private sealed class WatchRunMetrics
+    {
+        public WatchRunMetrics(int totalItems, int maxItemsPerRun, int startIndex)
+        {
+            TotalItems = totalItems;
+            MaxItemsPerRun = maxItemsPerRun;
+            StartIndex = startIndex;
+        }
+
+        public int TotalItems { get; }
+        public int MaxItemsPerRun { get; }
+        public int StartIndex { get; }
+        public int Processed { get; set; }
+        public int Succeeded { get; set; }
+        public int Failed { get; set; }
+        public int SkippedByBackoff { get; set; }
+        public int SkippedByDelayWindow { get; set; }
+        public int SkippedByLockBusy { get; set; }
+    }
+
+    private enum WatchItemRunOutcome
+    {
+        Success,
+        Failure,
+        LockBusy
+    }
+
+    private enum WatchItemEligibility
+    {
+        Eligible,
+        Backoff,
+        DelayWindow
+    }
+
+    private static string NormalizeSource(string? source)
+        => string.IsNullOrWhiteSpace(source) ? "unknown" : source.Trim().ToLowerInvariant();
 }
