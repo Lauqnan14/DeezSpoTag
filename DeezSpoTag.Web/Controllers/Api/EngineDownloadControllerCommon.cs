@@ -175,20 +175,7 @@ internal static class EngineDownloadControllerCommon
         payload.Cover = track.Cover ?? string.Empty;
         payload.AutoSources = autoSources;
         payload.AutoIndex = autoIndex;
-        payload.FallbackPlan = autoSources
-            .Select((source, index) =>
-            {
-                var step = DownloadSourceOrder.DecodeAutoSource(source);
-                var engine = string.IsNullOrWhiteSpace(step.Source) ? string.Empty : step.Source;
-                return new FallbackPlanStep(
-                    StepId: $"step-{index}",
-                    Engine: engine,
-                    Quality: step.Quality,
-                    RequiredInputs: Array.Empty<string>(),
-                    ResolutionStrategy: "direct_url");
-            })
-            .Where(step => !string.IsNullOrWhiteSpace(step.Engine))
-            .ToList();
+        payload.FallbackPlan = FallbackPayloadNormalizer.BuildDirectUrlPlanFromAutoSources(autoSources);
         payload.ReleaseDate = track.ReleaseDate ?? string.Empty;
         payload.DurationSeconds = ResolveDurationSeconds(track.DurationSeconds, track.DurationMs);
         payload.Position = track.Position;

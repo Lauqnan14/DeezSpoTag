@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared.Models;
@@ -137,6 +138,33 @@ public static class FallbackPayloadNormalizer
             var resolutionStrategy = ReadString(stepObj, "ResolutionStrategy") ?? "direct_url";
             var requiredInputs = ReadStringArray(stepObj, "RequiredInputs");
             steps.Add(new FallbackPlanStep(stepId, engine, quality, requiredInputs, resolutionStrategy));
+        }
+
+        return steps;
+    }
+
+    public static List<FallbackPlanStep> BuildDirectUrlPlanFromAutoSources(IReadOnlyList<string> autoSources)
+    {
+        if (autoSources == null || autoSources.Count == 0)
+        {
+            return new List<FallbackPlanStep>();
+        }
+
+        var steps = new List<FallbackPlanStep>(autoSources.Count);
+        for (var index = 0; index < autoSources.Count; index++)
+        {
+            var decoded = DownloadSourceOrder.DecodeAutoSource(autoSources[index]);
+            if (string.IsNullOrWhiteSpace(decoded.Source))
+            {
+                continue;
+            }
+
+            steps.Add(new FallbackPlanStep(
+                StepId: $"step-{index}",
+                Engine: decoded.Source,
+                Quality: decoded.Quality,
+                RequiredInputs: Array.Empty<string>(),
+                ResolutionStrategy: "direct_url"));
         }
 
         return steps;
