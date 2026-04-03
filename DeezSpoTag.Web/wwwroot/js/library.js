@@ -10524,10 +10524,29 @@ async function loadWatchlist() {
             button.addEventListener('click', async () => {
                 const artistId = button.dataset.watchlistRemove;
                 if (!artistId) return;
+                const card = button.closest('.watchlist-artist-card');
+                const strip = button.closest('.watchlist-card-strip');
+                const previousOpacity = card ? card.style.opacity : '';
+                button.disabled = true;
+                if (card) {
+                    card.style.opacity = '0.45';
+                }
                 try {
                     await fetchJson(`/api/library/watchlist/${artistId}`, { method: 'DELETE' });
-                    await loadWatchlist();
+                    if (card) {
+                        card.remove();
+                    }
+                    if (!container.querySelector('.watchlist-artist-card')) {
+                        container.innerHTML = '<div class="watchlist-empty-state">No monitored artists yet.</div>';
+                    }
                 } catch (error) {
+                    button.disabled = false;
+                    if (card) {
+                        card.style.opacity = previousOpacity;
+                    }
+                    if (strip) {
+                        strip.classList.remove('is-busy');
+                    }
                     showToast(`Watchlist remove failed: ${error.message}`, true);
                 }
             });
@@ -10917,11 +10936,30 @@ async function loadPlaylistWatchlist() {
                 const source = button.dataset.playlistSource;
                 const sourceId = button.dataset.playlistId;
                 if (!source || !sourceId) return;
+                const card = button.closest('.watchlist-playlist-card-v2');
+                const previousOpacity = card ? card.style.opacity : '';
+                button.disabled = true;
+                if (card) {
+                    card.style.opacity = '0.45';
+                }
                 try {
                     await fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}`, { method: 'DELETE' });
-                    await loadPlaylistWatchlist();
+                    if (card) {
+                        card.remove();
+                    }
+                    const remainingCards = container.querySelectorAll('.watchlist-playlist-card-v2').length;
+                    if (remainingCards === 0) {
+                        container.innerHTML = '<div class="watchlist-empty-state">No monitored playlists yet.</div>';
+                    }
+                    if (mergeButton) {
+                        mergeButton.disabled = remainingCards < 2;
+                    }
                     await loadPlaylistBlockedRules();
                 } catch (error) {
+                    button.disabled = false;
+                    if (card) {
+                        card.style.opacity = previousOpacity;
+                    }
                     showToast(`Playlist remove failed: ${error.message}`, true);
                 }
             });

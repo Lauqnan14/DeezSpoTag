@@ -1557,10 +1557,7 @@ async function refreshArtistWatchlistToggle(button, artistIdValue) {
     } catch {
         // Allow toggling even if status lookup fails.
     }
-    button.textContent = watching ? 'Monitoring Artist' : 'Monitor Artist';
-    button.classList.toggle('btn-secondary', watching);
-    button.classList.toggle('btn-primary', !watching);
-    button.dataset.watching = watching ? 'true' : 'false';
+    applyArtistWatchlistToggleState(button, watching, false);
 }
 
 async function refreshArtistWatchlistToggleBySpotify(button, spotifyId) {
@@ -1571,10 +1568,20 @@ async function refreshArtistWatchlistToggleBySpotify(button, spotifyId) {
     } catch {
         // Allow toggling even if status lookup fails.
     }
+    applyArtistWatchlistToggleState(button, watching, false);
+}
+
+function applyArtistWatchlistToggleState(button, watching, pending) {
+    if (!button) {
+        return;
+    }
+
     button.textContent = watching ? 'Monitoring Artist' : 'Monitor Artist';
     button.classList.toggle('btn-secondary', watching);
     button.classList.toggle('btn-primary', !watching);
     button.dataset.watching = watching ? 'true' : 'false';
+    button.classList.toggle('is-busy', pending === true);
+    button.disabled = pending === true;
 }
 
 async function initArtistWatchlistToggle(data) {
@@ -1592,15 +1599,20 @@ async function initArtistWatchlistToggle(data) {
     const artistName = (data?.artistName || document.querySelector('.artist-hero__title')?.textContent || 'Unknown Artist').trim();
     const isSpotifySource = String(currentArtistSource || '').toLowerCase() === 'spotify';
     let resolvedDeezerId = null;
+    let mutationInFlight = false;
 
     button.disabled = false;
     button.addEventListener('click', async () => {
-        button.disabled = true;
+        if (mutationInFlight) {
+            return;
+        }
+        mutationInFlight = true;
+        const currentlyWatching = button.dataset.watching === 'true';
+        const nextWatching = !currentlyWatching;
+        applyArtistWatchlistToggleState(button, nextWatching, true);
         try {
             if (isSpotifySource) {
-                const status = await fetchJson(`/api/library/watchlist/spotify/${encodeURIComponent(artistIdValue)}`);
-                const watching = status?.watching === true;
-                if (watching) {
+                if (currentlyWatching) {
                     await fetchJson(`/api/library/watchlist/spotify/${encodeURIComponent(artistIdValue)}`, { method: 'DELETE' });
                     showArtistToast('Artist removed from watchlist.');
                 } else {
@@ -1621,11 +1633,9 @@ async function initArtistWatchlistToggle(data) {
                     });
                     showArtistToast('Artist added to watchlist.');
                 }
-                await refreshArtistWatchlistToggleBySpotify(button, artistIdValue);
+                applyArtistWatchlistToggleState(button, nextWatching, false);
             } else {
-                const status = await fetchJson(`/api/library/watchlist/${artistIdValue}`);
-                const watching = status?.watching === true;
-                if (watching) {
+                if (currentlyWatching) {
                     await fetchJson(`/api/library/watchlist/${artistIdValue}`, { method: 'DELETE' });
                     showArtistToast('Artist removed from watchlist.');
                 } else {
@@ -1639,12 +1649,13 @@ async function initArtistWatchlistToggle(data) {
                     });
                     showArtistToast('Artist added to watchlist.');
                 }
-                await refreshArtistWatchlistToggle(button, artistIdValue);
+                applyArtistWatchlistToggleState(button, nextWatching, false);
             }
         } catch (error) {
+            applyArtistWatchlistToggleState(button, currentlyWatching, false);
             showArtistToast(`Watchlist update failed: ${error.message}`, true);
         } finally {
-            button.disabled = false;
+            mutationInFlight = false;
         }
     });
 

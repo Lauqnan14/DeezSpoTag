@@ -22,6 +22,7 @@ public sealed class LibraryDbService
     private const string PlaylistWatchlistTable = "playlist_watchlist";
     private const string PlaylistWatchIgnoreTable = "playlist_watch_ignore";
     private const string WatchlistHistoryTable = "watchlist_history";
+    private const string ArtistWatchlistTable = "artist_watchlist";
     private const string TrackAnalysisTable = "track_analysis";
     private const string LibraryTable = "library";
     private const string DownloadBlocklistTable = "download_blocklist";
@@ -57,6 +58,13 @@ public sealed class LibraryDbService
             ["idx_track_album_id"] = (TrackTable, "album_id", false),
             ["idx_track_local_audio_file_id"] = (TrackLocalTable, "audio_file_id", false),
             ["idx_artist_name_nocase"] = (ArtistTable, "name COLLATE NOCASE", false)
+            ,["idx_artist_watchlist_spotify_id"] = (ArtistWatchlistTable, "spotify_id", false)
+            ,["idx_artist_watchlist_deezer_id"] = (ArtistWatchlistTable, "deezer_id", false)
+            ,["idx_playlist_watchlist_created"] = (PlaylistWatchlistTable, "created_at", false)
+            ,["idx_playlist_watch_preferences_updated"] = (PlaylistWatchPreferencesTable, "updated_at", false)
+            ,["idx_playlist_watch_state_updated"] = (PlaylistWatchStateTable, "updated_at", false)
+            ,["idx_playlist_watch_track_source_status"] = (PlaylistWatchTrackTable, "source, source_id, status", false)
+            ,["idx_watchlist_history_source_created"] = (WatchlistHistoryTable, "source, created_at", false)
         };
     private readonly IConfiguration _configuration;
     private readonly ILogger<LibraryDbService> _logger;
@@ -224,6 +232,14 @@ CREATE TABLE IF NOT EXISTS playlist_track_candidate_cache (
         await BackfillColumnFromLegacyAsync(connection, PlaylistWatchTrackTable, SourceIdColumn, ExternalIdColumn, cancellationToken);
         await BackfillColumnFromLegacyAsync(connection, PlaylistWatchIgnoreTable, SourceIdColumn, ExternalIdColumn, cancellationToken);
         await BackfillColumnFromLegacyAsync(connection, WatchlistHistoryTable, SourceIdColumn, ExternalIdColumn, cancellationToken);
+        await NormalizeWatchlistKeysAsync(connection, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_artist_watchlist_spotify_id", ArtistWatchlistTable, "spotify_id", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_artist_watchlist_deezer_id", ArtistWatchlistTable, "deezer_id", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_playlist_watchlist_created", PlaylistWatchlistTable, "created_at", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_playlist_watch_preferences_updated", PlaylistWatchPreferencesTable, "updated_at", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_playlist_watch_state_updated", PlaylistWatchStateTable, "updated_at", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_playlist_watch_track_source_status", PlaylistWatchTrackTable, "source, source_id, status", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_watchlist_history_source_created", WatchlistHistoryTable, "source, created_at", unique: false, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS download_blocklist (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -600,6 +616,134 @@ WHERE af.relative_path IS NULL OR af.relative_path = '';";
             relParam.Value = row.RelativePath;
             await update.ExecuteNonQueryAsync(cancellationToken);
         }
+    }
+
+    private static async Task NormalizeWatchlistKeysAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        // Deduplicate by canonical source/source_id (or source/source_id/track_source_id) before normalization
+        // to avoid unique/primary key conflicts during updates.
+        await ExecuteIfTableExistsAsync(connection, PlaylistWatchlistTable, @"
+DELETE FROM playlist_watchlist
+WHERE id NOT IN (
+    SELECT MAX(id)
+    FROM playlist_watchlist
+    GROUP BY LOWER(TRIM(source)), TRIM(source_id)
+);", cancellationToken);
+
+        await ExecuteIfTableExistsAsync(connection, PlaylistWatchPreferencesTable, @"
+DELETE FROM playlist_watch_preferences
+WHERE rowid NOT IN (
+    SELECT MAX(rowid)
+    FROM playlist_watch_preferences
+    GROUP BY LOWER(TRIM(source)), TRIM(source_id)
+);", cancellationToken);
+
+        await ExecuteIfTableExistsAsync(connection, PlaylistWatchStateTable, @"
+DELETE FROM playlist_watch_state
+WHERE rowid NOT IN (
+    SELECT MAX(rowid)
+    FROM playlist_watch_state
+    GROUP BY LOWER(TRIM(source)), TRIM(source_id)
+);", cancellationToken);
+
+        await ExecuteIfTableExistsAsync(connection, "playlist_track_candidate_cache", @"
+DELETE FROM playlist_track_candidate_cache
+WHERE rowid NOT IN (
+    SELECT MAX(rowid)
+    FROM playlist_track_candidate_cache
+    GROUP BY LOWER(TRIM(source)), TRIM(source_id)
+);", cancellationToken);
+
+        await ExecuteIfTableExistsAsync(connection, PlaylistWatchTrackTable, @"
+DELETE FROM playlist_watch_track
+WHERE rowid NOT IN (
+    SELECT MAX(rowid)
+    FROM playlist_watch_track
+    GROUP BY LOWER(TRIM(source)), TRIM(source_id), TRIM(track_source_id)
+);", cancellationToken);
+
+        await ExecuteIfTableExistsAsync(connection, PlaylistWatchIgnoreTable, @"
+DELETE FROM playlist_watch_ignore
+WHERE rowid NOT IN (
+    SELECT MAX(rowid)
+    FROM playlist_watch_ignore
+    GROUP BY LOWER(TRIM(source)), TRIM(source_id), TRIM(track_source_id)
+);", cancellationToken);
+
+        await ExecuteIfTableExistsAsync(connection, PlaylistWatchlistTable, @"
+UPDATE playlist_watchlist
+SET source = LOWER(TRIM(source)),
+    source_id = TRIM(source_id)
+WHERE source <> LOWER(TRIM(source))
+   OR source_id <> TRIM(source_id);", cancellationToken);
+
+        await ExecuteIfTableExistsAsync(connection, PlaylistWatchPreferencesTable, @"
+UPDATE playlist_watch_preferences
+SET source = LOWER(TRIM(source)),
+    source_id = TRIM(source_id)
+WHERE source <> LOWER(TRIM(source))
+   OR source_id <> TRIM(source_id);", cancellationToken);
+
+        await ExecuteIfTableExistsAsync(connection, PlaylistWatchStateTable, @"
+UPDATE playlist_watch_state
+SET source = LOWER(TRIM(source)),
+    source_id = TRIM(source_id)
+WHERE source <> LOWER(TRIM(source))
+   OR source_id <> TRIM(source_id);", cancellationToken);
+
+        await ExecuteIfTableExistsAsync(connection, "playlist_track_candidate_cache", @"
+UPDATE playlist_track_candidate_cache
+SET source = LOWER(TRIM(source)),
+    source_id = TRIM(source_id)
+WHERE source <> LOWER(TRIM(source))
+   OR source_id <> TRIM(source_id);", cancellationToken);
+
+        await ExecuteIfTableExistsAsync(connection, PlaylistWatchTrackTable, @"
+UPDATE playlist_watch_track
+SET source = LOWER(TRIM(source)),
+    source_id = TRIM(source_id),
+    track_source_id = TRIM(track_source_id)
+WHERE source <> LOWER(TRIM(source))
+   OR source_id <> TRIM(source_id)
+   OR track_source_id <> TRIM(track_source_id);", cancellationToken);
+
+        await ExecuteIfTableExistsAsync(connection, PlaylistWatchIgnoreTable, @"
+UPDATE playlist_watch_ignore
+SET source = LOWER(TRIM(source)),
+    source_id = TRIM(source_id),
+    track_source_id = TRIM(track_source_id)
+WHERE source <> LOWER(TRIM(source))
+   OR source_id <> TRIM(source_id)
+   OR track_source_id <> TRIM(track_source_id);", cancellationToken);
+
+        await ExecuteIfTableExistsAsync(connection, WatchlistHistoryTable, @"
+UPDATE watchlist_history
+SET source = LOWER(TRIM(source)),
+    source_id = TRIM(source_id)
+WHERE source <> LOWER(TRIM(source))
+   OR source_id <> TRIM(source_id);", cancellationToken);
+
+        await ExecuteIfTableExistsAsync(connection, ArtistWatchlistTable, @"
+UPDATE artist_watchlist
+SET spotify_id = TRIM(spotify_id),
+    deezer_id = TRIM(deezer_id)
+WHERE (spotify_id IS NOT NULL AND spotify_id <> TRIM(spotify_id))
+   OR (deezer_id IS NOT NULL AND deezer_id <> TRIM(deezer_id));", cancellationToken);
+    }
+
+    private static async Task ExecuteIfTableExistsAsync(
+        SqliteConnection connection,
+        string table,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        if (!await TableExistsAsync(connection, table, cancellationToken))
+        {
+            return;
+        }
+
+        await using var command = new SqliteCommand(sql, connection);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task BackfillAudioFileVariantsAsync(SqliteConnection connection, CancellationToken cancellationToken)

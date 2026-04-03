@@ -4531,7 +4531,7 @@ LIMIT 1;";
 
         var normalizedSpotifyId = spotifyId.Trim();
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"SELECT EXISTS(SELECT 1 FROM artist_watchlist WHERE spotify_id = @spotifyId);";
+        const string sql = @"SELECT EXISTS(SELECT 1 FROM artist_watchlist WHERE LOWER(spotify_id) = LOWER(@spotifyId));";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("spotifyId", normalizedSpotifyId);
         var result = await command.ExecuteScalarAsync(cancellationToken);
@@ -4547,7 +4547,7 @@ LIMIT 1;";
 
         var normalizedSpotifyId = spotifyId.Trim();
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"DELETE FROM artist_watchlist WHERE spotify_id = @spotifyId;";
+        const string sql = @"DELETE FROM artist_watchlist WHERE LOWER(spotify_id) = LOWER(@spotifyId);";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("spotifyId", normalizedSpotifyId);
         var removed = await command.ExecuteNonQueryAsync(cancellationToken);
