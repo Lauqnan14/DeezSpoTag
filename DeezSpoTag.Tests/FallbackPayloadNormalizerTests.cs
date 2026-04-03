@@ -122,6 +122,31 @@ public sealed class FallbackPayloadNormalizerTests
         Assert.Equal(2, ((JsonArray)payload["FallbackPlan"]!).Count);
     }
 
+    [Fact]
+    public void BuildDirectUrlPlanFromAutoSources_BuildsIndexedCanonicalSteps()
+    {
+        var autoSources = new List<string>
+        {
+            "qobuz|27",
+            "tidal|HI_RES_LOSSLESS",
+            "deezer|9"
+        };
+
+        var plan = FallbackPayloadNormalizer.BuildDirectUrlPlanFromAutoSources(autoSources);
+
+        Assert.Equal(3, plan.Count);
+        Assert.Equal("step-0", plan[0].StepId);
+        Assert.Equal("qobuz", plan[0].Engine);
+        Assert.Equal("27", plan[0].Quality);
+        Assert.Equal("direct_url", plan[0].ResolutionStrategy);
+        Assert.Equal("step-1", plan[1].StepId);
+        Assert.Equal("tidal", plan[1].Engine);
+        Assert.Equal("HI_RES_LOSSLESS", plan[1].Quality);
+        Assert.Equal("step-2", plan[2].StepId);
+        Assert.Equal("deezer", plan[2].Engine);
+        Assert.Equal("9", plan[2].Quality);
+    }
+
     private static DownloadQueueItem CreateQueueItem(string engine = "deezer", string? contentType = null)
     {
         var now = DateTimeOffset.UtcNow;
