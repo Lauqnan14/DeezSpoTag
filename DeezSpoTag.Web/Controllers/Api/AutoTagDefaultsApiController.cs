@@ -12,15 +12,18 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
 {
     private readonly AutoTagDefaultsStore _store;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
+    private readonly TaggingProfileService _profileService;
     private readonly LibraryRepository _libraryRepository;
 
     public AutoTagDefaultsApiController(
         AutoTagDefaultsStore store,
         AutoTagProfileResolutionService profileResolutionService,
+        TaggingProfileService profileService,
         LibraryRepository libraryRepository)
     {
         _store = store;
         _profileResolutionService = profileResolutionService;
+        _profileService = profileService;
         _libraryRepository = libraryRepository;
     }
 
@@ -43,10 +46,16 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
         var profiles = state.Profiles;
 
         var requestedDefaultReference = request.DefaultFileProfile?.Trim();
-        var defaultProfile = TaggingProfileService.FindByIdOrName(profiles, requestedDefaultReference);
-        if (!string.IsNullOrWhiteSpace(requestedDefaultReference) && defaultProfile is null)
+        if (!string.IsNullOrWhiteSpace(requestedDefaultReference))
         {
-            return BadRequest("Selected default AutoTag profile does not exist.");
+            var defaultProfile = await _profileService.SetDefaultProfileAsync(requestedDefaultReference);
+            if (defaultProfile is null)
+            {
+                return BadRequest("Selected default AutoTag profile does not exist.");
+            }
+
+            state = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
+            profiles = state.Profiles;
         }
 
         var mirroredLibraryProfiles = state.Defaults.LibraryProfiles is { Count: > 0 }
@@ -84,8 +93,11 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
             }
         }
 
+        var resolvedDefaultProfileId = profiles
+            .FirstOrDefault(profile => profile.IsDefault)
+            ?.Id;
         var defaults = new AutoTagDefaultsDto(
-            defaultProfile?.Id,
+            resolvedDefaultProfileId,
             mirroredLibraryProfiles,
             scheduleCleaned);
         await _store.SaveAsync(defaults);
