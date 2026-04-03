@@ -614,7 +614,7 @@ public class AutoTagEnhancementController : ControllerBase
                 && !string.IsNullOrWhiteSpace(folder.RootPath)
                 && IsMusicFolder(folder))
             .ToList();
-        var scopedFolderIds = AutoTagFolderScopeHelper.NormalizeFolderIds(request.FolderIds, request.FolderId, enabledFolders);
+        var scopedFolderIds = AutoTagFolderScopeHelper.NormalizeFolderIds(request.FolderIds, enabledFolders);
         if (scopedFolderIds.Count == 0)
         {
             return enabledFolders;
@@ -1416,7 +1416,6 @@ public class AutoTagEnhancementController : ControllerBase
 
     [HttpGet("enhancement/technical-profiles")]
     public async Task<IActionResult> GetEnhancementTechnicalProfiles(
-        [FromQuery] long? folderId,
         [FromQuery] string? folderIds,
         [FromQuery] string? scope,
         CancellationToken cancellationToken)
@@ -1429,7 +1428,7 @@ public class AutoTagEnhancementController : ControllerBase
             .Where(folder => folder.Enabled && !string.IsNullOrWhiteSpace(folder.RootPath))
             .ToList();
         var folderIdsFromQuery = AutoTagFolderScopeHelper.ParseFolderIdsQuery(folderIds);
-        var selectedFolderIds = AutoTagFolderScopeHelper.NormalizeFolderIds(folderIdsFromQuery, folderId, enabledFolders);
+        var selectedFolderIds = AutoTagFolderScopeHelper.NormalizeFolderIds(folderIdsFromQuery, enabledFolders);
 
         if (selectedFolderIds.Count > 0 && enabledFolders.All(folder => !selectedFolderIds.Contains(folder.Id)))
         {
@@ -1487,7 +1486,7 @@ public class AutoTagEnhancementController : ControllerBase
         var enabledFolders = folders
             .Where(folder => folder.Enabled && !string.IsNullOrWhiteSpace(folder.RootPath))
             .ToList();
-        var scopedFolderIds = AutoTagFolderScopeHelper.NormalizeFolderIds(request.FolderIds, request.FolderId, enabledFolders);
+        var scopedFolderIds = AutoTagFolderScopeHelper.NormalizeFolderIds(request.FolderIds, enabledFolders);
         if (scopedFolderIds.Count == 0)
         {
             return (null, enabledFolders, scopedFolderIds);

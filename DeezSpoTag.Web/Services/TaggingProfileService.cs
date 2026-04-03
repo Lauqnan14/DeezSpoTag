@@ -343,6 +343,11 @@ public sealed class TaggingProfileService
         profile.AutoTag.Data ??= new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
 
         var changed = StripAuthSecrets(profile.AutoTag.Data);
+        if (TaggingProfileDataHelper.CanonicalizeEnhancementConfig(profile.AutoTag.Data))
+        {
+            changed = true;
+        }
+
         if (TryNormalizeDownloadTagSourceField(profile.AutoTag.Data))
         {
             changed = true;

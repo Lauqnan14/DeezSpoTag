@@ -89,17 +89,12 @@ internal static class AutoTagFolderScopeHelper
 
     public static IReadOnlyList<long> NormalizeFolderIds(
         IReadOnlyList<long>? folderIds,
-        long? legacyFolderId,
         IReadOnlyList<FolderDto> enabledFolders)
     {
         var selected = (folderIds ?? Array.Empty<long>())
             .Where(id => id > 0)
             .Distinct()
             .ToList();
-        if (selected.Count == 0 && legacyFolderId.HasValue && legacyFolderId.Value > 0)
-        {
-            selected.Add(legacyFolderId.Value);
-        }
 
         if (selected.Count == 0)
         {

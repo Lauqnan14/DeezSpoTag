@@ -421,7 +421,6 @@ public class AutoTagStartRequest
 
 public sealed class EnhancementFolderUniformityRequest
 {
-    public long? FolderId { get; set; }
     public IReadOnlyList<long>? FolderIds { get; set; }
     public bool? EnforceFolderStructure { get; set; }
     public bool? MoveMisplacedFiles { get; set; }
@@ -447,7 +446,6 @@ public sealed class EnhancementFolderUniformityRequest
 
 public sealed class EnhancementQualityChecksRequest
 {
-    public long? FolderId { get; set; }
     public IReadOnlyList<long>? FolderIds { get; set; }
     public string Scope { get; set; } = "all";
     public bool? FlagDuplicates { get; set; }
