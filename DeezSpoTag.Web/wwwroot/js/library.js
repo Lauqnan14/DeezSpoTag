@@ -28,6 +28,7 @@ const libraryState = {
     artistSortKey: 'name-asc',
     artistSearchTimer: null,
     artistLoadRequestId: 0,
+    artistLoadAbortController: null,
     scanArtistsRefreshInFlight: false,
     lastActiveScanRefreshKey: '',
     lastArtistRefreshAtMs: 0,
@@ -41,6 +42,7 @@ const libraryState = {
         analysisMs: 15000,
         minArtistRefreshMs: 10000
     },
+    runtimeStatusFailureCount: 0,
     albumTracksById: new Map(),
     currentSpotifyArtist: null,
     currentLocalArtistName: '',
@@ -2778,12 +2780,22 @@ globalThis.refreshAutoTagFolderDefaults = async function refreshAutoTagFolderDef
 async function loadArtists() {
     updateLibraryResultsMeta(-1, -1);
     const requestId = ++libraryState.artistLoadRequestId;
+    if (libraryState.artistLoadAbortController) {
+        libraryState.artistLoadAbortController.abort();
+    }
+    const abortController = new AbortController();
+    libraryState.artistLoadAbortController = abortController;
     const params = new URLSearchParams();
     const selectedFolderId = getSelectedLibraryViewFolderId();
     params.set('availability', 'local');
     if (selectedFolderId !== null) {
         params.set('folderId', String(selectedFolderId));
     }
+    const normalizedQuery = (libraryState.artistSearchQuery || '').trim();
+    if (normalizedQuery) {
+        params.set('search', normalizedQuery);
+    }
+    params.set('sort', libraryState.artistSortKey || 'name-asc');
     const incrementalRenderEnabled = !((libraryState.artistSearchQuery || '').trim())
         && (libraryState.artistSortKey || 'name-asc') === 'name-asc';
     const pageSize = 400;
@@ -2795,7 +2807,15 @@ async function loadArtists() {
         const pageParams = new URLSearchParams(params);
         pageParams.set('page', String(page));
         pageParams.set('pageSize', String(pageSize));
-        const payload = await fetchJson(`/api/library/artists?${pageParams.toString()}`);
+        let payload;
+        try {
+            payload = await fetchJson(`/api/library/artists?${pageParams.toString()}`, { signal: abortController.signal });
+        } catch (error) {
+            if (error?.name === 'AbortError') {
+                return;
+            }
+            throw error;
+        }
         if (requestId !== libraryState.artistLoadRequestId) {
             return;
         }
@@ -2828,9 +2848,11 @@ async function loadArtists() {
     }
 
     libraryState.allArtists = collected;
+    libraryState.filteredArtists = collected;
     libraryState.artistFolders.clear();
     libraryState.artistFolderScopeId = selectedFolderId;
-    await applyLibraryViewFilter(requestId);
+    updateLibraryResultsMeta(collected.length, collected.length);
+    renderArtistGrid(collected);
 }
 
 function getStoredLibraryViewSelection() {
@@ -13646,14 +13668,14 @@ function bindLibraryFilterEvents(viewSelect, searchInput, sortSelect) {
             }
             libraryState.artistSearchTimer = setTimeout(async () => {
                 libraryState.artistSearchQuery = searchInput.value || '';
-                await applyLibraryViewFilter();
+                await loadArtists();
             }, 180);
         });
     }
     if (sortSelect) {
         sortSelect.addEventListener('change', async () => {
             libraryState.artistSortKey = sortSelect.value || 'name-asc';
-            await applyLibraryViewFilter();
+            await loadArtists();
         });
     }
 }
@@ -13728,9 +13750,16 @@ function startLibraryRefreshIntervals(shouldLoadAnalysis, shouldLoadScanStatus) 
             } finally {
                 libraryState.scanStatusPolling = false;
                 const refreshedPolicy = getLibraryRefreshPolicy();
-                const nextDelay = status?.running
+                if (status === null) {
+                    libraryState.runtimeStatusFailureCount += 1;
+                } else {
+                    libraryState.runtimeStatusFailureCount = 0;
+                }
+                const failureBackoffFactor = Math.min(8, Math.max(1, 2 ** libraryState.runtimeStatusFailureCount));
+                const baseDelay = status?.running
                     ? refreshedPolicy.scanStatusActiveMs
                     : refreshedPolicy.scanStatusIdleMs;
+                const nextDelay = Math.min(120000, baseDelay * failureBackoffFactor);
                 scheduleScanStatusPoll(nextDelay);
             }
         }, Math.max(0, delayMs));

@@ -42,6 +42,8 @@ public class LibraryArtistsApiController : ControllerBase
     public async Task<IActionResult> GetAll(
         [FromQuery] string? availability,
         [FromQuery] long? folderId,
+        [FromQuery] string? search,
+        [FromQuery] string? sort,
         [FromQuery] int? page,
         [FromQuery] int? pageSize,
         CancellationToken cancellationToken)
@@ -66,6 +68,8 @@ public class LibraryArtistsApiController : ControllerBase
                 folderId,
                 page ?? 1,
                 pageSize ?? 300,
+                search,
+                sort,
                 cancellationToken);
             return Ok(new
             {

@@ -3999,7 +3999,14 @@ RETURNING id;";
         var all = new List<ArtistDto>();
         while (true)
         {
-            var page = await GetArtistsPageAsync(availability, folderId, page: pageIndex, pageSize: chunkSize, cancellationToken);
+            var page = await GetArtistsPageAsync(
+                availability,
+                folderId,
+                page: pageIndex,
+                pageSize: chunkSize,
+                search: null,
+                sort: null,
+                cancellationToken);
             if (page.Items.Count == 0)
             {
                 break;
@@ -4022,6 +4029,8 @@ RETURNING id;";
         long? folderId,
         int page,
         int pageSize,
+        string? search = null,
+        string? sort = null,
         CancellationToken cancellationToken = default)
     {
         var filters = availability?.ToLowerInvariant() ?? "all";
@@ -4033,6 +4042,15 @@ RETURNING id;";
         var safePage = Math.Max(1, page);
         var safePageSize = Math.Clamp(pageSize, 1, 1000);
         var offset = (safePage - 1) * safePageSize;
+        var normalizedSearch = (search ?? string.Empty).Trim();
+        var hasSearch = !string.IsNullOrWhiteSpace(normalizedSearch);
+        var searchPattern = hasSearch ? $"%{normalizedSearch}%" : null;
+        var sortKey = (sort ?? "name-asc").Trim().ToLowerInvariant();
+        var orderBy = sortKey switch
+        {
+            "name-desc" => "a.name DESC",
+            _ => "a.name ASC"
+        };
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string countSql = @"
@@ -4047,9 +4065,11 @@ FROM (
     JOIN folder f ON f.id = af.folder_id
     WHERE f.enabled = TRUE
       AND (@folderId IS NULL OR af.folder_id = @folderId)
+      AND (@searchPattern IS NULL OR a.name LIKE @searchPattern COLLATE NOCASE)
 );";
         await using var countCommand = new SqliteCommand(countSql, connection);
         countCommand.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        countCommand.Parameters.AddWithValue("searchPattern", (object?)searchPattern ?? DBNull.Value);
         var totalCountObj = await countCommand.ExecuteScalarAsync(cancellationToken);
         var totalCount = totalCountObj is null || totalCountObj is DBNull
             ? 0
@@ -4059,7 +4079,7 @@ FROM (
             return new ArtistPageDto(Array.Empty<ArtistDto>(), 0, safePage, safePageSize);
         }
 
-        const string pageSql = @"
+        var pageSql = $@"
 SELECT DISTINCT
        a.id,
        a.name,
@@ -4073,11 +4093,13 @@ JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
 WHERE f.enabled = TRUE
   AND (@folderId IS NULL OR af.folder_id = @folderId)
-ORDER BY a.name
+  AND (@searchPattern IS NULL OR a.name LIKE @searchPattern COLLATE NOCASE)
+ORDER BY {orderBy}
 LIMIT @limit OFFSET @offset;";
 
         await using var command = new SqliteCommand(pageSql, connection);
         command.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        command.Parameters.AddWithValue("searchPattern", (object?)searchPattern ?? DBNull.Value);
         command.Parameters.AddWithValue("limit", safePageSize);
         command.Parameters.AddWithValue("offset", offset);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
