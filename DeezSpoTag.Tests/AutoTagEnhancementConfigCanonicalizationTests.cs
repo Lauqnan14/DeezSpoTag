@@ -11,6 +11,8 @@ namespace DeezSpoTag.Tests;
 
 public sealed class AutoTagEnhancementConfigCanonicalizationTests
 {
+    private static readonly int[] DuplicateQualityFolderIds = { 9, 9, 10 };
+
     private static readonly MethodInfo SanitizeConfigJsonMethod =
         typeof(AutoTagService).GetMethod("SanitizeConfigJson", BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("AutoTagService.SanitizeConfigJson not found.");
@@ -105,7 +107,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
                 },
                 qualityChecks = new
                 {
-                    folderIds = new[] { 9, 9, 10 },
+                    folderIds = DuplicateQualityFolderIds,
                     folderId = 11
                 }
             })

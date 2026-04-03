@@ -10,6 +10,10 @@ namespace DeezSpoTag.Tests;
 
 public sealed class EngineFallbackCoordinatorParityTests
 {
+    private static readonly string[] ExpectedExplicitFallbackSteps = { "qobuz|27", "tidal|HI_RES_LOSSLESS" };
+    private static readonly string[] ExpectedForcedDeezerSteps = { "deezer|9", "deezer|3" };
+    private static readonly string[] ExpectedAutoSteps = { "qobuz|27", "tidal|HI_RES_LOSSLESS", "deezer|9" };
+
     [Fact]
     public void BuildPlanSteps_PrefersExplicitFallbackPlan_WhenPresent()
     {
@@ -22,7 +26,7 @@ public sealed class EngineFallbackCoordinatorParityTests
 
         var steps = BuildPlanSteps(fallbackPlan, new List<string> { "deezer|9" }, settings);
 
-        Assert.Equal(new[] { "qobuz|27", "tidal|HI_RES_LOSSLESS" }, steps);
+        Assert.Equal(ExpectedExplicitFallbackSteps, steps);
     }
 
     [Fact]
@@ -39,7 +43,7 @@ public sealed class EngineFallbackCoordinatorParityTests
 
         var steps = BuildPlanSteps(new List<FallbackPlanStep>(), autoSources, settings);
 
-        Assert.Equal(new[] { "deezer|9", "deezer|3" }, steps);
+        Assert.Equal(ExpectedForcedDeezerSteps, steps);
     }
 
     [Fact]
@@ -55,7 +59,7 @@ public sealed class EngineFallbackCoordinatorParityTests
 
         var steps = BuildPlanSteps(new List<FallbackPlanStep>(), autoSources, settings);
 
-        Assert.Equal(new[] { "qobuz|27", "tidal|HI_RES_LOSSLESS", "deezer|9" }, steps);
+        Assert.Equal(ExpectedAutoSteps, steps);
     }
 
     [Fact]

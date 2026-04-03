@@ -7,6 +7,9 @@ namespace DeezSpoTag.Tests;
 
 public sealed class DownloadSourceOrderFallbackParityTests
 {
+    private static readonly string[] ExpectedDeezerQualityFallback = { "deezer|3", "deezer|1" };
+    private static readonly string[] ExpectedQobuzStrictQuality = { "qobuz|6" };
+
     [Fact]
     public void ResolveQualityAutoSources_UsesCanonicalCrossEngineOrder_WhenServiceIsAuto()
     {
@@ -30,7 +33,7 @@ public sealed class DownloadSourceOrderFallbackParityTests
     {
         var sources = DownloadSourceOrder.ResolveEngineQualitySources("deezer", "3", strict: false);
 
-        Assert.Equal(new[] { "deezer|3", "deezer|1" }, sources);
+        Assert.Equal(ExpectedDeezerQualityFallback, sources);
     }
 
     [Fact]
@@ -38,7 +41,7 @@ public sealed class DownloadSourceOrderFallbackParityTests
     {
         var sources = DownloadSourceOrder.ResolveEngineQualitySources("qobuz", "6", strict: true);
 
-        Assert.Equal(new[] { "qobuz|6" }, sources);
+        Assert.Equal(ExpectedQobuzStrictQuality, sources);
     }
 
     [Fact]

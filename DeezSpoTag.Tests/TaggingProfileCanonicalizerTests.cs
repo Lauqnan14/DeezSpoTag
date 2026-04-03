@@ -11,6 +11,19 @@ namespace DeezSpoTag.Tests;
 
 public sealed class TaggingProfileCanonicalizerTests
 {
+    private static readonly string[] CanonicalDownloadTags = { "title", "artist", "lyrics" };
+    private static readonly string[] CanonicalAutoTags = { "style", "genre" };
+    private static readonly string[] ExpectedSeededDownloadTags = { "title", "genre" };
+    private static readonly string[] ExpectedSeededAutoTags = { "genre", "style" };
+    private static readonly string[] LegacyAliasDownloadTags = { "duration", "albumArt", "upc", "unsyncedLyrics" };
+    private static readonly string[] LegacyAliasAutoTags = { "duration", "unsyncedLyrics" };
+    private static readonly string[] ExpectedNormalizedDownloadTags = { "length", "cover", "barcode", "lyrics" };
+    private static readonly string[] ExpectedNormalizedAutoTags = { "length", "lyrics" };
+    private static readonly string[] StaleDownloadTags = { "artist", "album" };
+    private static readonly string[] StaleAutoTags = { "genre" };
+    private static readonly string[] ExpectedSyncedDownloadTags = { "title" };
+    private static readonly string[] ExpectedSyncedAutoTags = { "releaseDate" };
+
     [Fact]
     public void BuildTagConfig_UsesAutoTagArraysAsCanonicalSource()
     {
@@ -19,8 +32,8 @@ public sealed class TaggingProfileCanonicalizerTests
 
         var data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
         {
-            ["downloadTags"] = JsonSerializer.SerializeToElement(new[] { "title", "artist", "lyrics" }),
-            ["tags"] = JsonSerializer.SerializeToElement(new[] { "style", "genre" })
+            ["downloadTags"] = JsonSerializer.SerializeToElement(CanonicalDownloadTags),
+            ["tags"] = JsonSerializer.SerializeToElement(CanonicalAutoTags)
         };
 
         var config = TaggingProfileCanonicalizer.BuildTagConfig(fallback, data);
@@ -53,10 +66,10 @@ public sealed class TaggingProfileCanonicalizerTests
 
         Assert.True(changed);
         Assert.Equal(
-            new[] { "title", "genre" },
+            ExpectedSeededDownloadTags,
             ReadStringArray(profile.AutoTag.Data["downloadTags"]));
         Assert.Equal(
-            new[] { "genre", "style" },
+            ExpectedSeededAutoTags,
             ReadStringArray(profile.AutoTag.Data["tags"]));
 
         Assert.Equal(TagSource.DownloadSource, profile.TagConfig.Title);
@@ -75,8 +88,8 @@ public sealed class TaggingProfileCanonicalizerTests
             {
                 Data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
                 {
-                    ["downloadTags"] = JsonSerializer.SerializeToElement(new[] { "duration", "albumArt", "upc", "unsyncedLyrics" }),
-                    ["tags"] = JsonSerializer.SerializeToElement(new[] { "duration", "unsyncedLyrics" })
+                    ["downloadTags"] = JsonSerializer.SerializeToElement(LegacyAliasDownloadTags),
+                    ["tags"] = JsonSerializer.SerializeToElement(LegacyAliasAutoTags)
                 }
             }
         };
@@ -85,10 +98,10 @@ public sealed class TaggingProfileCanonicalizerTests
 
         Assert.True(changed);
         Assert.Equal(
-            new[] { "length", "cover", "barcode", "lyrics" },
+            ExpectedNormalizedDownloadTags,
             ReadStringArray(profile.AutoTag.Data["downloadTags"]));
         Assert.Equal(
-            new[] { "length", "lyrics" },
+            ExpectedNormalizedAutoTags,
             ReadStringArray(profile.AutoTag.Data["tags"]));
 
         Assert.Equal(TagSource.Both, profile.TagConfig.Duration);
@@ -107,8 +120,8 @@ public sealed class TaggingProfileCanonicalizerTests
             {
                 Data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
                 {
-                    ["downloadTags"] = JsonSerializer.SerializeToElement(new[] { "artist", "album" }),
-                    ["tags"] = JsonSerializer.SerializeToElement(new[] { "genre" })
+                    ["downloadTags"] = JsonSerializer.SerializeToElement(StaleDownloadTags),
+                    ["tags"] = JsonSerializer.SerializeToElement(StaleAutoTags)
                 }
             }
         };
@@ -119,8 +132,8 @@ public sealed class TaggingProfileCanonicalizerTests
         var changed = TaggingProfileCanonicalizer.SyncTagArraysFromConfig(profile);
 
         Assert.True(changed);
-        Assert.Equal(new[] { "title" }, ReadStringArray(profile.AutoTag.Data["downloadTags"]));
-        Assert.Equal(new[] { "releaseDate" }, ReadStringArray(profile.AutoTag.Data["tags"]));
+        Assert.Equal(ExpectedSyncedDownloadTags, ReadStringArray(profile.AutoTag.Data["downloadTags"]));
+        Assert.Equal(ExpectedSyncedAutoTags, ReadStringArray(profile.AutoTag.Data["tags"]));
     }
 
     private static UnifiedTagConfig CreateEmptyTagConfig()
