@@ -372,7 +372,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
         if (!TryResolveDownloadEnrichmentRoot(out var downloadRootPath, out var error))
         {
             _logger.LogWarning("Orchestration skipped: {Reason}", error);
-            _lastPipelineCompletedAt = pipelineStartedAt;
             return null;
         }
 
@@ -382,7 +381,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
         if (automationProfile == null)
         {
             _logger.LogWarning("Orchestration skipped: destination folder has no valid current AutoTag profile.");
-            _lastPipelineCompletedAt = pipelineStartedAt;
             return null;
         }
 
@@ -390,7 +388,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
         if (string.IsNullOrWhiteSpace(configJson))
         {
             _logger.LogWarning("Orchestration skipped: the destination folder profile could not be materialized into AutoTag config.");
-            _lastPipelineCompletedAt = pipelineStartedAt;
             return null;
         }
 
