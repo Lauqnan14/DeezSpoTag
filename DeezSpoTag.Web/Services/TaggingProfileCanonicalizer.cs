@@ -123,6 +123,42 @@ public static class TaggingProfileCanonicalizer
         return changed;
     }
 
+    public static bool SyncTagArraysFromConfig(TaggingProfile profile)
+    {
+        if (profile == null)
+        {
+            return false;
+        }
+
+        profile.TagConfig ??= new UnifiedTagConfig();
+        profile.AutoTag ??= new AutoTagSettings();
+        profile.AutoTag.Data ??= new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+
+        var data = profile.AutoTag.Data;
+        var changed = false;
+        changed |= WriteTagArray(data, ResolveTagArrayKey(data, "downloadTags"), BuildTagListFromConfig(profile.TagConfig, includeDownloadSource: true));
+        changed |= WriteTagArray(data, ResolveTagArrayKey(data, "tags"), BuildTagListFromConfig(profile.TagConfig, includeAutoTagSource: true));
+        return changed;
+    }
+
+    public static Dictionary<string, JsonElement> BuildAutoTagDataFromTagConfig(
+        UnifiedTagConfig? tagConfig,
+        Dictionary<string, JsonElement>? existingData)
+    {
+        var config = tagConfig ?? new UnifiedTagConfig();
+        var data = existingData is { Count: > 0 }
+            ? new Dictionary<string, JsonElement>(existingData, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+
+        var downloadKey = ResolveTagArrayKey(data, "downloadTags");
+        var enrichmentKey = ResolveTagArrayKey(data, "tags");
+
+        WriteTagArray(data, downloadKey, BuildTagListFromConfig(config, includeDownloadSource: true));
+        WriteTagArray(data, enrichmentKey, BuildTagListFromConfig(config, includeAutoTagSource: true));
+
+        return data;
+    }
+
     public static UnifiedTagConfig BuildTagConfig(
         UnifiedTagConfig? fallbackConfig,
         Dictionary<string, JsonElement>? autoTagData)
@@ -174,7 +210,7 @@ public static class TaggingProfileCanonicalizer
         out List<string> tags,
         out string resolvedKey)
     {
-        resolvedKey = data.Keys.FirstOrDefault(entry => string.Equals(entry, key, StringComparison.OrdinalIgnoreCase)) ?? key;
+        resolvedKey = ResolveTagArrayKey(data, key);
         tags = new List<string>();
         if (!data.TryGetValue(resolvedKey, out var element) || element.ValueKind != JsonValueKind.Array)
         {
@@ -187,6 +223,11 @@ public static class TaggingProfileCanonicalizer
             .Where(static item => !string.IsNullOrWhiteSpace(item))
             .Select(static item => item!));
         return true;
+    }
+
+    private static string ResolveTagArrayKey(Dictionary<string, JsonElement> data, string key)
+    {
+        return data.Keys.FirstOrDefault(entry => string.Equals(entry, key, StringComparison.OrdinalIgnoreCase)) ?? key;
     }
 
     private static bool WriteTagArray(Dictionary<string, JsonElement> data, string key, IEnumerable<string> tags)
