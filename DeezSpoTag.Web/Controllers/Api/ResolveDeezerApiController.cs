@@ -106,7 +106,7 @@ public sealed class ResolveDeezerApiController : ControllerBase
     {
         if (request == null || string.IsNullOrWhiteSpace(request.Url))
         {
-            return BadRequest(new { error = "URL is required." });
+            return BadRequest(new { available = false, reasonCode = "missing_url", error = "URL is required." });
         }
 
         var context = CreateResolveRequestContext(request);
@@ -120,7 +120,7 @@ public sealed class ResolveDeezerApiController : ControllerBase
         var deezerId = await ResolveDeezerIdAsync(context, cancellationToken);
         if (string.IsNullOrWhiteSpace(deezerId))
         {
-            return Ok(new { available = false });
+            return Ok(new { available = false, reasonCode = "no_match" });
         }
 
         return Ok(await BuildResolveResponseAsync(deezerId, context.IncludeMeta));

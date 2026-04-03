@@ -3967,35 +3967,47 @@ async function resolveExternalRequestToDeezer(current, source, row, options = {}
         const inFlightPromise = runExternalResolverTask(async () => {
             let deezerId = '';
             let resolvePayload = null;
-
-            if (source === 'spotify') {
-                const data = await fetchJsonWithRetry(`/api/spotify/resolve-deezer?url=${encodeURIComponent(current.link)}`, 3);
+            if (window.DeezerResolver && typeof window.DeezerResolver.resolveTrack === 'function') {
+                const data = await window.DeezerResolver.resolveTrack(
+                    {
+                        source,
+                        url: current.link,
+                        title: current.title,
+                        artist: current.artist,
+                        album: current.album,
+                        isrc: current.isrc,
+                        durationMs: current.durationMs,
+                        includeMeta: shouldHydrateDeezerMetadata(source)
+                    },
+                    {
+                        attempts: 3,
+                        baseDelayMs: 350,
+                        spotifyResolverFirst: true
+                    }
+                );
+                resolvePayload = data;
                 deezerId = data?.deezerId || '';
-            }
-
-            if (!deezerId) {
-                const qs = new URLSearchParams();
-                qs.set('url', current.link);
-                if (current.title) {
-                    qs.set('title', current.title);
+            } else {
+                if (!window.DeezerResolver || typeof window.DeezerResolver.resolveTrack !== 'function') {
+                    throw new Error('Deezer resolver unavailable');
                 }
-                if (current.artist) {
-                    qs.set('artist', current.artist);
-                }
-                if (current.album) {
-                    qs.set('album', current.album);
-                }
-                if (current.isrc) {
-                    qs.set('isrc', current.isrc);
-                }
-                if (current.durationMs && Number.isFinite(current.durationMs) && current.durationMs > 0) {
-                    qs.set('durationMs', String(current.durationMs));
-                }
-                if (shouldHydrateDeezerMetadata(source)) {
-                    qs.set('includeMeta', 'true');
-                }
-
-                const data = await fetchJsonWithRetry(`/api/resolve/deezer?${qs.toString()}`, 3);
+                const data = await window.DeezerResolver.resolveTrack(
+                    {
+                        source,
+                        url: current.link,
+                        title: current.title,
+                        artist: current.artist,
+                        album: current.album,
+                        isrc: current.isrc,
+                        durationMs: current.durationMs,
+                        includeMeta: shouldHydrateDeezerMetadata(source)
+                    },
+                    {
+                        attempts: 3,
+                        baseDelayMs: 350,
+                        spotifyResolverFirst: true
+                    }
+                );
                 resolvePayload = data;
                 deezerId = data?.deezerId || '';
             }
@@ -4041,10 +4053,21 @@ async function ensureRowPreviewForPlayback(row, control) {
     const existingDeezerId = String(row.querySelector('.track-checkbox')?.dataset.trackId || row.dataset.availabilityDeezerId || '').trim();
     if (/^\d+$/.test(existingDeezerId)) {
         const context = getDeezerPlaybackContextForRow(row, existingDeezerId);
-        const previewUrl = buildDeezerStreamUrl(existingDeezerId, {
-            type: getRowPlaybackTypeHint(row),
-            context
-        });
+        const previewUrl = (window.DeezerResolver && typeof window.DeezerResolver.resolvePlayableStreamUrl === 'function')
+            ? await window.DeezerResolver.resolvePlayableStreamUrl(
+                {
+                    deezerId: existingDeezerId,
+                    element: control,
+                    type: getRowPlaybackTypeHint(row),
+                    context
+                },
+                {
+                    cache: deezerPlaybackContextCache,
+                    requests: deezerPlaybackContextRequests,
+                    fetchContext: true
+                }
+            )
+            : buildDeezerStreamUrl(existingDeezerId, { type: getRowPlaybackTypeHint(row), context });
         control.setAttribute('data-preview', previewUrl);
         control.classList.remove('is-disabled');
         return previewUrl;
@@ -4071,10 +4094,21 @@ async function ensureRowPreviewForPlayback(row, control) {
         }
 
         const context = getDeezerPlaybackContextForRow(row, deezerId);
-        const previewUrl = buildDeezerStreamUrl(deezerId, {
-            type: getRowPlaybackTypeHint(row),
-            context
-        });
+        const previewUrl = (window.DeezerResolver && typeof window.DeezerResolver.resolvePlayableStreamUrl === 'function')
+            ? await window.DeezerResolver.resolvePlayableStreamUrl(
+                {
+                    deezerId,
+                    element: control,
+                    type: getRowPlaybackTypeHint(row),
+                    context
+                },
+                {
+                    cache: deezerPlaybackContextCache,
+                    requests: deezerPlaybackContextRequests,
+                    fetchContext: true
+                }
+            )
+            : buildDeezerStreamUrl(deezerId, { type: getRowPlaybackTypeHint(row), context });
         control.setAttribute('data-preview', previewUrl);
         control.classList.remove('is-disabled');
         control.classList.remove('is-pending');
@@ -6039,11 +6073,22 @@ async function playPausePreview(control) {
                 const deezerId = String(row.querySelector('.track-checkbox')?.dataset.trackId || row.dataset.availabilityDeezerId || '').trim();
                 if (deezerId && /^\d+$/.test(deezerId)) {
                     const context = getDeezerPlaybackContextForRow(row, deezerId);
-                    if (context) {
-                        previewUrl = buildDeezerStreamUrl(deezerId, {
-                            type: playbackType,
-                            context
-                        });
+                    if (window.DeezerResolver && typeof window.DeezerResolver.resolvePlayableStreamUrl === 'function') {
+                        previewUrl = await window.DeezerResolver.resolvePlayableStreamUrl(
+                            {
+                                deezerId,
+                                element: control,
+                                type: playbackType,
+                                context
+                            },
+                            {
+                                cache: deezerPlaybackContextCache,
+                                requests: deezerPlaybackContextRequests,
+                                fetchContext: true
+                            }
+                        );
+                    } else if (context) {
+                        previewUrl = buildDeezerStreamUrl(deezerId, { type: playbackType, context });
                     } else {
                         previewUrl = buildDeezerStreamUrl(deezerId, { type: playbackType });
                         void ensureDeezerPlaybackContextForRow(row, deezerId);
@@ -7156,8 +7201,13 @@ async function handleTracklistArtistLink(spotifyUrl) {
         return;
     }
     try {
-        const response = await fetch(`/api/spotify/resolve-deezer?url=${encodeURIComponent(spotifyUrl)}`);
-        const payload = response.ok ? await response.json() : null;
+        if (!window.DeezerResolver || typeof window.DeezerResolver.resolveTrack !== 'function') {
+            throw new Error('Deezer resolver unavailable');
+        }
+        const payload = await window.DeezerResolver.resolveTrack(
+            { source: 'spotify', url: spotifyUrl },
+            { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: true }
+        );
         if (payload?.deezerId && payload.type === 'artist') {
             window.location.href = `/Artist?id=${encodeURIComponent(payload.deezerId)}&source=deezer`;
             return;

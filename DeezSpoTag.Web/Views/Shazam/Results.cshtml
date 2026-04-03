@@ -682,7 +682,12 @@
 
         const spotifyUrl = (card.dataset.spotifyUrl || '').trim();
         if (spotifyUrl) {
-            const resolved = await fetchJsonOptional(`/api/spotify/resolve-deezer?url=${encodeURIComponent(spotifyUrl)}`);
+            const resolved = window.DeezerResolver && typeof window.DeezerResolver.resolveTrack === 'function'
+                ? await window.DeezerResolver.resolveTrack(
+                    { source: 'spotify', url: spotifyUrl },
+                    { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: true }
+                )
+                : null;
             if (resolved?.available && resolved?.deezerId) {
                 card.dataset.deezerId = resolved.deezerId;
                 card.dataset.deezerUrl = resolved.deezerUrl || `https://www.deezer.com/track/${resolved.deezerId}`;
@@ -821,8 +826,13 @@
         previewState.button = button;
         setPreviewButtonState(button, true);
 
-        if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
-            audio.src = await window.DeezerPlaybackContext.resolveStreamUrl(deezerId, { element: button });
+        if (window.DeezerResolver && typeof window.DeezerResolver.resolvePlayableStreamUrl === 'function') {
+            audio.src = await window.DeezerResolver.resolvePlayableStreamUrl(
+                { deezerId, element: button },
+                { fetchContext: true }
+            );
+        } else if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
+            audio.src = await window.DeezerPlaybackContext.resolveStreamUrl(deezerId, { element: button, fetchContext: true });
         } else {
             audio.src = `/api/deezer/stream/${encodeURIComponent(deezerId)}`;
         }

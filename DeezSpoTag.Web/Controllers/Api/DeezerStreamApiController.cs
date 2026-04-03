@@ -100,13 +100,13 @@ public class DeezerStreamApiController : ControllerBase
         await EnsureLoggedInAsync();
         if (!_deezerClient.LoggedIn)
         {
-            return Unauthorized(new { available = false, error = "Deezer login required." });
+            return Unauthorized(new { available = false, reasonCode = "auth_required", error = "Deezer login required." });
         }
 
         var context = await ResolvePlaybackContextAsync(id, forceRefresh: false);
         if (context == null)
         {
-            return Ok(new { available = false });
+            return Ok(new { available = false, reasonCode = "context_unavailable" });
         }
 
         return Ok(new
@@ -145,13 +145,13 @@ public class DeezerStreamApiController : ControllerBase
             }
 
             var format = ResolvePreviewFormat(qualityHint);
-            var (resolvedContext, mediaResult) = await FetchMediaResultAsync(id, context, format);
+            var (resolvedContext, mediaResult) = await FetchMediaResultAsync(id, context, format, cancellationToken);
             context = resolvedContext;
 
             if (string.IsNullOrWhiteSpace(mediaResult.Url) && format != Mp3128Format)
             {
                 format = Mp3128Format;
-                (context, mediaResult) = await FetchMediaResultAsync(id, context, format);
+                (context, mediaResult) = await FetchMediaResultAsync(id, context, format, cancellationToken);
             }
 
             if (string.IsNullOrWhiteSpace(mediaResult.Url)
@@ -216,9 +216,10 @@ public class DeezerStreamApiController : ControllerBase
     private async Task<(DeezerPlaybackContext context, DeezerMediaResult mediaResult)> FetchMediaResultAsync(
         string deezerId,
         DeezerPlaybackContext context,
-        string format)
+        string format,
+        CancellationToken cancellationToken)
     {
-        var mediaResult = await _deezerClient.GetTrackUrlWithStatusAsync(context.TrackToken, format);
+        var mediaResult = await FetchTrackUrlWithRetryAsync(context.TrackToken, format, cancellationToken);
         if (!string.IsNullOrWhiteSpace(mediaResult.Url) || mediaResult.ErrorCode != 2001)
         {
             return (context, mediaResult);
@@ -230,9 +231,41 @@ public class DeezerStreamApiController : ControllerBase
             return (context, mediaResult);
         }
 
-        mediaResult = await _deezerClient.GetTrackUrlWithStatusAsync(refreshedContext.TrackToken, format);
+        mediaResult = await FetchTrackUrlWithRetryAsync(refreshedContext.TrackToken, format, cancellationToken);
         CachePlaybackContext(refreshedContext);
         return (refreshedContext, mediaResult);
+    }
+
+    private async Task<DeezerMediaResult> FetchTrackUrlWithRetryAsync(
+        string trackToken,
+        string format,
+        CancellationToken cancellationToken)
+    {
+        var maxAttempts = 3;
+        DeezerMediaResult? last = null;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            last = await _deezerClient.GetTrackUrlWithStatusAsync(trackToken, format);
+            if (!string.IsNullOrWhiteSpace(last.Url) || !IsTransientMediaErrorCode(last.ErrorCode) || attempt >= maxAttempts)
+            {
+                return last;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(120 * attempt), cancellationToken);
+        }
+
+        return last ?? DeezerMediaResult.Empty();
+    }
+
+    private static bool IsTransientMediaErrorCode(int? errorCode)
+    {
+        if (!errorCode.HasValue || errorCode.Value <= 0)
+        {
+            return true;
+        }
+
+        return errorCode.Value == 429 || (errorCode.Value >= 500 && errorCode.Value <= 599);
     }
 
     private async Task<DeezerPlaybackContext?> ResolvePlaybackContextAsync(
@@ -249,20 +282,30 @@ public class DeezerStreamApiController : ControllerBase
             return cached;
         }
 
-        GwTrack? gwTrack;
-        try
+        GwTrack? gwTrack = null;
+        var maxAttempts = forceRefresh ? 2 : 3;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            gwTrack = await _deezerClient.Gw.GetTrackWithFallbackAsync(deezerId);
-        }
-        catch (DeezerGatewayException ex) when (IsMissingSongData(ex))
-        {
-            _logger.LogDebug(ex, "Deezer playback context not found for track {TrackId}", deezerId);
-            return null;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to resolve Deezer playback context for track {TrackId}", deezerId);
-            return null;
+            try
+            {
+                gwTrack = await _deezerClient.Gw.GetTrackWithFallbackAsync(deezerId);
+                break;
+            }
+            catch (DeezerGatewayException ex) when (IsMissingSongData(ex))
+            {
+                _logger.LogDebug(ex, "Deezer playback context not found for track {TrackId}", deezerId);
+                return null;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                if (attempt >= maxAttempts)
+                {
+                    _logger.LogWarning(ex, "Failed to resolve Deezer playback context for track {TrackId}", deezerId);
+                    return null;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(120 * attempt));
+            }
         }
 
         if (gwTrack == null || string.IsNullOrWhiteSpace(gwTrack.TrackToken))

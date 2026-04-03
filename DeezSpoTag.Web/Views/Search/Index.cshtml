@@ -1046,8 +1046,13 @@ document.addEventListener('DOMContentLoaded', function() {
                         const metadata = data?.metadata;
                         if (metadata?.id) {
                             if (metadata.type === 'artist') {
-                                fetch(`/api/spotify/resolve-deezer?url=${encodeURIComponent(currentSearchTerm)}`)
-                                    .then((resolveResp) => resolveResp.ok ? resolveResp.json() : null)
+                                const resolvePromise = (window.DeezerResolver && typeof window.DeezerResolver.resolveTrack === 'function')
+                                    ? window.DeezerResolver.resolveTrack(
+                                        { source: 'spotify', url: currentSearchTerm },
+                                        { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: true }
+                                    )
+                                    : Promise.resolve(null);
+                                resolvePromise
                                     .then((resolved) => {
                                         if (resolved?.available && resolved?.deezerId) {
                                             window.location.href = `/Artist?id=${encodeURIComponent(resolved.deezerId)}&source=deezer`;
@@ -2069,16 +2074,22 @@ async function playSearchPreview(deezerId, spotifyId, appleUrl, appleId, nativeP
             resolvedId = searchPreviewCache.get(cacheKey) || '';
         } else {
             try {
-                if (spotifyId) {
-                    const url = `https://open.spotify.com/track/${spotifyId}`;
-                    const resp = await fetch(`/api/spotify/resolve-deezer?url=${encodeURIComponent(url)}`);
-                    const data = resp.ok ? await resp.json() : null;
-                    resolvedId = data?.deezerId || '';
-                } else if (appleUrl || appleId) {
-                    const url = appleUrl || `https://music.apple.com/us/track/${appleId}`;
-                    const resp = await fetch(`/api/resolve/deezer?url=${encodeURIComponent(url)}`);
-                    const data = resp.ok ? await resp.json() : null;
-                    resolvedId = data?.deezerId || '';
+                if (window.DeezerResolver && typeof window.DeezerResolver.resolveTrack === 'function') {
+                    if (spotifyId) {
+                        const url = `https://open.spotify.com/track/${spotifyId}`;
+                        const data = await window.DeezerResolver.resolveTrack(
+                            { source: 'spotify', url },
+                            { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: true }
+                        );
+                        resolvedId = data?.deezerId || '';
+                    } else if (appleUrl || appleId) {
+                        const url = appleUrl || `https://music.apple.com/us/track/${appleId}`;
+                        const data = await window.DeezerResolver.resolveTrack(
+                            { source: 'apple', url },
+                            { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: false }
+                        );
+                        resolvedId = data?.deezerId || '';
+                    }
                 }
             } catch (error) {
                 console.warn('Preview resolve failed:', error);
@@ -2094,9 +2105,11 @@ async function playSearchPreview(deezerId, spotifyId, appleUrl, appleId, nativeP
         return;
     }
 
-    const previewUrl = (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function')
-        ? await window.DeezerPlaybackContext.resolveStreamUrl(resolvedId)
-        : `/api/deezer/stream/${resolvedId}`;
+    const previewUrl = (window.DeezerResolver && typeof window.DeezerResolver.resolvePlayableStreamUrl === 'function')
+        ? await window.DeezerResolver.resolvePlayableStreamUrl({ deezerId: resolvedId }, { fetchContext: true })
+        : ((window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function')
+            ? await window.DeezerPlaybackContext.resolveStreamUrl(resolvedId, { fetchContext: true })
+            : `/api/deezer/stream/${resolvedId}`);
     audio.pause();
     audio.src = previewUrl;
     audio.load();

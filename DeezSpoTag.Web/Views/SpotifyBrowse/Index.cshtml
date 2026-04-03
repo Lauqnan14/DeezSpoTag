@@ -166,9 +166,11 @@ async function openSpotifyItem(item) {
     if (parsed?.id) {
         if (parsed.type === 'artist') {
             try {
-                const resolveResponse = await fetch(`/api/spotify/resolve-deezer?url=${encodeURIComponent(`https://open.spotify.com/artist/${parsed.id}`)}`);
-                if (resolveResponse.ok) {
-                    const resolved = await resolveResponse.json();
+                if (window.DeezerResolver && typeof window.DeezerResolver.resolveTrack === 'function') {
+                    const resolved = await window.DeezerResolver.resolveTrack(
+                        { source: 'spotify', url: `https://open.spotify.com/artist/${parsed.id}` },
+                        { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: true }
+                    );
                     if (resolved?.available && resolved?.deezerId) {
                         window.location.href = `/Artist?id=${encodeURIComponent(resolved.deezerId)}&source=deezer`;
                         return;

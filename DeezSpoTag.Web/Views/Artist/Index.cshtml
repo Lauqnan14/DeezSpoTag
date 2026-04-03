@@ -1267,11 +1267,21 @@ async function playArtistTrackInApp(button) {
         streamUrl = previewUrl;
         trackKey = previewUrl;
     } else if (deezerId) {
-        if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
+        if (window.DeezerResolver && typeof window.DeezerResolver.resolvePlayableStreamUrl === 'function') {
+            streamUrl = await window.DeezerResolver.resolvePlayableStreamUrl(
+                { deezerId, element: button },
+                {
+                    cache: artistDeezerPlaybackContextCache,
+                    requests: artistDeezerPlaybackContextRequests,
+                    fetchContext: true
+                }
+            );
+        } else if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
             streamUrl = await window.DeezerPlaybackContext.resolveStreamUrl(deezerId, {
                 element: button,
                 cache: artistDeezerPlaybackContextCache,
-                requests: artistDeezerPlaybackContextRequests
+                requests: artistDeezerPlaybackContextRequests,
+                fetchContext: true
             });
         } else {
             const context = await fetchArtistDeezerPlaybackContext(deezerId);
@@ -1285,11 +1295,21 @@ async function playArtistTrackInApp(button) {
             return;
         }
         button.dataset.deezerId = resolved.deezerId;
-        if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
+        if (window.DeezerResolver && typeof window.DeezerResolver.resolvePlayableStreamUrl === 'function') {
+            streamUrl = await window.DeezerResolver.resolvePlayableStreamUrl(
+                { deezerId: resolved.deezerId, element: button },
+                {
+                    cache: artistDeezerPlaybackContextCache,
+                    requests: artistDeezerPlaybackContextRequests,
+                    fetchContext: true
+                }
+            );
+        } else if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
             streamUrl = await window.DeezerPlaybackContext.resolveStreamUrl(resolved.deezerId, {
                 element: button,
                 cache: artistDeezerPlaybackContextCache,
-                requests: artistDeezerPlaybackContextRequests
+                requests: artistDeezerPlaybackContextRequests,
+                fetchContext: true
             });
         } else {
             const context = await fetchArtistDeezerPlaybackContext(resolved.deezerId);
@@ -1384,7 +1404,12 @@ async function resolveSpotifyUrlToDeezer(url) {
         return artistSpotifyResolveCache.get(url);
     }
     try {
-        const resolved = await fetchJsonOptional(`/api/spotify/resolve-deezer?url=${encodeURIComponent(url)}`);
+        const resolved = window.DeezerResolver && typeof window.DeezerResolver.resolveTrack === 'function'
+            ? await window.DeezerResolver.resolveTrack(
+                { source: 'spotify', url },
+                { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: true }
+            )
+            : null;
         if (resolved) {
             artistSpotifyResolveCache.set(url, resolved);
         }
