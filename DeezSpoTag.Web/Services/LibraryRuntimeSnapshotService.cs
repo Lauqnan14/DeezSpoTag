@@ -14,6 +14,7 @@ public sealed class LibraryRuntimeSnapshotService
     private readonly LibraryConfigStore _configStore;
     private readonly LibraryScanRunner _scanRunner;
     private readonly LibraryStatsSnapshotService _libraryStatsSnapshotService;
+    private readonly ILogger<LibraryRuntimeSnapshotService> _logger;
     private readonly object _statsCacheLock = new();
     private readonly Dictionary<string, CachedStatsSnapshot> _activeScanStatsCache = new(StringComparer.Ordinal);
     private static readonly TimeSpan ActiveScanStatsTtl = TimeSpan.FromSeconds(5);
@@ -25,12 +26,14 @@ public sealed class LibraryRuntimeSnapshotService
         LibraryRepository repository,
         LibraryConfigStore configStore,
         LibraryScanRunner scanRunner,
-        LibraryStatsSnapshotService libraryStatsSnapshotService)
+        LibraryStatsSnapshotService libraryStatsSnapshotService,
+        ILogger<LibraryRuntimeSnapshotService> logger)
     {
         _repository = repository;
         _configStore = configStore;
         _scanRunner = scanRunner;
         _libraryStatsSnapshotService = libraryStatsSnapshotService;
+        _logger = logger;
     }
 
     public sealed record LibraryRefreshPolicyDto(
@@ -95,10 +98,12 @@ public sealed class LibraryRuntimeSnapshotService
             if (_activeScanStatsCache.TryGetValue(cacheKey, out var cached)
                 && cached.ExpiresAtUtc >= now)
             {
+                _logger.LogDebug("Library runtime stats cache hit for key {CacheKey} during active scan.", cacheKey);
                 return cached.Payload;
             }
         }
 
+        _logger.LogDebug("Library runtime stats cache miss for key {CacheKey} during active scan.", cacheKey);
         var payload = await _libraryStatsSnapshotService.BuildStatsPayloadAsync(folderId, cancellationToken);
         lock (_statsCacheLock)
         {

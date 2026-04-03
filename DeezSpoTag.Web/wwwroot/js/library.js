@@ -2468,6 +2468,10 @@ async function refreshArtistsDuringActiveScan(status) {
 
     const now = Date.now();
     if ((now - libraryState.lastArtistRefreshAtMs) < policy.minArtistRefreshMs) {
+        console.debug('Library artist refresh skipped due to throttle window.', {
+            minArtistRefreshMs: policy.minArtistRefreshMs,
+            elapsedMs: now - libraryState.lastArtistRefreshAtMs
+        });
         return;
     }
 
