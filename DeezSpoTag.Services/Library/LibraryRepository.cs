@@ -4079,11 +4079,6 @@ RETURNING id;";
         var hasSearch = !string.IsNullOrWhiteSpace(normalizedSearch);
         var searchPattern = hasSearch ? $"%{normalizedSearch}%" : null;
         var sortKey = (sort ?? "name-asc").Trim().ToLowerInvariant();
-        var orderBy = sortKey switch
-        {
-            "name-desc" => "a.name DESC",
-            _ => "a.name ASC"
-        };
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string countSql = @"
@@ -4112,7 +4107,7 @@ FROM (
             return new ArtistPageDto(Array.Empty<ArtistDto>(), 0, safePage, safePageSize);
         }
 
-        var pageSql = $@"
+        const string pageSqlNameAsc = @"
 SELECT DISTINCT
        a.id,
        a.name,
@@ -4127,9 +4122,27 @@ JOIN folder f ON f.id = af.folder_id
 WHERE f.enabled = TRUE
   AND (@folderId IS NULL OR af.folder_id = @folderId)
   AND (@searchPattern IS NULL OR a.name LIKE @searchPattern COLLATE NOCASE)
-ORDER BY {orderBy}
+ORDER BY a.name ASC
+LIMIT @limit OFFSET @offset;";
+        const string pageSqlNameDesc = @"
+SELECT DISTINCT
+       a.id,
+       a.name,
+       a.preferred_image_path,
+       a.preferred_background_path
+FROM artist a
+JOIN album al ON al.artist_id = a.id
+JOIN track t ON t.album_id = al.id
+JOIN track_local tl ON tl.track_id = t.id
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+WHERE f.enabled = TRUE
+  AND (@folderId IS NULL OR af.folder_id = @folderId)
+  AND (@searchPattern IS NULL OR a.name LIKE @searchPattern COLLATE NOCASE)
+ORDER BY a.name DESC
 LIMIT @limit OFFSET @offset;";
 
+        var pageSql = sortKey == "name-desc" ? pageSqlNameDesc : pageSqlNameAsc;
         await using var command = new SqliteCommand(pageSql, connection);
         command.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
         command.Parameters.AddWithValue("searchPattern", (object?)searchPattern ?? DBNull.Value);

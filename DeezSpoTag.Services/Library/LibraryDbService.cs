@@ -34,6 +34,10 @@ public sealed class LibraryDbService
     private const string RealType = "REAL";
     private const string SourceIdColumn = "source_id";
     private const string ExternalIdColumn = "external_id";
+    private const string ArtistIdColumn = "artist_id";
+    private const string AlbumIdColumn = "album_id";
+    private const string DeezerIdColumn = "deezer_id";
+    private const string UpdatedAtColumn = "updated_at";
     private static readonly Dictionary<string, (string Table, string Column, bool Unique)> KnownIndexDefinitions =
         new Dictionary<string, (string Table, string Column, bool Unique)>(StringComparer.Ordinal)
         {
@@ -54,15 +58,15 @@ public sealed class LibraryDbService
             ["idx_download_blocklist_normalized"] = (DownloadBlocklistTable, "normalized_value, is_enabled", false),
             ["idx_track_shazam_cache_status"] = (TrackShazamCacheTable, "status", false),
             ["idx_track_shazam_cache_scanned"] = (TrackShazamCacheTable, "scanned_at_utc", false),
-            ["idx_album_artist_id"] = (AlbumTable, "artist_id", false),
-            ["idx_track_album_id"] = (TrackTable, "album_id", false),
+            ["idx_album_artist_id"] = (AlbumTable, ArtistIdColumn, false),
+            ["idx_track_album_id"] = (TrackTable, AlbumIdColumn, false),
             ["idx_track_local_audio_file_id"] = (TrackLocalTable, "audio_file_id", false),
             ["idx_artist_name_nocase"] = (ArtistTable, "name COLLATE NOCASE", false)
             ,["idx_artist_watchlist_spotify_id"] = (ArtistWatchlistTable, "spotify_id", false)
-            ,["idx_artist_watchlist_deezer_id"] = (ArtistWatchlistTable, "deezer_id", false)
+            ,["idx_artist_watchlist_deezer_id"] = (ArtistWatchlistTable, DeezerIdColumn, false)
             ,["idx_playlist_watchlist_created"] = (PlaylistWatchlistTable, "created_at", false)
-            ,["idx_playlist_watch_preferences_updated"] = (PlaylistWatchPreferencesTable, "updated_at", false)
-            ,["idx_playlist_watch_state_updated"] = (PlaylistWatchStateTable, "updated_at", false)
+            ,["idx_playlist_watch_preferences_updated"] = (PlaylistWatchPreferencesTable, UpdatedAtColumn, false)
+            ,["idx_playlist_watch_state_updated"] = (PlaylistWatchStateTable, UpdatedAtColumn, false)
             ,["idx_playlist_watch_track_source_status"] = (PlaylistWatchTrackTable, "source, source_id, status", false)
             ,["idx_watchlist_history_source_created"] = (WatchlistHistoryTable, "source, created_at", false)
         };
@@ -111,17 +115,17 @@ public sealed class LibraryDbService
 
     private static async Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
-        await EnsureColumnAsync(connection, ArtistTable, "deezer_id", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistTable, DeezerIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistTable, "metadata_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistTable, "preferred_background_path", TextType, cancellationToken);
         await EnsureIndexAsync(connection, "idx_artist_name_nocase", ArtistTable, "name COLLATE NOCASE", unique: false, cancellationToken);
 
-        await EnsureColumnAsync(connection, AlbumTable, "deezer_id", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, AlbumTable, DeezerIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, AlbumTable, "metadata_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, AlbumTable, "has_animated_artwork", $"{IntegerType} DEFAULT 0", cancellationToken);
-        await EnsureIndexAsync(connection, "idx_album_artist_id", AlbumTable, "artist_id", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_album_artist_id", AlbumTable, ArtistIdColumn, unique: false, cancellationToken);
 
-        await EnsureColumnAsync(connection, TrackTable, "deezer_id", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, TrackTable, DeezerIdColumn, TextType, cancellationToken);
         await EnsureColumnsAsync(
             connection,
             TrackTable,
@@ -152,7 +156,7 @@ public sealed class LibraryDbService
             ("lyrics_unsynced", TextType),
             ("lyrics_synced", TextType),
             ("metadata_json", TextType));
-        await EnsureIndexAsync(connection, "idx_track_album_id", TrackTable, "album_id", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_track_album_id", TrackTable, AlbumIdColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_track_local_audio_file_id", TrackLocalTable, "audio_file_id", unique: false, cancellationToken);
 
         await EnsureColumnAsync(connection, AudioFileTable, "extension", TextType, cancellationToken);
@@ -234,10 +238,10 @@ CREATE TABLE IF NOT EXISTS playlist_track_candidate_cache (
         await BackfillColumnFromLegacyAsync(connection, WatchlistHistoryTable, SourceIdColumn, ExternalIdColumn, cancellationToken);
         await NormalizeWatchlistKeysAsync(connection, cancellationToken);
         await EnsureIndexAsync(connection, "idx_artist_watchlist_spotify_id", ArtistWatchlistTable, "spotify_id", unique: false, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_artist_watchlist_deezer_id", ArtistWatchlistTable, "deezer_id", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_artist_watchlist_deezer_id", ArtistWatchlistTable, DeezerIdColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watchlist_created", PlaylistWatchlistTable, "created_at", unique: false, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_playlist_watch_preferences_updated", PlaylistWatchPreferencesTable, "updated_at", unique: false, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_playlist_watch_state_updated", PlaylistWatchStateTable, "updated_at", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_playlist_watch_preferences_updated", PlaylistWatchPreferencesTable, UpdatedAtColumn, unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_playlist_watch_state_updated", PlaylistWatchStateTable, UpdatedAtColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_track_source_status", PlaylistWatchTrackTable, "source, source_id, status", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_watchlist_history_source_created", WatchlistHistoryTable, "source, created_at", unique: false, cancellationToken);
         await EnsureTableAsync(connection, @"
@@ -461,8 +465,8 @@ WHERE library_id IS NULL;";
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-        await CopySourceMappingAsync(connection, "artist_external", "artist_source", "artist_id", cancellationToken);
-        await CopySourceMappingAsync(connection, "album_external", "album_source", "album_id", cancellationToken);
+        await CopySourceMappingAsync(connection, "artist_external", "artist_source", ArtistIdColumn, cancellationToken);
+        await CopySourceMappingAsync(connection, "album_external", "album_source", AlbumIdColumn, cancellationToken);
         await CopySourceMappingAsync(connection, "track_external", "track_source", "track_id", cancellationToken);
     }
 
@@ -542,8 +546,8 @@ WHERE ({sourceColumn} IS NULL OR {sourceColumn} = '')
 
     private static bool IsSupportedSourceMappingMigration(string legacyTable, string newTable, string idColumn)
         => (legacyTable, newTable, idColumn) is
-            ("artist_external", "artist_source", "artist_id")
-            or ("album_external", "album_source", "album_id")
+            ("artist_external", "artist_source", ArtistIdColumn)
+            or ("album_external", "album_source", AlbumIdColumn)
             or ("track_external", "track_source", "track_id");
 
     private static string BuildCopySourceMappingSql(

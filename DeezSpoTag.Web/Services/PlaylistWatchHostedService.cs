@@ -11,6 +11,8 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class PlaylistWatchHostedService : BackgroundService
 {
+    private const string ArtistKind = "artist";
+    private const string PlaylistKind = "playlist";
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<PlaylistWatchHostedService> _logger;
     private readonly SemaphoreSlim _runLock = new(1, 1);
@@ -217,7 +219,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             var failures = _consecutiveFailures.AddOrUpdate(item.Key, 1, static (_, current) => Math.Min(current + 1, 12));
-            var baseDelaySeconds = item.Kind == "artist"
+            var baseDelaySeconds = item.Kind == ArtistKind
                 ? Math.Max(1, settings.WatchDelayBetweenArtistsSeconds)
                 : Math.Max(1, settings.WatchDelayBetweenPlaylistsSeconds);
             var backoffSeconds = Math.Min(
@@ -270,13 +272,13 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                 continue;
             }
             var key = $"playlist:{playlist.Source}:{playlist.SourceId}";
-            items.Add(new WatchItem("playlist", key, NormalizeSource(playlist.Source), playlist, null));
+            items.Add(new WatchItem(PlaylistKind, key, NormalizeSource(playlist.Source), playlist, null));
         }
 
         foreach (var artist in artists)
         {
             var key = $"artist:{artist.ArtistId}";
-            items.Add(new WatchItem("artist", key, "artist", null, artist));
+            items.Add(new WatchItem(ArtistKind, key, ArtistKind, null, artist));
         }
 
         return items;
@@ -294,7 +296,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             return WatchItemEligibility.Eligible;
         }
 
-        var delaySeconds = item.Kind == "artist"
+        var delaySeconds = item.Kind == ArtistKind
             ? settings.WatchDelayBetweenArtistsSeconds
             : settings.WatchDelayBetweenPlaylistsSeconds;
         var delay = TimeSpan.FromSeconds(Math.Max(1, delaySeconds));
@@ -340,14 +342,14 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         IServiceProvider serviceProvider,
         CancellationToken stoppingToken)
     {
-        if (item.Kind == "playlist" && item.Playlist != null)
+        if (item.Kind == PlaylistKind && item.Playlist != null)
         {
             var watcher = serviceProvider.GetRequiredService<PlaylistWatchService>();
             await watcher.CheckPlaylistWatchItemAsync(item.Playlist, stoppingToken);
             return;
         }
 
-        if (item.Kind == "artist" && item.Artist != null)
+        if (item.Kind == ArtistKind && item.Artist != null)
         {
             var watcher = serviceProvider.GetRequiredService<ArtistWatchService>();
             await watcher.CheckArtistWatchItemAsync(item.Artist, stoppingToken);
