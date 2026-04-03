@@ -3,11 +3,13 @@ using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Linq;
 using DeezSpoTag.Services.Download.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using DeezSpoTag.Core.Models.Download;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Library;
 
 namespace DeezSpoTag.Services.Download.Shared;
@@ -294,8 +296,9 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
         try
         {
+            var effectiveItem = await NormalizeFallbackPayloadAsync(nextItem, cancellationToken);
             using var scope = _serviceProvider.CreateScope();
-            var engineName = NormalizeEngineName(nextItem.Engine);
+            var engineName = NormalizeEngineName(effectiveItem.Engine);
             if (string.Equals(engineName, DeezSpoTagEngineAlias, StringComparison.OrdinalIgnoreCase))
             {
                 engineName = DeezerEngine;
@@ -306,21 +309,21 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
             if (processor == null)
             {
-                _logger.LogWarning("Unsupported engine '{Engine}' for queue item {QueueUuid}", nextItem.Engine, nextItem.QueueUuid);
-                await _queueRepository.UpdateStatusAsync(nextItem.QueueUuid, FailedStatus, "Unsupported engine", cancellationToken: cancellationToken);
-                _retryScheduler.ScheduleRetry(nextItem.QueueUuid, nextItem.Engine ?? "unknown", "unsupported engine");
+                _logger.LogWarning("Unsupported engine '{Engine}' for queue item {QueueUuid}", effectiveItem.Engine, effectiveItem.QueueUuid);
+                await _queueRepository.UpdateStatusAsync(effectiveItem.QueueUuid, FailedStatus, "Unsupported engine", cancellationToken: cancellationToken);
+                _retryScheduler.ScheduleRetry(effectiveItem.QueueUuid, effectiveItem.Engine ?? "unknown", "unsupported engine");
                 return;
             }
 
             try
             {
-                await processor.ProcessQueueItemAsync(nextItem, this, cancellationToken);
+                await processor.ProcessQueueItemAsync(effectiveItem, this, cancellationToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogError(ex, "Engine processing failed for {QueueUuid}", nextItem.QueueUuid);
-                await _queueRepository.UpdateStatusAsync(nextItem.QueueUuid, FailedStatus, ex.Message, cancellationToken: cancellationToken);
-                _retryScheduler.ScheduleRetry(nextItem.QueueUuid, nextItem.Engine ?? "unknown", ex.Message);
+                _logger.LogError(ex, "Engine processing failed for {QueueUuid}", effectiveItem.QueueUuid);
+                await _queueRepository.UpdateStatusAsync(effectiveItem.QueueUuid, FailedStatus, ex.Message, cancellationToken: cancellationToken);
+                _retryScheduler.ScheduleRetry(effectiveItem.QueueUuid, effectiveItem.Engine ?? "unknown", ex.Message);
             }
         }
         finally
@@ -328,6 +331,40 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             CurrentJob = null;
             _currentQueueUuid = null;
         }
+    }
+
+    private async Task<DownloadQueueItem> NormalizeFallbackPayloadAsync(DownloadQueueItem item, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(item.PayloadJson))
+        {
+            return item;
+        }
+
+        JsonObject? payloadObj;
+        try
+        {
+            payloadObj = JsonNode.Parse(item.PayloadJson) as JsonObject;
+        }
+        catch (JsonException)
+        {
+            return item;
+        }
+
+        if (payloadObj == null)
+        {
+            return item;
+        }
+
+        var state = FallbackPayloadNormalizer.ResolveCanonicalState(item, Settings, payloadObj);
+        var changed = FallbackPayloadNormalizer.ApplyCanonicalState(payloadObj, state, resetIndexAndHistory: false);
+        if (!changed)
+        {
+            return item;
+        }
+
+        var normalizedPayload = payloadObj.ToJsonString();
+        await _queueRepository.UpdatePayloadAsync(item.QueueUuid, normalizedPayload, cancellationToken);
+        return item with { PayloadJson = normalizedPayload };
     }
 
     public async Task CancelDownloadAsync(string uuid)

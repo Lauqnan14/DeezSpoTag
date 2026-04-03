@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Web.Services;
 
 namespace DeezSpoTag.Web.Controllers;
 
@@ -8,16 +10,16 @@ public class ArtistController : Controller
 {
     private readonly ILogger<ArtistController> _logger;
     private readonly DeezSpoTagSettingsService _settingsService;
-    private readonly DeezSpoTag.Services.Download.Shared.DeezSpoTagApp _deezSpoTagApp;
+    private readonly DownloadIntentService _intentService;
 
     public ArtistController(
         ILogger<ArtistController> logger,
         DeezSpoTagSettingsService settingsService,
-        DeezSpoTag.Services.Download.Shared.DeezSpoTagApp deezSpoTagApp)
+        DownloadIntentService intentService)
     {
         _logger = logger;
         _settingsService = settingsService;
-        _deezSpoTagApp = deezSpoTagApp;
+        _intentService = intentService;
     }
 
     public IActionResult Index(string id, string? source = null)
@@ -48,7 +50,18 @@ public class ArtistController : Controller
             var settings = _settingsService.LoadSettings();
             var resolvedBitrate = DownloadSourceOrder.ResolveDeezerBitrate(settings, bitrate);
             var url = $"https://www.deezer.com/artist/{id}";
-            var queued = await _deezSpoTagApp.AddToQueueAsync(new[] { url }, resolvedBitrate);
+            var intent = new DownloadIntent
+            {
+                SourceService = "deezer",
+                SourceUrl = url,
+                PreferredEngine = "deezer",
+                Quality = resolvedBitrate.ToString(),
+                ContentType = "music"
+            };
+            var result = await _intentService.EnqueueAsync(intent, HttpContext.RequestAborted);
+            var queued = result.Queued
+                .Select(static uuid => new Dictionary<string, object> { ["uuid"] = uuid })
+                .ToList();
             return DeezerQueueActionResultHelper.FromQueued(this, queued);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

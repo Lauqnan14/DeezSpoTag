@@ -2,8 +2,10 @@ using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Web.Services;
 
 namespace DeezSpoTag.Web.Controllers
 {
@@ -48,22 +50,22 @@ namespace DeezSpoTag.Web.Controllers
 
         private readonly ILogger<TracklistController> _logger;
         private readonly DeezSpoTagSettingsService _settingsService;
-        private readonly DeezSpoTag.Services.Download.Shared.DeezSpoTagApp _deezSpoTagApp;
         private readonly LibraryRepository _libraryRepository;
         private readonly AppleMusicCatalogService _appleCatalogService;
+        private readonly DownloadIntentService _intentService;
 
         public TracklistController(
             ILogger<TracklistController> logger,
             DeezSpoTagSettingsService settingsService,
-            DeezSpoTag.Services.Download.Shared.DeezSpoTagApp deezSpoTagApp,
             LibraryRepository libraryRepository,
-            AppleMusicCatalogService appleCatalogService)
+            AppleMusicCatalogService appleCatalogService,
+            DownloadIntentService intentService)
         {
             _logger = logger;
             _settingsService = settingsService;
-            _deezSpoTagApp = deezSpoTagApp;
             _libraryRepository = libraryRepository;
             _appleCatalogService = appleCatalogService;
+            _intentService = intentService;
         }
 
         public async Task<IActionResult> Index(
@@ -615,7 +617,7 @@ namespace DeezSpoTag.Web.Controllers
                     return BadRequest("Unsupported Deezer type.");
                 }
 
-                var queued = await _deezSpoTagApp.AddToQueueAsync(new[] { url }, resolvedBitrate);
+                var queued = await EnqueueDeezerUrlsViaIntentAsync(new[] { url }, resolvedBitrate);
                 return DeezerQueueActionResultHelper.FromQueued(this, queued);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -649,7 +651,7 @@ namespace DeezSpoTag.Web.Controllers
                     .Select(id => $"https://www.deezer.com/track/{id}")
                     .ToArray();
 
-                var queued = await _deezSpoTagApp.AddToQueueAsync(urls, resolvedBitrate);
+                var queued = await EnqueueDeezerUrlsViaIntentAsync(urls, resolvedBitrate);
                 if (queued.Count == 0)
                 {
                     return Json(new { success = false, message = "Nothing queued." });
@@ -662,6 +664,29 @@ namespace DeezSpoTag.Web.Controllers
                 _logger.LogError(ex, "Error initiating Deezer track downloads");
                 return Json(new { success = false, message = ex.Message });
             }
+        }
+
+        private async Task<List<Dictionary<string, object>>> EnqueueDeezerUrlsViaIntentAsync(
+            IEnumerable<string> urls,
+            int resolvedBitrate)
+        {
+            var queued = new List<Dictionary<string, object>>();
+            foreach (var url in urls)
+            {
+                var intent = new DownloadIntent
+                {
+                    SourceService = DeezerSource,
+                    SourceUrl = url,
+                    PreferredEngine = DeezerSource,
+                    Quality = resolvedBitrate.ToString(),
+                    ContentType = "music"
+                };
+
+                var result = await _intentService.EnqueueAsync(intent, HttpContext.RequestAborted);
+                queued.AddRange(result.Queued.Select(static uuid => new Dictionary<string, object> { ["uuid"] = uuid }));
+            }
+
+            return queued;
         }
 
     }
