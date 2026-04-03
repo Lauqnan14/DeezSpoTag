@@ -17,6 +17,8 @@
         historyStatus: [],
         liveJobId: null,
         liveJobPath: null,
+        liveJobSummary: null,
+        archivedRuns: [],
         selectedRunId: null,
         selectedRunSummary: null,
         selectedDate: null,
@@ -180,6 +182,40 @@
             return null;
         }
         return parsed;
+    }
+
+    function isTodayDateToken(value) {
+        return value === toDateToken(new Date());
+    }
+
+    function isHistoryTabActive() {
+        const historyPane = el("history-content");
+        return !!historyPane?.classList.contains("active");
+    }
+
+    function canShowLiveRunForSelectedDate() {
+        if (!state.liveJobSummary?.id) {
+            return false;
+        }
+
+        if (!state.selectedDate) {
+            return true;
+        }
+
+        return isTodayDateToken(state.selectedDate);
+    }
+
+    function getRunsForDisplay(runs) {
+        const archivedRuns = Array.isArray(runs) ? runs : [];
+        if (!canShowLiveRunForSelectedDate()) {
+            return archivedRuns;
+        }
+
+        if (archivedRuns.some((run) => run?.id === state.liveJobSummary.id)) {
+            return archivedRuns;
+        }
+
+        return [state.liveJobSummary, ...archivedRuns];
     }
 
     function toDateToken(date) {
@@ -516,18 +552,24 @@
             return;
         }
 
-        if (!Array.isArray(runs) || !runs.length) {
+        state.archivedRuns = Array.isArray(runs) ? runs : [];
+        const runsForDisplay = getRunsForDisplay(state.archivedRuns);
+
+        if (!runsForDisplay.length) {
             list.innerHTML = '<div class="autotag-run-empty">No AutoTag runs were saved on this date.</div>';
             clearRunSelection("No AutoTag log was saved on this date.");
             return;
         }
 
-        list.innerHTML = runs.map((run) => {
+        list.innerHTML = runsForDisplay.map((run) => {
             const started = run?.startedAt ? new Date(run.startedAt).toLocaleTimeString() : "--";
             const duration = formatDuration(run?.startedAt, run?.finishedAt);
             const path = run?.rootPath || "--";
+            const liveBadge = run?.id === state.liveJobSummary?.id
+                ? '<span class="badge bg-info text-dark">Live</span>'
+                : "";
             return `<button type="button" class="autotag-run-item" data-run-id="${escapeHtml(run.id)}">
-                <strong>${escapeHtml(started)} · ${escapeHtml(run.status || "--")}</strong>
+                <strong>${escapeHtml(started)} · ${escapeHtml(run.status || "--")} ${liveBadge}</strong>
                 <div class="autotag-run-item-meta">
                     <span>${escapeHtml(duration)}</span>
                     <span>${escapeHtml(run.trigger || "manual")}</span>
@@ -537,8 +579,13 @@
             </button>`;
         }).join("");
 
-        const preferred = runs.find((run) => run.id === state.selectedRunId) || runs[0];
-        loadRunDetails(preferred.id);
+        const preferred = runsForDisplay.find((run) => run.id === state.selectedRunId) || runsForDisplay[0];
+        const needsReload = preferred.id !== state.selectedRunId || !Array.isArray(state.historyStatus) || state.historyStatus.length === 0;
+        if (needsReload) {
+            void loadRunDetails(preferred.id);
+        } else {
+            highlightSelectedRun();
+        }
     }
 
     async function loadRunsForDate(date) {
@@ -636,8 +683,12 @@
                 return;
             }
 
-            const todayToken = toDateToken(new Date());
-            const defaultDate = availableDates.includes(todayToken) ? todayToken : availableDates[0] || `${year}-${String(month).padStart(2, "0")}-01`;
+            const today = new Date();
+            const todayToken = toDateToken(today);
+            const viewedMonthIsCurrent = today.getFullYear() === year && today.getMonth() + 1 === month;
+            const defaultDate = availableDates.includes(todayToken)
+                ? todayToken
+                : availableDates[0] || (viewedMonthIsCurrent ? todayToken : `${year}-${String(month).padStart(2, "0")}-01`);
             await loadRunsForDate(defaultDate);
         } catch (error) {
             console.warn("Failed to load AutoTag calendar", error);
@@ -714,18 +765,26 @@
 
     function resetLivePollingState() {
         state.liveJobId = null;
+        state.liveJobSummary = null;
         updateStatus("Idle", "waiting");
         updateLogs([]);
         updateLiveMetadata(null);
         updateProgressBar(null);
+        if (isHistoryTabActive() && isTodayDateToken(state.selectedDate)) {
+            renderRunList(state.archivedRuns);
+        }
     }
 
     async function applyPolledJob(job, logs) {
         state.liveJobId = job?.id || null;
+        state.liveJobSummary = buildSummaryFromLiveJob(job);
         updateStatus(job.id, job.status);
         updateLogs(logs);
         updateLiveMetadata({ ...job, logs });
         updateProgressBar(job);
+        if (isHistoryTabActive() && isTodayDateToken(state.selectedDate)) {
+            renderRunList(state.archivedRuns);
+        }
         syncSelectedRunWithLiveJob(job, logs);
         if (job.status === STATUS_RUNNING) {
             await refreshHistoryIfSelectedLiveRun();
