@@ -30,7 +30,17 @@ const libraryState = {
     artistLoadRequestId: 0,
     scanArtistsRefreshInFlight: false,
     lastActiveScanRefreshKey: '',
+    lastArtistRefreshAtMs: 0,
     wasScanRunning: false,
+    scanStatusPollTimer: 0,
+    scanStatusPolling: false,
+    analysisPollTimer: 0,
+    runtimeRefreshPolicy: {
+        scanStatusActiveMs: 5000,
+        scanStatusIdleMs: 15000,
+        analysisMs: 15000,
+        minArtistRefreshMs: 10000
+    },
     albumTracksById: new Map(),
     currentSpotifyArtist: null,
     currentLocalArtistName: '',
@@ -2225,6 +2235,29 @@ function getLibraryScanStatusElements() {
     };
 }
 
+function clampRefreshInterval(rawValue, fallbackValue, minValue, maxValue) {
+    const numeric = Number(rawValue);
+    if (!Number.isFinite(numeric)) {
+        return fallbackValue;
+    }
+    return Math.min(maxValue, Math.max(minValue, Math.trunc(numeric)));
+}
+
+function normalizeLibraryRefreshPolicy(policy) {
+    const source = policy && typeof policy === 'object' ? policy : {};
+    return {
+        scanStatusActiveMs: clampRefreshInterval(source.scanStatusActiveMs, 5000, 1000, 120000),
+        scanStatusIdleMs: clampRefreshInterval(source.scanStatusIdleMs, 15000, 2000, 300000),
+        analysisMs: clampRefreshInterval(source.analysisMs, 15000, 5000, 300000),
+        minArtistRefreshMs: clampRefreshInterval(source.minArtistRefreshMs, 10000, 1000, 120000)
+    };
+}
+
+function getLibraryRefreshPolicy() {
+    libraryState.runtimeRefreshPolicy = normalizeLibraryRefreshPolicy(libraryState.runtimeRefreshPolicy);
+    return libraryState.runtimeRefreshPolicy;
+}
+
 function resolveLibraryScanCount(runningValue, totalsValue, lastCountValue, running) {
     if (running && Number.isFinite(Number(runningValue))) {
         return Number(runningValue);
@@ -2365,13 +2398,24 @@ async function loadLibraryScanStatus() {
     }
     try {
         const selectedFolderId = getSelectedLibraryViewFolderId();
-        const statsUrl = selectedFolderId === null
-            ? '/api/library/stats'
-            : `/api/library/stats?folderId=${encodeURIComponent(String(selectedFolderId))}`;
-        const [status, stats] = await Promise.all([
-            fetchJson('/api/library/scan/status'),
-            fetchJsonOptional(statsUrl)
-        ]);
+        const runtimeUrl = selectedFolderId === null
+            ? '/api/library/runtime'
+            : `/api/library/runtime?folderId=${encodeURIComponent(String(selectedFolderId))}`;
+        let runtime = null;
+        try {
+            runtime = await fetchJsonOptional(runtimeUrl);
+        } catch (runtimeError) {
+            console.warn('Library runtime snapshot fetch failed, falling back to legacy status endpoints.', runtimeError);
+        }
+        const status = runtime?.scanStatus
+            ?? await fetchJson('/api/library/scan/status');
+        const stats = runtime?.stats
+            ?? await fetchJsonOptional(selectedFolderId === null
+                ? '/api/library/stats'
+                : `/api/library/stats?folderId=${encodeURIComponent(String(selectedFolderId))}`);
+        if (runtime?.refreshPolicy) {
+            libraryState.runtimeRefreshPolicy = normalizeLibraryRefreshPolicy(runtime.refreshPolicy);
+        }
         applyLibraryScanStatusSuccess(elements, status, stats, selectedFolderId);
         await refreshArtistsDuringActiveScan(status);
         return status;
@@ -2386,6 +2430,7 @@ async function loadLibraryScanStatus() {
 async function refreshArtistsDuringActiveScan(status) {
     const hasArtistsGrid = !!document.getElementById('artistsGrid');
     const running = !!status?.running;
+    const policy = getLibraryRefreshPolicy();
 
     if (!hasArtistsGrid) {
         libraryState.wasScanRunning = running;
@@ -2400,6 +2445,7 @@ async function refreshArtistsDuringActiveScan(status) {
             libraryState.scanArtistsRefreshInFlight = true;
             try {
                 await loadArtists();
+                libraryState.lastArtistRefreshAtMs = Date.now();
             } finally {
                 libraryState.scanArtistsRefreshInFlight = false;
             }
@@ -2420,10 +2466,16 @@ async function refreshArtistsDuringActiveScan(status) {
         return;
     }
 
+    const now = Date.now();
+    if ((now - libraryState.lastArtistRefreshAtMs) < policy.minArtistRefreshMs) {
+        return;
+    }
+
     libraryState.scanArtistsRefreshInFlight = true;
     try {
         await loadArtists();
         libraryState.lastActiveScanRefreshKey = refreshKey;
+        libraryState.lastArtistRefreshAtMs = Date.now();
     } finally {
         libraryState.scanArtistsRefreshInFlight = false;
     }
@@ -2728,11 +2780,50 @@ async function loadArtists() {
     if (selectedFolderId !== null) {
         params.set('folderId', String(selectedFolderId));
     }
-    const artists = await fetchJson(`/api/library/artists?${params.toString()}`);
+    const incrementalRenderEnabled = !((libraryState.artistSearchQuery || '').trim())
+        && (libraryState.artistSortKey || 'name-asc') === 'name-asc';
+    const pageSize = 400;
+    let page = 1;
+    let totalCount = -1;
+    const collected = [];
+
+    while (true) {
+        const pageParams = new URLSearchParams(params);
+        pageParams.set('page', String(page));
+        pageParams.set('pageSize', String(pageSize));
+        const payload = await fetchJson(`/api/library/artists?${pageParams.toString()}`);
+        if (requestId !== libraryState.artistLoadRequestId) {
+            return;
+        }
+
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+        totalCount = Number.isFinite(Number(payload?.totalCount)) ? Number(payload.totalCount) : totalCount;
+        if (items.length === 0) {
+            break;
+        }
+
+        collected.push(...items);
+        libraryState.allArtists = [...collected];
+        updateLibraryLoadProgressMeta(collected.length, totalCount);
+
+        if (incrementalRenderEnabled && document.getElementById('artistsGrid')) {
+            libraryState.filteredArtists = [...collected];
+            renderArtistGrid(collected);
+        }
+
+        const hasMore = payload?.hasMore === true;
+        if (!hasMore || (totalCount > 0 && collected.length >= totalCount)) {
+            break;
+        }
+
+        page += 1;
+    }
+
     if (requestId !== libraryState.artistLoadRequestId) {
         return;
     }
-    libraryState.allArtists = Array.isArray(artists) ? artists : [];
+
+    libraryState.allArtists = collected;
     libraryState.artistFolders.clear();
     libraryState.artistFolderScopeId = selectedFolderId;
     await applyLibraryViewFilter(requestId);
@@ -2829,6 +2920,8 @@ function resolveLibraryScanSuccessMessage(selectedFolderId, refreshImages, reset
 
 async function waitForScanCompletion(startedAtMs) {
     const deadline = startedAtMs + (15 * 60 * 1000);
+    const policy = getLibraryRefreshPolicy();
+    const refreshIntervalMs = Math.max(3000, policy.scanStatusActiveMs);
     let lastRefreshAt = 0;
     const refreshViews = async () => {
         try {
@@ -2845,7 +2938,7 @@ async function waitForScanCompletion(startedAtMs) {
 
     while (Date.now() < deadline) {
         const now = Date.now();
-        if ((now - lastRefreshAt) >= 3000) {
+        if ((now - lastRefreshAt) >= refreshIntervalMs) {
             await refreshViews();
             lastRefreshAt = now;
         }
@@ -2870,7 +2963,7 @@ async function waitForScanCompletion(startedAtMs) {
         } catch {
             // Ignore polling errors; try again.
         }
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        await new Promise(resolve => setTimeout(resolve, refreshIntervalMs));
     }
     showToast('Library scan still running.', true);
     await refreshViews();
@@ -8606,6 +8699,20 @@ function updateLibraryResultsMeta(totalCount, filteredCount) {
     meta.textContent = `${filteredCount} of ${totalCount} artists`;
 }
 
+function updateLibraryLoadProgressMeta(loadedCount, totalCount) {
+    const meta = document.getElementById('libraryResultsMeta');
+    if (!meta) {
+        return;
+    }
+
+    if (!Number.isFinite(totalCount) || totalCount <= 0) {
+        meta.textContent = `Loading artists... ${loadedCount.toLocaleString()}`;
+        return;
+    }
+
+    meta.textContent = `Loading artists... ${loadedCount.toLocaleString()} of ${totalCount.toLocaleString()}`;
+}
+
 function compareArtistsBySort(a, b, sortKey) {
     const first = (a?.name || '').toLocaleLowerCase();
     const second = (b?.name || '').toLocaleLowerCase();
@@ -13582,25 +13689,54 @@ function bindAlbumDownloadButton(downloadAlbumButton) {
 }
 
 function startLibraryRefreshIntervals(shouldLoadAnalysis, shouldLoadScanStatus) {
-    if (shouldLoadAnalysis) {
-        setInterval(async () => {
-            await loadAnalysisActivity();
-            await loadAnalysisStatus();
-        }, 15000);
-    }
-    if (shouldLoadScanStatus) {
-        let scanStatusPolling = false;
-        setInterval(async () => {
-            if (scanStatusPolling) {
+    const policy = getLibraryRefreshPolicy();
+
+    const scheduleAnalysisPoll = (delayMs) => {
+        if (libraryState.analysisPollTimer) {
+            globalThis.clearTimeout(libraryState.analysisPollTimer);
+        }
+        libraryState.analysisPollTimer = globalThis.setTimeout(async () => {
+            try {
+                await loadAnalysisActivity();
+                await loadAnalysisStatus();
+            } finally {
+                const refreshedPolicy = getLibraryRefreshPolicy();
+                scheduleAnalysisPoll(refreshedPolicy.analysisMs);
+            }
+        }, Math.max(0, delayMs));
+    };
+
+    const scheduleScanStatusPoll = (delayMs) => {
+        if (libraryState.scanStatusPollTimer) {
+            globalThis.clearTimeout(libraryState.scanStatusPollTimer);
+        }
+        libraryState.scanStatusPollTimer = globalThis.setTimeout(async () => {
+            if (libraryState.scanStatusPolling) {
+                const refreshedPolicy = getLibraryRefreshPolicy();
+                scheduleScanStatusPoll(refreshedPolicy.scanStatusActiveMs);
                 return;
             }
-            scanStatusPolling = true;
+
+            libraryState.scanStatusPolling = true;
+            let status = null;
             try {
-                await loadLibraryScanStatus();
+                status = await loadLibraryScanStatus();
             } finally {
-                scanStatusPolling = false;
+                libraryState.scanStatusPolling = false;
+                const refreshedPolicy = getLibraryRefreshPolicy();
+                const nextDelay = status?.running
+                    ? refreshedPolicy.scanStatusActiveMs
+                    : refreshedPolicy.scanStatusIdleMs;
+                scheduleScanStatusPoll(nextDelay);
             }
-        }, 5000);
+        }, Math.max(0, delayMs));
+    };
+
+    if (shouldLoadAnalysis) {
+        scheduleAnalysisPoll(policy.analysisMs);
+    }
+    if (shouldLoadScanStatus) {
+        scheduleScanStatusPoll(policy.scanStatusActiveMs);
     }
 }
 

@@ -42,6 +42,8 @@ public class LibraryArtistsApiController : ControllerBase
     public async Task<IActionResult> GetAll(
         [FromQuery] string? availability,
         [FromQuery] long? folderId,
+        [FromQuery] int? page,
+        [FromQuery] int? pageSize,
         CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)
@@ -55,6 +57,24 @@ public class LibraryArtistsApiController : ControllerBase
                 PreferredBackgroundPath = localArtist.BackgroundImagePath
             });
             return Ok(localArtists);
+        }
+
+        if (page.HasValue || pageSize.HasValue)
+        {
+            var artistPage = await _repository.GetArtistsPageAsync(
+                availability,
+                folderId,
+                page ?? 1,
+                pageSize ?? 300,
+                cancellationToken);
+            return Ok(new
+            {
+                items = artistPage.Items,
+                totalCount = artistPage.TotalCount,
+                page = artistPage.Page,
+                pageSize = artistPage.PageSize,
+                hasMore = (artistPage.Page * artistPage.PageSize) < artistPage.TotalCount
+            });
         }
 
         var dbArtists = await _repository.GetArtistsAsync(availability, folderId, cancellationToken);

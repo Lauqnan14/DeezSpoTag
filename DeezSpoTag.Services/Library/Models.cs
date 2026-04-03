@@ -366,6 +366,7 @@ public sealed record LibraryStatsDetailDto(
 public sealed record LibraryClearResultDto(int ArtistsRemoved, int AlbumsRemoved, int TracksRemoved);
 
 public sealed record ArtistDto(long Id, string Name, bool AvailableLocally, string? PreferredImagePath, string? PreferredBackgroundPath);
+public sealed record ArtistPageDto(IReadOnlyList<ArtistDto> Items, int TotalCount, int Page, int PageSize);
 
 public sealed record AlbumDto(
     long Id,
