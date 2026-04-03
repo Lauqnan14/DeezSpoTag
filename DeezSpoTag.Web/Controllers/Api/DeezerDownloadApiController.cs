@@ -271,13 +271,22 @@ namespace DeezSpoTag.Web.Controllers.Api
             AddWithSettingsAccumulator accumulator)
         {
             var resolvedBitrate = DownloadSourceOrder.ResolveDeezerBitrate(request.Settings, 0);
-            var queuedItems = await _deezSpoTagApp.AddToQueueAsync(
-                urls.ToArray(),
-                resolvedBitrate,
-                destinationFolderId: request.DestinationFolderId);
-            accumulator.Queued.AddRange(ExtractQueuedUuids(queuedItems));
+            foreach (var url in urls)
+            {
+                var intent = BuildFallbackIntent(url, request, DeezerSource);
+                intent.SourceService = DeezerSource;
+                intent.PreferredEngine = DeezerSource;
+                intent.Quality = resolvedBitrate.ToString();
+                intent.DestinationFolderId = request.DestinationFolderId;
+                var result = await _intentService.EnqueueAsync(intent, HttpContext.RequestAborted);
+                accumulator.Queued.AddRange(result.Queued);
+                if (!result.Success && !string.IsNullOrWhiteSpace(result.Message))
+                {
+                    accumulator.SetLastErrorIfEmpty(result.Message);
+                }
+            }
             accumulator.Engine = DeezerSource;
-            return queuedItems.Count;
+            return accumulator.Queued.Count;
         }
 
         private async Task<ResolvedIntents> ResolveIntentsForUrlAsync(
