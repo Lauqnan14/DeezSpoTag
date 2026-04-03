@@ -225,16 +225,31 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                 baseDelaySeconds * (int)Math.Pow(2, Math.Min(failures - 1, 6)));
             var nextRunUtc = startedUtc.AddSeconds(backoffSeconds);
             _nextAllowedRun[item.Key] = nextRunUtc;
-            _logger.LogWarning(
-                ex,
-                "Watchlist item failed: key={WatchItemKey}, kind={Kind}, source={Source}, failures={Failures}, backoffSeconds={BackoffSeconds}, nextRunUtc={NextRunUtc}, elapsedMs={ElapsedMs:0}",
-                item.Key,
-                item.Kind,
-                item.Source,
-                failures,
-                backoffSeconds,
-                nextRunUtc,
-                stopwatch.Elapsed.TotalMilliseconds);
+            if (ShouldEmitBackoffWarning(failures))
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Watchlist item failed: key={WatchItemKey}, kind={Kind}, source={Source}, failures={Failures}, backoffSeconds={BackoffSeconds}, nextRunUtc={NextRunUtc}, elapsedMs={ElapsedMs:0}",
+                    item.Key,
+                    item.Kind,
+                    item.Source,
+                    failures,
+                    backoffSeconds,
+                    nextRunUtc,
+                    stopwatch.Elapsed.TotalMilliseconds);
+            }
+            else
+            {
+                _logger.LogDebug(
+                    "Watchlist item still failing under backoff threshold: key={WatchItemKey}, kind={Kind}, source={Source}, failures={Failures}, backoffSeconds={BackoffSeconds}, nextRunUtc={NextRunUtc}, elapsedMs={ElapsedMs:0}",
+                    item.Key,
+                    item.Kind,
+                    item.Source,
+                    failures,
+                    backoffSeconds,
+                    nextRunUtc,
+                    stopwatch.Elapsed.TotalMilliseconds);
+            }
             return WatchItemRunOutcome.Failure;
         }
         finally
@@ -382,4 +397,15 @@ public sealed class PlaylistWatchHostedService : BackgroundService
 
     private static string NormalizeSource(string? source)
         => string.IsNullOrWhiteSpace(source) ? "unknown" : source.Trim().ToLowerInvariant();
+
+    internal static bool ShouldEmitBackoffWarning(int failures)
+    {
+        if (failures <= 2)
+        {
+            return true;
+        }
+
+        // Keep warnings on exponential milestones while reducing repetitive noise.
+        return (failures & (failures - 1)) == 0;
+    }
 }
