@@ -42,8 +42,7 @@ public sealed class AutoTagProfileResolutionService
         {
             defaults = await _defaultsStore.LoadAsync();
         }
-        var defaultProfile = ResolveProfileReference(profiles, defaults.DefaultFileProfile)
-            ?? profiles.FirstOrDefault(profile => profile.IsDefault)
+        var defaultProfile = profiles.FirstOrDefault(profile => profile.IsDefault)
             ?? profiles.FirstOrDefault();
         return new ResolvedState(profiles, defaults, defaultProfile, foldersById);
     }
@@ -129,16 +128,19 @@ public sealed class AutoTagProfileResolutionService
     }
 
     private async Task<AutoTagDefaultsDto> NormalizeDefaultsAsync(
-        IReadOnlyList<TaggingProfile> profiles,
+        List<TaggingProfile> profiles,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         var defaults = await _defaultsStore.LoadAsync();
         var changed = false;
-
-        var defaultFileProfile = NormalizeProfileReference(profiles, defaults.DefaultFileProfile, out var defaultChanged);
-        changed |= defaultChanged;
+        var defaultProfile = await EnsureDefaultProfileAuthorityAsync(profiles, defaults.DefaultFileProfile, cancellationToken);
+        var defaultFileProfile = defaultProfile?.Id;
+        if (!string.Equals(defaults.DefaultFileProfile?.Trim(), defaultFileProfile, StringComparison.OrdinalIgnoreCase))
+        {
+            changed = true;
+        }
 
         // Folder profile assignment is authoritative in the library DB (`folder.auto_tag_profile_id`).
         // We keep defaults.libraryProfiles as a generated mirror only.
@@ -158,6 +160,34 @@ public sealed class AutoTagProfileResolutionService
         }
 
         return normalized;
+    }
+
+    private async Task<TaggingProfile?> EnsureDefaultProfileAuthorityAsync(
+        List<TaggingProfile> profiles,
+        string? legacyDefaultProfileReference,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (profiles.Count == 0)
+        {
+            return null;
+        }
+
+        var currentDefault = profiles.FirstOrDefault(profile => profile.IsDefault);
+        if (currentDefault != null)
+        {
+            return currentDefault;
+        }
+
+        var fallbackDefault = ResolveProfileReference(profiles, legacyDefaultProfileReference)
+            ?? profiles[0];
+        await _profileService.SetDefaultProfileAsync(fallbackDefault.Id);
+
+        var reloaded = await _profileService.LoadAsync();
+        profiles.Clear();
+        profiles.AddRange(reloaded);
+        return profiles.FirstOrDefault(profile => profile.IsDefault)
+            ?? profiles.FirstOrDefault();
     }
 
     private async Task<IReadOnlyDictionary<long, FolderDto>> NormalizeFoldersAsync(

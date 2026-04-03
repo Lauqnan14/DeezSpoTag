@@ -118,6 +118,44 @@ public sealed class TaggingProfileService
         return profiles.FirstOrDefault(p => p.IsDefault) ?? profiles[0];
     }
 
+    public async Task<TaggingProfile?> SetDefaultProfileAsync(string? profileReference)
+    {
+        if (string.IsNullOrWhiteSpace(profileReference))
+        {
+            return await GetDefaultAsync();
+        }
+
+        var profiles = await LoadAsync();
+        if (profiles.Count == 0)
+        {
+            return null;
+        }
+
+        var target = FindByIdOrName(profiles, profileReference);
+        if (target == null)
+        {
+            return null;
+        }
+
+        var changed = false;
+        foreach (var profile in profiles)
+        {
+            var shouldBeDefault = string.Equals(profile.Id, target.Id, StringComparison.OrdinalIgnoreCase);
+            if (profile.IsDefault != shouldBeDefault)
+            {
+                profile.IsDefault = shouldBeDefault;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            await SaveAsync(profiles);
+        }
+
+        return target;
+    }
+
     public async Task<TaggingProfile?> UpsertAsync(TaggingProfile profile)
     {
         if (string.IsNullOrWhiteSpace(profile.Name))
@@ -228,9 +266,49 @@ public sealed class TaggingProfileService
         }
 
         var changed = RemoveLegacyMigratedProfiles(profiles);
+        if (EnsureSingleDefaultProfile(profiles))
+        {
+            changed = true;
+        }
         foreach (var _ in profiles.Where(SanitizeProfile))
         {
             changed = true;
+        }
+
+        return changed;
+    }
+
+    private static bool EnsureSingleDefaultProfile(List<TaggingProfile> profiles)
+    {
+        if (profiles.Count == 0)
+        {
+            return false;
+        }
+
+        var changed = false;
+        var defaultProfiles = profiles
+            .Where(profile => profile?.IsDefault == true)
+            .ToList();
+
+        if (defaultProfiles.Count == 0)
+        {
+            profiles[0].IsDefault = true;
+            return true;
+        }
+
+        var keeper = defaultProfiles[0];
+        foreach (var profile in profiles)
+        {
+            if (ReferenceEquals(profile, keeper))
+            {
+                continue;
+            }
+
+            if (profile.IsDefault)
+            {
+                profile.IsDefault = false;
+                changed = true;
+            }
         }
 
         return changed;
