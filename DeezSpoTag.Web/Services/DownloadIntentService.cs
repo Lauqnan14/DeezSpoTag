@@ -456,27 +456,14 @@ public sealed class DownloadIntentService
                 nonMusicQuality = DownloadContentTypes.Video;
             }
 
-            var sourceEntry = DownloadSourceOrder.EncodeAutoSource(engine, nonMusicQuality);
-            var nonMusicPlan = new List<FallbackPlanStep>
-            {
-                new(
-                    StepId: "step-0",
-                    Engine: engine,
-                    Quality: nonMusicQuality,
-                    RequiredInputs: new List<string>(),
-                    ResolutionStrategy: "direct_url")
-            };
-            return (nonMusicPlan, new List<string> { sourceEntry }, 0);
+            var nonMusicSources = new List<string> { DownloadSourceOrder.EncodeAutoSource(engine, nonMusicQuality) };
+            var nonMusicPlan = BuildFallbackPlanFromSources(intent, nonMusicSources, settings.FallbackSearch);
+            return (nonMusicPlan, nonMusicSources, 0);
         }
 
-        var plan = allowCrossEngineFallback
-            ? BuildFallbackPlan(intent, autoSources, settings, engine, quality)
-            : BuildSingleEngineFallbackPlan(intent, engine, quality, settings);
         var payloadSources = allowCrossEngineFallback
             ? DownloadSourceOrder.CollapseAutoSourcesByService(
-                plan
-                    .Select(step => DownloadSourceOrder.EncodeAutoSource(step.Engine, step.Quality))
-                    .ToList())
+                BuildFallbackPlanSources(autoSources, settings, engine, quality))
             : DownloadSourceOrder.ResolveEngineQualitySources(
                 engine,
                 quality,
@@ -486,9 +473,6 @@ public sealed class DownloadIntentService
             && string.Equals(engine, ApplePlatform, StringComparison.OrdinalIgnoreCase)
             && !IsAtmosQuality(quality))
         {
-            plan = plan
-                .Where(step => !IsAtmosQuality(step.Quality))
-                .ToList();
             payloadSources = payloadSources
                 .Where(source =>
                 {
@@ -498,6 +482,7 @@ public sealed class DownloadIntentService
                 .ToList();
         }
 
+        var plan = BuildFallbackPlanFromSources(intent, payloadSources, settings.FallbackSearch);
         var index = DownloadSourceOrder.FindAutoIndex(payloadSources, engine, quality);
         var clampedIndex = payloadSources.Count == 0 ? 0 : Math.Max(0, Math.Min(index, payloadSources.Count - 1));
         return (plan, payloadSources, clampedIndex);
@@ -3385,43 +3370,10 @@ public sealed class DownloadIntentService
         return !string.IsNullOrWhiteSpace(spotifyId);
     }
 
-    private static List<FallbackPlanStep> BuildSingleEngineFallbackPlan(
+    private static List<FallbackPlanStep> BuildFallbackPlanFromSources(
         DownloadIntent intent,
-        string engine,
-        string? requestedQuality,
-        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
-    {
-        // Build fallback plan for quality variants within the SAME engine only
-        var steps = new List<FallbackPlanStep>();
-        var sourceUrl = intent.SourceUrl ?? string.Empty;
-        var requiredInputsSnapshot = BuildRequiredInputsSnapshot(intent, sourceUrl);
-
-        var hasSongLinkInputs = !string.IsNullOrWhiteSpace(sourceUrl)
-            || !string.IsNullOrWhiteSpace(intent.DeezerId)
-            || !string.IsNullOrWhiteSpace(intent.SpotifyId);
-
-        // Get quality variants for this engine only
-        var strict = UseStrictQualityFallback(settings, engine, requestedQuality);
-        var engineQualities = DownloadSourceOrder.ResolveEngineQualitySources(engine, requestedQuality, strict);
-
-        AppendFallbackPlanSteps(
-            steps,
-            engineQualities,
-            sourceUrl,
-            intent.Isrc,
-            hasSongLinkInputs,
-            settings.FallbackSearch,
-            requiredInputsSnapshot);
-
-        return steps;
-    }
-
-    private static List<FallbackPlanStep> BuildFallbackPlan(
-        DownloadIntent intent,
-        IReadOnlyList<string> autoSources,
-        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
-        string engine,
-        string? requestedQuality)
+        IReadOnlyList<string> planSources,
+        bool fallbackSearchEnabled)
     {
         var steps = new List<FallbackPlanStep>();
         var sourceUrl = intent.SourceUrl ?? string.Empty;
@@ -3429,8 +3381,6 @@ public sealed class DownloadIntentService
             || !string.IsNullOrWhiteSpace(intent.DeezerId)
             || !string.IsNullOrWhiteSpace(intent.SpotifyId);
         var requiredInputsSnapshot = BuildRequiredInputsSnapshot(intent, sourceUrl);
-
-        var planSources = BuildFallbackPlanSources(autoSources, settings, engine, requestedQuality);
 
         AppendFallbackPlanSteps(
             steps,
@@ -3438,7 +3388,7 @@ public sealed class DownloadIntentService
             sourceUrl,
             intent.Isrc,
             hasSongLinkInputs,
-            settings.FallbackSearch,
+            fallbackSearchEnabled,
             requiredInputsSnapshot);
 
         return steps;
