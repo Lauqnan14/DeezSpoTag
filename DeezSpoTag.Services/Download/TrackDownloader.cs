@@ -236,6 +236,7 @@ public class TrackDownloader
         DownloadObject downloadObject,
         DeezSpoTagSettings settings,
         IDownloadListener? listener,
+        bool allowInEngineBitrateFallback = true,
         CancellationToken cancellationToken = default)
     {
         var result = new DeezSpoTagModels.TrackDownloadResult
@@ -251,7 +252,13 @@ public class TrackDownloader
         try
         {
             await EnsureTrackReadyForDownloadAsync(track, downloadObject, cancellationToken);
-            var selectedFormat = await SelectAndApplyBitrateAsync(track, album, downloadObject, settings, listener);
+            var selectedFormat = await SelectAndApplyBitrateAsync(
+                track,
+                album,
+                downloadObject,
+                settings,
+                listener,
+                allowInEngineBitrateFallback);
 
             // Apply settings to track (port from deezspotag: track.applySettings(this.settings))
             track.ApplySettings(settings);
@@ -353,7 +360,8 @@ public class TrackDownloader
         Album? album,
         DownloadObject downloadObject,
         DeezSpoTagSettings settings,
-        IDownloadListener? listener)
+        IDownloadListener? listener,
+        bool allowInEngineBitrateFallback)
     {
         int selectedFormat;
         try
@@ -361,7 +369,7 @@ public class TrackDownloader
             selectedFormat = await _bitrateSelector.GetPreferredBitrateAsync(
                 track,
                 downloadObject.Bitrate,
-                settings.FallbackBitrate,
+                settings.FallbackBitrate && allowInEngineBitrateFallback,
                 settings.FeelingLucky,
                 downloadObject.Uuid,
                 listener);

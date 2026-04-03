@@ -57,7 +57,7 @@ public sealed class TidalEngineProcessor : QueueEngineProcessorBase
                     }
                     catch (Exception ex) when (!cancellationToken.IsCancellationRequested
                                                && settings.FallbackBitrate
-                                               && !string.Equals(settings.Service, "auto", StringComparison.OrdinalIgnoreCase))
+                                               && ShouldUseInEngineQualityFallback(payload))
                     {
                         var fallbackQuality = EngineQualityFallback.GetNextLowerQuality(EngineName, tidalRequest.Quality);
                         if (string.IsNullOrWhiteSpace(fallbackQuality))
@@ -93,5 +93,10 @@ public sealed class TidalEngineProcessor : QueueEngineProcessorBase
                 payload => payload.Title,
                 static payload => payload.ToQueuePayload()),
             cancellationToken);
+    }
+
+    private static bool ShouldUseInEngineQualityFallback(TidalQueueItem payload)
+    {
+        return EngineFallbackPlanPolicy.ShouldUseInEngineFallback(payload, EngineName);
     }
 }
