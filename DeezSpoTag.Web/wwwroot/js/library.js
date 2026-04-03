@@ -13,7 +13,6 @@ const libraryState = {
     autotagProfiles: [],
     autotagDefaults: {
         defaultFileProfile: null,
-        libraryProfiles: {},
         librarySchedules: {}
     },
     previewAudio: null,
@@ -2550,9 +2549,6 @@ function normalizeAutoTagDefaults(defaults) {
         defaultFileProfile: typeof source.defaultFileProfile === 'string' && source.defaultFileProfile.trim()
             ? source.defaultFileProfile.trim()
             : null,
-        libraryProfiles: source.libraryProfiles && typeof source.libraryProfiles === 'object'
-            ? { ...source.libraryProfiles }
-            : {},
         librarySchedules: source.librarySchedules && typeof source.librarySchedules === 'object'
             ? { ...source.librarySchedules }
             : {}

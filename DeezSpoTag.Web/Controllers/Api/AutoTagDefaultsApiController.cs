@@ -2,6 +2,7 @@ using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using DeezSpoTag.Services.Library;
+using System.Globalization;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -36,7 +37,6 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
 
     public sealed record UpdateDefaultsRequest(
         string? DefaultFileProfile,
-        Dictionary<string, string>? LibraryProfiles,
         Dictionary<string, string>? LibrarySchedules);
 
     [HttpPost]
@@ -58,14 +58,10 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
             profiles = state.Profiles;
         }
 
-        var mirroredLibraryProfiles = state.Defaults.LibraryProfiles is { Count: > 0 }
-            ? new Dictionary<string, string>(state.Defaults.LibraryProfiles, StringComparer.OrdinalIgnoreCase)
-            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-        // DB is authoritative for folder->profile links. Ignore writable libraryProfiles payload.
-        // This endpoint only persists defaultFileProfile and per-folder schedules.
         var allowedScheduleFolderIds = _libraryRepository.IsConfigured
-            ? new HashSet<string>(mirroredLibraryProfiles.Keys, StringComparer.OrdinalIgnoreCase)
+            ? state.FoldersById.Keys
+                .Select(id => id.ToString(CultureInfo.InvariantCulture))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase)
             : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var scheduleCleaned = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (request.LibrarySchedules != null)
@@ -98,7 +94,6 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
             ?.Id;
         var defaults = new AutoTagDefaultsDto(
             resolvedDefaultProfileId,
-            mirroredLibraryProfiles,
             scheduleCleaned);
         await _store.SaveAsync(defaults);
 

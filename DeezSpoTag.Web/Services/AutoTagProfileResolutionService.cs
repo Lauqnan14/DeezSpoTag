@@ -142,18 +142,9 @@ public sealed class AutoTagProfileResolutionService
             changed = true;
         }
 
-        // Folder profile assignment is authoritative in the library DB (`folder.auto_tag_profile_id`).
-        // We keep defaults.libraryProfiles as a generated mirror only.
-        var libraryProfiles = _libraryRepository.IsConfigured
-            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            : NormalizeLibraryProfiles(defaults.LibraryProfiles, profiles, ref changed);
-        if (_libraryRepository.IsConfigured && defaults.LibraryProfiles is { Count: > 0 })
-        {
-            changed = true;
-        }
         var librarySchedules = NormalizeLibrarySchedules(defaults.LibrarySchedules, ref changed);
 
-        var normalized = new AutoTagDefaultsDto(defaultFileProfile, libraryProfiles, librarySchedules);
+        var normalized = new AutoTagDefaultsDto(defaultFileProfile, librarySchedules);
         if (changed)
         {
             normalized = await _defaultsStore.SaveAsync(normalized);
@@ -207,9 +198,6 @@ public sealed class AutoTagProfileResolutionService
         }
 
         var normalizedFolders = new Dictionary<long, FolderDto>();
-        var mergedLibraryProfiles = defaults.LibraryProfiles is { Count: > 0 }
-            ? new Dictionary<string, string>(defaults.LibraryProfiles, StringComparer.OrdinalIgnoreCase)
-            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var mergedSchedules = defaults.LibrarySchedules is { Count: > 0 }
             ? new Dictionary<string, string>(defaults.LibrarySchedules, StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -221,7 +209,6 @@ public sealed class AutoTagProfileResolutionService
             var normalizedFolder = await NormalizeFolderAsync(
                 originalFolder,
                 profiles,
-                mergedLibraryProfiles,
                 mergedSchedules,
                 cancellationToken);
 
@@ -233,48 +220,10 @@ public sealed class AutoTagProfileResolutionService
         {
             await _defaultsStore.SaveAsync(new AutoTagDefaultsDto(
                 defaults.DefaultFileProfile,
-                mergedLibraryProfiles,
                 mergedSchedules));
         }
 
         return normalizedFolders;
-    }
-
-    private Dictionary<string, string> NormalizeLibraryProfiles(
-        IReadOnlyDictionary<string, string>? libraryProfiles,
-        IReadOnlyList<TaggingProfile> profiles,
-        ref bool changed)
-    {
-        var normalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (libraryProfiles is not { Count: > 0 })
-        {
-            return normalized;
-        }
-
-        foreach (var (rawFolderId, rawReference) in libraryProfiles)
-        {
-            var folderId = rawFolderId?.Trim();
-            if (string.IsNullOrWhiteSpace(folderId))
-            {
-                changed = true;
-                continue;
-            }
-
-            var canonicalReference = NormalizeProfileReference(profiles, rawReference, out var referenceChanged);
-            if (referenceChanged
-                || !string.Equals(rawFolderId, folderId, StringComparison.Ordinal)
-                || !string.Equals(rawReference?.Trim(), canonicalReference, StringComparison.OrdinalIgnoreCase))
-            {
-                changed = true;
-            }
-
-            if (!string.IsNullOrWhiteSpace(canonicalReference))
-            {
-                normalized[folderId] = canonicalReference;
-            }
-        }
-
-        return normalized;
     }
 
     private static Dictionary<string, string> NormalizeLibrarySchedules(
@@ -319,7 +268,6 @@ public sealed class AutoTagProfileResolutionService
     private async Task<NormalizedFolderResult> NormalizeFolderAsync(
         FolderDto originalFolder,
         IReadOnlyList<TaggingProfile> profiles,
-        Dictionary<string, string> mergedLibraryProfiles,
         Dictionary<string, string> mergedSchedules,
         CancellationToken cancellationToken)
     {
@@ -333,9 +281,8 @@ public sealed class AutoTagProfileResolutionService
                 ?? folder with { AutoTagProfileId = effectiveProfileId };
         }
 
-        var defaultsChanged = RequiresAutoTagProfile(folder)
-            ? SyncRequiredFolderDefaults(folderIdKey, effectiveProfileId, mergedLibraryProfiles, mergedSchedules)
-            : RemoveOptionalFolderDefaults(folderIdKey, mergedLibraryProfiles, mergedSchedules);
+        var defaultsChanged = !RequiresAutoTagProfile(folder)
+            && RemoveOptionalFolderDefaults(folderIdKey, mergedSchedules);
 
         if (folder.AutoTagEnabled && string.IsNullOrWhiteSpace(effectiveProfileId) && RequiresAutoTagProfile(folder))
         {
@@ -346,35 +293,12 @@ public sealed class AutoTagProfileResolutionService
         return new NormalizedFolderResult(folder with { AutoTagProfileId = effectiveProfileId }, defaultsChanged);
     }
 
-    private static bool SyncRequiredFolderDefaults(
-        string folderIdKey,
-        string? effectiveProfileId,
-        Dictionary<string, string> mergedLibraryProfiles,
-        Dictionary<string, string> mergedSchedules)
-    {
-        if (string.IsNullOrWhiteSpace(effectiveProfileId))
-        {
-            return RemoveOptionalFolderDefaults(folderIdKey, mergedLibraryProfiles, mergedSchedules);
-        }
-
-        if (mergedLibraryProfiles.TryGetValue(folderIdKey, out var defaultsProfile)
-            && string.Equals(defaultsProfile, effectiveProfileId, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        mergedLibraryProfiles[folderIdKey] = effectiveProfileId;
-        return true;
-    }
-
     private static bool RemoveOptionalFolderDefaults(
         string folderIdKey,
-        Dictionary<string, string> mergedLibraryProfiles,
         Dictionary<string, string> mergedSchedules)
     {
-        var removedProfile = mergedLibraryProfiles.Remove(folderIdKey);
         var removedSchedule = mergedSchedules.Remove(folderIdKey);
-        return removedProfile || removedSchedule;
+        return removedSchedule;
     }
 
     private string? NormalizeProfileReference(
