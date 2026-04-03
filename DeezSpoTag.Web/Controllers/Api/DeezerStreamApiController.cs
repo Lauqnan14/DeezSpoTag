@@ -23,6 +23,7 @@ public class DeezerStreamApiController : ControllerBase
     private const string Mp3320Format = "MP3_320";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan PlaybackContextTtl = TimeSpan.FromMinutes(30);
+    private static readonly SemaphoreSlim LoginGate = new(1, 1);
     private static readonly ConcurrentDictionary<string, CachedPlaybackContext> PlaybackContextCache =
         new(StringComparer.Ordinal);
 
@@ -717,17 +718,50 @@ public class DeezerStreamApiController : ControllerBase
             return;
         }
 
+        await LoginGate.WaitAsync();
         try
         {
-            var loginData = await _loginStorage.LoadLoginCredentialsAsync();
-            if (!string.IsNullOrWhiteSpace(loginData?.Arl))
+            if (_deezerClient.LoggedIn)
             {
-                await _deezerClient.LoginViaArlAsync(loginData.Arl);
+                return;
+            }
+
+            var loginData = await _loginStorage.LoadLoginCredentialsAsync();
+            var arl = loginData?.Arl;
+            if (string.IsNullOrWhiteSpace(arl))
+            {
+                return;
+            }
+
+            const int maxAttempts = 3;
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                try
+                {
+                    await _deezerClient.LoginViaArlAsync(arl);
+                    if (_deezerClient.LoggedIn)
+                    {
+                        return;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    if (attempt >= maxAttempts)
+                    {
+                        _logger.LogWarning(ex, "Failed to auto-login Deezer client for streaming.");
+                        return;
+                    }
+                }
+
+                if (attempt < maxAttempts)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(150 * attempt));
+                }
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        finally
         {
-            _logger.LogWarning(ex, "Failed to auto-login Deezer client for streaming.");
+            LoginGate.Release();
         }
     }
 }
