@@ -324,20 +324,23 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
             ("Song One", "dz-song-1", "sp-song-1", "am-song-1"));
 
         var added = await _repository.AddPlaylistWatchlistAsync(
-            source: "spotify",
-            sourceId: "pl-123",
+            source: "  SpOtIfY  ",
+            sourceId: "  pl-123  ",
             name: "Road Mix",
             imageUrl: "https://example.com/cover.jpg",
             description: "Playlist description",
             trackCount: 24);
         Assert.NotNull(added);
+        Assert.Equal("spotify", added!.Source);
+        Assert.Equal("pl-123", added.SourceId);
 
         var watchlisted = await _repository.IsPlaylistWatchlistedAsync("spotify", "pl-123");
         Assert.True(watchlisted);
+        Assert.True(await _repository.IsPlaylistWatchlistedAsync(" SPOTIFY ", "  pl-123 "));
 
         await _repository.UpdatePlaylistWatchlistMetadataAsync(
-            source: "spotify",
-            sourceId: "pl-123",
+            source: " SPOTIFY ",
+            sourceId: " pl-123 ",
             name: "Road Mix Updated",
             imageUrl: null,
             description: "Updated description",
@@ -347,8 +350,8 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
 
         var pref = await _repository.UpsertPlaylistWatchPreferenceAsync(
             new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
-                Source: "spotify",
-                SourceId: "pl-123",
+                Source: "  SPOTIFY ",
+                SourceId: " pl-123  ",
                 DestinationFolderId: seeded.Folder.Id,
                 Service: "spotify",
                 PreferredEngine: "native",
@@ -370,11 +373,13 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.Equal("mirror", pref.SyncMode);
         Assert.Single(pref.RoutingRules!);
         Assert.Single(pref.IgnoreRules!);
+        Assert.Equal("spotify", pref.Source);
+        Assert.Equal("pl-123", pref.SourceId);
 
         await _repository.UpsertPlaylistWatchStateAsync(
             new LibraryRepository.PlaylistWatchStateUpsertInput(
-                Source: "spotify",
-                SourceId: "pl-123",
+                Source: "Spotify ",
+                SourceId: " pl-123",
                 SnapshotId: "snap-1",
                 TrackCount: 25,
                 BatchNextOffset: 10,
@@ -385,8 +390,8 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.Equal("snap-1", watchState!.SnapshotId);
 
         await _repository.UpsertPlaylistTrackCandidateCacheAsync(
-            source: "spotify",
-            sourceId: "pl-123",
+            source: " Spotify ",
+            sourceId: " pl-123 ",
             snapshotId: "snap-1",
             candidatesJson: "[{\"id\":\"dz-song-1\"}]");
         var cache = await _repository.GetPlaylistTrackCandidateCacheAsync("spotify", "pl-123");
@@ -394,29 +399,29 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.Equal("snap-1", cache!.SnapshotId);
 
         await _repository.AddPlaylistWatchTracksAsync(
-            "spotify",
-            "pl-123",
+            " spotify ",
+            " pl-123 ",
             new List<PlaylistWatchTrackInsert>
             {
                 new("dz-song-1", "ISRC00000001"),
                 new("dz-song-2", "ISRC00000002")
             });
-        await _repository.UpdatePlaylistWatchTrackStatusAsync("spotify", "pl-123", "dz-song-1", "completed");
+        await _repository.UpdatePlaylistWatchTrackStatusAsync(" Spotify ", " pl-123 ", "dz-song-1", "completed");
         var completedTrackIds = await _repository.GetPlaylistWatchTrackIdsAsync("spotify", "pl-123");
         Assert.Contains("dz-song-1", completedTrackIds);
         Assert.DoesNotContain("dz-song-2", completedTrackIds);
 
         await _repository.AddPlaylistWatchIgnoredTracksAsync(
-            "spotify",
-            "pl-123",
+            " SPOTIFY ",
+            " pl-123 ",
             new List<PlaylistWatchIgnoreInsert> { new("dz-song-ignore", "ISRC00009999") });
         var ignoredForPlaylist = await _repository.GetPlaylistWatchIgnoredTrackIdsAsync("spotify", "pl-123");
         Assert.Contains("dz-song-ignore", ignoredForPlaylist);
 
-        var ignoredBySource = await _repository.GetPlaylistWatchIgnoredTrackIdsBySourceAsync("spotify");
+        var ignoredBySource = await _repository.GetPlaylistWatchIgnoredTrackIdsBySourceAsync(" SpOtIfY ");
         Assert.Contains("dz-song-ignore", ignoredBySource);
 
-        var removedIgnore = await _repository.RemovePlaylistWatchIgnoredTrackAsync("spotify", "pl-123", "dz-song-ignore");
+        var removedIgnore = await _repository.RemovePlaylistWatchIgnoredTrackAsync(" spotify ", " pl-123 ", "dz-song-ignore");
         Assert.True(removedIgnore);
 
         var blockTrack = await _repository.UpsertDownloadBlocklistEntryAsync("track", " Song One ", enabled: true);
@@ -434,7 +439,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         var removedBlock = await _repository.RemoveDownloadBlocklistEntryAsync(blockArtist!.Id);
         Assert.True(removedBlock);
 
-        var removedWatchlist = await _repository.RemovePlaylistWatchlistAsync("spotify", "pl-123");
+        var removedWatchlist = await _repository.RemovePlaylistWatchlistAsync(" Spotify ", " pl-123 ");
         Assert.True(removedWatchlist);
         Assert.False(await _repository.IsPlaylistWatchlistedAsync("spotify", "pl-123"));
     }

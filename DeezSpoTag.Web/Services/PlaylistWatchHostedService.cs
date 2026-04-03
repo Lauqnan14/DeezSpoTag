@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Library;
 
@@ -14,6 +15,8 @@ public sealed class PlaylistWatchHostedService : BackgroundService
     private readonly SemaphoreSlim _runLock = new(1, 1);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _itemLocks = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastRun = new();
+    private readonly ConcurrentDictionary<string, int> _consecutiveFailures = new();
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _nextAllowedRun = new();
     private int _roundRobinIndex;
 
     public PlaylistWatchHostedService(
@@ -92,6 +95,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                 return;
             }
 
+            CleanupStaleState(items);
             await ProcessWatchItemsAsync(items, settings, scope.ServiceProvider, stoppingToken);
         }
         catch (OperationCanceledException)
@@ -131,7 +135,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                 continue;
             }
 
-            var wasProcessed = await TryProcessItemAsync(item, serviceProvider, stoppingToken);
+            var wasProcessed = await TryProcessItemAsync(item, settings, serviceProvider, stoppingToken);
             if (wasProcessed)
             {
                 processed++;
@@ -145,6 +149,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
 
     private async Task<bool> TryProcessItemAsync(
         WatchItem item,
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         IServiceProvider serviceProvider,
         CancellationToken stoppingToken)
     {
@@ -158,6 +163,8 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         {
             await RunItemAsync(item, serviceProvider, stoppingToken);
             _lastRun[item.Key] = DateTimeOffset.UtcNow;
+            _consecutiveFailures.TryRemove(item.Key, out _);
+            _nextAllowedRun.TryRemove(item.Key, out _);
             return true;
         }
         catch (OperationCanceledException)
@@ -166,6 +173,14 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            var failures = _consecutiveFailures.AddOrUpdate(item.Key, 1, static (_, current) => Math.Min(current + 1, 12));
+            var baseDelaySeconds = item.Kind == "artist"
+                ? Math.Max(1, settings.WatchDelayBetweenArtistsSeconds)
+                : Math.Max(1, settings.WatchDelayBetweenPlaylistsSeconds);
+            var backoffSeconds = Math.Min(
+                600,
+                baseDelaySeconds * (int)Math.Pow(2, Math.Min(failures - 1, 6)));
+            _nextAllowedRun[item.Key] = DateTimeOffset.UtcNow.AddSeconds(backoffSeconds);
             _logger.LogWarning(ex, "Playlist watch item run failed for {WatchItemKey}", item.Key);
             return false;
         }
@@ -201,6 +216,11 @@ public sealed class PlaylistWatchHostedService : BackgroundService
 
     private bool IsEligible(WatchItem item, DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
     {
+        if (_nextAllowedRun.TryGetValue(item.Key, out var nextAllowedUtc) && DateTimeOffset.UtcNow < nextAllowedUtc)
+        {
+            return false;
+        }
+
         if (!_lastRun.TryGetValue(item.Key, out var lastRunUtc))
         {
             return true;
@@ -211,6 +231,38 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             : settings.WatchDelayBetweenPlaylistsSeconds;
         var delay = TimeSpan.FromSeconds(Math.Max(1, delaySeconds));
         return DateTimeOffset.UtcNow - lastRunUtc >= delay;
+    }
+
+    private void CleanupStaleState(IReadOnlyList<WatchItem> items)
+    {
+        var activeKeys = new HashSet<string>(items.Select(static item => item.Key), StringComparer.Ordinal);
+        CleanupDictionary(_itemLocks, activeKeys, static semaphore =>
+        {
+            semaphore.Dispose();
+            return true;
+        });
+        CleanupDictionary(_lastRun, activeKeys, static _ => true);
+        CleanupDictionary(_consecutiveFailures, activeKeys, static _ => true);
+        CleanupDictionary(_nextAllowedRun, activeKeys, static _ => true);
+    }
+
+    private static void CleanupDictionary<TValue>(
+        ConcurrentDictionary<string, TValue> dictionary,
+        HashSet<string> activeKeys,
+        Func<TValue, bool> onRemoved)
+    {
+        foreach (var key in dictionary.Keys)
+        {
+            if (activeKeys.Contains(key))
+            {
+                continue;
+            }
+
+            if (dictionary.TryRemove(key, out var removedValue))
+            {
+                _ = onRemoved(removedValue);
+            }
+        }
     }
 
     private static async Task RunItemAsync(

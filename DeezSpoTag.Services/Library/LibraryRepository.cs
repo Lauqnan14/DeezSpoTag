@@ -3476,10 +3476,15 @@ LIMIT @limit;";
         string sourceId,
         CancellationToken cancellationToken)
     {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, source);
-        command.Parameters.AddWithValue(SourceIdField, sourceId);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         while (await reader.ReadAsync(cancellationToken))
@@ -3502,9 +3507,15 @@ LIMIT @limit;";
         string source,
         CancellationToken cancellationToken)
     {
+        var normalizedSource = NormalizePlaylistWatchSource(source);
+        if (string.IsNullOrWhiteSpace(normalizedSource))
+        {
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, source);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         while (await reader.ReadAsync(cancellationToken))
@@ -3531,6 +3542,11 @@ LIMIT @limit;";
         Func<TTrack, string?> isrcSelector,
         CancellationToken cancellationToken)
     {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return;
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
         await using var command = new SqliteCommand(sql, connection, transaction);
@@ -3541,8 +3557,8 @@ LIMIT @limit;";
 
         foreach (var track in tracks)
         {
-            sourceParam.Value = source;
-            sourceIdParam.Value = sourceId;
+            sourceParam.Value = normalizedSource;
+            sourceIdParam.Value = normalizedSourceId;
             trackParam.Value = trackSourceIdSelector(track);
             isrcParam.Value = (object?)isrcSelector(track) ?? DBNull.Value;
             await command.ExecuteNonQueryAsync(cancellationToken);
@@ -3553,6 +3569,23 @@ LIMIT @limit;";
 
     private static string SerializeJsonArray<T>(IEnumerable<T> values)
         => JsonSerializer.Serialize(values);
+
+    private static string NormalizePlaylistWatchSource(string source)
+        => string.IsNullOrWhiteSpace(source) ? string.Empty : source.Trim().ToLowerInvariant();
+
+    private static string NormalizePlaylistWatchSourceId(string sourceId)
+        => string.IsNullOrWhiteSpace(sourceId) ? string.Empty : sourceId.Trim();
+
+    private static bool TryNormalizePlaylistWatchKey(
+        string source,
+        string sourceId,
+        out string normalizedSource,
+        out string normalizedSourceId)
+    {
+        normalizedSource = NormalizePlaylistWatchSource(source);
+        normalizedSourceId = NormalizePlaylistWatchSourceId(sourceId);
+        return !string.IsNullOrWhiteSpace(normalizedSource) && !string.IsNullOrWhiteSpace(normalizedSourceId);
+    }
 
     private static IReadOnlyList<string>? DeserializeStringList(string json)
     {
@@ -4496,10 +4529,11 @@ LIMIT 1;";
             return false;
         }
 
+        var normalizedSpotifyId = spotifyId.Trim();
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"SELECT EXISTS(SELECT 1 FROM artist_watchlist WHERE spotify_id = @spotifyId);";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("spotifyId", spotifyId);
+        command.Parameters.AddWithValue("spotifyId", normalizedSpotifyId);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is not null && result != DBNull.Value && Convert.ToInt32(result) == 1;
     }
@@ -4511,10 +4545,11 @@ LIMIT 1;";
             return false;
         }
 
+        var normalizedSpotifyId = spotifyId.Trim();
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"DELETE FROM artist_watchlist WHERE spotify_id = @spotifyId;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("spotifyId", spotifyId);
+        command.Parameters.AddWithValue("spotifyId", normalizedSpotifyId);
         var removed = await command.ExecuteNonQueryAsync(cancellationToken);
         return removed > 0;
     }
@@ -4675,11 +4710,16 @@ ORDER BY created_at DESC;";
 
     public async Task<bool> IsPlaylistWatchlistedAsync(string source, string sourceId, CancellationToken cancellationToken = default)
     {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return false;
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"SELECT EXISTS(SELECT 1 FROM playlist_watchlist WHERE source = @source AND source_id = @sourceId);";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, source);
-        command.Parameters.AddWithValue(SourceIdField, sourceId);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is not null && result != DBNull.Value && Convert.ToInt32(result) == 1;
     }
@@ -4693,13 +4733,18 @@ ORDER BY created_at DESC;";
         int? trackCount,
         CancellationToken cancellationToken = default)
     {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return null;
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 INSERT OR IGNORE INTO playlist_watchlist (source, source_id, name, image_url, description, track_count)
 VALUES (@source, @sourceId, @name, @imageUrl, @description, @trackCount);";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, source);
-        command.Parameters.AddWithValue(SourceIdField, sourceId);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue("name", name);
         command.Parameters.AddWithValue("imageUrl", (object?)imageUrl ?? DBNull.Value);
         command.Parameters.AddWithValue("description", (object?)description ?? DBNull.Value);
@@ -4719,8 +4764,8 @@ FROM playlist_watchlist
 WHERE source = @source AND source_id = @sourceId
 LIMIT 1;";
         await using var selectCommand = new SqliteCommand(selectSql, connection);
-        selectCommand.Parameters.AddWithValue(SourceField, source);
-        selectCommand.Parameters.AddWithValue(SourceIdField, sourceId);
+        selectCommand.Parameters.AddWithValue(SourceField, normalizedSource);
+        selectCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         await using var reader = await selectCommand.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
         {
@@ -4748,6 +4793,11 @@ LIMIT 1;";
         int? trackCount,
         CancellationToken cancellationToken = default)
     {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return;
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 UPDATE playlist_watchlist
@@ -4757,8 +4807,8 @@ SET name = COALESCE(@name, name),
     track_count = COALESCE(@trackCount, track_count)
 WHERE source = @source AND source_id = @sourceId;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, source);
-        command.Parameters.AddWithValue(SourceIdField, sourceId);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue("name", (object?)name ?? DBNull.Value);
         command.Parameters.AddWithValue("imageUrl", (object?)imageUrl ?? DBNull.Value);
         command.Parameters.AddWithValue("description", (object?)description ?? DBNull.Value);
@@ -4768,6 +4818,11 @@ WHERE source = @source AND source_id = @sourceId;";
 
     public async Task<bool> RemovePlaylistWatchlistAsync(string source, string sourceId, CancellationToken cancellationToken = default)
     {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return false;
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
         const string sql = @"
@@ -4777,8 +4832,8 @@ DELETE FROM playlist_track_candidate_cache WHERE source = @source AND source_id 
 DELETE FROM playlist_watch_preferences WHERE source = @source AND source_id = @sourceId;
 DELETE FROM playlist_watchlist WHERE source = @source AND source_id = @sourceId;";
         await using var command = new SqliteCommand(sql, connection, transaction);
-        command.Parameters.AddWithValue(SourceField, source);
-        command.Parameters.AddWithValue(SourceIdField, sourceId);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         var removed = await command.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return removed > 0;
@@ -4820,6 +4875,11 @@ ORDER BY updated_at DESC;";
         string sourceId,
         CancellationToken cancellationToken = default)
     {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return null;
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 SELECT source,
@@ -4840,8 +4900,8 @@ FROM playlist_watch_preferences
 WHERE source = @source AND source_id = @sourceId
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, source);
-        command.Parameters.AddWithValue(SourceIdField, sourceId);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
         {
@@ -4855,6 +4915,11 @@ LIMIT 1;";
         PlaylistWatchPreferenceUpsertInput input,
         CancellationToken cancellationToken = default)
     {
+        if (!TryNormalizePlaylistWatchKey(input.Source, input.SourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return null;
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 INSERT INTO playlist_watch_preferences (source, source_id, destination_folder_id, service, preferred_engine, download_variant_mode, sync_mode, autotag_profile, update_artwork, reuse_saved_artwork, routing_rules_json, ignore_rules_json)
@@ -4872,8 +4937,8 @@ ON CONFLICT(source, source_id) DO UPDATE SET
     ignore_rules_json = excluded.ignore_rules_json,
     updated_at = CURRENT_TIMESTAMP;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, input.Source);
-        command.Parameters.AddWithValue(SourceIdField, input.SourceId);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue("destinationFolderId", (object?)input.DestinationFolderId ?? DBNull.Value);
         command.Parameters.AddWithValue("service", (object?)input.Service ?? DBNull.Value);
         command.Parameters.AddWithValue("preferredEngine", (object?)input.PreferredEngine ?? DBNull.Value);
@@ -4888,7 +4953,7 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         command.Parameters.AddWithValue("ignoreRulesJson", (object?)ignoreRulesJson ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
 
-        return await GetPlaylistWatchPreferenceAsync(input.Source, input.SourceId, cancellationToken);
+        return await GetPlaylistWatchPreferenceAsync(normalizedSource, normalizedSourceId, cancellationToken);
     }
 
     public async Task<PlaylistWatchStateDto?> GetPlaylistWatchStateAsync(
@@ -4896,6 +4961,11 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         string sourceId,
         CancellationToken cancellationToken = default)
     {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return null;
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 SELECT source,
@@ -4910,8 +4980,8 @@ FROM playlist_watch_state
 WHERE source = @source AND source_id = @sourceId
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, source);
-        command.Parameters.AddWithValue(SourceIdField, sourceId);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
         {
@@ -4937,6 +5007,11 @@ LIMIT 1;";
         PlaylistWatchStateUpsertInput input,
         CancellationToken cancellationToken = default)
     {
+        if (!TryNormalizePlaylistWatchKey(input.Source, input.SourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return;
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 INSERT INTO playlist_watch_state (source, source_id, snapshot_id, track_count, batch_next_offset, batch_processing_snapshot_id, last_checked_utc)
@@ -4949,8 +5024,8 @@ ON CONFLICT(source, source_id) DO UPDATE SET
     last_checked_utc = excluded.last_checked_utc,
     updated_at = CURRENT_TIMESTAMP;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, input.Source);
-        command.Parameters.AddWithValue(SourceIdField, input.SourceId);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue("snapshotId", (object?)input.SnapshotId ?? DBNull.Value);
         command.Parameters.AddWithValue("trackCount", (object?)input.TrackCount ?? DBNull.Value);
         command.Parameters.AddWithValue("batchNextOffset", (object?)input.BatchNextOffset ?? DBNull.Value);
@@ -4964,6 +5039,11 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         string sourceId,
         CancellationToken cancellationToken = default)
     {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return null;
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 SELECT source,
@@ -4975,8 +5055,8 @@ FROM playlist_track_candidate_cache
 WHERE source = @source AND source_id = @sourceId
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, source);
-        command.Parameters.AddWithValue(SourceIdField, sourceId);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
         {
@@ -4999,6 +5079,11 @@ LIMIT 1;";
         string candidatesJson,
         CancellationToken cancellationToken = default)
     {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return;
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 INSERT INTO playlist_track_candidate_cache (source, source_id, snapshot_id, candidates_json)
@@ -5008,8 +5093,8 @@ ON CONFLICT(source, source_id) DO UPDATE SET
     candidates_json = excluded.candidates_json,
     updated_at = CURRENT_TIMESTAMP;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, source);
-        command.Parameters.AddWithValue(SourceIdField, sourceId);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue("snapshotId", (object?)snapshotId ?? DBNull.Value);
         command.Parameters.AddWithValue("candidatesJson", candidatesJson);
         await command.ExecuteNonQueryAsync(cancellationToken);
@@ -5080,13 +5165,18 @@ VALUES (@source, @sourceId, @trackSourceId, @isrc);";
         string trackSourceId,
         CancellationToken cancellationToken = default)
     {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return false;
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 DELETE FROM playlist_watch_ignore
 WHERE source = @source AND source_id = @sourceId AND track_source_id = @trackSourceId;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, source);
-        command.Parameters.AddWithValue(SourceIdField, sourceId);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue("trackSourceId", trackSourceId);
         var removed = await command.ExecuteNonQueryAsync(cancellationToken);
         return removed > 0;
@@ -5256,14 +5346,19 @@ VALUES (@source, @sourceId, @trackSourceId, @isrc, 'queued');";
         string status,
         CancellationToken cancellationToken = default)
     {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return false;
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string insertSql = @"
 INSERT OR IGNORE INTO playlist_watch_track (source, source_id, track_source_id, status)
 VALUES (@source, @sourceId, @trackSourceId, @status);";
         await using (var insertCommand = new SqliteCommand(insertSql, connection))
         {
-            insertCommand.Parameters.AddWithValue(SourceField, source);
-            insertCommand.Parameters.AddWithValue(SourceIdField, sourceId);
+            insertCommand.Parameters.AddWithValue(SourceField, normalizedSource);
+            insertCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
             insertCommand.Parameters.AddWithValue("trackSourceId", trackSourceId);
             insertCommand.Parameters.AddWithValue("status", status);
             await insertCommand.ExecuteNonQueryAsync(cancellationToken);
@@ -5275,8 +5370,8 @@ SET status = @status
 WHERE source = @source AND source_id = @sourceId AND track_source_id = @trackSourceId;";
         await using var updateCommand = new SqliteCommand(updateSql, connection);
         updateCommand.Parameters.AddWithValue("status", status);
-        updateCommand.Parameters.AddWithValue(SourceField, source);
-        updateCommand.Parameters.AddWithValue(SourceIdField, sourceId);
+        updateCommand.Parameters.AddWithValue(SourceField, normalizedSource);
+        updateCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         updateCommand.Parameters.AddWithValue("trackSourceId", trackSourceId);
         var updated = await updateCommand.ExecuteNonQueryAsync(cancellationToken);
         return updated > 0;
@@ -5286,14 +5381,19 @@ WHERE source = @source AND source_id = @sourceId AND track_source_id = @trackSou
         WatchlistHistoryInsert entry,
         CancellationToken cancellationToken = default)
     {
+        if (!TryNormalizePlaylistWatchKey(entry.Source, entry.SourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return;
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 INSERT INTO watchlist_history (source, watch_type, source_id, name, collection_type, track_count, status, artist_name)
 VALUES (@source, @watchType, @sourceId, @name, @collectionType, @trackCount, @status, @artistName);";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, entry.Source);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue("watchType", entry.WatchType);
-        command.Parameters.AddWithValue(SourceIdField, entry.SourceId);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue("name", entry.Name);
         command.Parameters.AddWithValue("collectionType", entry.CollectionType);
         command.Parameters.AddWithValue("trackCount", entry.TrackCount);
