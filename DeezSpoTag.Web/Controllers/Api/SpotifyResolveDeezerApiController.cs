@@ -48,13 +48,13 @@ public class SpotifyResolveDeezerApiController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(url))
         {
-            return BadRequest(new { error = "URL is required." });
+            return BadRequest(new { available = false, reasonCode = "missing_url", error = "URL is required." });
         }
 
         var metadata = await _metadataService.FetchByUrlAsync(url, cancellationToken);
         if (metadata == null)
         {
-            return Ok(new { available = false });
+            return Ok(new { available = false, reasonCode = "metadata_unavailable" });
         }
 
         switch (metadata.Type)
@@ -66,7 +66,7 @@ public class SpotifyResolveDeezerApiController : ControllerBase
             case ArtistType:
                 return Ok(await ResolveArtistAsync(metadata));
             default:
-                return Ok(new { available = false });
+                return Ok(new { available = false, reasonCode = "unsupported_type" });
         }
     }
 
@@ -75,7 +75,7 @@ public class SpotifyResolveDeezerApiController : ControllerBase
         var track = metadata.TrackList.FirstOrDefault();
         if (track == null)
         {
-            return new { available = false };
+            return new { available = false, reasonCode = "missing_track_metadata" };
         }
 
         try
@@ -96,7 +96,7 @@ public class SpotifyResolveDeezerApiController : ControllerBase
             var deezerId = resolved.DeezerId;
             if (string.IsNullOrWhiteSpace(deezerId) || deezerId == "0")
             {
-                return new { available = false, reason = resolved.Reason };
+                return new { available = false, reasonCode = string.IsNullOrWhiteSpace(resolved.Reason) ? "no_match" : resolved.Reason, reason = resolved.Reason };
             }
 
             return new
@@ -112,7 +112,7 @@ public class SpotifyResolveDeezerApiController : ControllerBase
             _logger.LogWarning(ex, "Failed to resolve Deezer track for SpotifyUrl");
         }
 
-        return new { available = false };
+        return new { available = false, reasonCode = "resolver_exception" };
     }
 
     private async Task<object> ResolveAlbumAsync(SpotifyUrlMetadata metadata, CancellationToken cancellationToken)
@@ -121,7 +121,7 @@ public class SpotifyResolveDeezerApiController : ControllerBase
 
         if (string.IsNullOrWhiteSpace(deezerId))
         {
-            return new { available = false };
+            return new { available = false, reasonCode = "no_match" };
         }
 
         return new
@@ -139,7 +139,7 @@ public class SpotifyResolveDeezerApiController : ControllerBase
         var match = await ResolveArtistMatchAsync(query, metadata);
         if (match is null || string.IsNullOrWhiteSpace(match.DeezerId))
         {
-            return new { available = false };
+            return new { available = false, reasonCode = "no_match" };
         }
 
         var strongDiscographyMatch = match.Confidence >= ArtistDiscographyThreshold
@@ -155,6 +155,7 @@ public class SpotifyResolveDeezerApiController : ControllerBase
             return new
             {
                 available = false,
+                reasonCode = "low_confidence_artist_match",
                 type = ArtistType,
                 artistName = metadata.Name,
                 deezerId = match.DeezerId,
