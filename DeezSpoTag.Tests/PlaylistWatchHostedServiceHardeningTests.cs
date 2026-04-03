@@ -3,13 +3,21 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using System.Linq;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Web.Controllers.Api;
 using DeezSpoTag.Web.Services;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -19,6 +27,8 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
 {
     private string _tempRoot = string.Empty;
     private LibraryRepository _repository = default!;
+    private LibraryConfigStore _configStore = default!;
+    private PlaylistVisualService _playlistVisualService = default!;
     private DeezSpoTagSettingsService _settingsService = default!;
     private ServiceProvider _provider = default!;
 
@@ -40,6 +50,14 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         await dbService.EnsureSchemaAsync();
 
         _repository = new LibraryRepository(config, NullLogger<LibraryRepository>.Instance);
+        _configStore = new LibraryConfigStore(
+            _repository,
+            NullLogger<LibraryConfigStore>.Instance,
+            new StubHostEnvironment(_tempRoot));
+        _playlistVisualService = new PlaylistVisualService(
+            new StubHttpClientFactory(),
+            new StubWebHostEnvironment(_tempRoot),
+            NullLogger<PlaylistVisualService>.Instance);
         _settingsService = new DeezSpoTagSettingsService(config, NullLogger<DeezSpoTagSettingsService>.Instance);
         var settings = _settingsService.LoadSettings();
         settings.WatchEnabled = true;
@@ -157,6 +175,74 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         Assert.False(nextAllowedAfterCleanup.ContainsKey(staleKey));
     }
 
+    [Fact]
+    public async Task RunOnce_HighVolumePlaylistLoad_ApiAndSchedulerProgressesAcrossRounds()
+    {
+        var apiController = new LibraryPlaylistWatchlistApiController(
+            _repository,
+            _configStore,
+            _provider.GetRequiredService<PlaylistWatchService>(),
+            playlistSyncService: null!,
+            _playlistVisualService);
+
+        var total = 220;
+        for (var index = 0; index < total; index++)
+        {
+            var result = await apiController.Add(
+                new LibraryPlaylistWatchlistApiController.PlaylistWatchlistRequest(
+                    Source: "unsupported",
+                    SourceId: $"pl-load-{index:D4}",
+                    Name: $"Load Playlist {index:D4}",
+                    ImageUrl: null,
+                    Description: null,
+                    TrackCount: null),
+                CancellationToken.None);
+            Assert.IsType<OkObjectResult>(result);
+        }
+
+        var hosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
+        var roundCount = (int)Math.Ceiling(total / 50.0) + 1;
+        for (var round = 0; round < roundCount; round++)
+        {
+            await InvokeRunOnceAsync(hosted);
+        }
+
+        var lastRun = GetLastRunMap(hosted);
+        var processedUnsupported = lastRun.Keys.Count(key => key.StartsWith("playlist:unsupported:pl-load-", StringComparison.Ordinal));
+        Assert.Equal(total, processedUnsupported);
+
+        var failures = GetFailureMap(hosted);
+        Assert.DoesNotContain(failures.Keys, key => key.StartsWith("playlist:unsupported:pl-load-", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RunOnce_BackoffWarnings_OnlyLogAtThresholdMilestones()
+    {
+        await _repository.AddPlaylistWatchlistAsync("spotify", "pl-log-threshold", "Failing", null, null, null);
+
+        var logger = new ListLogger<PlaylistWatchHostedService>();
+        var hosted = new PlaylistWatchHostedService(_provider, logger);
+        var failKey = "playlist:spotify:pl-log-threshold";
+
+        for (var run = 0; run < 6; run++)
+        {
+            var nextAllowed = GetNextAllowedMap(hosted);
+            nextAllowed[failKey] = DateTimeOffset.UtcNow.AddSeconds(-1);
+            await InvokeRunOnceAsync(hosted);
+        }
+
+        var warningCount = logger.Entries.Count(entry =>
+            entry.Level == LogLevel.Warning
+            && entry.Message.Contains("Watchlist item failed:", StringComparison.Ordinal));
+        var debugCount = logger.Entries.Count(entry =>
+            entry.Level == LogLevel.Debug
+            && entry.Message.Contains("still failing under backoff threshold", StringComparison.Ordinal));
+
+        // Warnings expected at failures 1, 2, and 4 only.
+        Assert.Equal(3, warningCount);
+        Assert.Equal(3, debugCount);
+    }
+
     private static async Task InvokeRunOnceAsync(PlaylistWatchHostedService hosted)
     {
         var method = typeof(PlaylistWatchHostedService).GetMethod("RunOnceAsync", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -172,10 +258,77 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     private static ConcurrentDictionary<string, DateTimeOffset> GetNextAllowedMap(PlaylistWatchHostedService hosted)
         => (ConcurrentDictionary<string, DateTimeOffset>)GetPrivateField(hosted, "_nextAllowedRun");
 
+    private static ConcurrentDictionary<string, DateTimeOffset> GetLastRunMap(PlaylistWatchHostedService hosted)
+        => (ConcurrentDictionary<string, DateTimeOffset>)GetPrivateField(hosted, "_lastRun");
+
     private static object GetPrivateField(object instance, string fieldName)
     {
         var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(field);
         return field!.GetValue(instance)!;
+    }
+
+    private sealed class StubHostEnvironment : IHostEnvironment
+    {
+        public StubHostEnvironment(string rootPath)
+        {
+            ContentRootPath = rootPath;
+            ContentRootFileProvider = new PhysicalFileProvider(rootPath);
+        }
+
+        public string EnvironmentName { get; set; } = Environments.Development;
+        public string ApplicationName { get; set; } = "DeezSpoTag.Tests";
+        public string ContentRootPath { get; set; }
+        public IFileProvider ContentRootFileProvider { get; set; }
+    }
+
+    private sealed class StubWebHostEnvironment : IWebHostEnvironment
+    {
+        public StubWebHostEnvironment(string rootPath)
+        {
+            ContentRootPath = rootPath;
+            ContentRootFileProvider = new PhysicalFileProvider(rootPath);
+            WebRootPath = rootPath;
+            WebRootFileProvider = new PhysicalFileProvider(rootPath);
+        }
+
+        public string EnvironmentName { get; set; } = Environments.Development;
+        public string ApplicationName { get; set; } = "DeezSpoTag.Tests";
+        public string ContentRootPath { get; set; }
+        public IFileProvider ContentRootFileProvider { get; set; }
+        public string WebRootPath { get; set; }
+        public IFileProvider WebRootFileProvider { get; set; }
+    }
+
+    private sealed class StubHttpClientFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new();
+    }
+
+    private sealed class ListLogger<T> : ILogger<T>
+    {
+        public List<LogEntry> Entries { get; } = new();
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Entries.Add(new LogEntry(logLevel, formatter(state, exception)));
+        }
+    }
+
+    private sealed record LogEntry(LogLevel Level, string Message);
+
+    private sealed class NullScope : IDisposable
+    {
+        public static readonly NullScope Instance = new();
+        public void Dispose() { }
     }
 }
