@@ -26,6 +26,7 @@ public sealed class SpotifyArtistService
     private const int CanonicalFallbackMinLead = 250;
     private const int ExactCandidateScoreParallelism = 4;
     private const int ShazamCandidateScoreParallelism = 4;
+    private const string DebugActivityLevel = "debug";
     private static readonly TimeSpan LocalAlbumCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan SampleTrackPathCacheTtl = TimeSpan.FromMinutes(2);
     private static readonly string[] AliasSuffixes =
@@ -1838,11 +1839,11 @@ public sealed class SpotifyArtistService
         {
             if (!localArtistId.HasValue)
             {
-                AddActivity("debug", $"[spotify] shazam skipped for {artistName}: missing local artist id.");
+                AddActivity(DebugActivityLevel, $"[spotify] shazam skipped for {artistName}: missing local artist id.");
             }
             else
             {
-                AddActivity("debug", $"[spotify] shazam skipped for {artistName}: shazam runtime unavailable.");
+                AddActivity(DebugActivityLevel, $"[spotify] shazam skipped for {artistName}: shazam runtime unavailable.");
             }
             return null;
         }
@@ -1853,7 +1854,7 @@ public sealed class SpotifyArtistService
             cancellationToken);
         if (sampleTrackPaths.Count == 0)
         {
-            AddActivity("debug", $"[spotify] shazam skipped for {artistName}: no sample track paths.");
+            AddActivity(DebugActivityLevel, $"[spotify] shazam skipped for {artistName}: no sample track paths.");
             return null;
         }
 
@@ -1861,7 +1862,7 @@ public sealed class SpotifyArtistService
 
         if (candidateVotes.Count == 0)
         {
-            AddActivity("debug", $"[spotify] shazam produced no spotify candidates for {artistName}.");
+            AddActivity(DebugActivityLevel, $"[spotify] shazam produced no spotify candidates for {artistName}.");
             return null;
         }
 
@@ -1875,7 +1876,7 @@ public sealed class SpotifyArtistService
             return bestId;
         }
 
-        AddActivity("debug", $"[spotify] shazam candidates rejected for {artistName}: no candidate passed acceptance checks.");
+        AddActivity(DebugActivityLevel, $"[spotify] shazam candidates rejected for {artistName}: no candidate passed acceptance checks.");
         return null;
     }
 
@@ -2032,38 +2033,7 @@ public sealed class SpotifyArtistService
             && SpotifyMetadataService.TryParseSpotifyUrl(spotifyUrl, out var type, out var id)
             && !string.IsNullOrWhiteSpace(id))
         {
-            if (string.Equals(type, "artist", StringComparison.OrdinalIgnoreCase))
-            {
-                if (LooksLikeSpotifyEntityId(id))
-                {
-                    artistIds.Add(id);
-                }
-            }
-            else
-            {
-                try
-                {
-                    var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(spotifyUrl, cancellationToken);
-                    if (metadata?.TrackList is { Count: > 0 } trackList)
-                    {
-                        foreach (var artistId in trackList
-                                     .Take(ShazamArtistCandidateTrackWindow)
-                                     .SelectMany(track => track.ArtistIds ?? Array.Empty<string>())
-                                     .Where(LooksLikeSpotifyEntityId))
-                        {
-                            artistIds.Add(artistId);
-                        }
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "Failed resolving Spotify artist ids from Shazam URL {SpotifyUrl}.", spotifyUrl);
-                }
-            }
+            await AddArtistIdsFromSpotifyUrlAsync(spotifyUrl, type, id, artistIds, cancellationToken);
         }
 
         if (artistIds.Count > 0)
@@ -2127,12 +2097,9 @@ public sealed class SpotifyArtistService
             var resolved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var candidate in candidates)
             {
-                foreach (var artistId in candidate.Track.ArtistIds ?? Array.Empty<string>())
+                foreach (var artistId in (candidate.Track.ArtistIds ?? Array.Empty<string>()).Where(LooksLikeSpotifyEntityId))
                 {
-                    if (LooksLikeSpotifyEntityId(artistId))
-                    {
-                        resolved.Add(artistId);
-                    }
+                    resolved.Add(artistId);
                 }
             }
 
@@ -2295,13 +2262,53 @@ public sealed class SpotifyArtistService
 
         void AddCandidates(IReadOnlyList<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> candidates)
         {
-            foreach (var candidate in candidates)
+            foreach (var candidate in candidates.Where(candidate => seen.Add(candidate.Id)))
             {
-                if (seen.Add(candidate.Id))
-                {
-                    combined.Add(candidate);
-                }
+                combined.Add(candidate);
             }
+        }
+    }
+
+    private async Task AddArtistIdsFromSpotifyUrlAsync(
+        string spotifyUrl,
+        string type,
+        string id,
+        HashSet<string> artistIds,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(type, "artist", StringComparison.OrdinalIgnoreCase))
+        {
+            if (LooksLikeSpotifyEntityId(id))
+            {
+                artistIds.Add(id);
+            }
+
+            return;
+        }
+
+        try
+        {
+            var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(spotifyUrl, cancellationToken);
+            if (metadata?.TrackList is not { Count: > 0 } trackList)
+            {
+                return;
+            }
+
+            foreach (var artistId in trackList
+                         .Take(ShazamArtistCandidateTrackWindow)
+                         .SelectMany(track => track.ArtistIds ?? Array.Empty<string>())
+                         .Where(LooksLikeSpotifyEntityId))
+            {
+                artistIds.Add(artistId);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed resolving Spotify artist ids from Shazam URL {SpotifyUrl}.", spotifyUrl);
         }
     }
 
@@ -2440,19 +2447,7 @@ public sealed class SpotifyArtistService
             return;
         }
 
-        string? canonicalArtistName = null;
-        try
-        {
-            var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(
-                $"https://open.spotify.com/artist/{spotifyArtistId}",
-                cancellationToken);
-            canonicalArtistName = metadata?.Name?.Trim();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Failed to fetch canonical Spotify artist name for {SpotifyArtistId}.", spotifyArtistId);
-            return;
-        }
+        var canonicalArtistName = await TryFetchCanonicalSpotifyArtistNameAsync(spotifyArtistId, cancellationToken);
 
         if (string.IsNullOrWhiteSpace(canonicalArtistName))
         {
@@ -2473,27 +2468,68 @@ public sealed class SpotifyArtistService
             return;
         }
 
-        var folders = await _libraryRepository.GetFoldersAsync(cancellationToken);
-        var enabledRoots = folders
-            .Where(folder => folder.Enabled && !string.IsNullOrWhiteSpace(folder.RootPath))
-            .Select(folder => Path.GetFullPath(folder.RootPath))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var enabledRoots = await ResolveEnabledLibraryRootsAsync(cancellationToken);
         if (enabledRoots.Count == 0)
         {
             return;
         }
 
+        var rewriteResult = await RewriteArtistAlbumDirectoriesAsync(
+            localArtistId,
+            targetArtistSegment,
+            enabledRoots,
+            cancellationToken);
+        if (rewriteResult.MovedAlbumCount > 0 || rewriteResult.MoveConflicts > 0 || rewriteResult.MoveFailures > 0)
+        {
+            AddActivity(
+                rewriteResult.MoveFailures > 0 ? "warn" : "info",
+                $"[spotify] canonical artist folder rewrite for {currentArtistName} -> {canonicalArtistName}: moved_albums={rewriteResult.MovedAlbumCount}, conflicts={rewriteResult.MoveConflicts}, failures={rewriteResult.MoveFailures}.");
+        }
+    }
+
+    private async Task<string?> TryFetchCanonicalSpotifyArtistNameAsync(string spotifyArtistId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(
+                $"https://open.spotify.com/artist/{spotifyArtistId}",
+                cancellationToken);
+            return metadata?.Name?.Trim();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to fetch canonical Spotify artist name for {SpotifyArtistId}.", spotifyArtistId);
+            return null;
+        }
+    }
+
+    private async Task<List<string>> ResolveEnabledLibraryRootsAsync(CancellationToken cancellationToken)
+    {
+        var folders = await _libraryRepository.GetFoldersAsync(cancellationToken);
+        return folders
+            .Where(folder => folder.Enabled && !string.IsNullOrWhiteSpace(folder.RootPath))
+            .Select(folder => Path.GetFullPath(folder.RootPath))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private async Task<(int MovedAlbumCount, int MoveConflicts, int MoveFailures)> RewriteArtistAlbumDirectoriesAsync(
+        long localArtistId,
+        string targetArtistSegment,
+        IReadOnlyList<string> enabledRoots,
+        CancellationToken cancellationToken)
+    {
         var trackIds = await _libraryRepository.GetTrackIdsByArtistAsync(localArtistId, 0, 200_000, cancellationToken);
         if (trackIds.Count == 0)
         {
-            return;
+            return (0, 0, 0);
         }
 
         var movedAlbumDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var sourceArtistDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var moveConflicts = 0;
         var moveFailures = 0;
-        var sourceArtistDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var trackId in trackIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -2503,69 +2539,101 @@ public sealed class SpotifyArtistService
                 continue;
             }
 
-            var fullPath = Path.GetFullPath(path);
-            var root = enabledRoots.FirstOrDefault(candidateRoot => IsPathUnderRoot(fullPath, candidateRoot));
-            if (root is null)
-            {
-                continue;
-            }
-
-            var relative = Path.GetRelativePath(root, fullPath);
-            if (relative.StartsWith("..", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            var segments = relative.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
-            if (segments.Length < 3)
-            {
-                continue;
-            }
-
-            var sourceArtistSegment = segments[0].Trim();
-            var albumSegment = segments[1].Trim();
-            if (string.IsNullOrWhiteSpace(sourceArtistSegment)
-                || string.IsNullOrWhiteSpace(albumSegment)
-                || string.Equals(sourceArtistSegment, targetArtistSegment, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var sourceAlbumDir = Path.Combine(root, sourceArtistSegment, albumSegment);
-            if (!Directory.Exists(sourceAlbumDir))
-            {
-                continue;
-            }
-
-            if (!movedAlbumDirs.Add(sourceAlbumDir))
-            {
-                continue;
-            }
-
-            var targetArtistDir = Path.Combine(root, targetArtistSegment);
-            var targetAlbumDir = Path.Combine(targetArtistDir, albumSegment);
-            if (Directory.Exists(targetAlbumDir))
+            var moveOutcome = TryMoveTrackAlbumDirectory(
+                path,
+                targetArtistSegment,
+                enabledRoots,
+                movedAlbumDirs,
+                sourceArtistDirs);
+            if (moveOutcome == FolderMoveOutcome.Conflict)
             {
                 moveConflicts++;
-                continue;
             }
-
-            try
-            {
-                Directory.CreateDirectory(targetArtistDir);
-                Directory.Move(sourceAlbumDir, targetAlbumDir);
-                sourceArtistDirs.Add(Path.Combine(root, sourceArtistSegment));
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            else if (moveOutcome == FolderMoveOutcome.Failed)
             {
                 moveFailures++;
-                _logger.LogWarning(ex,
-                    "Failed moving album directory during artist canonicalization: {SourceAlbumDir} -> {TargetAlbumDir}",
-                    sourceAlbumDir,
-                    targetAlbumDir);
             }
         }
 
+        CleanupEmptySourceArtistDirectories(sourceArtistDirs);
+        return (movedAlbumDirs.Count - moveConflicts - moveFailures, moveConflicts, moveFailures);
+    }
+
+    private enum FolderMoveOutcome
+    {
+        Skipped = 0,
+        Moved = 1,
+        Conflict = 2,
+        Failed = 3
+    }
+
+    private FolderMoveOutcome TryMoveTrackAlbumDirectory(
+        string filePath,
+        string targetArtistSegment,
+        IReadOnlyList<string> enabledRoots,
+        HashSet<string> movedAlbumDirs,
+        HashSet<string> sourceArtistDirs)
+    {
+        var fullPath = Path.GetFullPath(filePath);
+        var root = enabledRoots.FirstOrDefault(candidateRoot => IsPathUnderRoot(fullPath, candidateRoot));
+        if (root is null)
+        {
+            return FolderMoveOutcome.Skipped;
+        }
+
+        var relative = Path.GetRelativePath(root, fullPath);
+        if (relative.StartsWith("..", StringComparison.Ordinal))
+        {
+            return FolderMoveOutcome.Skipped;
+        }
+
+        var segments = relative.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length < 3)
+        {
+            return FolderMoveOutcome.Skipped;
+        }
+
+        var sourceArtistSegment = segments[0].Trim();
+        var albumSegment = segments[1].Trim();
+        if (string.IsNullOrWhiteSpace(sourceArtistSegment)
+            || string.IsNullOrWhiteSpace(albumSegment)
+            || string.Equals(sourceArtistSegment, targetArtistSegment, StringComparison.OrdinalIgnoreCase))
+        {
+            return FolderMoveOutcome.Skipped;
+        }
+
+        var sourceAlbumDir = Path.Combine(root, sourceArtistSegment, albumSegment);
+        if (!Directory.Exists(sourceAlbumDir) || !movedAlbumDirs.Add(sourceAlbumDir))
+        {
+            return FolderMoveOutcome.Skipped;
+        }
+
+        var targetArtistDir = Path.Combine(root, targetArtistSegment);
+        var targetAlbumDir = Path.Combine(targetArtistDir, albumSegment);
+        if (Directory.Exists(targetAlbumDir))
+        {
+            return FolderMoveOutcome.Conflict;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(targetArtistDir);
+            Directory.Move(sourceAlbumDir, targetAlbumDir);
+            sourceArtistDirs.Add(Path.Combine(root, sourceArtistSegment));
+            return FolderMoveOutcome.Moved;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning(ex,
+                "Failed moving album directory during artist canonicalization: {SourceAlbumDir} -> {TargetAlbumDir}",
+                sourceAlbumDir,
+                targetAlbumDir);
+            return FolderMoveOutcome.Failed;
+        }
+    }
+
+    private void CleanupEmptySourceArtistDirectories(IEnumerable<string> sourceArtistDirs)
+    {
         foreach (var sourceArtistDir in sourceArtistDirs)
         {
             try
@@ -2580,13 +2648,6 @@ public sealed class SpotifyArtistService
             {
                 _logger.LogDebug(ex, "Failed deleting empty source artist directory {SourceArtistDir}.", sourceArtistDir);
             }
-        }
-
-        if (movedAlbumDirs.Count > 0 || moveConflicts > 0 || moveFailures > 0)
-        {
-            AddActivity(
-                moveFailures > 0 ? "warn" : "info",
-                $"[spotify] canonical artist folder rewrite for {currentArtistName} -> {canonicalArtistName}: moved_albums={movedAlbumDirs.Count - moveConflicts - moveFailures}, conflicts={moveConflicts}, failures={moveFailures}.");
         }
     }
 

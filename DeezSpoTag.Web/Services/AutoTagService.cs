@@ -1439,21 +1439,13 @@ public class AutoTagService
         IReadOnlyList<FolderDto> enabledFolders,
         CancellationToken cancellationToken)
     {
-        if (enhancementRoot["folderUniformity"] is not JsonObject folderUniformity
-            || ReadBool(folderUniformity, "enforceFolderStructure") != true)
+        if (!TryGetFolderUniformityConfig(enhancementRoot, out var folderUniformity))
         {
             return;
         }
 
-        var scopedFolders = ResolveScopedFolders(rootPath, folderUniformity, enabledFolders);
-        var rootPaths = scopedFolders.Count > 0
-            ? scopedFolders
-                .Select(folder => folder.RootPath)
-                .Where(path => !string.IsNullOrWhiteSpace(path))
-                .Select(Path.GetFullPath)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList()
-            : ResolveRootPathsForWorkflow(rootPath, folderUniformity, enabledFolders);
+        var scopedFolders = ResolveScopedFolders(rootPath, folderUniformity!, enabledFolders);
+        var rootPaths = ResolveFolderUniformityRootPaths(rootPath, folderUniformity!, enabledFolders, scopedFolders);
         if (rootPaths.Count == 0)
         {
             AppendLog(job, "enhancement workflow: folder uniformity skipped (no eligible folders/paths).");
@@ -1461,18 +1453,64 @@ public class AutoTagService
         }
 
         var settings = _settingsService.LoadSettings();
-        AutoTagProfileResolutionService.ResolvedState? profileState = null;
-        if (scopedFolders.Count > 0)
+        var profileState = scopedFolders.Count > 0
+            ? await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken)
+            : null;
+        var scopedFoldersByPath = BuildScopedFoldersByPath(scopedFolders);
+
+        AppendLog(job, $"enhancement workflow: folder uniformity starting ({rootPaths.Count} path(s)).");
+        await RunFolderUniformityForPathsAsync(job, folderUniformity!, rootPaths, settings, profileState, scopedFoldersByPath, cancellationToken);
+        await RunFolderUniformityDedupeAsync(job, folderUniformity!, scopedFolders, rootPaths, enabledFolders, cancellationToken);
+
+        AppendLog(job, "enhancement workflow: folder uniformity completed.");
+    }
+
+    private static bool TryGetFolderUniformityConfig(JsonObject enhancementRoot, out JsonObject? folderUniformity)
+    {
+        if (enhancementRoot["folderUniformity"] is not JsonObject config
+            || ReadBool(config, "enforceFolderStructure") != true)
         {
-            profileState = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
+            folderUniformity = null;
+            return false;
         }
 
-        var scopedFoldersByPath = scopedFolders
+        folderUniformity = config;
+        return true;
+    }
+
+    private static List<string> ResolveFolderUniformityRootPaths(
+        string rootPath,
+        JsonObject folderUniformity,
+        IReadOnlyList<FolderDto> enabledFolders,
+        IReadOnlyList<FolderDto> scopedFolders)
+    {
+        return scopedFolders.Count > 0
+            ? scopedFolders
+                .Select(folder => folder.RootPath)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Select(Path.GetFullPath)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList()
+            : ResolveRootPathsForWorkflow(rootPath, folderUniformity, enabledFolders);
+    }
+
+    private static Dictionary<string, FolderDto> BuildScopedFoldersByPath(IReadOnlyList<FolderDto> scopedFolders)
+    {
+        return scopedFolders
             .Where(folder => !string.IsNullOrWhiteSpace(folder.RootPath))
             .GroupBy(folder => Path.GetFullPath(folder.RootPath.Trim()), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+    }
 
-        AppendLog(job, $"enhancement workflow: folder uniformity starting ({rootPaths.Count} path(s)).");
+    private async Task RunFolderUniformityForPathsAsync(
+        AutoTagJob job,
+        JsonObject folderUniformity,
+        IReadOnlyList<string> rootPaths,
+        DeezSpoTagSettings settings,
+        AutoTagProfileResolutionService.ResolvedState? profileState,
+        IReadOnlyDictionary<string, FolderDto> scopedFoldersByPath,
+        CancellationToken cancellationToken)
+    {
         foreach (var path in rootPaths)
         {
             if (!Directory.Exists(path))
@@ -1507,33 +1545,44 @@ public class AutoTagService
                     $"folder uniformity report: planned={organizerReport.PlannedMoves}, files={organizerReport.MovedFiles}, sidecars={organizerReport.MovedSidecars}, duplicate-replacements={organizerReport.ReplacedDuplicates}, duplicate-quarantine={organizerReport.QuarantinedDuplicates}.");
             }
         }
+    }
 
-        if (ReadBool(folderUniformity, "runDedupe") != false)
+    private async Task RunFolderUniformityDedupeAsync(
+        AutoTagJob job,
+        JsonObject folderUniformity,
+        IReadOnlyList<FolderDto> scopedFolders,
+        IReadOnlyList<string> rootPaths,
+        IReadOnlyList<FolderDto> enabledFolders,
+        CancellationToken cancellationToken)
+    {
+        if (ReadBool(folderUniformity, "runDedupe") == false)
         {
-            var dedupeFolders = scopedFolders.Count > 0
-                ? scopedFolders
-                : enabledFolders
-                    .Where(folder => !string.IsNullOrWhiteSpace(folder.RootPath)
-                        && rootPaths.Any(path => PathsOverlap(path, folder.RootPath)))
-                    .ToList();
-            if (dedupeFolders.Count > 0)
-            {
-                var duplicateResult = await _duplicateCleanerService.ScanAsync(
-                    dedupeFolders,
-                    new DuplicateCleanerOptions
-                    {
-                        UseDuplicatesFolder = true,
-                        DuplicatesFolderName = folderUniformity["duplicatesFolderName"]?.GetValue<string>() ?? DuplicateCleanerService.DuplicatesFolderName,
-                        UseShazamForIdentity = ReadBool(folderUniformity, "useShazamForDedupe") == true,
-                        ConflictPolicy = folderUniformity["duplicateConflictPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.DuplicateConflictKeepBest
-                    },
-                    cancellationToken);
-                AppendLog(job,
-                    $"enhancement workflow: folder-uniformity dedupe finished (found={duplicateResult.DuplicatesFound}, moved={duplicateResult.Deleted}, folder={duplicateResult.DuplicatesFolderName}).");
-            }
+            return;
         }
 
-        AppendLog(job, "enhancement workflow: folder uniformity completed.");
+        var dedupeFolders = scopedFolders.Count > 0
+            ? scopedFolders
+            : enabledFolders
+                .Where(folder => !string.IsNullOrWhiteSpace(folder.RootPath)
+                    && rootPaths.Any(path => PathsOverlap(path, folder.RootPath)))
+                .ToList();
+        if (dedupeFolders.Count == 0)
+        {
+            return;
+        }
+
+        var duplicateResult = await _duplicateCleanerService.ScanAsync(
+            dedupeFolders,
+            new DuplicateCleanerOptions
+            {
+                UseDuplicatesFolder = true,
+                DuplicatesFolderName = folderUniformity["duplicatesFolderName"]?.GetValue<string>() ?? DuplicateCleanerService.DuplicatesFolderName,
+                UseShazamForIdentity = ReadBool(folderUniformity, "useShazamForDedupe") == true,
+                ConflictPolicy = folderUniformity["duplicateConflictPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.DuplicateConflictKeepBest
+            },
+            cancellationToken);
+        AppendLog(job,
+            $"enhancement workflow: folder-uniformity dedupe finished (found={duplicateResult.DuplicatesFound}, moved={duplicateResult.Deleted}, folder={duplicateResult.DuplicatesFolderName}).");
     }
 
     private async Task RunConfiguredCoverMaintenanceAsync(

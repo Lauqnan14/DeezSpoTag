@@ -347,15 +347,15 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             }
         };
 
-        var result = await _trackDownloader.DownloadTrackAsync(
-            track,
-            track.Album,
-            null,
-            downloadObject,
-            settings,
-            new DownloadListenerAdapter(_listener),
-            allowInEngineBitrateFallback: ShouldUseInEngineQualityFallback(payload),
-            cancellationToken);
+        var result = await _trackDownloader.DownloadTrackAsync(new TrackDownloader.TrackDownloadRequest(
+            Track: track,
+            Album: track.Album,
+            Playlist: null,
+            DownloadObject: downloadObject,
+            Settings: settings,
+            Listener: new DownloadListenerAdapter(_listener),
+            AllowInEngineBitrateFallback: ShouldUseInEngineQualityFallback(payload),
+            CancellationToken: cancellationToken));
 
         if (string.IsNullOrWhiteSpace(result.Path))
         {

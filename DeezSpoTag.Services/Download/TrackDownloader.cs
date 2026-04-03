@@ -200,6 +200,16 @@ public class TrackDownloader
         public required CancellationToken CancellationToken { get; init; }
     }
 
+    public sealed record TrackDownloadRequest(
+        Track Track,
+        Album? Album,
+        Playlist? Playlist,
+        DownloadObject DownloadObject,
+        DeezSpoTagSettings Settings,
+        IDownloadListener? Listener,
+        bool AllowInEngineBitrateFallback = true,
+        CancellationToken CancellationToken = default);
+
     public TrackDownloader(
         ILogger<TrackDownloader> logger,
         IServiceProvider serviceProvider)
@@ -229,16 +239,17 @@ public class TrackDownloader
     /// <summary>
     /// Download a single track (port of download method from deezspotag downloader)
     /// </summary>
-    public async Task<DeezSpoTagModels.TrackDownloadResult> DownloadTrackAsync(
-        Track track,
-        Album? album,
-        Playlist? playlist,
-        DownloadObject downloadObject,
-        DeezSpoTagSettings settings,
-        IDownloadListener? listener,
-        bool allowInEngineBitrateFallback = true,
-        CancellationToken cancellationToken = default)
+    public async Task<DeezSpoTagModels.TrackDownloadResult> DownloadTrackAsync(TrackDownloadRequest request)
     {
+        var track = request.Track;
+        var album = request.Album;
+        var playlist = request.Playlist;
+        var downloadObject = request.DownloadObject;
+        var settings = request.Settings;
+        var listener = request.Listener;
+        var allowInEngineBitrateFallback = request.AllowInEngineBitrateFallback;
+        var cancellationToken = request.CancellationToken;
+
         var result = new DeezSpoTagModels.TrackDownloadResult
         {
             ItemData = new Dictionary<string, object>
