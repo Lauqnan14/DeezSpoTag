@@ -652,6 +652,16 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.Equal(1000, clamped.PageSize);
         Assert.Equal(25, clamped.Items.Count);
 
+        var searched = await _repository.GetArtistsPageAsync("local", folder.Id, page: 1, pageSize: 20, search: "Artist 2", sort: "name-asc");
+        Assert.Equal(6, searched.TotalCount);
+        Assert.Equal("Artist 20", searched.Items[0].Name);
+        Assert.Equal("Artist 25", searched.Items[^1].Name);
+
+        var descending = await _repository.GetArtistsPageAsync("local", folder.Id, page: 1, pageSize: 5, search: null, sort: "name-desc");
+        Assert.Equal(25, descending.TotalCount);
+        Assert.Equal("Artist 25", descending.Items[0].Name);
+        Assert.Equal("Artist 21", descending.Items[^1].Name);
+
         var allArtists = await _repository.GetArtistsAsync("local", folder.Id);
         Assert.Equal(25, allArtists.Count);
         Assert.Equal("Artist 01", allArtists[0].Name);

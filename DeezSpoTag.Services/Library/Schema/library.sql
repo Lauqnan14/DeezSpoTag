@@ -150,12 +150,17 @@ CREATE TABLE IF NOT EXISTS audio_file (
 
 
 CREATE INDEX IF NOT EXISTS idx_audio_file_content_hash ON audio_file (content_hash);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_audio_file_folder_relative ON audio_file (folder_id, relative_path);
+CREATE INDEX IF NOT EXISTS idx_artist_name_nocase ON artist (name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_album_artist_id ON album (artist_id);
+CREATE INDEX IF NOT EXISTS idx_track_album_id ON track (album_id);
 
 CREATE TABLE IF NOT EXISTS track_local (
     track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,
     audio_file_id BIGINT NOT NULL REFERENCES audio_file(id) ON DELETE CASCADE,
     PRIMARY KEY (track_id, audio_file_id)
 );
+CREATE INDEX IF NOT EXISTS idx_track_local_audio_file_id ON track_local (audio_file_id);
 
 CREATE TABLE IF NOT EXISTS track_genre (
     track_id BIGINT NOT NULL REFERENCES track(id) ON DELETE CASCADE,

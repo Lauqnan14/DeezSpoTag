@@ -12,6 +12,7 @@ public sealed class LibraryDbService
     private const string ArtistTable = "artist";
     private const string AlbumTable = "album";
     private const string TrackTable = "track";
+    private const string TrackLocalTable = "track_local";
     private const string AudioFileTable = "audio_file";
     private const string DownloadTaskTable = "download_task";
     private const string FolderTable = "folder";
@@ -51,7 +52,11 @@ public sealed class LibraryDbService
             ["idx_download_blocklist_field"] = (DownloadBlocklistTable, "field, is_enabled", false),
             ["idx_download_blocklist_normalized"] = (DownloadBlocklistTable, "normalized_value, is_enabled", false),
             ["idx_track_shazam_cache_status"] = (TrackShazamCacheTable, "status", false),
-            ["idx_track_shazam_cache_scanned"] = (TrackShazamCacheTable, "scanned_at_utc", false)
+            ["idx_track_shazam_cache_scanned"] = (TrackShazamCacheTable, "scanned_at_utc", false),
+            ["idx_album_artist_id"] = (AlbumTable, "artist_id", false),
+            ["idx_track_album_id"] = (TrackTable, "album_id", false),
+            ["idx_track_local_audio_file_id"] = (TrackLocalTable, "audio_file_id", false),
+            ["idx_artist_name_nocase"] = (ArtistTable, "name COLLATE NOCASE", false)
         };
     private readonly IConfiguration _configuration;
     private readonly ILogger<LibraryDbService> _logger;
@@ -101,10 +106,12 @@ public sealed class LibraryDbService
         await EnsureColumnAsync(connection, ArtistTable, "deezer_id", TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistTable, "metadata_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistTable, "preferred_background_path", TextType, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_artist_name_nocase", ArtistTable, "name COLLATE NOCASE", unique: false, cancellationToken);
 
         await EnsureColumnAsync(connection, AlbumTable, "deezer_id", TextType, cancellationToken);
         await EnsureColumnAsync(connection, AlbumTable, "metadata_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, AlbumTable, "has_animated_artwork", $"{IntegerType} DEFAULT 0", cancellationToken);
+        await EnsureIndexAsync(connection, "idx_album_artist_id", AlbumTable, "artist_id", unique: false, cancellationToken);
 
         await EnsureColumnAsync(connection, TrackTable, "deezer_id", TextType, cancellationToken);
         await EnsureColumnsAsync(
@@ -137,6 +144,8 @@ public sealed class LibraryDbService
             ("lyrics_unsynced", TextType),
             ("lyrics_synced", TextType),
             ("metadata_json", TextType));
+        await EnsureIndexAsync(connection, "idx_track_album_id", TrackTable, "album_id", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_track_local_audio_file_id", TrackLocalTable, "audio_file_id", unique: false, cancellationToken);
 
         await EnsureColumnAsync(connection, AudioFileTable, "extension", TextType, cancellationToken);
         await EnsureColumnAsync(connection, AudioFileTable, "relative_path", TextType, cancellationToken);
