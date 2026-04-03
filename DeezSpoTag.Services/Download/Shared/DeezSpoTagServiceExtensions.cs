@@ -84,7 +84,6 @@ public static class DeezSpoTagServiceExtensions
         services.AddScoped<IQueueEngineProcessor, DeezSpoTag.Services.Download.Qobuz.QobuzEngineProcessor>();
         services.AddScoped<IQueueEngineProcessor, DeezSpoTag.Services.Download.Tidal.TidalEngineProcessor>();
         services.AddScoped<IQueueEngineProcessor, DeezSpoTag.Services.Download.Amazon.AmazonEngineProcessor>();
-        services.AddScoped<DeezSpoTag.Services.Download.Deezer.DeezerQueueService>();
         
         return services;
     }
