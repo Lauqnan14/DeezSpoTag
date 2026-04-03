@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Amazon;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
@@ -174,6 +175,20 @@ internal static class EngineDownloadControllerCommon
         payload.Cover = track.Cover ?? string.Empty;
         payload.AutoSources = autoSources;
         payload.AutoIndex = autoIndex;
+        payload.FallbackPlan = autoSources
+            .Select((source, index) =>
+            {
+                var step = DownloadSourceOrder.DecodeAutoSource(source);
+                var engine = string.IsNullOrWhiteSpace(step.Source) ? string.Empty : step.Source;
+                return new FallbackPlanStep(
+                    StepId: $"step-{index}",
+                    Engine: engine,
+                    Quality: step.Quality,
+                    RequiredInputs: Array.Empty<string>(),
+                    ResolutionStrategy: "direct_url");
+            })
+            .Where(step => !string.IsNullOrWhiteSpace(step.Engine))
+            .ToList();
         payload.ReleaseDate = track.ReleaseDate ?? string.Empty;
         payload.DurationSeconds = ResolveDurationSeconds(track.DurationSeconds, track.DurationMs);
         payload.Position = track.Position;
