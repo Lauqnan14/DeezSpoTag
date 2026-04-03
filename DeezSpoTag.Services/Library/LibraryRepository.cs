@@ -4107,7 +4107,7 @@ FROM (
             return new ArtistPageDto(Array.Empty<ArtistDto>(), 0, safePage, safePageSize);
         }
 
-        const string pageSqlNameAsc = @"
+        const string pageSql = @"
 SELECT DISTINCT
        a.id,
        a.name,
@@ -4122,30 +4122,14 @@ JOIN folder f ON f.id = af.folder_id
 WHERE f.enabled = TRUE
   AND (@folderId IS NULL OR af.folder_id = @folderId)
   AND (@searchPattern IS NULL OR a.name LIKE @searchPattern COLLATE NOCASE)
-ORDER BY a.name ASC
+ORDER BY
+    CASE WHEN @sortDesc = 0 THEN a.name END ASC,
+    CASE WHEN @sortDesc = 1 THEN a.name END DESC
 LIMIT @limit OFFSET @offset;";
-        const string pageSqlNameDesc = @"
-SELECT DISTINCT
-       a.id,
-       a.name,
-       a.preferred_image_path,
-       a.preferred_background_path
-FROM artist a
-JOIN album al ON al.artist_id = a.id
-JOIN track t ON t.album_id = al.id
-JOIN track_local tl ON tl.track_id = t.id
-JOIN audio_file af ON af.id = tl.audio_file_id
-JOIN folder f ON f.id = af.folder_id
-WHERE f.enabled = TRUE
-  AND (@folderId IS NULL OR af.folder_id = @folderId)
-  AND (@searchPattern IS NULL OR a.name LIKE @searchPattern COLLATE NOCASE)
-ORDER BY a.name DESC
-LIMIT @limit OFFSET @offset;";
-
-        var pageSql = sortKey == "name-desc" ? pageSqlNameDesc : pageSqlNameAsc;
         await using var command = new SqliteCommand(pageSql, connection);
         command.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
         command.Parameters.AddWithValue("searchPattern", (object?)searchPattern ?? DBNull.Value);
+        command.Parameters.AddWithValue("sortDesc", sortKey == "name-desc" ? 1 : 0);
         command.Parameters.AddWithValue("limit", safePageSize);
         command.Parameters.AddWithValue("offset", offset);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -4888,12 +4872,6 @@ ORDER BY updated_at DESC;";
         string sourceId,
         CancellationToken cancellationToken = default)
     {
-        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
-        {
-            return null;
-        }
-
-        await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 SELECT source,
        source_id,
@@ -4912,16 +4890,12 @@ SELECT source,
 FROM playlist_watch_preferences
 WHERE source = @source AND source_id = @sourceId
 LIMIT 1;";
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, normalizedSource);
-        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
-        {
-            return null;
-        }
-
-        return await ReadPlaylistWatchPreferenceAsync(reader, cancellationToken);
+        return await QuerySingleByPlaylistWatchKeyAsync(
+            source,
+            sourceId,
+            sql,
+            ReadPlaylistWatchPreferenceAsync,
+            cancellationToken);
     }
 
     public async Task<PlaylistWatchPreferenceDto?> UpsertPlaylistWatchPreferenceAsync(
@@ -4974,12 +4948,6 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         string sourceId,
         CancellationToken cancellationToken = default)
     {
-        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
-        {
-            return null;
-        }
-
-        await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 SELECT source,
        source_id,
@@ -4992,28 +4960,12 @@ SELECT source,
 FROM playlist_watch_state
 WHERE source = @source AND source_id = @sourceId
 LIMIT 1;";
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, normalizedSource);
-        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
-        {
-            return null;
-        }
-
-        var batchOffset = await reader.IsDBNullAsync(4, cancellationToken) ? (int?)null : reader.GetInt32(4);
-        var batchSnapshot = await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5);
-        var lastChecked = await reader.IsDBNullAsync(6, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(6));
-        var updated = await reader.IsDBNullAsync(7, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(7));
-        return new PlaylistWatchStateDto(
-            reader.GetString(0),
-            reader.GetString(1),
-            await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
-            await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetInt32(3),
-            batchOffset,
-            batchSnapshot,
-            lastChecked,
-            updated);
+        return await QuerySingleByPlaylistWatchKeyAsync(
+            source,
+            sourceId,
+            sql,
+            ReadPlaylistWatchStateAsync,
+            cancellationToken);
     }
 
     public async Task UpsertPlaylistWatchStateAsync(
@@ -5052,12 +5004,6 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         string sourceId,
         CancellationToken cancellationToken = default)
     {
-        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
-        {
-            return null;
-        }
-
-        await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 SELECT source,
        source_id,
@@ -5067,6 +5013,28 @@ SELECT source,
 FROM playlist_track_candidate_cache
 WHERE source = @source AND source_id = @sourceId
 LIMIT 1;";
+        return await QuerySingleByPlaylistWatchKeyAsync(
+            source,
+            sourceId,
+            sql,
+            ReadPlaylistTrackCandidateCacheAsync,
+            cancellationToken);
+    }
+
+    private async Task<TDto?> QuerySingleByPlaylistWatchKeyAsync<TDto>(
+        string source,
+        string sourceId,
+        string sql,
+        Func<SqliteDataReader, CancellationToken, Task<TDto>> projector,
+        CancellationToken cancellationToken)
+        where TDto : class
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
@@ -5076,6 +5044,32 @@ LIMIT 1;";
             return null;
         }
 
+        return await projector(reader, cancellationToken);
+    }
+
+    private static async Task<PlaylistWatchStateDto> ReadPlaylistWatchStateAsync(
+        SqliteDataReader reader,
+        CancellationToken cancellationToken)
+    {
+        var batchOffset = await reader.IsDBNullAsync(4, cancellationToken) ? (int?)null : reader.GetInt32(4);
+        var batchSnapshot = await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5);
+        var lastChecked = await reader.IsDBNullAsync(6, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(6));
+        var updated = await reader.IsDBNullAsync(7, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(7));
+        return new PlaylistWatchStateDto(
+            reader.GetString(0),
+            reader.GetString(1),
+            await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
+            await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetInt32(3),
+            batchOffset,
+            batchSnapshot,
+            lastChecked,
+            updated);
+    }
+
+    private static async Task<PlaylistTrackCandidateCacheDto> ReadPlaylistTrackCandidateCacheAsync(
+        SqliteDataReader reader,
+        CancellationToken cancellationToken)
+    {
         var updatedAt = await reader.IsDBNullAsync(4, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(4));
         return new PlaylistTrackCandidateCacheDto(
             reader.GetString(0),
