@@ -111,10 +111,11 @@ public sealed class QobuzDownloadApiController : ControllerBase
         long? destinationFolderId,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
     {
-        var autoSources = DownloadSourceOrder.ResolveQualityAutoSources(
+        var (autoSources, autoIndex, resolvedQuality) = EngineDownloadControllerCommon.ResolveAutoSourceState(
             settings,
             includeDeezer: false,
-            targetQuality: quality);
+            engine: "qobuz",
+            quality: quality);
         var payload = new QobuzQueueItem
         {
             QobuzId = track.QobuzId ?? string.Empty,
@@ -122,10 +123,10 @@ public sealed class QobuzDownloadApiController : ControllerBase
         EngineDownloadControllerCommon.PopulateSharedQueueFields(
             payload,
             EngineDownloadControllerCommon.CreateQueueTrackSeed(track),
-            quality,
+            resolvedQuality,
             destinationFolderId,
             autoSources,
-            autoSources.Count > 0 ? 0 : -1);
+            autoIndex);
 
         return payload;
     }

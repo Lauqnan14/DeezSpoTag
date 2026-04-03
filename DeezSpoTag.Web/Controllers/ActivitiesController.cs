@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Utils;
@@ -245,26 +246,19 @@ public class ActivitiesController : Controller
             var settings = _settingsService.LoadSettings();
             var newestFirst = string.Equals(settings.QueueOrder, "recent", StringComparison.OrdinalIgnoreCase);
 
-            // Build fresh auto sources from the full AutoPriority quality-descending order.
-            var autoSources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
-            var firstStep = autoSources.Count > 0
-                ? DownloadSourceOrder.DecodeAutoSource(autoSources[0])
-                : new DownloadSourceOrder.AutoSourceStep(item.Engine ?? "deezer", null);
-
-            // Reset the payload so the download starts from the beginning of the quality fallback order.
+            // Reset payload using canonical fallback normalization so retry behavior
+            // matches queue retry scheduler and engine coordinator expectations.
             var payloadNode = JsonNode.Parse(item.PayloadJson);
-            if (payloadNode is JsonObject payloadObj)
+            if (payloadNode is not JsonObject payloadObj)
             {
-                payloadObj["AutoIndex"] = 0;
-                payloadObj["Engine"] = firstStep.Source;
-                payloadObj["AutoSources"] = new JsonArray(
-                    autoSources.Select(s => (JsonNode)JsonValue.Create(s)!).ToArray());
-                payloadObj["FallbackPlan"] = new JsonArray();
-                payloadObj["FallbackHistory"] = new JsonArray();
-                payloadObj["FallbackQueuedExternally"] = false;
-
-                await _queueRepository.UpdatePayloadAsync(request.Uuid, payloadObj.ToJsonString(), HttpContext.RequestAborted);
+                _activityLog.Warn($"Retry blocked: invalid payload JSON for {request.Uuid}");
+                return BadRequest("Retry blocked: invalid payload for this download.");
             }
+
+            var canonicalState = FallbackPayloadNormalizer.ResolveCanonicalState(item, settings, payloadObj);
+            FallbackPayloadNormalizer.ApplyCanonicalState(payloadObj, canonicalState, resetIndexAndHistory: true);
+            var firstStep = canonicalState.FirstStep;
+            await _queueRepository.UpdatePayloadAsync(request.Uuid, payloadObj.ToJsonString(), HttpContext.RequestAborted);
 
             // Update the engine column so the correct engine processor picks up the item.
             await _queueRepository.UpdateEngineAsync(request.Uuid, firstStep.Source, HttpContext.RequestAborted);
