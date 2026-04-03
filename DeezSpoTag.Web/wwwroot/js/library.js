@@ -2801,49 +2801,17 @@ async function loadArtists() {
     const incrementalRenderEnabled = !((libraryState.artistSearchQuery || '').trim())
         && (libraryState.artistSortKey || 'name-asc') === 'name-asc';
     const pageSize = 400;
-    let page = 1;
-    let totalCount = -1;
-    const collected = [];
-
-    while (true) {
-        const pageParams = new URLSearchParams(params);
-        pageParams.set('page', String(page));
-        pageParams.set('pageSize', String(pageSize));
-        let payload;
-        try {
-            payload = await fetchJson(`/api/library/artists?${pageParams.toString()}`, { signal: abortController.signal });
-        } catch (error) {
-            if (error?.name === 'AbortError') {
-                return;
-            }
-            throw error;
-        }
-        if (requestId !== libraryState.artistLoadRequestId) {
-            return;
-        }
-
-        const items = Array.isArray(payload?.items) ? payload.items : [];
-        totalCount = Number.isFinite(Number(payload?.totalCount)) ? Number(payload.totalCount) : totalCount;
-        if (items.length === 0) {
-            break;
-        }
-
-        collected.push(...items);
-        libraryState.allArtists = [...collected];
-        updateLibraryLoadProgressMeta(collected.length, totalCount);
-
-        if (incrementalRenderEnabled && document.getElementById('artistsGrid')) {
-            libraryState.filteredArtists = [...collected];
-            renderArtistGrid(collected);
-        }
-
-        const hasMore = payload?.hasMore === true;
-        if (!hasMore || (totalCount > 0 && collected.length >= totalCount)) {
-            break;
-        }
-
-        page += 1;
+    const pagedResult = await fetchArtistsPaged({
+        baseParams: params,
+        pageSize,
+        abortController,
+        requestId,
+        incrementalRenderEnabled
+    });
+    if (!pagedResult) {
+        return;
     }
+    const collected = pagedResult.collected;
 
     if (requestId !== libraryState.artistLoadRequestId) {
         return;
@@ -2855,6 +2823,64 @@ async function loadArtists() {
     libraryState.artistFolderScopeId = selectedFolderId;
     updateLibraryResultsMeta(collected.length, collected.length);
     renderArtistGrid(collected);
+}
+
+async function fetchArtistsPagePayload(baseParams, page, pageSize, abortController) {
+    const pageParams = new URLSearchParams(baseParams);
+    pageParams.set('page', String(page));
+    pageParams.set('pageSize', String(pageSize));
+    try {
+        return await fetchJson(`/api/library/artists?${pageParams.toString()}`, { signal: abortController.signal });
+    } catch (error) {
+        if (error?.name === 'AbortError') {
+            return null;
+        }
+        throw error;
+    }
+}
+
+function updateArtistsIncrementalView(collected, totalCount, incrementalRenderEnabled) {
+    libraryState.allArtists = [...collected];
+    updateLibraryLoadProgressMeta(collected.length, totalCount);
+    if (incrementalRenderEnabled && document.getElementById('artistsGrid')) {
+        libraryState.filteredArtists = [...collected];
+        renderArtistGrid(collected);
+    }
+}
+
+async function fetchArtistsPaged(options) {
+    const { baseParams, pageSize, abortController, requestId, incrementalRenderEnabled } = options;
+    let page = 1;
+    let totalCount = -1;
+    const collected = [];
+
+    while (true) {
+        const payload = await fetchArtistsPagePayload(baseParams, page, pageSize, abortController);
+        if (!payload) {
+            return null;
+        }
+        if (requestId !== libraryState.artistLoadRequestId) {
+            return null;
+        }
+
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+        totalCount = Number.isFinite(Number(payload?.totalCount)) ? Number(payload.totalCount) : totalCount;
+        if (items.length === 0) {
+            break;
+        }
+
+        collected.push(...items);
+        updateArtistsIncrementalView(collected, totalCount, incrementalRenderEnabled);
+
+        const hasMore = payload?.hasMore === true;
+        if (!hasMore || (totalCount > 0 && collected.length >= totalCount)) {
+            break;
+        }
+
+        page += 1;
+    }
+
+    return { collected, totalCount };
 }
 
 function getStoredLibraryViewSelection() {
@@ -3170,9 +3196,10 @@ function renderArtistGrid(artists) {
     const anchorIdsByLetter = new Map();
     artists.forEach(artist => {
         const letter = getAlphaJumpLetter(artist?.name);
-        const anchorId = !anchorIdsByLetter.has(letter)
-            ? buildAlphaJumpAnchorId('library', letter)
-            : '';
+        let anchorId = '';
+        if (!anchorIdsByLetter.has(letter)) {
+            anchorId = buildAlphaJumpAnchorId('library', letter);
+        }
         if (anchorId) {
             anchorIdsByLetter.set(letter, anchorId);
         }
