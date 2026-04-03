@@ -3994,14 +3994,72 @@ RETURNING id;";
         long? folderId,
         CancellationToken cancellationToken = default)
     {
+        const int chunkSize = 1000;
+        var pageIndex = 1;
+        var all = new List<ArtistDto>();
+        while (true)
+        {
+            var page = await GetArtistsPageAsync(availability, folderId, page: pageIndex, pageSize: chunkSize, cancellationToken);
+            if (page.Items.Count == 0)
+            {
+                break;
+            }
+
+            all.AddRange(page.Items);
+            if (all.Count >= page.TotalCount)
+            {
+                break;
+            }
+
+            pageIndex++;
+        }
+
+        return all;
+    }
+
+    public async Task<ArtistPageDto> GetArtistsPageAsync(
+        string? availability,
+        long? folderId,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken = default)
+    {
         var filters = availability?.ToLowerInvariant() ?? "all";
         if (filters == "remote")
         {
-            return [];
+            return new ArtistPageDto(Array.Empty<ArtistDto>(), 0, Math.Max(1, page), Math.Clamp(pageSize, 1, 1000));
         }
 
+        var safePage = Math.Max(1, page);
+        var safePageSize = Math.Clamp(pageSize, 1, 1000);
+        var offset = (safePage - 1) * safePageSize;
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
+        const string countSql = @"
+SELECT COUNT(*)
+FROM (
+    SELECT DISTINCT a.id
+    FROM artist a
+    JOIN album al ON al.artist_id = a.id
+    JOIN track t ON t.album_id = al.id
+    JOIN track_local tl ON tl.track_id = t.id
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE f.enabled = TRUE
+      AND (@folderId IS NULL OR af.folder_id = @folderId)
+);";
+        await using var countCommand = new SqliteCommand(countSql, connection);
+        countCommand.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        var totalCountObj = await countCommand.ExecuteScalarAsync(cancellationToken);
+        var totalCount = totalCountObj is null || totalCountObj is DBNull
+            ? 0
+            : Convert.ToInt32(totalCountObj, CultureInfo.InvariantCulture);
+        if (totalCount <= 0)
+        {
+            return new ArtistPageDto(Array.Empty<ArtistDto>(), 0, safePage, safePageSize);
+        }
+
+        const string pageSql = @"
 SELECT DISTINCT
        a.id,
        a.name,
@@ -4015,10 +4073,13 @@ JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
 WHERE f.enabled = TRUE
   AND (@folderId IS NULL OR af.folder_id = @folderId)
-ORDER BY a.name;";
+ORDER BY a.name
+LIMIT @limit OFFSET @offset;";
 
-        await using var command = new SqliteCommand(sql, connection);
+        await using var command = new SqliteCommand(pageSql, connection);
         command.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        command.Parameters.AddWithValue("limit", safePageSize);
+        command.Parameters.AddWithValue("offset", offset);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var artists = new List<ArtistDto>();
         while (await reader.ReadAsync(cancellationToken))
@@ -4031,7 +4092,7 @@ ORDER BY a.name;";
                 await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3)));
         }
 
-        return artists;
+        return new ArtistPageDto(artists, totalCount, safePage, safePageSize);
     }
 
     public async Task<IReadOnlyList<AlbumDto>> GetArtistAlbumsAsync(long artistId, CancellationToken cancellationToken = default)

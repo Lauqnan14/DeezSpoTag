@@ -1058,6 +1058,8 @@ static void RegisterCoreApplicationServices(IServiceCollection services, IConfig
     services.AddSingleton<DeezSpoTag.Services.Library.AudioQualitySignalAnalyzer>();
     services.AddSingleton<DeezSpoTag.Web.Services.SpectrogramService>();
     services.AddSingleton<DeezSpoTag.Web.Services.LibraryConfigStore>();
+    services.AddSingleton<DeezSpoTag.Web.Services.LibraryStatsSnapshotService>();
+    services.AddSingleton<DeezSpoTag.Web.Services.LibraryRuntimeSnapshotService>();
     services.AddSingleton<DeezSpoTag.Web.Services.AutoTagFolderScopeDependencies>(sp =>
         new DeezSpoTag.Web.Services.AutoTagFolderScopeDependencies(
             sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
