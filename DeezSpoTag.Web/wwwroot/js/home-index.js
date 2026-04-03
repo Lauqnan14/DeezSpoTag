@@ -1189,7 +1189,7 @@ function renderHomeTopGenresCards(meta, isChannelPage) {
     const sliced = mergedItems.map((item) => renderTopGenresItem(item)).join('');
     const showMoreCard = isChannelPage
         ? ''
-        : `<a class="top-genres-card top-genres-card--more" href="/Categories">View all</a>`;
+        : `<a class="top-genres-card top-genres-card--more" href="/Categories">See more</a>`;
     return {
         cards: `${sliced}${showMoreCard}`,
         deezerItemsAttr: `data-deezer-items="${encodeURIComponent(JSON.stringify(baseTopGenresItems))}"`
@@ -2667,7 +2667,7 @@ function refreshCategoriesSection() {
     }
     const mergedItems = mergeSpotifyCategories(deezerItems, 14);
     row.innerHTML = mergedItems.map((item) => renderTopGenresItem(item)).join('')
-        + `<a class="top-genres-card top-genres-card--more" href="/Categories">View all</a>`;
+        + `<a class="top-genres-card top-genres-card--more" href="/Categories">See more</a>`;
 }
 
 function openTracklist(id, type) {
