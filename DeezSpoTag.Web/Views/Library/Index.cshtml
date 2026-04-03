@@ -92,7 +92,7 @@
 
 <div id="unmatchedArtistsModal" class="unmatched-artists-modal" hidden>
     <div class="unmatched-artists-modal__backdrop" data-close-unmatched-modal></div>
-    <div class="unmatched-artists-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="unmatchedArtistsTitle">
+    <dialog class="unmatched-artists-modal__dialog" aria-labelledby="unmatchedArtistsTitle">
         <header class="unmatched-artists-modal__header">
             <h3 id="unmatchedArtistsTitle">Resolve Unmatched Spotify Artists</h3>
             <button type="button" class="unmatched-artists-modal__close" id="closeUnmatchedArtistsModal" aria-label="Close">×</button>
@@ -104,7 +104,7 @@
         </div>
         <div id="unmatchedArtistsStatus" class="unmatched-artists-modal__status">Loading unmatched artists...</div>
         <div id="unmatchedArtistsList" class="unmatched-artists-modal__list"></div>
-    </div>
+    </dialog>
 </div>
 
 <script src="~/js/library.js" asp-append-version="true"></script>

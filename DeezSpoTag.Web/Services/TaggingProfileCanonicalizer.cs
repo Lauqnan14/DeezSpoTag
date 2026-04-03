@@ -6,6 +6,9 @@ namespace DeezSpoTag.Web.Services;
 
 public static class TaggingProfileCanonicalizer
 {
+    private const string DownloadTagsKey = "downloadTags";
+    private const string EnrichmentTagsKey = "tags";
+
     private sealed record TagDescriptor(
         string CanonicalKey,
         Func<UnifiedTagConfig, TagSource> Getter,
@@ -88,13 +91,12 @@ public static class TaggingProfileCanonicalizer
         var data = profile.AutoTag.Data;
         var baseConfig = CloneConfig(profile.TagConfig);
 
-        var hasDownloadTags = TryReadTagArray(data, "downloadTags", out var downloadTags, out var downloadKey);
-        var hasEnrichmentTags = TryReadTagArray(data, "tags", out var enrichmentTags, out var enrichmentKey);
+        var hasDownloadTags = TryReadTagArray(data, DownloadTagsKey, out var downloadTags, out var downloadKey);
+        var hasEnrichmentTags = TryReadTagArray(data, EnrichmentTagsKey, out var enrichmentTags, out var enrichmentKey);
 
         if (!hasDownloadTags && seedFromTagConfigWhenMissing)
         {
             downloadTags = BuildTagListFromConfig(baseConfig, includeDownloadSource: true);
-            hasDownloadTags = true;
             changed |= WriteTagArray(data, downloadKey, downloadTags);
         }
         else if (hasDownloadTags)
@@ -105,7 +107,6 @@ public static class TaggingProfileCanonicalizer
         if (!hasEnrichmentTags && seedFromTagConfigWhenMissing)
         {
             enrichmentTags = BuildTagListFromConfig(baseConfig, includeAutoTagSource: true);
-            hasEnrichmentTags = true;
             changed |= WriteTagArray(data, enrichmentKey, enrichmentTags);
         }
         else if (hasEnrichmentTags)
@@ -136,8 +137,8 @@ public static class TaggingProfileCanonicalizer
 
         var data = profile.AutoTag.Data;
         var changed = false;
-        changed |= WriteTagArray(data, ResolveTagArrayKey(data, "downloadTags"), BuildTagListFromConfig(profile.TagConfig, includeDownloadSource: true));
-        changed |= WriteTagArray(data, ResolveTagArrayKey(data, "tags"), BuildTagListFromConfig(profile.TagConfig, includeAutoTagSource: true));
+        changed |= WriteTagArray(data, ResolveTagArrayKey(data, DownloadTagsKey), BuildTagListFromConfig(profile.TagConfig, includeDownloadSource: true));
+        changed |= WriteTagArray(data, ResolveTagArrayKey(data, EnrichmentTagsKey), BuildTagListFromConfig(profile.TagConfig, includeAutoTagSource: true));
         return changed;
     }
 
@@ -150,8 +151,8 @@ public static class TaggingProfileCanonicalizer
             ? new Dictionary<string, JsonElement>(existingData, StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
 
-        var downloadKey = ResolveTagArrayKey(data, "downloadTags");
-        var enrichmentKey = ResolveTagArrayKey(data, "tags");
+        var downloadKey = ResolveTagArrayKey(data, DownloadTagsKey);
+        var enrichmentKey = ResolveTagArrayKey(data, EnrichmentTagsKey);
 
         WriteTagArray(data, downloadKey, BuildTagListFromConfig(config, includeDownloadSource: true));
         WriteTagArray(data, enrichmentKey, BuildTagListFromConfig(config, includeAutoTagSource: true));
@@ -169,8 +170,8 @@ public static class TaggingProfileCanonicalizer
             return CloneConfig(fallback);
         }
 
-        var hasDownloadTags = TryReadTagArray(autoTagData, "downloadTags", out var downloadTags, out _);
-        var hasEnrichmentTags = TryReadTagArray(autoTagData, "tags", out var enrichmentTags, out _);
+        var hasDownloadTags = TryReadTagArray(autoTagData, DownloadTagsKey, out var downloadTags, out _);
+        var hasEnrichmentTags = TryReadTagArray(autoTagData, EnrichmentTagsKey, out var enrichmentTags, out _);
 
         var config = hasDownloadTags
             ? CreateEmptyConfig()

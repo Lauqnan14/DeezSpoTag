@@ -328,24 +328,9 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
 
     private static bool ShouldUseInEngineQualityFallback(QobuzQueueItem payload)
     {
-        IEnumerable<string> plannedEngines = Enumerable.Empty<string>();
-        if (payload.FallbackPlan != null && payload.FallbackPlan.Count > 0)
-        {
-            plannedEngines = payload.FallbackPlan
-                .Select(step => step.Engine)
-                .Where(engine => !string.IsNullOrWhiteSpace(engine));
-        }
-        else if (payload.AutoSources != null && payload.AutoSources.Count > 0)
-        {
-            plannedEngines = payload.AutoSources
-                .Select(DownloadSourceOrder.DecodeAutoSource)
-                .Select(step => step.Source)
-                .Where(engine => !string.IsNullOrWhiteSpace(engine));
-        }
-
         // If the queue item is in a multi-engine fallback plan (e.g. qobuz -> tidal -> apple),
         // do not do in-engine quality step-down first; let the global coordinator preserve source order.
-        return !plannedEngines.Any(engine => !string.Equals(engine, EngineName, StringComparison.OrdinalIgnoreCase));
+        return EngineFallbackPlanPolicy.ShouldUseInEngineFallback(payload, EngineName);
     }
 
     private async Task<string> DownloadWithQualityAsync(DownloadWithQualityContext context, string quality)

@@ -1,5 +1,4 @@
 using DeezSpoTag.Services.Download.Shared;
-using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
@@ -612,7 +611,7 @@ public class AutoTagEnhancementController : ControllerBase
         var enabledFolders = folders
             .Where(folder => folder.Enabled
                 && !string.IsNullOrWhiteSpace(folder.RootPath)
-                && IsMusicFolder(folder))
+                && LibraryFolderPathSafety.IsMusicFolder(folder))
             .ToList();
         var scopedFolderIds = AutoTagFolderScopeHelper.NormalizeFolderIds(request.FolderIds, enabledFolders);
         if (scopedFolderIds.Count == 0)
@@ -1137,12 +1136,6 @@ public class AutoTagEnhancementController : ControllerBase
         _folderUniformityRun = runState;
     }
 
-    private static bool IsMusicFolder(FolderDto folder)
-    {
-        var mode = folder.DesiredQuality?.Trim().ToLowerInvariant();
-        return mode is not "video" and not "podcast";
-    }
-
     private static List<FolderDto> FilterUnsafeMusicDownloadRoots(
         IReadOnlyList<FolderDto> folders,
         DeezSpoTagSettings settings,
@@ -1157,13 +1150,13 @@ public class AutoTagEnhancementController : ControllerBase
         var filtered = new List<FolderDto>(folders.Count);
         foreach (var folder in folders)
         {
-            if (!IsMusicFolder(folder) || string.IsNullOrWhiteSpace(folder.RootPath))
+            if (!LibraryFolderPathSafety.IsMusicFolder(folder) || string.IsNullOrWhiteSpace(folder.RootPath))
             {
                 filtered.Add(folder);
                 continue;
             }
 
-            if (IsSameOrDescendantPath(folder.RootPath, settings.DownloadLocation))
+            if (LibraryFolderPathSafety.IsSameOrDescendantPath(folder.RootPath, settings.DownloadLocation))
             {
                 skippedRoots.Add(folder.RootPath);
                 continue;
@@ -1173,33 +1166,6 @@ public class AutoTagEnhancementController : ControllerBase
         }
 
         return filtered;
-    }
-
-    private static bool IsSameOrDescendantPath(string candidatePath, string rootPath)
-    {
-        var normalizedRoot = NormalizeRootPath(rootPath);
-        var normalizedCandidate = NormalizeRootPath(candidatePath);
-        if (string.Equals(normalizedRoot, normalizedCandidate, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        var rootWithSeparator = normalizedRoot.EndsWith('/')
-            || normalizedRoot.EndsWith('\\')
-            ? normalizedRoot
-            : normalizedRoot + Path.DirectorySeparatorChar;
-        return normalizedCandidate.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string NormalizeRootPath(string path)
-    {
-        if (DownloadPathResolver.IsSmbPath(path))
-        {
-            return path.TrimEnd('/');
-        }
-
-        return Path.GetFullPath(path)
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
     private static bool TryParseSourceFolderProgress(

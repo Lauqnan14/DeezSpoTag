@@ -12,9 +12,6 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Authorize]
 public sealed class TaggingProfilesApiController : ControllerBase
 {
-    private const string DownloadTagSourceKey = "downloadTagSource";
-    private const string DeezerSource = "deezer";
-
     private readonly TaggingProfileService _profiles;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
     public TaggingProfilesApiController(
@@ -162,82 +159,8 @@ public sealed class TaggingProfilesApiController : ControllerBase
 
     private static AutoTagSettings SanitizeAutoTagSettings(AutoTagSettings? autoTag)
     {
-        var sanitized = autoTag ?? new AutoTagSettings();
-        sanitized.Data ??= new Dictionary<string, JsonElement>();
-        StripAuthSecrets(sanitized.Data);
-        EnsureBooleanAutoTagDefault(sanitized.Data, "overwrite", false);
-        EnsureStringArrayAutoTagDefault(sanitized.Data, "overwriteTags");
-        EnsureDownloadTagSourceDefault(sanitized.Data);
-        return sanitized;
+        return TaggingProfileDataHelper.SanitizeAutoTagSettings(autoTag);
     }
-
-    private static void EnsureBooleanAutoTagDefault(Dictionary<string, JsonElement> data, string key, bool defaultValue)
-    {
-        var existingKey = data.Keys.FirstOrDefault(entry =>
-            string.Equals(entry, key, StringComparison.OrdinalIgnoreCase));
-        if (string.IsNullOrWhiteSpace(existingKey))
-        {
-            data[key] = JsonSerializer.SerializeToElement(defaultValue);
-            return;
-        }
-
-        var value = data[existingKey];
-        if (value.ValueKind is not JsonValueKind.True and not JsonValueKind.False)
-        {
-            data[existingKey] = JsonSerializer.SerializeToElement(defaultValue);
-        }
-    }
-
-    private static void EnsureStringArrayAutoTagDefault(Dictionary<string, JsonElement> data, string key)
-    {
-        var existingKey = data.Keys.FirstOrDefault(entry =>
-            string.Equals(entry, key, StringComparison.OrdinalIgnoreCase));
-        if (string.IsNullOrWhiteSpace(existingKey))
-        {
-            data[key] = JsonSerializer.SerializeToElement(Array.Empty<string>());
-            return;
-        }
-
-        var value = data[existingKey];
-        if (value.ValueKind != JsonValueKind.Array)
-        {
-            data[existingKey] = JsonSerializer.SerializeToElement(Array.Empty<string>());
-            return;
-        }
-
-        var normalized = value.EnumerateArray()
-            .Where(item => item.ValueKind == JsonValueKind.String)
-            .Select(item => item.GetString())
-            .Where(item => !string.IsNullOrWhiteSpace(item))
-            .Select(item => item!.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        data[existingKey] = JsonSerializer.SerializeToElement(normalized);
-    }
-
-    private static void EnsureDownloadTagSourceDefault(Dictionary<string, JsonElement> data)
-    {
-        var key = data.Keys.FirstOrDefault(entry =>
-            string.Equals(entry, DownloadTagSourceKey, StringComparison.OrdinalIgnoreCase));
-        if (string.IsNullOrWhiteSpace(key))
-        {
-            data[DownloadTagSourceKey] = JsonSerializer.SerializeToElement(DeezerSource);
-            return;
-        }
-
-        var value = data[key];
-        if (value.ValueKind != JsonValueKind.String)
-        {
-            data[key] = JsonSerializer.SerializeToElement(DeezerSource);
-            return;
-        }
-
-        var normalized = TaggingProfileDataHelper.NormalizeDownloadTagSource(value.GetString(), DeezerSource);
-        data[key] = JsonSerializer.SerializeToElement(normalized);
-    }
-
-    private static void StripAuthSecrets(Dictionary<string, JsonElement> data)
-        => _ = TaggingProfileDataHelper.StripAuthSecrets(data);
 
     [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(string id, CancellationToken cancellationToken)
@@ -436,7 +359,15 @@ public sealed class TaggingProfilesApiController : ControllerBase
     private static bool TryGetTagList(Dictionary<string, JsonElement> data, string key, out List<string> tags)
     {
         tags = new List<string>();
-        if (!data.TryGetValue(key, out var element) || element.ValueKind != JsonValueKind.Array)
+        var matchingKey = data.Keys.FirstOrDefault(entry =>
+            string.Equals(entry, key, StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(matchingKey))
+        {
+            return false;
+        }
+
+        var element = data[matchingKey];
+        if (element.ValueKind != JsonValueKind.Array)
         {
             return false;
         }
