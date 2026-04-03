@@ -49,7 +49,7 @@ public sealed class LibraryRuntimeSnapshotService : ILibraryRuntimeSnapshotProvi
     public async Task<LibraryRuntimeSnapshotDto> BuildSnapshotAsync(long? folderId, CancellationToken cancellationToken)
     {
         var scanStatus = BuildScanStatus();
-        var stats = await BuildStatsPayloadAsync(folderId, scanStatus.Running, cancellationToken);
+        var stats = await BuildStatsPayloadAsync(folderId, scanStatus.Running, scanStatus.ProgressSignature, cancellationToken);
         var refreshPolicy = BuildRefreshPolicy();
         return new LibraryRuntimeSnapshotDto(scanStatus.Payload, stats, refreshPolicy);
     }
@@ -86,13 +86,12 @@ public sealed class LibraryRuntimeSnapshotService : ILibraryRuntimeSnapshotProvi
         });
     }
 
-    private async Task<object> BuildStatsPayloadAsync(long? folderId, bool running, CancellationToken cancellationToken)
+    private async Task<object> BuildStatsPayloadAsync(
+        long? folderId,
+        bool running,
+        string progressSignature,
+        CancellationToken cancellationToken)
     {
-        var scanStatus = _scanRunner.GetStatus();
-        var progressSignature = string.Create(
-            CultureInfo.InvariantCulture,
-            $"{scanStatus.ProcessedFiles}:{scanStatus.TotalFiles}:{scanStatus.ErrorCount}:{scanStatus.ArtistsDetected}:{scanStatus.AlbumsDetected}:{scanStatus.TracksDetected}:{scanStatus.CurrentFile ?? string.Empty}");
-
         if (!running)
         {
             lock (_statsCacheLock)
