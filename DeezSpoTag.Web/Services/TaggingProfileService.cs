@@ -125,6 +125,7 @@ public sealed class TaggingProfileService
             return null;
         }
 
+        TaggingProfileCanonicalizer.SyncTagArraysFromConfig(profile);
         TaggingProfileCanonicalizer.Canonicalize(profile);
 
         var profiles = await LoadAsync();
@@ -265,6 +266,11 @@ public sealed class TaggingProfileService
 
         var changed = StripAuthSecrets(profile.AutoTag.Data);
         if (TryNormalizeDownloadTagSourceField(profile.AutoTag.Data))
+        {
+            changed = true;
+        }
+
+        if (TaggingProfileCanonicalizer.SyncTagArraysFromConfig(profile))
         {
             changed = true;
         }

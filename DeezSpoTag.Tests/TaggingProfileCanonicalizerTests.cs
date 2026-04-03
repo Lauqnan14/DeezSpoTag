@@ -97,6 +97,32 @@ public sealed class TaggingProfileCanonicalizerTests
         Assert.Equal(TagSource.Both, profile.TagConfig.UnsyncedLyrics);
     }
 
+    [Fact]
+    public void SyncTagArraysFromConfig_OverwritesStaleArrays()
+    {
+        var profile = new TaggingProfile
+        {
+            TagConfig = CreateEmptyTagConfig(),
+            AutoTag = new AutoTagSettings
+            {
+                Data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["downloadTags"] = JsonSerializer.SerializeToElement(new[] { "artist", "album" }),
+                    ["tags"] = JsonSerializer.SerializeToElement(new[] { "genre" })
+                }
+            }
+        };
+
+        profile.TagConfig.Title = TagSource.DownloadSource;
+        profile.TagConfig.ReleaseDate = TagSource.AutoTagPlatform;
+
+        var changed = TaggingProfileCanonicalizer.SyncTagArraysFromConfig(profile);
+
+        Assert.True(changed);
+        Assert.Equal(new[] { "title" }, ReadStringArray(profile.AutoTag.Data["downloadTags"]));
+        Assert.Equal(new[] { "releaseDate" }, ReadStringArray(profile.AutoTag.Data["tags"]));
+    }
+
     private static UnifiedTagConfig CreateEmptyTagConfig()
     {
         var config = new UnifiedTagConfig();

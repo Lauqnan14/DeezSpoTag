@@ -1,6 +1,5 @@
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Shared;
-using System.Text.Json;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -63,16 +62,7 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
                 return null;
             }
 
-            var effectiveTagConfig = TaggingProfileCanonicalizer.BuildTagConfig(profile.TagConfig, profile.AutoTag?.Data);
-            var tagSettings = _converter.ToTagSettings(effectiveTagConfig, profile.Technical);
-            if (ShouldApplyLegacyDownloadTagFallback(tagSettings, profile.AutoTag?.Data, out var legacyDownloadTags))
-            {
-                ApplyLegacyDownloadTags(tagSettings, legacyDownloadTags);
-                _logger.LogWarning(
-                    "Profile {ProfileId} had legacy tag mismatch (tagConfig vs autoTag.downloadTags) for folder {FolderId}; restored download tag selection from legacy list.",
-                    profile.Id,
-                    folder.Id);
-            }
+            var tagSettings = _converter.ToTagSettings(profile.TagConfig, profile.Technical);
 
             if (IsDownloadTagSelectionEmpty(tagSettings))
             {
@@ -125,174 +115,6 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
         }
 
         return "music";
-    }
-
-    private static bool ShouldApplyLegacyDownloadTagFallback(
-        TagSettings tagSettings,
-        Dictionary<string, JsonElement>? autoTagData,
-        out HashSet<string> legacyDownloadTags)
-    {
-        legacyDownloadTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (autoTagData == null
-            || !TryGetStringArray(autoTagData, "downloadTags", legacyDownloadTags)
-            || legacyDownloadTags.Count == 0)
-        {
-            return false;
-        }
-
-        // Detect mismatched legacy state where explicit tagConfig disabled core download tags
-        // but legacy autoTag.downloadTags still requested them.
-        var coreDisabled =
-            !tagSettings.Title
-            && !tagSettings.Artist
-            && !tagSettings.Album
-            && !tagSettings.AlbumArtist;
-
-        var legacyRequestsCore =
-            legacyDownloadTags.Contains("title")
-            || legacyDownloadTags.Contains("artist")
-            || legacyDownloadTags.Contains("album")
-            || legacyDownloadTags.Contains("albumArtist");
-
-        return coreDisabled && legacyRequestsCore;
-    }
-
-    private static bool TryGetStringArray(
-        Dictionary<string, JsonElement> source,
-        string key,
-        HashSet<string> output)
-    {
-        var matchingKey = source.Keys.FirstOrDefault(entry =>
-            string.Equals(entry, key, StringComparison.OrdinalIgnoreCase));
-        if (string.IsNullOrWhiteSpace(matchingKey))
-        {
-            return false;
-        }
-
-        var value = source[matchingKey];
-        if (value.ValueKind != JsonValueKind.Array)
-        {
-            return false;
-        }
-
-        foreach (var item in value.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.String)
-            {
-                continue;
-            }
-
-            var normalized = item.GetString()?.Trim();
-            if (!string.IsNullOrWhiteSpace(normalized))
-            {
-                output.Add(normalized);
-            }
-        }
-
-        return output.Count > 0;
-    }
-
-    private static void ApplyLegacyDownloadTags(TagSettings tagSettings, HashSet<string> legacyDownloadTags)
-    {
-        foreach (var tag in legacyDownloadTags)
-        {
-            switch (tag)
-            {
-                case "title":
-                    tagSettings.Title = true;
-                    break;
-                case "artist":
-                    tagSettings.Artist = true;
-                    break;
-                case "artists":
-                    tagSettings.Artists = true;
-                    break;
-                case "album":
-                    tagSettings.Album = true;
-                    break;
-                case "albumArtist":
-                    tagSettings.AlbumArtist = true;
-                    break;
-                case "cover":
-                case "albumArt":
-                    tagSettings.Cover = true;
-                    break;
-                case "trackNumber":
-                    tagSettings.TrackNumber = true;
-                    break;
-                case "trackTotal":
-                    tagSettings.TrackTotal = true;
-                    break;
-                case "discNumber":
-                    tagSettings.DiscNumber = true;
-                    break;
-                case "discTotal":
-                    tagSettings.DiscTotal = true;
-                    break;
-                case "genre":
-                    tagSettings.Genre = true;
-                    break;
-                case "year":
-                    tagSettings.Year = true;
-                    break;
-                case "date":
-                    tagSettings.Date = true;
-                    break;
-                case "isrc":
-                    tagSettings.Isrc = true;
-                    break;
-                case "barcode":
-                    tagSettings.Barcode = true;
-                    break;
-                case "bpm":
-                    tagSettings.Bpm = true;
-                    break;
-                case "duration":
-                case "length":
-                    tagSettings.Length = true;
-                    break;
-                case "replayGain":
-                    tagSettings.ReplayGain = true;
-                    break;
-                case "label":
-                    tagSettings.Label = true;
-                    break;
-                case "copyright":
-                    tagSettings.Copyright = true;
-                    break;
-                case "lyrics":
-                case "unsyncedLyrics":
-                    tagSettings.Lyrics = true;
-                    break;
-                case "syncedLyrics":
-                    tagSettings.SyncedLyrics = true;
-                    break;
-                case "composer":
-                    tagSettings.Composer = true;
-                    break;
-                case "involvedPeople":
-                    tagSettings.InvolvedPeople = true;
-                    break;
-                case "source":
-                    tagSettings.Source = true;
-                    break;
-                case "url":
-                    tagSettings.Url = true;
-                    break;
-                case "trackId":
-                    tagSettings.TrackId = true;
-                    break;
-                case "releaseId":
-                    tagSettings.ReleaseId = true;
-                    break;
-                case "explicit":
-                    tagSettings.Explicit = true;
-                    break;
-                case "rating":
-                    tagSettings.Rating = true;
-                    break;
-            }
-        }
     }
 
     private static bool IsDownloadTagSelectionEmpty(TagSettings settings)

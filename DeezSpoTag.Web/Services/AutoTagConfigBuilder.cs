@@ -12,11 +12,20 @@ public sealed class AutoTagConfigBuilder
 
     public string? BuildConfigJson(TaggingProfile profile)
     {
-        if (profile.AutoTag.Data.Count == 0)
+        if (profile == null)
         {
             return null;
         }
 
-        return JsonSerializer.Serialize(profile.AutoTag.Data, _serializerOptions);
+        var canonicalData = TaggingProfileCanonicalizer.BuildAutoTagDataFromTagConfig(
+            profile.TagConfig,
+            profile.AutoTag?.Data);
+
+        if (canonicalData.Count == 0)
+        {
+            return null;
+        }
+
+        return JsonSerializer.Serialize(canonicalData, _serializerOptions);
     }
 }
