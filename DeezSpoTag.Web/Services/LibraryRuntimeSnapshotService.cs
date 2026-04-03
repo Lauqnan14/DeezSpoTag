@@ -3,7 +3,7 @@ using System.Globalization;
 
 namespace DeezSpoTag.Web.Services;
 
-public sealed class LibraryRuntimeSnapshotService
+public sealed class LibraryRuntimeSnapshotService : ILibraryRuntimeSnapshotProvider
 {
     private const int DefaultScanStatusActiveMs = 5000;
     private const int DefaultScanStatusIdleMs = 15000;
@@ -17,10 +17,9 @@ public sealed class LibraryRuntimeSnapshotService
     private readonly ILogger<LibraryRuntimeSnapshotService> _logger;
     private readonly object _statsCacheLock = new();
     private readonly Dictionary<string, CachedStatsSnapshot> _activeScanStatsCache = new(StringComparer.Ordinal);
-    private static readonly TimeSpan ActiveScanStatsTtl = TimeSpan.FromSeconds(5);
 
-    private sealed record CachedStatsSnapshot(DateTimeOffset ExpiresAtUtc, object Payload);
-    private sealed record ScanStatusSnapshot(bool Running, object Payload);
+    private sealed record CachedStatsSnapshot(string ProgressSignature, object Payload);
+    private sealed record ScanStatusSnapshot(bool Running, string ProgressSignature, object Payload);
 
     public LibraryRuntimeSnapshotService(
         LibraryRepository repository,
@@ -59,8 +58,11 @@ public sealed class LibraryRuntimeSnapshotService
     {
         var lastScan = _configStore.GetLastScanInfo();
         var scanStatus = _scanRunner.GetStatus();
+        var progressSignature = string.Create(
+            CultureInfo.InvariantCulture,
+            $"{scanStatus.ProcessedFiles}:{scanStatus.TotalFiles}:{scanStatus.ErrorCount}:{scanStatus.ArtistsDetected}:{scanStatus.AlbumsDetected}:{scanStatus.TracksDetected}:{scanStatus.CurrentFile ?? string.Empty}");
 
-        return new ScanStatusSnapshot(scanStatus.IsRunning, new
+        return new ScanStatusSnapshot(scanStatus.IsRunning, progressSignature, new
         {
             lastRunUtc = lastScan.LastRunUtc,
             lastCounts = new
@@ -86,17 +88,25 @@ public sealed class LibraryRuntimeSnapshotService
 
     private async Task<object> BuildStatsPayloadAsync(long? folderId, bool running, CancellationToken cancellationToken)
     {
+        var scanStatus = _scanRunner.GetStatus();
+        var progressSignature = string.Create(
+            CultureInfo.InvariantCulture,
+            $"{scanStatus.ProcessedFiles}:{scanStatus.TotalFiles}:{scanStatus.ErrorCount}:{scanStatus.ArtistsDetected}:{scanStatus.AlbumsDetected}:{scanStatus.TracksDetected}:{scanStatus.CurrentFile ?? string.Empty}");
+
         if (!running)
         {
+            lock (_statsCacheLock)
+            {
+                _activeScanStatsCache.Clear();
+            }
             return await _libraryStatsSnapshotService.BuildStatsPayloadAsync(folderId, cancellationToken);
         }
 
         var cacheKey = folderId?.ToString(CultureInfo.InvariantCulture) ?? "all";
-        var now = DateTimeOffset.UtcNow;
         lock (_statsCacheLock)
         {
             if (_activeScanStatsCache.TryGetValue(cacheKey, out var cached)
-                && cached.ExpiresAtUtc >= now)
+                && string.Equals(cached.ProgressSignature, progressSignature, StringComparison.Ordinal))
             {
                 _logger.LogDebug("Library runtime stats cache hit for key {CacheKey} during active scan.", cacheKey);
                 return cached.Payload;
@@ -107,7 +117,7 @@ public sealed class LibraryRuntimeSnapshotService
         var payload = await _libraryStatsSnapshotService.BuildStatsPayloadAsync(folderId, cancellationToken);
         lock (_statsCacheLock)
         {
-            _activeScanStatsCache[cacheKey] = new CachedStatsSnapshot(now.Add(ActiveScanStatsTtl), payload);
+            _activeScanStatsCache[cacheKey] = new CachedStatsSnapshot(progressSignature, payload);
         }
 
         return payload;

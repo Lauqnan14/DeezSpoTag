@@ -29,6 +29,8 @@ const libraryState = {
     artistSearchTimer: null,
     artistLoadRequestId: 0,
     artistLoadAbortController: null,
+    artistVirtualizationCleanup: null,
+    artistVirtualizationKey: '',
     scanArtistsRefreshInFlight: false,
     lastActiveScanRefreshKey: '',
     lastArtistRefreshAtMs: 0,
@@ -2995,12 +2997,159 @@ async function waitForScanCompletion(startedAtMs) {
     await refreshViews();
 }
 
+function clearArtistGridVirtualization() {
+    if (typeof libraryState.artistVirtualizationCleanup === 'function') {
+        libraryState.artistVirtualizationCleanup();
+    }
+    libraryState.artistVirtualizationCleanup = null;
+    libraryState.artistVirtualizationKey = '';
+}
+
+function createArtistCardElement(artist, anchorId = '') {
+    const card = document.createElement('div');
+    card.className = 'artist-card ds-tile';
+    if (anchorId) {
+        card.id = anchorId;
+    }
+    const initials = (artist?.name || '')
+        .split(' ')
+        .map(part => part[0])
+        .slice(0, 2)
+        .join('')
+        .toUpperCase();
+    const coverPath = artist?.preferredImagePath
+        ? `/api/library/image?path=${encodeURIComponent(artist.preferredImagePath)}&size=240`
+        : '';
+    const coverUrl = coverPath ? appendCacheKey(coverPath) : '';
+    const imageMarkup = artist?.preferredImagePath
+        ? `<img src="${coverUrl}" alt="${escapeHtml(artist?.name || 'Artist')}" loading="lazy" decoding="async" />`
+        : `<div class="artist-initials">${initials || '?'}</div>`;
+    card.innerHTML = `
+        ${imageMarkup}
+        <strong>${escapeHtml(artist?.name || 'Unknown Artist')}</strong>
+    `;
+    card.addEventListener('click', () => {
+        persistLibraryReturnState();
+        globalThis.location.href = `/Library/Artist/${artist.id}`;
+    });
+    return card;
+}
+
+function renderArtistGridWindowed(container, artists, letterNav) {
+    const renderKey = artists.map(item => `${item.id}:${item.name || ''}`).join('|');
+    if (libraryState.artistVirtualizationKey !== renderKey) {
+        clearArtistGridVirtualization();
+    }
+    libraryState.artistVirtualizationKey = renderKey;
+
+    container.innerHTML = '';
+    container.classList.add('artist-grid-windowed');
+    container.style.position = 'relative';
+    const cardSizeRaw = getComputedStyle(container).getPropertyValue('--art-card-size').trim();
+    const cardSize = Math.max(120, Number.parseInt(cardSizeRaw || '180', 10) || 180);
+    const gap = 16;
+    const rowHeight = cardSize + 48;
+    const minColumnWidth = cardSize + gap;
+    const columns = Math.max(1, Math.floor((container.clientWidth + gap) / minColumnWidth));
+    const totalRows = Math.max(1, Math.ceil(artists.length / columns));
+    const totalHeight = totalRows * rowHeight;
+    container.style.height = `${totalHeight}px`;
+
+    const anchorIdsByLetter = new Map();
+    const firstIndexByLetter = new Map();
+    artists.forEach((artist, index) => {
+        const letter = getAlphaJumpLetter(artist?.name);
+        if (!firstIndexByLetter.has(letter)) {
+            firstIndexByLetter.set(letter, index);
+            const anchorId = buildAlphaJumpAnchorId('library', letter);
+            anchorIdsByLetter.set(letter, anchorId);
+            const anchor = document.createElement('span');
+            anchor.id = anchorId;
+            anchor.className = 'artist-grid-anchor';
+            anchor.style.top = `${Math.floor(index / columns) * rowHeight}px`;
+            container.appendChild(anchor);
+        }
+    });
+
+    const content = document.createElement('div');
+    content.className = 'artist-grid-windowed-content';
+    content.style.height = `${totalHeight}px`;
+    container.appendChild(content);
+
+    const overscanRows = 4;
+    let lastRangeKey = '';
+    const renderVisibleRange = () => {
+        const containerRect = container.getBoundingClientRect();
+        const viewportHeight = globalThis.innerHeight || document.documentElement.clientHeight || 900;
+        if (containerRect.bottom < -200 || containerRect.top > viewportHeight + 200) {
+            return;
+        }
+        const absoluteTop = containerRect.top + globalThis.scrollY;
+        const viewportTop = globalThis.scrollY;
+        const viewportBottom = viewportTop + viewportHeight;
+        const visibleTopPx = Math.max(0, viewportTop - absoluteTop);
+        const visibleBottomPx = Math.min(totalHeight, viewportBottom - absoluteTop);
+        const startRow = Math.max(0, Math.floor(visibleTopPx / rowHeight) - overscanRows);
+        const endRow = Math.min(totalRows, Math.ceil(visibleBottomPx / rowHeight) + overscanRows);
+        const startIndex = Math.max(0, startRow * columns);
+        const endIndex = Math.min(artists.length, endRow * columns);
+        const rangeKey = `${startIndex}:${endIndex}:${columns}`;
+        if (rangeKey === lastRangeKey) {
+            return;
+        }
+        lastRangeKey = rangeKey;
+
+        content.innerHTML = '';
+        for (let index = startIndex; index < endIndex; index++) {
+            const artist = artists[index];
+            if (!artist) {
+                continue;
+            }
+            const letter = getAlphaJumpLetter(artist?.name);
+            const anchorId = firstIndexByLetter.get(letter) === index
+                ? anchorIdsByLetter.get(letter) || ''
+                : '';
+            const card = createArtistCardElement(artist, anchorId);
+            const row = Math.floor(index / columns);
+            const col = index % columns;
+            card.style.position = 'absolute';
+            card.style.top = `${row * rowHeight}px`;
+            card.style.left = `${col * (cardSize + gap)}px`;
+            card.style.width = `${cardSize}px`;
+            content.appendChild(card);
+        }
+    };
+
+    const onScroll = () => {
+        globalThis.requestAnimationFrame(renderVisibleRange);
+    };
+    const onResize = () => {
+        clearArtistGridVirtualization();
+        renderArtistGrid(artists);
+    };
+
+    globalThis.addEventListener('scroll', onScroll, { passive: true });
+    globalThis.addEventListener('resize', onResize);
+    libraryState.artistVirtualizationCleanup = () => {
+        globalThis.removeEventListener('scroll', onScroll);
+        globalThis.removeEventListener('resize', onResize);
+    };
+
+    renderVisibleRange();
+    renderAlphaJumpNavigation(letterNav, anchorIdsByLetter);
+    applyPendingLibraryScrollRestore();
+}
+
 function renderArtistGrid(artists) {
     const container = document.getElementById('artistsGrid');
     const letterNav = document.getElementById('libraryLetterNav');
     if (!container) {
         return;
     }
+    clearArtistGridVirtualization();
+    container.classList.remove('artist-grid-windowed');
+    container.style.position = '';
+    container.style.height = '';
     container.innerHTML = '';
     if (!artists.length) {
         const hasFilter = !!(libraryState.artistSearchQuery || '').trim();
@@ -3012,32 +3161,22 @@ function renderArtistGrid(artists) {
         return;
     }
 
+    const shouldUseWindowing = artists.length >= 600;
+    if (shouldUseWindowing) {
+        renderArtistGridWindowed(container, artists, letterNav);
+        return;
+    }
+
     const anchorIdsByLetter = new Map();
     artists.forEach(artist => {
-        const card = document.createElement('div');
-        card.className = 'artist-card ds-tile';
         const letter = getAlphaJumpLetter(artist?.name);
-        if (!anchorIdsByLetter.has(letter)) {
-            const anchorId = buildAlphaJumpAnchorId('library', letter);
-            anchorIdsByLetter.set(letter, anchorId);
-            card.id = anchorId;
-        }
-        const initials = artist.name.split(' ').map(part => part[0]).slice(0, 2).join('').toUpperCase();
-        const coverPath = artist.preferredImagePath
-            ? `/api/library/image?path=${encodeURIComponent(artist.preferredImagePath)}&size=240`
+        const anchorId = !anchorIdsByLetter.has(letter)
+            ? buildAlphaJumpAnchorId('library', letter)
             : '';
-        const coverUrl = coverPath ? appendCacheKey(coverPath) : '';
-        const imageMarkup = artist.preferredImagePath
-            ? `<img src="${coverUrl}" alt="${escapeHtml(artist.name || 'Artist')}" loading="lazy" decoding="async" />`
-            : `<div class="artist-initials">${initials || '?'}</div>`;
-        card.innerHTML = `
-            ${imageMarkup}
-            <strong>${escapeHtml(artist.name || 'Unknown Artist')}</strong>
-        `;
-        card.addEventListener('click', () => {
-            persistLibraryReturnState();
-            globalThis.location.href = `/Library/Artist/${artist.id}`;
-        });
+        if (anchorId) {
+            anchorIdsByLetter.set(letter, anchorId);
+        }
+        const card = createArtistCardElement(artist, anchorId);
         container.appendChild(card);
     });
 

@@ -9,17 +9,17 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Authorize]
 public class LibraryRuntimeApiController : ControllerBase
 {
-    private readonly LibraryRuntimeSnapshotService _runtimeSnapshotService;
+    private readonly ILibraryRuntimeSnapshotProvider _runtimeSnapshotProvider;
 
-    public LibraryRuntimeApiController(LibraryRuntimeSnapshotService runtimeSnapshotService)
+    public LibraryRuntimeApiController(ILibraryRuntimeSnapshotProvider runtimeSnapshotProvider)
     {
-        _runtimeSnapshotService = runtimeSnapshotService;
+        _runtimeSnapshotProvider = runtimeSnapshotProvider;
     }
 
     [HttpGet]
     public async Task<IActionResult> Get([FromQuery] long? folderId, CancellationToken cancellationToken)
     {
-        var snapshot = await _runtimeSnapshotService.BuildSnapshotAsync(folderId, cancellationToken);
+        var snapshot = await _runtimeSnapshotProvider.BuildSnapshotAsync(folderId, cancellationToken);
         return Ok(new
         {
             scanStatus = snapshot.ScanStatus,
