@@ -1,8 +1,7 @@
 using DeezSpoTag.Services.Download.Queue;
-using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
-using Microsoft.Extensions.Logging;
 
 namespace DeezSpoTag.Services.Download.Fallback;
 
@@ -47,17 +46,13 @@ public sealed class EngineFallbackCoordinator
         DeezSpoTagSettingsService settingsService,
         SongLinkResolver songLinkResolver,
         DeezerIsrcResolver deezerIsrcResolver,
-        IActivityLogWriter activityLog,
-        ILogger<EngineFallbackCoordinator> logger,
-        DeezSpoTagApp deezerApp)
+        IActivityLogWriter activityLog)
     {
         _queueRepository = queueRepository;
         _settingsService = settingsService;
         _songLinkResolver = songLinkResolver;
         _deezerIsrcResolver = deezerIsrcResolver;
         _activityLog = activityLog;
-        _ = logger;
-        _ = deezerApp;
     }
 
     public Task<bool> TryAdvanceAsync<TPayload>(
