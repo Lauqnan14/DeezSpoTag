@@ -4033,14 +4033,20 @@ async function ensureRowPreviewForPlayback(row, control) {
 
     const existingDeezerId = String(row.querySelector('.track-checkbox')?.dataset.trackId || row.dataset.availabilityDeezerId || '').trim();
     if (/^\d+$/.test(existingDeezerId)) {
-        const context = getDeezerPlaybackContextForRow(row, existingDeezerId);
+        let context = getDeezerPlaybackContextForRow(row, existingDeezerId);
+        if (!context && getRowPlaybackTypeHint(row) !== 'episode') {
+            context = await awaitWithTimeout(
+                ensureDeezerPlaybackContextForRow(row, existingDeezerId),
+                1800
+            ) || null;
+        }
         const previewUrl = buildDeezerStreamUrl(existingDeezerId, {
             type: getRowPlaybackTypeHint(row),
             context
         });
         control.setAttribute('data-preview', previewUrl);
         control.classList.remove('is-disabled');
-        if (!context) {
+        if (!context && getRowPlaybackTypeHint(row) !== 'episode') {
             void ensureDeezerPlaybackContextForRow(row, existingDeezerId);
         }
         return previewUrl;
@@ -4066,7 +4072,13 @@ async function ensureRowPreviewForPlayback(row, control) {
             return '';
         }
 
-        const context = getDeezerPlaybackContextForRow(row, deezerId);
+        let context = getDeezerPlaybackContextForRow(row, deezerId);
+        if (!context && getRowPlaybackTypeHint(row) !== 'episode') {
+            context = await awaitWithTimeout(
+                ensureDeezerPlaybackContextForRow(row, deezerId),
+                1800
+            ) || null;
+        }
         const previewUrl = buildDeezerStreamUrl(deezerId, {
             type: getRowPlaybackTypeHint(row),
             context
@@ -5494,6 +5506,30 @@ function buildDeezerStreamUrl(deezerId, options = {}) {
     return window.DeezerPlaybackContext.buildStreamUrl(deezerId, options);
 }
 
+async function awaitWithTimeout(promise, timeoutMs) {
+    if (!promise || typeof promise.then !== 'function') {
+        return null;
+    }
+
+    const boundedTimeout = Number.isFinite(timeoutMs)
+        ? Math.max(1, Math.trunc(timeoutMs))
+        : 1800;
+
+    let timeoutHandle = null;
+    try {
+        return await Promise.race([
+            promise,
+            new Promise((resolve) => {
+                timeoutHandle = setTimeout(() => resolve(null), boundedTimeout);
+            })
+        ]);
+    } finally {
+        if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+        }
+    }
+}
+
 function getDeezerPlaybackContextForRow(row, deezerId = '') {
     if (!row) {
         return null;
@@ -6105,7 +6141,13 @@ async function playPausePreview(control) {
     // Build the stream URL immediately so Deezer-native playback is never blocked on preview hydration.
     if (!previewUrl && row && /^\d+$/.test(rowDeezerId)) {
         const playbackType = getRowPlaybackTypeHint(row);
-        const context = getDeezerPlaybackContextForRow(row, rowDeezerId);
+        let context = getDeezerPlaybackContextForRow(row, rowDeezerId);
+        if (!context && playbackType !== 'episode') {
+            context = await awaitWithTimeout(
+                ensureDeezerPlaybackContextForRow(row, rowDeezerId),
+                1800
+            ) || null;
+        }
         previewUrl = buildDeezerStreamUrl(rowDeezerId, {
             type: playbackType,
             context
@@ -6126,7 +6168,13 @@ async function playPausePreview(control) {
             } else {
                 const deezerId = rowDeezerId;
                 if (deezerId && /^\d+$/.test(deezerId)) {
-                    const context = getDeezerPlaybackContextForRow(row, deezerId);
+                    let context = getDeezerPlaybackContextForRow(row, deezerId);
+                    if (!context) {
+                        context = await awaitWithTimeout(
+                            ensureDeezerPlaybackContextForRow(row, deezerId),
+                            1800
+                        ) || null;
+                    }
                     previewUrl = buildDeezerStreamUrl(deezerId, {
                         type: playbackType,
                         context
