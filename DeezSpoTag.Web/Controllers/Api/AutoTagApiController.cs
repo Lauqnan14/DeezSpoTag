@@ -230,6 +230,7 @@ public class AutoTagJobsController : ControllerBase
     }
 
     [HttpGet("jobs/{id}")]
+    [ResponseCache(Duration = 0, Location = ResponseCacheLocation.None, NoStore = true)]
     public IActionResult GetJob(string id)
     {
         var job = _autoTagService.GetJob(id);
@@ -291,6 +292,7 @@ public class AutoTagJobsController : ControllerBase
     }
 
     [HttpGet("jobs/latest")]
+    [ResponseCache(Duration = 0, Location = ResponseCacheLocation.None, NoStore = true)]
     public IActionResult GetLatestJob()
     {
         var job = _autoTagService.GetLatestJob();

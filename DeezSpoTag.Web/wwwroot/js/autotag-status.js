@@ -229,7 +229,13 @@
     }
 
     async function fetchJson(url) {
-        const response = await fetch(url);
+        const response = await fetch(url, {
+            cache: "no-store",
+            headers: {
+                "Cache-Control": "no-cache",
+                Pragma: "no-cache"
+            }
+        });
         if (!response.ok) {
             throw new Error(`Request failed: ${response.status}`);
         }
@@ -846,6 +852,26 @@
         });
     }
 
+    function bindPageResumeRefresh() {
+        globalThis.addEventListener("focus", () => {
+            if (!document.hidden) {
+                void refreshNow({ loadCalendar: isHistoryTabActive() });
+            }
+        });
+
+        globalThis.addEventListener("pageshow", () => {
+            if (!document.hidden) {
+                void refreshNow({ loadCalendar: isHistoryTabActive() });
+            }
+        });
+
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden) {
+                void refreshNow({ loadCalendar: isHistoryTabActive() });
+            }
+        });
+    }
+
     function bindFilterButtons() {
         document.querySelectorAll(".autotag-filter-toolbar button[data-filter]").forEach((btn) => {
             btn.addEventListener("click", () => setFilter(btn.dataset.filter || "all"));
@@ -1382,6 +1408,7 @@
         bindQuickActions();
         bindDiffActions();
         bindHistoryNavigation();
+        bindPageResumeRefresh();
         void pollJob();
         void loadCalendar();
     });
