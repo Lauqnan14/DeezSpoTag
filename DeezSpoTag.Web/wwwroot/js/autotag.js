@@ -80,19 +80,7 @@
                 runDedupe: true,
                 useShazamForDedupe: false,
                 duplicatesFolderName: "%duplicates%",
-                includeSubfolders: true,
-                usePrimaryArtistFolders: true,
-                multiArtistSeparator: "default",
-                createArtistFolder: true,
-                artistNameTemplate: "%artist%",
-                createAlbumFolder: true,
-                albumNameTemplate: "%album%",
-                createCDFolder: false,
-                createStructurePlaylist: false,
-                createSingleFolder: false,
-                createPlaylistFolder: true,
-                playlistNameTemplate: "%playlist%",
-                illegalCharacterReplacer: "_"
+                includeSubfolders: true
             },
             coverMaintenance: {
                 folderIds: [],
