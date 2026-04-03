@@ -2827,6 +2827,7 @@ public class AutoTagService
             EnsureEffectivePlatforms(node);
             EnsureSupportedDownloadTagSource(node);
             EnsureOverwriteDefaults(node);
+            EnsureEnhancementFolderScopesCanonical(node);
             EnsureLegacyFolderUniformityStructureMirrorsRemoved(node);
             EnsureSpotifySecret(node);
             return node.ToJsonString(new JsonSerializerOptions
@@ -2932,6 +2933,73 @@ public class AutoTagService
         }
 
         root[AutoTagLiterals.OverwriteTagsKey] = normalized;
+    }
+
+    private static void EnsureEnhancementFolderScopesCanonical(JsonNode node)
+    {
+        if (node is not JsonObject root
+            || root["enhancement"] is not JsonObject enhancement)
+        {
+            return;
+        }
+
+        CanonicalizeEnhancementFolderScopeSection(enhancement, "folderUniformity");
+        CanonicalizeEnhancementFolderScopeSection(enhancement, "coverMaintenance");
+        CanonicalizeEnhancementFolderScopeSection(enhancement, "qualityChecks");
+    }
+
+    private static void CanonicalizeEnhancementFolderScopeSection(JsonObject enhancement, string sectionName)
+    {
+        if (enhancement[sectionName] is not JsonObject section)
+        {
+            return;
+        }
+
+        var folderIds = ParseFolderIds(section, "folderIds");
+        if (folderIds.Count == 0 && TryParseLegacyFolderId(section["folderId"], out var legacyFolderId))
+        {
+            folderIds.Add(legacyFolderId);
+        }
+
+        var normalized = new JsonArray();
+        foreach (var folderId in folderIds.Distinct())
+        {
+            normalized.Add(folderId);
+        }
+
+        section["folderIds"] = normalized;
+        section.Remove("folderId");
+    }
+
+    private static bool TryParseLegacyFolderId(JsonNode? folderIdNode, out long folderId)
+    {
+        folderId = 0;
+        if (folderIdNode is not JsonValue value)
+        {
+            return false;
+        }
+
+        if (value.TryGetValue<long>(out var longValue) && longValue > 0)
+        {
+            folderId = longValue;
+            return true;
+        }
+
+        if (value.TryGetValue<int>(out var intValue) && intValue > 0)
+        {
+            folderId = intValue;
+            return true;
+        }
+
+        if (value.TryGetValue<string>(out var stringValue)
+            && long.TryParse(stringValue, out var parsedValue)
+            && parsedValue > 0)
+        {
+            folderId = parsedValue;
+            return true;
+        }
+
+        return false;
     }
 
     private static void EnsureLegacyFolderUniformityStructureMirrorsRemoved(JsonNode node)

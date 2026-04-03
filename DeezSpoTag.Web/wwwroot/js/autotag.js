@@ -1653,9 +1653,6 @@
 
         const folderUniformity = enhancement.folderUniformity;
         folderUniformity.folderIds = parseFolderIdList(folderUniformity.folderIds);
-        if (folderUniformity.folderIds.length === 0 && folderUniformity.folderId != null) {
-            folderUniformity.folderIds = parseFolderIdList([folderUniformity.folderId]);
-        }
         delete folderUniformity.folderId;
         folderUniformity.enforceFolderStructure = folderUniformity.enforceFolderStructure !== false;
         folderUniformity.moveMisplacedFiles = folderUniformity.moveMisplacedFiles !== false;
@@ -1695,9 +1692,6 @@
 
         const coverMaintenance = enhancement.coverMaintenance;
         coverMaintenance.folderIds = parseFolderIdList(coverMaintenance.folderIds);
-        if (coverMaintenance.folderIds.length === 0 && coverMaintenance.folderId != null) {
-            coverMaintenance.folderIds = parseFolderIdList([coverMaintenance.folderId]);
-        }
         delete coverMaintenance.folderId;
         coverMaintenance.minResolution = Number.parseInt(String(coverMaintenance.minResolution ?? 500), 10);
         if (!Number.isFinite(coverMaintenance.minResolution)) {
@@ -1715,9 +1709,6 @@
 
         const qualityChecks = enhancement.qualityChecks;
         qualityChecks.folderIds = parseFolderIdList(qualityChecks.folderIds);
-        if (qualityChecks.folderIds.length === 0 && qualityChecks.folderId != null) {
-            qualityChecks.folderIds = parseFolderIdList([qualityChecks.folderId]);
-        }
         delete qualityChecks.folderId;
         qualityChecks.scope = String(qualityChecks.scope || "all").toLowerCase() === "watchlist" ? "watchlist" : "all";
         qualityChecks.technicalProfiles = normalizeTechnicalProfiles(qualityChecks.technicalProfiles);
