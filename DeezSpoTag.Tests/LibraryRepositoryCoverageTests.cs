@@ -569,6 +569,96 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ArtistsPaging_ReturnsStableSlices_And_TotalCount()
+    {
+        var folder = await _repository.AddFolderAsync(
+            new LibraryRepository.FolderUpsertInput(
+                RootPath: "/music/paging-library",
+                DisplayName: "Paging Library",
+                Enabled: true,
+                LibraryName: "Music",
+                DesiredQuality: "flac",
+                ConvertEnabled: false,
+                ConvertFormat: null,
+                ConvertBitrate: null));
+
+        var allFolders = await _repository.GetFoldersAsync();
+        var artists = Enumerable.Range(1, 25)
+            .Select(index => new LocalArtistScanDto($"Artist {index:00}", $"/covers/artist-{index:00}.jpg"))
+            .ToList();
+        var albums = Enumerable.Range(1, 25)
+            .Select(index => new LocalAlbumScanDto(
+                ArtistName: $"Artist {index:00}",
+                Title: $"Album {index:00}",
+                PreferredCoverPath: $"/covers/album-{index:00}.jpg",
+                LocalFolders: new[] { folder.DisplayName },
+                HasAnimatedArtwork: false))
+            .ToList();
+
+        var tracks = Enumerable.Range(1, 25)
+            .Select(index =>
+            {
+                var artistName = $"Artist {index:00}";
+                var albumName = $"Album {index:00}";
+                var title = $"Song {index:00}";
+                return CreateTrackScan(
+                    title: title,
+                    filePath: $"/music/paging-library/{artistName}/{albumName}/01 - {title}.flac",
+                    deezerTrackId: $"dz-paging-{index:00}",
+                    spotifyTrackId: $"sp-paging-{index:00}",
+                    appleTrackId: $"am-paging-{index:00}") with
+                {
+                    ArtistName = artistName,
+                    AlbumTitle = albumName,
+                    TagArtist = artistName,
+                    TagAlbumArtist = artistName,
+                    TagAlbum = albumName,
+                    TrackNo = 1,
+                    TagTrackNo = 1,
+                    SourceId = $"sp-paging-{index:00}"
+                };
+            })
+            .ToList();
+
+        await _repository.IngestLocalScanAsync(
+            allFolders,
+            artists,
+            albums,
+            tracks,
+            pruneMissingArtists: true);
+
+        var page1 = await _repository.GetArtistsPageAsync("local", folder.Id, page: 1, pageSize: 10);
+        Assert.Equal(25, page1.TotalCount);
+        Assert.Equal(10, page1.Items.Count);
+        Assert.Equal(1, page1.Page);
+        Assert.Equal(10, page1.PageSize);
+        Assert.Equal("Artist 01", page1.Items[0].Name);
+        Assert.Equal("Artist 10", page1.Items[^1].Name);
+
+        var page2 = await _repository.GetArtistsPageAsync("local", folder.Id, page: 2, pageSize: 10);
+        Assert.Equal(25, page2.TotalCount);
+        Assert.Equal(10, page2.Items.Count);
+        Assert.Equal("Artist 11", page2.Items[0].Name);
+        Assert.Equal("Artist 20", page2.Items[^1].Name);
+
+        var page3 = await _repository.GetArtistsPageAsync("local", folder.Id, page: 3, pageSize: 10);
+        Assert.Equal(25, page3.TotalCount);
+        Assert.Equal(5, page3.Items.Count);
+        Assert.Equal("Artist 21", page3.Items[0].Name);
+        Assert.Equal("Artist 25", page3.Items[^1].Name);
+
+        var clamped = await _repository.GetArtistsPageAsync("local", folder.Id, page: 0, pageSize: 5000);
+        Assert.Equal(1, clamped.Page);
+        Assert.Equal(1000, clamped.PageSize);
+        Assert.Equal(25, clamped.Items.Count);
+
+        var allArtists = await _repository.GetArtistsAsync("local", folder.Id);
+        Assert.Equal(25, allArtists.Count);
+        Assert.Equal("Artist 01", allArtists[0].Name);
+        Assert.Equal("Artist 25", allArtists[^1].Name);
+    }
+
+    [Fact]
     public async Task ShazamCache_And_PlexMetadata_RoundTrip_Works()
     {
         var seeded = await SeedLibraryAsync(
