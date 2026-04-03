@@ -675,15 +675,33 @@ namespace DeezSpoTag.Web.Controllers.Api
 
             try
             {
-                var downloadObjects = await _deezSpoTagApp.AddToQueueAsync(new[] { request.Url }, DownloadSourceOrder.DeezerFlac);
-                if (downloadObjects.Count == 0)
+                var settings = _settingsService.LoadSettings();
+                var resolvedBitrate = DownloadSourceOrder.ResolveDeezerBitrate(settings, DownloadSourceOrder.DeezerFlac);
+                var inferredContentType = IsDeezerEpisodeUrl(request.Url) || IsDeezerShowUrl(request.Url)
+                    ? DownloadContentTypes.Podcast
+                    : "music";
+
+                var intent = new DownloadIntent
+                {
+                    SourceService = DeezerSource,
+                    SourceUrl = request.Url,
+                    PreferredEngine = DeezerSource,
+                    Quality = resolvedBitrate.ToString(),
+                    ContentType = inferredContentType
+                };
+
+                var intentResult = await _intentService.EnqueueAsync(intent, HttpContext.RequestAborted);
+                if (!intentResult.Success || intentResult.Queued.Count == 0)
                 {
                     return BadRequest("Invalid or unsupported URL");
                 }
 
-                var downloadObject = downloadObjects[0];
-                var linkId = downloadObject.GetValueOrDefault("uuid")?.ToString() ?? "";
-                var linkType = downloadObject.GetValueOrDefault("type")?.ToString() ?? "unknown";
+                var linkId = intentResult.Queued[0];
+                var linkType = "unknown";
+                if (TryParseDeezerUrl(request.Url, out var parsedType, out _))
+                {
+                    linkType = parsedType;
+                }
 
                 if (!string.IsNullOrWhiteSpace(linkId))
                 {
