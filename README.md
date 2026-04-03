@@ -82,7 +82,6 @@ If your host uses Compose v1, replace `docker compose` with `docker-compose`.
 
 ---
 
-## Quick Setup
 
 ### Common `.env` Values
 
@@ -94,134 +93,6 @@ If your host uses Compose v1, replace `docker compose` with `docker-compose`.
 - `DOWNLOADS_PATH`
 - `LIBRARY_PATH`
 
-### Release Channels
-
-- `prerelease` channel is published continuously from `main`.
-- `stable` channel is published only when manually promoted in GitHub Actions.
-- Docker channel selection is tag-based:
-  - prerelease: set
-    - `DEEZSPOTAG_IMAGE=ghcr.io/<owner>/deezspotag:prerelease`
-    - `APPLE_WRAPPER_IMAGE=ghcr.io/<owner>/deezspotag-apple-wrapper:prerelease`
-  - stable: set
-    - `DEEZSPOTAG_IMAGE=ghcr.io/<owner>/deezspotag:latest`
-    - `APPLE_WRAPPER_IMAGE=ghcr.io/<owner>/deezspotag-apple-wrapper:latest`
-- With `pull_policy: always`, `docker compose up -d` always pulls the selected channel tag.
-- GitHub Releases behavior:
-  - default (`push` to `main`): creates prerelease entries (`vX.Y.Z.W-pre`)
-  - manual promote (`workflow_dispatch` with `release_channel=stable`): creates stable release (`vX.Y.Z.W`)
-- Versioned image tags follow the same GitHub release format:
-  - prerelease image version tag: `vX.Y.Z.W-pre`
-  - stable image version tag: `vX.Y.Z.W`
-
-### Current Runtime Model
-
-- `deezspotag` and `apple-wrapper` run in Docker `network_mode: host` (Linux host networking).
-- `deezspotag` runs the published app from the release image (`dotnet DeezSpoTag.Web.dll`).
-- `deezspotag` app state/config in-container uses `/data`, backed by the host Workers data path bind mount.
-- `apple-wrapper` binds directly on host ports `10020/20020/30020`.
-- `deezspotag` reaches `apple-wrapper` via `127.0.0.1` in host mode.
-- `deezspotag` and `apple-wrapper` share:
-  - `${APPLE_WRAPPER_DATA_PATH}` -> `/apple-wrapper/data` (app) and `/opt/apple-wrapper/data` (wrapper)
-  - `${APPLE_WRAPPER_SESSION_PATH}` -> `/apple-wrapper/session` (app) and `/opt/apple-wrapper/rootfs/data/data/com.apple.android.music` (wrapper)
-- Apple auth orchestration uses shared files and wrapper HTTP ports, so Docker daemon access is not required in the app container.
-- `apple-wrapper` image tracks upstream `WorldObservationLog/wrapper` runtime behavior; DeezSpoTag-specific logic is limited to container packaging and control-path integration.
-- Compose maps host `/dev/urandom` and `/dev/random` into wrapper rootfs to avoid distro-specific `mknod` variance.
-- The published wrapper image also bakes the minimal rootfs device nodes and timezone payload required by the upstream wrapper, so startup does not depend on NAS-specific `mknod` behavior.
-- App and wrapper state persist in host bind-mount paths.
-- Compose auto-creates:
-  - `DEEZSPOTAG_DATA_PATH`
-  - `APPLE_WRAPPER_DATA_PATH`
-  - `APPLE_WRAPPER_SESSION_PATH`
-  - `DOWNLOADS_PATH`
-  - `LIBRARY_PATH`
-
-### Host `.NET` + Docker Apple Wrapper (Parity Gate)
-
-Use this flow when you want to run the web app locally via `dotnet run` but keep Apple wrapper in Docker:
-
-```bash
-docker compose stop deezspotag
-docker compose up -d apple-wrapper
-```
-
-Then start the app locally with Workers data paths:
-
-```bash
-export DEEZSPOTAG_DATA_DIR=DeezSpoTag.Workers/Data
-export DEEZSPOTAG_CONFIG_DIR=DeezSpoTag.Workers/Data
-export DEEZSPOTAG_APPLE_WRAPPER_HOST=127.0.0.1
-export DEEZSPOTAG_APPLE_WRAPPER_CONTROL_MODE=shared
-export DEEZSPOTAG_APPLE_WRAPPER_SHARED_DATA_DIR=/absolute/path/to/apple-wrapper/data
-export DEEZSPOTAG_APPLE_WRAPPER_SHARED_SESSION_DIR=/absolute/path/to/apple-wrapper/session
-dotnet run --project DeezSpoTag.Web/DeezSpoTag.Web.csproj -c Debug
-```
-
-Expected wrapper endpoints from host:
-
-- `127.0.0.1:10020`
-- `127.0.0.1:20020`
-- `127.0.0.1:30020`
-
-### Parity Smoke Test
-
-Validate that the release Docker image contains the same critical feature stack used by debug workflows:
-
-```bash
-./scripts/docker-dev.sh parity
-```
-
-This checks:
-
-- media tools (`ffmpeg`, `mp4box`, `mp4decrypt`)
-- Python + Essentia import
-- analyzer assets (`Tools/vibe_analyzer.py`, `Tools/models`)
-- Apple wrapper image startup + shared-control compatibility
-- application HTTP startup on localhost
-- clean-start bootstrap with temporary writable app data
-
-### Guardrail Stack (Regression Protection)
-
-DeezSpoTag includes an impact-aware guardrail runner to reduce cross-area regressions.
-
-Run manually:
-
-```bash
-./scripts/guardrails.sh
-```
-
-Behavior:
-
-- always runs a build gate
-- detects changed files against `origin/main`
-- runs mapped regression suites for impacted domains (download, library, Spotify matching)
-- falls back to a smoke suite if no mapping is hit
-
-Local push enforcement:
-
-- `.githooks/pre-push` runs guardrails when pushing `main`
-- to bypass only when absolutely necessary: `DEEZSPOTAG_SKIP_GUARDRAILS=1 git push`
-
-CI enforcement:
-
-- `.github/workflows/guardrails.yml` runs on PRs and pushes to `main`
-- PRs run in changed-file mode against the base branch
-- pushes to `main` run in full mode
-
-### Local Wrapper Image Build
-
-Build the wrapper image that matches the supported `linux/amd64` release path:
-
-```bash
-./Tools/AppleMusicWrapper/build-image.sh
-```
-
-This builds `deezspotag-apple-wrapper:local-amd64` and runs the wrapper smoke audit:
-
-- static runtime contract (`wrapper`, `main`, baked `/dev` nodes, timezone payload)
-- idle startup without cached Apple session
-- wrapper process launch with shared-control mounts and fake login path
-
-Use this if you want to validate the wrapper image locally before publishing it.
 
 ## Security Notes
 
@@ -232,7 +103,7 @@ Use this if you want to validate the wrapper image locally before publishing it.
 
 ## Acknowledgements
 
-DeezSpoTag was informed by ideas, architecture patterns, and implementation approaches from many open-source projects. Thanks to the creators and maintainers behind these references:
+DeezSpoTag was informed by ideas, architecture patterns, and implementation approaches from many open-source projects. Thanks to the creators and maintainers behind these projects:
 
 - **deemix** (GPL-3.0) by Bambanah and contributors.
 - **Lidarr** (GPL-3.0) by Team Lidarr.
@@ -265,17 +136,4 @@ If any project listed above needs correction or more specific attribution, open 
 
 ---
 
-## Architecture
 
-- `deezspotag`: main web app and orchestration runtime.
-- `apple-wrapper`: external Apple helper runtime.
-- Data roots:
-  - App state and config in container: `/data` (mapped to host Workers data directory)
-  - Downloads: `/downloads`
-  - Library scan mount: `/library`
-
----
-
-## Disclaimer
-
-This app is still in development.
