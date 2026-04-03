@@ -2000,7 +2000,7 @@ public class AutoTagService
         JsonObject folderUniformity,
         DeezSpoTagSettings settings)
     {
-        return new AutoTagOrganizerOptions
+        var options = new AutoTagOrganizerOptions
         {
             IncludeSubfolders = ReadBool(folderUniformity, "includeSubfolders") ?? true,
             MoveMisplacedFiles = ReadBool(folderUniformity, "moveMisplacedFiles") ?? true,
@@ -2017,37 +2017,12 @@ public class AutoTagService
             UseShazamForUntaggedFiles = ReadBool(folderUniformity, "useShazamForUntaggedFiles") == true,
             DuplicateConflictPolicy = folderUniformity["duplicateConflictPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.DuplicateConflictKeepBest,
             ArtworkPolicy = folderUniformity["artworkPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.ArtworkPolicyPreserveExisting,
-            LyricsPolicy = folderUniformity["lyricsPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.LyricsPolicyMerge,
-            UsePrimaryArtistFoldersOverride = ReadBool(folderUniformity, "usePrimaryArtistFolders")
-                ?? settings.Tags?.SingleAlbumArtist,
-            MultiArtistSeparatorOverride = string.IsNullOrWhiteSpace(folderUniformity[AutoTagLiterals.MultiArtistSeparatorKey]?.GetValue<string>())
-                ? settings.Tags?.MultiArtistSeparator
-                : folderUniformity[AutoTagLiterals.MultiArtistSeparatorKey]!.GetValue<string>().Trim(),
-            CreateArtistFolderOverride = ReadBool(folderUniformity, "createArtistFolder")
-                ?? settings.CreateArtistFolder,
-            ArtistNameTemplateOverride = string.IsNullOrWhiteSpace(folderUniformity["artistNameTemplate"]?.GetValue<string>())
-                ? settings.ArtistNameTemplate
-                : folderUniformity["artistNameTemplate"]!.GetValue<string>().Trim(),
-            CreateAlbumFolderOverride = ReadBool(folderUniformity, "createAlbumFolder")
-                ?? settings.CreateAlbumFolder,
-            AlbumNameTemplateOverride = string.IsNullOrWhiteSpace(folderUniformity["albumNameTemplate"]?.GetValue<string>())
-                ? settings.AlbumNameTemplate
-                : folderUniformity["albumNameTemplate"]!.GetValue<string>().Trim(),
-            CreateCDFolderOverride = ReadBool(folderUniformity, "createCDFolder")
-                ?? settings.CreateCDFolder,
-            CreateStructurePlaylistOverride = ReadBool(folderUniformity, "createStructurePlaylist")
-                ?? settings.CreateStructurePlaylist,
-            CreateSingleFolderOverride = ReadBool(folderUniformity, "createSingleFolder")
-                ?? settings.CreateSingleFolder,
-            CreatePlaylistFolderOverride = ReadBool(folderUniformity, "createPlaylistFolder")
-                ?? settings.CreatePlaylistFolder,
-            PlaylistNameTemplateOverride = string.IsNullOrWhiteSpace(folderUniformity["playlistNameTemplate"]?.GetValue<string>())
-                ? settings.PlaylistNameTemplate
-                : folderUniformity["playlistNameTemplate"]!.GetValue<string>().Trim(),
-            IllegalCharacterReplacerOverride = string.IsNullOrWhiteSpace(folderUniformity["illegalCharacterReplacer"]?.GetValue<string>())
-                ? settings.IllegalCharacterReplacer
-                : folderUniformity["illegalCharacterReplacer"]!.GetValue<string>().Trim()
+            LyricsPolicy = folderUniformity["lyricsPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.LyricsPolicyMerge
         };
+
+        // Folder-structure and technical defaults are driven by canonical settings/profile overlays.
+        AutoTagOrganizerProfileOverlay.ApplySettingsOverrides(options, settings);
+        return options;
     }
 
     private bool TryBuildEnrichmentStage(
@@ -2852,6 +2827,7 @@ public class AutoTagService
             EnsureEffectivePlatforms(node);
             EnsureSupportedDownloadTagSource(node);
             EnsureOverwriteDefaults(node);
+            EnsureLegacyFolderUniformityStructureMirrorsRemoved(node);
             EnsureSpotifySecret(node);
             return node.ToJsonString(new JsonSerializerOptions
             {
@@ -2956,6 +2932,29 @@ public class AutoTagService
         }
 
         root[AutoTagLiterals.OverwriteTagsKey] = normalized;
+    }
+
+    private static void EnsureLegacyFolderUniformityStructureMirrorsRemoved(JsonNode node)
+    {
+        if (node is not JsonObject root
+            || root["enhancement"] is not JsonObject enhancement
+            || enhancement["folderUniformity"] is not JsonObject folderUniformity)
+        {
+            return;
+        }
+
+        folderUniformity.Remove("usePrimaryArtistFolders");
+        folderUniformity.Remove(AutoTagLiterals.MultiArtistSeparatorKey);
+        folderUniformity.Remove("createArtistFolder");
+        folderUniformity.Remove("artistNameTemplate");
+        folderUniformity.Remove("createAlbumFolder");
+        folderUniformity.Remove("albumNameTemplate");
+        folderUniformity.Remove("createCDFolder");
+        folderUniformity.Remove("createStructurePlaylist");
+        folderUniformity.Remove("createSingleFolder");
+        folderUniformity.Remove("createPlaylistFolder");
+        folderUniformity.Remove("playlistNameTemplate");
+        folderUniformity.Remove("illegalCharacterReplacer");
     }
 
     private static string RedactSensitiveConfigJson(string configJson)

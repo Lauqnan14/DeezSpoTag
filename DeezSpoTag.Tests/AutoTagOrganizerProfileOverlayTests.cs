@@ -80,4 +80,43 @@ public sealed class AutoTagOrganizerProfileOverlayTests
         Assert.Equal("%playlist%", options.PlaylistNameTemplateOverride);
         Assert.Equal("_", options.IllegalCharacterReplacerOverride);
     }
+
+    [Fact]
+    public void ApplySettingsOverrides_MapsGlobalSettingsIntoOrganizerOverrides()
+    {
+        var options = new AutoTagOrganizerOptions();
+        var settings = new DeezSpoTagSettings
+        {
+            Tags = new TagSettings
+            {
+                SingleAlbumArtist = false,
+                MultiArtistSeparator = " / "
+            },
+            CreateArtistFolder = true,
+            ArtistNameTemplate = " ",
+            CreateAlbumFolder = true,
+            AlbumNameTemplate = "",
+            CreateCDFolder = true,
+            CreateStructurePlaylist = true,
+            CreateSingleFolder = false,
+            CreatePlaylistFolder = true,
+            PlaylistNameTemplate = "",
+            IllegalCharacterReplacer = ""
+        };
+
+        AutoTagOrganizerProfileOverlay.ApplySettingsOverrides(options, settings);
+
+        Assert.False(options.UsePrimaryArtistFoldersOverride);
+        Assert.Equal("/", options.MultiArtistSeparatorOverride?.Trim());
+        Assert.True(options.CreateArtistFolderOverride);
+        Assert.Equal("%artist%", options.ArtistNameTemplateOverride);
+        Assert.True(options.CreateAlbumFolderOverride);
+        Assert.Equal("%album%", options.AlbumNameTemplateOverride);
+        Assert.True(options.CreateCDFolderOverride);
+        Assert.True(options.CreateStructurePlaylistOverride);
+        Assert.False(options.CreateSingleFolderOverride);
+        Assert.True(options.CreatePlaylistFolderOverride);
+        Assert.Equal("%playlist%", options.PlaylistNameTemplateOverride);
+        Assert.Equal("_", options.IllegalCharacterReplacerOverride);
+    }
 }

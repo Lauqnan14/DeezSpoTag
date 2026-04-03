@@ -4,6 +4,36 @@ namespace DeezSpoTag.Web.Services;
 
 public static class AutoTagOrganizerProfileOverlay
 {
+    public static void ApplySettingsOverrides(AutoTagOrganizerOptions options, DeezSpoTagSettings? settings)
+    {
+        if (options == null || settings == null)
+        {
+            return;
+        }
+
+        var technical = new TechnicalTagSettings
+        {
+            SingleAlbumArtist = settings.Tags?.SingleAlbumArtist ?? true,
+            MultiArtistSeparator = settings.Tags?.MultiArtistSeparator ?? "default"
+        };
+
+        var folderStructure = new FolderStructureSettings
+        {
+            CreateArtistFolder = settings.CreateArtistFolder,
+            ArtistNameTemplate = settings.ArtistNameTemplate,
+            CreateAlbumFolder = settings.CreateAlbumFolder,
+            AlbumNameTemplate = settings.AlbumNameTemplate,
+            CreateCDFolder = settings.CreateCDFolder,
+            CreateStructurePlaylist = settings.CreateStructurePlaylist,
+            CreateSingleFolder = settings.CreateSingleFolder,
+            CreatePlaylistFolder = settings.CreatePlaylistFolder,
+            PlaylistNameTemplate = settings.PlaylistNameTemplate,
+            IllegalCharacterReplacer = settings.IllegalCharacterReplacer
+        };
+
+        ApplyTechnicalAndFolderStructureOverrides(options, technical, folderStructure);
+    }
+
     public static void ApplyTaggingProfileOverrides(AutoTagOrganizerOptions options, TaggingProfile? profile)
     {
         if (options == null || profile == null)
