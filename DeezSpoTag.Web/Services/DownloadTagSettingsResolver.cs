@@ -63,6 +63,15 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
             }
 
             var tagSettings = _converter.ToTagSettings(profile.TagConfig, profile.Technical);
+            if (IsDownloadTagSelectionEmpty(tagSettings))
+            {
+                _logger.LogWarning(
+                    "Profile {ProfileId} resolved to an empty download tag selection for folder {FolderId}; restoring default download tags.",
+                    profile.Id,
+                    folder.Id);
+                tagSettings = _converter.ToTagSettings(new UnifiedTagConfig(), profile.Technical);
+            }
+
             var downloadTagSource = ExtractDownloadTagSource(profile.AutoTag);
             return new DownloadTagProfileSettings(tagSettings, downloadTagSource, profile.FolderStructure, profile.Technical);
         }
@@ -105,5 +114,49 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
         }
 
         return "music";
+    }
+
+    private static bool IsDownloadTagSelectionEmpty(TagSettings settings)
+    {
+        return !settings.Title
+               && !settings.Artist
+               && !settings.Artists
+               && !settings.Album
+               && !settings.AlbumArtist
+               && !settings.Cover
+               && !settings.TrackNumber
+               && !settings.TrackTotal
+               && !settings.DiscNumber
+               && !settings.DiscTotal
+               && !settings.Genre
+               && !settings.Year
+               && !settings.Date
+               && !settings.Isrc
+               && !settings.Barcode
+               && !settings.Bpm
+               && !settings.Length
+               && !settings.ReplayGain
+               && !settings.Danceability
+               && !settings.Energy
+               && !settings.Valence
+               && !settings.Acousticness
+               && !settings.Instrumentalness
+               && !settings.Speechiness
+               && !settings.Loudness
+               && !settings.Tempo
+               && !settings.TimeSignature
+               && !settings.Liveness
+               && !settings.Label
+               && !settings.Copyright
+               && !settings.Lyrics
+               && !settings.SyncedLyrics
+               && !settings.Composer
+               && !settings.InvolvedPeople
+               && !settings.Source
+               && !settings.Url
+               && !settings.TrackId
+               && !settings.ReleaseId
+               && !settings.Explicit
+               && !settings.Rating;
     }
 }

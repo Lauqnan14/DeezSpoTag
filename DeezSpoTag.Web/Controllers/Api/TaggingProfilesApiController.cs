@@ -390,10 +390,16 @@ public sealed class TaggingProfilesApiController : ControllerBase
             return null;
         }
 
-        var config = CreateEmptyUnifiedTagConfig();
+        var hasExplicitDownloadTagList = HasExplicitTagArray(request.AutoTag.Data, "downloadTags");
+        // Legacy payloads frequently carried only "tags" (AutoTag/enrichment tags) without
+        // an explicit "downloadTags" list. In that case we preserve default download-stage
+        // tags and only overlay enrichment sources.
+        var config = hasExplicitDownloadTagList
+            ? CreateEmptyUnifiedTagConfig()
+            : new UnifiedTagConfig();
         var downloadTagMode = TagSource.DownloadSource;
 
-        if (downloadTags.Count > 0)
+        if (hasExplicitDownloadTagList && downloadTags.Count > 0)
         {
             derived = true;
             hasDownloadTags = true;
@@ -413,6 +419,18 @@ public sealed class TaggingProfilesApiController : ControllerBase
         }
 
         return config;
+    }
+
+    private static bool HasExplicitTagArray(Dictionary<string, JsonElement> data, string key)
+    {
+        var matchingKey = data.Keys.FirstOrDefault(entry =>
+            string.Equals(entry, key, StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(matchingKey))
+        {
+            return false;
+        }
+
+        return data[matchingKey].ValueKind == JsonValueKind.Array;
     }
 
     private static bool TryGetTagList(Dictionary<string, JsonElement> data, string key, out List<string> tags)
