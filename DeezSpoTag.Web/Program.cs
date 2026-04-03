@@ -797,7 +797,8 @@ static void RegisterAutoTagServices(IServiceCollection services)
             QualityScannerService = sp.GetRequiredService<DeezSpoTag.Web.Services.QualityScannerService>(),
             DuplicateCleanerService = sp.GetRequiredService<DeezSpoTag.Web.Services.DuplicateCleanerService>(),
             LyricsRefreshQueueService = sp.GetRequiredService<DeezSpoTag.Web.Services.LyricsRefreshQueueService>(),
-            CoverMaintenanceService = sp.GetRequiredService<DeezSpoTag.Web.Services.CoverPort.CoverLibraryMaintenanceService>()
+            CoverMaintenanceService = sp.GetRequiredService<DeezSpoTag.Web.Services.CoverPort.CoverLibraryMaintenanceService>(),
+            ProfileResolutionService = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTagProfileResolutionService>()
         });
     services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.LocalAutoTagRunnerCollaborators>(sp =>
         new DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.LocalAutoTagRunnerCollaborators

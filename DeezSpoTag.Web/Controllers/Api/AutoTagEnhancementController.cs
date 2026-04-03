@@ -1356,8 +1356,7 @@ public class AutoTagEnhancementController : ControllerBase
         // Folder Uniformity must honor each folder/profile structure as the source of truth.
         // Request-level structure values are applied first, then profile values win.
         ApplyRequestOrganizerOverrides(folderOptions, request);
-        ApplyProfileTechnicalOverrides(folderOptions, profile.Technical);
-        ApplyProfileFolderStructureOverrides(folderOptions, profile.FolderStructure);
+        AutoTagOrganizerProfileOverlay.ApplyTaggingProfileOverrides(folderOptions, profile);
         return true;
     }
 
@@ -1400,47 +1399,6 @@ public class AutoTagEnhancementController : ControllerBase
             IllegalCharacterReplacerOverride = source.IllegalCharacterReplacerOverride,
             TechnicalSettingsOverride = source.TechnicalSettingsOverride
         };
-    }
-
-    private static void ApplyProfileTechnicalOverrides(AutoTagOrganizerOptions options, TechnicalTagSettings? technical)
-    {
-        if (technical == null)
-        {
-            return;
-        }
-
-        options.TechnicalSettingsOverride = technical;
-        options.UsePrimaryArtistFoldersOverride = technical.SingleAlbumArtist;
-        options.MultiArtistSeparatorOverride = string.IsNullOrWhiteSpace(technical.MultiArtistSeparator)
-            ? "default"
-            : technical.MultiArtistSeparator.Trim();
-    }
-
-    private static void ApplyProfileFolderStructureOverrides(AutoTagOrganizerOptions options, FolderStructureSettings? folderStructure)
-    {
-        if (folderStructure == null)
-        {
-            return;
-        }
-
-        options.CreateArtistFolderOverride = folderStructure.CreateArtistFolder;
-        options.ArtistNameTemplateOverride = string.IsNullOrWhiteSpace(folderStructure.ArtistNameTemplate)
-            ? "%artist%"
-            : folderStructure.ArtistNameTemplate.Trim();
-        options.CreateAlbumFolderOverride = folderStructure.CreateAlbumFolder;
-        options.AlbumNameTemplateOverride = string.IsNullOrWhiteSpace(folderStructure.AlbumNameTemplate)
-            ? "%album%"
-            : folderStructure.AlbumNameTemplate.Trim();
-        options.CreateCDFolderOverride = folderStructure.CreateCDFolder;
-        options.CreateStructurePlaylistOverride = folderStructure.CreateStructurePlaylist;
-        options.CreateSingleFolderOverride = folderStructure.CreateSingleFolder;
-        options.CreatePlaylistFolderOverride = folderStructure.CreatePlaylistFolder;
-        options.PlaylistNameTemplateOverride = string.IsNullOrWhiteSpace(folderStructure.PlaylistNameTemplate)
-            ? "%playlist%"
-            : folderStructure.PlaylistNameTemplate.Trim();
-        options.IllegalCharacterReplacerOverride = string.IsNullOrWhiteSpace(folderStructure.IllegalCharacterReplacer)
-            ? "_"
-            : folderStructure.IllegalCharacterReplacer.Trim();
     }
 
     private static void ApplyRequestOrganizerOverrides(AutoTagOrganizerOptions options, EnhancementFolderUniformityRequest request)
