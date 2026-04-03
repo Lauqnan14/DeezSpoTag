@@ -443,18 +443,6 @@ public sealed class EnhancementFolderUniformityRequest
     public bool? UseShazamForUntaggedFiles { get; set; }
     public string? DuplicatesFolderName { get; set; }
     public bool? IncludeSubfolders { get; set; }
-    public bool? UsePrimaryArtistFolders { get; set; }
-    public string? MultiArtistSeparator { get; set; }
-    public bool? CreateArtistFolder { get; set; }
-    public string? ArtistNameTemplate { get; set; }
-    public bool? CreateAlbumFolder { get; set; }
-    public string? AlbumNameTemplate { get; set; }
-    public bool? CreateCDFolder { get; set; }
-    public bool? CreateStructurePlaylist { get; set; }
-    public bool? CreateSingleFolder { get; set; }
-    public bool? CreatePlaylistFolder { get; set; }
-    public string? PlaylistNameTemplate { get; set; }
-    public string? IllegalCharacterReplacer { get; set; }
 }
 
 public sealed class EnhancementQualityChecksRequest
