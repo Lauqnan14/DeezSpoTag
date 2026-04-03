@@ -9,6 +9,10 @@ namespace DeezSpoTag.Services.Download.Fallback;
 
 public static class FallbackPayloadNormalizer
 {
+    private const string QualityKey = "Quality";
+    private const string DirectUrlResolution = "direct_url";
+    private const string DefaultEngine = "deezer";
+
     public sealed record CanonicalFallbackState(
         List<string> AutoSources,
         List<FallbackPlanStep> FallbackPlan,
@@ -20,7 +24,7 @@ public static class FallbackPayloadNormalizer
         JsonObject payloadObj)
     {
         var payloadContentType = ReadString(payloadObj, "ContentType");
-        var payloadQuality = ReadString(payloadObj, "Quality");
+        var payloadQuality = ReadString(payloadObj, QualityKey);
         var payloadAutoSources = ReadStringArray(payloadObj, "AutoSources");
         var payloadFallbackPlan = ReadFallbackPlan(payloadObj);
         var contentType = string.IsNullOrWhiteSpace(item.ContentType) ? payloadContentType : item.ContentType;
@@ -28,13 +32,13 @@ public static class FallbackPayloadNormalizer
         if (IsVideoPayload(contentType, payloadQuality, payloadObj))
         {
             var firstStep = new DownloadSourceOrder.AutoSourceStep("apple", DownloadContentTypes.Video);
-            return BuildSingleStepFallback(firstStep, "direct_url");
+            return BuildSingleStepFallback(firstStep, DirectUrlResolution);
         }
 
         if (Shared.DownloadEngineSettingsHelper.IsAtmosOnlyPayload(contentType, payloadQuality))
         {
             var firstStep = new DownloadSourceOrder.AutoSourceStep("apple", "ATMOS");
-            return BuildSingleStepFallback(firstStep, "direct_url");
+            return BuildSingleStepFallback(firstStep, DirectUrlResolution);
         }
 
         if (payloadFallbackPlan.Count > 0)
@@ -58,13 +62,13 @@ public static class FallbackPayloadNormalizer
                 .Select((source, index) =>
                 {
                     var step = DownloadSourceOrder.DecodeAutoSource(source);
-                    var engine = string.IsNullOrWhiteSpace(step.Source) ? item.Engine ?? "deezer" : step.Source;
+                    var engine = string.IsNullOrWhiteSpace(step.Source) ? item.Engine ?? DefaultEngine : step.Source;
                     return new FallbackPlanStep(
                         StepId: $"step-{index}",
                         Engine: engine,
                         Quality: step.Quality,
                         RequiredInputs: Array.Empty<string>(),
-                        ResolutionStrategy: "direct_url");
+                        ResolutionStrategy: DirectUrlResolution);
                 })
                 .ToList();
             return new CanonicalFallbackState(payloadAutoSources, fallbackPlan, firstStep);
@@ -73,18 +77,18 @@ public static class FallbackPayloadNormalizer
         var resolvedAutoSources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
         var resolvedFirstStep = resolvedAutoSources.Count > 0
             ? DownloadSourceOrder.DecodeAutoSource(resolvedAutoSources[0])
-            : new DownloadSourceOrder.AutoSourceStep(item.Engine ?? "deezer", null);
+            : new DownloadSourceOrder.AutoSourceStep(item.Engine ?? DefaultEngine, null);
         var resolvedFallbackPlan = resolvedAutoSources
             .Select((source, index) =>
             {
                 var step = DownloadSourceOrder.DecodeAutoSource(source);
-                var engine = string.IsNullOrWhiteSpace(step.Source) ? item.Engine ?? "deezer" : step.Source;
+                var engine = string.IsNullOrWhiteSpace(step.Source) ? item.Engine ?? DefaultEngine : step.Source;
                 return new FallbackPlanStep(
                     StepId: $"step-{index}",
                     Engine: engine,
                     Quality: step.Quality,
                     RequiredInputs: Array.Empty<string>(),
-                    ResolutionStrategy: "direct_url");
+                    ResolutionStrategy: DirectUrlResolution);
             })
             .ToList();
         return new CanonicalFallbackState(resolvedAutoSources, resolvedFallbackPlan, resolvedFirstStep);
@@ -105,7 +109,7 @@ public static class FallbackPayloadNormalizer
             changed |= SetBool(payloadObj, "FallbackQueuedExternally", false);
             if (!string.IsNullOrWhiteSpace(state.FirstStep.Quality))
             {
-                changed |= SetString(payloadObj, "Quality", state.FirstStep.Quality);
+                changed |= SetString(payloadObj, QualityKey, state.FirstStep.Quality);
             }
         }
 
@@ -134,8 +138,8 @@ public static class FallbackPayloadNormalizer
             }
 
             var stepId = ReadString(stepObj, "StepId") ?? $"step-{steps.Count}";
-            var quality = ReadString(stepObj, "Quality");
-            var resolutionStrategy = ReadString(stepObj, "ResolutionStrategy") ?? "direct_url";
+            var quality = ReadString(stepObj, QualityKey);
+            var resolutionStrategy = ReadString(stepObj, "ResolutionStrategy") ?? DirectUrlResolution;
             var requiredInputs = ReadStringArray(stepObj, "RequiredInputs");
             steps.Add(new FallbackPlanStep(stepId, engine, quality, requiredInputs, resolutionStrategy));
         }
@@ -164,7 +168,7 @@ public static class FallbackPayloadNormalizer
                 Engine: decoded.Source,
                 Quality: decoded.Quality,
                 RequiredInputs: Array.Empty<string>(),
-                ResolutionStrategy: "direct_url"));
+                ResolutionStrategy: DirectUrlResolution));
         }
 
         return steps;
@@ -218,7 +222,7 @@ public static class FallbackPayloadNormalizer
             return decoded;
         }
 
-        return new DownloadSourceOrder.AutoSourceStep(engine ?? "deezer", quality);
+        return new DownloadSourceOrder.AutoSourceStep(engine ?? DefaultEngine, quality);
     }
 
     private static bool IsVideoPayload(string? contentType, string? quality, JsonObject payloadObj)

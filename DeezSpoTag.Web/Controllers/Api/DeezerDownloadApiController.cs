@@ -487,18 +487,6 @@ namespace DeezSpoTag.Web.Controllers.Api
             return alreadyQueued;
         }
 
-        private static List<string> ExtractQueuedUuids(IEnumerable<Dictionary<string, object>> queuedItems)
-        {
-            return queuedItems
-                .Select(static item =>
-                    item.TryGetValue("uuid", out var uuidObj) && uuidObj is string uuid
-                        ? uuid
-                        : null)
-                .Where(static uuid => !string.IsNullOrWhiteSpace(uuid))
-                .Cast<string>()
-                .ToList();
-        }
-
         private sealed record AddWithSettingsRequest(
             IReadOnlyCollection<string> Urls,
             long? DestinationFolderId,
