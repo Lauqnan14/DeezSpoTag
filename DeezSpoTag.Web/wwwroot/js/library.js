@@ -13235,7 +13235,7 @@ function getFilteredUnmatchedArtistItems() {
 }
 
 function isHighConfidenceUnmatchedSuggestion(suggestion) {
-    if (!suggestion || !suggestion.spotifyId) {
+    if (!suggestion?.spotifyId) {
         return false;
     }
 
@@ -13248,6 +13248,43 @@ function isHighConfidenceUnmatchedSuggestion(suggestion) {
     }
 
     return suggestion.verified && suggestion.totalAlbums >= 3 && suggestion.score >= 100_000;
+}
+
+async function ensureUnmatchedSuggestionsForItem(state, artistId) {
+    let suggestions = state.suggestions.get(artistId);
+    if (Array.isArray(suggestions) && suggestions.length > 0) {
+        return suggestions;
+    }
+
+    suggestions = await fetchUnmatchedArtistSuggestions(artistId);
+    state.suggestions.set(artistId, suggestions);
+    return suggestions;
+}
+
+async function applyHighConfidenceSuggestionForItem(state, item) {
+    let suggestions;
+    try {
+        suggestions = await ensureUnmatchedSuggestionsForItem(state, item.artistId);
+    } catch {
+        return { status: 'failed' };
+    }
+
+    const best = suggestions[0];
+    if (!isHighConfidenceUnmatchedSuggestion(best)) {
+        return { status: 'skipped' };
+    }
+
+    try {
+        await fetchJson(`/api/library/artists/${item.artistId}/spotify-id`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ spotifyId: best.spotifyId })
+        });
+        state.suggestions.delete(item.artistId);
+        return { status: 'applied' };
+    } catch {
+        return { status: 'failed' };
+    }
 }
 
 async function applyBestSuggestionsForHighConfidence(elements) {
@@ -13270,34 +13307,14 @@ async function applyBestSuggestionsForHighConfidence(elements) {
         const state = libraryState.unmatchedArtistResolver;
 
         for (const item of visibleItems) {
-            let suggestions = state.suggestions.get(item.artistId);
-            if (!Array.isArray(suggestions) || suggestions.length === 0) {
-                try {
-                    suggestions = await fetchUnmatchedArtistSuggestions(item.artistId);
-                    state.suggestions.set(item.artistId, suggestions);
-                } catch {
-                    failed++;
-                    continue;
-                }
-            }
-
-            const best = suggestions[0];
-            if (!isHighConfidenceUnmatchedSuggestion(best)) {
-                skipped++;
-                continue;
-            }
-
-            try {
-                await fetchJson(`/api/library/artists/${item.artistId}/spotify-id`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ spotifyId: best.spotifyId })
-                });
-                applied++;
+            const result = await applyHighConfidenceSuggestionForItem(state, item);
+            if (result.status === 'applied') {
+                applied += 1;
                 appliedArtistIds.add(item.artistId);
-                state.suggestions.delete(item.artistId);
-            } catch {
-                failed++;
+            } else if (result.status === 'skipped') {
+                skipped += 1;
+            } else {
+                failed += 1;
             }
         }
 

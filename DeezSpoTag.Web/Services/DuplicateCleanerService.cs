@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Models.Settings;
-using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using TagLib;
@@ -346,12 +345,12 @@ public class DuplicateCleanerService
             return true;
         }
 
-        if (string.IsNullOrWhiteSpace(downloadRoot) || !IsMusicFolder(folder))
+        if (string.IsNullOrWhiteSpace(downloadRoot) || !LibraryFolderPathSafety.IsMusicFolder(folder))
         {
             return false;
         }
 
-        if (!IsSameOrDescendantPath(folder.RootPath, downloadRoot))
+        if (!LibraryFolderPathSafety.IsSameOrDescendantPath(folder.RootPath, downloadRoot))
         {
             return false;
         }
@@ -361,39 +360,6 @@ public class DuplicateCleanerService
             folder.RootPath,
             downloadRoot);
         return true;
-    }
-
-    private static bool IsMusicFolder(FolderDto folder)
-    {
-        var mode = folder.DesiredQuality?.Trim().ToLowerInvariant();
-        return mode is not "video" and not "podcast";
-    }
-
-    private static bool IsSameOrDescendantPath(string candidatePath, string rootPath)
-    {
-        var normalizedRoot = NormalizeRootPath(rootPath);
-        var normalizedCandidate = NormalizeRootPath(candidatePath);
-        if (string.Equals(normalizedRoot, normalizedCandidate, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        var rootWithSeparator = normalizedRoot.EndsWith('/')
-            || normalizedRoot.EndsWith('\\')
-            ? normalizedRoot
-            : normalizedRoot + Path.DirectorySeparatorChar;
-        return normalizedCandidate.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string NormalizeRootPath(string path)
-    {
-        if (DownloadPathResolver.IsSmbPath(path))
-        {
-            return path.TrimEnd('/');
-        }
-
-        return Path.GetFullPath(path)
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
     private async Task ScanFolderAsync(

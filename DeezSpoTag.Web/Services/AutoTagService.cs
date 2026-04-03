@@ -1373,7 +1373,7 @@ public class AutoTagService
         }
 
         var root = LoadConfigRoot(configPath);
-        if (root == null || root["enhancement"] is not JsonObject enhancementRoot)
+        if (root == null || root[AutoTagLiterals.EnhancementStage] is not JsonObject enhancementRoot)
         {
             return;
         }

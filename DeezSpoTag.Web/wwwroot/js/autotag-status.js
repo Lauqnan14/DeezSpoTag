@@ -692,9 +692,14 @@
             const today = new Date();
             const todayToken = toDateToken(today);
             const viewedMonthIsCurrent = today.getFullYear() === year && today.getMonth() + 1 === month;
-            const defaultDate = availableDates.includes(todayToken)
-                ? todayToken
-                : availableDates[0] || (viewedMonthIsCurrent ? todayToken : `${year}-${String(month).padStart(2, "0")}-01`);
+            let defaultDate = availableDates[0];
+            if (availableDates.includes(todayToken)) {
+                defaultDate = todayToken;
+            } else if (!defaultDate) {
+                defaultDate = viewedMonthIsCurrent
+                    ? todayToken
+                    : `${year}-${String(month).padStart(2, "0")}-01`;
+            }
             await loadRunsForDate(defaultDate);
         } catch (error) {
             console.warn("Failed to load AutoTag calendar", error);

@@ -1,3 +1,4 @@
+using DeezSpoTag.Core.Models.Settings;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -5,6 +6,12 @@ namespace DeezSpoTag.Web.Services;
 
 internal static class TaggingProfileDataHelper
 {
+    private const string FolderIdsKey = "folderIds";
+    private const string LegacyFolderIdKey = "folderId";
+    private const string DownloadTagSourceKey = "downloadTagSource";
+    private const string OverwriteKey = "overwrite";
+    private const string OverwriteTagsKey = "overwriteTags";
+
     private static readonly string[] LegacyFolderUniformityStructureKeys =
     {
         "usePrimaryArtistFolders",
@@ -65,6 +72,19 @@ internal static class TaggingProfileDataHelper
         };
     }
 
+    public static AutoTagSettings SanitizeAutoTagSettings(
+        AutoTagSettings? autoTag,
+        string defaultDownloadTagSource = "deezer")
+    {
+        var sanitized = autoTag ?? new AutoTagSettings();
+        sanitized.Data ??= new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        _ = StripAuthSecrets(sanitized.Data);
+        EnsureBooleanAutoTagDefault(sanitized.Data, OverwriteKey, false);
+        EnsureStringArrayAutoTagDefault(sanitized.Data, OverwriteTagsKey);
+        EnsureDownloadTagSourceDefault(sanitized.Data, defaultDownloadTagSource);
+        return sanitized;
+    }
+
     public static bool CanonicalizeEnhancementConfig(Dictionary<string, JsonElement> data)
     {
         if (!data.TryGetValue("enhancement", out var enhancementElement)
@@ -109,8 +129,8 @@ internal static class TaggingProfileDataHelper
         }
 
         var changed = false;
-        var folderIds = ReadCanonicalFolderIds(section, "folderIds");
-        var legacyFolderId = TryReadLong(section["folderId"]);
+        var folderIds = ReadCanonicalFolderIds(section, FolderIdsKey);
+        var legacyFolderId = TryReadLong(section[LegacyFolderIdKey]);
         if (folderIds.Count == 0 && legacyFolderId is > 0)
         {
             folderIds.Add(legacyFolderId.Value);
@@ -123,18 +143,13 @@ internal static class TaggingProfileDataHelper
             normalized.Add(folderId);
         }
 
-        if (!HasSameFolderIds(section["folderIds"], folderIds))
+        if (!HasSameFolderIds(section[FolderIdsKey], folderIds))
         {
-            section["folderIds"] = normalized;
-            changed = true;
-        }
-        else if (section["folderIds"] is null)
-        {
-            section["folderIds"] = normalized;
+            section[FolderIdsKey] = normalized;
             changed = true;
         }
 
-        if (section.Remove("folderId"))
+        if (section.Remove(LegacyFolderIdKey))
         {
             changed = true;
         }
@@ -234,5 +249,75 @@ internal static class TaggingProfileDataHelper
         }
 
         return platformNode.Remove(field);
+    }
+
+    private static void EnsureBooleanAutoTagDefault(Dictionary<string, JsonElement> data, string key, bool defaultValue)
+    {
+        var existingKey = GetCaseInsensitiveKey(data, key);
+        if (string.IsNullOrWhiteSpace(existingKey))
+        {
+            data[key] = JsonSerializer.SerializeToElement(defaultValue);
+            return;
+        }
+
+        var value = data[existingKey];
+        if (value.ValueKind is not JsonValueKind.True and not JsonValueKind.False)
+        {
+            data[existingKey] = JsonSerializer.SerializeToElement(defaultValue);
+        }
+    }
+
+    private static void EnsureStringArrayAutoTagDefault(Dictionary<string, JsonElement> data, string key)
+    {
+        var existingKey = GetCaseInsensitiveKey(data, key);
+        if (string.IsNullOrWhiteSpace(existingKey))
+        {
+            data[key] = JsonSerializer.SerializeToElement(Array.Empty<string>());
+            return;
+        }
+
+        var value = data[existingKey];
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            data[existingKey] = JsonSerializer.SerializeToElement(Array.Empty<string>());
+            return;
+        }
+
+        var normalized = value.EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.String)
+            .Select(item => item.GetString())
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Select(item => item!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        data[existingKey] = JsonSerializer.SerializeToElement(normalized);
+    }
+
+    private static void EnsureDownloadTagSourceDefault(
+        Dictionary<string, JsonElement> data,
+        string defaultDownloadTagSource)
+    {
+        var key = GetCaseInsensitiveKey(data, DownloadTagSourceKey);
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            data[DownloadTagSourceKey] = JsonSerializer.SerializeToElement(defaultDownloadTagSource);
+            return;
+        }
+
+        var value = data[key];
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            data[key] = JsonSerializer.SerializeToElement(defaultDownloadTagSource);
+            return;
+        }
+
+        var normalized = NormalizeDownloadTagSource(value.GetString(), defaultDownloadTagSource);
+        data[key] = JsonSerializer.SerializeToElement(normalized);
+    }
+
+    private static string? GetCaseInsensitiveKey(Dictionary<string, JsonElement> data, string key)
+    {
+        return data.Keys.FirstOrDefault(entry =>
+            string.Equals(entry, key, StringComparison.OrdinalIgnoreCase));
     }
 }
