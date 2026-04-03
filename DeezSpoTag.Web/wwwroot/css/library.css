@@ -343,6 +343,25 @@
     width: 100%;
 }
 
+.artist-grid.artist-grid-windowed {
+    display: block;
+    width: 100%;
+}
+
+.artist-grid-windowed .artist-grid-windowed-content {
+    position: relative;
+    width: 100%;
+}
+
+.artist-grid-windowed .artist-grid-anchor {
+    position: absolute;
+    left: 0;
+    width: 1px;
+    height: 1px;
+    pointer-events: none;
+    opacity: 0;
+}
+
 .artist-card {
     display: flex;
     flex-direction: column;
