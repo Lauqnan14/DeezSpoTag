@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Hosting;
 
 namespace DeezSpoTag.Web.Services;
@@ -34,17 +35,25 @@ public sealed class AutoTagDefaultsStore
             await TryMigrateLegacyDefaultsAsync();
             if (!File.Exists(_defaultsPath))
             {
-                return new AutoTagDefaultsDto(null, new Dictionary<string, string>(), new Dictionary<string, string>());
+                return new AutoTagDefaultsDto(null, new Dictionary<string, string>());
             }
 
             var json = await File.ReadAllTextAsync(_defaultsPath);
-            return JsonSerializer.Deserialize<AutoTagDefaultsDto>(json, _jsonOptions)
-                ?? new AutoTagDefaultsDto(null, new Dictionary<string, string>(), new Dictionary<string, string>());
+            var defaults = JsonSerializer.Deserialize<AutoTagDefaultsDto>(json, _jsonOptions)
+                ?? new AutoTagDefaultsDto(null, new Dictionary<string, string>());
+            var normalized = NormalizeDefaults(defaults, out var normalizedChanged);
+            var hadLegacyLibraryProfiles = ContainsLegacyLibraryProfiles(json);
+            if (normalizedChanged || hadLegacyLibraryProfiles)
+            {
+                await SaveAsync(normalized);
+            }
+
+            return normalized;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to load AutoTag defaults.");
-            return new AutoTagDefaultsDto(null, new Dictionary<string, string>(), new Dictionary<string, string>());
+            return new AutoTagDefaultsDto(null, new Dictionary<string, string>());
         }
     }
 
@@ -73,9 +82,6 @@ public sealed class AutoTagDefaultsStore
 
         var defaults = await LoadAsync();
         var defaultFileProfile = defaults.DefaultFileProfile;
-        var libraryProfiles = defaults.LibraryProfiles is { Count: > 0 }
-            ? new Dictionary<string, string>(defaults.LibraryProfiles, StringComparer.OrdinalIgnoreCase)
-            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var librarySchedules = defaults.LibrarySchedules is { Count: > 0 }
             ? new Dictionary<string, string>(defaults.LibrarySchedules, StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -87,31 +93,75 @@ public sealed class AutoTagDefaultsStore
             changed = true;
         }
 
-        var foldersToClearSchedule = new List<string>();
-        foreach (var (folderId, profileReference) in libraryProfiles.ToList())
-        {
-            if (string.IsNullOrWhiteSpace(profileReference) || !references.Contains(profileReference.Trim()))
-            {
-                continue;
-            }
-
-            libraryProfiles.Remove(folderId);
-            foldersToClearSchedule.Add(folderId);
-            changed = true;
-        }
-
-        foreach (var folderId in foldersToClearSchedule)
-        {
-            changed |= librarySchedules.Remove(folderId);
-        }
-
         if (!changed)
         {
             return false;
         }
 
-        await SaveAsync(new AutoTagDefaultsDto(defaultFileProfile, libraryProfiles, librarySchedules));
+        await SaveAsync(new AutoTagDefaultsDto(defaultFileProfile, librarySchedules));
         return true;
+    }
+
+    private static AutoTagDefaultsDto NormalizeDefaults(AutoTagDefaultsDto defaults, out bool changed)
+    {
+        changed = false;
+        var defaultFileProfile = string.IsNullOrWhiteSpace(defaults.DefaultFileProfile)
+            ? null
+            : defaults.DefaultFileProfile.Trim();
+        if (!string.Equals(defaultFileProfile, defaults.DefaultFileProfile, StringComparison.Ordinal))
+        {
+            changed = true;
+        }
+
+        var schedules = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (rawFolderId, rawSchedule) in defaults.LibrarySchedules ?? new Dictionary<string, string>())
+        {
+            var folderId = rawFolderId?.Trim();
+            var schedule = rawSchedule?.Trim();
+            if (string.IsNullOrWhiteSpace(folderId) || string.IsNullOrWhiteSpace(schedule))
+            {
+                changed = true;
+                continue;
+            }
+
+            if (!long.TryParse(folderId, out var parsedFolderId) || parsedFolderId <= 0)
+            {
+                changed = true;
+                continue;
+            }
+
+            if (!string.Equals(folderId, rawFolderId, StringComparison.Ordinal)
+                || !string.Equals(schedule, rawSchedule, StringComparison.Ordinal))
+            {
+                changed = true;
+            }
+
+            schedules[folderId] = schedule;
+        }
+
+        if (schedules.Count != (defaults.LibrarySchedules?.Count ?? 0))
+        {
+            changed = true;
+        }
+
+        return new AutoTagDefaultsDto(defaultFileProfile, schedules);
+    }
+
+    private static bool ContainsLegacyLibraryProfiles(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            return JsonNode.Parse(json) is JsonObject root && root["libraryProfiles"] is not null;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private async Task TryMigrateLegacyDefaultsAsync()
@@ -150,5 +200,4 @@ public sealed class AutoTagDefaultsStore
 
 public sealed record AutoTagDefaultsDto(
     string? DefaultFileProfile,
-    Dictionary<string, string> LibraryProfiles,
     Dictionary<string, string> LibrarySchedules);
