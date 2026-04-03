@@ -4436,8 +4436,21 @@ public sealed class DownloadIntentService
         payload.Id = Guid.NewGuid().ToString("N");
         payload.DestinationFolderId = secondaryDestinationFolderId;
         payload.QualityBucket = AtmosQuality;
-        var fallbackInfo = BuildFallbackInfoForEngine(request.Intent, request.Settings, ApplePlatform, secondaryQuality);
-        ApplyFallbackInfo(payload, fallbackInfo);
+        var fallbackInfo = BuildEnqueueFallbackInfo(new EnqueueFallbackRequest(
+            request.Intent,
+            request.Settings,
+            ApplePlatform,
+            secondaryQuality,
+            MusicIntent: IsMusicIntent(request.Intent),
+            AllowCrossEngineFallback: false,
+            UseAtmosStereoDual: false,
+            AutoSources: DownloadSourceOrder.ResolveEngineQualitySources(
+                ApplePlatform,
+                secondaryQuality,
+                strict: UseStrictQualityFallback(request.Settings, ApplePlatform, secondaryQuality))));
+        payload.FallbackPlan = fallbackInfo.FallbackPlan;
+        payload.AutoSources = fallbackInfo.AutoSources;
+        payload.AutoIndex = fallbackInfo.AutoIndex;
 
         var enqueueDecision = await EnqueueItemAsync(
             payload,
@@ -4820,21 +4833,6 @@ public sealed class DownloadIntentService
         return !string.IsNullOrWhiteSpace(intentValue)
             ? intentValue
             : existingValue ?? string.Empty;
-    }
-
-    private static (List<FallbackPlanStep> FallbackPlan, List<string> AutoSources, int AutoIndex) BuildFallbackInfoForEngine(
-        DownloadIntent intent,
-        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
-        string engine,
-        string? quality)
-    {
-        var plan = BuildSingleEngineFallbackPlan(intent, engine, quality, settings);
-        var sources = DownloadSourceOrder.ResolveEngineQualitySources(
-            engine,
-            quality,
-            strict: UseStrictQualityFallback(settings, engine, quality));
-        var index = DownloadSourceOrder.FindAutoIndex(sources, engine, quality);
-        return (plan, sources, Math.Max(0, index));
     }
 
     private async Task<EnqueueItemDecision> EnqueueItemAsync<TPayload>(
@@ -5317,15 +5315,6 @@ public sealed class DownloadIntentService
                 _deezspotagListener.SendAddedToQueue(qobuz.ToQueuePayload());
                 break;
         }
-    }
-
-    private static void ApplyFallbackInfo(
-        AppleQueueItem payload,
-        (List<FallbackPlanStep> FallbackPlan, List<string> AutoSources, int AutoIndex) info)
-    {
-        payload.FallbackPlan = info.FallbackPlan;
-        payload.AutoSources = info.AutoSources;
-        payload.AutoIndex = info.AutoIndex;
     }
 
     private static string? ResolveSecondaryQuality(
