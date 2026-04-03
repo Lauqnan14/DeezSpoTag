@@ -354,6 +354,7 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             downloadObject,
             settings,
             new DownloadListenerAdapter(_listener),
+            allowInEngineBitrateFallback: ShouldUseInEngineQualityFallback(payload),
             cancellationToken);
 
         if (string.IsNullOrWhiteSpace(result.Path))
@@ -455,6 +456,12 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
 
         return !string.IsNullOrWhiteSpace(payload.SourceUrl)
                && payload.SourceUrl.Contains("/episode/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ShouldUseInEngineQualityFallback(DeezerQueueItem payload)
+    {
+        // Preserve global AUTO fallback order for multi-engine plans.
+        return EngineFallbackPlanPolicy.ShouldUseInEngineFallback(payload, EngineName);
     }
 
     private async Task<CoreTrack?> BuildTrackAsync(DeezerQueueItem payload, string? metadataSource)

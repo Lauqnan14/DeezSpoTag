@@ -239,7 +239,8 @@ public sealed class DeezerQueueService
                 deezspotagDownloadObject,
                 url,
                 bitrate,
-                multiQualityContext.PrimaryDestinationFolderId);
+                multiQualityContext.PrimaryDestinationFolderId,
+                _settings);
 
             foreach (var baseItem in baseItems)
             {
@@ -664,15 +665,20 @@ public sealed class DeezerQueueService
         DeezSpoTagDownloadObject downloadObject,
         string sourceUrl,
         int bitrate,
-        long? destinationFolderId)
+        long? destinationFolderId,
+        DeezSpoTagSettings settings)
     {
         var items = new List<DeezerQueueItem>();
         var isEpisodeObject = string.Equals(downloadObject.Type, EpisodeType, StringComparison.OrdinalIgnoreCase);
         var quality = isEpisodeObject ? DownloadContentTypes.Podcast : bitrate.ToString();
-        var autoSources = isEpisodeObject
-            ? DownloadSourceOrder.ResolveEngineQualitySources(DeezerEngine, DownloadContentTypes.Podcast, strict: true)
-            : DownloadSourceOrder.ResolveEngineQualitySources(DeezerEngine, quality, strict: false);
-        var autoIndex = autoSources.Count > 0 ? 0 : -1;
+        var autoSources = ResolveFallbackAutoSources(settings, isEpisodeObject, quality);
+        var autoIndex = isEpisodeObject
+            ? (autoSources.Count > 0 ? 0 : -1)
+            : DownloadSourceOrder.FindAutoIndex(autoSources, DeezerEngine, quality);
+        if (autoIndex < 0)
+        {
+            autoIndex = autoSources.Count > 0 ? 0 : -1;
+        }
 
         if (downloadObject is DeezSpoTagSingle single)
         {
@@ -722,6 +728,24 @@ public sealed class DeezerQueueService
         }
 
         return items;
+    }
+
+    private static List<string> ResolveFallbackAutoSources(
+        DeezSpoTagSettings settings,
+        bool isEpisodeObject,
+        string quality)
+    {
+        if (isEpisodeObject)
+        {
+            return DownloadSourceOrder.ResolveEngineQualitySources(DeezerEngine, DownloadContentTypes.Podcast, strict: true);
+        }
+
+        if (string.Equals(settings.Service, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            return DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: quality);
+        }
+
+        return DownloadSourceOrder.ResolveEngineQualitySources(DeezerEngine, quality, strict: false);
     }
 
     private sealed record QueueItemBuildContext(

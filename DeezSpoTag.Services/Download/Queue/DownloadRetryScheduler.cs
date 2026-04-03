@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Linq;
 using System.Text.Json.Nodes;
 using DeezSpoTag.Services.Download.Apple;
+using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Settings;
@@ -13,7 +14,8 @@ public sealed class DownloadRetryScheduler
 {
     private sealed record FallbackResetState(
         List<string> AutoSources,
-        DownloadSourceOrder.AutoSourceStep FirstStep);
+        DownloadSourceOrder.AutoSourceStep FirstStep,
+        List<FallbackPlanStep> FallbackPlan);
 
     private readonly ConcurrentDictionary<string, int> _attempts = new(StringComparer.Ordinal);
     private readonly DownloadQueueRepository _queueRepository;
@@ -177,15 +179,26 @@ public sealed class DownloadRetryScheduler
             var payloadContentType = ReadString(payloadObj, "ContentType");
             var payloadQuality = ReadString(payloadObj, "Quality");
             var payloadAutoSources = ReadStringArray(payloadObj, "AutoSources");
+            var payloadFallbackPlan = ReadFallbackPlan(payloadObj);
             var contentType = string.IsNullOrWhiteSpace(item.ContentType) ? payloadContentType : item.ContentType;
-            var fallbackState = ResolveFallbackState(item, settings, payloadObj, contentType, payloadQuality, payloadAutoSources);
+            var fallbackState = ResolveFallbackState(item, settings, payloadObj, contentType, payloadQuality, payloadAutoSources, payloadFallbackPlan);
 
             payloadObj["AutoIndex"] = 0;
             payloadObj["Engine"] = fallbackState.FirstStep.Source;
             payloadObj["SourceService"] = fallbackState.FirstStep.Source;
             payloadObj["AutoSources"] = new JsonArray(
                 fallbackState.AutoSources.Select(source => (JsonNode)JsonValue.Create(source)!).ToArray());
-            payloadObj["FallbackPlan"] = new JsonArray();
+            payloadObj["FallbackPlan"] = new JsonArray(
+                fallbackState.FallbackPlan
+                    .Select(step => (JsonNode)new JsonObject
+                    {
+                        ["StepId"] = step.StepId,
+                        ["Engine"] = step.Engine,
+                        ["Quality"] = step.Quality,
+                        ["RequiredInputs"] = new JsonArray(step.RequiredInputs.Select(input => (JsonNode)JsonValue.Create(input)!).ToArray()),
+                        ["ResolutionStrategy"] = step.ResolutionStrategy
+                    })
+                    .ToArray());
             payloadObj["FallbackHistory"] = new JsonArray();
             payloadObj["FallbackQueuedExternally"] = false;
             if (!string.IsNullOrWhiteSpace(fallbackState.FirstStep.Quality))
@@ -208,21 +221,41 @@ public sealed class DownloadRetryScheduler
         JsonObject payloadObj,
         string? contentType,
         string? payloadQuality,
-        List<string> payloadAutoSources)
+        List<string> payloadAutoSources,
+        List<FallbackPlanStep> payloadFallbackPlan)
     {
         if (IsVideoPayload(contentType, payloadQuality, payloadObj))
         {
             var firstStep = new DownloadSourceOrder.AutoSourceStep("apple", DownloadContentTypes.Video);
             payloadObj["ContentType"] = DownloadContentTypes.Video;
             payloadObj["Quality"] = DownloadContentTypes.Video;
-            return BuildSingleStepFallback(firstStep);
+            return BuildSingleStepFallback(firstStep, "direct_url");
         }
 
         if (Shared.DownloadEngineSettingsHelper.IsAtmosOnlyPayload(contentType, payloadQuality))
         {
             var firstStep = new DownloadSourceOrder.AutoSourceStep("apple", "ATMOS");
             payloadObj["ContentType"] = "atmos";
-            return BuildSingleStepFallback(firstStep);
+            return BuildSingleStepFallback(firstStep, "direct_url");
+        }
+
+        if (payloadFallbackPlan.Count > 0)
+        {
+            var normalizedAutoSources = payloadFallbackPlan
+                .Where(step => !string.IsNullOrWhiteSpace(step.Engine))
+                .Select(step => DownloadSourceOrder.EncodeAutoSource(step.Engine, step.Quality))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (normalizedAutoSources.Count > 0)
+            {
+                var firstStep = DownloadSourceOrder.DecodeAutoSource(normalizedAutoSources[0]);
+                if (string.IsNullOrWhiteSpace(firstStep.Source))
+                {
+                    firstStep = new DownloadSourceOrder.AutoSourceStep(item.Engine ?? "deezer", payloadQuality);
+                }
+
+                return new FallbackResetState(normalizedAutoSources, firstStep, payloadFallbackPlan);
+            }
         }
 
         if (payloadAutoSources.Count > 0)
@@ -233,20 +266,55 @@ public sealed class DownloadRetryScheduler
                 firstStep = new DownloadSourceOrder.AutoSourceStep(item.Engine ?? "deezer", payloadQuality);
             }
 
-            return new FallbackResetState(payloadAutoSources, firstStep);
+            var fallbackPlan = payloadAutoSources
+                .Select((source, index) =>
+                {
+                    var step = DownloadSourceOrder.DecodeAutoSource(source);
+                    var engine = string.IsNullOrWhiteSpace(step.Source) ? item.Engine ?? "deezer" : step.Source;
+                    return new FallbackPlanStep(
+                        StepId: $"retry-step-{index}",
+                        Engine: engine,
+                        Quality: step.Quality,
+                        RequiredInputs: Array.Empty<string>(),
+                        ResolutionStrategy: "direct_url");
+                })
+                .ToList();
+            return new FallbackResetState(payloadAutoSources, firstStep, fallbackPlan);
         }
 
         var resolvedAutoSources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
         var resolvedFirstStep = resolvedAutoSources.Count > 0
             ? DownloadSourceOrder.DecodeAutoSource(resolvedAutoSources[0])
             : new DownloadSourceOrder.AutoSourceStep(item.Engine ?? "deezer", null);
-        return new FallbackResetState(resolvedAutoSources, resolvedFirstStep);
+        var resolvedFallbackPlan = resolvedAutoSources
+            .Select((source, index) =>
+            {
+                var step = DownloadSourceOrder.DecodeAutoSource(source);
+                var engine = string.IsNullOrWhiteSpace(step.Source) ? item.Engine ?? "deezer" : step.Source;
+                return new FallbackPlanStep(
+                    StepId: $"retry-step-{index}",
+                    Engine: engine,
+                    Quality: step.Quality,
+                    RequiredInputs: Array.Empty<string>(),
+                    ResolutionStrategy: "direct_url");
+            })
+            .ToList();
+        return new FallbackResetState(resolvedAutoSources, resolvedFirstStep, resolvedFallbackPlan);
     }
 
-    private static FallbackResetState BuildSingleStepFallback(DownloadSourceOrder.AutoSourceStep firstStep)
+    private static FallbackResetState BuildSingleStepFallback(DownloadSourceOrder.AutoSourceStep firstStep, string resolutionStrategy)
     {
         var autoSources = new List<string> { DownloadSourceOrder.EncodeAutoSource(firstStep.Source, firstStep.Quality) };
-        return new FallbackResetState(autoSources, firstStep);
+        var fallbackPlan = new List<FallbackPlanStep>
+        {
+            new(
+                StepId: "retry-step-0",
+                Engine: firstStep.Source,
+                Quality: firstStep.Quality,
+                RequiredInputs: Array.Empty<string>(),
+                ResolutionStrategy: resolutionStrategy)
+        };
+        return new FallbackResetState(autoSources, firstStep, fallbackPlan);
     }
 
     private static bool IsVideoPayload(string? contentType, string? quality, JsonObject payloadObj)
@@ -290,5 +358,36 @@ public sealed class DownloadRetryScheduler
             .Where(static value => !string.IsNullOrWhiteSpace(value))
             .Select(static value => value!.Trim())
             .ToList();
+    }
+
+    private static List<FallbackPlanStep> ReadFallbackPlan(JsonObject payloadObj)
+    {
+        if (payloadObj["FallbackPlan"] is not JsonArray planArray)
+        {
+            return new List<FallbackPlanStep>();
+        }
+
+        var steps = new List<FallbackPlanStep>();
+        foreach (var node in planArray)
+        {
+            if (node is not JsonObject stepObj)
+            {
+                continue;
+            }
+
+            var engine = ReadString(stepObj, "Engine");
+            if (string.IsNullOrWhiteSpace(engine))
+            {
+                continue;
+            }
+
+            var stepId = ReadString(stepObj, "StepId") ?? $"retry-step-{steps.Count}";
+            var quality = ReadString(stepObj, "Quality");
+            var resolutionStrategy = ReadString(stepObj, "ResolutionStrategy") ?? "direct_url";
+            var requiredInputs = ReadStringArray(stepObj, "RequiredInputs");
+            steps.Add(new FallbackPlanStep(stepId, engine, quality, requiredInputs, resolutionStrategy));
+        }
+
+        return steps;
     }
 }
