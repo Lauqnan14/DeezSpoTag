@@ -63,7 +63,8 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
                 return null;
             }
 
-            var tagSettings = _converter.ToTagSettings(profile.TagConfig, profile.Technical);
+            var effectiveTagConfig = TaggingProfileCanonicalizer.BuildTagConfig(profile.TagConfig, profile.AutoTag?.Data);
+            var tagSettings = _converter.ToTagSettings(effectiveTagConfig, profile.Technical);
             if (ShouldApplyLegacyDownloadTagFallback(tagSettings, profile.AutoTag?.Data, out var legacyDownloadTags))
             {
                 ApplyLegacyDownloadTags(tagSettings, legacyDownloadTags);

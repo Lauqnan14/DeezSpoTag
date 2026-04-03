@@ -125,6 +125,8 @@ public sealed class TaggingProfileService
             return null;
         }
 
+        TaggingProfileCanonicalizer.Canonicalize(profile);
+
         var profiles = await LoadAsync();
         if (string.IsNullOrWhiteSpace(profile.Id))
         {
@@ -149,6 +151,7 @@ public sealed class TaggingProfileService
             existing.Technical = profile.Technical;
             existing.FolderStructure = profile.FolderStructure;
             existing.Verification = profile.Verification;
+            TaggingProfileCanonicalizer.Canonicalize(existing);
         }
         else
         {
@@ -252,13 +255,26 @@ public sealed class TaggingProfileService
 
     private static bool SanitizeProfile(TaggingProfile? profile)
     {
-        if (profile?.AutoTag?.Data == null || profile.AutoTag.Data.Count == 0)
+        if (profile == null)
         {
             return false;
         }
 
+        profile.AutoTag ??= new AutoTagSettings();
+        profile.AutoTag.Data ??= new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+
         var changed = StripAuthSecrets(profile.AutoTag.Data);
-        return TryNormalizeDownloadTagSourceField(profile.AutoTag.Data) || changed;
+        if (TryNormalizeDownloadTagSourceField(profile.AutoTag.Data))
+        {
+            changed = true;
+        }
+
+        if (TaggingProfileCanonicalizer.Canonicalize(profile))
+        {
+            changed = true;
+        }
+
+        return changed;
     }
 
     private static bool TryNormalizeDownloadTagSourceField(Dictionary<string, JsonElement> data)
