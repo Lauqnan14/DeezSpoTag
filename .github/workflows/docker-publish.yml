@@ -1,6 +1,9 @@
 name: Publish Docker Images
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       release_channel:
@@ -90,7 +93,7 @@ jobs:
 
   publish:
     needs: [release-context, bump-version]
-    if: always() && github.ref == 'refs/heads/main' && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled'
+    if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]') && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -288,7 +291,7 @@ jobs:
 
   release:
     needs: [release-context, bump-version, publish]
-    if: always() && github.ref == 'refs/heads/main' && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled'
+    if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]') && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
