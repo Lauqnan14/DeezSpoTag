@@ -829,10 +829,10 @@
         if (window.DeezerResolver && typeof window.DeezerResolver.resolvePlayableStreamUrl === 'function') {
             audio.src = await window.DeezerResolver.resolvePlayableStreamUrl(
                 { deezerId, element: button },
-                { fetchContext: true }
+                { fetchContext: false }
             );
         } else if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
-            audio.src = await window.DeezerPlaybackContext.resolveStreamUrl(deezerId, { element: button, fetchContext: true });
+            audio.src = await window.DeezerPlaybackContext.resolveStreamUrl(deezerId, { element: button, fetchContext: false });
         } else {
             audio.src = `/api/deezer/stream/${encodeURIComponent(deezerId)}`;
         }

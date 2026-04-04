@@ -228,7 +228,7 @@
                 type: input?.type || '',
                 cache: options.cache,
                 requests: options.requests,
-                fetchContext: options.fetchContext !== false
+                fetchContext: options.fetchContext === true
             });
         }
 
