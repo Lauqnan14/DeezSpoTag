@@ -3801,11 +3801,6 @@
         aspect-ratio: 1 / 1;
     }
 
-    .library-page .artist-grid {
-        grid-template-columns: repeat(auto-fill, minmax(var(--art-card-size), var(--art-card-size)));
-        gap: 14px;
-        justify-content: start;
-    }
 }
 
 /* Small phone breakpoints */
@@ -3825,12 +3820,6 @@
 
     .artist-grid {
         gap: 12px;
-    }
-
-    .library-page .artist-grid {
-        grid-template-columns: repeat(auto-fill, minmax(var(--art-card-size), var(--art-card-size)));
-        gap: 10px;
-        justify-content: start;
     }
 
     .watchlist-grid {
@@ -3959,10 +3948,6 @@
 
     .library-page .welcome-title {
         font-size: 18px;
-    }
-
-    .artist-grid {
-        grid-template-columns: 1fr;
     }
 
     .watchlist-avatar {
