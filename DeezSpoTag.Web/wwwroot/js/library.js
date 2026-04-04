@@ -887,10 +887,10 @@ async function resolveSpotifyUrlToDeezer(url) {
         const resolved = globalThis.DeezerResolver && typeof globalThis.DeezerResolver.resolveTrack === 'function'
             ? await globalThis.DeezerResolver.resolveTrack(
                 { source: 'spotify', url },
-                { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: true }
+                { attempts: 2, baseDelayMs: 250, timeoutMs: 2500, spotifyResolverFirst: true }
             )
             : null;
-        if (resolved) {
+        if (resolved?.type === 'track' && resolved?.available === true && resolved?.deezerId) {
             libraryState.spotifyResolveCache.set(url, resolved);
         }
         return resolved;
@@ -2135,9 +2135,9 @@ async function playSpotifyTrackInApp(url, button) {
     const previewKey = `deezer:${trackId}`;
     const playbackContext = globalThis.DeezerPlaybackContext;
     const streamUrl = (globalThis.DeezerResolver && typeof globalThis.DeezerResolver.resolvePlayableStreamUrl === 'function')
-        ? await globalThis.DeezerResolver.resolvePlayableStreamUrl({ deezerId: trackId, element: button }, { fetchContext: true })
+        ? await globalThis.DeezerResolver.resolvePlayableStreamUrl({ deezerId: trackId, element: button }, { fetchContext: false })
         : ((playbackContext && typeof playbackContext.resolveStreamUrl === 'function')
-            ? await playbackContext.resolveStreamUrl(trackId, { element: button, fetchContext: true })
+            ? await playbackContext.resolveStreamUrl(trackId, { element: button, fetchContext: false })
             : `/api/deezer/stream/${encodeURIComponent(trackId)}`);
     const audio = libraryState.previewAudio ?? new Audio();
 

@@ -4103,7 +4103,7 @@ async function resolveDeezerPlaybackUrlForRow(row, deezerId, playbackType = '') 
             element: row,
             cache: deezerPlaybackContextCache,
             requests: deezerPlaybackContextRequests,
-            fetchContext: true
+            fetchContext: false
         });
         if (resolved) {
             return resolved;

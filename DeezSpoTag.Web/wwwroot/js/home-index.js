@@ -273,9 +273,11 @@ async function resolveSpotifyUrlToDeezerHome(url) {
         }
         const resolved = await globalThis.DeezerResolver.resolveTrack(
             { source: 'spotify', url },
-            { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: true }
+            { attempts: 2, baseDelayMs: 250, timeoutMs: 2500, spotifyResolverFirst: true }
         );
-        homeSpotifyResolveCache.set(url, resolved);
+        if (resolved?.type === 'track' && resolved?.available === true && resolved?.deezerId) {
+            homeSpotifyResolveCache.set(url, resolved);
+        }
         return resolved;
     } catch {
         return null;
@@ -367,7 +369,7 @@ async function resolveHomeTrendingDeezerStreamUrl(deezerId, button) {
             {
                 cache: homeDeezerPlaybackContextCache,
                 requests: homeDeezerPlaybackContextRequests,
-                fetchContext: true
+                fetchContext: false
             }
         );
     }

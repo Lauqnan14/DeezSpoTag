@@ -1273,7 +1273,7 @@ async function playArtistTrackInApp(button) {
                 {
                     cache: artistDeezerPlaybackContextCache,
                     requests: artistDeezerPlaybackContextRequests,
-                    fetchContext: true
+                    fetchContext: false
                 }
             );
         } else if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
@@ -1281,7 +1281,7 @@ async function playArtistTrackInApp(button) {
                 element: button,
                 cache: artistDeezerPlaybackContextCache,
                 requests: artistDeezerPlaybackContextRequests,
-                fetchContext: true
+                fetchContext: false
             });
         } else {
             const context = await fetchArtistDeezerPlaybackContext(deezerId);
@@ -1301,7 +1301,7 @@ async function playArtistTrackInApp(button) {
                 {
                     cache: artistDeezerPlaybackContextCache,
                     requests: artistDeezerPlaybackContextRequests,
-                    fetchContext: true
+                    fetchContext: false
                 }
             );
         } else if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
@@ -1309,7 +1309,7 @@ async function playArtistTrackInApp(button) {
                 element: button,
                 cache: artistDeezerPlaybackContextCache,
                 requests: artistDeezerPlaybackContextRequests,
-                fetchContext: true
+                fetchContext: false
             });
         } else {
             const context = await fetchArtistDeezerPlaybackContext(resolved.deezerId);
@@ -1407,10 +1407,10 @@ async function resolveSpotifyUrlToDeezer(url) {
         const resolved = window.DeezerResolver && typeof window.DeezerResolver.resolveTrack === 'function'
             ? await window.DeezerResolver.resolveTrack(
                 { source: 'spotify', url },
-                { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: true }
+                { attempts: 2, baseDelayMs: 250, timeoutMs: 2500, spotifyResolverFirst: true }
             )
             : null;
-        if (resolved) {
+        if (resolved?.type === 'track' && resolved?.available === true && resolved?.deezerId) {
             artistSpotifyResolveCache.set(url, resolved);
         }
         return resolved;
