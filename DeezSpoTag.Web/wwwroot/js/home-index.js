@@ -32,6 +32,8 @@ const showToast = globalThis.HomeViewHelpers.showToast;
 
 const HOME_TRENDING_SPOTIFY_SOURCE_ID = 'home-trending-songs';
 const homeSpotifyResolveCache = new Map();
+const homeSpotifyResolveInFlight = new Map();
+const homeTrendingContextWarmupInFlight = new Map();
 const spotifyHomeItemCache = new Map();
 const homeTrendingWatchMetaCache = new Map();
 let spotifyHomeItemSeq = 0;
@@ -42,6 +44,7 @@ const homeTrendingPreviewState = {
     audio: null,
     trackKey: null,
     button: null,
+    startingButton: null,
     requestId: 0,
     pendingKey: null,
     queueButtons: [],
@@ -164,7 +167,31 @@ function parseSpotifyUrl(url) {
 
 const setHomeTrendingPreviewButtonState = globalThis.HomeViewHelpers.setHomeTrendingPreviewButtonState;
 
+function setHomeTrendingStartingState(button, isStarting) {
+    if (!button) {
+        return;
+    }
+    button.classList.toggle('is-starting', isStarting);
+    const row = button.closest('.home-top-song-item');
+    if (row) {
+        row.classList.toggle('is-starting', isStarting);
+    }
+}
+
+function clearHomeTrendingStartingButton() {
+    if (homeTrendingPreviewState.startingButton) {
+        setHomeTrendingStartingState(homeTrendingPreviewState.startingButton, false);
+        homeTrendingPreviewState.startingButton = null;
+        return;
+    }
+
+    document.querySelectorAll('.home-top-song-item__play.is-starting').forEach((button) => {
+        setHomeTrendingStartingState(button, false);
+    });
+}
+
 function clearHomeTrendingPreviewButton() {
+    clearHomeTrendingStartingButton();
     if (!homeTrendingPreviewState.button) {
         if (globalThis.HomeViewHelpers && typeof globalThis.HomeViewHelpers.clearHomeTrendingPlayingMarkers === 'function') {
             globalThis.HomeViewHelpers.clearHomeTrendingPlayingMarkers(null);
@@ -248,6 +275,53 @@ function normalizeHomeDeezerPlaybackContext(payload) {
     return globalThis.HomeViewHelpers.normalizeHomeDeezerPlaybackContext(payload);
 }
 
+function hasHomeTrendingPlaybackContext(button) {
+    if (!button?.dataset) {
+        return false;
+    }
+    return Boolean(
+        String(button.dataset.streamTrackId || '').trim()
+        && String(button.dataset.trackToken || '').trim()
+    );
+}
+
+async function warmHomeTrendingPlaybackContext(button, deezerId) {
+    const normalizedId = String(deezerId || '').trim();
+    if (!normalizedId || !button) {
+        return null;
+    }
+    if (hasHomeTrendingPlaybackContext(button)) {
+        button.dataset.mappingState = 'context-ready';
+        return true;
+    }
+
+    if (homeTrendingContextWarmupInFlight.has(normalizedId)) {
+        return await homeTrendingContextWarmupInFlight.get(normalizedId);
+    }
+
+    const warmupPromise = (async () => {
+        try {
+            const context = await fetchHomeDeezerPlaybackContext(normalizedId);
+            if (context && globalThis.DeezerPlaybackContext && typeof globalThis.DeezerPlaybackContext.applyContextToElement === 'function') {
+                globalThis.DeezerPlaybackContext.applyContextToElement(button, context);
+                button.dataset.mappingState = 'context-ready';
+                return true;
+            }
+        } catch {
+            // Best-effort warmup.
+        } finally {
+            homeTrendingContextWarmupInFlight.delete(normalizedId);
+        }
+        if (button.dataset.mappingState !== 'context-ready') {
+            button.dataset.mappingState = 'mapped';
+        }
+        return false;
+    })();
+
+    homeTrendingContextWarmupInFlight.set(normalizedId, warmupPromise);
+    return await warmupPromise;
+}
+
 function buildHomeDeezerStreamUrl(deezerId, context) {
     return globalThis.HomeViewHelpers.buildHomeDeezerStreamUrl(deezerId, context);
 }
@@ -267,32 +341,74 @@ async function resolveSpotifyUrlToDeezerHome(url) {
     if (homeSpotifyResolveCache.has(url)) {
         return homeSpotifyResolveCache.get(url);
     }
-    try {
-        const response = await fetch(`/api/spotify/resolve-deezer?url=${encodeURIComponent(url)}`);
-        if (!response.ok) {
-            return null;
-        }
-        const raw = await response.text();
-        const trimmed = raw.trim();
-        if (!trimmed || trimmed === 'undefined') {
-            return null;
-        }
-        const resolved = JSON.parse(raw);
-        homeSpotifyResolveCache.set(url, resolved);
-        return resolved;
-    } catch {
-        return null;
+    if (homeSpotifyResolveInFlight.has(url)) {
+        return await homeSpotifyResolveInFlight.get(url);
     }
+
+    const request = (async () => {
+        try {
+            const response = await fetch(`/api/spotify/resolve-deezer?url=${encodeURIComponent(url)}`);
+            if (!response.ok) {
+                return null;
+            }
+            const raw = await response.text();
+            const trimmed = raw.trim();
+            if (!trimmed || trimmed === 'undefined') {
+                return null;
+            }
+            const resolved = JSON.parse(raw);
+            homeSpotifyResolveCache.set(url, resolved);
+            return resolved;
+        } catch {
+            return null;
+        } finally {
+            homeSpotifyResolveInFlight.delete(url);
+        }
+    })();
+
+    homeSpotifyResolveInFlight.set(url, request);
+    return await request;
+}
+
+function isHomeTrendingMappingButtonVisible(button) {
+    if (!(button instanceof HTMLElement)) {
+        return false;
+    }
+    const rect = button.getBoundingClientRect();
+    const viewportHeight = globalThis.innerHeight || document.documentElement.clientHeight || 0;
+    return rect.bottom >= -120 && rect.top <= viewportHeight + 200;
+}
+
+function getHomeTrendingMappingButtons() {
+    return Array.from(
+        document.querySelectorAll('#home-trending .home-top-song-item__play[data-home-trending-track="true"][data-spotify-url]')
+    );
+}
+
+async function processHomeTrendingQueue(entries, concurrency, handler) {
+    if (!entries.length) {
+        return;
+    }
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(concurrency, entries.length) }, async () => {
+        while (cursor < entries.length) {
+            const entry = entries[cursor++];
+            await handler(entry);
+        }
+    });
+    await Promise.all(workers);
 }
 
 async function primeHomeTrendingTrackMappings(options = {}) {
     const limit = Number(options?.limit || 0);
+    const visibleFirst = options?.visibleFirst !== false;
+    const visibleFirstOnly = options?.visibleFirstOnly === true;
     const requestedConcurrency = Number(options?.concurrency || 4);
     const concurrency = Number.isFinite(requestedConcurrency)
         ? Math.max(1, Math.min(8, Math.trunc(requestedConcurrency)))
         : 4;
 
-    const buttons = Array.from(document.querySelectorAll('#home-sections .home-top-song-item__play[data-spotify-url]'));
+    const buttons = getHomeTrendingMappingButtons();
     if (buttons.length === 0) {
         return;
     }
@@ -300,7 +416,8 @@ async function primeHomeTrendingTrackMappings(options = {}) {
     const queue = buttons
         .map((button) => ({
             button,
-            url: String(button.dataset.spotifyUrl || '').trim()
+            url: String(button.dataset.spotifyUrl || '').trim(),
+            isVisible: isHomeTrendingMappingButtonVisible(button)
         }))
         .filter((entry) => entry.url && !entry.button.dataset.deezerId);
 
@@ -308,34 +425,35 @@ async function primeHomeTrendingTrackMappings(options = {}) {
         return;
     }
 
-    const pending = (limit > 0 ? queue.slice(0, limit) : queue);
-    let cursor = 0;
-    const workers = Array.from({ length: Math.min(concurrency, pending.length) }, async () => {
-        while (cursor < pending.length) {
-            const current = pending[cursor++];
-            try {
-                const resolved = await resolveSpotifyUrlToDeezerHome(current.url);
-                if (resolved?.type !== 'track' || !resolved?.deezerId) {
-                    continue;
-                }
-                const deezerId = String(resolved.deezerId);
-                current.button.dataset.deezerId = deezerId;
-                if (globalThis.DeezerPlaybackContext && typeof globalThis.DeezerPlaybackContext.fetchContext === 'function') {
-                    const context = await globalThis.DeezerPlaybackContext.fetchContext(deezerId, {
-                        cache: homeDeezerPlaybackContextCache,
-                        requests: homeDeezerPlaybackContextRequests
-                    });
-                    if (context && typeof globalThis.DeezerPlaybackContext.applyContextToElement === 'function') {
-                        globalThis.DeezerPlaybackContext.applyContextToElement(current.button, context);
-                    }
-                }
-            } catch {
-                // Best-effort warmup; playback still resolves on demand.
+    if (visibleFirst) {
+        queue.sort((left, right) => Number(right.isVisible) - Number(left.isVisible));
+    }
+
+    let pending = queue;
+    if (visibleFirstOnly) {
+        pending = pending.filter((entry) => entry.isVisible);
+    }
+    if (limit > 0) {
+        pending = pending.slice(0, limit);
+    }
+
+    await processHomeTrendingQueue(pending, concurrency, async (current) => {
+        try {
+            current.button.dataset.mappingState = 'mapping';
+            const resolved = await resolveSpotifyUrlToDeezerHome(current.url);
+            if (resolved?.type !== 'track' || !resolved?.deezerId) {
+                current.button.dataset.mappingState = 'unmapped';
+                return;
             }
+            const deezerId = String(resolved.deezerId);
+            current.button.dataset.deezerId = deezerId;
+            current.button.dataset.mappingState = 'mapped';
+            void warmHomeTrendingPlaybackContext(current.button, deezerId);
+        } catch {
+            current.button.dataset.mappingState = 'unmapped';
+            // Best-effort warmup; playback still resolves on demand.
         }
     });
-
-    await Promise.all(workers);
 }
 
 function scheduleHomeTrendingTrackMappingWarmup() {
@@ -343,11 +461,11 @@ function scheduleHomeTrendingTrackMappingWarmup() {
         clearTimeout(homeTrendingMatchWarmupTimer);
     }
 
-    void primeHomeTrendingTrackMappings({ limit: 8, concurrency: 4 });
+    void primeHomeTrendingTrackMappings({ visibleFirst: true, visibleFirstOnly: true, concurrency: 8, limit: 16 });
     homeTrendingMatchWarmupTimer = setTimeout(() => {
         homeTrendingMatchWarmupTimer = 0;
-        void primeHomeTrendingTrackMappings({ concurrency: 2 });
-    }, 900);
+        void primeHomeTrendingTrackMappings({ visibleFirst: true, concurrency: 6 });
+    }, 120);
 }
 
 function buildHomeTrendingIntentKey(previewUrl, deezerId, spotifyUrl) {
@@ -364,6 +482,9 @@ function buildHomeTrendingIntentKey(previewUrl, deezerId, spotifyUrl) {
 }
 
 async function resolveHomeTrendingDeezerStreamUrl(deezerId, button) {
+    if (button && !hasHomeTrendingPlaybackContext(button)) {
+        void warmHomeTrendingPlaybackContext(button, deezerId);
+    }
     if (globalThis.DeezerPlaybackContext && typeof globalThis.DeezerPlaybackContext.resolveStreamUrl === 'function') {
         return await globalThis.DeezerPlaybackContext.resolveStreamUrl(deezerId, {
             element: button,
@@ -400,6 +521,8 @@ async function resolveHomeTrendingStreamCandidate(button, deezerId, spotifyUrl, 
 
     const resolvedDeezerId = String(resolved.deezerId);
     button.dataset.deezerId = resolvedDeezerId;
+    button.dataset.mappingState = 'mapped';
+    void warmHomeTrendingPlaybackContext(button, resolvedDeezerId);
     const streamUrl = await resolveHomeTrendingDeezerStreamUrl(resolvedDeezerId, button);
     return { streamUrl, trackKey: `deezer:${resolvedDeezerId}` };
 }
@@ -420,6 +543,7 @@ function handleHomeTrendingToggleForActiveTrack(audio, trackKey, fromQueue) {
     }
 
     audio.pause();
+    clearHomeTrendingStartingButton();
     clearHomeTrendingPreviewButton();
     homeTrendingPreviewState.trackKey = null;
     resetHomeTrendingQueue();
@@ -477,16 +601,52 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
         homeTrendingPreviewState.audio = audio;
         homeTrendingPreviewState.trackKey = trackKey;
         homeTrendingPreviewState.button = button;
+        clearHomeTrendingStartingButton();
+        homeTrendingPreviewState.startingButton = button;
+        setHomeTrendingStartingState(button, true);
+        setHomeTrendingPreviewButtonState(button, false);
         // Ensure old request/stream is fully detached before setting a new source.
         audio.pause();
+        audio.onplaying = null;
+        audio.onpause = null;
         audio.onended = null;
         audio.onerror = null;
         audio.src = streamUrl;
         audio.currentTime = 0;
 
+        audio.onplaying = () => {
+            if (isStaleRequest()) {
+                return;
+            }
+            if (homeTrendingPreviewState.startingButton === button) {
+                setHomeTrendingStartingState(button, false);
+                homeTrendingPreviewState.startingButton = null;
+            }
+            setHomeTrendingPreviewButtonState(button, true);
+        };
+        audio.onpause = () => {
+            if (isStaleRequest()) {
+                return;
+            }
+            if (homeTrendingPreviewState.trackKey !== trackKey) {
+                return;
+            }
+            if (homeTrendingPreviewState.startingButton === button) {
+                setHomeTrendingStartingState(button, false);
+                homeTrendingPreviewState.startingButton = null;
+            }
+            setHomeTrendingPreviewButtonState(button, false);
+            if (homeTrendingPreviewState.button === button) {
+                homeTrendingPreviewState.button = null;
+            }
+        };
         audio.onended = () => {
             if (isStaleRequest()) {
                 return;
+            }
+            if (homeTrendingPreviewState.startingButton === button) {
+                setHomeTrendingStartingState(button, false);
+                homeTrendingPreviewState.startingButton = null;
             }
             clearHomeTrendingPreviewButton();
             homeTrendingPreviewState.trackKey = null;
@@ -495,6 +655,10 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
         audio.onerror = () => {
             if (isStaleRequest()) {
                 return;
+            }
+            if (homeTrendingPreviewState.startingButton === button) {
+                setHomeTrendingStartingState(button, false);
+                homeTrendingPreviewState.startingButton = null;
             }
             clearHomeTrendingPreviewButton();
             homeTrendingPreviewState.trackKey = null;
@@ -506,10 +670,22 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
             await audio.play();
             if (isStaleRequest()) {
                 audio.pause();
+                return;
+            }
+            if (!audio.paused) {
+                if (homeTrendingPreviewState.startingButton === button) {
+                    setHomeTrendingStartingState(button, false);
+                    homeTrendingPreviewState.startingButton = null;
+                }
+                setHomeTrendingPreviewButtonState(button, true);
             }
         } catch {
             if (isStaleRequest()) {
                 return;
+            }
+            if (homeTrendingPreviewState.startingButton === button) {
+                setHomeTrendingStartingState(button, false);
+                homeTrendingPreviewState.startingButton = null;
             }
             setHomeTrendingPreviewButtonState(button, false);
             homeTrendingPreviewState.trackKey = null;
@@ -2378,6 +2554,7 @@ function buildHomeTrendingPlayAttributes(item, deezerTrackId, spotifyTrackUrl, p
         mv: item.media_version || item.mediaVersion || item.mv || ''
     });
     const playAttrs = [];
+    playAttrs.push('data-home-trending-track="true"');
 
     if (deezerTrackId) {
         playAttrs.push(`data-deezer-id="${escapeHtml(deezerTrackId)}"`);
