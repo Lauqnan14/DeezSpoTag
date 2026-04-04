@@ -9,18 +9,6 @@ public static class DeezSpoTagDataRootResolver
             return explicitDataRoot.Trim();
         }
 
-        var configDir = Environment.GetEnvironmentVariable("DEEZSPOTAG_CONFIG_DIR");
-        if (!string.IsNullOrWhiteSpace(configDir))
-        {
-            return configDir.Trim();
-        }
-
-        var dataDir = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_DIR");
-        if (!string.IsNullOrWhiteSpace(dataDir))
-        {
-            return dataDir.Trim();
-        }
-
         return AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
     }
 }

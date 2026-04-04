@@ -27,18 +27,11 @@ public static class AppDataPathResolver
 
     public static string GetDefaultWorkersDataDir()
     {
-        var configuredConfigDir = NormalizeConfiguredDataRoot(Environment.GetEnvironmentVariable(ConfigDirEnvVar));
-        if (!string.IsNullOrWhiteSpace(configuredConfigDir))
+        var configuredUnifiedRoot = ResolveConfiguredUnifiedDataRootOrThrow();
+        if (!string.IsNullOrWhiteSpace(configuredUnifiedRoot))
         {
-            EnsureWritableDirectoryOrThrow(configuredConfigDir, ConfigDirEnvVar);
-            return configuredConfigDir;
-        }
-
-        var configuredDataDir = NormalizeConfiguredDataRoot(Environment.GetEnvironmentVariable(DataDirEnvVar));
-        if (!string.IsNullOrWhiteSpace(configuredDataDir))
-        {
-            EnsureWritableDirectoryOrThrow(configuredDataDir, DataDirEnvVar);
-            return configuredDataDir;
+            EnsureWritableDirectoryOrThrow(configuredUnifiedRoot, $"{DataDirEnvVar}/{ConfigDirEnvVar}");
+            return configuredUnifiedRoot;
         }
 
         var canonicalPrimary = CanonicalWorkersDataCandidates[0];
@@ -206,16 +199,10 @@ public static class AppDataPathResolver
 
     public static string ResolveDataRootOrDefault(string defaultDataRoot)
     {
-        var configuredConfigDir = NormalizeConfiguredDataRoot(Environment.GetEnvironmentVariable(ConfigDirEnvVar));
-        if (!string.IsNullOrWhiteSpace(configuredConfigDir))
+        var configuredUnifiedRoot = ResolveConfiguredUnifiedDataRootOrThrow();
+        if (!string.IsNullOrWhiteSpace(configuredUnifiedRoot))
         {
-            return configuredConfigDir;
-        }
-
-        var configuredDataDir = NormalizeConfiguredDataRoot(Environment.GetEnvironmentVariable(DataDirEnvVar));
-        if (!string.IsNullOrWhiteSpace(configuredDataDir))
-        {
-            return configuredDataDir;
+            return configuredUnifiedRoot;
         }
 
         return Path.GetFullPath(defaultDataRoot);
@@ -223,16 +210,35 @@ public static class AppDataPathResolver
 
     public static string EnsureConfiguredDataAndConfigRoots(string defaultDataRoot)
     {
-        var resolvedConfigRoot = NormalizeConfiguredDataRoot(Environment.GetEnvironmentVariable(ConfigDirEnvVar));
-        var resolvedDataRoot = NormalizeConfiguredDataRoot(Environment.GetEnvironmentVariable(DataDirEnvVar));
-        var fallbackRoot = Path.GetFullPath(defaultDataRoot);
+        var configuredUnifiedRoot = ResolveConfiguredUnifiedDataRootOrThrow();
+        var effectiveRoot = string.IsNullOrWhiteSpace(configuredUnifiedRoot)
+            ? Path.GetFullPath(defaultDataRoot)
+            : configuredUnifiedRoot;
+        Environment.SetEnvironmentVariable(ConfigDirEnvVar, effectiveRoot);
+        Environment.SetEnvironmentVariable(DataDirEnvVar, effectiveRoot);
+        return effectiveRoot;
+    }
 
-        var effectiveConfigRoot = string.IsNullOrWhiteSpace(resolvedConfigRoot) ? fallbackRoot : resolvedConfigRoot;
-        var effectiveDataRoot = string.IsNullOrWhiteSpace(resolvedDataRoot) ? fallbackRoot : resolvedDataRoot;
+    private static string? ResolveConfiguredUnifiedDataRootOrThrow()
+    {
+        var configuredConfigDir = NormalizeConfiguredDataRoot(Environment.GetEnvironmentVariable(ConfigDirEnvVar));
+        var configuredDataDir = NormalizeConfiguredDataRoot(Environment.GetEnvironmentVariable(DataDirEnvVar));
 
-        Environment.SetEnvironmentVariable(ConfigDirEnvVar, effectiveConfigRoot);
-        Environment.SetEnvironmentVariable(DataDirEnvVar, effectiveDataRoot);
-        return effectiveDataRoot;
+        if (!string.IsNullOrWhiteSpace(configuredConfigDir)
+            && !string.IsNullOrWhiteSpace(configuredDataDir)
+            && !string.Equals(configuredConfigDir, configuredDataDir, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Configured data roots diverge: {ConfigDirEnvVar}='{configuredConfigDir}' and {DataDirEnvVar}='{configuredDataDir}'. " +
+                "Set both to the same path.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(configuredDataDir))
+        {
+            return configuredDataDir;
+        }
+
+        return configuredConfigDir;
     }
 
     public static string ResolveDbPathStrict(string dataRoot, string scope, string fileName)
