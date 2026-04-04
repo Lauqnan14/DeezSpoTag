@@ -1880,10 +1880,6 @@
     function renderPlatforms() {
         const container = el("autotag-platforms");
         container.innerHTML = "";
-        const removedUnauthorized = enforceAuthenticatedPlatformSelection({ allowPendingAuth: true });
-        if (removedUnauthorized) {
-            storeSelectedPlatforms();
-        }
         rebuildSourceOrdersFromPlatforms();
         const order = state.config.platforms;
         const platforms = getPlatformsSortedBySelectionOrder(order);
@@ -3411,7 +3407,6 @@
         );
         state.config.downloadTagSource = normalizeDownloadTagSource(getDownloadTagSource() || state.config.downloadTagSource || "deezer");
         ensureEffectivePlatforms(state.config);
-        enforceAuthenticatedPlatformSelection();
 
         return state.config;
     }
@@ -5885,7 +5880,7 @@
             id: profileId,
             name,
             isDefault,
-            tagConfig: structuredClone(existing?.tagConfig || null),
+            tagConfig: null,
             autoTag: getProfileAutoTagSnapshot(existing),
             folderStructure: readFolderStructureFromUI(),
             technical: readTechnicalSettingsFromUI(existing?.technical || null),
@@ -6398,10 +6393,6 @@
         loadStoredAuth().then((data) => {
             mergeStoredAuth(state.config, data);
             loadSpotifyStatus().then(() => {
-                const removedUnauthorized = enforceAuthenticatedPlatformSelection();
-                if (removedUnauthorized) {
-                    storeSelectedPlatforms();
-                }
                 renderPlatforms();
                 updateDownloadSourceAvailability();
                 refreshDownloadTagsForSource();

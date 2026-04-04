@@ -51,13 +51,9 @@ public sealed class TaggingProfilesApiController : ControllerBase
 
         var existing = await _profiles.GetByIdAsync(request.Id);
         var tagConfig = TryBuildTagConfig(request, out _, out _)
-            ?? ConvertTagConfig(request.TagConfig);
-
-        // Preserve existing tag config if the caller did not send tag sources.
-        if (!HasTagConfigPayload(request.TagConfig) && request.AutoTag is null && existing is not null)
-        {
-            tagConfig = existing.TagConfig;
-        }
+            ?? (HasTagConfigPayload(request.TagConfig)
+                ? ConvertTagConfig(request.TagConfig)
+                : existing?.TagConfig ?? new UnifiedTagConfig());
 
         var profile = new TaggingProfile
         {
@@ -296,11 +292,6 @@ public sealed class TaggingProfilesApiController : ControllerBase
     {
         derived = false;
         hasDownloadTags = false;
-        if (HasTagConfigPayload(request.TagConfig))
-        {
-            return null;
-        }
-
         if (request.AutoTag?.Data == null || request.AutoTag.Data.Count == 0)
         {
             return null;
