@@ -12,7 +12,6 @@ internal static class AutoTagLegacyPathCandidates
         var candidates = new[]
         {
             Path.Join(contentRoot, "Data", autoTagFolderName, fileName),
-            Path.Join(AppContext.BaseDirectory, "Data", autoTagFolderName, fileName),
             Path.Join(Directory.GetCurrentDirectory(), "Data", autoTagFolderName, fileName),
             Path.Join(Directory.GetCurrentDirectory(), "DeezSpoTag.Web", "Data", autoTagFolderName, fileName)
         };

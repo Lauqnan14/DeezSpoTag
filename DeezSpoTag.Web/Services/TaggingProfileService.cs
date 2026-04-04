@@ -546,7 +546,6 @@ public sealed class TaggingProfileService
         var defaultRoots = new[]
         {
             Path.Join(_contentRoot, "Data"),
-            Path.Join(AppContext.BaseDirectory, "Data"),
             Path.Join(Directory.GetCurrentDirectory(), "Data"),
             Path.Join(Directory.GetCurrentDirectory(), "DeezSpoTag.Web", "Data")
         };

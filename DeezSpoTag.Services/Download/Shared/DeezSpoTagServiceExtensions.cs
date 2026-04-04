@@ -4,6 +4,7 @@ using DeezSpoTag.Services.Download.Shared.Advanced;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -32,8 +33,7 @@ public static class DeezSpoTagServiceExtensions
         services.AddSingleton<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(provider =>
         {
             var logger = provider.GetRequiredService<ILogger<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>>();
-            var configuration = provider.GetRequiredService<Microsoft.Extensions.Configuration.IConfiguration>();
-            return new DeezSpoTag.Services.Settings.DeezSpoTagSettingsService(configuration, logger);
+            return new DeezSpoTag.Services.Settings.DeezSpoTagSettingsService(logger);
         });
         services.AddSingleton<ISettingsService>(provider => provider.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>());
         
@@ -64,8 +64,9 @@ public static class DeezSpoTagServiceExtensions
         services.AddScoped<EnhancedQueuePersistenceService>(provider =>
         {
             var logger = provider.GetRequiredService<ILogger<EnhancedQueuePersistenceService>>();
-            var configuration = provider.GetRequiredService<Microsoft.Extensions.Configuration.IConfiguration>();
-            var configFolder = Path.Join(configuration["DataDirectory"] ?? "Data", "deezspotag");
+            var configFolder = Path.Join(
+                AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir()),
+                "deezspotag");
             return new EnhancedQueuePersistenceService(logger, configFolder);
         });
         // Async queue processor factory

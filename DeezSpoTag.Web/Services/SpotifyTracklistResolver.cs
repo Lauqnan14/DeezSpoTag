@@ -1648,11 +1648,7 @@ internal static class SpotifyTracklistResolver
 
     private static string ResolvePersistentCachePath()
     {
-        var dataDir = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_DIR");
-        if (string.IsNullOrWhiteSpace(dataDir))
-        {
-            dataDir = Path.Join(AppContext.BaseDirectory, "Data");
-        }
+        var dataDir = AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
 
         return Path.Join(dataDir, "spotify", "spotify-deezer-track-map.json");
     }

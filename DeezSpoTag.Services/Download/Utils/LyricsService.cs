@@ -1598,31 +1598,7 @@ public class LyricsService
 
     private static string ResolveSpotifyDataRoot()
     {
-        var configDir = Environment.GetEnvironmentVariable("DEEZSPOTAG_CONFIG_DIR");
-        if (!string.IsNullOrWhiteSpace(configDir))
-        {
-            return configDir.Trim();
-        }
-
-        var dataDir = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_DIR");
-        if (!string.IsNullOrWhiteSpace(dataDir))
-        {
-            return dataDir.Trim();
-        }
-
-        var current = new DirectoryInfo(AppContext.BaseDirectory);
-        for (var i = 0; i < 6 && current != null; i++)
-        {
-            var candidate = Path.Join(current.FullName, "Data");
-            if (Directory.Exists(candidate))
-            {
-                return candidate;
-            }
-
-            current = current.Parent;
-        }
-
-        return Path.Join(AppContext.BaseDirectory, "Data");
+        return AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
     }
 
     private static string? ResolveSpotifyBlobPath(string? rawPath)

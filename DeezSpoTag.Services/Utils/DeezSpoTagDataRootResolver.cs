@@ -21,6 +21,6 @@ public static class DeezSpoTagDataRootResolver
             return dataDir.Trim();
         }
 
-        return Path.Join(AppContext.BaseDirectory, "Data");
+        return AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
     }
 }
