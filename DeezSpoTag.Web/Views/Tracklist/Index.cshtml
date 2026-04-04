@@ -6031,18 +6031,20 @@ async function playNextPreviewFrom(control) {
                 continue;
             }
         }
-        await playPausePreview(nextControl);
-        return true;
+        const started = await playPausePreview(nextControl, { autoAdvance: true });
+        if (started) {
+            return true;
+        }
     }
     return false;
 }
 
-async function playPausePreview(control) {
+async function playPausePreview(control, options = {}) {
     if (!control) {
-        return;
+        return false;
     }
     if (!previewAudio) {
-        return;
+        return false;
     }
 
     let previewUrl = control.getAttribute('data-preview') || '';
@@ -6075,21 +6077,28 @@ async function playPausePreview(control) {
         const source = row ? getRowTrackSource(row) : '';
         if (isDeezerMatchedExternalSource(source) && window.DeezSpoTag?.ui?.showToast) {
             DeezSpoTag.ui.showToast('No Deezer match available yet for this track.', { type: 'warning' });
-            return;
+            return false;
         }
         if (linkOnly) {
             DeezSpoTag.ui.alert('Track not available for streaming.', { title: 'Playback' });
         }
-        return;
+        return false;
     }
 
     if (control.hasAttribute('playing')) {
         if (previewAudio.paused) {
-            previewAudio.play().catch(() => {});
-            previewStopped = false;
-            control.textContent = 'pause';
-            if (row) {
-                row.classList.add('track-row-playing');
+            try {
+                await previewAudio.play();
+                previewStopped = false;
+                control.textContent = 'pause';
+                if (row) {
+                    row.classList.add('track-row-playing');
+                }
+                return true;
+            } catch {
+                previewStopped = true;
+                resetPreviewControls();
+                return false;
             }
         } else {
             previewStopped = true;
@@ -6098,8 +6107,8 @@ async function playPausePreview(control) {
             if (row) {
                 row.classList.remove('track-row-playing');
             }
+            return false;
         }
-        return;
     }
 
     resetPreviewControls();
@@ -6113,7 +6122,17 @@ async function playPausePreview(control) {
     previewAudio.src = previewUrl;
     previewAudio.load();
     previewAudio.volume = getPreviewVolume();
-    previewAudio.play().catch(() => {});
+    try {
+        await previewAudio.play();
+        return true;
+    } catch {
+        previewStopped = true;
+        resetPreviewControls();
+        if (!options?.autoAdvance && window.DeezSpoTag?.ui?.showToast) {
+            DeezSpoTag.ui.showToast('Playback failed for this track.', { type: 'warning' });
+        }
+        return false;
+    }
 }
 
 if (previewAudio) {
