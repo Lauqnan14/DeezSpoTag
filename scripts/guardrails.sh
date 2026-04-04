@@ -71,7 +71,7 @@ if [[ "$changed_count" -le 200 ]]; then
   printf '%s\n' "$CHANGED_FILES" | sed 's/^/  - /'
 else
   log "Changed file list omitted (too large); first 40 entries:"
-  printf '%s\n' "$CHANGED_FILES" | head -n 40 | sed 's/^/  - /'
+  printf '%s\n' "$CHANGED_FILES" | awk 'NR <= 40 { print "  - " $0 }'
 fi
 
 log "Running build gate..."
