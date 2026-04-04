@@ -2820,18 +2820,24 @@
         if (!profile) {
             return false;
         }
+        const profileId = profile.id || profile.Id || "";
         const select = el("autotag-profile-select");
         if (select) {
-            select.value = profile.id || "";
+            select.value = profileId;
         }
-        applyProfileConfig(profile.autoTag?.data || profile.autoTag || {});
-        applyFolderStructureToUI(profile.folderStructure);
-        applyTechnicalSettingsToUI(profile.technical);
+        const autoTagData = profile.autoTag?.data
+            || profile.autoTag
+            || profile.AutoTag?.data
+            || profile.AutoTag
+            || {};
+        applyProfileConfig(autoTagData);
+        applyFolderStructureToUI(profile.folderStructure || profile.FolderStructure);
+        applyTechnicalSettingsToUI(profile.technical || profile.Technical);
         const nameInput = el("autotag-profile-name");
         if (nameInput) {
-            nameInput.value = profile.name || "";
+            nameInput.value = profile.name || profile.Name || "";
         }
-        setActiveProfileId(profile.id || null);
+        setActiveProfileId(profileId || null);
         return true;
     }
 
@@ -5957,7 +5963,7 @@
         }
 
         const savedProfile = await response.json().catch(() => null);
-        const savedProfileId = savedProfile?.id || savedProfile?.Id || profileId || null;
+        const savedProfileId = savedProfile?.id || savedProfile?.Id || saveTarget.profileId || null;
         const nextProfiles = Array.isArray(state.profiles) ? [...state.profiles] : [];
         let replaceIndex = -1;
         if (savedProfileId) {
