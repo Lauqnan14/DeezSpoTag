@@ -1,12 +1,12 @@
 using DeezSpoTag.Web.Configuration;
 using DeezSpoTag.Web.Models;
+using DeezSpoTag.Services.Utils;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Linq;
 using System.Security.Claims;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using System.IO;
 using System.Threading.Tasks;
@@ -26,18 +26,15 @@ public sealed class AccountApiController : ControllerBase
     private const string AvatarPathClaim = "avatar_path";
     private readonly UserManager<AppUser> _userManager;
     private readonly SignInManager<AppUser> _signInManager;
-    private readonly IConfiguration _configuration;
     private readonly LoginConfiguration _loginConfiguration;
 
     public AccountApiController(
         UserManager<AppUser> userManager,
         SignInManager<AppUser> signInManager,
-        IConfiguration configuration,
         IOptions<LoginConfiguration> loginConfiguration)
     {
         _userManager = userManager;
         _signInManager = signInManager;
-        _configuration = configuration;
         _loginConfiguration = loginConfiguration.Value;
     }
 
@@ -124,7 +121,7 @@ public sealed class AccountApiController : ControllerBase
             return BadRequest(new { message = "Only PNG or JPEG images are allowed." });
         }
 
-        var dataDir = _configuration["DataDirectory"] ?? "Data";
+        var dataDir = AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
         var avatarDir = Path.Join(dataDir, "avatars", user.Id);
         Directory.CreateDirectory(avatarDir);
         var extension = isPng ? ".png" : ".jpg";

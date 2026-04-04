@@ -2,6 +2,7 @@
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Collections.Generic;
@@ -48,7 +49,7 @@ public class DeezSpoTagSettingsService : ISettingsService
     private string? _lastFixSignature;
     private readonly HashSet<string> _loggedFixFields = new(StringComparer.OrdinalIgnoreCase);
 
-    public DeezSpoTagSettingsService(IConfiguration configuration, ILogger<DeezSpoTagSettingsService> logger)
+    public DeezSpoTagSettingsService(ILogger<DeezSpoTagSettingsService> logger)
     {
         _logger = logger;
         var configRoot = Environment.GetEnvironmentVariable("DEEZSPOTAG_CONFIG_DIR");
@@ -58,7 +59,7 @@ public class DeezSpoTagSettingsService : ISettingsService
         }
         if (string.IsNullOrWhiteSpace(configRoot))
         {
-            configRoot = configuration["DataDirectory"] ?? "Data";
+            configRoot = AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
         }
         var configFolder = ResolveConfigFolder(configRoot);
         if (File.Exists(configFolder))
@@ -78,12 +79,18 @@ public class DeezSpoTagSettingsService : ISettingsService
         ConsolidateDuplicateConfigFiles(dataRoot, _settingsFilePath);
     }
 
+    [Obsolete("Use DeezSpoTagSettingsService(ILogger<DeezSpoTagSettingsService>)")]
+    public DeezSpoTagSettingsService(IConfiguration _unusedConfiguration, ILogger<DeezSpoTagSettingsService> logger)
+        : this(logger)
+    {
+    }
+
     private static string ResolveConfigFolder(string configRoot)
     {
         var normalized = (configRoot ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(normalized))
         {
-            return Path.Join("Data", "deezspotag");
+            return Path.Join(AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir()), DeezSpoTagFolderName);
         }
 
         normalized = Path.GetFullPath(normalized);
