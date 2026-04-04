@@ -3967,17 +3967,12 @@ async function resolveExternalRequestToDeezer(current, source, row, options = {}
         const inFlightPromise = runExternalResolverTask(async () => {
             let deezerId = '';
             let resolvePayload = null;
-            if (!window.DeezerResolver || typeof window.DeezerResolver.resolveTrack !== 'function') {
-                throw new Error('Deezer resolver unavailable');
+            if (source === 'spotify') {
+                const data = await fetchJsonWithRetry(`/api/spotify/resolve-deezer?url=${encodeURIComponent(current.link)}`, 3);
+                deezerId = data?.deezerId || '';
             }
 
-            const isHighPriority = priority === 'high';
-            const normalizedSource = String(source || '').trim().toLowerCase();
-            const isBoomplay = normalizedSource === 'boomplay';
-            let data = null;
-            if (isBoomplay) {
-                // Restore the proven Boomplay resolve path (pre-unification behavior):
-                // generic resolver with title/artist/isrc hints and retry semantics.
+            if (!deezerId) {
                 const qs = new URLSearchParams();
                 qs.set('url', current.link);
                 if (current.title) {
@@ -3999,32 +3994,10 @@ async function resolveExternalRequestToDeezer(current, source, row, options = {}
                     qs.set('includeMeta', 'true');
                 }
 
-                data = await fetchJsonWithRetry(`/api/resolve/deezer?${qs.toString()}`, 3);
-            } else {
-                const dataAttempts = isHighPriority ? 2 : 3;
-                const dataBaseDelayMs = isHighPriority ? 250 : 350;
-                const dataTimeoutMs = isHighPriority ? 4500 : 8000;
-                data = await window.DeezerResolver.resolveTrack(
-                    {
-                        source,
-                        url: current.link,
-                        title: current.title,
-                        artist: current.artist,
-                        album: current.album,
-                        isrc: current.isrc,
-                        durationMs: current.durationMs,
-                        includeMeta: shouldHydrateDeezerMetadata(source)
-                    },
-                    {
-                        attempts: dataAttempts,
-                        baseDelayMs: dataBaseDelayMs,
-                        timeoutMs: dataTimeoutMs,
-                        spotifyResolverFirst: normalizedSource === 'spotify'
-                    }
-                );
+                const data = await fetchJsonWithRetry(`/api/resolve/deezer?${qs.toString()}`, 3);
+                resolvePayload = data;
+                deezerId = data?.deezerId || '';
             }
-            resolvePayload = data;
-            deezerId = data?.deezerId || '';
 
             externalDeezerMatchCache.set(cacheKey, deezerId);
             return { deezerId, resolvePayload };
@@ -4066,22 +4039,13 @@ async function ensureRowPreviewForPlayback(row, control) {
 
     const existingDeezerId = String(row.querySelector('.track-checkbox')?.dataset.trackId || row.dataset.availabilityDeezerId || '').trim();
     if (/^\d+$/.test(existingDeezerId)) {
-        let context = getDeezerPlaybackContextForRow(row, existingDeezerId);
-        if (!context && getRowPlaybackTypeHint(row) !== 'episode') {
-            context = await awaitWithTimeout(
-                ensureDeezerPlaybackContextForRow(row, existingDeezerId),
-                1800
-            ) || null;
-        }
+        const context = getDeezerPlaybackContextForRow(row, existingDeezerId);
         const previewUrl = buildDeezerStreamUrl(existingDeezerId, {
             type: getRowPlaybackTypeHint(row),
             context
         });
         control.setAttribute('data-preview', previewUrl);
         control.classList.remove('is-disabled');
-        if (!context && getRowPlaybackTypeHint(row) !== 'episode') {
-            void ensureDeezerPlaybackContextForRow(row, existingDeezerId);
-        }
         return previewUrl;
     }
 
@@ -4105,13 +4069,7 @@ async function ensureRowPreviewForPlayback(row, control) {
             return '';
         }
 
-        let context = getDeezerPlaybackContextForRow(row, deezerId);
-        if (!context && getRowPlaybackTypeHint(row) !== 'episode') {
-            context = await awaitWithTimeout(
-                ensureDeezerPlaybackContextForRow(row, deezerId),
-                1800
-            ) || null;
-        }
+        const context = getDeezerPlaybackContextForRow(row, deezerId);
         const previewUrl = buildDeezerStreamUrl(deezerId, {
             type: getRowPlaybackTypeHint(row),
             context
@@ -5539,30 +5497,6 @@ function buildDeezerStreamUrl(deezerId, options = {}) {
     return window.DeezerPlaybackContext.buildStreamUrl(deezerId, options);
 }
 
-async function awaitWithTimeout(promise, timeoutMs) {
-    if (!promise || typeof promise.then !== 'function') {
-        return null;
-    }
-
-    const boundedTimeout = Number.isFinite(timeoutMs)
-        ? Math.max(1, Math.trunc(timeoutMs))
-        : 1800;
-
-    let timeoutHandle = null;
-    try {
-        return await Promise.race([
-            promise,
-            new Promise((resolve) => {
-                timeoutHandle = setTimeout(() => resolve(null), boundedTimeout);
-            })
-        ]);
-    } finally {
-        if (timeoutHandle) {
-            clearTimeout(timeoutHandle);
-        }
-    }
-}
-
 function getDeezerPlaybackContextForRow(row, deezerId = '') {
     if (!row) {
         return null;
@@ -5821,7 +5755,6 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
         const previewLabel = hasPreview
             ? (isPodcastShow ? 'Play Episode' : 'Play Track')
             : (canResolveOnDemand ? 'Match and play track' : 'No Deezer match');
-        const previewSampleAttr = track.preview ? ` data-preview-sample="${escapeHtml(track.preview)}"` : '';
         const albumTitle = escapeHtml(track.album?.title || fallbackAlbumTitle || 'Unknown');
         const collectionCell = isPlaylistLike
             ? (isPodcastShow
@@ -5834,7 +5767,6 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
                 <span class="track-num">${track.track_position || index + 1}</span>
                 <span class="material-icons preview-controls${previewClass}"
                       data-preview="${previewUrl}"
-                      ${previewSampleAttr}
                       data-link-only="${track.link || ''}"
                       onclick="playPausePreview(this)"
                       title="${previewLabel}">
@@ -6033,76 +5965,6 @@ function escapeHtml(text) {
 const previewAudio = document.getElementById('preview-track');
 
 let previewStopped = false;
-let previewStartupTimer = null;
-let previewStartupToken = 0;
-
-function clearPreviewStartupWatch() {
-    if (previewStartupTimer) {
-        clearTimeout(previewStartupTimer);
-        previewStartupTimer = null;
-    }
-}
-
-function getSamplePreviewUrl(control, row) {
-    const controlSample = String(control?.getAttribute('data-preview-sample') || '').trim();
-    if (controlSample) {
-        return controlSample;
-    }
-    const checkbox = row?.querySelector('.track-checkbox');
-    const checkboxSample = String(checkbox?.dataset.trackPreview || '').trim();
-    if (checkboxSample) {
-        return checkboxSample;
-    }
-    return '';
-}
-
-async function tryFallbackToSamplePreview(control, row) {
-    const sampleUrl = getSamplePreviewUrl(control, row);
-    if (!sampleUrl) {
-        return false;
-    }
-    if (control?.dataset?.sampleFallbackTried === 'true') {
-        return false;
-    }
-
-    if (control?.dataset) {
-        control.dataset.sampleFallbackTried = 'true';
-    }
-
-    try {
-        previewAudio.pause();
-        previewAudio.src = sampleUrl;
-        previewAudio.load();
-        previewAudio.volume = getPreviewVolume();
-        await previewAudio.play();
-        if (window.DeezSpoTag?.ui?.showToast) {
-            DeezSpoTag.ui.showToast('Primary Deezer stream unavailable. Playing sample preview.', { type: 'warning' });
-        }
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-function beginPreviewStartupWatch(control, row) {
-    clearPreviewStartupWatch();
-    previewStartupToken += 1;
-    const token = previewStartupToken;
-    previewStartupTimer = setTimeout(async () => {
-        if (token !== previewStartupToken) {
-            return;
-        }
-        const isSameControlPlaying = !!control?.hasAttribute('playing');
-        const didStart = !previewAudio.paused && Number(previewAudio.currentTime || 0) > 0;
-        if (!isSameControlPlaying || didStart) {
-            return;
-        }
-        const fallbackPlayed = await tryFallbackToSamplePreview(control, row);
-        if (!fallbackPlayed && window.DeezSpoTag?.ui?.showToast) {
-            DeezSpoTag.ui.showToast('Playback start timed out for this track.', { type: 'warning' });
-        }
-    }, 7000);
-}
 
 function getPreviewVolume() {
     const stored = parseInt(localStorage.getItem('previewVolume') || '', 10);
@@ -6113,7 +5975,6 @@ function getPreviewVolume() {
 }
 
 function resetPreviewControls() {
-    clearPreviewStartupWatch();
     document.querySelectorAll('.preview-controls').forEach((el) => {
         el.removeAttribute('playing');
         el.textContent = 'play_arrow';
@@ -6166,31 +6027,6 @@ async function playPausePreview(control) {
     let previewUrl = control.getAttribute('data-preview') || '';
     const linkOnly = control.getAttribute('data-link-only') || '';
     const row = control.closest('tr');
-    const rowDeezerId = row
-        ? String(row.querySelector('.track-checkbox')?.dataset.trackId || row.dataset.availabilityDeezerId || '').trim()
-        : '';
-
-    // Fast-path recovery: some rows can miss data-preview even when a valid Deezer id exists.
-    // Build the stream URL immediately so Deezer-native playback is never blocked on preview hydration.
-    if (!previewUrl && row && /^\d+$/.test(rowDeezerId)) {
-        const playbackType = getRowPlaybackTypeHint(row);
-        let context = getDeezerPlaybackContextForRow(row, rowDeezerId);
-        if (!context && playbackType !== 'episode') {
-            context = await awaitWithTimeout(
-                ensureDeezerPlaybackContextForRow(row, rowDeezerId),
-                1800
-            ) || null;
-        }
-        previewUrl = buildDeezerStreamUrl(rowDeezerId, {
-            type: playbackType,
-            context
-        });
-        control.setAttribute('data-preview', previewUrl);
-        control.classList.remove('is-disabled');
-        if (!context && playbackType !== 'episode') {
-            void ensureDeezerPlaybackContextForRow(row, rowDeezerId);
-        }
-    }
 
     if (previewUrl && previewUrl.includes('/api/deezer/stream/')) {
         const hasContextParams = /[?&](trackToken|streamTrackId)=/i.test(previewUrl);
@@ -6199,20 +6035,16 @@ async function playPausePreview(control) {
             if (playbackType === 'episode') {
                 // Podcast episode playback already resolves directly by episode id.
             } else {
-                const deezerId = rowDeezerId;
+                const deezerId = String(row.querySelector('.track-checkbox')?.dataset.trackId || row.dataset.availabilityDeezerId || '').trim();
                 if (deezerId && /^\d+$/.test(deezerId)) {
-                    let context = getDeezerPlaybackContextForRow(row, deezerId);
-                    if (!context) {
-                        context = await awaitWithTimeout(
-                            ensureDeezerPlaybackContextForRow(row, deezerId),
-                            1800
-                        ) || null;
-                    }
-                    previewUrl = buildDeezerStreamUrl(deezerId, {
-                        type: playbackType,
-                        context
-                    });
-                    if (!context) {
+                    const context = getDeezerPlaybackContextForRow(row, deezerId);
+                    if (context) {
+                        previewUrl = buildDeezerStreamUrl(deezerId, {
+                            type: playbackType,
+                            context
+                        });
+                    } else {
+                        previewUrl = buildDeezerStreamUrl(deezerId, { type: playbackType });
                         void ensureDeezerPlaybackContextForRow(row, deezerId);
                     }
                     control.setAttribute('data-preview', previewUrl);
@@ -6259,10 +6091,6 @@ async function playPausePreview(control) {
     }
 
     resetPreviewControls();
-    clearPreviewStartupWatch();
-    if (control?.dataset) {
-        control.dataset.sampleFallbackTried = 'false';
-    }
     control.setAttribute('playing', 'true');
     control.textContent = 'pause';
     previewStopped = false;
@@ -6273,26 +6101,11 @@ async function playPausePreview(control) {
     previewAudio.src = previewUrl;
     previewAudio.load();
     previewAudio.volume = getPreviewVolume();
-    beginPreviewStartupWatch(control, row);
-    previewAudio.play().catch(async () => {
-        const fallbackPlayed = await tryFallbackToSamplePreview(control, row);
-        if (!fallbackPlayed) {
-            clearPreviewStartupWatch();
-            resetPreviewControls();
-            if (window.DeezSpoTag?.ui?.showToast) {
-                DeezSpoTag.ui.showToast('Playback failed for this track.', { type: 'warning' });
-            }
-        }
-    });
+    previewAudio.play().catch(() => {});
 }
 
 if (previewAudio) {
-    previewAudio.addEventListener('playing', () => {
-        clearPreviewStartupWatch();
-    });
-
     previewAudio.addEventListener('ended', () => {
-        clearPreviewStartupWatch();
         const current = document.querySelector('.preview-controls[playing]');
         if (!current) {
             previewStopped = true;
@@ -6309,14 +6122,7 @@ if (previewAudio) {
         })();
     });
 
-    previewAudio.addEventListener('error', async () => {
-        clearPreviewStartupWatch();
-        const current = document.querySelector('.preview-controls[playing]');
-        const row = current?.closest('tr') || null;
-        const fallbackPlayed = current ? await tryFallbackToSamplePreview(current, row) : false;
-        if (fallbackPlayed) {
-            return;
-        }
+    previewAudio.addEventListener('error', () => {
         previewStopped = true;
         resetPreviewControls();
         if (window.DeezSpoTag?.ui?.showToast) {
