@@ -785,21 +785,57 @@ public sealed class SpotifyMetadataService
             return cached with { TrackList = new List<SpotifyTrackSummary>() };
         }
 
-        var spotiFlacPayload = await _pathfinderMetadataClient.FetchSpotiFlacPlaylistMetadataAsync(
-            playlistId,
-            cancellationToken);
-        if (spotiFlacPayload != null)
+        if (TryGetPlaylistFromCache(playlistId, out var cachedPlaylist))
         {
-            var metadata = MapSpotiFlacPlaylistMetadata(playlistId, spotiFlacPayload, includeTracks: false);
-            CachePlaylistMetadata(playlistId, metadata);
-            return metadata;
+            var cachedMetadata = cachedPlaylist with { TrackList = new List<SpotifyTrackSummary>() };
+            CachePlaylistMetadata(playlistId, cachedMetadata);
+            return cachedMetadata;
         }
 
-        var fallbackUrl = $"https://open.spotify.com/playlist/{playlistId}";
-        var fallback = await FetchByUrlAsync(fallbackUrl, cancellationToken);
-        return fallback is null
-            ? null
-            : fallback with { TrackList = new List<SpotifyTrackSummary>() };
+        var metadataTimeout = TimeSpan.FromSeconds(4);
+        try
+        {
+            using var metadataCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            metadataCts.CancelAfter(metadataTimeout);
+            var spotiFlacPayload = await _pathfinderMetadataClient.FetchSpotiFlacPlaylistMetadataAsync(
+                playlistId,
+                metadataCts.Token);
+            if (spotiFlacPayload != null)
+            {
+                var metadata = MapSpotiFlacPlaylistMetadata(playlistId, spotiFlacPayload, includeTracks: false);
+                CachePlaylistMetadata(playlistId, metadata);
+                return metadata;
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "Spotify playlist metadata lookup timed out after {TimeoutMs}ms for {PlaylistId}; returning lightweight metadata.",
+                (int)metadataTimeout.TotalMilliseconds,
+                playlistId);
+        }
+
+        var lightweightMetadata = BuildLightweightPlaylistMetadata(playlistId);
+        CachePlaylistMetadata(playlistId, lightweightMetadata);
+        return lightweightMetadata;
+    }
+
+    private static SpotifyUrlMetadata BuildLightweightPlaylistMetadata(string playlistId)
+    {
+        return new SpotifyUrlMetadata(
+            PlaylistType,
+            playlistId,
+            "Spotify Playlist",
+            $"https://open.spotify.com/playlist/{playlistId}",
+            null,
+            null,
+            0,
+            null,
+            new List<SpotifyTrackSummary>(),
+            new List<SpotifyAlbumSummary>(),
+            "Spotify",
+            null,
+            null);
     }
 
     public async Task<SpotifyPlaylistPage?> FetchPlaylistTrackPageAsync(
