@@ -875,6 +875,20 @@ function isAuthHtmlResponse(response) {
     }
 }
 
+function getLibraryPlaybackFacade() {
+    const facade = globalThis.DeezerPlaybackFacade;
+    if (!facade || typeof facade !== 'object') {
+        return null;
+    }
+    if (typeof facade.resolveTrackBySpotifyUrl !== 'function') {
+        return null;
+    }
+    if (typeof facade.resolvePlayableStreamUrl !== 'function') {
+        return null;
+    }
+    return facade;
+}
+
 async function resolveSpotifyUrlToDeezer(url) {
     if (!url) {
         return null;
@@ -884,12 +898,15 @@ async function resolveSpotifyUrlToDeezer(url) {
         return cached;
     }
     try {
-        const resolved = globalThis.DeezerResolver && typeof globalThis.DeezerResolver.resolveTrack === 'function'
-            ? await globalThis.DeezerResolver.resolveTrack(
-                { source: 'spotify', url },
-                { attempts: 2, baseDelayMs: 250, timeoutMs: 2500, spotifyResolverFirst: true }
-            )
-            : null;
+        const facade = getLibraryPlaybackFacade();
+        const resolved = facade
+            ? await facade.resolveTrackBySpotifyUrl(url)
+            : (globalThis.DeezerResolver && typeof globalThis.DeezerResolver.resolveTrack === 'function'
+                ? await globalThis.DeezerResolver.resolveTrack(
+                    { source: 'spotify', url },
+                    { attempts: 2, baseDelayMs: 250, timeoutMs: 2500, spotifyResolverFirst: true }
+                )
+                : null);
         if (resolved?.type === 'track' && resolved?.available === true && resolved?.deezerId) {
             libraryState.spotifyResolveCache.set(url, resolved);
         }
@@ -2134,11 +2151,17 @@ async function playSpotifyTrackInApp(url, button) {
     const trackId = resolved.deezerId.toString();
     const previewKey = `deezer:${trackId}`;
     const playbackContext = globalThis.DeezerPlaybackContext;
-    const streamUrl = (globalThis.DeezerResolver && typeof globalThis.DeezerResolver.resolvePlayableStreamUrl === 'function')
-        ? await globalThis.DeezerResolver.resolvePlayableStreamUrl({ deezerId: trackId, element: button }, { fetchContext: false })
-        : ((playbackContext && typeof playbackContext.resolveStreamUrl === 'function')
-            ? await playbackContext.resolveStreamUrl(trackId, { element: button, fetchContext: false })
-            : `/api/deezer/stream/${encodeURIComponent(trackId)}`);
+    const facade = getLibraryPlaybackFacade();
+    const streamUrl = facade
+        ? await facade.resolvePlayableStreamUrl(trackId, {
+            element: button,
+            fetchContext: false
+        })
+        : ((globalThis.DeezerResolver && typeof globalThis.DeezerResolver.resolvePlayableStreamUrl === 'function')
+            ? await globalThis.DeezerResolver.resolvePlayableStreamUrl({ deezerId: trackId, element: button }, { fetchContext: false })
+            : ((playbackContext && typeof playbackContext.resolveStreamUrl === 'function')
+                ? await playbackContext.resolveStreamUrl(trackId, { element: button, fetchContext: false })
+                : `/api/deezer/stream/${encodeURIComponent(trackId)}`));
     const audio = libraryState.previewAudio ?? new Audio();
 
     if (libraryState.previewTrackId === previewKey && !audio.paused) {

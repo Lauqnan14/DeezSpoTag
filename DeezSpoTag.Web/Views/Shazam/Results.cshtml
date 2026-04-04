@@ -482,6 +482,20 @@
             .trim();
     };
 
+    const getShazamPlaybackFacade = () => {
+        const facade = window.DeezerPlaybackFacade;
+        if (!facade || typeof facade !== 'object') {
+            return null;
+        }
+        if (typeof facade.resolveTrackBySpotifyUrl !== 'function') {
+            return null;
+        }
+        if (typeof facade.resolvePlayableStreamUrl !== 'function') {
+            return null;
+        }
+        return facade;
+    };
+
     const resolveAvailability = async (card, options = {}) => {
         if (!card) {
             return null;
@@ -680,14 +694,30 @@
             return mapped.deezerId;
         }
 
+        const isrc = (card.dataset.isrc || '').trim();
+        const titleValue = (card.dataset.title || '').trim();
+        const artistValue = (card.dataset.artist || '').trim();
+        const albumValue = (card.dataset.album || '').trim();
+        const durationMs = (card.dataset.durationMs || '').trim();
         const spotifyUrl = (card.dataset.spotifyUrl || '').trim();
         if (spotifyUrl) {
-            const resolved = window.DeezerResolver && typeof window.DeezerResolver.resolveTrack === 'function'
-                ? await window.DeezerResolver.resolveTrack(
-                    { source: 'spotify', url: spotifyUrl },
-                    { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: true }
-                )
-                : null;
+            const facade = getShazamPlaybackFacade();
+            const resolved = facade
+                ? await facade.resolveTrackBySpotifyUrl(spotifyUrl, {
+                    metadata: {
+                        title: titleValue,
+                        artist: artistValue,
+                        album: albumValue,
+                        isrc,
+                        durationMs: Number.parseInt(durationMs, 10) || 0
+                    }
+                })
+                : (window.DeezerResolver && typeof window.DeezerResolver.resolveTrack === 'function'
+                    ? await window.DeezerResolver.resolveTrack(
+                        { source: 'spotify', url: spotifyUrl },
+                        { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: true }
+                    )
+                    : null);
             if (resolved?.available && resolved?.deezerId) {
                 card.dataset.deezerId = resolved.deezerId;
                 card.dataset.deezerUrl = resolved.deezerUrl || `https://www.deezer.com/track/${resolved.deezerId}`;
@@ -826,7 +856,13 @@
         previewState.button = button;
         setPreviewButtonState(button, true);
 
-        if (window.DeezerResolver && typeof window.DeezerResolver.resolvePlayableStreamUrl === 'function') {
+        const facade = getShazamPlaybackFacade();
+        if (facade) {
+            audio.src = await facade.resolvePlayableStreamUrl(deezerId, {
+                element: button,
+                fetchContext: false
+            });
+        } else if (window.DeezerResolver && typeof window.DeezerResolver.resolvePlayableStreamUrl === 'function') {
             audio.src = await window.DeezerResolver.resolvePlayableStreamUrl(
                 { deezerId, element: button },
                 { fetchContext: false }

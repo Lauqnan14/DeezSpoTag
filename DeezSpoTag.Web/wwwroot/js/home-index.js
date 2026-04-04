@@ -309,6 +309,20 @@ async function fetchHomeDeezerPlaybackContext(deezerId) {
     );
 }
 
+function getDeezerPlaybackFacade() {
+    const facade = globalThis.DeezerPlaybackFacade;
+    if (!facade || typeof facade !== 'object') {
+        return null;
+    }
+    if (typeof facade.resolveTrackBySpotifyUrl !== 'function') {
+        return null;
+    }
+    if (typeof facade.resolvePlayableStreamUrl !== 'function') {
+        return null;
+    }
+    return facade;
+}
+
 function collectHomeTrendingMatchMetadata(button) {
     if (!button?.dataset) {
         return null;
@@ -379,6 +393,15 @@ async function resolveSpotifyUrlToDeezerHome(url, metadata = null) {
     if (!url) {
         return null;
     }
+    const facade = getDeezerPlaybackFacade();
+    if (facade) {
+        try {
+            return await facade.resolveTrackBySpotifyUrl(url, { metadata });
+        } catch {
+            // Keep legacy fallback path below if facade fails unexpectedly.
+        }
+    }
+
     if (homeSpotifyResolveCache.has(url)) {
         return homeSpotifyResolveCache.get(url);
     }
@@ -534,6 +557,24 @@ async function resolveHomeTrendingDeezerStreamUrl(deezerId, button) {
     if (button && !hasHomeTrendingPlaybackContext(button)) {
         void warmHomeTrendingPlaybackContext(button, deezerId);
     }
+
+    const facade = getDeezerPlaybackFacade();
+    if (facade) {
+        try {
+            const streamUrl = await facade.resolvePlayableStreamUrl(deezerId, {
+                element: button,
+                cache: homeDeezerPlaybackContextCache,
+                requests: homeDeezerPlaybackContextRequests,
+                fetchContext: false
+            });
+            if (streamUrl) {
+                return streamUrl;
+            }
+        } catch {
+            // Keep legacy fallback path below if facade fails unexpectedly.
+        }
+    }
+
     if (globalThis.DeezerPlaybackContext && typeof globalThis.DeezerPlaybackContext.resolveStreamUrl === 'function') {
         return await globalThis.DeezerPlaybackContext.resolveStreamUrl(deezerId, {
             element: button,
