@@ -3957,6 +3957,44 @@ function buildExternalMatchRequestFromRow(row) {
     };
 }
 
+function getTracklistPlaybackFacade() {
+    const facade = window.DeezerPlaybackFacade;
+    if (!facade || typeof facade !== 'object') {
+        return null;
+    }
+    if (typeof facade.resolveTrackBySpotifyUrl !== 'function') {
+        return null;
+    }
+    if (typeof facade.resolvePlayableStreamUrl !== 'function') {
+        return null;
+    }
+    return facade;
+}
+
+function buildExternalDeezerResolveQuery(current, source) {
+    const qs = new URLSearchParams();
+    qs.set('url', current.link);
+    if (current.title) {
+        qs.set('title', current.title);
+    }
+    if (current.artist) {
+        qs.set('artist', current.artist);
+    }
+    if (current.album) {
+        qs.set('album', current.album);
+    }
+    if (current.isrc) {
+        qs.set('isrc', current.isrc);
+    }
+    if (current.durationMs && Number.isFinite(current.durationMs) && current.durationMs > 0) {
+        qs.set('durationMs', String(current.durationMs));
+    }
+    if (shouldHydrateDeezerMetadata(source)) {
+        qs.set('includeMeta', 'true');
+    }
+    return qs;
+}
+
 async function resolveExternalRequestToDeezer(current, source, row, options = {}) {
     if (!current || !current.link) {
         return '';
@@ -3978,32 +4016,31 @@ async function resolveExternalRequestToDeezer(current, source, row, options = {}
             let deezerId = '';
             let resolvePayload = null;
             if (source === 'spotify') {
-                const data = await fetchJsonWithRetry(`/api/spotify/resolve-deezer?url=${encodeURIComponent(current.link)}`, 3);
-                deezerId = data?.deezerId || '';
+                const facade = getTracklistPlaybackFacade();
+                if (facade) {
+                    const resolved = await facade.resolveTrackBySpotifyUrl(current.link, {
+                        metadata: {
+                            title: current.title || '',
+                            artist: current.artist || '',
+                            album: current.album || '',
+                            isrc: current.isrc || '',
+                            durationMs: Number.isFinite(current.durationMs) && current.durationMs > 0 ? current.durationMs : 0
+                        }
+                    });
+                    deezerId = resolved?.deezerId || '';
+                    if (deezerId && shouldHydrateDeezerMetadata(source) && resolved?.resolvedBy === 'metadata-fallback') {
+                        const qs = buildExternalDeezerResolveQuery(current, source);
+                        const data = await fetchJsonWithRetry(`/api/resolve/deezer?${qs.toString()}`, 3);
+                        resolvePayload = data;
+                    }
+                } else {
+                    const data = await fetchJsonWithRetry(`/api/spotify/resolve-deezer?url=${encodeURIComponent(current.link)}`, 3);
+                    deezerId = data?.deezerId || '';
+                }
             }
 
             if (!deezerId) {
-                const qs = new URLSearchParams();
-                qs.set('url', current.link);
-                if (current.title) {
-                    qs.set('title', current.title);
-                }
-                if (current.artist) {
-                    qs.set('artist', current.artist);
-                }
-                if (current.album) {
-                    qs.set('album', current.album);
-                }
-                if (current.isrc) {
-                    qs.set('isrc', current.isrc);
-                }
-                if (current.durationMs && Number.isFinite(current.durationMs) && current.durationMs > 0) {
-                    qs.set('durationMs', String(current.durationMs));
-                }
-                if (shouldHydrateDeezerMetadata(source)) {
-                    qs.set('includeMeta', 'true');
-                }
-
+                const qs = buildExternalDeezerResolveQuery(current, source);
                 const data = await fetchJsonWithRetry(`/api/resolve/deezer?${qs.toString()}`, 3);
                 resolvePayload = data;
                 deezerId = data?.deezerId || '';
@@ -4098,6 +4135,20 @@ async function resolveDeezerPlaybackUrlForRow(row, deezerId, playbackType = '') 
     const normalizedId = String(deezerId || '').trim();
     if (!normalizedId || !/^\d+$/.test(normalizedId)) {
         return '';
+    }
+
+    const facade = getTracklistPlaybackFacade();
+    if (facade) {
+        const resolvedViaFacade = await facade.resolvePlayableStreamUrl(normalizedId, {
+            type: playbackType,
+            element: row,
+            cache: deezerPlaybackContextCache,
+            requests: deezerPlaybackContextRequests,
+            fetchContext: false
+        });
+        if (resolvedViaFacade) {
+            return resolvedViaFacade;
+        }
     }
 
     if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
