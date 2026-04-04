@@ -2773,6 +2773,9 @@ async function loadSpotifyTrendingTracklist() {
 
     await loadIgnoredTracks();
     renderTracklist(payload.tracklist);
+    if (payload.matching?.pending > 0 && payload.matching?.token) {
+        startSpotifyMatchPolling(payload.matching.token, payload.matching.pending);
+    }
     updateSpotifyNotice();
 }
 
