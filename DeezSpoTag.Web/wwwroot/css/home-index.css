@@ -212,15 +212,6 @@
 .home-top-song-item__play.is-playing .playback-icon--pause {
     display: block;
 }
-.home-top-song-item__play.is-starting {
-    opacity: 1;
-    visibility: visible;
-    pointer-events: auto;
-    color: var(--primary-color);
-}
-.home-top-song-item.is-starting .home-top-song-item__thumb img {
-    animation: none;
-}
 .home-top-song-item:hover .home-top-song-item__play,
 .home-top-song-item:focus-within .home-top-song-item__play {
     opacity: 1;
