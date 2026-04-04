@@ -566,7 +566,7 @@ document.getElementById('unified-search').addEventListener('keypress', function(
 
 const searchInput = document.getElementById('unified-search');
 
-const SEARCH_LINK_PLACEHOLDER = 'Search Spotify tracks, albums, artists, playlists first... or paste Spotify/Apple Music/Boomplay/Tidal/Qobuz/Bandcamp links';
+const SEARCH_LINK_PLACEHOLDER = 'Search Deezer, Spotify and Apple Music tracks, albums, artists,... or paste Spotify/Apple Music/Boomplay/Tidal/Qobuz/Bandcamp links';
 const SUPPORTED_LINK_SOURCES = 'Spotify, Apple Music, Boomplay, Tidal, Qobuz, Bandcamp, Deezer';
 
 function applySearchSourceState() {
