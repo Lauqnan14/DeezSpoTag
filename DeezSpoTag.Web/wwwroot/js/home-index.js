@@ -284,6 +284,56 @@ async function resolveSpotifyUrlToDeezerHome(url) {
     }
 }
 
+function tryExtractDeezerTrackIdFromUrl(url) {
+    const text = String(url || '').trim();
+    if (!text) {
+        return '';
+    }
+    const match = text.match(/deezer\.com\/track\/(\d+)/i);
+    return match ? String(match[1]) : '';
+}
+
+async function mapHomeTrendingSpotifyUrls(urls) {
+    const normalized = Array.from(new Set(
+        (Array.isArray(urls) ? urls : [])
+            .map(url => String(url || '').trim())
+            .filter(Boolean)
+    ));
+    if (normalized.length === 0) {
+        return new Map();
+    }
+
+    try {
+        const response = await fetch('/api/spotify/home-feed/map', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ urls: normalized })
+        });
+        if (!response.ok) {
+            return new Map();
+        }
+
+        const payload = await response.json();
+        const matches = payload && payload.matches && typeof payload.matches === 'object'
+            ? payload.matches
+            : null;
+        if (!matches) {
+            return new Map();
+        }
+
+        const resolved = new Map();
+        for (const [url, deezerUrl] of Object.entries(matches)) {
+            const deezerId = tryExtractDeezerTrackIdFromUrl(deezerUrl);
+            if (deezerId) {
+                resolved.set(String(url), deezerId);
+            }
+        }
+        return resolved;
+    } catch {
+        return new Map();
+    }
+}
+
 async function primeHomeTrendingTrackMappings(options = {}) {
     const limit = Number(options?.limit || 0);
     const requestedConcurrency = Number(options?.concurrency || 4);
@@ -308,10 +358,28 @@ async function primeHomeTrendingTrackMappings(options = {}) {
     }
 
     const pending = (limit > 0 ? queue.slice(0, limit) : queue);
+    const batchMapped = await mapHomeTrendingSpotifyUrls(pending.map(entry => entry.url));
+    if (batchMapped.size > 0) {
+        pending.forEach((entry) => {
+            const deezerId = batchMapped.get(entry.url) || '';
+            if (deezerId) {
+                entry.button.dataset.deezerId = deezerId;
+                homeSpotifyResolveCache.set(entry.url, {
+                    available: true,
+                    type: 'track',
+                    deezerId
+                });
+            }
+        });
+    }
+
     let cursor = 0;
     const workers = Array.from({ length: Math.min(concurrency, pending.length) }, async () => {
         while (cursor < pending.length) {
             const current = pending[cursor++];
+            if ((current.button.dataset.deezerId || '').trim()) {
+                continue;
+            }
             try {
                 const resolved = await resolveSpotifyUrlToDeezerHome(current.url);
                 if (resolved?.type !== 'track' || !resolved?.deezerId) {
