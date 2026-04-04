@@ -2594,9 +2594,13 @@
         flex: 1 1 100%;
     }
 
-    .library-grid,
-    .artist-grid {
+    .library-grid {
         grid-template-columns: repeat(auto-fit, minmax(var(--art-grid-min), 1fr));
+    }
+
+    .library-page .artist-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
     }
 }
 
