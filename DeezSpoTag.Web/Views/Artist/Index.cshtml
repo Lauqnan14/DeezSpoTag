@@ -685,6 +685,7 @@ const artistPreviewState = {
 const artistSpotifyResolveCache = new Map();
 const artistDeezerPlaybackContextCache = new Map();
 const artistDeezerPlaybackContextRequests = new Map();
+const artistPlaybackState = window.DeezerPlaybackState;
 let artistTopTracksHandlersBound = false;
 let artistTopTrackPreviewWarmupTimer = 0;
 
@@ -1170,11 +1171,13 @@ function setArtistPreviewButtonState(button, isPlaying) {
     if (isPlaying) {
         const list = document.getElementById('artistTopTracksList');
         if (list) {
-            list.querySelectorAll('.top-song-item__play.is-playing').forEach((activeButton) => {
+            list.querySelectorAll('.top-song-item__play').forEach((activeButton) => {
                 if (activeButton === button) {
                     return;
                 }
                 activeButton.classList.remove('is-playing');
+                activeButton.classList.remove('is-starting');
+                delete activeButton.dataset.playbackState;
                 const activeRow = activeButton.closest('.top-song-item');
                 if (activeRow) {
                     activeRow.classList.remove('is-playing');
@@ -1189,12 +1192,24 @@ function setArtistPreviewButtonState(button, isPlaying) {
     }
 }
 
+function setArtistPlaybackState(button, state) {
+    if (artistPlaybackState && typeof artistPlaybackState.transitionButtonState === 'function') {
+        artistPlaybackState.transitionButtonState(button, state, {
+            setPlaying: setArtistPreviewButtonState
+        });
+        return;
+    }
+
+    const isPlaying = String(state || '').toLowerCase() === 'playing';
+    setArtistPreviewButtonState(button, isPlaying);
+}
+
 function resetArtistPreviewState() {
     if (artistPreviewState.audio && !artistPreviewState.audio.paused) {
         artistPreviewState.audio.pause();
     }
     if (artistPreviewState.button) {
-        setArtistPreviewButtonState(artistPreviewState.button, false);
+        setArtistPlaybackState(artistPreviewState.button, 'idle');
     }
     artistPreviewState.trackKey = null;
     artistPreviewState.button = null;
@@ -1205,7 +1220,7 @@ function restoreArtistPreviewState() {
     const audio = artistPreviewState.audio;
     if (!audio || audio.paused || !artistPreviewState.sourceKey) {
         if (artistPreviewState.button) {
-            setArtistPreviewButtonState(artistPreviewState.button, false);
+            setArtistPlaybackState(artistPreviewState.button, 'idle');
         }
         artistPreviewState.button = null;
         return;
@@ -1224,7 +1239,7 @@ function restoreArtistPreviewState() {
     }
 
     artistPreviewState.button = nextButton;
-    setArtistPreviewButtonState(nextButton, true);
+    setArtistPlaybackState(nextButton, 'playing');
 }
 
 function normalizeArtistDeezerPlaybackContext(payload) {
@@ -1363,27 +1378,27 @@ async function playArtistTrackInApp(button) {
     if (artistPreviewState.trackKey === trackKey && !audio.paused) {
         audio.pause();
         if (artistPreviewState.button) {
-            setArtistPreviewButtonState(artistPreviewState.button, false);
+            setArtistPlaybackState(artistPreviewState.button, 'idle');
         }
         return;
     }
 
     if (artistPreviewState.button && artistPreviewState.button !== button) {
-        setArtistPreviewButtonState(artistPreviewState.button, false);
+        setArtistPlaybackState(artistPreviewState.button, 'idle');
     }
 
     artistPreviewState.audio = audio;
     artistPreviewState.trackKey = trackKey;
     artistPreviewState.button = button;
     artistPreviewState.sourceKey = sourceKey;
-    setArtistPreviewButtonState(button, true);
+    setArtistPlaybackState(button, 'requested');
     audio.src = streamUrl;
     audio.currentTime = 0;
     audio.onended = () => {
         const nextButton = getNextTopTrackButton();
         const currentButton = artistPreviewState.button;
         if (currentButton) {
-            setArtistPreviewButtonState(currentButton, false);
+            setArtistPlaybackState(currentButton, 'ended');
         }
         artistPreviewState.trackKey = null;
         artistPreviewState.button = null;
@@ -1397,7 +1412,7 @@ async function playArtistTrackInApp(button) {
         const nextButton = getNextTopTrackButton();
         const currentButton = artistPreviewState.button;
         if (currentButton) {
-            setArtistPreviewButtonState(currentButton, false);
+            setArtistPlaybackState(currentButton, 'error');
         }
         artistPreviewState.trackKey = null;
         artistPreviewState.button = null;
@@ -1411,8 +1426,9 @@ async function playArtistTrackInApp(button) {
 
     try {
         await audio.play();
+        setArtistPlaybackState(button, 'playing');
     } catch {
-        setArtistPreviewButtonState(button, false);
+        setArtistPlaybackState(button, 'error');
         artistPreviewState.trackKey = null;
         if (artistPreviewState.button === button) {
             artistPreviewState.button = null;

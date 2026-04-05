@@ -59,6 +59,7 @@
         trackId: null,
         button: null
     };
+    const shazamPlaybackState = window.DeezerPlaybackState;
     const availabilityCache = new Map();
     const previewCacheKey = 'deezspotag-shazam-preview-cache';
     const previewCacheTtlMs = 24 * 60 * 60 * 1000;
@@ -817,12 +818,24 @@
         button.classList.toggle('is-playing', isPlaying);
     };
 
+    const setShazamPlaybackState = (button, state) => {
+        if (shazamPlaybackState && typeof shazamPlaybackState.transitionButtonState === 'function') {
+            shazamPlaybackState.transitionButtonState(button, state, {
+                setPlaying: setPreviewButtonState
+            });
+            return;
+        }
+
+        const isPlaying = String(state || '').toLowerCase() === 'playing';
+        setPreviewButtonState(button, isPlaying);
+    };
+
     const stopPreview = () => {
         if (previewState.audio && !previewState.audio.paused) {
             previewState.audio.pause();
         }
         if (previewState.button) {
-            setPreviewButtonState(previewState.button, false);
+            setShazamPlaybackState(previewState.button, 'idle');
         }
         previewState.trackId = null;
         previewState.button = null;
@@ -849,12 +862,12 @@
         }
 
         if (previewState.button && previewState.button !== button) {
-            setPreviewButtonState(previewState.button, false);
+            setShazamPlaybackState(previewState.button, 'idle');
         }
 
         previewState.trackId = deezerId;
         previewState.button = button;
-        setPreviewButtonState(button, true);
+        setShazamPlaybackState(button, 'requested');
 
         const facade = getShazamPlaybackFacade();
         if (facade) {
@@ -874,12 +887,15 @@
         }
         audio.currentTime = 0;
         audio.onended = () => {
+            setShazamPlaybackState(button, 'ended');
             stopPreview();
         };
 
         try {
             await audio.play();
+            setShazamPlaybackState(button, 'playing');
         } catch {
+            setShazamPlaybackState(button, 'error');
             stopPreview();
             notify('Unable to start playback.', 'error');
         }

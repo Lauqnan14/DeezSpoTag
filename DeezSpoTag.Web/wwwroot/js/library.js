@@ -2003,12 +2003,14 @@ async function handleSpotifyRedirect(url, metadata = {}) {
 }
 
 function clearPreviewPlayingMarkers(exceptButton = null) {
-    document.querySelectorAll('.track-action.track-play.is-playing').forEach((activeButton) => {
+    document.querySelectorAll('.track-action.track-play').forEach((activeButton) => {
         if (exceptButton && activeButton === exceptButton) {
             return;
         }
 
         activeButton.classList.remove('is-playing');
+        activeButton.classList.remove('is-starting');
+        delete activeButton.dataset.playbackState;
         const row = activeButton.closest('.top-song-item, .home-top-song-item');
         if (row) {
             row.classList.remove('is-playing');
@@ -2051,17 +2053,32 @@ function setPreviewButtonState(button, isPlaying) {
 
 }
 
+const libraryPlaybackState = globalThis.DeezerPlaybackState;
+
+function setLibraryPlaybackState(button, state) {
+    if (libraryPlaybackState && typeof libraryPlaybackState.transitionButtonState === 'function') {
+        libraryPlaybackState.transitionButtonState(button, state, {
+            setPlaying: setPreviewButtonState,
+            clear: () => clearPreviewPlayingMarkers(null)
+        });
+        return;
+    }
+
+    const isPlaying = String(state || '').toLowerCase() === 'playing';
+    setPreviewButtonState(button, isPlaying);
+}
+
 function clearActivePreviewButton() {
     if (!libraryState.previewButton) {
         return;
     }
 
-    setPreviewButtonState(libraryState.previewButton, false);
+    setLibraryPlaybackState(libraryState.previewButton, 'idle');
     libraryState.previewButton = null;
 }
 
-function resetPreviewState(button) {
-    setPreviewButtonState(button, false);
+function resetPreviewState(button, state = 'idle') {
+    setLibraryPlaybackState(button, state);
     libraryState.previewTrackId = null;
     if (libraryState.previewButton === button) {
         libraryState.previewButton = null;
@@ -2076,7 +2093,7 @@ function configurePreviewAudio(audio, previewKey, button, sourceUrl, onEnded, on
     libraryState.previewAudio = audio;
     libraryState.previewTrackId = previewKey;
     libraryState.previewButton = button;
-    setPreviewButtonState(button, true);
+    setLibraryPlaybackState(button, 'requested');
     audio.pause();
     audio.src = sourceUrl;
     audio.currentTime = 0;
@@ -2087,9 +2104,10 @@ function configurePreviewAudio(audio, previewKey, button, sourceUrl, onEnded, on
 async function startPreviewPlayback(audio, button, message) {
     try {
         await audio.play();
+        setLibraryPlaybackState(button, 'playing');
         return true;
     } catch {
-        resetPreviewState(button);
+        resetPreviewState(button, 'error');
         showToast(message, true);
         return false;
     }
@@ -2174,7 +2192,7 @@ async function playSpotifyTrackInApp(url, button) {
         const nextButton = getNextSpotifyTopTrackButton();
         const currentButton = libraryState.previewButton;
         if (currentButton) {
-            setPreviewButtonState(currentButton, false);
+            setLibraryPlaybackState(currentButton, 'ended');
         }
         libraryState.previewTrackId = null;
         libraryState.previewButton = null;
@@ -2187,7 +2205,7 @@ async function playSpotifyTrackInApp(url, button) {
         const nextButton = getNextSpotifyTopTrackButton();
         const currentButton = libraryState.previewButton;
         if (currentButton) {
-            setPreviewButtonState(currentButton, false);
+            setLibraryPlaybackState(currentButton, 'error');
         }
         libraryState.previewTrackId = null;
         libraryState.previewButton = null;
