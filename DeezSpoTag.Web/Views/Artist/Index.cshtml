@@ -1242,20 +1242,6 @@ function restoreArtistPreviewState() {
     setArtistPlaybackState(nextButton, 'playing');
 }
 
-function normalizeArtistDeezerPlaybackContext(payload) {
-    if (!window.DeezerPlaybackContext || typeof window.DeezerPlaybackContext.normalize !== 'function') {
-        return null;
-    }
-    return window.DeezerPlaybackContext.normalize(payload);
-}
-
-function buildArtistDeezerStreamUrl(deezerId, context) {
-    if (!window.DeezerPlaybackContext || typeof window.DeezerPlaybackContext.buildStreamUrl !== 'function') {
-        return '';
-    }
-    return window.DeezerPlaybackContext.buildStreamUrl(deezerId, { context: context });
-}
-
 function getArtistPlaybackFacade() {
     const facade = window.DeezerPlaybackFacade;
     if (!facade || typeof facade !== 'object') {
@@ -1268,16 +1254,6 @@ function getArtistPlaybackFacade() {
         return null;
     }
     return facade;
-}
-
-async function fetchArtistDeezerPlaybackContext(deezerId) {
-    if (!window.DeezerPlaybackContext || typeof window.DeezerPlaybackContext.fetchContext !== 'function') {
-        return null;
-    }
-    return await window.DeezerPlaybackContext.fetchContext(deezerId, {
-        cache: artistDeezerPlaybackContextCache,
-        requests: artistDeezerPlaybackContextRequests
-    });
 }
 
 async function resolveArtistDeezerStreamUrl(deezerId, button) {
@@ -1299,34 +1275,7 @@ async function resolveArtistDeezerStreamUrl(deezerId, button) {
         }
     }
 
-    if (window.DeezerResolver && typeof window.DeezerResolver.resolvePlayableStreamUrl === 'function') {
-        const streamUrl = await window.DeezerResolver.resolvePlayableStreamUrl(
-            { deezerId: normalizedId, element: button },
-            {
-                cache: artistDeezerPlaybackContextCache,
-                requests: artistDeezerPlaybackContextRequests,
-                fetchContext: false
-            }
-        );
-        if (streamUrl) {
-            return streamUrl;
-        }
-    }
-
-    if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
-        const streamUrl = await window.DeezerPlaybackContext.resolveStreamUrl(normalizedId, {
-            element: button,
-            cache: artistDeezerPlaybackContextCache,
-            requests: artistDeezerPlaybackContextRequests,
-            fetchContext: false
-        });
-        if (streamUrl) {
-            return streamUrl;
-        }
-    }
-
-    const context = await fetchArtistDeezerPlaybackContext(normalizedId);
-    return buildArtistDeezerStreamUrl(normalizedId, context);
+    return `/api/deezer/stream/${encodeURIComponent(normalizedId)}`;
 }
 
 async function playArtistTrackInApp(button) {
@@ -1446,14 +1395,10 @@ async function resolveSpotifyUrlToDeezer(url) {
     }
     try {
         const facade = getArtistPlaybackFacade();
-        const resolved = facade
-            ? await facade.resolveTrackBySpotifyUrl(url)
-            : (window.DeezerResolver && typeof window.DeezerResolver.resolveTrack === 'function'
-                ? await window.DeezerResolver.resolveTrack(
-                    { source: 'spotify', url },
-                    { attempts: 2, baseDelayMs: 250, timeoutMs: 2500, spotifyResolverFirst: true }
-                )
-                : null);
+        if (!facade) {
+            return null;
+        }
+        const resolved = await facade.resolveTrackBySpotifyUrl(url);
         if (resolved?.type === 'track' && resolved?.available === true && resolved?.deezerId) {
             artistSpotifyResolveCache.set(url, resolved);
         }

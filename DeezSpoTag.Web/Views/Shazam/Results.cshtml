@@ -703,22 +703,18 @@
         const spotifyUrl = (card.dataset.spotifyUrl || '').trim();
         if (spotifyUrl) {
             const facade = getShazamPlaybackFacade();
-            const resolved = facade
-                ? await facade.resolveTrackBySpotifyUrl(spotifyUrl, {
-                    metadata: {
-                        title: titleValue,
-                        artist: artistValue,
-                        album: albumValue,
-                        isrc,
-                        durationMs: Number.parseInt(durationMs, 10) || 0
-                    }
-                })
-                : (window.DeezerResolver && typeof window.DeezerResolver.resolveTrack === 'function'
-                    ? await window.DeezerResolver.resolveTrack(
-                        { source: 'spotify', url: spotifyUrl },
-                        { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: true }
-                    )
-                    : null);
+            if (!facade) {
+                return null;
+            }
+            const resolved = await facade.resolveTrackBySpotifyUrl(spotifyUrl, {
+                metadata: {
+                    title: titleValue,
+                    artist: artistValue,
+                    album: albumValue,
+                    isrc,
+                    durationMs: Number.parseInt(durationMs, 10) || 0
+                }
+            });
             if (resolved?.available && resolved?.deezerId) {
                 card.dataset.deezerId = resolved.deezerId;
                 card.dataset.deezerUrl = resolved.deezerUrl || `https://www.deezer.com/track/${resolved.deezerId}`;
@@ -875,13 +871,6 @@
                 element: button,
                 fetchContext: false
             });
-        } else if (window.DeezerResolver && typeof window.DeezerResolver.resolvePlayableStreamUrl === 'function') {
-            audio.src = await window.DeezerResolver.resolvePlayableStreamUrl(
-                { deezerId, element: button },
-                { fetchContext: false }
-            );
-        } else if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
-            audio.src = await window.DeezerPlaybackContext.resolveStreamUrl(deezerId, { element: button, fetchContext: false });
         } else {
             audio.src = `/api/deezer/stream/${encodeURIComponent(deezerId)}`;
         }
