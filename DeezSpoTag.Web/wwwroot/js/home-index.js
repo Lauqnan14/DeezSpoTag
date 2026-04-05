@@ -165,6 +165,24 @@ function parseSpotifyUrl(url) {
 }
 
 const setHomeTrendingPreviewButtonState = globalThis.HomeViewHelpers.setHomeTrendingPreviewButtonState;
+const homePlaybackState = globalThis.DeezerPlaybackState;
+
+function setHomeTrendingPlaybackState(button, state) {
+    if (homePlaybackState && typeof homePlaybackState.transitionButtonState === 'function') {
+        homePlaybackState.transitionButtonState(button, state, {
+            setPlaying: setHomeTrendingPreviewButtonState,
+            clear: () => {
+                if (globalThis.HomeViewHelpers && typeof globalThis.HomeViewHelpers.clearHomeTrendingPlayingMarkers === 'function') {
+                    globalThis.HomeViewHelpers.clearHomeTrendingPlayingMarkers(null);
+                }
+            }
+        });
+        return;
+    }
+
+    const isPlaying = String(state || '').toLowerCase() === 'playing';
+    setHomeTrendingPreviewButtonState(button, isPlaying);
+}
 
 function clearHomeTrendingPreviewButton() {
     if (!homeTrendingPreviewState.button) {
@@ -173,7 +191,7 @@ function clearHomeTrendingPreviewButton() {
         }
         return;
     }
-    setHomeTrendingPreviewButtonState(homeTrendingPreviewState.button, false);
+    setHomeTrendingPlaybackState(homeTrendingPreviewState.button, 'idle');
     homeTrendingPreviewState.button = null;
 }
 
@@ -633,6 +651,7 @@ function handleHomeTrendingToggleForActiveTrack(audio, trackKey, fromQueue) {
     }
 
     audio.pause();
+    setHomeTrendingPlaybackState(homeTrendingPreviewState.button, 'idle');
     clearHomeTrendingPreviewButton();
     homeTrendingPreviewState.trackKey = null;
     resetHomeTrendingQueue();
@@ -653,12 +672,25 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
     const spotifyUrl = (button.dataset.spotifyUrl || '').trim();
     const previewUrl = (button.dataset.previewUrl || '').trim();
     const intentKey = buildHomeTrendingIntentKey(previewUrl, deezerId, spotifyUrl);
-    if (intentKey && homeTrendingPreviewState.pendingKey === intentKey) {
+    const canUsePlaybackStateRequest = homePlaybackState && typeof homePlaybackState.beginRequest === 'function';
+    const request = canUsePlaybackStateRequest
+        ? homePlaybackState.beginRequest(homeTrendingPreviewState, intentKey)
+        : null;
+    if (canUsePlaybackStateRequest && request === null) {
         return;
     }
-    const requestId = ++homeTrendingPreviewState.requestId;
-    homeTrendingPreviewState.pendingKey = intentKey || null;
-    const isStaleRequest = () => requestId !== homeTrendingPreviewState.requestId;
+    if (!canUsePlaybackStateRequest) {
+        if (intentKey && homeTrendingPreviewState.pendingKey === intentKey) {
+            return;
+        }
+    }
+
+    const requestId = request?.requestId ?? (++homeTrendingPreviewState.requestId);
+    if (!canUsePlaybackStateRequest) {
+        homeTrendingPreviewState.pendingKey = intentKey || null;
+    }
+    const isStaleRequest = request?.isStale ?? (() => requestId !== homeTrendingPreviewState.requestId);
+    setHomeTrendingPlaybackState(button, 'requested');
 
     try {
         const candidate = await resolveHomeTrendingStreamCandidate(
@@ -690,17 +722,17 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
         if (!fromQueue && homeTrendingPreviewState.trackKey === trackKey && audio.paused) {
             try {
                 await audio.play();
-                setHomeTrendingPreviewButtonState(button, true);
+                setHomeTrendingPlaybackState(button, 'playing');
                 return;
             } catch {
-                setHomeTrendingPreviewButtonState(button, false);
+                setHomeTrendingPlaybackState(button, 'error');
             }
         }
 
         homeTrendingPreviewState.audio = audio;
         homeTrendingPreviewState.trackKey = trackKey;
         homeTrendingPreviewState.button = button;
-        setHomeTrendingPreviewButtonState(button, true);
+        setHomeTrendingPlaybackState(button, 'requested');
         // Ensure old request/stream is fully detached before setting a new source.
         audio.pause();
         audio.onended = null;
@@ -712,6 +744,7 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
             if (isStaleRequest()) {
                 return;
             }
+            setHomeTrendingPlaybackState(button, 'ended');
             clearHomeTrendingPreviewButton();
             homeTrendingPreviewState.trackKey = null;
             tryPlayNextHomeTrendingQueueItem();
@@ -720,6 +753,7 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
             if (isStaleRequest()) {
                 return;
             }
+            setHomeTrendingPlaybackState(button, 'error');
             clearHomeTrendingPreviewButton();
             homeTrendingPreviewState.trackKey = null;
             showToast('Playback interrupted.', 'warning');
@@ -732,11 +766,12 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
                 audio.pause();
                 return;
             }
+            setHomeTrendingPlaybackState(button, 'playing');
         } catch {
             if (isStaleRequest()) {
                 return;
             }
-            setHomeTrendingPreviewButtonState(button, false);
+            setHomeTrendingPlaybackState(button, 'error');
             homeTrendingPreviewState.trackKey = null;
             if (homeTrendingPreviewState.button === button) {
                 homeTrendingPreviewState.button = null;
@@ -745,7 +780,9 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
             tryPlayNextHomeTrendingQueueItem();
         }
     } finally {
-        if (requestId === homeTrendingPreviewState.requestId) {
+        if (request?.finalize) {
+            request.finalize();
+        } else if (requestId === homeTrendingPreviewState.requestId) {
             homeTrendingPreviewState.pendingKey = null;
         }
     }

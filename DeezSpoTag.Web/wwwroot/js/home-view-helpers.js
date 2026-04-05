@@ -35,11 +35,13 @@
     }
 
     function clearHomeTrendingPlayingMarkers(exceptButton) {
-        global.document.querySelectorAll('.home-top-song-item__play.is-playing').forEach((activeButton) => {
+        global.document.querySelectorAll('.home-top-song-item__play').forEach((activeButton) => {
             if (exceptButton && activeButton === exceptButton) {
                 return;
             }
             activeButton.classList.remove('is-playing');
+            activeButton.classList.remove('is-starting');
+            delete activeButton.dataset.playbackState;
             const row = activeButton.closest('.home-top-song-item');
             if (row) {
                 row.classList.remove('is-playing');
