@@ -4033,9 +4033,6 @@ async function resolveExternalRequestToDeezer(current, source, row, options = {}
                         const data = await fetchJsonWithRetry(`/api/resolve/deezer?${qs.toString()}`, 3);
                         resolvePayload = data;
                     }
-                } else {
-                    const data = await fetchJsonWithRetry(`/api/spotify/resolve-deezer?url=${encodeURIComponent(current.link)}`, 3);
-                    deezerId = data?.deezerId || '';
                 }
             }
 
@@ -4148,19 +4145,6 @@ async function resolveDeezerPlaybackUrlForRow(row, deezerId, playbackType = '') 
         });
         if (resolvedViaFacade) {
             return resolvedViaFacade;
-        }
-    }
-
-    if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
-        const resolved = await window.DeezerPlaybackContext.resolveStreamUrl(normalizedId, {
-            type: playbackType,
-            element: row,
-            cache: deezerPlaybackContextCache,
-            requests: deezerPlaybackContextRequests,
-            fetchContext: false
-        });
-        if (resolved) {
-            return resolved;
         }
     }
 

@@ -31,8 +31,6 @@ function isValidURL(string) {
 const showToast = globalThis.HomeViewHelpers.showToast;
 
 const HOME_TRENDING_SPOTIFY_SOURCE_ID = 'home-trending-songs';
-const homeSpotifyResolveCache = new Map();
-const homeSpotifyResolveInFlight = new Map();
 const homeTrendingContextWarmupInFlight = new Map();
 const spotifyHomeItemCache = new Map();
 const homeTrendingWatchMetaCache = new Map();
@@ -366,98 +364,19 @@ function collectHomeTrendingMatchMetadata(button) {
     };
 }
 
-async function resolveDeezerByMetadataFallback(url, metadata) {
-    if (!url) {
-        return null;
-    }
-
-    const params = new URLSearchParams();
-    params.set('url', url);
-    if (metadata?.title) {
-        params.set('title', metadata.title);
-    }
-    if (metadata?.artist) {
-        params.set('artist', metadata.artist);
-    }
-    if (metadata?.album) {
-        params.set('album', metadata.album);
-    }
-    if (metadata?.isrc) {
-        params.set('isrc', metadata.isrc);
-    }
-    if (metadata?.durationMs && Number.isFinite(metadata.durationMs) && metadata.durationMs > 0) {
-        params.set('durationMs', String(metadata.durationMs));
-    }
-
-    const response = await fetch(`/api/resolve/deezer?${params.toString()}`);
-    if (!response.ok) {
-        return null;
-    }
-    const payload = await response.json();
-    const deezerId = String(payload?.deezerId || '').trim();
-    if (!deezerId || deezerId === '0') {
-        return null;
-    }
-    return {
-        available: true,
-        type: 'track',
-        deezerId,
-        deezerUrl: `https://www.deezer.com/track/${deezerId}`,
-        resolvedBy: 'metadata-fallback'
-    };
-}
-
 async function resolveSpotifyUrlToDeezerHome(url, metadata = null) {
     if (!url) {
         return null;
     }
     const facade = getDeezerPlaybackFacade();
-    if (facade) {
-        try {
-            return await facade.resolveTrackBySpotifyUrl(url, { metadata });
-        } catch {
-            // Keep legacy fallback path below if facade fails unexpectedly.
-        }
+    if (!facade) {
+        return null;
     }
-
-    if (homeSpotifyResolveCache.has(url)) {
-        return homeSpotifyResolveCache.get(url);
+    try {
+        return await facade.resolveTrackBySpotifyUrl(url, { metadata });
+    } catch {
+        return null;
     }
-    if (homeSpotifyResolveInFlight.has(url)) {
-        return await homeSpotifyResolveInFlight.get(url);
-    }
-
-    const request = (async () => {
-        try {
-            const response = await fetch(`/api/spotify/resolve-deezer?url=${encodeURIComponent(url)}`);
-            if (!response.ok) {
-                return null;
-            }
-            const raw = await response.text();
-            const trimmed = raw.trim();
-            if (!trimmed || trimmed === 'undefined') {
-                return null;
-            }
-            const resolved = JSON.parse(raw);
-            if (resolved?.type === 'track' && resolved?.available === true && resolved?.deezerId) {
-                homeSpotifyResolveCache.set(url, resolved);
-                return resolved;
-            }
-            const fallbackResolved = await resolveDeezerByMetadataFallback(url, metadata);
-            if (fallbackResolved?.deezerId) {
-                homeSpotifyResolveCache.set(url, fallbackResolved);
-                return fallbackResolved;
-            }
-            return null;
-        } catch {
-            return null;
-        } finally {
-            homeSpotifyResolveInFlight.delete(url);
-        }
-    })();
-
-    homeSpotifyResolveInFlight.set(url, request);
-    return await request;
 }
 
 function isHomeTrendingMappingButtonVisible(button) {
@@ -572,14 +491,18 @@ function buildHomeTrendingIntentKey(previewUrl, deezerId, spotifyUrl) {
 }
 
 async function resolveHomeTrendingDeezerStreamUrl(deezerId, button) {
+    const normalizedId = String(deezerId || '').trim();
+    if (!normalizedId) {
+        return '';
+    }
     if (button && !hasHomeTrendingPlaybackContext(button)) {
-        void warmHomeTrendingPlaybackContext(button, deezerId);
+        void warmHomeTrendingPlaybackContext(button, normalizedId);
     }
 
     const facade = getDeezerPlaybackFacade();
     if (facade) {
         try {
-            const streamUrl = await facade.resolvePlayableStreamUrl(deezerId, {
+            const streamUrl = await facade.resolvePlayableStreamUrl(normalizedId, {
                 element: button,
                 cache: homeDeezerPlaybackContextCache,
                 requests: homeDeezerPlaybackContextRequests,
@@ -589,18 +512,11 @@ async function resolveHomeTrendingDeezerStreamUrl(deezerId, button) {
                 return streamUrl;
             }
         } catch {
-            // Keep legacy fallback path below if facade fails unexpectedly.
+            return '';
         }
     }
 
-    if (globalThis.DeezerPlaybackContext && typeof globalThis.DeezerPlaybackContext.resolveStreamUrl === 'function') {
-        return await globalThis.DeezerPlaybackContext.resolveStreamUrl(deezerId, {
-            element: button,
-            cache: homeDeezerPlaybackContextCache,
-            requests: homeDeezerPlaybackContextRequests
-        });
-    }
-    return `/api/deezer/stream/${encodeURIComponent(deezerId)}`;
+    return `/api/deezer/stream/${encodeURIComponent(normalizedId)}`;
 }
 
 async function resolveHomeTrendingStreamCandidate(button, deezerId, spotifyUrl, previewUrl, isStaleRequest) {

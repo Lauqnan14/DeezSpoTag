@@ -899,14 +899,10 @@ async function resolveSpotifyUrlToDeezer(url) {
     }
     try {
         const facade = getLibraryPlaybackFacade();
-        const resolved = facade
-            ? await facade.resolveTrackBySpotifyUrl(url)
-            : (globalThis.DeezerResolver && typeof globalThis.DeezerResolver.resolveTrack === 'function'
-                ? await globalThis.DeezerResolver.resolveTrack(
-                    { source: 'spotify', url },
-                    { attempts: 2, baseDelayMs: 250, timeoutMs: 2500, spotifyResolverFirst: true }
-                )
-                : null);
+        if (!facade) {
+            return null;
+        }
+        const resolved = await facade.resolveTrackBySpotifyUrl(url);
         if (resolved?.type === 'track' && resolved?.available === true && resolved?.deezerId) {
             libraryState.spotifyResolveCache.set(url, resolved);
         }
@@ -2168,18 +2164,13 @@ async function playSpotifyTrackInApp(url, button) {
 
     const trackId = resolved.deezerId.toString();
     const previewKey = `deezer:${trackId}`;
-    const playbackContext = globalThis.DeezerPlaybackContext;
     const facade = getLibraryPlaybackFacade();
     const streamUrl = facade
         ? await facade.resolvePlayableStreamUrl(trackId, {
             element: button,
             fetchContext: false
         })
-        : ((globalThis.DeezerResolver && typeof globalThis.DeezerResolver.resolvePlayableStreamUrl === 'function')
-            ? await globalThis.DeezerResolver.resolvePlayableStreamUrl({ deezerId: trackId, element: button }, { fetchContext: false })
-            : ((playbackContext && typeof playbackContext.resolveStreamUrl === 'function')
-                ? await playbackContext.resolveStreamUrl(trackId, { element: button, fetchContext: false })
-                : `/api/deezer/stream/${encodeURIComponent(trackId)}`));
+        : `/api/deezer/stream/${encodeURIComponent(trackId)}`;
     const audio = libraryState.previewAudio ?? new Audio();
 
     if (libraryState.previewTrackId === previewKey && !audio.paused) {
