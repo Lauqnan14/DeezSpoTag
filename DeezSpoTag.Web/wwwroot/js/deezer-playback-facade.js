@@ -82,6 +82,28 @@
         };
     }
 
+    async function resolveTrackBySpotifyRequest(request, options = {}) {
+        if (!request || typeof request !== 'object') {
+            return null;
+        }
+
+        const url = String(request.link || request.url || '').trim();
+        if (!url) {
+            return null;
+        }
+
+        return await resolveTrackBySpotifyUrl(url, {
+            ...options,
+            metadata: {
+                title: request.title || '',
+                artist: request.artist || '',
+                album: request.album || '',
+                isrc: request.isrc || '',
+                durationMs: request.durationMs || 0
+            },
+        });
+    }
+
     async function resolveTrackBySpotifyUrl(url, options = {}) {
         const normalizedUrl = String(url || '').trim();
         if (!normalizedUrl) {
@@ -256,6 +278,7 @@
 
     global.DeezerPlaybackFacade = {
         resolveTrackBySpotifyUrl: resolveTrackBySpotifyUrl,
+        resolveTrackBySpotifyRequest: resolveTrackBySpotifyRequest,
         resolvePlayableStreamUrl: resolvePlayableStreamUrl,
         resolvePlayablePreviewUrl: resolvePlayablePreviewUrl,
         clearCaches: clearCaches

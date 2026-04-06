@@ -3926,7 +3926,7 @@ function buildExternalMatchRequestFromTrack(track, source, fallbackIndex) {
     };
 }
 
-function buildExternalMatchRequestFromRow(row) {
+function buildSpotifyTrackResolveRequestFromRow(row) {
     if (!row) {
         return null;
     }
@@ -3955,6 +3955,10 @@ function buildExternalMatchRequestFromRow(row) {
         isrc: row.dataset.availabilityIsrc || checkbox?.dataset.trackIsrc || '',
         durationMs: Number.isFinite(durationMsRaw) && durationMsRaw > 0 ? Math.round(durationMsRaw) : 0
     };
+}
+
+function buildExternalMatchRequestFromRow(row) {
+    return buildSpotifyTrackResolveRequestFromRow(row);
 }
 
 function getTracklistPlaybackFacade() {
@@ -4020,16 +4024,11 @@ async function resolveExternalRequestToDeezer(current, source, row, options = {}
             let resolvePayload = null;
             if (source === 'spotify') {
                 const facade = getTracklistPlaybackFacade();
+                const request = buildSpotifyTrackResolveRequestFromRow(row);
                 if (facade) {
-                    const resolved = await facade.resolveTrackBySpotifyUrl(current.link, {
-                        metadata: {
-                            title: current.title || '',
-                            artist: current.artist || '',
-                            album: current.album || '',
-                            isrc: current.isrc || '',
-                            durationMs: Number.isFinite(current.durationMs) && current.durationMs > 0 ? current.durationMs : 0
-                        }
-                    });
+                    const resolved = request
+                        ? await facade.resolveTrackBySpotifyRequest(request)
+                        : null;
                     deezerId = resolved?.deezerId || '';
                     if (deezerId && shouldHydrateDeezerMetadata(source) && resolved?.resolvedBy === 'metadata-fallback') {
                         const qs = buildExternalDeezerResolveQuery(current, source);
@@ -4205,7 +4204,7 @@ function applyMatchedRowState(row, deezerId) {
     const source = getRowTrackSource(row);
     const canRetryMatch = !deezerId
         && isDeezerMatchedExternalSource(source)
-        && !!buildExternalMatchRequestFromRow(row);
+        && !!buildSpotifyTrackResolveRequestFromRow(row);
     row.dataset.availabilityDeezerId = deezerId;
     row.classList.toggle('track-row-dead', !deezerId && !canRetryMatch);
     const previewControl = row.querySelector('.preview-controls');
