@@ -67,6 +67,7 @@ namespace DeezSpoTag.Web.Services
                         }
 
                         // EXACT PORT: Attempt to login with saved ARL like deezspotag connect.ts
+                        DeezSpoTag.Web.Controllers.Api.DeezerStreamApiController.ClearPlaybackContextCache();
                         var success = await _deezerClient.LoginViaArlAsync(normalizedArl);
 
                         if (success && _deezerClient.CurrentUser != null)

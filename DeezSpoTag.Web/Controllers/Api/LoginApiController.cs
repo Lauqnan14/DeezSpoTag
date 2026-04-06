@@ -81,6 +81,7 @@ namespace DeezSpoTag.Web.Controllers.Api
                         return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false));
                     }
 
+                    DeezerStreamApiController.ClearPlaybackContextCache();
                     var refreshSuccess = await _deezerClient.LoginViaArlAsync(normalizedArl, 0);
                     if (!refreshSuccess || _deezerClient.CurrentUser == null)
                     {
@@ -280,6 +281,7 @@ namespace DeezSpoTag.Web.Controllers.Api
 
         private async Task PersistLoginResultAsync(int response, string? normalizedArl)
         {
+            DeezerStreamApiController.ClearPlaybackContextCache();
             var isSingleUser = _configuration.GetValue<bool>(IsSingleUserSetting, true);
             if (response is LOGIN_STATUS_SUCCESS or LOGIN_STATUS_ALREADY_LOGGED)
             {
@@ -380,6 +382,8 @@ namespace DeezSpoTag.Web.Controllers.Api
                     await _deezerClient.LogoutAsync();
                     _logger.LogDebug("Deezer client session cleared");
                 }
+
+                DeezerStreamApiController.ClearPlaybackContextCache();
 
                 // Also clear Apple wrapper session on manual logout so restart does not auto-restore Apple auth.
                 var appleLogoutResult = await _appleWrapperService.LogoutExternalWrapperSessionAsync(cancellationToken);

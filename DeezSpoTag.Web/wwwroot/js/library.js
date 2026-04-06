@@ -886,6 +886,9 @@ function getLibraryPlaybackFacade() {
     if (typeof facade.resolvePlayableStreamUrl !== 'function') {
         return null;
     }
+    if (typeof facade.resolvePlayablePreviewUrl !== 'function') {
+        return null;
+    }
     return facade;
 }
 
@@ -2116,6 +2119,15 @@ async function playDirectPreviewInApp(previewUrl, button) {
         return;
     }
 
+    const facade = getLibraryPlaybackFacade();
+    const resolvedPreviewUrl = facade
+        ? await facade.resolvePlayablePreviewUrl(normalizedPreviewUrl, { element: button })
+        : normalizedPreviewUrl;
+    if (!resolvedPreviewUrl) {
+        showToast('Preview unavailable.', true);
+        return;
+    }
+
     const audio = libraryState.previewAudio ?? new Audio();
     if (libraryState.previewTrackId === normalizedPreviewUrl && !audio.paused) {
         audio.pause();
@@ -2123,7 +2135,7 @@ async function playDirectPreviewInApp(previewUrl, button) {
         return;
     }
 
-    configurePreviewAudio(audio, normalizedPreviewUrl, button, normalizedPreviewUrl, () => {
+    configurePreviewAudio(audio, resolvedPreviewUrl, button, normalizedPreviewUrl, () => {
         clearActivePreviewButton();
         libraryState.previewTrackId = null;
     });
@@ -2165,12 +2177,19 @@ async function playSpotifyTrackInApp(url, button) {
     const trackId = resolved.deezerId.toString();
     const previewKey = `deezer:${trackId}`;
     const facade = getLibraryPlaybackFacade();
-    const streamUrl = facade
+    const resolvedStreamUrl = facade
         ? await facade.resolvePlayableStreamUrl(trackId, {
             element: button,
-            fetchContext: false
+            fetchContext: true
         })
         : `/api/deezer/stream/${encodeURIComponent(trackId)}`;
+    const streamUrl = facade
+        ? await facade.resolvePlayablePreviewUrl(resolvedStreamUrl, { element: button })
+        : resolvedStreamUrl;
+    if (!streamUrl) {
+        showToast('Track not available for streaming.', true);
+        return;
+    }
     const audio = libraryState.previewAudio ?? new Audio();
 
     if (libraryState.previewTrackId === previewKey && !audio.paused) {

@@ -69,6 +69,7 @@ public class LoginFixApiController : ControllerBase
                 await _deezerClient.LogoutAsync();
                 _logger.LogDebug("Logged out existing session");
             }
+            DeezerStreamApiController.ClearPlaybackContextCache();
 
             // Step 4: Re-authenticate with extracted ARL
             var loginResult = await _authService.LoginWithArlAsync(extractedArl);
@@ -230,6 +231,7 @@ public class LoginFixApiController : ControllerBase
                 await _deezerClient.LogoutAsync();
                 _logger.LogInformation("Logged out existing session for forced re-auth");
             }
+            DeezerStreamApiController.ClearPlaybackContextCache();
 
             // Re-authenticate
             var loginResult = await _authService.LoginWithArlAsync(credentials.Arl);

@@ -35,6 +35,7 @@ public sealed class DeezerLoginWarmupService : IHostedService
             }
 
             _logger.LogInformation("Warming up Deezer session from stored credentials.");
+            DeezSpoTag.Web.Controllers.Api.DeezerStreamApiController.ClearPlaybackContextCache();
             await _deezerClient.LoginViaArlAsync(credentials.Arl);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -45,4 +46,3 @@ public sealed class DeezerLoginWarmupService : IHostedService
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
-
