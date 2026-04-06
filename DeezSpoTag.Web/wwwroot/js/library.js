@@ -2093,23 +2093,30 @@ function configurePreviewAudio(audio, previewKey, button, sourceUrl, onEnded, on
     libraryState.previewTrackId = previewKey;
     libraryState.previewButton = button;
     setLibraryPlaybackState(button, 'requested');
-    const facade = getLibraryPlaybackFacade();
-    if (facade && typeof facade.configurePreviewAudioSource === 'function') {
-        facade.configurePreviewAudioSource(audio, sourceUrl, {
-            volume: typeof facade.getPreviewVolume === 'function'
-                ? facade.getPreviewVolume()
-                : undefined
-        });
-    } else {
-        audio.pause();
-        audio.src = sourceUrl;
-        if (typeof audio.load === 'function') {
-            audio.load();
-        }
-        audio.currentTime = 0;
-    }
+    bootstrapPreviewAudioSource(audio, sourceUrl);
     audio.onended = onEnded;
     audio.onerror = typeof onError === 'function' ? onError : null;
+}
+
+function bootstrapPreviewAudioSource(audio, sourceUrl) {
+    const normalizedSourceUrl = String(sourceUrl || '').trim();
+    if (!audio || !normalizedSourceUrl) {
+        return false;
+    }
+
+    const facade = getLibraryPlaybackFacade();
+    if (facade && typeof facade.configurePreviewAudioSource === 'function') {
+        facade.configurePreviewAudioSource(audio, normalizedSourceUrl);
+        return true;
+    }
+
+    audio.pause();
+    audio.src = normalizedSourceUrl;
+    if (typeof audio.load === 'function') {
+        audio.load();
+    }
+    audio.currentTime = 0;
+    return true;
 }
 
 async function startPreviewPlayback(audio, button, message) {
