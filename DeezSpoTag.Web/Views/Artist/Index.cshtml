@@ -1256,9 +1256,6 @@ function getArtistPlaybackFacade() {
     if (typeof facade.resolvePlayablePreviewUrl !== 'function') {
         return null;
     }
-    if (typeof facade.configurePreviewAudioSource !== 'function') {
-        return null;
-    }
     return facade;
 }
 
@@ -1286,6 +1283,27 @@ async function resolveArtistDeezerStreamUrl(deezerId, button) {
     }
 
     return `/api/deezer/stream/${encodeURIComponent(normalizedId)}`;
+}
+
+function bootstrapArtistPreviewAudioSource(audio, sourceUrl) {
+    const normalizedSourceUrl = String(sourceUrl || '').trim();
+    if (!audio || !normalizedSourceUrl) {
+        return false;
+    }
+
+    const facade = getArtistPlaybackFacade();
+    if (facade && typeof facade.configurePreviewAudioSource === 'function') {
+        facade.configurePreviewAudioSource(audio, normalizedSourceUrl);
+        return true;
+    }
+
+    audio.pause();
+    audio.src = normalizedSourceUrl;
+    if (typeof audio.load === 'function') {
+        audio.load();
+    }
+    audio.currentTime = 0;
+    return true;
 }
 
 async function playArtistTrackInApp(button) {
@@ -1354,26 +1372,12 @@ async function playArtistTrackInApp(button) {
         setArtistPlaybackState(artistPreviewState.button, 'idle');
     }
 
-    const facade = getArtistPlaybackFacade();
     artistPreviewState.audio = audio;
     artistPreviewState.trackKey = trackKey;
     artistPreviewState.button = button;
     artistPreviewState.sourceKey = sourceKey;
     setArtistPlaybackState(button, 'requested');
-    if (facade) {
-        facade.configurePreviewAudioSource(audio, streamUrl, {
-            volume: typeof facade.getPreviewVolume === 'function'
-                ? facade.getPreviewVolume()
-                : undefined
-        });
-    } else {
-        audio.pause();
-        audio.src = streamUrl;
-        if (typeof audio.load === 'function') {
-            audio.load();
-        }
-        audio.currentTime = 0;
-    }
+    bootstrapArtistPreviewAudioSource(audio, streamUrl);
     audio.onended = () => {
         const nextButton = getNextTopTrackButton();
         const currentButton = artistPreviewState.button;
