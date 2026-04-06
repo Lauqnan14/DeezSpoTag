@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
 namespace DeezSpoTag.Web.Services;
@@ -9,6 +10,9 @@ public sealed class MediaServerSoundtrackCacheRepository
     private const string SoundtrackMediaCacheTableName = "soundtrack_media_cache";
     private const string ServerTypeParameterName = "$server_type";
     private const string LibraryIdParameterName = "$library_id";
+    private const string TvShowServerTypeParameterName = "$tv_server_type";
+    private const string TvShowLibraryIdParameterName = "$tv_library_id";
+    private const string TvShowShowIdParameterName = "$tv_show_id";
     private const string CacheItemSelectColumnsSql = """
 server_type,
 server_label,
@@ -305,6 +309,114 @@ LIMIT $limit OFFSET $offset;
         }
 
         return rows;
+    }
+
+    public async Task UpsertTvShowEpisodesAsync(
+        MediaServerTvShowEpisodesResponseDto response,
+        CancellationToken cancellationToken)
+    {
+        if (response == null
+            || string.IsNullOrWhiteSpace(response.ServerType)
+            || string.IsNullOrWhiteSpace(response.LibraryId)
+            || string.IsNullOrWhiteSpace(response.ShowId))
+        {
+            return;
+        }
+
+        await EnsureInitializedAsync(cancellationToken);
+
+        var payloadJson = JsonSerializer.Serialize(response);
+        var sql = """
+INSERT INTO soundtrack_tv_show_cache (
+    server_type,
+    library_id,
+    show_id,
+    payload_json,
+    updated_at_utc
+) VALUES (
+    $tv_server_type,
+    $tv_library_id,
+    $tv_show_id,
+    $payload_json,
+    $updated_at_utc
+)
+ON CONFLICT(server_type, library_id, show_id) DO UPDATE SET
+    payload_json = excluded.payload_json,
+    updated_at_utc = excluded.updated_at_utc;
+""";
+
+        try
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await using var command = new SqliteCommand(sql, connection);
+            command.Parameters.AddWithValue(TvShowServerTypeParameterName, Normalize(response.ServerType));
+            command.Parameters.AddWithValue(TvShowLibraryIdParameterName, Normalize(response.LibraryId));
+            command.Parameters.AddWithValue(TvShowShowIdParameterName, Normalize(response.ShowId));
+            command.Parameters.AddWithValue("$payload_json", payloadJson);
+            command.Parameters.AddWithValue("$updated_at_utc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed persisting media server TV show soundtrack cache row.");
+        }
+    }
+
+    public async Task<MediaServerTvShowEpisodesResponseDto?> GetTvShowEpisodesAsync(
+        string? serverType,
+        string? libraryId,
+        string? showId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedServerType = Normalize(serverType);
+        var normalizedLibraryId = Normalize(libraryId);
+        var normalizedShowId = Normalize(showId);
+        if (string.IsNullOrWhiteSpace(normalizedServerType)
+            || string.IsNullOrWhiteSpace(normalizedLibraryId)
+            || string.IsNullOrWhiteSpace(normalizedShowId))
+        {
+            return null;
+        }
+
+        await EnsureInitializedAsync(cancellationToken);
+
+        const string sql = """
+SELECT payload_json
+FROM soundtrack_tv_show_cache
+WHERE server_type = $tv_server_type
+  AND library_id = $tv_library_id
+  AND show_id = $tv_show_id
+LIMIT 1;
+""";
+
+        try
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await using var command = new SqliteCommand(sql, connection);
+            command.Parameters.AddWithValue(TvShowServerTypeParameterName, normalizedServerType);
+            command.Parameters.AddWithValue(TvShowLibraryIdParameterName, normalizedLibraryId);
+            command.Parameters.AddWithValue(TvShowShowIdParameterName, normalizedShowId);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken) || await reader.IsDBNullAsync(0, cancellationToken))
+            {
+                return null;
+            }
+
+            var payloadJson = reader.GetString(0);
+            if (string.IsNullOrWhiteSpace(payloadJson))
+            {
+                return null;
+            }
+
+            return JsonSerializer.Deserialize<MediaServerTvShowEpisodesResponseDto>(payloadJson);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed loading cached media server TV show soundtrack row.");
+            return null;
+        }
     }
 
     private static string BuildGetItemsByIdsSql(int batchLength)
@@ -704,6 +816,18 @@ CREATE TABLE IF NOT EXISTS soundtrack_library_sync_state (
     updated_at_utc TEXT NOT NULL,
     PRIMARY KEY(server_type, library_id)
 );
+
+CREATE TABLE IF NOT EXISTS soundtrack_tv_show_cache (
+    server_type TEXT NOT NULL,
+    library_id TEXT NOT NULL,
+    show_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL,
+    PRIMARY KEY(server_type, library_id, show_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_soundtrack_tv_show_cache_updated
+ON soundtrack_tv_show_cache (updated_at_utc DESC);
 """;
 
             await using (var schemaCommand = new SqliteCommand(schemaSql, connection))
