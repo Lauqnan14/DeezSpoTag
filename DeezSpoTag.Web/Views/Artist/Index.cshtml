@@ -1253,6 +1253,9 @@ function getArtistPlaybackFacade() {
     if (typeof facade.resolvePlayableStreamUrl !== 'function') {
         return null;
     }
+    if (typeof facade.resolvePlayablePreviewUrl !== 'function') {
+        return null;
+    }
     return facade;
 }
 
@@ -1268,10 +1271,14 @@ async function resolveArtistDeezerStreamUrl(deezerId, button) {
             element: button,
             cache: artistDeezerPlaybackContextCache,
             requests: artistDeezerPlaybackContextRequests,
-            fetchContext: false
+            fetchContext: true
         });
         if (streamUrl) {
-            return streamUrl;
+            return await facade.resolvePlayablePreviewUrl(streamUrl, {
+                element: button,
+                cache: artistDeezerPlaybackContextCache,
+                requests: artistDeezerPlaybackContextRequests
+            });
         }
     }
 
@@ -1291,7 +1298,10 @@ async function playArtistTrackInApp(button) {
     let trackKey = '';
 
     if (previewUrl) {
-        streamUrl = previewUrl;
+        const facade = getArtistPlaybackFacade();
+        streamUrl = facade
+            ? await facade.resolvePlayablePreviewUrl(previewUrl, { element: button })
+            : previewUrl;
         trackKey = previewUrl;
     } else if (deezerId) {
         streamUrl = await resolveArtistDeezerStreamUrl(deezerId, button);
@@ -1306,6 +1316,11 @@ async function playArtistTrackInApp(button) {
         streamUrl = await resolveArtistDeezerStreamUrl(resolved.deezerId, button);
         trackKey = `deezer:${resolved.deezerId}`;
     } else {
+        showArtistPlaybackMessage('Preview unavailable.');
+        return;
+    }
+
+    if (!streamUrl) {
         showArtistPlaybackMessage('Preview unavailable.');
         return;
     }

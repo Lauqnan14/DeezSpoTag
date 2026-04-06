@@ -494,6 +494,9 @@
         if (typeof facade.resolvePlayableStreamUrl !== 'function') {
             return null;
         }
+        if (typeof facade.resolvePlayablePreviewUrl !== 'function') {
+            return null;
+        }
         return facade;
     };
 
@@ -857,23 +860,30 @@
             return;
         }
 
-        if (previewState.button && previewState.button !== button) {
-            setShazamPlaybackState(previewState.button, 'idle');
+        const facade = getShazamPlaybackFacade();
+        const streamCandidate = facade
+            ? await facade.resolvePlayableStreamUrl(deezerId, {
+                element: button,
+                fetchContext: true
+            })
+            : `/api/deezer/stream/${encodeURIComponent(deezerId)}`;
+        const streamUrl = facade
+            ? await facade.resolvePlayablePreviewUrl(streamCandidate, { element: button })
+            : streamCandidate;
+        if (!streamUrl) {
+            notify('Preview unavailable for this track.', 'warning');
+            return;
         }
 
+        const previousButton = previewState.button;
         previewState.trackId = deezerId;
         previewState.button = button;
         setShazamPlaybackState(button, 'requested');
 
-        const facade = getShazamPlaybackFacade();
-        if (facade) {
-            audio.src = await facade.resolvePlayableStreamUrl(deezerId, {
-                element: button,
-                fetchContext: false
-            });
-        } else {
-            audio.src = `/api/deezer/stream/${encodeURIComponent(deezerId)}`;
+        if (previousButton && previousButton !== button) {
+            setShazamPlaybackState(previousButton, 'idle');
         }
+        audio.src = streamUrl;
         audio.currentTime = 0;
         audio.onended = () => {
             setShazamPlaybackState(button, 'ended');

@@ -50,6 +50,11 @@ public class DeezerStreamApiController : ControllerBase
         _logger = logger;
     }
 
+    public static void ClearPlaybackContextCache()
+    {
+        PlaybackContextCache.Clear();
+    }
+
     [HttpGet("{id}")]
     public async Task<IActionResult> StreamTrack(
         string id,
@@ -139,7 +144,6 @@ public class DeezerStreamApiController : ControllerBase
                 hintedMd5Origin,
                 hintedMediaVersion);
 
-            context ??= await ResolvePlaybackContextAsync(id, forceRefresh: false);
             if (context is null || string.IsNullOrWhiteSpace(context.TrackToken))
             {
                 return false;
@@ -148,26 +152,6 @@ public class DeezerStreamApiController : ControllerBase
             var format = ResolvePreviewFormat(qualityHint);
             var (resolvedContext, mediaResult) = await FetchMediaResultAsync(id, context, format, cancellationToken);
             context = resolvedContext;
-
-            if (string.IsNullOrWhiteSpace(mediaResult.Url) && format != Mp3128Format)
-            {
-                format = Mp3128Format;
-                (context, mediaResult) = await FetchMediaResultAsync(id, context, format, cancellationToken);
-            }
-
-            if (string.IsNullOrWhiteSpace(mediaResult.Url)
-                && !string.IsNullOrWhiteSpace(context.Md5Origin)
-                && !string.IsNullOrWhiteSpace(context.MediaVersion))
-            {
-                mediaResult = new DeezerMediaResult
-                {
-                    Url = DeezSpoTag.Services.Crypto.CryptoService.GenerateCryptedStreamUrl(
-                        context.StreamTrackId,
-                        context.Md5Origin,
-                        context.MediaVersion,
-                        format)
-                };
-            }
 
             if (string.IsNullOrWhiteSpace(mediaResult.Url))
             {
@@ -220,58 +204,87 @@ public class DeezerStreamApiController : ControllerBase
         string format,
         CancellationToken cancellationToken)
     {
-        var mediaResult = await FetchTrackUrlWithRetryAsync(context.TrackToken, format, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        var mediaResult = await _deezerClient.GetTrackUrlWithStatusAsync(context.TrackToken, format);
         if (!string.IsNullOrWhiteSpace(mediaResult.Url) || mediaResult.ErrorCode != 2001)
         {
             return (context, mediaResult);
         }
 
-        var refreshedContext = await ResolvePlaybackContextAsync(deezerId, forceRefresh: true);
+        var refreshedContext = await ResolvePlaybackContextFromTrackListDataAsync(
+            lookupId: context.StreamTrackId,
+            fallbackDeezerId: deezerId,
+            cancellationToken: cancellationToken);
         if (refreshedContext is null || string.IsNullOrWhiteSpace(refreshedContext.TrackToken))
         {
             return (context, mediaResult);
         }
 
-        mediaResult = await FetchTrackUrlWithRetryAsync(refreshedContext.TrackToken, format, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        mediaResult = await _deezerClient.GetTrackUrlWithStatusAsync(refreshedContext.TrackToken, format);
         CachePlaybackContext(refreshedContext);
         return (refreshedContext, mediaResult);
     }
 
-    private async Task<DeezerMediaResult> FetchTrackUrlWithRetryAsync(
-        string trackToken,
-        string format,
+    private async Task<DeezerPlaybackContext?> ResolvePlaybackContextFromTrackListDataAsync(
+        string lookupId,
+        string fallbackDeezerId,
         CancellationToken cancellationToken)
     {
-        var maxAttempts = 3;
-        DeezerMediaResult? last = null;
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        var normalizedLookupId = NormalizeOptional(lookupId);
+        var normalizedFallbackDeezerId = NormalizeOptional(fallbackDeezerId);
+
+        if (string.IsNullOrWhiteSpace(normalizedLookupId) || !normalizedLookupId.All(char.IsDigit))
+        {
+            return null;
+        }
+
+        try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            last = await _deezerClient.GetTrackUrlWithStatusAsync(trackToken, format);
-            if (!string.IsNullOrWhiteSpace(last.Url) || !IsTransientMediaErrorCode(last.ErrorCode) || attempt >= maxAttempts)
+            var tracks = await _deezerClient.Gw.GetTracksAsync(new List<string> { normalizedLookupId });
+            var refreshedTrack = tracks.FirstOrDefault(t => t != null && !string.IsNullOrWhiteSpace(t.TrackToken));
+            if (refreshedTrack == null)
             {
-                return last;
+                return null;
             }
 
-            await Task.Delay(TimeSpan.FromMilliseconds(120 * attempt), cancellationToken);
+            var refreshedDeezerId = refreshedTrack.SngId > 0
+                ? refreshedTrack.SngId.ToString(CultureInfo.InvariantCulture)
+                : normalizedFallbackDeezerId;
+            if (string.IsNullOrWhiteSpace(refreshedDeezerId))
+            {
+                refreshedDeezerId = normalizedLookupId;
+            }
+            var refreshedStreamTrackId = ResolveStreamTrackId(refreshedTrack);
+            if (string.IsNullOrWhiteSpace(refreshedStreamTrackId))
+            {
+                refreshedStreamTrackId = refreshedDeezerId;
+            }
+
+            var context = new DeezerPlaybackContext(
+                refreshedDeezerId,
+                refreshedStreamTrackId,
+                refreshedTrack.TrackToken,
+                NormalizeOptional(refreshedTrack.Md5Origin),
+                refreshedTrack.MediaVersion > 0
+                    ? refreshedTrack.MediaVersion.ToString(CultureInfo.InvariantCulture)
+                    : string.Empty,
+                NormalizeOptional(refreshedTrack.SngTitle));
+            CachePlaybackContext(context);
+            return context;
         }
-
-        return last ?? DeezerMediaResult.Empty();
-    }
-
-    private static bool IsTransientMediaErrorCode(int? errorCode)
-    {
-        if (!errorCode.HasValue || errorCode.Value <= 0)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return true;
+            _logger.LogWarning(ex, "Failed to resolve Deezer playback context via track list data for track {TrackId}", normalizedLookupId);
+            return null;
         }
-
-        return errorCode.Value == 429 || (errorCode.Value >= 500 && errorCode.Value <= 599);
     }
 
     private async Task<DeezerPlaybackContext?> ResolvePlaybackContextAsync(
         string deezerId,
-        bool forceRefresh)
+        bool forceRefresh,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(deezerId) || !deezerId.All(char.IsDigit))
         {
@@ -283,57 +296,11 @@ public class DeezerStreamApiController : ControllerBase
             return cached;
         }
 
-        GwTrack? gwTrack = null;
-        var maxAttempts = forceRefresh ? 2 : 3;
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
-        {
-            try
-            {
-                gwTrack = await _deezerClient.Gw.GetTrackWithFallbackAsync(deezerId);
-                break;
-            }
-            catch (DeezerGatewayException ex) when (IsMissingSongData(ex))
-            {
-                _logger.LogDebug(ex, "Deezer playback context not found for track {TrackId}", deezerId);
-                return null;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                if (attempt >= maxAttempts)
-                {
-                    _logger.LogWarning(ex, "Failed to resolve Deezer playback context for track {TrackId}", deezerId);
-                    return null;
-                }
-
-                await Task.Delay(TimeSpan.FromMilliseconds(120 * attempt));
-            }
-        }
-
-        if (gwTrack == null || string.IsNullOrWhiteSpace(gwTrack.TrackToken))
-        {
-            return null;
-        }
-
-        var streamTrackId = ResolveStreamTrackId(gwTrack);
-        if (string.IsNullOrWhiteSpace(streamTrackId))
-        {
-            streamTrackId = deezerId;
-        }
-
-        var context = new DeezerPlaybackContext(
-            deezerId,
-            streamTrackId,
-            gwTrack.TrackToken,
-            NormalizeOptional(gwTrack.Md5Origin),
-            gwTrack.MediaVersion > 0 ? gwTrack.MediaVersion.ToString(CultureInfo.InvariantCulture) : string.Empty,
-            NormalizeOptional(gwTrack.SngTitle));
-        CachePlaybackContext(context);
-        return context;
+        return await ResolvePlaybackContextFromTrackListDataAsync(
+            lookupId: deezerId,
+            fallbackDeezerId: deezerId,
+            cancellationToken: cancellationToken);
     }
-
-    private static bool IsMissingSongData(DeezerGatewayException ex)
-        => ex.Message.Contains("No song data", StringComparison.OrdinalIgnoreCase)
-           || ex.Message.Contains("DATA_ERROR", StringComparison.OrdinalIgnoreCase);
 
     private static DeezerPlaybackContext? TryBuildHintedPlaybackContext(
         string deezerId,
@@ -738,6 +705,7 @@ public class DeezerStreamApiController : ControllerBase
             {
                 try
                 {
+                    ClearPlaybackContextCache();
                     await _deezerClient.LoginViaArlAsync(arl);
                     if (_deezerClient.LoggedIn)
                     {

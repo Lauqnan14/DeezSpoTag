@@ -187,6 +187,68 @@
         return '/api/deezer/stream/' + encodeURIComponent(normalizedId);
     }
 
+    function parsePlayablePreviewUrl(previewUrl) {
+        const normalizedPreviewUrl = String(previewUrl || '').trim();
+        if (!normalizedPreviewUrl) {
+            return null;
+        }
+
+        try {
+            const url = new URL(normalizedPreviewUrl, global.location?.origin || 'http://localhost');
+            const match = url.pathname.match(/^\/api\/deezer\/stream\/(\d+)$/i);
+            if (!match) {
+                return null;
+            }
+
+            return {
+                deezerId: match[1],
+                hasContext: /[?&](trackToken|streamTrackId)=/i.test(url.search)
+            };
+        } catch {
+            const path = normalizedPreviewUrl.split(/[?#]/, 1)[0];
+            const match = path.match(/^\/api\/deezer\/stream\/(\d+)$/i);
+            if (!match) {
+                return null;
+            }
+
+            return {
+                deezerId: match[1],
+                hasContext: /[?&](trackToken|streamTrackId)=/i.test(normalizedPreviewUrl)
+            };
+        }
+    }
+
+    async function resolvePlayablePreviewUrl(previewUrl, options = {}) {
+        const normalizedPreviewUrl = String(previewUrl || '').trim();
+        if (!normalizedPreviewUrl) {
+            return '';
+        }
+
+        const parsed = parsePlayablePreviewUrl(normalizedPreviewUrl);
+        if (!parsed) {
+            return normalizedPreviewUrl;
+        }
+
+        if (parsed.hasContext) {
+            return normalizedPreviewUrl;
+        }
+
+        const resolvedStreamUrl = await resolvePlayableStreamUrl(parsed.deezerId, {
+            ...options,
+            fetchContext: true
+        });
+        if (!resolvedStreamUrl) {
+            return '';
+        }
+
+        const resolvedPreview = parsePlayablePreviewUrl(resolvedStreamUrl);
+        if (resolvedPreview && !resolvedPreview.hasContext) {
+            return '';
+        }
+
+        return resolvedStreamUrl;
+    }
+
     function clearCaches() {
         resolveCache.clear();
         resolveInFlight.clear();
@@ -195,6 +257,7 @@
     global.DeezerPlaybackFacade = {
         resolveTrackBySpotifyUrl: resolveTrackBySpotifyUrl,
         resolvePlayableStreamUrl: resolvePlayableStreamUrl,
+        resolvePlayablePreviewUrl: resolvePlayablePreviewUrl,
         clearCaches: clearCaches
     };
 })(globalThis);

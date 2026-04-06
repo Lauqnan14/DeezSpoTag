@@ -120,6 +120,7 @@ public sealed class ConnectApiController : ControllerBase
             var credentials = await _loginStorage.LoadLoginCredentialsAsync();
             if (!string.IsNullOrWhiteSpace(credentials?.Arl))
             {
+                DeezerStreamApiController.ClearPlaybackContextCache();
                 await _deezerClient.LoginViaArlAsync(credentials.Arl);
             }
 

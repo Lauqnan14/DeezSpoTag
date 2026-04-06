@@ -2105,11 +2105,20 @@ async function playSearchPreview(deezerId, spotifyId, appleUrl, appleId, nativeP
         return;
     }
 
-    const previewUrl = (window.DeezerResolver && typeof window.DeezerResolver.resolvePlayableStreamUrl === 'function')
-        ? await window.DeezerResolver.resolvePlayableStreamUrl({ deezerId: resolvedId }, { fetchContext: false })
+    const previewCandidate = (window.DeezerResolver && typeof window.DeezerResolver.resolvePlayableStreamUrl === 'function')
+        ? await window.DeezerResolver.resolvePlayableStreamUrl({ deezerId: resolvedId }, { fetchContext: true })
         : ((window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function')
-            ? await window.DeezerPlaybackContext.resolveStreamUrl(resolvedId, { fetchContext: false })
+            ? await window.DeezerPlaybackContext.resolveStreamUrl(resolvedId, { fetchContext: true })
             : `/api/deezer/stream/${resolvedId}`);
+    const previewUrl = (window.DeezerPlaybackFacade && typeof window.DeezerPlaybackFacade.resolvePlayablePreviewUrl === 'function')
+        ? await window.DeezerPlaybackFacade.resolvePlayablePreviewUrl(previewCandidate, { fetchContext: true })
+        : previewCandidate;
+    if (!previewUrl) {
+        if (window.DeezSpoTag?.ui?.showToast) {
+            window.DeezSpoTag.ui.showToast('Preview unavailable.', { type: 'warning' });
+        }
+        return;
+    }
     audio.pause();
     audio.src = previewUrl;
     audio.load();

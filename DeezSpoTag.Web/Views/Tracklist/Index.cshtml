@@ -3968,6 +3968,9 @@ function getTracklistPlaybackFacade() {
     if (typeof facade.resolvePlayableStreamUrl !== 'function') {
         return null;
     }
+    if (typeof facade.resolvePlayablePreviewUrl !== 'function') {
+        return null;
+    }
     return facade;
 }
 
@@ -4101,7 +4104,6 @@ async function ensureRowPreviewForPlayback(row, control) {
     control.classList.add('is-resolving');
     control.classList.remove('is-disabled');
     control.classList.add('is-pending');
-    control.textContent = 'hourglass_top';
 
     try {
         let deezerId = externalDeezerMatchCache.get(request.link) || '';
@@ -4109,6 +4111,8 @@ async function ensureRowPreviewForPlayback(row, control) {
             deezerId = await resolveExternalRequestToDeezer(request, source, row, { priority: 'high' });
         }
         if (!/^\d+$/.test(deezerId)) {
+            control.classList.remove('is-pending');
+            control.classList.add('is-disabled');
             return '';
         }
 
@@ -4117,6 +4121,11 @@ async function ensureRowPreviewForPlayback(row, control) {
             deezerId,
             getRowPlaybackTypeHint(row));
         control.setAttribute('data-preview', previewUrl);
+        if (!previewUrl) {
+            control.classList.remove('is-pending');
+            control.classList.add('is-disabled');
+            return '';
+        }
         control.classList.remove('is-disabled');
         control.classList.remove('is-pending');
         return previewUrl;
@@ -4141,18 +4150,31 @@ async function resolveDeezerPlaybackUrlForRow(row, deezerId, playbackType = '') 
             element: row,
             cache: deezerPlaybackContextCache,
             requests: deezerPlaybackContextRequests,
-            fetchContext: false
+            fetchContext: true
         });
         if (resolvedViaFacade) {
-            return resolvedViaFacade;
+            return await facade.resolvePlayablePreviewUrl(resolvedViaFacade, {
+                type: playbackType,
+                element: row,
+                cache: deezerPlaybackContextCache,
+                requests: deezerPlaybackContextRequests
+            });
         }
     }
 
     const context = getDeezerPlaybackContextForRow(row, normalizedId);
-    return buildDeezerStreamUrl(normalizedId, {
+    const streamUrl = buildDeezerStreamUrl(normalizedId, {
         type: playbackType,
         context
     });
+    return window.DeezerPlaybackFacade?.resolvePlayablePreviewUrl
+        ? await window.DeezerPlaybackFacade.resolvePlayablePreviewUrl(streamUrl, {
+            type: playbackType,
+            element: row,
+            cache: deezerPlaybackContextCache,
+            requests: deezerPlaybackContextRequests
+        })
+        : streamUrl;
 }
 
 function applyExternalMatchToRow(row, deezerId) {
@@ -6081,6 +6103,7 @@ function setTracklistPreviewControlState(control, state) {
     }
 
     const normalized = String(state || '').trim().toLowerCase();
+    const row = control.closest('tr');
     if (tracklistPlaybackState && typeof tracklistPlaybackState.transitionButtonState === 'function') {
         tracklistPlaybackState.transitionButtonState(control, normalized, {
             setPlaying: applyTracklistPlayingVisual
@@ -6091,11 +6114,17 @@ function setTracklistPreviewControlState(control, state) {
 
     if (normalized === 'requested') {
         control.classList.add('is-starting');
-        control.textContent = 'hourglass_top';
+        control.textContent = 'pause';
+        if (row) {
+            row.classList.add('track-row-playing');
+        }
         return;
     }
 
     control.classList.remove('is-starting');
+    if (row && normalized !== 'playing') {
+        row.classList.remove('track-row-playing');
+    }
 }
 
 async function playNextPreviewFrom(control) {
@@ -6143,6 +6172,12 @@ async function playPausePreview(control, options = {}) {
     let previewUrl = control.getAttribute('data-preview') || '';
     const linkOnly = control.getAttribute('data-link-only') || '';
     const row = control.closest('tr');
+    const source = row ? getRowTrackSource(row) : '';
+
+    if (!control.hasAttribute('playing') && (previewUrl || isDeezerMatchedExternalSource(source))) {
+        resetPreviewControls();
+        setTracklistPreviewControlState(control, 'requested');
+    }
 
     if (previewUrl && previewUrl.includes('/api/deezer/stream/')) {
         const hasContextParams = /[?&](trackToken|streamTrackId)=/i.test(previewUrl);
@@ -6175,6 +6210,7 @@ async function playPausePreview(control, options = {}) {
         if (linkOnly) {
             DeezSpoTag.ui.alert('Track not available for streaming.', { title: 'Playback' });
         }
+        setTracklistPreviewControlState(control, 'idle');
         return false;
     }
 
@@ -6200,8 +6236,6 @@ async function playPausePreview(control, options = {}) {
         }
     }
 
-    resetPreviewControls();
-    setTracklistPreviewControlState(control, 'requested');
     previewStopped = false;
     previewAudio.pause();
     previewAudio.src = previewUrl;
@@ -6484,7 +6518,7 @@ async function downloadEpisodeTracks(trackElements) {
 
     try {
         if (downloadButton) {
-            downloadButton.innerHTML = '<span class="material-icons">hourglass_empty</span> Adding to queue...';
+            downloadButton.innerHTML = 'Adding to queue...';
             downloadButton.disabled = true;
         }
 
@@ -6656,7 +6690,7 @@ async function downloadTracks(trackElements) {
     
     try {
         // Update button to show progress
-        downloadButton.innerHTML = '<span class="material-icons">hourglass_empty</span> Adding to queue...';
+        downloadButton.innerHTML = 'Adding to queue...';
         downloadButton.disabled = true;
         let successCount = 0;
         let deferredCount = 0;
