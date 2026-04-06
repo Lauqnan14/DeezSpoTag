@@ -1195,6 +1195,7 @@ public sealed partial class MediaServerSoundtrackService
         }
 
         var episodeLimit = Math.Clamp(limit.GetValueOrDefault(500), 1, 2000);
+        var normalizedSeasonId = NormalizeText(seasonId);
         var auth = await _platformAuthService.LoadAsync();
         var settings = await _store.LoadAsync(cancellationToken);
         var targets = ResolveTargetLibraries(
@@ -1203,9 +1204,12 @@ public sealed partial class MediaServerSoundtrackService
             MediaServerSoundtrackConstants.TvShowCategory,
             serverType,
             libraryId);
+        var cached = await _cacheRepository.GetTvShowEpisodesAsync(serverType, libraryId, normalizedShowId, cancellationToken);
         if (targets.Count == 0)
         {
-            return new MediaServerTvShowEpisodesResponseDto();
+            return cached != null
+                ? FilterCachedTvShowEpisodes(cached, normalizedSeasonId, episodeLimit)
+                : new MediaServerTvShowEpisodesResponseDto();
         }
 
         var target = targets[0];
@@ -1213,7 +1217,9 @@ public sealed partial class MediaServerSoundtrackService
         var show = allShows.FirstOrDefault(item => string.Equals(item.ItemId, normalizedShowId, StringComparison.OrdinalIgnoreCase));
         if (show is null)
         {
-            return new MediaServerTvShowEpisodesResponseDto
+            return cached != null
+                ? FilterCachedTvShowEpisodes(cached, normalizedSeasonId, episodeLimit)
+                : new MediaServerTvShowEpisodesResponseDto
             {
                 ServerType = NormalizeServerType(target.ServerType),
                 ServerLabel = GetServerDisplayName(target.ServerType),
@@ -1222,18 +1228,53 @@ public sealed partial class MediaServerSoundtrackService
             };
         }
 
-        var fetched = await FetchTvEpisodesForShowAsync(auth, target, show, cancellationToken);
-        var normalizedSeasonId = NormalizeText(seasonId);
-        var filteredEpisodes = fetched.Episodes
-            .Where(item => string.IsNullOrWhiteSpace(normalizedSeasonId)
-                || string.Equals(item.SeasonId, normalizedSeasonId, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(item => item.SeasonNumber ?? int.MaxValue)
-            .ThenBy(item => item.EpisodeNumber ?? int.MaxValue)
-            .ThenBy(item => item.Title, StringComparer.OrdinalIgnoreCase)
-            .Take(episodeLimit)
-            .ToList();
+        try
+        {
+            var fetched = await FetchTvEpisodesForShowAsync(auth, target, show, cancellationToken);
+            var soundtrack = await ResolveSoundtrackAsync(show, cancellationToken);
+            var fullResponse = BuildTvShowEpisodesResponse(target, show, fetched, soundtrack, null, null);
+            await _cacheRepository.UpsertTvShowEpisodesAsync(fullResponse, cancellationToken);
+            return BuildTvShowEpisodesResponse(target, show, fetched, soundtrack, normalizedSeasonId, episodeLimit);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (cached != null)
+            {
+                return FilterCachedTvShowEpisodes(cached, normalizedSeasonId, episodeLimit);
+            }
 
-        var soundtrack = await ResolveSoundtrackAsync(show, cancellationToken);
+            _logger.LogWarning(ex, "Failed loading media server TV show soundtrack episodes for {ShowId}.", normalizedShowId);
+            return new MediaServerTvShowEpisodesResponseDto
+            {
+                ServerType = NormalizeServerType(target.ServerType),
+                ServerLabel = GetServerDisplayName(target.ServerType),
+                LibraryId = target.LibraryId,
+                LibraryName = target.LibraryName,
+                ShowId = show.ItemId,
+                ShowTitle = show.Title,
+                ShowImageUrl = show.ImageUrl,
+                SelectedSeasonId = string.IsNullOrWhiteSpace(normalizedSeasonId) ? null : normalizedSeasonId
+            };
+        }
+    }
+
+    private async Task<List<MediaServerLibraryDescriptor>> DiscoverLibrariesAsync(PlatformAuthState auth, CancellationToken cancellationToken)
+    {
+        var discovered = new List<MediaServerLibraryDescriptor>();
+        discovered.AddRange(await DiscoverPlexLibrariesAsync(auth.Plex, cancellationToken));
+        discovered.AddRange(await DiscoverJellyfinLibrariesAsync(auth.Jellyfin, cancellationToken));
+        return discovered;
+    }
+
+    private static MediaServerTvShowEpisodesResponseDto BuildTvShowEpisodesResponse(
+        (string ServerType, string LibraryId, string LibraryName, string Category) target,
+        MediaServerContentItem show,
+        TvEpisodeFetchResult fetched,
+        MediaServerSoundtrackMatchDto? soundtrack,
+        string? normalizedSeasonId,
+        int? episodeLimit)
+    {
+        var selectedSeasonId = NormalizeText(normalizedSeasonId);
         var seasons = fetched.Seasons
             .Select(season => new MediaServerTvShowSeasonDto
             {
@@ -1248,6 +1289,18 @@ public sealed partial class MediaServerSoundtrackService
             .ThenBy(season => season.Title, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        var filteredEpisodes = fetched.Episodes
+            .Where(item => string.IsNullOrWhiteSpace(selectedSeasonId)
+                || string.Equals(item.SeasonId, selectedSeasonId, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(item => item.SeasonNumber ?? int.MaxValue)
+            .ThenBy(item => item.EpisodeNumber ?? int.MaxValue)
+            .ThenBy(item => item.Title, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var limitedEpisodes = episodeLimit.HasValue
+            ? filteredEpisodes.Take(Math.Clamp(episodeLimit.Value, 1, 2000)).ToList()
+            : filteredEpisodes;
+
         return new MediaServerTvShowEpisodesResponseDto
         {
             ServerType = NormalizeServerType(target.ServerType),
@@ -1257,10 +1310,10 @@ public sealed partial class MediaServerSoundtrackService
             ShowId = show.ItemId,
             ShowTitle = show.Title,
             ShowImageUrl = show.ImageUrl,
-            SelectedSeasonId = string.IsNullOrWhiteSpace(normalizedSeasonId) ? null : normalizedSeasonId,
-            TotalEpisodes = filteredEpisodes.Count,
+            SelectedSeasonId = string.IsNullOrWhiteSpace(selectedSeasonId) ? null : selectedSeasonId,
+            TotalEpisodes = limitedEpisodes.Count,
             Seasons = seasons,
-            Episodes = filteredEpisodes.Select(episode => new MediaServerTvShowEpisodeDto
+            Episodes = limitedEpisodes.Select(episode => new MediaServerTvShowEpisodeDto
             {
                 EpisodeId = episode.EpisodeId,
                 SeasonId = episode.SeasonId,
@@ -1275,12 +1328,60 @@ public sealed partial class MediaServerSoundtrackService
         };
     }
 
-    private async Task<List<MediaServerLibraryDescriptor>> DiscoverLibrariesAsync(PlatformAuthState auth, CancellationToken cancellationToken)
+    private static MediaServerTvShowEpisodesResponseDto FilterCachedTvShowEpisodes(
+        MediaServerTvShowEpisodesResponseDto cached,
+        string? normalizedSeasonId,
+        int episodeLimit)
     {
-        var discovered = new List<MediaServerLibraryDescriptor>();
-        discovered.AddRange(await DiscoverPlexLibrariesAsync(auth.Plex, cancellationToken));
-        discovered.AddRange(await DiscoverJellyfinLibrariesAsync(auth.Jellyfin, cancellationToken));
-        return discovered;
+        var selectedSeasonId = NormalizeText(normalizedSeasonId);
+        var seasons = cached.Seasons
+            .Select(season => new MediaServerTvShowSeasonDto
+            {
+                SeasonId = season.SeasonId,
+                Title = season.Title,
+                SeasonNumber = season.SeasonNumber,
+                ImageUrl = season.ImageUrl,
+                EpisodeCount = season.EpisodeCount
+            })
+            .OrderBy(season => season.SeasonNumber ?? int.MaxValue)
+            .ThenBy(season => season.Title, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var filteredEpisodes = cached.Episodes
+            .Where(item => string.IsNullOrWhiteSpace(selectedSeasonId)
+                || string.Equals(item.SeasonId, selectedSeasonId, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(item => item.SeasonNumber ?? int.MaxValue)
+            .ThenBy(item => item.EpisodeNumber ?? int.MaxValue)
+            .ThenBy(item => item.Title, StringComparer.OrdinalIgnoreCase)
+            .Take(Math.Clamp(episodeLimit, 1, 2000))
+            .Select(episode => new MediaServerTvShowEpisodeDto
+            {
+                EpisodeId = episode.EpisodeId,
+                SeasonId = episode.SeasonId,
+                SeasonTitle = episode.SeasonTitle,
+                SeasonNumber = episode.SeasonNumber,
+                EpisodeNumber = episode.EpisodeNumber,
+                Title = episode.Title,
+                Year = episode.Year,
+                ImageUrl = episode.ImageUrl,
+                Soundtrack = episode.Soundtrack
+            })
+            .ToList();
+
+        return new MediaServerTvShowEpisodesResponseDto
+        {
+            ServerType = NormalizeServerType(cached.ServerType),
+            ServerLabel = cached.ServerLabel,
+            LibraryId = cached.LibraryId,
+            LibraryName = cached.LibraryName,
+            ShowId = cached.ShowId,
+            ShowTitle = cached.ShowTitle,
+            ShowImageUrl = cached.ShowImageUrl,
+            SelectedSeasonId = string.IsNullOrWhiteSpace(selectedSeasonId) ? null : selectedSeasonId,
+            TotalEpisodes = filteredEpisodes.Count,
+            Seasons = seasons,
+            Episodes = filteredEpisodes
+        };
     }
 
     private async Task<List<MediaServerLibraryDescriptor>> DiscoverPlexLibrariesAsync(PlexAuth? plex, CancellationToken cancellationToken)

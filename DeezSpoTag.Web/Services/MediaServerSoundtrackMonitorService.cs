@@ -48,13 +48,17 @@ public sealed class MediaServerSoundtrackMonitorService : BackgroundService
             await _service.RefreshDiscoveredLibrariesAsync(cancellationToken);
             await _service.SyncPersistentMediaCacheAsync(fullRefresh: false, cancellationToken);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogWarning(ex, "Soundtrack monitor refresh timed out.");
+        }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Soundtrack monitor refresh failed.");
+            _logger.LogWarning(ex, "Soundtrack monitor refresh failed.");
         }
     }
 }
