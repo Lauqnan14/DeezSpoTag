@@ -6055,6 +6055,10 @@ const tracklistPlaybackState = window.DeezerPlaybackState;
 let previewStopped = false;
 
 function getPreviewVolume() {
+    const playbackFacade = window.DeezerPlaybackFacade;
+    if (playbackFacade && typeof playbackFacade.getPreviewVolume === 'function') {
+        return playbackFacade.getPreviewVolume();
+    }
     const stored = parseInt(localStorage.getItem('previewVolume') || '', 10);
     if (!Number.isNaN(stored)) {
         return Math.max(0, Math.min(1, stored / 100));
@@ -6236,10 +6240,18 @@ async function playPausePreview(control, options = {}) {
     }
 
     previewStopped = false;
-    previewAudio.pause();
-    previewAudio.src = previewUrl;
-    previewAudio.load();
-    previewAudio.volume = getPreviewVolume();
+    const playbackFacade = window.DeezerPlaybackFacade;
+    if (playbackFacade && typeof playbackFacade.configurePreviewAudioSource === 'function') {
+        playbackFacade.configurePreviewAudioSource(previewAudio, previewUrl, {
+            volume: getPreviewVolume()
+        });
+    } else {
+        previewAudio.pause();
+        previewAudio.src = previewUrl;
+        previewAudio.load();
+        previewAudio.volume = getPreviewVolume();
+        previewAudio.currentTime = 0;
+    }
     try {
         await previewAudio.play();
         setTracklistPreviewControlState(control, 'playing');

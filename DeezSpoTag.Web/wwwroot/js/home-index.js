@@ -702,12 +702,21 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
         homeTrendingPreviewState.trackKey = trackKey;
         homeTrendingPreviewState.button = button;
         setHomeTrendingPlaybackState(button, 'requested');
-        // Ensure old request/stream is fully detached before setting a new source.
-        audio.pause();
+        const playbackFacade = getDeezerPlaybackFacade();
+        if (playbackFacade && typeof playbackFacade.configurePreviewAudioSource === 'function') {
+            playbackFacade.configurePreviewAudioSource(audio, streamUrl);
+        } else {
+            // Mirror the tracklist bootstrap when the shared helper is unavailable.
+            audio.pause();
+            audio.src = streamUrl;
+            if (typeof audio.load === 'function') {
+                audio.load();
+            }
+            audio.volume = 0.8;
+            audio.currentTime = 0;
+        }
         audio.onended = null;
         audio.onerror = null;
-        audio.src = streamUrl;
-        audio.currentTime = 0;
 
         audio.onended = () => {
             if (isStaleRequest()) {

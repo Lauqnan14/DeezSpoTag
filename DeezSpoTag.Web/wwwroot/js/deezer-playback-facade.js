@@ -271,6 +271,39 @@
         return resolvedStreamUrl;
     }
 
+    function getPreviewVolume(defaultVolume = 0.8) {
+        try {
+            const stored = Number.parseInt(String(global.localStorage?.getItem('previewVolume') || ''), 10);
+            if (Number.isFinite(stored)) {
+                return Math.max(0, Math.min(1, stored / 100));
+            }
+        } catch {
+            // Ignore storage access issues and fall back to the default.
+        }
+
+        return Math.max(0, Math.min(1, Number(defaultVolume) || 0.8));
+    }
+
+    function configurePreviewAudioSource(audio, sourceUrl, options = {}) {
+        const normalizedSourceUrl = String(sourceUrl || '').trim();
+        if (!audio || !normalizedSourceUrl) {
+            return false;
+        }
+
+        const volume = Number.isFinite(options.volume)
+            ? Math.max(0, Math.min(1, Number(options.volume)))
+            : getPreviewVolume();
+
+        audio.pause();
+        audio.src = normalizedSourceUrl;
+        if (typeof audio.load === 'function') {
+            audio.load();
+        }
+        audio.volume = volume;
+        audio.currentTime = 0;
+        return true;
+    }
+
     function clearCaches() {
         resolveCache.clear();
         resolveInFlight.clear();
@@ -281,6 +314,8 @@
         resolveTrackBySpotifyRequest: resolveTrackBySpotifyRequest,
         resolvePlayableStreamUrl: resolvePlayableStreamUrl,
         resolvePlayablePreviewUrl: resolvePlayablePreviewUrl,
+        getPreviewVolume: getPreviewVolume,
+        configurePreviewAudioSource: configurePreviewAudioSource,
         clearCaches: clearCaches
     };
 })(globalThis);
