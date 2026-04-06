@@ -1256,6 +1256,9 @@ function getArtistPlaybackFacade() {
     if (typeof facade.resolvePlayablePreviewUrl !== 'function') {
         return null;
     }
+    if (typeof facade.configurePreviewAudioSource !== 'function') {
+        return null;
+    }
     return facade;
 }
 
@@ -1351,13 +1354,26 @@ async function playArtistTrackInApp(button) {
         setArtistPlaybackState(artistPreviewState.button, 'idle');
     }
 
+    const facade = getArtistPlaybackFacade();
     artistPreviewState.audio = audio;
     artistPreviewState.trackKey = trackKey;
     artistPreviewState.button = button;
     artistPreviewState.sourceKey = sourceKey;
     setArtistPlaybackState(button, 'requested');
-    audio.src = streamUrl;
-    audio.currentTime = 0;
+    if (facade) {
+        facade.configurePreviewAudioSource(audio, streamUrl, {
+            volume: typeof facade.getPreviewVolume === 'function'
+                ? facade.getPreviewVolume()
+                : undefined
+        });
+    } else {
+        audio.pause();
+        audio.src = streamUrl;
+        if (typeof audio.load === 'function') {
+            audio.load();
+        }
+        audio.currentTime = 0;
+    }
     audio.onended = () => {
         const nextButton = getNextTopTrackButton();
         const currentButton = artistPreviewState.button;

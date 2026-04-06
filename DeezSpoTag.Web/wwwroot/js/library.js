@@ -2093,9 +2093,21 @@ function configurePreviewAudio(audio, previewKey, button, sourceUrl, onEnded, on
     libraryState.previewTrackId = previewKey;
     libraryState.previewButton = button;
     setLibraryPlaybackState(button, 'requested');
-    audio.pause();
-    audio.src = sourceUrl;
-    audio.currentTime = 0;
+    const facade = getLibraryPlaybackFacade();
+    if (facade && typeof facade.configurePreviewAudioSource === 'function') {
+        facade.configurePreviewAudioSource(audio, sourceUrl, {
+            volume: typeof facade.getPreviewVolume === 'function'
+                ? facade.getPreviewVolume()
+                : undefined
+        });
+    } else {
+        audio.pause();
+        audio.src = sourceUrl;
+        if (typeof audio.load === 'function') {
+            audio.load();
+        }
+        audio.currentTime = 0;
+    }
     audio.onended = onEnded;
     audio.onerror = typeof onError === 'function' ? onError : null;
 }
