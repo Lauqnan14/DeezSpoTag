@@ -1298,6 +1298,12 @@ DeezSpoTag.Download = {
         if (context.intentContext.allowQualityUpgrade) {
             deezerMetadata.allowQualityUpgrade = true;
         }
+        if (!deezerMetadata.preferredEngine && context.intentContext.preferredEngine) {
+            deezerMetadata.preferredEngine = context.intentContext.preferredEngine;
+        }
+        if (!deezerMetadata.quality && context.intentContext.preferredQuality) {
+            deezerMetadata.quality = context.intentContext.preferredQuality;
+        }
         return deezerMetadata;
     },
     async postDeezerAddWithSettings({ url, bitrate, destinationId, metadata }) {
