@@ -215,6 +215,33 @@ ORDER BY (queue_order IS NULL), queue_order ASC, created_at;";
         return items;
     }
 
+    public async Task<IReadOnlyList<DownloadQueueItem>> GetRunningTasksOlderThanAsync(
+        TimeSpan age,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
+       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
+       duration_ms, destination_folder_id, quality_rank, queue_order, content_type,
+       status, payload, progress, downloaded, failed, error, created_at, updated_at
+FROM download_task
+WHERE status = 'running'
+  AND updated_at <= datetime('now', '-' || @ageSeconds || ' seconds')
+ORDER BY updated_at ASC;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("ageSeconds", Math.Max(1, (int)Math.Ceiling(age.TotalSeconds)));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var items = new List<DownloadQueueItem>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            items.Add(ReadItem(reader));
+        }
+
+        return items;
+    }
+
     public async Task<int> GetQueuedCountAsync(string engine, CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);
@@ -302,6 +329,31 @@ SET status = 'queued',
     updated_at = CURRENT_TIMESTAMP
 WHERE status = 'paused';";
         await ExecuteNonQueryAsync(connection, sql, cancellationToken);
+    }
+
+    public async Task<bool> TryClaimStaleRunningAsync(
+        string queueUuid,
+        TimeSpan age,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return false;
+        }
+
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid
+  AND status = 'running'
+  AND updated_at <= datetime('now', '-' || @ageSeconds || ' seconds');";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        command.Parameters.AddWithValue("ageSeconds", Math.Max(1, (int)Math.Ceiling(age.TotalSeconds)));
+        var affected = await command.ExecuteNonQueryAsync(cancellationToken);
+        return affected > 0;
     }
 
     private async Task<DownloadQueueItem?> DequeueNextCoreAsync(

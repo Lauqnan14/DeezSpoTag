@@ -127,8 +127,17 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
                 DeezSpoTagSpeedTracker.Clear(currentUUID);
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
+            if (_cancellationRegistry.WasTimedOut(currentUUID))
+            {
+                var timeoutException = new TimeoutException(
+                    DownloadQueueRecoveryPolicy.BuildStallTimeoutMessage(EngineName),
+                    ex);
+                await HandleProcessingExceptionAsync(timeoutException, currentUUID, nextItem.Engine, payload, cancellationToken);
+                return;
+            }
+
             await HandleCancellationAsync(currentUUID, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

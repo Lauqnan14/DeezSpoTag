@@ -96,8 +96,17 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
 
             await ExecuteDownloadPipelineAsync(next, payload, settings, itemToken);
         }
-        catch (OperationCanceledException) when (itemToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (itemToken.IsCancellationRequested)
         {
+            if (_cancellationRegistry.WasTimedOut(next.QueueUuid))
+            {
+                var timeoutException = new TimeoutException(
+                    DownloadQueueRecoveryPolicy.BuildStallTimeoutMessage(EngineName),
+                    ex);
+                await HandleFailureAsync(next, payload, timeoutException, stoppingToken);
+                return;
+            }
+
             await HandleCancellationAsync(next.QueueUuid, payload);
         }
         catch (OperationCanceledException ex) when (!itemToken.IsCancellationRequested && !stoppingToken.IsCancellationRequested)

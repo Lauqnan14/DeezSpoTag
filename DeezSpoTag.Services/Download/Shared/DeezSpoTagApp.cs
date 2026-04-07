@@ -211,6 +211,16 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
     private async Task HandleUnhandledProcessorCancellationAsync(DownloadQueueItem item, OperationCanceledException ex)
     {
+        if (_cancellationRegistry.WasTimedOut(item.QueueUuid))
+        {
+            var stallTimeoutException = new TimeoutException(
+                DownloadQueueRecoveryPolicy.BuildStallTimeoutMessage(item.Engine),
+                ex);
+            _logger.LogError(stallTimeoutException, "Queue processor timeout escaped engine for {QueueUuid}", item.QueueUuid);
+            await MarkQueueItemAsFailedAndRetryAsync(item, stallTimeoutException.Message);
+            return;
+        }
+
         if (_cancellationRegistry.WasUserPaused(item.QueueUuid))
         {
             await _queueRepository.UpdateStatusAsync(
