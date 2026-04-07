@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
+using System.Collections.Concurrent;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Fallback;
@@ -32,6 +33,9 @@ public class ActivitiesController : Controller
     private const string FilesField = "files";
     private const string LyricsStatusField = "lyrics_status";
     private const string TtmlExtension = ".ttml";
+    private static readonly ConcurrentDictionary<string, CachedQueuePayload> QueuePayloadCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan QueuePayloadCacheTtl = TimeSpan.FromSeconds(30);
+    private const int QueuePayloadCacheMaxEntries = 1024;
     private readonly ILogger<ActivitiesController> _logger;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly DownloadQueueRepository _queueRepository;
@@ -199,6 +203,18 @@ public class ActivitiesController : Controller
 
         try
         {
+            var item = await _queueRepository.GetByUuidAsync(request.Uuid);
+            if (item == null)
+            {
+                return NotFound("Download not found in queue");
+            }
+
+            var normalizedStatus = (item.Status ?? string.Empty).Trim().ToLowerInvariant();
+            if (normalizedStatus is not FailedStatus and not CanceledStatus and not CancelledStatus)
+            {
+                return BadRequest("Only failed or canceled downloads can be deleted");
+            }
+
             await _queueRepository.DeleteByUuidAsync(request.Uuid);
             _logger.LogInformation("Removed failed download {Uuid} from queue", LogSanitizer.OneLine(request.Uuid));
             return Json(new { success = true, message = "Download removed from queue" });
@@ -367,8 +383,84 @@ public class ActivitiesController : Controller
         {
             payload["quality"] = ResolveSourceQuality(item.Engine, settings);
         }
-        AttachLyricsFiles(payload);
+        if (ShouldAttachLyricsFiles(item.Status))
+        {
+            var cacheKey = BuildQueuePayloadCacheKey(item);
+            if (TryGetCachedQueuePayload(cacheKey, out var cachedPayload))
+            {
+                return cachedPayload;
+            }
+
+            AttachLyricsFiles(payload);
+            CacheQueuePayload(cacheKey, payload);
+        }
         return payload;
+    }
+
+    private static bool ShouldAttachLyricsFiles(string? status)
+    {
+        var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized is CompletedStatus
+            or CompleteStatus
+            or FinishedStatus
+            or DownloadFinishedStatus
+            or FailedStatus
+            or CanceledStatus
+            or CancelledStatus
+            or SkippedStatus;
+    }
+
+    private static string BuildQueuePayloadCacheKey(DownloadQueueItem item)
+    {
+        var normalizedStatus = (item.Status ?? string.Empty).Trim().ToLowerInvariant();
+        return $"{item.QueueUuid}|{normalizedStatus}|{item.UpdatedAt.UtcTicks}";
+    }
+
+    private static bool TryGetCachedQueuePayload(string cacheKey, out Dictionary<string, object> payload)
+    {
+        payload = new Dictionary<string, object>();
+        if (!QueuePayloadCache.TryGetValue(cacheKey, out var cached))
+        {
+            return false;
+        }
+
+        var nowUtc = DateTimeOffset.UtcNow;
+        if (nowUtc - cached.CachedAtUtc > QueuePayloadCacheTtl)
+        {
+            QueuePayloadCache.TryRemove(cacheKey, out _);
+            return false;
+        }
+
+        payload = new Dictionary<string, object>(cached.Payload, StringComparer.OrdinalIgnoreCase);
+        return true;
+    }
+
+    private static void CacheQueuePayload(string cacheKey, Dictionary<string, object> payload)
+    {
+        QueuePayloadCache[cacheKey] = new CachedQueuePayload(
+            DateTimeOffset.UtcNow,
+            new Dictionary<string, object>(payload, StringComparer.OrdinalIgnoreCase));
+        PruneQueuePayloadCache();
+    }
+
+    private static void PruneQueuePayloadCache()
+    {
+        var nowUtc = DateTimeOffset.UtcNow;
+        foreach (var entry in QueuePayloadCache.Where(entry => nowUtc - entry.Value.CachedAtUtc > QueuePayloadCacheTtl).ToArray())
+        {
+            QueuePayloadCache.TryRemove(entry.Key, out _);
+        }
+
+        if (QueuePayloadCache.Count <= QueuePayloadCacheMaxEntries)
+        {
+            return;
+        }
+
+        var excess = QueuePayloadCache.Count - QueuePayloadCacheMaxEntries;
+        foreach (var entry in QueuePayloadCache.OrderBy(entry => entry.Value.CachedAtUtc).Take(excess).ToArray())
+        {
+            QueuePayloadCache.TryRemove(entry.Key, out _);
+        }
     }
 
     private static string ResolveSourceQuality(string engine, DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
@@ -954,6 +1046,8 @@ public class ActivitiesController : Controller
     }
 
 }
+
+internal sealed record CachedQueuePayload(DateTimeOffset CachedAtUtc, Dictionary<string, object> Payload);
 
 public sealed class CancelDownloadRequest
 {
