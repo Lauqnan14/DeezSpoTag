@@ -7,6 +7,7 @@ using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Download.Shared;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -80,6 +81,96 @@ public class ActivitiesController : Controller
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error getting download queue");
+            return Json(new { success = false, error = ex.Message });
+        }
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> PauseTask([FromBody] CancelDownloadRequest request)
+    {
+        if (!ModelState.IsValid)
+        {
+            return BadRequest(ModelState);
+        }
+
+        try
+        {
+            var item = await _queueRepository.GetByUuidAsync(request.Uuid, HttpContext.RequestAborted);
+            if (item == null)
+            {
+                return NotFound("Download not found in queue");
+            }
+
+            var status = (item.Status ?? string.Empty).Trim().ToLowerInvariant();
+            if (status == RunningStatus)
+            {
+                await _deezSpoTagApp.PauseQueueAsync();
+            }
+            else if (status is QueuedStatus or InQueueStatus)
+            {
+                await _queueRepository.UpdateStatusAsync(request.Uuid, PausedStatus, cancellationToken: HttpContext.RequestAborted);
+            }
+
+            _logger.LogInformation("Paused download {Uuid}", LogSanitizer.OneLine(request.Uuid));
+            return Json(new { success = true, message = "Download paused" });
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Error pausing download {Uuid}", LogSanitizer.OneLine(request.Uuid));
+            return Json(new { success = false, error = ex.Message });
+        }
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> ResumeTask([FromBody] CancelDownloadRequest request)
+    {
+        if (!ModelState.IsValid)
+        {
+            return BadRequest(ModelState);
+        }
+
+        try
+        {
+            var item = await _queueRepository.GetByUuidAsync(request.Uuid, HttpContext.RequestAborted);
+            if (item == null)
+            {
+                return NotFound("Download not found in queue");
+            }
+
+            var status = (item.Status ?? string.Empty).Trim().ToLowerInvariant();
+            if (status == PausedStatus)
+            {
+                await _queueRepository.UpdateStatusAsync(request.Uuid, QueuedStatus, error: null, cancellationToken: HttpContext.RequestAborted);
+            }
+
+            await _deezSpoTagApp.EnsureQueueProcessorRunningAsync();
+            _logger.LogInformation("Resumed download {Uuid}", LogSanitizer.OneLine(request.Uuid));
+            return Json(new { success = true, message = "Download resumed" });
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Error resuming download {Uuid}", LogSanitizer.OneLine(request.Uuid));
+            return Json(new { success = false, error = ex.Message });
+        }
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> CancelTask([FromBody] CancelDownloadRequest request)
+    {
+        if (!ModelState.IsValid)
+        {
+            return BadRequest(ModelState);
+        }
+
+        try
+        {
+            await _deezSpoTagApp.CancelDownloadAsync(request.Uuid);
+            _logger.LogInformation("Cancelled download {Uuid}", LogSanitizer.OneLine(request.Uuid));
+            return Json(new { success = true, message = "Download cancelled" });
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Error cancelling download {Uuid}", LogSanitizer.OneLine(request.Uuid));
             return Json(new { success = false, error = ex.Message });
         }
     }
@@ -508,19 +599,7 @@ public class ActivitiesController : Controller
 
     private static Dictionary<string, object> ParsePayload(string? payloadJson)
     {
-        if (string.IsNullOrWhiteSpace(payloadJson))
-        {
-            return new Dictionary<string, object>();
-        }
-
-        try
-        {
-            return JsonSerializer.Deserialize<Dictionary<string, object>>(payloadJson)
-                   ?? new Dictionary<string, object>();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
-            return new Dictionary<string, object>();
-        }
+        return QueuePayloadJsonParser.Parse(payloadJson);
     }
 
     private static void NormalizePayloadKeys(Dictionary<string, object> payload)
@@ -540,6 +619,7 @@ public class ActivitiesController : Controller
         EnsurePayloadFieldRaw(payload, "fallbackPlan", "FallbackPlan");
         EnsurePayloadFieldRaw(payload, "fallbackHistory", "FallbackHistory");
         EnsurePayloadFieldRaw(payload, "fallbackQueuedExternally", "FallbackQueuedExternally");
+        EnsurePayloadFieldRaw(payload, "finalDestinations", "FinalDestinations");
         EnsurePayloadField(payload, "videoResolution", "VideoResolution", "videoResolutionTier", "VideoResolutionTier");
         EnsurePayloadField(payload, "videoHdr", "VideoHdr");
         EnsurePayloadField(payload, "videoAudioProfile", "VideoAudioProfile");

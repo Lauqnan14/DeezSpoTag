@@ -89,9 +89,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                 continue;
             }
 
-            var payload = string.IsNullOrWhiteSpace(task.PayloadJson)
-                ? new Dictionary<string, object>()
-                : JsonSerializer.Deserialize<Dictionary<string, object>>(task.PayloadJson) ?? new Dictionary<string, object>();
+            var payload = QueuePayloadJsonParser.Parse(task.PayloadJson);
 
             payload["status"] = MapStatusForUi(task.Status);
             payload["progress"] = task.Progress ?? 0;

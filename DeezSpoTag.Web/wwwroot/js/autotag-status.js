@@ -889,19 +889,6 @@
         await pollJob();
     }
 
-    function bindTabRefresh() {
-        const autotagTab = el("activities-autotag-tab");
-        const historyTab = el("activities-history-tab");
-
-        autotagTab?.addEventListener("shown.bs.tab", () => {
-            void refreshNow();
-        });
-
-        historyTab?.addEventListener("shown.bs.tab", () => {
-            void refreshNow({ loadCalendar: true, resetLiveFollow: true });
-        });
-    }
-
     function bindPageResumeRefresh() {
         globalThis.addEventListener("focus", () => {
             if (!document.hidden) {
@@ -1456,7 +1443,6 @@
             refresh: (options) => refreshNow(options)
         };
 
-        bindTabRefresh();
         bindFilterButtons();
         bindQuickActions();
         bindDiffActions();
