@@ -217,7 +217,7 @@
 
         try {
             const url = new URL(normalizedPreviewUrl, global.location?.origin || 'http://localhost');
-            const match = url.pathname.match(/^\/api\/deezer\/stream\/(\d+)$/i);
+            const match = /^\/api\/deezer\/stream\/(\d+)$/i.exec(url.pathname);
             if (!match) {
                 return null;
             }
@@ -228,7 +228,7 @@
             };
         } catch {
             const path = normalizedPreviewUrl.split(/[?#]/, 1)[0];
-            const match = path.match(/^\/api\/deezer\/stream\/(\d+)$/i);
+            const match = /^\/api\/deezer\/stream\/(\d+)$/i.exec(path);
             if (!match) {
                 return null;
             }

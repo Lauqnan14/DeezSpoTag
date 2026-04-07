@@ -370,7 +370,7 @@ function buildSpotifyTrackResolveRequestFromTrendingCard(button) {
 }
 
 async function resolveHomeTrendingSpotifyTrackToDeezer(request) {
-    if (!request || !request.link) {
+    if (!request?.link) {
         return null;
     }
     const facade = getDeezerPlaybackFacade();
@@ -393,6 +393,67 @@ async function resolveHomeTrendingSpotifyTrackToDeezer(request) {
     } catch {
         return null;
     }
+}
+
+async function resolveHomeTrendingPreviewCandidate(button, previewUrl) {
+    if (!previewUrl) {
+        return null;
+    }
+
+    const facade = getDeezerPlaybackFacade();
+    if (facade) {
+        try {
+            const resolvedPreviewUrl = await facade.resolvePlayablePreviewUrl(previewUrl, { element: button });
+            if (resolvedPreviewUrl) {
+                return { streamUrl: resolvedPreviewUrl, trackKey: previewUrl };
+            }
+        } catch {
+            // Fall through to the warning below.
+        }
+    } else if (!/\/api\/deezer\/stream\//i.test(previewUrl)) {
+        return { streamUrl: previewUrl, trackKey: previewUrl };
+    }
+
+    return null;
+}
+
+async function resolveHomeTrendingDeezerCandidate(button, deezerId) {
+    if (!deezerId) {
+        return null;
+    }
+
+    const streamUrl = await resolveHomeTrendingDeezerStreamUrl(deezerId, button);
+    if (!streamUrl) {
+        return null;
+    }
+
+    return { streamUrl, trackKey: `deezer:${deezerId}` };
+}
+
+async function resolveHomeTrendingSpotifyCandidate(button, spotifyUrl, isStaleRequest) {
+    if (!spotifyUrl) {
+        return null;
+    }
+
+    const resolved = await resolveHomeTrendingSpotifyTrackToDeezer(
+        buildSpotifyTrackResolveRequestFromTrendingCard(button)
+    );
+    if (isStaleRequest()) {
+        return null;
+    }
+    if (!resolved || resolved.available === false || resolved.type !== 'track' || !resolved.deezerId) {
+        return null;
+    }
+
+    const resolvedDeezerId = String(resolved.deezerId);
+    button.dataset.deezerId = resolvedDeezerId;
+    button.dataset.mappingState = 'mapped';
+    void warmHomeTrendingPlaybackContext(button, resolvedDeezerId);
+    const streamUrl = await resolveHomeTrendingDeezerStreamUrl(resolvedDeezerId, button);
+    if (!streamUrl) {
+        return null;
+    }
+    return { streamUrl, trackKey: `deezer:${resolvedDeezerId}` };
 }
 
 function isHomeTrendingMappingButtonVisible(button) {
@@ -540,32 +601,22 @@ async function resolveHomeTrendingDeezerStreamUrl(deezerId, button) {
 }
 
 async function resolveHomeTrendingStreamCandidate(button, deezerId, spotifyUrl, previewUrl, isStaleRequest) {
+    const previewCandidate = await resolveHomeTrendingPreviewCandidate(button, previewUrl);
+    if (previewCandidate) {
+        return previewCandidate;
+    }
     if (previewUrl) {
-        const facade = getDeezerPlaybackFacade();
-        if (facade) {
-            try {
-                const resolvedPreviewUrl = await facade.resolvePlayablePreviewUrl(previewUrl, { element: button });
-                if (resolvedPreviewUrl) {
-                    return { streamUrl: resolvedPreviewUrl, trackKey: previewUrl };
-                }
-            } catch {
-                // Fall through to the warning below.
-            }
-        } else if (!/\/api\/deezer\/stream\//i.test(previewUrl)) {
-            return { streamUrl: previewUrl, trackKey: previewUrl };
-        }
-
         showToast('Preview unavailable.', 'warning');
         return null;
     }
 
+    const deezerCandidate = await resolveHomeTrendingDeezerCandidate(button, deezerId);
+    if (deezerCandidate) {
+        return deezerCandidate;
+    }
     if (deezerId) {
-        const streamUrl = await resolveHomeTrendingDeezerStreamUrl(deezerId, button);
-        if (!streamUrl) {
-            showToast('Preview unavailable.', 'warning');
-            return null;
-        }
-        return { streamUrl, trackKey: `deezer:${deezerId}` };
+        showToast('Preview unavailable.', 'warning');
+        return null;
     }
 
     if (!spotifyUrl) {
@@ -573,27 +624,12 @@ async function resolveHomeTrendingStreamCandidate(button, deezerId, spotifyUrl, 
         return null;
     }
 
-    const resolved = await resolveHomeTrendingSpotifyTrackToDeezer(
-        buildSpotifyTrackResolveRequestFromTrendingCard(button)
-    );
-    if (isStaleRequest()) {
-        return null;
-    }
-    if (!resolved || resolved.available === false || resolved.type !== 'track' || !resolved.deezerId) {
+    const spotifyCandidate = await resolveHomeTrendingSpotifyCandidate(button, spotifyUrl, isStaleRequest);
+    if (!spotifyCandidate) {
         showToast('Track not available for streaming.', 'warning');
         return null;
     }
-
-    const resolvedDeezerId = String(resolved.deezerId);
-    button.dataset.deezerId = resolvedDeezerId;
-    button.dataset.mappingState = 'mapped';
-    void warmHomeTrendingPlaybackContext(button, resolvedDeezerId);
-    const streamUrl = await resolveHomeTrendingDeezerStreamUrl(resolvedDeezerId, button);
-    if (!streamUrl) {
-        showToast('Preview unavailable.', 'warning');
-        return null;
-    }
-    return { streamUrl, trackKey: `deezer:${resolvedDeezerId}` };
+    return spotifyCandidate;
 }
 
 function tryPlayNextHomeTrendingQueueItem() {
@@ -619,6 +655,145 @@ function handleHomeTrendingToggleForActiveTrack(audio, trackKey, fromQueue) {
     return true;
 }
 
+function configureHomeTrendingPreviewAudio(audio, streamUrl) {
+    const playbackFacade = getDeezerPlaybackFacade();
+    if (playbackFacade && typeof playbackFacade.configurePreviewAudioSource === 'function') {
+        playbackFacade.configurePreviewAudioSource(audio, streamUrl);
+        return;
+    }
+
+    audio.pause();
+    audio.src = streamUrl;
+    if (typeof audio.load === 'function') {
+        audio.load();
+    }
+    audio.volume = 0.8;
+    audio.currentTime = 0;
+}
+
+function registerHomeTrendingPreviewAudioHandlers(button, audio, isStaleRequest) {
+    audio.onended = () => {
+        if (isStaleRequest()) {
+            return;
+        }
+        setHomeTrendingPlaybackState(button, 'ended');
+        clearHomeTrendingPreviewButton();
+        homeTrendingPreviewState.trackKey = null;
+        tryPlayNextHomeTrendingQueueItem();
+    };
+    audio.onerror = () => {
+        if (isStaleRequest()) {
+            return;
+        }
+        setHomeTrendingPlaybackState(button, 'error');
+        clearHomeTrendingPreviewButton();
+        homeTrendingPreviewState.trackKey = null;
+        showToast('Playback interrupted.', 'warning');
+        tryPlayNextHomeTrendingQueueItem();
+    };
+}
+
+async function attemptHomeTrendingPlaybackStart(button, audio, isStaleRequest) {
+    try {
+        await audio.play();
+        if (isStaleRequest()) {
+            audio.pause();
+            return false;
+        }
+        setHomeTrendingPlaybackState(button, 'playing');
+        return true;
+    } catch {
+        if (isStaleRequest()) {
+            return false;
+        }
+        setHomeTrendingPlaybackState(button, 'error');
+        homeTrendingPreviewState.trackKey = null;
+        if (homeTrendingPreviewState.button === button) {
+            homeTrendingPreviewState.button = null;
+        }
+        showToast('Unable to start playback.', 'warning');
+        tryPlayNextHomeTrendingQueueItem();
+        return false;
+    }
+}
+
+async function playHomeTrendingResolvedCandidate(button, candidate, fromQueue, isStaleRequest) {
+    if (isStaleRequest()) {
+        return;
+    }
+
+    const { streamUrl, trackKey } = candidate || {};
+    if (!streamUrl || !trackKey) {
+        setHomeTrendingPlaybackState(button, 'idle');
+        return;
+    }
+
+    const audio = homeTrendingPreviewState.audio ?? new Audio();
+    if (handleHomeTrendingToggleForActiveTrack(audio, trackKey, fromQueue)) {
+        return;
+    }
+
+    if (homeTrendingPreviewState.button !== button) {
+        clearHomeTrendingPreviewButton();
+    }
+
+    if (!fromQueue && homeTrendingPreviewState.trackKey === trackKey && audio.paused) {
+        try {
+            await audio.play();
+            setHomeTrendingPlaybackState(button, 'playing');
+            return;
+        } catch {
+            setHomeTrendingPlaybackState(button, 'error');
+        }
+    }
+
+    homeTrendingPreviewState.audio = audio;
+    homeTrendingPreviewState.trackKey = trackKey;
+    homeTrendingPreviewState.button = button;
+    setHomeTrendingPlaybackState(button, 'requested');
+    configureHomeTrendingPreviewAudio(audio, streamUrl);
+    registerHomeTrendingPreviewAudioHandlers(button, audio, isStaleRequest);
+    await attemptHomeTrendingPlaybackStart(button, audio, isStaleRequest);
+}
+
+function prepareHomeTrendingPlaybackRequest(intentKey, canUsePlaybackStateRequest) {
+    if (canUsePlaybackStateRequest) {
+        const request = homePlaybackState.beginRequest(homeTrendingPreviewState, intentKey);
+        if (request === null) {
+            return null;
+        }
+
+        return {
+            requestId: request.requestId,
+            isStaleRequest: request.isStale,
+            finalize: request.finalize
+        };
+    }
+
+    if (intentKey && homeTrendingPreviewState.pendingKey === intentKey) {
+        return null;
+    }
+
+    const requestId = ++homeTrendingPreviewState.requestId;
+    homeTrendingPreviewState.pendingKey = intentKey || null;
+    return {
+        requestId,
+        isStaleRequest: () => requestId !== homeTrendingPreviewState.requestId,
+        finalize: null
+    };
+}
+
+function finalizeHomeTrendingPlaybackRequest(playbackRequest) {
+    if (playbackRequest?.finalize) {
+        playbackRequest.finalize();
+        return;
+    }
+
+    if (playbackRequest?.requestId === homeTrendingPreviewState.requestId) {
+        homeTrendingPreviewState.pendingKey = null;
+    }
+}
+
 async function playHomeTrendingTrackInApp(target, options = {}) {
     const button = resolveHomeTrendingPlayButton(target);
     if (!button) {
@@ -634,23 +809,12 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
     const previewUrl = (button.dataset.previewUrl || '').trim();
     const intentKey = buildHomeTrendingIntentKey(previewUrl, deezerId, spotifyUrl);
     const canUsePlaybackStateRequest = homePlaybackState && typeof homePlaybackState.beginRequest === 'function';
-    const request = canUsePlaybackStateRequest
-        ? homePlaybackState.beginRequest(homeTrendingPreviewState, intentKey)
-        : null;
-    if (canUsePlaybackStateRequest && request === null) {
+    const playbackRequest = prepareHomeTrendingPlaybackRequest(intentKey, canUsePlaybackStateRequest);
+    if (!playbackRequest) {
         return;
     }
-    if (!canUsePlaybackStateRequest) {
-        if (intentKey && homeTrendingPreviewState.pendingKey === intentKey) {
-            return;
-        }
-    }
 
-    const requestId = request?.requestId ?? (++homeTrendingPreviewState.requestId);
-    if (!canUsePlaybackStateRequest) {
-        homeTrendingPreviewState.pendingKey = intentKey || null;
-    }
-    const isStaleRequest = request?.isStale ?? (() => requestId !== homeTrendingPreviewState.requestId);
+    const { isStaleRequest } = playbackRequest;
     setHomeTrendingPlaybackState(button, 'requested');
 
     try {
@@ -667,102 +831,9 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
             }
             return;
         }
-        const { streamUrl, trackKey } = candidate;
-
-        if (isStaleRequest()) {
-            return;
-        }
-
-        if (!streamUrl || !trackKey) {
-            setHomeTrendingPlaybackState(button, 'idle');
-            return;
-        }
-
-        const audio = homeTrendingPreviewState.audio ?? new Audio();
-
-        if (handleHomeTrendingToggleForActiveTrack(audio, trackKey, fromQueue)) {
-            return;
-        }
-
-        if (homeTrendingPreviewState.button !== button) {
-            clearHomeTrendingPreviewButton();
-        }
-
-        if (!fromQueue && homeTrendingPreviewState.trackKey === trackKey && audio.paused) {
-            try {
-                await audio.play();
-                setHomeTrendingPlaybackState(button, 'playing');
-                return;
-            } catch {
-                setHomeTrendingPlaybackState(button, 'error');
-            }
-        }
-
-        homeTrendingPreviewState.audio = audio;
-        homeTrendingPreviewState.trackKey = trackKey;
-        homeTrendingPreviewState.button = button;
-        setHomeTrendingPlaybackState(button, 'requested');
-        const playbackFacade = getDeezerPlaybackFacade();
-        if (playbackFacade && typeof playbackFacade.configurePreviewAudioSource === 'function') {
-            playbackFacade.configurePreviewAudioSource(audio, streamUrl);
-        } else {
-            // Mirror the tracklist bootstrap when the shared helper is unavailable.
-            audio.pause();
-            audio.src = streamUrl;
-            if (typeof audio.load === 'function') {
-                audio.load();
-            }
-            audio.volume = 0.8;
-            audio.currentTime = 0;
-        }
-        audio.onended = null;
-        audio.onerror = null;
-
-        audio.onended = () => {
-            if (isStaleRequest()) {
-                return;
-            }
-            setHomeTrendingPlaybackState(button, 'ended');
-            clearHomeTrendingPreviewButton();
-            homeTrendingPreviewState.trackKey = null;
-            tryPlayNextHomeTrendingQueueItem();
-        };
-        audio.onerror = () => {
-            if (isStaleRequest()) {
-                return;
-            }
-            setHomeTrendingPlaybackState(button, 'error');
-            clearHomeTrendingPreviewButton();
-            homeTrendingPreviewState.trackKey = null;
-            showToast('Playback interrupted.', 'warning');
-            tryPlayNextHomeTrendingQueueItem();
-        };
-
-        try {
-            await audio.play();
-            if (isStaleRequest()) {
-                audio.pause();
-                return;
-            }
-            setHomeTrendingPlaybackState(button, 'playing');
-        } catch {
-            if (isStaleRequest()) {
-                return;
-            }
-            setHomeTrendingPlaybackState(button, 'error');
-            homeTrendingPreviewState.trackKey = null;
-            if (homeTrendingPreviewState.button === button) {
-                homeTrendingPreviewState.button = null;
-            }
-            showToast('Unable to start playback.', 'warning');
-            tryPlayNextHomeTrendingQueueItem();
-        }
+        await playHomeTrendingResolvedCandidate(button, candidate, fromQueue, isStaleRequest);
     } finally {
-        if (request?.finalize) {
-            request.finalize();
-        } else if (requestId === homeTrendingPreviewState.requestId) {
-            homeTrendingPreviewState.pendingKey = null;
-        }
+        finalizeHomeTrendingPlaybackRequest(playbackRequest);
     }
 }
 
@@ -2622,25 +2693,60 @@ function buildHomeTrendingPlayAttributes(item, deezerTrackId, spotifyTrackUrl, p
 
     if (deezerTrackId) {
         playAttrs.push(`data-deezer-id="${escapeHtml(deezerTrackId)}"`);
-        if (deezerPlaybackContext) {
-            playAttrs.push(
-                `data-stream-track-id="${escapeHtml(deezerPlaybackContext.streamTrackId)}"`,
-                `data-track-token="${escapeHtml(deezerPlaybackContext.trackToken)}"`
-            );
-            if (deezerPlaybackContext.md5origin) {
-                playAttrs.push(`data-md5-origin="${escapeHtml(deezerPlaybackContext.md5origin)}"`);
-            }
-            if (deezerPlaybackContext.mv) {
-                playAttrs.push(`data-media-version="${escapeHtml(deezerPlaybackContext.mv)}"`);
-            }
-        }
+        appendHomeTrendingDeezerContextAttributes(playAttrs, deezerPlaybackContext);
     }
+    appendHomeTrendingUrlAttributes(playAttrs, spotifyTrackUrl, previewUrl);
+    appendHomeTrendingTrackMetadataAttributes(playAttrs, item);
+
+    return playAttrs;
+}
+
+function appendHomeTrendingDeezerContextAttributes(playAttrs, deezerPlaybackContext) {
+    if (!deezerPlaybackContext) {
+        return;
+    }
+
+    playAttrs.push(
+        `data-stream-track-id="${escapeHtml(deezerPlaybackContext.streamTrackId)}"`,
+        `data-track-token="${escapeHtml(deezerPlaybackContext.trackToken)}"`
+    );
+    if (deezerPlaybackContext.md5origin) {
+        playAttrs.push(`data-md5-origin="${escapeHtml(deezerPlaybackContext.md5origin)}"`);
+    }
+    if (deezerPlaybackContext.mv) {
+        playAttrs.push(`data-media-version="${escapeHtml(deezerPlaybackContext.mv)}"`);
+    }
+}
+
+function appendHomeTrendingUrlAttributes(playAttrs, spotifyTrackUrl, previewUrl) {
     if (spotifyTrackUrl) {
         playAttrs.push(`data-spotify-url="${escapeHtml(spotifyTrackUrl)}"`);
     }
     if (previewUrl) {
         playAttrs.push(`data-preview-url="${escapeHtml(previewUrl)}"`);
     }
+}
+
+function appendHomeTrendingTrackMetadataAttributes(playAttrs, item) {
+    const metadata = extractHomeTrendingTrackMetadata(item);
+    if (metadata.title) {
+        playAttrs.push(`data-track-title="${escapeHtml(metadata.title)}"`);
+    }
+    if (metadata.artist) {
+        playAttrs.push(`data-track-artist="${escapeHtml(metadata.artist)}"`);
+    }
+    if (metadata.album) {
+        playAttrs.push(`data-track-album="${escapeHtml(metadata.album)}"`);
+    }
+    if (metadata.isrc) {
+        playAttrs.push(`data-track-isrc="${escapeHtml(metadata.isrc)}"`);
+    }
+    if (metadata.durationMs > 0) {
+        playAttrs.push(`data-track-duration-ms="${metadata.durationMs}"`);
+    }
+}
+
+function extractHomeTrendingTrackMetadata(item) {
     const title = (item.name || item.title || '').toString().trim();
     const artist = (item.artists || item.artist || item.ownerName || item.owner || '').toString().trim();
     const album = (item.albumName || item.album || item.releaseName || '').toString().trim();
@@ -2650,23 +2756,14 @@ function buildHomeTrendingPlayAttributes(item, deezerTrackId, spotifyTrackUrl, p
         10
     );
     const durationMs = Number.isFinite(durationMsRaw) && durationMsRaw > 0 ? durationMsRaw : 0;
-    if (title) {
-        playAttrs.push(`data-track-title="${escapeHtml(title)}"`);
-    }
-    if (artist) {
-        playAttrs.push(`data-track-artist="${escapeHtml(artist)}"`);
-    }
-    if (album) {
-        playAttrs.push(`data-track-album="${escapeHtml(album)}"`);
-    }
-    if (isrc) {
-        playAttrs.push(`data-track-isrc="${escapeHtml(isrc)}"`);
-    }
-    if (durationMs > 0) {
-        playAttrs.push(`data-track-duration-ms="${durationMs}"`);
-    }
 
-    return playAttrs;
+    return {
+        title,
+        artist,
+        album,
+        isrc,
+        durationMs
+    };
 }
 
 function buildHomeTrendingPlayButton(canPlay, playAttributes, altText) {

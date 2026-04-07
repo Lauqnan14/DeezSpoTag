@@ -14,7 +14,6 @@ public sealed class MediaServerSoundtrackCacheRepository
     private const string TvShowLibraryIdParameterName = "$tv_library_id";
     private const string TvShowShowIdParameterName = "$tv_show_id";
     private const string UpdatedAtUtcColumnName = "updated_at_utc";
-    private static readonly string UpdatedAtUtcParameterName = string.Concat("$", UpdatedAtUtcColumnName);
     private const string CacheItemSelectColumnsSql = """
 server_type,
 server_label,
@@ -42,33 +41,183 @@ match_locked,
 match_retry_count,
 match_resolved_utc
 """;
-    private const string CacheItemUpsertColumnsSql = """
-server_type,
-server_label,
-library_id,
-library_name,
-category,
-item_id,
-title,
-year,
-image_url,
-content_hash,
-is_active,
-first_seen_utc,
-last_seen_utc,
-soundtrack_kind,
-soundtrack_deezer_id,
-soundtrack_title,
-soundtrack_subtitle,
-soundtrack_url,
-soundtrack_cover_url,
-soundtrack_score,
-match_provider,
-match_reason,
-match_locked,
-match_retry_count,
-match_resolved_utc,
-{UpdatedAtUtcColumnName}
+    private const string UpsertItemsSql = """
+INSERT INTO soundtrack_media_cache (
+    server_type,
+    server_label,
+    library_id,
+    library_name,
+    category,
+    item_id,
+    title,
+    year,
+    image_url,
+    content_hash,
+    is_active,
+    first_seen_utc,
+    last_seen_utc,
+    soundtrack_kind,
+    soundtrack_deezer_id,
+    soundtrack_title,
+    soundtrack_subtitle,
+    soundtrack_url,
+    soundtrack_cover_url,
+    soundtrack_score,
+    match_provider,
+    match_reason,
+    match_locked,
+    match_retry_count,
+    match_resolved_utc,
+    updated_at_utc
+) VALUES (
+    $server_type,
+    $server_label,
+    $library_id,
+    $library_name,
+    $category,
+    $item_id,
+    $title,
+    $year,
+    $image_url,
+    $content_hash,
+    $is_active,
+    $first_seen_utc,
+    $last_seen_utc,
+    $soundtrack_kind,
+    $soundtrack_deezer_id,
+    $soundtrack_title,
+    $soundtrack_subtitle,
+    $soundtrack_url,
+    $soundtrack_cover_url,
+    $soundtrack_score,
+    $match_provider,
+    $match_reason,
+    $match_locked,
+    $match_retry_count,
+    $match_resolved_utc,
+    $updated_at_utc_items
+)
+ON CONFLICT(server_type, library_id, item_id) DO UPDATE SET
+    server_label = excluded.server_label,
+    library_name = excluded.library_name,
+    category = excluded.category,
+    title = excluded.title,
+    year = excluded.year,
+    image_url = excluded.image_url,
+    content_hash = excluded.content_hash,
+    is_active = excluded.is_active,
+    first_seen_utc = COALESCE(soundtrack_media_cache.first_seen_utc, excluded.first_seen_utc),
+    last_seen_utc = excluded.last_seen_utc,
+    soundtrack_kind = excluded.soundtrack_kind,
+    soundtrack_deezer_id = excluded.soundtrack_deezer_id,
+    soundtrack_title = excluded.soundtrack_title,
+    soundtrack_subtitle = excluded.soundtrack_subtitle,
+    soundtrack_url = excluded.soundtrack_url,
+    soundtrack_cover_url = excluded.soundtrack_cover_url,
+    soundtrack_score = excluded.soundtrack_score,
+    match_provider = excluded.match_provider,
+    match_reason = excluded.match_reason,
+    match_locked = excluded.match_locked,
+    match_retry_count = excluded.match_retry_count,
+    match_resolved_utc = excluded.match_resolved_utc,
+    updated_at_utc = excluded.updated_at_utc;
+""";
+    private const string UpsertTvShowEpisodesSql = """
+INSERT INTO soundtrack_tv_show_cache (
+    server_type,
+    library_id,
+    show_id,
+    payload_json,
+    updated_at_utc
+) VALUES (
+    $tv_server_type,
+    $tv_library_id,
+    $tv_show_id,
+    $payload_json,
+    $updated_at_utc_tv
+)
+ON CONFLICT(server_type, library_id, show_id) DO UPDATE SET
+    payload_json = excluded.payload_json,
+    updated_at_utc = excluded.updated_at_utc;
+""";
+    private const string DeactivateLibraryItemsNotSeenSinceSql = """
+UPDATE soundtrack_media_cache
+SET is_active = 0,
+    updated_at_utc = $updated_at_utc_deactivate
+WHERE server_type = $server_type
+  AND library_id = $library_id
+  AND last_seen_utc < $cutoff_utc;
+""";
+    private const string UpsertLibrarySyncStateSql = """
+INSERT INTO soundtrack_library_sync_state (
+    server_type,
+    library_id,
+    category,
+    status,
+    last_offset,
+    last_batch_count,
+    total_processed,
+    last_sync_utc,
+    last_success_utc,
+    last_error,
+    updated_at_utc
+) VALUES (
+    $server_type,
+    $library_id,
+    $category,
+    $status,
+    $last_offset,
+    $last_batch_count,
+    $total_processed,
+    $last_sync_utc,
+    $last_success_utc,
+    $last_error,
+    $updated_at_utc_sync
+)
+ON CONFLICT(server_type, library_id) DO UPDATE SET
+    category = excluded.category,
+    status = excluded.status,
+    last_offset = excluded.last_offset,
+    last_batch_count = excluded.last_batch_count,
+    total_processed = excluded.total_processed,
+    last_sync_utc = excluded.last_sync_utc,
+    last_success_utc = excluded.last_success_utc,
+    last_error = excluded.last_error,
+    updated_at_utc = excluded.updated_at_utc;
+""";
+    private const string GetLibrarySyncStateSql = """
+SELECT
+    server_type,
+    library_id,
+    category,
+    status,
+    last_offset,
+    last_batch_count,
+    total_processed,
+    last_sync_utc,
+    last_success_utc,
+    last_error,
+    updated_at_utc
+FROM soundtrack_library_sync_state
+WHERE server_type = $server_type
+  AND library_id = $library_id
+LIMIT 1;
+""";
+    private const string GetLibrarySyncStatesSql = """
+SELECT
+    server_type,
+    library_id,
+    category,
+    status,
+    last_offset,
+    last_batch_count,
+    total_processed,
+    last_sync_utc,
+    last_success_utc,
+    last_error,
+    updated_at_utc
+FROM soundtrack_library_sync_state
+ORDER BY updated_at_utc DESC, server_type, library_id;
 """;
     private readonly string _connectionString;
     private readonly ILogger<MediaServerSoundtrackCacheRepository> _logger;
@@ -97,69 +246,12 @@ match_resolved_utc,
 
         await EnsureInitializedAsync(cancellationToken);
 
-        var sql = $"""
-INSERT INTO {SoundtrackMediaCacheTableName} (
-    {CacheItemUpsertColumnsSql}
-) VALUES (
-    {ServerTypeParameterName},
-    $server_label,
-    {LibraryIdParameterName},
-    $library_name,
-    $category,
-    $item_id,
-    $title,
-    $year,
-    $image_url,
-    $content_hash,
-    $is_active,
-    $first_seen_utc,
-    $last_seen_utc,
-    $soundtrack_kind,
-    $soundtrack_deezer_id,
-    $soundtrack_title,
-    $soundtrack_subtitle,
-    $soundtrack_url,
-    $soundtrack_cover_url,
-    $soundtrack_score,
-    $match_provider,
-    $match_reason,
-    $match_locked,
-    $match_retry_count,
-    $match_resolved_utc,
-    {UpdatedAtUtcParameterName}
-)
-ON CONFLICT(server_type, library_id, item_id) DO UPDATE SET
-    server_label = excluded.server_label,
-    library_name = excluded.library_name,
-    category = excluded.category,
-    title = excluded.title,
-    year = excluded.year,
-    image_url = excluded.image_url,
-    content_hash = excluded.content_hash,
-    is_active = excluded.is_active,
-    first_seen_utc = COALESCE({SoundtrackMediaCacheTableName}.first_seen_utc, excluded.first_seen_utc),
-    last_seen_utc = excluded.last_seen_utc,
-    soundtrack_kind = excluded.soundtrack_kind,
-    soundtrack_deezer_id = excluded.soundtrack_deezer_id,
-    soundtrack_title = excluded.soundtrack_title,
-    soundtrack_subtitle = excluded.soundtrack_subtitle,
-    soundtrack_url = excluded.soundtrack_url,
-    soundtrack_cover_url = excluded.soundtrack_cover_url,
-    soundtrack_score = excluded.soundtrack_score,
-    match_provider = excluded.match_provider,
-    match_reason = excluded.match_reason,
-    match_locked = excluded.match_locked,
-    match_retry_count = excluded.match_retry_count,
-    match_resolved_utc = excluded.match_resolved_utc,
-    {UpdatedAtUtcColumnName} = excluded.{UpdatedAtUtcColumnName};
-""";
-
         try
         {
             await using var connection = new SqliteConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
             await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-            await using var command = new SqliteCommand(sql, connection, (SqliteTransaction)transaction);
+            await using var command = new SqliteCommand(UpsertItemsSql, connection, (SqliteTransaction)transaction);
 
             var nowUtc = DateTimeOffset.UtcNow;
             var nowUtcText = nowUtc.ToString("O", CultureInfo.InvariantCulture);
@@ -328,35 +420,17 @@ LIMIT $limit OFFSET $offset;
         await EnsureInitializedAsync(cancellationToken);
 
         var payloadJson = JsonSerializer.Serialize(response);
-        var sql = $"""
-INSERT INTO soundtrack_tv_show_cache (
-    server_type,
-    library_id,
-    show_id,
-    payload_json,
-    {UpdatedAtUtcColumnName}
-) VALUES (
-    $tv_server_type,
-    $tv_library_id,
-    $tv_show_id,
-    $payload_json,
-    {UpdatedAtUtcParameterName}
-)
-ON CONFLICT(server_type, library_id, show_id) DO UPDATE SET
-    payload_json = excluded.payload_json,
-    {UpdatedAtUtcColumnName} = excluded.{UpdatedAtUtcColumnName};
-""";
 
         try
         {
             await using var connection = new SqliteConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
-            await using var command = new SqliteCommand(sql, connection);
+            await using var command = new SqliteCommand(UpsertTvShowEpisodesSql, connection);
             command.Parameters.AddWithValue(TvShowServerTypeParameterName, Normalize(response.ServerType));
             command.Parameters.AddWithValue(TvShowLibraryIdParameterName, Normalize(response.LibraryId));
             command.Parameters.AddWithValue(TvShowShowIdParameterName, Normalize(response.ShowId));
             command.Parameters.AddWithValue("$payload_json", payloadJson);
-            command.Parameters.AddWithValue(UpdatedAtUtcParameterName, DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+            command.Parameters.AddWithValue("$updated_at_utc_tv", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -534,7 +608,7 @@ WHERE server_type = {ServerTypeParameterName}
         command.Parameters.AddWithValue("$match_locked", match?.Locked == true ? 1 : 0);
         command.Parameters.AddWithValue("$match_retry_count", Math.Max(match?.RetryCount ?? 0, 0));
         command.Parameters.AddWithValue("$match_resolved_utc", matchResolvedUtc?.ToString("O", CultureInfo.InvariantCulture) ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue(UpdatedAtUtcParameterName, nowUtcText);
+        command.Parameters.AddWithValue("$updated_at_utc_items", nowUtcText);
         return true;
     }
 
@@ -562,19 +636,11 @@ WHERE server_type = {ServerTypeParameterName}
         {
             await using var connection = new SqliteConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
-            var sql = $"""
-UPDATE {SoundtrackMediaCacheTableName}
-SET is_active = 0,
-    {UpdatedAtUtcColumnName} = {UpdatedAtUtcParameterName}
-WHERE server_type = {ServerTypeParameterName}
-  AND library_id = {LibraryIdParameterName}
-  AND last_seen_utc < $cutoff_utc;
-""";
-            await using var command = new SqliteCommand(sql, connection);
+            await using var command = new SqliteCommand(DeactivateLibraryItemsNotSeenSinceSql, connection);
             command.Parameters.AddWithValue(ServerTypeParameterName, Normalize(serverType));
             command.Parameters.AddWithValue(LibraryIdParameterName, Normalize(libraryId));
             command.Parameters.AddWithValue("$cutoff_utc", cutoffUtc.ToString("O", CultureInfo.InvariantCulture));
-            command.Parameters.AddWithValue(UpdatedAtUtcParameterName, DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+            command.Parameters.AddWithValue("$updated_at_utc_deactivate", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -588,49 +654,11 @@ WHERE server_type = {ServerTypeParameterName}
         ArgumentNullException.ThrowIfNull(state);
         await EnsureInitializedAsync(cancellationToken);
 
-        var sql = $"""
-INSERT INTO soundtrack_library_sync_state (
-    server_type,
-    library_id,
-    category,
-    status,
-    last_offset,
-    last_batch_count,
-    total_processed,
-    last_sync_utc,
-    last_success_utc,
-    last_error,
-    {UpdatedAtUtcColumnName}
-) VALUES (
-    {ServerTypeParameterName},
-    {LibraryIdParameterName},
-    $category,
-    $status,
-    $last_offset,
-    $last_batch_count,
-    $total_processed,
-    $last_sync_utc,
-    $last_success_utc,
-    $last_error,
-    {UpdatedAtUtcParameterName}
-)
-ON CONFLICT(server_type, library_id) DO UPDATE SET
-    category = excluded.category,
-    status = excluded.status,
-    last_offset = excluded.last_offset,
-    last_batch_count = excluded.last_batch_count,
-    total_processed = excluded.total_processed,
-    last_sync_utc = excluded.last_sync_utc,
-    last_success_utc = excluded.last_success_utc,
-    last_error = excluded.last_error,
-    {UpdatedAtUtcColumnName} = excluded.{UpdatedAtUtcColumnName};
-""";
-
         try
         {
             await using var connection = new SqliteConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
-            await using var command = new SqliteCommand(sql, connection);
+            await using var command = new SqliteCommand(UpsertLibrarySyncStateSql, connection);
             command.Parameters.AddWithValue(ServerTypeParameterName, Normalize(state.ServerType));
             command.Parameters.AddWithValue(LibraryIdParameterName, Normalize(state.LibraryId));
             command.Parameters.AddWithValue("$category", NormalizeCategory(state.Category));
@@ -641,7 +669,7 @@ ON CONFLICT(server_type, library_id) DO UPDATE SET
             command.Parameters.AddWithValue("$last_sync_utc", state.LastSyncUtc?.ToString("O", CultureInfo.InvariantCulture) ?? (object)DBNull.Value);
             command.Parameters.AddWithValue("$last_success_utc", state.LastSuccessUtc?.ToString("O", CultureInfo.InvariantCulture) ?? (object)DBNull.Value);
             command.Parameters.AddWithValue("$last_error", NullOrText(state.LastError));
-            command.Parameters.AddWithValue(UpdatedAtUtcParameterName, (state.UpdatedAtUtc == default ? DateTimeOffset.UtcNow : state.UpdatedAtUtc).ToString("O", CultureInfo.InvariantCulture));
+            command.Parameters.AddWithValue("$updated_at_utc_sync", (state.UpdatedAtUtc == default ? DateTimeOffset.UtcNow : state.UpdatedAtUtc).ToString("O", CultureInfo.InvariantCulture));
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -667,25 +695,7 @@ ON CONFLICT(server_type, library_id) DO UPDATE SET
         {
             await using var connection = new SqliteConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
-            var sql = $"""
-SELECT
-    server_type,
-    library_id,
-    category,
-    status,
-    last_offset,
-    last_batch_count,
-    total_processed,
-    last_sync_utc,
-    last_success_utc,
-    last_error,
-    {UpdatedAtUtcColumnName}
-FROM soundtrack_library_sync_state
-WHERE server_type = {ServerTypeParameterName}
-  AND library_id = {LibraryIdParameterName}
-LIMIT 1;
-""";
-            await using var command = new SqliteCommand(sql, connection);
+            await using var command = new SqliteCommand(GetLibrarySyncStateSql, connection);
             command.Parameters.AddWithValue(ServerTypeParameterName, normalizedServerType);
             command.Parameters.AddWithValue(LibraryIdParameterName, normalizedLibraryId);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -710,23 +720,7 @@ LIMIT 1;
         {
             await using var connection = new SqliteConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
-            const string sql = """
-SELECT
-    server_type,
-    library_id,
-    category,
-    status,
-    last_offset,
-    last_batch_count,
-    total_processed,
-    last_sync_utc,
-    last_success_utc,
-    last_error,
-    {UpdatedAtUtcColumnName}
-FROM soundtrack_library_sync_state
-ORDER BY {UpdatedAtUtcColumnName} DESC, server_type, library_id;
-""";
-            await using var command = new SqliteCommand(sql, connection);
+            await using var command = new SqliteCommand(GetLibrarySyncStatesSql, connection);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             var rows = new List<MediaServerSoundtrackLibrarySyncStateDto>();
             while (await reader.ReadAsync(cancellationToken))

@@ -468,9 +468,12 @@ DeezSpoTag.Download = {
         this.showNotification(resolvedMessage, notificationType);
         this.logDownloadEvent('info', resolvedMessage);
         this.clearPendingDownload(url, bitrate, destinationFolderId, options);
-        const reasonCodes = Array.isArray(apiError?.reasonCodes)
-            ? apiError.reasonCodes
-            : (apiError?.reasonCode ? [apiError.reasonCode] : []);
+        let reasonCodes = [];
+        if (Array.isArray(apiError?.reasonCodes)) {
+            reasonCodes = apiError.reasonCodes;
+        } else if (apiError?.reasonCode) {
+            reasonCodes = [apiError.reasonCode];
+        }
         return returnsSuccess
             ? { success: true, alreadyQueued: true, errorMessage: resolvedMessage, linkType, reasonCodes }
             : { success: false, errorMessage: resolvedMessage, linkType, reasonCodes };
@@ -492,9 +495,14 @@ DeezSpoTag.Download = {
         this.showNotification(resolvedMessage, notificationType);
         this.logDownloadEvent('info', resolvedMessage);
         this.clearPendingDownload(url, bitrate, destinationFolderId, options);
-        const reasonCodes = Array.isArray(result?.reasonCodes)
-            ? result.reasonCodes
-            : (result?.reasonCode ? [result.reasonCode] : Object.keys(result?.skippedReasons || {}));
+        let reasonCodes = [];
+        if (Array.isArray(result?.reasonCodes)) {
+            reasonCodes = result.reasonCodes;
+        } else if (result?.reasonCode) {
+            reasonCodes = [result.reasonCode];
+        } else {
+            reasonCodes = Object.keys(result?.skippedReasons || {});
+        }
         return { success: true, alreadyQueued: true, linkType, reasonCodes };
     },
     handleQueuedResult(result, {
@@ -1637,9 +1645,12 @@ DeezSpoTag.Download = {
         results.errors.push(`${url}: ${error?.message || 'Unknown error'}`);
     },
     mergeBatchReasonCounts(results, outcome) {
-        const reasonCodes = Array.isArray(outcome?.reasonCodes) && outcome.reasonCodes.length > 0
-            ? outcome.reasonCodes
-            : (outcome?.reasonCode ? [outcome.reasonCode] : []);
+        let reasonCodes = [];
+        if (Array.isArray(outcome?.reasonCodes) && outcome.reasonCodes.length > 0) {
+            reasonCodes = outcome.reasonCodes;
+        } else if (outcome?.reasonCode) {
+            reasonCodes = [outcome.reasonCode];
+        }
         reasonCodes.forEach((reasonCode) => {
             const normalized = String(reasonCode || '').trim();
             if (!normalized) {
@@ -1650,38 +1661,50 @@ DeezSpoTag.Download = {
     },
     showBatchQueueSummary(results) {
         if (results.success > 0) {
-            const deferredSummary = results.deferred > 0 ? ` (${results.deferred} deferred)` : '';
-            const alreadyQueuedSummary = results.alreadyQueued > 0 ? ` (${results.alreadyQueued} already queued)` : '';
-            const failedSummary = results.failed > 0 ? ` (${results.failed} failed)` : '';
-            const duplicateSummary = results.inputDuplicates > 0 ? ` (${results.inputDuplicates} input duplicates removed)` : '';
             this.showQueueToast(
-                `Successfully added ${results.success} items to queue${duplicateSummary}${deferredSummary}${alreadyQueuedSummary}${failedSummary}`,
-                results.failed > 0 || results.alreadyQueued > 0 || results.deferred > 0 ? 'warning' : 'success'
+                this.buildSuccessfulBatchQueueMessage(results),
+                this.getBatchQueueToastType(results)
             );
             return;
         }
 
         if (results.deferred > 0 && results.failed === 0) {
-            this.showQueueToast(
-                `Queued ${results.deferred} item(s) for background intent resolution. They will appear after matching.`,
-                'info'
-            );
+            this.showQueueToast(this.buildDeferredBatchQueueMessage(results), 'info');
             return;
         }
 
         if (results.alreadyQueued > 0 && results.failed === 0) {
-            const reasonSummary = this.formatBatchReasonSummary(results.reasonCounts);
-            const duplicateSummary = results.inputDuplicates > 0 ? ` and ${results.inputDuplicates} duplicate input(s)` : '';
-            this.showNotification(
-                `All ${results.alreadyQueued} items were already queued${duplicateSummary}${reasonSummary}`,
-                'warning'
-            );
+            this.showNotification(this.buildAlreadyQueuedBatchMessage(results), 'warning');
             return;
         }
 
+        this.showNotification(this.buildFailedBatchQueueMessage(results), 'error');
+    },
+    getBatchQueueToastType(results) {
+        return results.failed > 0 || results.alreadyQueued > 0 || results.deferred > 0 ? 'warning' : 'success';
+    },
+    buildSuccessfulBatchQueueMessage(results) {
+        const duplicateSummary = this.buildDuplicateInputSummary(results.inputDuplicates);
+        const deferredSummary = results.deferred > 0 ? ` (${results.deferred} deferred)` : '';
+        const alreadyQueuedSummary = results.alreadyQueued > 0 ? ` (${results.alreadyQueued} already queued)` : '';
+        const failedSummary = results.failed > 0 ? ` (${results.failed} failed)` : '';
+        return `Successfully added ${results.success} items to queue${duplicateSummary}${deferredSummary}${alreadyQueuedSummary}${failedSummary}`;
+    },
+    buildDeferredBatchQueueMessage(results) {
+        return `Queued ${results.deferred} item(s) for background intent resolution. They will appear after matching.`;
+    },
+    buildAlreadyQueuedBatchMessage(results) {
         const reasonSummary = this.formatBatchReasonSummary(results.reasonCounts);
-        const duplicateSummary = results.inputDuplicates > 0 ? ` (${results.inputDuplicates} duplicate input(s) removed)` : '';
-        this.showNotification(`Failed to add any items to queue${duplicateSummary}${reasonSummary}`, 'error');
+        const duplicateSummary = results.inputDuplicates > 0 ? ` and ${results.inputDuplicates} duplicate input(s)` : '';
+        return `All ${results.alreadyQueued} items were already queued${duplicateSummary}${reasonSummary}`;
+    },
+    buildFailedBatchQueueMessage(results) {
+        const reasonSummary = this.formatBatchReasonSummary(results.reasonCounts);
+        const duplicateSummary = this.buildDuplicateInputSummary(results.inputDuplicates);
+        return `Failed to add any items to queue${duplicateSummary}${reasonSummary}`;
+    },
+    buildDuplicateInputSummary(duplicateCount) {
+        return duplicateCount > 0 ? ` (${duplicateCount} duplicate input(s) removed)` : '';
     },
     formatBatchReasonSummary(reasonCounts) {
         const entries = Object.entries(reasonCounts || {});
@@ -1689,8 +1712,9 @@ DeezSpoTag.Download = {
             return '';
         }
 
-        const summary = entries
-            .sort((a, b) => b[1] - a[1])
+        const sortedEntries = [...entries];
+        sortedEntries.sort((a, b) => b[1] - a[1]);
+        const summary = sortedEntries
             .slice(0, 3)
             .map(([reason, count]) => `${reason} (${count})`)
             .join(', ');
