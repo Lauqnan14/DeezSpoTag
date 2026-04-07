@@ -300,10 +300,11 @@ namespace DeezSpoTag.Web.Controllers.Api
             bool bypassDirectDeezerRouting,
             CancellationToken cancellationToken)
         {
-            var expandedIntents = bypassDirectDeezerRouting
-                ? new List<DownloadIntent>()
-                : await ExpandKnownUrlAsync(url, cancellationToken);
-            var knownExpandableUrl = !bypassDirectDeezerRouting && IsKnownExpandableUrl(url);
+            // Bypassing direct Deezer routing should only prevent forcing the Deezer engine.
+            // It must not suppress URL expansion, otherwise Deezer-origin URLs queued to another
+            // engine lose title/artist/cover metadata and render as "Unknown" in Activities.
+            var expandedIntents = await ExpandKnownUrlAsync(url, cancellationToken);
+            var knownExpandableUrl = IsKnownExpandableUrl(url);
             if (expandedIntents.Count == 0)
             {
                 if (knownExpandableUrl)
