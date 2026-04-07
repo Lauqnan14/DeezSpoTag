@@ -32,6 +32,7 @@ internal static class AutoTagLiterals
     internal const string MultiPlatformKey = "multiplatform";
     internal const string OverwriteTagsKey = "overwriteTags";
     internal const string DownloadTagSourceKey = "downloadTagSource";
+    internal const string FollowDownloadEngineSource = "engine";
     internal const string DeezerSource = "deezer";
     internal const string SpotifySource = "spotify";
     internal const string PlatformsKey = "platforms";
@@ -2564,12 +2565,7 @@ public class AutoTagService
 
     private static string NormalizeDownloadTagSource(string? downloadTagSource)
     {
-        return downloadTagSource?.Trim().ToLowerInvariant() switch
-        {
-            AutoTagLiterals.SpotifySource => AutoTagLiterals.SpotifySource,
-            AutoTagLiterals.DeezerSource => AutoTagLiterals.DeezerSource,
-            _ => AutoTagLiterals.DeezerSource
-        };
+        return DownloadTagSourceHelper.NormalizeStoredSource(downloadTagSource, AutoTagLiterals.DeezerSource);
     }
 
     private static string? ResolveDownloadSourcePlatform(JsonObject root)

@@ -23,7 +23,7 @@
         parseFilename: false,
         filenameTemplate: "%artists% - %title%",
         shortTitle: false,
-        downloadTagSource: "deezer",
+        downloadTagSource: "engine",
         matchDuration: false,
         maxDurationDifference: 30,
         matchById: false,
@@ -664,10 +664,14 @@
     }
 
     function getDownloadTagSource() {
+        const engineToggle = el("metadataSourceEngineEnabled");
         const deezerToggle = el("metadataSourceDeezerEnabled");
         const spotifyToggle = el("metadataSourceSpotifyEnabled");
         const configuredSource = normalizeDownloadTagSource(state.config.downloadTagSource);
 
+        if (engineToggle?.checked === true && deezerToggle?.checked !== true && spotifyToggle?.checked !== true) {
+            return "engine";
+        }
         if (deezerToggle?.checked === true && spotifyToggle?.checked !== true) {
             return "deezer";
         }
@@ -687,8 +691,12 @@
             return;
         }
 
+        const engineToggle = el("metadataSourceEngineEnabled");
         const deezerToggle = el("metadataSourceDeezerEnabled");
         const spotifyToggle = el("metadataSourceSpotifyEnabled");
+        if (engineToggle) {
+            engineToggle.checked = normalized === "engine";
+        }
         if (deezerToggle) {
             deezerToggle.checked = normalized === "deezer";
         }
@@ -699,18 +707,23 @@
     }
 
     function enforceSingleDownloadSource(changedId) {
+        const engineToggle = el("metadataSourceEngineEnabled");
         const deezerToggle = el("metadataSourceDeezerEnabled");
         const spotifyToggle = el("metadataSourceSpotifyEnabled");
-        if (!deezerToggle || !spotifyToggle) {
-            setDownloadTagSource(state.config.downloadTagSource || "deezer");
+        if (!engineToggle || !deezerToggle || !spotifyToggle) {
+            setDownloadTagSource(state.config.downloadTagSource || "engine");
             return;
         }
 
         let nextSource = null;
-        if (deezerToggle.checked && !spotifyToggle.checked) {
+        if (engineToggle.checked && !deezerToggle.checked && !spotifyToggle.checked) {
+            nextSource = "engine";
+        } else if (deezerToggle.checked && !engineToggle.checked && !spotifyToggle.checked) {
             nextSource = "deezer";
-        } else if (spotifyToggle.checked && !deezerToggle.checked) {
+        } else if (spotifyToggle.checked && !engineToggle.checked && !deezerToggle.checked) {
             nextSource = "spotify";
+        } else if (changedId === "metadataSourceEngineEnabled") {
+            nextSource = "engine";
         } else if (changedId === "metadataSourceSpotifyEnabled") {
             nextSource = "spotify";
         } else if (changedId === "metadataSourceDeezerEnabled") {
@@ -718,7 +731,7 @@
         }
 
         if (!nextSource) {
-            nextSource = normalizeDownloadTagSource(state.config.downloadTagSource || "deezer");
+            nextSource = normalizeDownloadTagSource(state.config.downloadTagSource || "engine");
         }
 
         setDownloadTagSource(nextSource);
@@ -726,11 +739,58 @@
 
     function normalizeDownloadTagSource(downloadTagSource) {
         const normalized = String(downloadTagSource || "").trim().toLowerCase();
-        return normalized === "spotify" ? "spotify" : "deezer";
+        if (normalized === "engine") {
+            return "engine";
+        }
+        if (normalized === "spotify") {
+            return "spotify";
+        }
+        return "deezer";
+    }
+
+    function getCurrentDownloadEngineId() {
+        const normalized = String(state.settingsCache?.service || "").trim().toLowerCase();
+        if (!normalized || normalized === "auto") {
+            return "auto";
+        }
+        if (normalized === "apple" || normalized === "applemusic" || normalized === "itunes") {
+            return "apple";
+        }
+        return normalized;
+    }
+
+    function getCurrentDownloadEngineLabel() {
+        const engine = getCurrentDownloadEngineId();
+        switch (engine) {
+        case "amazon":
+            return "Amazon Music";
+        case "apple":
+            return "Apple Music";
+        case "auto":
+            return "Auto";
+        case "deezer":
+            return "Deezer";
+        case "qobuz":
+            return "Qobuz";
+        case "tidal":
+            return "TIDAL";
+        default:
+            return engine ? engine.charAt(0).toUpperCase() + engine.slice(1) : "current download engine";
+        }
     }
 
     function getDownloadSourcePlatform(downloadTagSource) {
         const source = normalizeDownloadTagSource(downloadTagSource);
+        if (source === "engine") {
+            const engine = getCurrentDownloadEngineId();
+            if (engine === "apple") {
+                return "itunes";
+            }
+            if (engine === "deezer" || engine === "spotify" || engine === "boomplay") {
+                return engine;
+            }
+            return null;
+        }
         if (source === "deezer") {
             return "deezer";
         }
@@ -740,10 +800,33 @@
         return null;
     }
 
+    function renderDownloadTagSourceContext() {
+        const source = getDownloadTagSource();
+        const helper = el("download-tag-source-helper");
+        if (!helper) {
+            return;
+        }
+
+        if (source === "engine") {
+            const engineLabel = getCurrentDownloadEngineLabel();
+            const platformId = getDownloadSourcePlatform(source);
+            helper.textContent = platformId
+                ? `Follows Settings > Download Source (${engineLabel}). The download engine stays there; this profile now mirrors that engine for download-stage tag metadata.`
+                : `Follows Settings > Download Source (${engineLabel}). The download engine stays there; this profile will use engine-native metadata during download when available.`;
+            return;
+        }
+
+        const sourceLabel = source === "spotify" ? "Spotify" : "Deezer";
+        helper.textContent = `Overrides Settings > Download Source only for tag metadata during download. Files still use the engine from Settings, while ${sourceLabel} supplies the tags written immediately on download.`;
+    }
+
     function updateDownloadSourceAvailability() {
+        const engineToggle = el("metadataSourceEngineEnabled");
         const deezerToggle = el("metadataSourceDeezerEnabled");
         const spotifyToggle = el("metadataSourceSpotifyEnabled");
-        if (!(deezerToggle instanceof HTMLInputElement) || !(spotifyToggle instanceof HTMLInputElement)) {
+        if (!(deezerToggle instanceof HTMLInputElement)
+            || !(spotifyToggle instanceof HTMLInputElement)
+            || !(engineToggle instanceof HTMLInputElement)) {
             return;
         }
 
@@ -751,6 +834,7 @@
         spotifyToggle.title = spotifyUnavailable
             ? "Spotify login is not detected right now. You can still select Spotify, but some tags may be unavailable until connected."
             : "";
+        engineToggle.disabled = false;
         deezerToggle.disabled = false;
     }
 
@@ -1337,8 +1421,9 @@
     }
 
     function refreshDownloadTagsForSource() {
+        renderDownloadTagSourceContext();
         updateDownloadTagsVisibility();
-        if (!getDownloadTagSource()) {
+        if (!getDownloadTagSource() || getDownloadTagIds().length === 0) {
             el("autotag-download-tags").innerHTML = "";
             return;
         }
@@ -1348,21 +1433,30 @@
     }
 
     function updateDownloadTagsVisibility() {
-        const enabled = Boolean(getDownloadTagSource());
+        const source = getDownloadTagSource();
+        const enabled = Boolean(source);
+        const hasTagCatalog = enabled && getDownloadTagIds().length > 0;
         const helper = el("download-tags-helper");
         const grid = el("autotag-download-tags");
         const toggleButton = document.querySelector('button[data-tags-target="downloadTags"]');
         const toolbar = toggleButton?.closest(".tags-toolbar");
         if (toolbar) {
-            toolbar.style.display = enabled ? "flex" : "none";
+            toolbar.style.display = hasTagCatalog ? "flex" : "none";
         }
         if (grid) {
-            grid.style.display = enabled ? "grid" : "none";
+            grid.style.display = hasTagCatalog ? "grid" : "none";
         }
         if (helper) {
-            helper.textContent = enabled
-                ? "Select which tags to write during the download process. These are fetched from the download engine or metadata source."
-                : "Enable a download source to choose download tags.";
+            const platformId = getDownloadSourcePlatform(source);
+            if (!enabled) {
+                helper.textContent = "Enable a metadata source to choose download tags.";
+            } else if (source === "engine" && !platformId) {
+                helper.textContent = `The active download engine (${getCurrentDownloadEngineLabel()}) does not publish a curated AutoTag download-tag list. Native engine metadata will still be used during download when available.`;
+            } else if (source === "engine") {
+                helper.textContent = `These tags follow Settings > Download Source (${getCurrentDownloadEngineLabel()}). Change this profile only if you want a different metadata source than the download engine.`;
+            } else {
+                helper.textContent = "Select which tags to write during the download process. This metadata source only affects tags written during download, not the engine that downloads the file.";
+            }
         }
     }
 
@@ -2372,7 +2466,7 @@
         renderSuccessLibraryOptions();
         renderEnhancementFolderOptions();
         renderPlatforms();
-        setDownloadTagSource(state.config.downloadTagSource || "deezer");
+        setDownloadTagSource(state.config.downloadTagSource || "engine");
         renderTags("autotag-tags", state.config.tags, "tags");
         refreshDownloadTagsForSource();
         renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
@@ -3384,7 +3478,7 @@
         state.config.custom.itunes.animated_artwork = getAnimatedArtworkValue(
             state.config.custom?.itunes?.animated_artwork ?? state.settingsCache?.saveAnimatedArtwork ?? false
         );
-        state.config.downloadTagSource = normalizeDownloadTagSource(getDownloadTagSource() || state.config.downloadTagSource || "deezer");
+        state.config.downloadTagSource = normalizeDownloadTagSource(getDownloadTagSource() || state.config.downloadTagSource || "engine");
         ensureEffectivePlatforms(state.config);
 
         return state.config;
@@ -5243,6 +5337,7 @@
             applyTemplateSettingsToUI(state.settingsCache);
             applyOtherSettingsToUI(state.settingsCache);
             applyFolderStructureSettingsToUI(state.settingsCache);
+            refreshDownloadTagsForSource();
             // Manual external intake path input is intentionally disabled.
             // const intakeInput = el("autotag-custom-path");
             // const currentIntakeValue = String(intakeInput?.value || "").trim();
@@ -6264,7 +6359,7 @@
             });
         }
     });
-    ["metadataSourceDeezerEnabled", "metadataSourceSpotifyEnabled"].forEach((id) => {
+    ["metadataSourceEngineEnabled", "metadataSourceDeezerEnabled", "metadataSourceSpotifyEnabled"].forEach((id) => {
         const field = el(id);
         if (field) {
             field.addEventListener("change", () => {

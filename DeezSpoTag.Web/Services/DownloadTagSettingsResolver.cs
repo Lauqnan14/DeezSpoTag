@@ -92,13 +92,7 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
             return null;
         }
 
-        var source = sourceElement.GetString()?.Trim().ToLowerInvariant();
-        return source switch
-        {
-            "deezer" => "deezer",
-            "spotify" => "spotify",
-            _ => "deezer"
-        };
+        return DownloadTagSourceHelper.NormalizeStoredSource(sourceElement.GetString(), DownloadTagSourceHelper.DeezerSource);
     }
 
     private static string ResolveFolderMode(string? desiredQuality)

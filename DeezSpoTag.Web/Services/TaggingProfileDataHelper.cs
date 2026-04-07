@@ -1,4 +1,5 @@
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Download.Shared;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -64,12 +65,7 @@ internal static class TaggingProfileDataHelper
 
     public static string NormalizeDownloadTagSource(string? downloadTagSource, string defaultSource)
     {
-        return downloadTagSource?.Trim().ToLowerInvariant() switch
-        {
-            "spotify" => "spotify",
-            "deezer" => "deezer",
-            _ => defaultSource
-        };
+        return DownloadTagSourceHelper.NormalizeStoredSource(downloadTagSource, defaultSource);
     }
 
     public static AutoTagSettings SanitizeAutoTagSettings(

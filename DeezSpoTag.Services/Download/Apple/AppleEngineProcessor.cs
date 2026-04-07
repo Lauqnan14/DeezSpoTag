@@ -296,6 +296,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             payload.DestinationFolderId,
             _logger,
             itemToken,
+            currentEngine: EngineName,
             requireProfile: !isVideoPayload);
         await _folderConversionSettingsOverlay.ApplyAsync(settings, payload.DestinationFolderId, itemToken);
         DownloadEngineSettingsHelper.ApplyQualityBucketToSettings(settings, payload.QualityBucket);

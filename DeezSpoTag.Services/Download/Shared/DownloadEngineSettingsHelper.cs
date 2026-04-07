@@ -12,6 +12,7 @@ public static class DownloadEngineSettingsHelper
         long? destinationFolderId,
         ILogger logger,
         CancellationToken cancellationToken,
+        string? currentEngine = null,
         bool wrapResolutionExceptions = true,
         bool requireProfile = true)
     {
@@ -30,7 +31,7 @@ public static class DownloadEngineSettingsHelper
                 throw new InvalidOperationException("Destination music folder requires a valid AutoTag profile.");
             }
 
-            ApplyResolvedProfileToSettings(settings, unwrappedProfile);
+            ApplyResolvedProfileToSettings(settings, unwrappedProfile, currentEngine: currentEngine);
             return;
         }
 
@@ -47,7 +48,7 @@ public static class DownloadEngineSettingsHelper
                 throw new InvalidOperationException("Destination music folder requires a valid AutoTag profile.");
             }
 
-            ApplyResolvedProfileToSettings(settings, profile);
+            ApplyResolvedProfileToSettings(settings, profile, currentEngine: currentEngine);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -99,13 +100,14 @@ public static class DownloadEngineSettingsHelper
     public static void ApplyResolvedProfileToSettings(
         DeezSpoTagSettings settings,
         DownloadTagProfileSettings profile,
-        string? metadataSourceOverride = null)
+        string? metadataSourceOverride = null,
+        string? currentEngine = null)
     {
         settings.Tags = TagSettingsMerge.UseProfileOnly(profile.TagSettings);
-        var normalizedSource = !string.IsNullOrWhiteSpace(metadataSourceOverride)
-            ? metadataSourceOverride.Trim().ToLowerInvariant()
-            : profile.DownloadTagSource?.Trim().ToLowerInvariant();
-        settings.MetadataSource = normalizedSource is "spotify" or "deezer" ? normalizedSource : string.Empty;
+        var normalizedSource = metadataSourceOverride != null
+            ? DownloadTagSourceHelper.NormalizeMetadataResolverSource(metadataSourceOverride)
+            : DownloadTagSourceHelper.ResolveMetadataSource(profile.DownloadTagSource, currentEngine, settings.Service);
+        settings.MetadataSource = normalizedSource ?? string.Empty;
         TechnicalLyricsSettingsApplier.Apply(settings, profile.Technical);
 
         var folder = profile.FolderStructure;

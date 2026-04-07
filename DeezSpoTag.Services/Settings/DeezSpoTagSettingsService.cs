@@ -1317,6 +1317,7 @@ public class DeezSpoTagSettingsService : ISettingsService
     private static bool IsSupportedMetadataSource(string? source)
     {
         return string.Equals(source, "spotify", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(source, "deezer", StringComparison.OrdinalIgnoreCase);
+               || string.Equals(source, "deezer", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(source, "qobuz", StringComparison.OrdinalIgnoreCase);
     }
 }

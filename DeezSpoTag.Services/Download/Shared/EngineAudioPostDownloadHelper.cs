@@ -896,7 +896,8 @@ public static class EngineAudioPostDownloadHelper
             context.Settings,
             payload.DestinationFolderId,
             context.Logger,
-            cancellationToken);
+            cancellationToken,
+            currentEngine: context.EngineName);
         await context.FolderConversionSettingsOverlay.ApplyAsync(context.Settings, payload.DestinationFolderId, cancellationToken);
         DownloadEngineSettingsHelper.ApplyQualityBucketToSettings(context.Settings, payload.QualityBucket);
         context.Listener.SendStartDownload(queueItem.QueueUuid);

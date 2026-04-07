@@ -601,18 +601,17 @@ public class TrackDownloader
 
     private async Task<TagSettings> ResolveTagSettingsAsync(long? destinationFolderId, DeezSpoTagSettings settings, CancellationToken cancellationToken)
     {
-        settings.MetadataSource = DeezerSource;
+        settings.MetadataSource = string.Empty;
 
         try
         {
             var profile = await _tagSettingsResolver.ResolveProfileAsync(destinationFolderId, cancellationToken);
             if (profile != null)
             {
-                if (!string.IsNullOrWhiteSpace(profile.DownloadTagSource))
-                {
-                    var normalizedSource = profile.DownloadTagSource.Trim().ToLowerInvariant();
-                    settings.MetadataSource = normalizedSource is "spotify" or DeezerSource ? normalizedSource : DeezerSource;
-                }
+                settings.MetadataSource = DownloadTagSourceHelper.ResolveMetadataSource(
+                    profile.DownloadTagSource,
+                    DeezerSource,
+                    settings.Service) ?? string.Empty;
 
                 TechnicalLyricsSettingsApplier.Apply(settings, profile.Technical);
 

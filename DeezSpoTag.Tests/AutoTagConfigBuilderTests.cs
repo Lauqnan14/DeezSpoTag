@@ -82,6 +82,34 @@ public sealed class AutoTagConfigBuilderTests
         Assert.Equal("spotify", root.GetProperty("downloadTagSource").GetString());
     }
 
+    [Fact]
+    public void BuildConfigJson_PreservesFollowEngineDownloadTagSource()
+    {
+        var profile = new TaggingProfile
+        {
+            TagConfig = CreateEmptyTagConfig(),
+            AutoTag = new AutoTagSettings
+            {
+                Data = new Dictionary<string, JsonElement>
+                {
+                    ["downloadTagSource"] = JsonSerializer.SerializeToElement("engine")
+                }
+            }
+        };
+
+        profile.TagConfig.Title = TagSource.DownloadSource;
+
+        var builder = new AutoTagConfigBuilder();
+        var json = builder.BuildConfigJson(profile);
+
+        Assert.False(string.IsNullOrWhiteSpace(json));
+
+        using var document = JsonDocument.Parse(json!);
+        var root = document.RootElement;
+
+        Assert.Equal("engine", root.GetProperty("downloadTagSource").GetString());
+    }
+
     private static UnifiedTagConfig CreateEmptyTagConfig()
     {
         var config = new UnifiedTagConfig();

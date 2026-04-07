@@ -730,15 +730,29 @@
                 </div>
             </div>
 
-            <!-- Tag Sources -->
+            <!-- Download Tag Metadata Sources -->
             <div class="card bg-darker border-secondary mb-4">
                 <div class="card-header">
                     <h5 class="mb-0">
-                        <i class="fas fa-sort-amount-down me-2"></i>Tag Sources
+                        <i class="fas fa-sort-amount-down me-2"></i>Download Tag Metadata Source
                     </h5>
                 </div>
                 <div class="card-body autotag-card-body">
                     <div class="tag-sources-grid">
+                        <!-- Follow Download Engine -->
+                        <div class="enrichment-source-item">
+                            <div class="switch-row">
+                                <div class="source-header">
+                                    <i class="fas fa-route me-2" style="color: #7dd3fc;"></i>
+                                    <label class="switch-label" for="metadataSourceEngineEnabled">Follow download engine</label>
+                                </div>
+                                <span class="switch">
+                                    <input type="checkbox" id="metadataSourceEngineEnabled" />
+                                    <span class="slider"></span>
+                                </span>
+                            </div>
+                        </div>
+
                         <!-- Deezer Source -->
                         <div class="enrichment-source-item">
                             <div class="switch-row">
@@ -768,6 +782,7 @@
                         </div>
 
                     </div>
+                    <span class="helper" id="download-tag-source-helper">Separate from Settings &gt; Download Source. That chooses the download engine. This profile chooses the metadata used to write tags during download.</span>
                 </div>
             </div>
 
@@ -784,7 +799,7 @@
                         <button class="action-btn action-btn-sm" data-tags-action="disable" data-tags-target="downloadTags">Disable all</button>
                         <button class="action-btn action-btn-sm" data-tags-action="toggle" data-tags-target="downloadTags">Toggle</button>
                     </div>
-                    <span class="helper" id="download-tags-helper">Select which tags to write during the download process. These are fetched from the download engine or metadata source.</span>
+                    <span class="helper" id="download-tags-helper">Select which tags to write during the download process. The list below changes based on the AutoTag metadata source selected above.</span>
                     <div class="tags-grid download-tags-grid" id="autotag-download-tags"></div>
                 </div>
             </div>
