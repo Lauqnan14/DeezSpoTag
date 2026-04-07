@@ -19,6 +19,7 @@
         liveJobPath: null,
         liveJobSummary: null,
         archivedRuns: [],
+        manualHistorySelection: false,
         selectedRunId: null,
         selectedRunSummary: null,
         selectedDate: null,
@@ -203,6 +204,19 @@
         }
 
         return isTodayDateToken(state.selectedDate);
+    }
+
+    function getLiveRunDateToken(job) {
+        const sourceDate = job?.startedAt || job?.finishedAt || null;
+        const parsed = sourceDate ? new Date(sourceDate) : null;
+        if (parsed && !Number.isNaN(parsed.getTime())) {
+            return toDateToken(parsed);
+        }
+        return toDateToken(new Date());
+    }
+
+    function shouldFollowLiveRunInHistory() {
+        return isHistoryTabActive() && !state.manualHistorySelection && !!state.liveJobSummary?.id;
     }
 
     function getRunsForDisplay(runs) {
@@ -465,6 +479,28 @@
         }
     }
 
+    function renderLiveRunSelection(job, logs) {
+        const liveSummary = buildSummaryFromLiveJob(job);
+        if (!liveSummary?.id) {
+            return;
+        }
+
+        state.selectedRunId = liveSummary.id;
+        state.selectedDate = getLiveRunDateToken(job);
+        state.historyStatus = Array.isArray(job?.statusHistory)
+            ? job.statusHistory.slice().reverse()
+            : [];
+        renderRunSummary(liveSummary, {
+            summary: liveSummary,
+            statusHistory: job?.statusHistory || [],
+            logs
+        });
+        updateFilterCountsFromHistory();
+        renderFilteredHistory();
+        renderRunList(state.archivedRuns);
+        highlightSelectedRun();
+    }
+
     function buildSummaryFromLiveJob(job) {
         if (!job?.id) {
             return null;
@@ -594,8 +630,11 @@
         }
     }
 
-    async function loadRunsForDate(date) {
+    async function loadRunsForDate(date, options = {}) {
         state.selectedDate = date;
+        if (options.manual === true) {
+            state.manualHistorySelection = true;
+        }
         setText("autotag-history-selected-date", formatDate(date));
         try {
             const payload = await fetchJson(`/api/autotag/history/runs?date=${encodeURIComponent(date)}`);
@@ -793,11 +832,13 @@
         updateLogs(logs);
         updateLiveMetadata({ ...job, logs });
         updateProgressBar(job);
-        if (isHistoryTabActive() && isTodayDateToken(state.selectedDate)) {
+        if (shouldFollowLiveRunInHistory()) {
+            renderLiveRunSelection(job, logs);
+        } else if (isHistoryTabActive() && isTodayDateToken(state.selectedDate)) {
             renderRunList(state.archivedRuns);
         }
         syncSelectedRunWithLiveJob(job, logs);
-        if (job.status === STATUS_RUNNING) {
+        if (job.status === STATUS_RUNNING && !shouldFollowLiveRunInHistory()) {
             await refreshHistoryIfSelectedLiveRun();
         }
     }
@@ -837,6 +878,10 @@
             pollTimer = null;
         }
 
+        if (options.resetLiveFollow === true) {
+            state.manualHistorySelection = false;
+        }
+
         if (options.loadCalendar === true) {
             await loadCalendar();
         }
@@ -853,7 +898,7 @@
         });
 
         historyTab?.addEventListener("shown.bs.tab", () => {
-            void refreshNow({ loadCalendar: true });
+            void refreshNow({ loadCalendar: true, resetLiveFollow: true });
         });
     }
 
@@ -932,11 +977,13 @@
     function bindHistoryNavigation() {
         el("autotag-history-prev-month")?.addEventListener("click", async () => {
             state.calendarMonth = new Date(state.calendarMonth.getFullYear(), state.calendarMonth.getMonth() - 1, 1);
+            state.manualHistorySelection = true;
             await loadCalendar();
         });
 
         el("autotag-history-next-month")?.addEventListener("click", async () => {
             state.calendarMonth = new Date(state.calendarMonth.getFullYear(), state.calendarMonth.getMonth() + 1, 1);
+            state.manualHistorySelection = true;
             await loadCalendar();
         });
 
@@ -946,7 +993,7 @@
                 return;
             }
 
-            await loadRunsForDate(button.dataset.date);
+            await loadRunsForDate(button.dataset.date, { manual: true });
         });
 
         el("autotag-history-run-list")?.addEventListener("click", async (event) => {
@@ -955,6 +1002,7 @@
                 return;
             }
 
+            state.manualHistorySelection = true;
             await loadRunDetails(button.dataset.runId);
         });
     }
