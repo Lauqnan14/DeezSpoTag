@@ -601,7 +601,7 @@ public class TrackDownloader
 
     private async Task<TagSettings> ResolveTagSettingsAsync(long? destinationFolderId, DeezSpoTagSettings settings, CancellationToken cancellationToken)
     {
-        settings.MetadataSource = string.Empty;
+        settings.MetadataSource = DownloadTagSourceHelper.NormalizeMetadataResolverSource(settings.MetadataSource) ?? string.Empty;
 
         try
         {
@@ -611,7 +611,7 @@ public class TrackDownloader
                 settings.MetadataSource = DownloadTagSourceHelper.ResolveMetadataSource(
                     profile.DownloadTagSource,
                     DeezerSource,
-                    settings.Service) ?? string.Empty;
+                    settings.Service) ?? settings.MetadataSource;
 
                 TechnicalLyricsSettingsApplier.Apply(settings, profile.Technical);
 

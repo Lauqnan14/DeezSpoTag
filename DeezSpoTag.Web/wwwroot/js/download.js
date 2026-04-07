@@ -38,6 +38,9 @@ DeezSpoTag.Download = {
         this.ensureDestinationSelects();
         this.ensureSettingsLoaded();
         this.logger = DeezSpoTag.DownloadLogger || null;
+        globalThis.addEventListener('deezspotag:settings-updated', (event) => {
+            this.applyUpdatedSettings(event?.detail?.settings || null);
+        });
         globalThis.addEventListener('storage', (event) => {
             if (event.key === this.APPLE_NOTIFICATION_MODE_KEY) {
                 this.refreshAppleNotificationMode();
@@ -294,6 +297,15 @@ DeezSpoTag.Download = {
         })();
 
         return this.settingsPromise;
+    },
+    applyUpdatedSettings(settings) {
+        const nextSettings = settings && typeof settings === 'object'
+            ? JSON.parse(JSON.stringify(settings))
+            : null;
+        this.settings = nextSettings;
+        this.settingsPromise = nextSettings
+            ? Promise.resolve(nextSettings)
+            : null;
     },
     normalizeAppleNotificationMode(mode) {
         const normalized = String(mode || '').trim().toLowerCase();

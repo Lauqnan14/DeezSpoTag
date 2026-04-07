@@ -818,8 +818,6 @@ public sealed class DownloadIntentService
         long? destinationFolderId,
         CancellationToken cancellationToken)
     {
-        settings.MetadataSource = string.Empty;
-
         try
         {
             var profile = await _downloadTagSettingsResolver.ResolveProfileAsync(destinationFolderId, cancellationToken);
