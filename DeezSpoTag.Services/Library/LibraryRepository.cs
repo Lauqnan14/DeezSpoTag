@@ -6507,6 +6507,71 @@ LIMIT 100;";
         return results;
     }
 
+    public async Task<IReadOnlyList<bool>> ExistsInLibraryAsync(
+        long libraryId,
+        long? folderId,
+        IReadOnlyList<LibraryExistenceInput> inputs,
+        CancellationToken cancellationToken = default)
+    {
+        if (libraryId <= 0 || inputs.Count == 0)
+        {
+            return Array.Empty<bool>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string isrcSql = @"
+SELECT EXISTS(
+    SELECT 1
+    FROM track t
+    JOIN track_local tl ON tl.track_id = t.id
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    LEFT JOIN track_source ts ON ts.track_id = t.id AND ts.source = 'isrc'
+    WHERE f.library_id = @libraryId
+      AND (@folderId IS NULL OR f.id = @folderId)
+      AND (LOWER(t.tag_isrc) = LOWER(@isrc) OR LOWER(ts.source_id) = LOWER(@isrc))
+);";
+        const string trackSql = @"
+SELECT ar.name,
+       t.title,
+       t.duration_ms
+FROM track t
+JOIN album al ON al.id = t.album_id
+JOIN artist ar ON ar.id = al.artist_id
+JOIN track_local tl ON tl.track_id = t.id
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+WHERE f.library_id = @libraryId
+  AND (@folderId IS NULL OR f.id = @folderId)
+  AND LOWER(ar.name) LIKE LOWER(@artistSearch)
+  AND (@durationMs IS NULL OR t.duration_ms IS NULL OR ABS(t.duration_ms - @durationMs) <= 2000)
+LIMIT 100;";
+
+        await using var isrcCommand = new SqliteCommand(isrcSql, connection);
+        isrcCommand.Parameters.AddWithValue("isrc", string.Empty);
+        isrcCommand.Parameters.AddWithValue(LibraryIdField, libraryId);
+        isrcCommand.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+
+        await using var trackCommand = new SqliteCommand(trackSql, connection);
+        trackCommand.Parameters.AddWithValue("artistSearch", string.Empty);
+        trackCommand.Parameters.AddWithValue("durationMs", DBNull.Value);
+        trackCommand.Parameters.AddWithValue(LibraryIdField, libraryId);
+        trackCommand.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+
+        var results = new bool[inputs.Count];
+
+        for (var i = 0; i < inputs.Count; i++)
+        {
+            results[i] = await ExistsInLibraryAsync(
+                inputs[i],
+                isrcCommand,
+                trackCommand,
+                cancellationToken);
+        }
+
+        return results;
+    }
+
     private static async Task<bool> ExistsInLibraryAsync(
         LibraryExistenceInput input,
         SqliteCommand isrcCommand,

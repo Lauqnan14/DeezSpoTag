@@ -574,6 +574,66 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExistsInLibrary_ScopedToLibrary_DoesNotLeakAcrossOtherLibraries()
+    {
+        var primary = await SeedLibraryAsync(
+            ("Primary Song", "sp-song-primary", "sp-song-primary", "ap-song-primary"));
+
+        var otherFolder = await _repository.AddFolderAsync(
+            new LibraryRepository.FolderUpsertInput(
+                RootPath: "/music/library-b",
+                DisplayName: "Library B",
+                Enabled: true,
+                LibraryName: "Secondary Music",
+                DesiredQuality: "flac",
+                ConvertEnabled: false,
+                ConvertFormat: null,
+                ConvertBitrate: null));
+
+        var allFolders = await _repository.GetFoldersAsync();
+        var artists = new List<LocalArtistScanDto>
+        {
+            new("Other Artist", "/covers/other-artist.jpg")
+        };
+        var albums = new List<LocalAlbumScanDto>
+        {
+            new(
+                ArtistName: "Other Artist",
+                Title: "Other Album",
+                PreferredCoverPath: "/covers/other-album.jpg",
+                LocalFolders: new[] { otherFolder.DisplayName },
+                HasAnimatedArtwork: false)
+        };
+        var tracks = new[]
+        {
+            CreateTrackScan(
+                title: "Other Song",
+                filePath: "/music/library-b/Other Artist/Other Album/01 - Other Song.flac",
+                deezerTrackId: "sp-other-song",
+                spotifyTrackId: "sp-other-song",
+                appleTrackId: "ap-other-song")
+        };
+
+        await _repository.IngestLocalScanAsync(
+            allFolders,
+            artists,
+            albums,
+            tracks,
+            pruneMissingArtists: true);
+
+        var existenceResults = await _repository.ExistsInLibraryAsync(
+            primary.LibraryId,
+            null,
+            new[]
+            {
+                new LibraryRepository.LibraryExistenceInput(null, "Other Song", "Other Artist", 180000)
+            });
+
+        Assert.Single(existenceResults);
+        Assert.False(existenceResults[0]);
+    }
+
+    [Fact]
     public async Task ArtistsPaging_ReturnsStableSlices_And_TotalCount()
     {
         var folder = await _repository.AddFolderAsync(

@@ -522,6 +522,11 @@ public sealed class LibraryRecommendationService
                 scope.StationId);
             enriched = eligible;
         }
+        enriched = await ExcludeTracksAlreadyInLibraryAsync(
+            scope.LibraryId,
+            scope.FolderId,
+            enriched,
+            cancellationToken);
         var cappedTracks = BuildDiversifiedTrackSelection(
             enriched,
             cappedLimit,
@@ -540,6 +545,50 @@ public sealed class LibraryRecommendationService
             },
             cappedTracks,
             basePool.GeneratedAtUtc);
+    }
+
+    private async Task<IReadOnlyList<RecommendationTrackDto>> ExcludeTracksAlreadyInLibraryAsync(
+        long libraryId,
+        long? folderId,
+        IReadOnlyList<RecommendationTrackDto> tracks,
+        CancellationToken cancellationToken)
+    {
+        if (libraryId <= 0 || tracks.Count == 0 || !_repository.IsConfigured)
+        {
+            return tracks;
+        }
+
+        var inputs = tracks
+            .Select(track => new LibraryRepository.LibraryExistenceInput(
+                NormalizeText(track.Isrc, string.Empty),
+                NormalizeText(track.Title, string.Empty),
+                NormalizeText(track.Artist?.Name, string.Empty),
+                track.Duration > 0 ? track.Duration * 1000 : null))
+            .ToList();
+
+        var exists = await _repository.ExistsInLibraryAsync(
+            libraryId,
+            folderId,
+            inputs,
+            cancellationToken);
+
+        if (exists.Count == 0)
+        {
+            return tracks;
+        }
+
+        var filtered = new List<RecommendationTrackDto>(tracks.Count);
+        for (var index = 0; index < tracks.Count; index++)
+        {
+            if (index < exists.Count && exists[index])
+            {
+                continue;
+            }
+
+            filtered.Add(tracks[index] with { TrackPosition = filtered.Count + 1 });
+        }
+
+        return filtered;
     }
 
     public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellationToken = default)
