@@ -2971,7 +2971,7 @@ let queueLoadRequestSequence = 0;
 let queueVisibilityHandlerAttached = false;
 const queueProgressCache = {};
 const queueProgressTextAnimationByTask = {};
-const queueProgressAnimationDurationMs = 2800;
+const queueProgressAnimationDurationMs = 350;
 const queuePollDelayMs = 3000;
 const queueActivityByTask = {};
 const queuePrefetchByTask = {};
@@ -4052,11 +4052,11 @@ function renderTasks() {
             : '';
         const cachedProgress = queueProgressCache[task.taskId];
         const progressStart = Number.isFinite(cachedProgress)
-            ? normalizeQueueProgressPercent(cachedProgress)
+            ? clampQueueProgressPercent(cachedProgress)
             : progressValue;
-        queueProgressCache[task.taskId] = progressValue;
+        queueProgressCache[task.taskId] = progressStart;
         const progressHtml = task.status === 'running'
-            ? `<div class="progress-text"><span>Downloading...</span><span class="progress-value" data-progress-start="${progressStart}" data-progress-target="${progressValue}">${progressStart}%</span></div>
+            ? `<div class="progress-text"><span>Downloading...</span><span class="progress-value" data-progress-start="${progressStart}" data-progress-target="${progressValue}">${normalizeQueueProgressPercent(progressStart)}%</span></div>
                <div class="progress-bar"><div class="progress-fill" style="width: ${progressStart}%" data-progress-start="${progressStart}" data-progress-target="${progressValue}"></div></div>`
             : '';
         if (task.status !== 'running' && queueProgressTextAnimationByTask[task.taskId] != null) {
@@ -4185,8 +4185,8 @@ function smoothQueueProgressBars() {
     }
     requestAnimationFrame(() => {
         fills.forEach((fill) => {
-            const target = normalizeQueueProgressPercent(fill.dataset.progressTarget);
-            const start = normalizeQueueProgressPercent(fill.dataset.progressStart);
+            const target = clampQueueProgressPercent(fill.dataset.progressTarget);
+            const start = clampQueueProgressPercent(fill.dataset.progressStart);
             if (Number.isFinite(target)) {
                 fill.style.width = `${target}%`;
             }
@@ -4196,47 +4196,56 @@ function smoothQueueProgressBars() {
             if (!valueEl || !taskId) {
                 return;
             }
-            animateQueueProgressText(taskId, valueEl, start, target);
+            animateQueueProgress(taskId, fill, valueEl, start, target);
         });
     });
 }
 
-function normalizeQueueProgressPercent(value) {
+function clampQueueProgressPercent(value) {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) {
         return 0;
     }
-    return Math.max(0, Math.min(100, Math.round(numeric)));
+    return Math.max(0, Math.min(100, numeric));
 }
 
-function animateQueueProgressText(taskId, valueEl, start, target) {
-    const startValue = normalizeQueueProgressPercent(start);
-    const targetValue = normalizeQueueProgressPercent(target);
+function normalizeQueueProgressPercent(value) {
+    return Math.round(clampQueueProgressPercent(value));
+}
+
+function animateQueueProgress(taskId, fillEl, valueEl, start, target) {
+    const startValue = clampQueueProgressPercent(start);
+    const targetValue = clampQueueProgressPercent(target);
     if (queueProgressTextAnimationByTask[taskId] != null) {
         cancelAnimationFrame(queueProgressTextAnimationByTask[taskId]);
         delete queueProgressTextAnimationByTask[taskId];
     }
 
     if (startValue === targetValue) {
-        valueEl.textContent = `${targetValue}%`;
+        fillEl.style.width = `${targetValue}%`;
+        valueEl.textContent = `${normalizeQueueProgressPercent(targetValue)}%`;
+        queueProgressCache[taskId] = targetValue;
         return;
     }
 
     const startTime = performance.now();
     const delta = targetValue - startValue;
     const step = (now) => {
-        if (!document.body.contains(valueEl)) {
+        if (!document.body.contains(valueEl) || !document.body.contains(fillEl)) {
             delete queueProgressTextAnimationByTask[taskId];
             return;
         }
 
         const t = Math.min(1, (now - startTime) / queueProgressAnimationDurationMs);
-        const current = normalizeQueueProgressPercent(startValue + (delta * t));
-        valueEl.textContent = `${current}%`;
+        const current = clampQueueProgressPercent(startValue + (delta * t));
+        queueProgressCache[taskId] = current;
+        fillEl.style.width = `${current}%`;
+        valueEl.textContent = `${normalizeQueueProgressPercent(current)}%`;
 
         if (t < 1) {
             queueProgressTextAnimationByTask[taskId] = requestAnimationFrame(step);
         } else {
+            queueProgressCache[taskId] = targetValue;
             delete queueProgressTextAnimationByTask[taskId];
         }
     };
@@ -4495,6 +4504,7 @@ async function loadQueueFromServer(options) {
         const queue = payload.data?.queue || {};
         const queueOrder = payload.data?.queueOrder || [];
         const ordered = [];
+        const existingById = new Map(tasks.map(task => [task.taskId, task]));
 
         if (requestSequence !== queueLoadRequestSequence) {
             return;
@@ -4502,15 +4512,15 @@ async function loadQueueFromServer(options) {
 
         queueOrder.forEach(uuid => {
             if (queue[uuid]) {
-                ordered.push(mapQueueItem(queue[uuid]));
+                ordered.push(mergeQueueTask(existingById.get(uuid), mapQueueItem(queue[uuid])));
             }
         });
 
-	        Object.values(queue).forEach(item => {
-	            if (!ordered.some(task => task.taskId === item.uuid)) {
-	                ordered.push(mapQueueItem(item));
-	            }
-	        });
+        Object.values(queue).forEach(item => {
+            if (!ordered.some(task => task.taskId === item.uuid)) {
+                ordered.push(mergeQueueTask(existingById.get(item.uuid), mapQueueItem(item)));
+            }
+        });
 
         if (requestSequence === queueLoadRequestSequence) {
             tasks = ordered;
@@ -4562,10 +4572,123 @@ function mapQueueItem(item) {
         videoBadges: isVideo ? resolveVideoBadges(item, rawQuality) : [],
         status: mapStatus(item.status),
         progress: normalizeQueueProgressPercent(item.progress),
+        downloaded: normalizeQueueCounter(item.downloaded || item.Downloaded),
+        failed: normalizeQueueCounter(item.failed || item.Failed),
         engine: normalizeEngine(resolvedEngine || 'deezer'),
         error: item.error || null,
         lyricsBadges: getLyricsBadges(item),
         cover: getCoverFromPayload(item)
+    };
+}
+
+function normalizeQueueCounter(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+        return 0;
+    }
+
+    return Math.max(0, Math.round(numeric));
+}
+
+function isQueueTerminalStatus(status) {
+    return status === 'complete' || status === 'failed' || status === 'canceled';
+}
+
+function isQueueResetStatus(status) {
+    return status === 'queued' || status === 'retrying';
+}
+
+function resolveQueueTaskText(currentValue, incomingValue) {
+    const incoming = String(incomingValue || '').trim();
+    if (incoming && incoming.toLowerCase() !== 'unknown') {
+        return incoming;
+    }
+
+    const current = String(currentValue || '').trim();
+    if (current) {
+        return current;
+    }
+
+    return incoming;
+}
+
+function resolveMergedQueueProgress(currentProgress, incomingProgress, currentStatus, incomingStatus) {
+    const current = clampQueueProgressPercent(currentProgress);
+    const incoming = clampQueueProgressPercent(incomingProgress);
+    const normalizedCurrentStatus = mapStatus(currentStatus);
+    const normalizedIncomingStatus = mapStatus(incomingStatus || currentStatus);
+
+    if (normalizedIncomingStatus === 'complete') {
+        return 100;
+    }
+
+    if (isQueueResetStatus(normalizedIncomingStatus) && incoming <= 0) {
+        return 0;
+    }
+
+    if (normalizedCurrentStatus === 'complete') {
+        return 100;
+    }
+
+    if (isQueueTerminalStatus(normalizedIncomingStatus)) {
+        return Math.max(current, incoming);
+    }
+
+    return Math.max(current, incoming);
+}
+
+function resolveMergedQueueStatus(currentStatus, incomingStatus, mergedProgress) {
+    const current = mapStatus(currentStatus);
+    const incoming = mapStatus(incomingStatus);
+
+    if (!incoming) {
+        return current || 'queued';
+    }
+
+    if (incoming === 'complete') {
+        return 'complete';
+    }
+
+    if (incoming === 'queued' && current === 'running' && mergedProgress > 0) {
+        return 'running';
+    }
+
+    return incoming;
+}
+
+function mergeQueueTask(existing, incoming) {
+    if (!existing) {
+        return incoming;
+    }
+
+    const mergedProgress = resolveMergedQueueProgress(
+        existing.progress,
+        incoming.progress,
+        existing.status,
+        incoming.status);
+    const mergedStatus = resolveMergedQueueStatus(existing.status, incoming.status, mergedProgress);
+
+    return {
+        ...existing,
+        ...incoming,
+        title: resolveQueueTaskText(existing.title, incoming.title),
+        artist: resolveQueueTaskText(existing.artist, incoming.artist),
+        quality: String(incoming.quality || '').trim() || existing.quality,
+        videoBadges: Array.isArray(incoming.videoBadges) && incoming.videoBadges.length > 0
+            ? incoming.videoBadges
+            : existing.videoBadges,
+        status: mergedStatus,
+        progress: normalizeQueueProgressPercent(mergedProgress),
+        downloaded: normalizeQueueCounter(incoming.downloaded ?? existing.downloaded),
+        failed: normalizeQueueCounter(incoming.failed ?? existing.failed),
+        engine: incoming.engine || existing.engine,
+        error: incoming.error !== null && incoming.error !== undefined
+            ? incoming.error
+            : (mergedStatus === 'running' || mergedStatus === 'queued' ? null : existing.error),
+        lyricsBadges: Array.isArray(incoming.lyricsBadges) && incoming.lyricsBadges.length > 0
+            ? incoming.lyricsBadges
+            : existing.lyricsBadges,
+        cover: String(incoming.cover || '').trim() || existing.cover
     };
 }
 
@@ -4856,6 +4979,17 @@ function clearMissingQueueActivity(taskList) {
             delete queuePrefetchByTask[taskId];
         }
     });
+    Object.keys(queueProgressCache).forEach(taskId => {
+        if (!activeTaskIds.has(taskId)) {
+            delete queueProgressCache[taskId];
+        }
+    });
+    Object.keys(queueProgressTextAnimationByTask).forEach(taskId => {
+        if (!activeTaskIds.has(taskId) && queueProgressTextAnimationByTask[taskId] != null) {
+            cancelAnimationFrame(queueProgressTextAnimationByTask[taskId]);
+            delete queueProgressTextAnimationByTask[taskId];
+        }
+    });
 }
 
 function normalizePrefetchStatus(value) {
@@ -5070,8 +5204,13 @@ function applyQueueRealtimeProgress(payload) {
     }
 
     let changed = false;
-    if (task.progress !== progress) {
-        task.progress = progress;
+    const mergedProgress = normalizeQueueProgressPercent(resolveMergedQueueProgress(
+        task.progress,
+        progress,
+        task.status,
+        'running'));
+    if (task.progress !== mergedProgress) {
+        task.progress = mergedProgress;
         changed = true;
     }
     if (progress > 0 && task.status === 'queued') {
@@ -5133,8 +5272,9 @@ function applyQueueRealtimeUpdate(payload) {
         : null;
     let taskChanged = false;
 
-    if (status && task.status !== status) {
-        task.status = status;
+    const mergedStatus = resolveMergedQueueStatus(task.status, status, task.progress);
+    if (status && task.status !== mergedStatus) {
+        task.status = mergedStatus;
         taskChanged = true;
     }
     const nextTitle = resolveQueueItemTitle(update);
@@ -5173,9 +5313,30 @@ function applyQueueRealtimeUpdate(payload) {
             taskChanged = true;
         }
     }
-    if (nextProgress !== null && task.progress !== nextProgress) {
-        task.progress = nextProgress;
-        taskChanged = true;
+    if (nextProgress !== null) {
+        const mergedProgress = normalizeQueueProgressPercent(resolveMergedQueueProgress(
+            task.progress,
+            nextProgress,
+            task.status,
+            status || task.status));
+        if (task.progress !== mergedProgress) {
+            task.progress = mergedProgress;
+            taskChanged = true;
+        }
+    }
+    if (update?.downloaded !== undefined || update?.Downloaded !== undefined) {
+        const nextDownloaded = normalizeQueueCounter(update?.downloaded ?? update?.Downloaded);
+        if (task.downloaded !== nextDownloaded) {
+            task.downloaded = nextDownloaded;
+            taskChanged = true;
+        }
+    }
+    if (update?.failed !== undefined || update?.Failed !== undefined) {
+        const nextFailed = normalizeQueueCounter(update?.failed ?? update?.Failed);
+        if (task.failed !== nextFailed) {
+            task.failed = nextFailed;
+            taskChanged = true;
+        }
     }
     if (update?.error !== undefined && update?.error !== null) {
         const nextError = String(update.error).trim();
@@ -5183,6 +5344,9 @@ function applyQueueRealtimeUpdate(payload) {
             task.error = nextError;
             taskChanged = true;
         }
+    } else if ((status === 'running' || status === 'queued') && task.error) {
+        task.error = null;
+        taskChanged = true;
     }
     const nextLyricsBadges = getLyricsBadgesFromRealtimeUpdate(update, taskId);
     if (nextLyricsBadges && !areSameBadgeSet(task.lyricsBadges, nextLyricsBadges)) {

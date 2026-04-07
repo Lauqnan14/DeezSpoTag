@@ -19,6 +19,8 @@ DeezSpoTag.Download = {
     engineById: {},
     downloadMetaById: {},
     progressCacheById: {},
+    progressAnimationFrameById: {},
+    progressAnimationDurationMs: 300,
     inFlightByUrl: {},
     settings: null,
     settingsPromise: null,
@@ -1951,6 +1953,53 @@ DeezSpoTag.Download = {
         }
         return Math.max(0, Math.min(100, numeric));
     },
+    isResetQueueStatus(status) {
+        return status === 'queued';
+    },
+    mergeProgressPercent(currentProgress, incomingProgress, currentStatus, incomingStatus) {
+        const current = this.normalizeProgressPercent(currentProgress);
+        const incoming = this.normalizeProgressPercent(incomingProgress);
+        const nextStatus = this.mapServerQueueStatus(incomingStatus || currentStatus);
+        const prevStatus = this.mapServerQueueStatus(currentStatus);
+
+        if (nextStatus === 'completed') {
+            return 100;
+        }
+
+        if (this.isResetQueueStatus(nextStatus) && incoming <= 0) {
+            return 0;
+        }
+
+        if (prevStatus === 'completed') {
+            return 100;
+        }
+
+        return Math.max(current, incoming);
+    },
+    mergeQueueItem(existing, incoming) {
+        if (!existing) {
+            return incoming;
+        }
+
+        const mergedProgress = this.mergeProgressPercent(
+            existing.progress,
+            incoming.progress,
+            existing.status,
+            incoming.status);
+        const incomingStatus = this.mapServerQueueStatus(incoming.status);
+        let mergedStatus = incomingStatus || existing.status || 'queued';
+        if (incomingStatus === 'queued' && existing.status === 'downloading' && mergedProgress > 0) {
+            mergedStatus = 'downloading';
+        }
+
+        return {
+            ...existing,
+            ...incoming,
+            status: mergedStatus,
+            progress: mergedProgress,
+            addedAt: existing.addedAt || incoming.addedAt || new Date()
+        };
+    },
     buildServerQueueSnapshot(statusPayload) {
         const queue = statusPayload?.queue;
         if (!queue || typeof queue !== 'object') {
@@ -1994,7 +2043,7 @@ DeezSpoTag.Download = {
                 quality: quality || this.downloadMetaById[id]?.quality || ''
             };
 
-            snapshot.push({
+            snapshot.push(this.mergeQueueItem(existing, {
                 id,
                 url,
                 type: payload.type || normalizedEngine || existing.type || '',
@@ -2002,7 +2051,7 @@ DeezSpoTag.Download = {
                 status: this.mapServerQueueStatus(payload.status),
                 progress: this.normalizeProgressPercent(payload.progress),
                 addedAt: existing.addedAt || new Date()
-            });
+            }));
         });
 
         return snapshot;
@@ -2018,12 +2067,14 @@ DeezSpoTag.Download = {
             if (this.queue.items.length !== 0) {
                 this.queue.items = [];
                 this.progressCacheById = {};
+                this.progressAnimationFrameById = {};
                 this.updateQueueDisplay();
             }
             return;
         }
 
-        this.queue.items = snapshot;
+        const existingById = new Map(this.queue.items.map((item) => [String(item.id), item]));
+        this.queue.items = snapshot.map((item) => this.mergeQueueItem(existingById.get(String(item.id)), item));
         this.updateQueueDisplay();
     },
 
@@ -2076,6 +2127,11 @@ DeezSpoTag.Download = {
 
     removeFromLocalQueue(downloadId) {
         this.queue.items = this.queue.items.filter(item => item.id !== downloadId);
+        delete this.progressCacheById[downloadId];
+        if (this.progressAnimationFrameById[downloadId] != null) {
+            cancelAnimationFrame(this.progressAnimationFrameById[downloadId]);
+            delete this.progressAnimationFrameById[downloadId];
+        }
     },
 
     updateLocalQueueItem(downloadId, updates) {
@@ -2087,16 +2143,17 @@ DeezSpoTag.Download = {
 
     // SignalR event handlers
     updateDownloadProgress(downloadId, progress) {
+        const item = this.queue.items.find(entry => entry.id === downloadId);
+        const mergedProgress = this.mergeProgressPercent(
+            item?.progress,
+            progress,
+            item?.status,
+            'downloading');
         this.updateLocalQueueItem(downloadId, {
             status: 'downloading',
-            progress: progress
+            progress: mergedProgress
         });
         this.updateQueueDisplay();
-        
-        // Update any progress bars on the page
-        document.querySelectorAll(`.download-progress[data-download-id="${downloadId}"]`).forEach((element) => {
-            element.style.width = `${progress}%`;
-        });
     },
 
     handleDownloadCompleted(downloadId, result) {
@@ -2432,7 +2489,6 @@ DeezSpoTag.Download = {
             const targetProgress = Number.isFinite(item.progress) ? Math.max(0, Math.min(100, item.progress)) : 0;
             const cachedProgress = this.progressCacheById[item.id];
             const startProgress = Number.isFinite(cachedProgress) ? cachedProgress : targetProgress;
-            this.progressCacheById[item.id] = targetProgress;
             return `
             <div class="download-item" data-download-id="${item.id}">
                 <div class="download-info">
@@ -2463,12 +2519,50 @@ DeezSpoTag.Download = {
         }
         requestAnimationFrame(() => {
             fills.forEach((fill) => {
-                const target = Number(fill.dataset.progressTarget);
-                if (Number.isFinite(target)) {
-                    fill.style.width = `${target}%`;
+                const target = this.normalizeProgressPercent(fill.dataset.progressTarget);
+                const start = this.normalizeProgressPercent(fill.style.width.replace('%', ''));
+                const downloadId = fill.dataset.downloadId || '';
+                if (!downloadId) {
+                    return;
                 }
+                this.animateQueueProgressBar(downloadId, fill, start, target);
             });
         });
+    },
+    animateQueueProgressBar(downloadId, fill, start, target) {
+        if (this.progressAnimationFrameById[downloadId] != null) {
+            cancelAnimationFrame(this.progressAnimationFrameById[downloadId]);
+            delete this.progressAnimationFrameById[downloadId];
+        }
+
+        if (start === target) {
+            fill.style.width = `${target}%`;
+            this.progressCacheById[downloadId] = target;
+            return;
+        }
+
+        const startTime = performance.now();
+        const delta = target - start;
+        const step = (now) => {
+            if (!document.body.contains(fill)) {
+                delete this.progressAnimationFrameById[downloadId];
+                return;
+            }
+
+            const t = Math.min(1, (now - startTime) / this.progressAnimationDurationMs);
+            const current = this.normalizeProgressPercent(start + (delta * t));
+            fill.style.width = `${current}%`;
+            this.progressCacheById[downloadId] = current;
+
+            if (t < 1) {
+                this.progressAnimationFrameById[downloadId] = requestAnimationFrame(step);
+            } else {
+                this.progressCacheById[downloadId] = target;
+                delete this.progressAnimationFrameById[downloadId];
+            }
+        };
+
+        this.progressAnimationFrameById[downloadId] = requestAnimationFrame(step);
     },
 
     // Utility functions
