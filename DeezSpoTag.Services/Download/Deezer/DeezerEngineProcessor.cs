@@ -176,8 +176,9 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             payload.DestinationFolderId,
             _logger,
             cancellationToken,
-            currentEngine: EngineName,
-            requireProfile: !isEpisodePayload);
+            new DownloadEngineSettingsHelper.ProfileResolutionOptions(
+                CurrentEngine: EngineName,
+                RequireProfile: !isEpisodePayload));
         await _folderConversionSettingsOverlay.ApplyAsync(settings, payload.DestinationFolderId, cancellationToken);
 
         _listener.SendStartDownload(queueUuid);

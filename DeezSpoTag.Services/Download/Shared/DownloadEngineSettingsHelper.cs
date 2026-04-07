@@ -6,22 +6,25 @@ namespace DeezSpoTag.Services.Download.Shared;
 
 public static class DownloadEngineSettingsHelper
 {
+    public readonly record struct ProfileResolutionOptions(
+        string? CurrentEngine = null,
+        bool WrapResolutionExceptions = true,
+        bool RequireProfile = true);
+
     public static async Task ResolveAndApplyProfileAsync(
         IDownloadTagSettingsResolver resolver,
         DeezSpoTagSettings settings,
         long? destinationFolderId,
         ILogger logger,
         CancellationToken cancellationToken,
-        string? currentEngine = null,
-        bool wrapResolutionExceptions = true,
-        bool requireProfile = true)
+        ProfileResolutionOptions options = default)
     {
-        if (!wrapResolutionExceptions)
+        if (!options.WrapResolutionExceptions)
         {
             var unwrappedProfile = await resolver.ResolveProfileAsync(destinationFolderId, cancellationToken);
             if (unwrappedProfile == null)
             {
-                if (!requireProfile)
+                if (!options.RequireProfile)
                 {
                     return;
                 }
@@ -29,7 +32,7 @@ public static class DownloadEngineSettingsHelper
                 throw new InvalidOperationException("Destination music folder requires a valid AutoTag profile.");
             }
 
-            ApplyResolvedProfileToSettings(settings, unwrappedProfile, currentEngine: currentEngine);
+            ApplyResolvedProfileToSettings(settings, unwrappedProfile, currentEngine: options.CurrentEngine);
             return;
         }
 
@@ -38,7 +41,7 @@ public static class DownloadEngineSettingsHelper
             var profile = await resolver.ResolveProfileAsync(destinationFolderId, cancellationToken);
             if (profile == null)
             {
-                if (!requireProfile)
+                if (!options.RequireProfile)
                 {
                     return;
                 }
@@ -46,7 +49,7 @@ public static class DownloadEngineSettingsHelper
                 throw new InvalidOperationException("Destination music folder requires a valid AutoTag profile.");
             }
 
-            ApplyResolvedProfileToSettings(settings, profile, currentEngine: currentEngine);
+            ApplyResolvedProfileToSettings(settings, profile, currentEngine: options.CurrentEngine);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

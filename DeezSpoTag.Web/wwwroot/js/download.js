@@ -302,12 +302,26 @@ DeezSpoTag.Download = {
     },
     applyUpdatedSettings(settings) {
         const nextSettings = settings && typeof settings === 'object'
-            ? JSON.parse(JSON.stringify(settings))
+            ? this.cloneSettingsPayload(settings)
             : null;
         this.settings = nextSettings;
         this.settingsPromise = nextSettings
             ? Promise.resolve(nextSettings)
             : null;
+    },
+    cloneSettingsPayload(value) {
+        if (typeof structuredClone === 'function') {
+            return structuredClone(value);
+        }
+        if (Array.isArray(value)) {
+            return value.map((entry) => this.cloneSettingsPayload(entry));
+        }
+        if (value && typeof value === 'object') {
+            return Object.fromEntries(
+                Object.entries(value).map(([key, entry]) => [key, this.cloneSettingsPayload(entry)])
+            );
+        }
+        return value;
     },
     normalizeAppleNotificationMode(mode) {
         const normalized = String(mode || '').trim().toLowerCase();
