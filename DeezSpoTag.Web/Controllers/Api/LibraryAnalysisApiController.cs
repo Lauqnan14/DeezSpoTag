@@ -60,8 +60,19 @@ public class LibraryAnalysisApiController : ControllerBase
         return Ok(latest);
     }
 
+    [HttpGet("current")]
+    public Task<IActionResult> GetCurrent(CancellationToken cancellationToken)
+    {
+        return GetCurrentProcessingResultAsync(cancellationToken);
+    }
+
     [HttpGet("processing")]
-    public async Task<IActionResult> GetProcessing(CancellationToken cancellationToken)
+    public Task<IActionResult> GetProcessing(CancellationToken cancellationToken)
+    {
+        return GetCurrentProcessingResultAsync(cancellationToken);
+    }
+
+    private async Task<IActionResult> GetCurrentProcessingResultAsync(CancellationToken cancellationToken)
     {
         var processing = await _repository.GetProcessingTrackAsync(cancellationToken);
         if (processing is null)
