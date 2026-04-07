@@ -443,6 +443,11 @@ public class ActivitiesController : Controller
         EnsurePayloadField(payload, "contentType", "ContentType", "content_type");
         EnsurePayloadField(payload, "collectionType", "CollectionType", "collection_type");
         EnsurePayloadField(payload, "quality", "Quality", "bitrate", "Bitrate");
+        EnsurePayloadFieldRaw(payload, "autoSources", "AutoSources");
+        EnsurePayloadFieldRaw(payload, "autoIndex", "AutoIndex");
+        EnsurePayloadFieldRaw(payload, "fallbackPlan", "FallbackPlan");
+        EnsurePayloadFieldRaw(payload, "fallbackHistory", "FallbackHistory");
+        EnsurePayloadFieldRaw(payload, "fallbackQueuedExternally", "FallbackQueuedExternally");
         EnsurePayloadField(payload, "videoResolution", "VideoResolution", "videoResolutionTier", "VideoResolutionTier");
         EnsurePayloadField(payload, "videoHdr", "VideoHdr");
         EnsurePayloadField(payload, "videoAudioProfile", "VideoAudioProfile");
@@ -475,6 +480,25 @@ public class ActivitiesController : Controller
                 payload[target] = normalized;
                 return;
             }
+        }
+    }
+
+    private static void EnsurePayloadFieldRaw(Dictionary<string, object> payload, string target, params string[] candidates)
+    {
+        if (payload.ContainsKey(target))
+        {
+            return;
+        }
+
+        foreach (var candidate in candidates)
+        {
+            if (!payload.TryGetValue(candidate, out var value))
+            {
+                continue;
+            }
+
+            payload[target] = value;
+            return;
         }
     }
 

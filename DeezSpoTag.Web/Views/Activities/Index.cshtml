@@ -868,6 +868,19 @@
     border: 1px solid var(--warning);
 }
 
+.downloads-tab .badge-fallback-step {
+    background: rgba(148, 163, 184, 0.16);
+    color: var(--text-primary);
+    border: 1px solid rgba(148, 163, 184, 0.45);
+    text-transform: none;
+}
+
+.downloads-tab .badge-fallback-step.is-active {
+    background: rgba(0, 212, 255, 0.22);
+    color: var(--accent-blue);
+    border-color: var(--accent-blue);
+}
+
 .downloads-tab .badge-lyrics-synced {
     background: rgba(16, 185, 129, 0.2);
     color: #10b981;
@@ -3920,6 +3933,99 @@ async function clearCanceledTasks() {
 	    return classes[status] || 'badge-status';
 	}
 
+	function normalizeFallbackStep(step) {
+	    if (!step || typeof step !== 'object') {
+	        return null;
+	    }
+
+	    const engine = String(step.engine ?? step.Engine ?? '').trim();
+	    if (!engine) {
+	        return null;
+	    }
+
+	    const quality = String(step.quality ?? step.Quality ?? '').trim();
+	    return { engine, quality };
+	}
+
+	function decodeFallbackStepValue(value) {
+	    const raw = String(value ?? '').trim();
+	    if (!raw) {
+	        return null;
+	    }
+
+	    const [enginePart, qualityPart] = raw.split('|', 2);
+	    const engine = String(enginePart || '').trim();
+	    if (!engine) {
+	        return null;
+	    }
+
+	    return {
+	        engine,
+	        quality: String(qualityPart || '').trim()
+	    };
+	}
+
+	function formatFallbackStepLabel(step) {
+	    const engine = String(step?.engine || '').trim().toLowerCase();
+	    const quality = String(step?.quality || '').trim();
+	    const qualityLabel = formatFallbackQualityLabel(engine, quality);
+	    if (qualityLabel) {
+	        return qualityLabel;
+	    }
+
+	    return engine ? engine.charAt(0).toUpperCase() + engine.slice(1) : 'Unknown';
+	}
+
+	function formatFallbackQualityLabel(engine, quality) {
+	    if (!quality) {
+	        return '';
+	    }
+
+	    const upper = quality.toUpperCase();
+	    const qualityLabels = {
+	        '27': 'Qobuz 27',
+	        'HI_RES_LOSSLESS': 'Tidal Hi-Res Lossless',
+	        'ALAC': 'Apple ALAC',
+	        '7': 'Qobuz 24-bit',
+	        '6': 'Qobuz CD',
+	        'LOSSLESS': 'Tidal Lossless',
+	        'FLAC': 'Amazon FLAC',
+	        '9': 'Deezer FLAC',
+	        'AAC': 'Apple AAC',
+	        '3': 'Deezer 320kbps',
+	        '1': 'Deezer 128kbps'
+	    };
+
+	    if (qualityLabels[upper]) {
+	        return qualityLabels[upper];
+	    }
+
+	    if (!engine) {
+	        return quality;
+	    }
+
+	    return `${engine.charAt(0).toUpperCase() + engine.slice(1)} ${quality}`;
+	}
+
+	function renderFallbackPlanBadges(task) {
+	    const rawPlan = Array.isArray(task?.fallbackPlan) && task.fallbackPlan.length > 0
+	        ? task.fallbackPlan.map(normalizeFallbackStep).filter(Boolean)
+	        : (Array.isArray(task?.autoSources) ? task.autoSources.map(decodeFallbackStepValue).filter(Boolean) : []);
+
+	    if (rawPlan.length === 0) {
+	        return '';
+	    }
+
+	    const currentIndex = Number.isFinite(Number(task?.autoIndex)) ? Number(task.autoIndex) : -1;
+	    const badges = rawPlan.map((step, index) => {
+	        const label = escapeHtml(formatFallbackStepLabel(step));
+	        const activeClass = index === currentIndex ? ' is-active' : '';
+	        return `<span class="badge badge-fallback-step${activeClass}" title="${escapeHtml(`${step.engine}${step.quality ? ` | ${step.quality}` : ''}`)}">${label}</span>`;
+	    });
+
+	    return badges.join('');
+	}
+
 	let renderTasksScheduled = false;
 	function scheduleRenderTasks() {
 	    if (renderTasksScheduled) return;
@@ -4029,6 +4135,7 @@ function renderTasks() {
                         <span class="badge badge-quality">${safeQuality}</span>
                         ${videoBadges.map(videoBadge => `<span class="badge ${videoBadge.className}">${videoBadge.label}</span>`).join('')}
                         <span class="badge badge-engine">${safeEngine}</span>
+                        ${renderFallbackPlanBadges(task)}
                         ${lyricsBadges.length
                             ? lyricsBadges.map(label => {
                                 const kind = label.toLowerCase();

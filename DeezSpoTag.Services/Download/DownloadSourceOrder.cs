@@ -85,7 +85,7 @@ public static class DownloadSourceOrder
             includeDeezer,
             profile => ShouldIncludeQualityProfile(profile, forcedService, includeAtmos));
 
-        if (string.IsNullOrWhiteSpace(targetQuality))
+        if (string.IsNullOrWhiteSpace(targetQuality) || string.Equals(forcedService, AutoService, StringComparison.OrdinalIgnoreCase))
         {
             return sources;
         }

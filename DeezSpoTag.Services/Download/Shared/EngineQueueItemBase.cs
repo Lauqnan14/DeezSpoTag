@@ -68,6 +68,23 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
 
     protected Dictionary<string, object> BuildQueuePayload(string mappedStatus, Dictionary<string, object?>? extra = null)
     {
+        var extras = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["autoSources"] = AutoSources,
+            ["autoIndex"] = AutoIndex,
+            ["fallbackPlan"] = FallbackPlan,
+            ["fallbackHistory"] = FallbackHistory,
+            ["fallbackQueuedExternally"] = FallbackQueuedExternally
+        };
+
+        if (extra != null)
+        {
+            foreach (var entry in extra)
+            {
+                extras[entry.Key] = entry.Value;
+            }
+        }
+
         return QueuePayloadBuilder.BuildBasePayload(new QueuePayloadBuilder.QueuePayloadInput
         {
             Id = Id,
@@ -89,7 +106,7 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
             Profile = Profile,
             FinalDestinations = FinalDestinations,
             DestinationFolderId = DestinationFolderId,
-            Extras = extra
+            Extras = extras
         });
     }
 }
