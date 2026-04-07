@@ -176,7 +176,6 @@ namespace DeezSpoTag.Web.Controllers.Api
                 url,
                 request,
                 inferredSourceService,
-                bypassDirectDeezerRouting,
                 cancellationToken);
             if (resolvedIntents.SkipUrl)
             {
@@ -297,7 +296,6 @@ namespace DeezSpoTag.Web.Controllers.Api
             string url,
             AddWithSettingsRequest request,
             string inferredSourceService,
-            bool bypassDirectDeezerRouting,
             CancellationToken cancellationToken)
         {
             // Bypassing direct Deezer routing should only prevent forcing the Deezer engine.

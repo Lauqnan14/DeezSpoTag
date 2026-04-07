@@ -31,6 +31,7 @@ public class ActivitiesController : Controller
     private const string RunningStatus = "running";
     private const string FinishedStatus = "finished";
     private const string DownloadFinishedStatus = "download finished";
+    private const string DownloadNotFoundMessage = "Download not found in queue";
     private const string FilesField = "files";
     private const string LyricsStatusField = "lyrics_status";
     private const string TtmlExtension = ".ttml";
@@ -98,7 +99,7 @@ public class ActivitiesController : Controller
             var item = await _queueRepository.GetByUuidAsync(request.Uuid, HttpContext.RequestAborted);
             if (item == null)
             {
-                return NotFound("Download not found in queue");
+                return NotFound(DownloadNotFoundMessage);
             }
 
             var status = (item.Status ?? string.Empty).Trim().ToLowerInvariant();
@@ -134,7 +135,7 @@ public class ActivitiesController : Controller
             var item = await _queueRepository.GetByUuidAsync(request.Uuid, HttpContext.RequestAborted);
             if (item == null)
             {
-                return NotFound("Download not found in queue");
+                return NotFound(DownloadNotFoundMessage);
             }
 
             var status = (item.Status ?? string.Empty).Trim().ToLowerInvariant();
@@ -297,7 +298,7 @@ public class ActivitiesController : Controller
             var item = await _queueRepository.GetByUuidAsync(request.Uuid);
             if (item == null)
             {
-                return NotFound("Download not found in queue");
+                return NotFound(DownloadNotFoundMessage);
             }
 
             var normalizedStatus = (item.Status ?? string.Empty).Trim().ToLowerInvariant();
@@ -335,7 +336,7 @@ public class ActivitiesController : Controller
             var item = await _queueRepository.GetByUuidAsync(request.Uuid);
             if (item == null)
             {
-                return NotFound("Download not found in queue");
+                return NotFound(DownloadNotFoundMessage);
             }
 
             if (!string.Equals(item.Status, FailedStatus, StringComparison.OrdinalIgnoreCase)

@@ -196,8 +196,9 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             payload.DestinationFolderId,
             _logger,
             itemToken,
-            currentEngine: EngineName,
-            wrapResolutionExceptions: false);
+            new DownloadEngineSettingsHelper.ProfileResolutionOptions(
+                CurrentEngine: EngineName,
+                WrapResolutionExceptions: false));
         await _folderConversionSettingsOverlay.ApplyAsync(settings, payload.DestinationFolderId, itemToken);
 
         _deezspotagListener.SendStartDownload(next.QueueUuid);
