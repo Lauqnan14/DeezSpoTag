@@ -2979,6 +2979,8 @@ let queueRealtimeAttached = false;
 let queueRealtimeAttachTimer = null;
 let queueRealtimeLifecycleAttached = false;
 let queueActionInFlight = false;
+let queueHydrationRefreshTimer = null;
+let lastQueueHydrationRefreshAt = 0;
 
 let analysisPollTimeoutId = null;
 let analysisPollInFlight = false;
@@ -4554,8 +4556,8 @@ function mapQueueItem(item) {
         : mapBitrate(rawQuality);
     return {
         taskId: item.uuid,
-        title: item.title || 'Unknown',
-        artist: item.artist || 'Unknown',
+        title: resolveQueueItemTitle(item) || 'Unknown',
+        artist: resolveQueueItemArtist(item) || 'Unknown',
         quality: displayQuality,
         videoBadges: isVideo ? resolveVideoBadges(item, rawQuality) : [],
         status: mapStatus(item.status),
@@ -4565,6 +4567,59 @@ function mapQueueItem(item) {
         lyricsBadges: getLyricsBadges(item),
         cover: getCoverFromPayload(item)
     };
+}
+
+function readQueueItemText(item, candidates) {
+    if (!item || typeof item !== 'object' || !Array.isArray(candidates)) {
+        return '';
+    }
+
+    for (const candidate of candidates) {
+        const value = String(item[candidate] ?? '').trim();
+        if (value) {
+            return value;
+        }
+    }
+
+    return '';
+}
+
+function resolveQueueItemTitle(item) {
+    return readQueueItemText(item, ['title', 'Title', 'trackTitle', 'TrackTitle']);
+}
+
+function resolveQueueItemArtist(item) {
+    return readQueueItemText(item, ['artist', 'Artist', 'artistName', 'ArtistName']);
+}
+
+function taskNeedsMetadataHydration(task) {
+    if (!task || typeof task !== 'object') {
+        return false;
+    }
+
+    const title = String(task.title || '').trim().toLowerCase();
+    const artist = String(task.artist || '').trim().toLowerCase();
+    const cover = String(task.cover || '').trim();
+    return !title
+        || !artist
+        || title === 'unknown'
+        || artist === 'unknown'
+        || !cover
+        || cover === '/images/default-cover.png';
+}
+
+function scheduleQueueHydrationRefresh() {
+    if (queueHydrationRefreshTimer != null) {
+        return;
+    }
+
+    const now = Date.now();
+    const delay = Math.max(0, 1000 - (now - lastQueueHydrationRefreshAt));
+    queueHydrationRefreshTimer = setTimeout(async () => {
+        queueHydrationRefreshTimer = null;
+        lastQueueHydrationRefreshAt = Date.now();
+        await loadQueueFromServer({ force: true });
+    }, delay);
 }
 
 function resolveQueueDisplayEngine(item) {
@@ -5009,16 +5064,19 @@ function applyQueueRealtimeProgress(payload) {
     }
     const progress = normalizeQueueProgressPercent(payload?.progress ?? payload?.progressNext);
     const task = tasks.find(entry => entry.taskId === taskId);
+    if (!task) {
+        scheduleQueueHydrationRefresh();
+        return;
+    }
+
     let changed = false;
-    if (task) {
-        if (task.progress !== progress) {
-            task.progress = progress;
-            changed = true;
-        }
-        if (progress > 0 && task.status === 'queued') {
-            task.status = 'running';
-            changed = true;
-        }
+    if (task.progress !== progress) {
+        task.progress = progress;
+        changed = true;
+    }
+    if (progress > 0 && task.status === 'queued') {
+        task.status = 'running';
+        changed = true;
     }
     if (progress >= 100) {
         setTaskActivity(taskId, 'Finalizing items...');
@@ -5031,6 +5089,9 @@ function applyQueueRealtimeProgress(payload) {
             return;
         }
         clearTaskActivity(taskId);
+    }
+    if (taskNeedsMetadataHydration(task)) {
+        scheduleQueueHydrationRefresh();
     }
     if (changed) {
         updateStats();
@@ -5062,46 +5123,82 @@ function applyQueueRealtimeUpdate(payload) {
         ? ''
         : mapStatus(rawStatus);
     const task = tasks.find(entry => entry.taskId === taskId);
+    if (!task) {
+        scheduleQueueHydrationRefresh();
+        return;
+    }
+
     const nextProgress = (typeof update?.progress === 'number' || typeof update?.progressNext === 'number')
         ? normalizeQueueProgressPercent(update?.progress ?? update?.progressNext)
         : null;
     let taskChanged = false;
 
-    if (task) {
-        if (status && task.status !== status) {
-            task.status = status;
+    if (status && task.status !== status) {
+        task.status = status;
+        taskChanged = true;
+    }
+    const nextTitle = resolveQueueItemTitle(update);
+    if (nextTitle && task.title !== nextTitle) {
+        task.title = nextTitle;
+        taskChanged = true;
+    }
+    const nextArtist = resolveQueueItemArtist(update);
+    if (nextArtist && task.artist !== nextArtist) {
+        task.artist = nextArtist;
+        taskChanged = true;
+    }
+    const nextCover = getCoverFromPayload(update);
+    if (nextCover && task.cover !== nextCover) {
+        task.cover = nextCover;
+        taskChanged = true;
+    }
+    const nextEngineRaw = resolveQueueDisplayEngine(update);
+    const nextEngine = nextEngineRaw ? normalizeEngine(nextEngineRaw) : '';
+    if (nextEngine && task.engine !== nextEngine) {
+        task.engine = nextEngine;
+        taskChanged = true;
+    }
+    const nextRawQuality = update?.quality || update?.Quality || update?.bitrate || update?.Bitrate || '';
+    if (nextRawQuality) {
+        const nextContentType = String(update?.contentType || update?.ContentType || '').toLowerCase();
+        const nextIsVideo = nextContentType === 'video' || String(nextRawQuality).toLowerCase().startsWith('video-');
+        const nextDisplayQuality = nextIsVideo ? 'Video' : mapBitrate(nextRawQuality);
+        const nextVideoBadges = nextIsVideo ? resolveVideoBadges(update, nextRawQuality) : [];
+        if (nextDisplayQuality && task.quality !== nextDisplayQuality) {
+            task.quality = nextDisplayQuality;
             taskChanged = true;
         }
-        const nextEngineRaw = resolveQueueDisplayEngine(update);
-        const nextEngine = nextEngineRaw ? normalizeEngine(nextEngineRaw) : '';
-        if (nextEngine && task.engine !== nextEngine) {
-            task.engine = nextEngine;
+        if (!areSameBadgeSet(task.videoBadges, nextVideoBadges)) {
+            task.videoBadges = nextVideoBadges;
             taskChanged = true;
         }
-        if (nextProgress !== null && task.progress !== nextProgress) {
-            task.progress = nextProgress;
+    }
+    if (nextProgress !== null && task.progress !== nextProgress) {
+        task.progress = nextProgress;
+        taskChanged = true;
+    }
+    if (update?.error !== undefined && update?.error !== null) {
+        const nextError = String(update.error).trim();
+        if (task.error !== nextError) {
+            task.error = nextError;
             taskChanged = true;
         }
-        if (update?.error !== undefined && update?.error !== null) {
-            const nextError = String(update.error).trim();
-            if (task.error !== nextError) {
-                task.error = nextError;
-                taskChanged = true;
-            }
-        }
-        const nextLyricsBadges = getLyricsBadgesFromRealtimeUpdate(update, taskId);
-        if (nextLyricsBadges && !areSameBadgeSet(task.lyricsBadges, nextLyricsBadges)) {
-            task.lyricsBadges = nextLyricsBadges;
-            taskChanged = true;
-        }
-        if (status === 'complete' && task.progress !== 100) {
-            task.progress = 100;
-            taskChanged = true;
-        }
-        if (taskChanged) {
-            updateStats();
-            scheduleRenderTasks();
-        }
+    }
+    const nextLyricsBadges = getLyricsBadgesFromRealtimeUpdate(update, taskId);
+    if (nextLyricsBadges && !areSameBadgeSet(task.lyricsBadges, nextLyricsBadges)) {
+        task.lyricsBadges = nextLyricsBadges;
+        taskChanged = true;
+    }
+    if (status === 'complete' && task.progress !== 100) {
+        task.progress = 100;
+        taskChanged = true;
+    }
+    if (taskNeedsMetadataHydration(task)) {
+        scheduleQueueHydrationRefresh();
+    }
+    if (taskChanged) {
+        updateStats();
+        scheduleRenderTasks();
     }
 
     if (status === 'running') {
@@ -5255,6 +5352,9 @@ function normalizeEngine(engine) {
 function getCoverFromPayload(item) {
     if (item.cover) {
         return item.cover;
+    }
+    if (item.Cover) {
+        return item.Cover;
     }
     if (item.metadata?.cover) {
         return item.metadata.cover;
