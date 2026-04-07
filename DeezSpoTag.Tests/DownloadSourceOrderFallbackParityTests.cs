@@ -29,6 +29,23 @@ public sealed class DownloadSourceOrderFallbackParityTests
     }
 
     [Fact]
+    public void ResolveQualityAutoSources_KeepsCrossEngineOrder_WhenAutoHasTargetQuality()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            Service = "auto"
+        };
+
+        var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: "6");
+
+        Assert.Equal("qobuz|27", sources[0]);
+        Assert.Equal("tidal|HI_RES_LOSSLESS", sources[1]);
+        Assert.Equal("apple|ALAC", sources[2]);
+        Assert.Contains("qobuz|6", sources);
+        Assert.Contains("deezer|1", sources);
+    }
+
+    [Fact]
     public void ResolveEngineQualitySources_StrictFalse_ReturnsEngineOnlyFromRequestedQualityDownward()
     {
         var sources = DownloadSourceOrder.ResolveEngineQualitySources("deezer", "3", strict: false);
