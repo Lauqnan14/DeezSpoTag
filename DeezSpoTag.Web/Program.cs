@@ -113,11 +113,19 @@ static string ConfigureDataDirectories()
             $"Configured data roots diverge: DEEZSPOTAG_CONFIG_DIR='{configuredConfigDir}' and DEEZSPOTAG_DATA_DIR='{configuredDataDir}'. Set one unified path.");
     }
 
-    var dataDir = !string.IsNullOrWhiteSpace(configuredDataDir)
-        ? configuredDataDir
-        : !string.IsNullOrWhiteSpace(configuredConfigDir)
-            ? configuredConfigDir
-            : workersDataDir;
+    string dataDir;
+    if (!string.IsNullOrWhiteSpace(configuredDataDir))
+    {
+        dataDir = configuredDataDir;
+    }
+    else if (!string.IsNullOrWhiteSpace(configuredConfigDir))
+    {
+        dataDir = configuredConfigDir;
+    }
+    else
+    {
+        dataDir = workersDataDir;
+    }
 
     Environment.SetEnvironmentVariable("DEEZSPOTAG_CONFIG_DIR", dataDir);
     Environment.SetEnvironmentVariable("DEEZSPOTAG_DATA_DIR", dataDir);

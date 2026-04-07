@@ -13,6 +13,8 @@ public sealed class MediaServerSoundtrackCacheRepository
     private const string TvShowServerTypeParameterName = "$tv_server_type";
     private const string TvShowLibraryIdParameterName = "$tv_library_id";
     private const string TvShowShowIdParameterName = "$tv_show_id";
+    private const string UpdatedAtUtcColumnName = "updated_at_utc";
+    private static readonly string UpdatedAtUtcParameterName = string.Concat("$", UpdatedAtUtcColumnName);
     private const string CacheItemSelectColumnsSql = """
 server_type,
 server_label,
@@ -66,7 +68,7 @@ match_reason,
 match_locked,
 match_retry_count,
 match_resolved_utc,
-updated_at_utc
+{UpdatedAtUtcColumnName}
 """;
     private readonly string _connectionString;
     private readonly ILogger<MediaServerSoundtrackCacheRepository> _logger;
@@ -124,7 +126,7 @@ INSERT INTO {SoundtrackMediaCacheTableName} (
     $match_locked,
     $match_retry_count,
     $match_resolved_utc,
-    $updated_at_utc
+    {UpdatedAtUtcParameterName}
 )
 ON CONFLICT(server_type, library_id, item_id) DO UPDATE SET
     server_label = excluded.server_label,
@@ -149,7 +151,7 @@ ON CONFLICT(server_type, library_id, item_id) DO UPDATE SET
     match_locked = excluded.match_locked,
     match_retry_count = excluded.match_retry_count,
     match_resolved_utc = excluded.match_resolved_utc,
-    updated_at_utc = excluded.updated_at_utc;
+    {UpdatedAtUtcColumnName} = excluded.{UpdatedAtUtcColumnName};
 """;
 
         try
@@ -326,23 +328,23 @@ LIMIT $limit OFFSET $offset;
         await EnsureInitializedAsync(cancellationToken);
 
         var payloadJson = JsonSerializer.Serialize(response);
-        var sql = """
+        var sql = $"""
 INSERT INTO soundtrack_tv_show_cache (
     server_type,
     library_id,
     show_id,
     payload_json,
-    updated_at_utc
+    {UpdatedAtUtcColumnName}
 ) VALUES (
     $tv_server_type,
     $tv_library_id,
     $tv_show_id,
     $payload_json,
-    $updated_at_utc
+    {UpdatedAtUtcParameterName}
 )
 ON CONFLICT(server_type, library_id, show_id) DO UPDATE SET
     payload_json = excluded.payload_json,
-    updated_at_utc = excluded.updated_at_utc;
+    {UpdatedAtUtcColumnName} = excluded.{UpdatedAtUtcColumnName};
 """;
 
         try
@@ -354,7 +356,7 @@ ON CONFLICT(server_type, library_id, show_id) DO UPDATE SET
             command.Parameters.AddWithValue(TvShowLibraryIdParameterName, Normalize(response.LibraryId));
             command.Parameters.AddWithValue(TvShowShowIdParameterName, Normalize(response.ShowId));
             command.Parameters.AddWithValue("$payload_json", payloadJson);
-            command.Parameters.AddWithValue("$updated_at_utc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+            command.Parameters.AddWithValue(UpdatedAtUtcParameterName, DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -532,7 +534,7 @@ WHERE server_type = {ServerTypeParameterName}
         command.Parameters.AddWithValue("$match_locked", match?.Locked == true ? 1 : 0);
         command.Parameters.AddWithValue("$match_retry_count", Math.Max(match?.RetryCount ?? 0, 0));
         command.Parameters.AddWithValue("$match_resolved_utc", matchResolvedUtc?.ToString("O", CultureInfo.InvariantCulture) ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue("$updated_at_utc", nowUtcText);
+        command.Parameters.AddWithValue(UpdatedAtUtcParameterName, nowUtcText);
         return true;
     }
 
@@ -563,7 +565,7 @@ WHERE server_type = {ServerTypeParameterName}
             var sql = $"""
 UPDATE {SoundtrackMediaCacheTableName}
 SET is_active = 0,
-    updated_at_utc = $updated_at_utc
+    {UpdatedAtUtcColumnName} = {UpdatedAtUtcParameterName}
 WHERE server_type = {ServerTypeParameterName}
   AND library_id = {LibraryIdParameterName}
   AND last_seen_utc < $cutoff_utc;
@@ -572,7 +574,7 @@ WHERE server_type = {ServerTypeParameterName}
             command.Parameters.AddWithValue(ServerTypeParameterName, Normalize(serverType));
             command.Parameters.AddWithValue(LibraryIdParameterName, Normalize(libraryId));
             command.Parameters.AddWithValue("$cutoff_utc", cutoffUtc.ToString("O", CultureInfo.InvariantCulture));
-            command.Parameters.AddWithValue("$updated_at_utc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+            command.Parameters.AddWithValue(UpdatedAtUtcParameterName, DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -598,7 +600,7 @@ INSERT INTO soundtrack_library_sync_state (
     last_sync_utc,
     last_success_utc,
     last_error,
-    updated_at_utc
+    {UpdatedAtUtcColumnName}
 ) VALUES (
     {ServerTypeParameterName},
     {LibraryIdParameterName},
@@ -610,7 +612,7 @@ INSERT INTO soundtrack_library_sync_state (
     $last_sync_utc,
     $last_success_utc,
     $last_error,
-    $updated_at_utc
+    {UpdatedAtUtcParameterName}
 )
 ON CONFLICT(server_type, library_id) DO UPDATE SET
     category = excluded.category,
@@ -621,7 +623,7 @@ ON CONFLICT(server_type, library_id) DO UPDATE SET
     last_sync_utc = excluded.last_sync_utc,
     last_success_utc = excluded.last_success_utc,
     last_error = excluded.last_error,
-    updated_at_utc = excluded.updated_at_utc;
+    {UpdatedAtUtcColumnName} = excluded.{UpdatedAtUtcColumnName};
 """;
 
         try
@@ -639,7 +641,7 @@ ON CONFLICT(server_type, library_id) DO UPDATE SET
             command.Parameters.AddWithValue("$last_sync_utc", state.LastSyncUtc?.ToString("O", CultureInfo.InvariantCulture) ?? (object)DBNull.Value);
             command.Parameters.AddWithValue("$last_success_utc", state.LastSuccessUtc?.ToString("O", CultureInfo.InvariantCulture) ?? (object)DBNull.Value);
             command.Parameters.AddWithValue("$last_error", NullOrText(state.LastError));
-            command.Parameters.AddWithValue("$updated_at_utc", (state.UpdatedAtUtc == default ? DateTimeOffset.UtcNow : state.UpdatedAtUtc).ToString("O", CultureInfo.InvariantCulture));
+            command.Parameters.AddWithValue(UpdatedAtUtcParameterName, (state.UpdatedAtUtc == default ? DateTimeOffset.UtcNow : state.UpdatedAtUtc).ToString("O", CultureInfo.InvariantCulture));
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -677,7 +679,7 @@ SELECT
     last_sync_utc,
     last_success_utc,
     last_error,
-    updated_at_utc
+    {UpdatedAtUtcColumnName}
 FROM soundtrack_library_sync_state
 WHERE server_type = {ServerTypeParameterName}
   AND library_id = {LibraryIdParameterName}
@@ -720,9 +722,9 @@ SELECT
     last_sync_utc,
     last_success_utc,
     last_error,
-    updated_at_utc
+    {UpdatedAtUtcColumnName}
 FROM soundtrack_library_sync_state
-ORDER BY updated_at_utc DESC, server_type, library_id;
+ORDER BY {UpdatedAtUtcColumnName} DESC, server_type, library_id;
 """;
             await using var command = new SqliteCommand(sql, connection);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -792,7 +794,7 @@ CREATE TABLE IF NOT EXISTS {SoundtrackMediaCacheTableName} (
     match_locked INTEGER NOT NULL DEFAULT 0,
     match_retry_count INTEGER NOT NULL DEFAULT 0,
     match_resolved_utc TEXT NULL,
-    updated_at_utc TEXT NOT NULL,
+    {UpdatedAtUtcColumnName} TEXT NOT NULL,
     UNIQUE(server_type, library_id, item_id)
 );
 
@@ -800,7 +802,7 @@ CREATE INDEX IF NOT EXISTS idx_soundtrack_media_cache_filters
 ON {SoundtrackMediaCacheTableName} (category, is_active, server_type, library_id, title COLLATE NOCASE);
 
 CREATE INDEX IF NOT EXISTS idx_soundtrack_media_cache_updated
-ON {SoundtrackMediaCacheTableName} (updated_at_utc DESC);
+ON {SoundtrackMediaCacheTableName} ({UpdatedAtUtcColumnName} DESC);
 
 CREATE TABLE IF NOT EXISTS soundtrack_library_sync_state (
     server_type TEXT NOT NULL,
@@ -813,7 +815,7 @@ CREATE TABLE IF NOT EXISTS soundtrack_library_sync_state (
     last_sync_utc TEXT NULL,
     last_success_utc TEXT NULL,
     last_error TEXT NULL,
-    updated_at_utc TEXT NOT NULL,
+    {UpdatedAtUtcColumnName} TEXT NOT NULL,
     PRIMARY KEY(server_type, library_id)
 );
 
@@ -822,12 +824,12 @@ CREATE TABLE IF NOT EXISTS soundtrack_tv_show_cache (
     library_id TEXT NOT NULL,
     show_id TEXT NOT NULL,
     payload_json TEXT NOT NULL,
-    updated_at_utc TEXT NOT NULL,
+    {UpdatedAtUtcColumnName} TEXT NOT NULL,
     PRIMARY KEY(server_type, library_id, show_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_soundtrack_tv_show_cache_updated
-ON soundtrack_tv_show_cache (updated_at_utc DESC);
+ON soundtrack_tv_show_cache ({UpdatedAtUtcColumnName} DESC);
 """;
 
             await using (var schemaCommand = new SqliteCommand(schemaSql, connection))

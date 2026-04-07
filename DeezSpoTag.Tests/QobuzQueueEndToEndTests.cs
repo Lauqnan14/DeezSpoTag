@@ -34,7 +34,7 @@ public sealed class QobuzQueueEndToEndTests
 
             using var loggerFactory = LoggerFactory.Create(builder => builder.AddDebug());
             var queueRepository = new DownloadQueueRepository(config, loggerFactory.CreateLogger<DownloadQueueRepository>());
-            var settingsService = new DeezSpoTagSettingsService(config, loggerFactory.CreateLogger<DeezSpoTagSettingsService>());
+            var settingsService = new DeezSpoTagSettingsService(loggerFactory.CreateLogger<DeezSpoTagSettingsService>());
             var settings = settingsService.LoadSettings();
             settings.DownloadLocation = Path.Join(tempRoot, "downloads");
             settingsService.SaveSettings(settings);

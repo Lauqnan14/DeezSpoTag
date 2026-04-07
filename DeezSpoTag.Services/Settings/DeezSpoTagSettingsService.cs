@@ -79,12 +79,6 @@ public class DeezSpoTagSettingsService : ISettingsService
         ConsolidateDuplicateConfigFiles(dataRoot, _settingsFilePath);
     }
 
-    [Obsolete("Use DeezSpoTagSettingsService(ILogger<DeezSpoTagSettingsService>)")]
-    public DeezSpoTagSettingsService(IConfiguration _unusedConfiguration, ILogger<DeezSpoTagSettingsService> logger)
-        : this(logger)
-    {
-    }
-
     private static string ResolveConfigFolder(string configRoot)
     {
         var normalized = (configRoot ?? string.Empty).Trim();

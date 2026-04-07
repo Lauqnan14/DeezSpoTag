@@ -61,7 +61,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             new StubHttpClientFactory(),
             new StubWebHostEnvironment(_tempRoot),
             NullLogger<PlaylistVisualService>.Instance);
-        _settingsService = new DeezSpoTagSettingsService(config, NullLogger<DeezSpoTagSettingsService>.Instance);
+        _settingsService = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
         var settings = _settingsService.LoadSettings();
         settings.WatchEnabled = true;
         settings.WatchPollIntervalSeconds = 1;
