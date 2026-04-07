@@ -14,7 +14,7 @@
          - VersionPrefix tracks major.minor.patch
          - VersionRevision tracks per-change revision (0-9), then rolls patch -->
     <VersionPrefix>0.1.8</VersionPrefix>
-    <VersionRevision>5</VersionRevision>
+    <VersionRevision>6</VersionRevision>
     <Version>$(VersionPrefix)</Version>
     <AssemblyVersion>$(VersionPrefix).$(VersionRevision)</AssemblyVersion>
     <FileVersion>$(VersionPrefix).$(VersionRevision)</FileVersion>
