@@ -224,8 +224,24 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             }
             await MarkQueueItemCompletedAsync(next.QueueUuid, queueContext.Payload, itemToken);
         }
-        catch (OperationCanceledException) when (itemToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (itemToken.IsCancellationRequested)
         {
+            if (_cancellationRegistry.WasTimedOut(next.QueueUuid))
+            {
+                var timeoutException = new TimeoutException(
+                    DownloadQueueRecoveryPolicy.BuildStallTimeoutMessage(EngineName),
+                    ex);
+                if (queueContext != null)
+                {
+                    await HandleDownloadFailureAsync(next, queueContext.Payload, timeoutException.Message, stoppingToken, CancellationToken.None);
+                    return;
+                }
+
+                await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, timeoutException.Message, cancellationToken: CancellationToken.None);
+                ScheduleRetryIfEligible(next.QueueUuid, timeoutException.Message);
+                return;
+            }
+
             await HandleCanceledQueueItemAsync(next.QueueUuid);
         }
         catch (OperationCanceledException ex) when (!itemToken.IsCancellationRequested && !stoppingToken.IsCancellationRequested)

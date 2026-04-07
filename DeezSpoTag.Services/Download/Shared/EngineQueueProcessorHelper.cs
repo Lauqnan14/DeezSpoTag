@@ -205,8 +205,32 @@ internal static class EngineQueueProcessorHelper
             });
             deps.Listener.SendFinishDownload(next.QueueUuid, callbacks.ResolveFinishTitle(payload) ?? string.Empty);
         }
-        catch (OperationCanceledException) when (itemToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (itemToken.IsCancellationRequested)
         {
+            if (deps.CancellationRegistry.WasTimedOut(next.QueueUuid))
+            {
+                var timeoutException = new TimeoutException(
+                    DownloadQueueRecoveryPolicy.BuildStallTimeoutMessage(engineName),
+                    ex);
+                var failureContext = new EngineAudioPostDownloadHelper.FailureHandlingContext<TPayload>(
+                    deps.QueueRepository,
+                    deps.ActivityLog,
+                    deps.Listener,
+                    deps.RetryScheduler,
+                    deps.ServiceProvider,
+                    deps.FallbackCoordinator.TryAdvanceAsync,
+                    callbacks.ToQueuePayload,
+                    engineName,
+                    deps.Logger);
+                await EngineAudioPostDownloadHelper.HandleFailureAsync(
+                    timeoutException,
+                    next.QueueUuid,
+                    payload,
+                    failureContext,
+                    stoppingToken);
+                return;
+            }
+
             var cancellationContext = new EngineAudioPostDownloadHelper.CancellationHandlingContext(
                 deps.QueueRepository,
                 deps.CancellationRegistry,

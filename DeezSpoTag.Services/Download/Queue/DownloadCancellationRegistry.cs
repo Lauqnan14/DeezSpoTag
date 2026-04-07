@@ -7,6 +7,7 @@ public sealed class DownloadCancellationRegistry
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _active = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, bool> _userCanceled = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, bool> _userPaused = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, bool> _timedOut = new(StringComparer.OrdinalIgnoreCase);
 
     public void Register(string queueUuid, CancellationTokenSource cancellationTokenSource)
     {
@@ -22,6 +23,11 @@ public sealed class DownloadCancellationRegistry
         }
 
         return false;
+    }
+
+    public bool IsActive(string queueUuid)
+    {
+        return !string.IsNullOrWhiteSpace(queueUuid) && _active.ContainsKey(queueUuid);
     }
 
     public void MarkUserCanceled(string queueUuid)
@@ -68,9 +74,30 @@ public sealed class DownloadCancellationRegistry
         return false;
     }
 
+    public bool MarkTimedOut(string queueUuid)
+    {
+        return !string.IsNullOrWhiteSpace(queueUuid) && _timedOut.TryAdd(queueUuid, true);
+    }
+
+    public bool WasTimedOut(string queueUuid)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return false;
+        }
+
+        if (_timedOut.TryRemove(queueUuid, out _))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
     public void Remove(string queueUuid)
     {
         _active.TryRemove(queueUuid, out _);
         _userPaused.TryRemove(queueUuid, out _);
+        _timedOut.TryRemove(queueUuid, out _);
     }
 }
