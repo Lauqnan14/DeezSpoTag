@@ -1913,11 +1913,11 @@ LIMIT 1;";
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
+        const string sql = $@"
 INSERT OR IGNORE INTO play_history
     (library_id, plex_user_id, track_id, plex_track_key, plex_rating_key, played_at_utc, play_duration_ms, source, metadata_json)
 VALUES
-    (@libraryId, @plexUserId, @trackId, @plexTrackKey, @plexRatingKey, @playedAtUtc, @durationMs, 'plex', @metadataJson);";
+    (@libraryId, @plexUserId, @trackId, @plexTrackKey, @plexRatingKey, @playedAtUtc, @{DurationMsField}, 'plex', @metadataJson);";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(LibraryIdField, (object?)input.LibraryId ?? DBNull.Value);
         command.Parameters.AddWithValue("plexUserId", input.PlexUserId);
@@ -2549,7 +2549,7 @@ LIMIT 1;";
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
+        const string sql = $@"
 SELECT al.id
 FROM track t
 JOIN album al ON al.id = t.album_id
@@ -2558,14 +2558,14 @@ JOIN track_local tl ON tl.track_id = t.id
 LEFT JOIN audio_file af ON af.id = tl.audio_file_id
 WHERE LOWER(ar.name) = LOWER(@artistName)
   AND LOWER(t.title) = LOWER(@trackTitle)
-  AND (@durationMs IS NULL OR t.duration_ms IS NULL OR ABS(t.duration_ms - @durationMs) <= 2000)
+  AND (@{DurationMsField} IS NULL OR t.duration_ms IS NULL OR ABS(t.duration_ms - @{DurationMsField}) <= 2000)
 ORDER BY af.quality_rank DESC NULLS LAST, t.id DESC
 LIMIT 1;";
 
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("artistName", artistName);
         command.Parameters.AddWithValue("trackTitle", trackTitle);
-        command.Parameters.AddWithValue("durationMs", (object?)durationMs ?? DBNull.Value);
+        command.Parameters.AddWithValue(DurationMsField, (object?)durationMs ?? DBNull.Value);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         if (result is null || result == DBNull.Value)
         {
@@ -6101,7 +6101,7 @@ LIMIT 200;";
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
+        const string sql = $@"
 SELECT MAX(af.quality_rank)
 FROM track t
 JOIN album al ON al.id = t.album_id
@@ -6117,12 +6117,12 @@ WHERE (
         )
       )
   AND LOWER(t.title) = LOWER(@trackTitle)
-  AND (@durationMs IS NULL OR t.duration_ms IS NULL OR ABS(t.duration_ms - @durationMs) <= 2000);";
+  AND (@{DurationMsField} IS NULL OR t.duration_ms IS NULL OR ABS(t.duration_ms - @{DurationMsField}) <= 2000);";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("artistName", artistName);
         command.Parameters.AddWithValue("artistPrimaryName", string.IsNullOrWhiteSpace(artistPrimaryName) ? (object)DBNull.Value : artistPrimaryName.Trim());
         command.Parameters.AddWithValue("trackTitle", trackTitle);
-        command.Parameters.AddWithValue("durationMs", (object?)durationMs ?? DBNull.Value);
+        command.Parameters.AddWithValue(DurationMsField, (object?)durationMs ?? DBNull.Value);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is DBNull or null ? null : Convert.ToInt32(result);
     }
@@ -6360,19 +6360,19 @@ ORDER BY br.artist_name, br.track_title;";
     public async Task<bool> IsQueuedAsync(string artistName, string trackTitle, int? durationMs, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
+        const string sql = $@"
 SELECT EXISTS(
     SELECT 1
     FROM download_task dt
-    WHERE LOWER(dt.artist_name) = LOWER(@artistName)
-      AND LOWER(dt.track_title) = LOWER(@trackTitle)
-      AND dt.status IN ('queued', 'running', 'paused')
-      AND (@durationMs IS NULL OR dt.duration_ms IS NULL OR ABS(dt.duration_ms - @durationMs) <= 2000)
+WHERE LOWER(dt.artist_name) = LOWER(@artistName)
+  AND LOWER(dt.track_title) = LOWER(@trackTitle)
+  AND dt.status IN ('queued', 'running', 'paused')
+  AND (@{DurationMsField} IS NULL OR dt.duration_ms IS NULL OR ABS(dt.duration_ms - @{DurationMsField}) <= 2000)
 );";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("artistName", artistName);
         command.Parameters.AddWithValue("trackTitle", trackTitle);
-        command.Parameters.AddWithValue("durationMs", (object?)durationMs ?? DBNull.Value);
+        command.Parameters.AddWithValue(DurationMsField, (object?)durationMs ?? DBNull.Value);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is not null && result != DBNull.Value && Convert.ToInt64(result) == 1;
     }
@@ -6475,7 +6475,7 @@ SELECT EXISTS(
     LEFT JOIN track_source ts ON ts.track_id = t.id AND ts.source = 'isrc'
     WHERE (LOWER(t.tag_isrc) = LOWER(@isrc) OR LOWER(ts.source_id) = LOWER(@isrc))
 );";
-        const string trackSql = @"
+        const string trackSql = $@"
 SELECT ar.name,
        t.title,
        t.duration_ms
@@ -6484,14 +6484,14 @@ JOIN album al ON al.id = t.album_id
 JOIN artist ar ON ar.id = al.artist_id
 JOIN track_local tl ON tl.track_id = t.id
 WHERE LOWER(ar.name) LIKE LOWER(@artistSearch)
-  AND (@durationMs IS NULL OR t.duration_ms IS NULL OR ABS(t.duration_ms - @durationMs) <= 2000)
+  AND (@{DurationMsField} IS NULL OR t.duration_ms IS NULL OR ABS(t.duration_ms - @{DurationMsField}) <= 2000)
 LIMIT 100;";
 
         await using var isrcCommand = new SqliteCommand(isrcSql, connection);
         isrcCommand.Parameters.AddWithValue("isrc", string.Empty);
         await using var trackCommand = new SqliteCommand(trackSql, connection);
         trackCommand.Parameters.AddWithValue("artistSearch", string.Empty);
-        trackCommand.Parameters.AddWithValue("durationMs", DBNull.Value);
+        trackCommand.Parameters.AddWithValue(DurationMsField, DBNull.Value);
 
         var results = new bool[inputs.Count];
 
@@ -6531,7 +6531,7 @@ SELECT EXISTS(
       AND (@folderId IS NULL OR f.id = @folderId)
       AND (LOWER(t.tag_isrc) = LOWER(@isrc) OR LOWER(ts.source_id) = LOWER(@isrc))
 );";
-        const string trackSql = @"
+        const string trackSql = $@"
 SELECT ar.name,
        t.title,
        t.duration_ms
@@ -6544,7 +6544,7 @@ JOIN folder f ON f.id = af.folder_id
 WHERE f.library_id = @libraryId
   AND (@folderId IS NULL OR f.id = @folderId)
   AND LOWER(ar.name) LIKE LOWER(@artistSearch)
-  AND (@durationMs IS NULL OR t.duration_ms IS NULL OR ABS(t.duration_ms - @durationMs) <= 2000)
+  AND (@{DurationMsField} IS NULL OR t.duration_ms IS NULL OR ABS(t.duration_ms - @{DurationMsField}) <= 2000)
 LIMIT 100;";
 
         await using var isrcCommand = new SqliteCommand(isrcSql, connection);
@@ -6554,7 +6554,7 @@ LIMIT 100;";
 
         await using var trackCommand = new SqliteCommand(trackSql, connection);
         trackCommand.Parameters.AddWithValue("artistSearch", string.Empty);
-        trackCommand.Parameters.AddWithValue("durationMs", DBNull.Value);
+        trackCommand.Parameters.AddWithValue(DurationMsField, DBNull.Value);
         trackCommand.Parameters.AddWithValue(LibraryIdField, libraryId);
         trackCommand.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
 
@@ -7783,9 +7783,9 @@ LIMIT 1;";
 
             if (shouldUpdate)
             {
-                const string updateSql = @"
+                const string updateSql = $@"
 UPDATE track
-SET duration_ms = COALESCE(@durationMs, duration_ms),
+SET duration_ms = COALESCE(@{DurationMsField}, duration_ms),
     lyrics_status = @lyricsStatus,
     lyrics_type = @lyricsType,
     deezer_id = @deezerId,
@@ -7942,7 +7942,7 @@ RETURNING id;";
     private static void AddTrackParameters(SqliteCommand command, LocalTrackScanDto track, int? normalizedTrackDurationMs)
     {
         command.Parameters.AddWithValue("duration", (object?)normalizedTrackDurationMs ?? DBNull.Value);
-        command.Parameters.AddWithValue("durationMs", (object?)normalizedTrackDurationMs ?? DBNull.Value);
+        command.Parameters.AddWithValue(DurationMsField, (object?)normalizedTrackDurationMs ?? DBNull.Value);
         command.Parameters.AddWithValue("disc", (object?)track.Disc ?? DBNull.Value);
         command.Parameters.AddWithValue("trackNo", (object?)track.TrackNo ?? DBNull.Value);
         command.Parameters.AddWithValue("lyricsStatus", (object?)track.LyricsStatus ?? DBNull.Value);

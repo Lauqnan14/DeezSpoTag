@@ -10,8 +10,6 @@ namespace DeezSpoTag.Services.Download.Utils;
 /// </summary>
 public static class DownloadUtils
 {
-    private static readonly string[] AlternateAudioExtensions = { ".mp3", ".flac", ".opus", ".m4a" };
-
     /// <summary>
     /// Check if a track should be downloaded based on overwrite settings (port of checkShouldDownload)
     /// </summary>
@@ -23,87 +21,10 @@ public static class DownloadUtils
         OverwriteOption overwriteFile,
         Track track)
     {
-        if (CanAlwaysDownload(overwriteFile))
-        {
-            return true;
-        }
-
-        var trackAlreadyDownloaded = File.Exists(writepath);
-
-        if (ShouldSkipExistingFile(overwriteFile, trackAlreadyDownloaded))
-        {
-            return false;
-        }
-
-        if (ShouldSkipWhenAnyAudioExtensionExists(overwriteFile, trackAlreadyDownloaded, filepath, filename))
-        {
-            return false;
-        }
-
-        if (ShouldOverwriteLowerBitrate(overwriteFile, trackAlreadyDownloaded, extension, writepath, track))
-        {
-            return true;
-        }
-
-        return !trackAlreadyDownloaded;
-    }
-
-    private static bool CanAlwaysDownload(OverwriteOption overwriteFile)
-        => overwriteFile is OverwriteOption.Overwrite or OverwriteOption.KeepBoth;
-
-    private static bool ShouldSkipExistingFile(OverwriteOption overwriteFile, bool trackAlreadyDownloaded)
-        => trackAlreadyDownloaded && overwriteFile == OverwriteOption.DontOverwrite;
-
-    private static bool ShouldSkipWhenAnyAudioExtensionExists(
-        OverwriteOption overwriteFile,
-        bool trackAlreadyDownloaded,
-        string filepath,
-        string filename)
-    {
-        if (trackAlreadyDownloaded || overwriteFile != OverwriteOption.DontCheckExt)
-        {
-            return false;
-        }
-
-        var baseFilename = Path.Join(filepath, filename);
-        return AlternateAudioExtensions.Any(ext => File.Exists(baseFilename + ext));
-    }
-
-    private static bool ShouldOverwriteLowerBitrate(
-        OverwriteOption overwriteFile,
-        bool trackAlreadyDownloaded,
-        string extension,
-        string writepath,
-        Track track)
-    {
-        if (!trackAlreadyDownloaded
-            || overwriteFile != OverwriteOption.OnlyLowerBitrates
-            || extension != ".mp3")
-        {
-            return false;
-        }
-
-        try
-        {
-            return HasLowerMp3Bitrate(writepath, track);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return false;
-        }
-    }
-
-    private static bool HasLowerMp3Bitrate(string writepath, Track track)
-    {
-        if (track.Duration <= 0)
-        {
-            return false;
-        }
-
-        var stats = new FileInfo(writepath);
-        var fileSizeKb = (stats.Length * 8d) / 1024d;
-        var bitrateApprox = fileSizeKb / track.Duration;
-        return track.Bitrate == 3 && bitrateApprox < 310;
+        // Queue admission already deduplicates by queue and destination.
+        // The staging folder is a temporary workspace, so an existing file there
+        // must not block a queued download from running, tagging, and being moved.
+        return true;
     }
 
     /// <summary>

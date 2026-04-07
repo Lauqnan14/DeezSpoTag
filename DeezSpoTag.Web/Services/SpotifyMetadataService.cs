@@ -807,9 +807,10 @@ public sealed class SpotifyMetadataService
                 return metadata;
             }
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogWarning(
+                ex,
                 "Spotify playlist metadata lookup timed out after {TimeoutMs}ms for {PlaylistId}; returning lightweight metadata.",
                 (int)metadataTimeout.TotalMilliseconds,
                 playlistId);

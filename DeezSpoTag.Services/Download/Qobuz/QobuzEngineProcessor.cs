@@ -249,15 +249,13 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         string? resolvedIsrc,
         CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(payload.QobuzId))
+        var sourceSelection = ResolveQobuzSource(payload);
+        if (!string.IsNullOrWhiteSpace(payload.QobuzId) && sourceSelection.HasTrackUrl)
         {
-            if (ResolveQobuzSource(payload).HasTrackUrl)
-            {
-                payload.QobuzResolutionSource = "direct_url";
-                payload.QobuzResolutionScore = null;
-                await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
-                return null;
-            }
+            payload.QobuzResolutionSource = "direct_url";
+            payload.QobuzResolutionScore = null;
+            await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
+            return null;
         }
 
         var resolvedTrack = await ResolvePreferredQobuzTrackAsync(payload, resolvedIsrc, cancellationToken);
