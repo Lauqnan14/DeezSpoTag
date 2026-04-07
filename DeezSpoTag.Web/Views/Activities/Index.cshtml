@@ -4421,7 +4421,11 @@ async function deleteFailedTask(taskId) {
 
 async function pauseTask(taskId) {
     try {
-        const response = await fetch(`/api/deezer/download/pause/${taskId}`, { method: 'POST' });
+        const response = await fetch('/Activities/PauseTask', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uuid: taskId })
+        });
         if (!response.ok) {
             throw new Error(await response.text());
         }
@@ -4433,7 +4437,11 @@ async function pauseTask(taskId) {
 
 async function resumeTask(taskId) {
     try {
-        const response = await fetch(`/api/deezer/download/resume/${taskId}`, { method: 'POST' });
+        const response = await fetch('/Activities/ResumeTask', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uuid: taskId })
+        });
         if (!response.ok) {
             throw new Error(await response.text());
         }
@@ -4445,7 +4453,11 @@ async function resumeTask(taskId) {
 
 async function cancelTask(taskId) {
     try {
-        const response = await fetch(`/api/deezer/download/cancel/${taskId}`, { method: 'POST' });
+        const response = await fetch('/Activities/CancelTask', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uuid: taskId })
+        });
         if (!response.ok) {
             throw new Error(await response.text());
         }
@@ -5591,16 +5603,33 @@ if (document.readyState === 'loading') {
     if (clearButton) {
         clearButton.addEventListener('click', async () => {
             const logger = window.DeezSpoTag?.DownloadLogger;
-            if (!logger) return;
+            const status = document.getElementById('download-logs-status');
+            if (!logger || !status) return;
             const confirmed = await DeezSpoTag.ui.confirm('Clear all logs? This cannot be undone.', {
                 title: 'Clear Logs'
             });
             if (!confirmed) {
                 return;
             }
-            fetch('/api/library/scan/logs/clear', { method: 'POST' }).catch(() => {});
-            libraryLogKeys.clear();
-            logger.clear();
+
+            clearButton.disabled = true;
+            try {
+                const response = await fetch('/api/library/scan/logs/clear', { method: 'POST' });
+                if (!response.ok) {
+                    throw new Error(await response.text());
+                }
+
+                libraryLogKeys.clear();
+                logger.clear();
+                status.textContent = 'Logs cleared.';
+            } catch (error) {
+                const message = error && typeof error.message === 'string'
+                    ? error.message
+                    : 'Failed to clear logs.';
+                status.textContent = `Failed to clear logs: ${message}`;
+            } finally {
+                clearButton.disabled = false;
+            }
         });
     }
 

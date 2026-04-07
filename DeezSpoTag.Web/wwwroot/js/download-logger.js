@@ -27,7 +27,7 @@ globalThis.DeezSpoTag = globalThis.DeezSpoTag || {};
             const entry = {
                 timestamp: resolvedTimestamp,
                 level,
-                message: String(message || '').toLowerCase(),
+                message: String(message || ''),
                 engine: context.engine || ''
             };
             this.logs.push(entry);
