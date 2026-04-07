@@ -18,7 +18,19 @@ namespace DeezSpoTag.Web.Controllers.Api;
 
 internal static class EngineDownloadControllerCommon
 {
-    internal readonly record struct BatchEnqueueResult(IReadOnlyList<string> Queued, int Skipped)
+    private static readonly HashSet<string> AlreadyQueuedReasonCodes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "queue_duplicate",
+        "queue_recently_downloaded",
+        "queue_quality_not_higher",
+        "library_duplicate",
+        "library_quality_not_higher"
+    };
+
+    internal readonly record struct BatchEnqueueResult(
+        IReadOnlyList<string> Queued,
+        int Skipped,
+        IReadOnlyDictionary<string, int> SkippedReasons)
     {
         public bool Success => Queued.Count > 0;
     }
@@ -110,7 +122,7 @@ internal static class EngineDownloadControllerCommon
         public required ILogger Logger { get; init; }
         public required Func<DeezSpoTagSettings, IActionResult?> ValidateSettings { get; init; }
         public required Func<TTrack, DeezSpoTagSettings, CancellationToken, Task<TPayload?>> PreparePayloadAsync { get; init; }
-        public required Func<TPayload, int, CancellationToken, Task<bool>> EnqueueAsync { get; init; }
+        public required Func<TPayload, int, CancellationToken, Task<EnqueueOutcome>> EnqueueAsync { get; init; }
         public required Action<TPayload> OnQueued { get; init; }
     }
 
@@ -217,13 +229,14 @@ internal static class EngineDownloadControllerCommon
     public static async Task<BatchEnqueueResult> EnqueueBatchAsync<TTrack, TPayload>(
         IEnumerable<TTrack> tracks,
         Func<TTrack, CancellationToken, Task<TPayload?>> preparePayloadAsync,
-        Func<TPayload, CancellationToken, Task<bool>> enqueueAsync,
+        Func<TPayload, CancellationToken, Task<EnqueueOutcome>> enqueueAsync,
         Action<TPayload> onQueued,
         CancellationToken cancellationToken)
         where TPayload : EngineQueueItemBase
     {
         var queued = new List<string>();
         var skipped = 0;
+        var skippedReasons = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var track in tracks)
         {
@@ -234,7 +247,8 @@ internal static class EngineDownloadControllerCommon
                 continue;
             }
 
-            if (await enqueueAsync(payload, cancellationToken))
+            var outcome = await enqueueAsync(payload, cancellationToken);
+            if (outcome.Success)
             {
                 queued.Add(payload.Id);
                 onQueued(payload);
@@ -242,9 +256,14 @@ internal static class EngineDownloadControllerCommon
             }
 
             skipped++;
+            if (!string.IsNullOrWhiteSpace(outcome.ReasonCode))
+            {
+                skippedReasons.TryGetValue(outcome.ReasonCode, out var reasonCount);
+                skippedReasons[outcome.ReasonCode] = reasonCount + 1;
+            }
         }
 
-        return new BatchEnqueueResult(queued, skipped);
+        return new BatchEnqueueResult(queued, skipped, skippedReasons);
     }
 
     public static async Task<TPayload?> PrepareSpotifyLinkedPayloadAsync<TTrack, TPayload>(
@@ -476,23 +495,53 @@ internal static class EngineDownloadControllerCommon
 
     public static object BuildBatchResponse(string engineLabel, BatchEnqueueResult result)
     {
+        var reasonCodes = result.SkippedReasons.Keys.ToArray();
+        var alreadyQueued = !result.Success
+            && result.SkippedReasons.Count > 0
+            && result.SkippedReasons.Keys.All(IsAlreadyQueuedReasonCode);
+
         return new
         {
             success = result.Success,
             queued = result.Queued,
             skipped = result.Skipped,
-            message = BuildBatchMessage(engineLabel, result)
+            alreadyQueued,
+            reasonCode = reasonCodes.Length == 1 ? reasonCodes[0] : null,
+            reasonCodes,
+            skippedReasons = result.SkippedReasons,
+            message = BuildBatchMessage(engineLabel, result, alreadyQueued)
         };
     }
 
-    private static string BuildBatchMessage(string engineLabel, BatchEnqueueResult result)
+    private static string BuildBatchMessage(string engineLabel, BatchEnqueueResult result, bool alreadyQueued)
     {
         if (!result.Success)
         {
+            if (alreadyQueued)
+            {
+                return "Item already queued";
+            }
+
+            if (result.SkippedReasons.Count > 0)
+            {
+                var topReason = result.SkippedReasons
+                    .OrderByDescending(entry => entry.Value)
+                    .FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(topReason.Key))
+                {
+                    return $"{engineLabel} enqueue skipped: {topReason.Key}";
+                }
+            }
+
             return "Nothing queued";
         }
 
         var skippedSuffix = result.Skipped > 0 ? $", skipped {result.Skipped}" : string.Empty;
         return $"Queued {result.Queued.Count} {engineLabel} item(s){skippedSuffix}";
+    }
+
+    private static bool IsAlreadyQueuedReasonCode(string reasonCode)
+    {
+        return AlreadyQueuedReasonCodes.Contains(reasonCode);
     }
 }

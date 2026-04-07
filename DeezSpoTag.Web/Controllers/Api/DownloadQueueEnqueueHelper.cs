@@ -7,7 +7,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 
 internal static class DownloadQueueEnqueueHelper
 {
-    public static Func<TPayload, int, CancellationToken, Task<bool>> CreateDedupEnqueueDelegate<TPayload>(
+    public static Func<TPayload, int, CancellationToken, Task<EnqueueOutcome>> CreateDedupEnqueueDelegate<TPayload>(
         DownloadQueueRepository queueRepository,
         IDeezSpoTagListener listener,
         ILogger logger)
@@ -30,7 +30,7 @@ internal static class DownloadQueueEnqueueHelper
         return payload => listener.SendAddedToQueue(payloadMapper(payload));
     }
 
-    public static async Task<bool> EnqueueWithDedupAsync<TPayload>(
+    public static async Task<EnqueueOutcome> EnqueueWithDedupAsync<TPayload>(
         TPayload payload,
         int redownloadCooldownMinutes,
         DownloadQueueRepository queueRepository,
@@ -73,7 +73,17 @@ internal static class DownloadQueueEnqueueHelper
                         failed = 0,
                         error = default(string)
                     });
-                    return true;
+                    return EnqueueOutcome.Queued("queue_requeued", "Duplicate triggered retry", duplicate.QueueUuid);
+                }
+
+                if (duplicateStatus is "completed" or "complete")
+                {
+                    logger.LogInformation(
+                        "Skip enqueue (engine={Engine} reason=recently_downloaded): {Artist} - {Title}",
+                        payload.Engine,
+                        payload.Artist,
+                        payload.Title);
+                    return EnqueueOutcome.Skipped("queue_recently_downloaded", "Skipped: track was downloaded recently.");
                 }
             }
 
@@ -82,7 +92,7 @@ internal static class DownloadQueueEnqueueHelper
                 payload.Engine,
                 payload.Artist,
                 payload.Title);
-            return false;
+            return EnqueueOutcome.Skipped("queue_duplicate", "Skipped: matching track is already in queue.");
         }
 
         var existing = await queueRepository.GetByMetadataAsync(payload.Engine, payload.Artist, payload.Title, payload.ContentType, cancellationToken);
@@ -91,7 +101,9 @@ internal static class DownloadQueueEnqueueHelper
             var existingStatus = existing.Status ?? string.Empty;
             if (existingStatus is "queued" or "running" or "paused" || IsCompletedStatus(existingStatus))
             {
-                return false;
+                return IsCompletedStatus(existingStatus)
+                    ? EnqueueOutcome.Skipped("queue_recently_downloaded", "Skipped: track was downloaded recently.")
+                    : EnqueueOutcome.Skipped("queue_duplicate", "Skipped: matching track is already in queue.");
             }
 
             payload.Id = existing.QueueUuid;
@@ -112,7 +124,7 @@ internal static class DownloadQueueEnqueueHelper
                 failed: 0,
                 progress: 0,
                 cancellationToken: cancellationToken);
-            return true;
+            return EnqueueOutcome.Queued("queue_requeued", "Duplicate triggered retry", existing.QueueUuid);
         }
 
         var json = JsonSerializer.Serialize(payload);
@@ -147,7 +159,7 @@ internal static class DownloadQueueEnqueueHelper
             UpdatedAt: DateTimeOffset.UtcNow);
 
         await queueRepository.EnqueueAsync(item, cancellationToken);
-        return true;
+        return EnqueueOutcome.Queued();
     }
 
     private static bool IsCompletedStatus(string status)
@@ -155,4 +167,18 @@ internal static class DownloadQueueEnqueueHelper
         return status.Equals("completed", StringComparison.OrdinalIgnoreCase)
             || status.Equals("complete", StringComparison.OrdinalIgnoreCase);
     }
+}
+
+public readonly record struct EnqueueOutcome(
+    bool Success,
+    bool AlreadyQueued,
+    string? ReasonCode,
+    string? Message,
+    string? QueueUuid)
+{
+    public static EnqueueOutcome Queued(string? reasonCode = null, string? message = null, string? queueUuid = null)
+        => new(true, false, reasonCode, message, queueUuid);
+
+    public static EnqueueOutcome Skipped(string reasonCode, string message)
+        => new(false, true, reasonCode, message, null);
 }

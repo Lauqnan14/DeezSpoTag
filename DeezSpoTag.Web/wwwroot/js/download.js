@@ -468,9 +468,12 @@ DeezSpoTag.Download = {
         this.showNotification(resolvedMessage, notificationType);
         this.logDownloadEvent('info', resolvedMessage);
         this.clearPendingDownload(url, bitrate, destinationFolderId, options);
+        const reasonCodes = Array.isArray(apiError?.reasonCodes)
+            ? apiError.reasonCodes
+            : (apiError?.reasonCode ? [apiError.reasonCode] : []);
         return returnsSuccess
-            ? { success: true, alreadyQueued: true, errorMessage: resolvedMessage, linkType }
-            : { success: false, errorMessage: resolvedMessage, linkType };
+            ? { success: true, alreadyQueued: true, errorMessage: resolvedMessage, linkType, reasonCodes }
+            : { success: false, errorMessage: resolvedMessage, linkType, reasonCodes };
     },
     handleAlreadyQueuedResult(result, {
         url,
@@ -489,7 +492,10 @@ DeezSpoTag.Download = {
         this.showNotification(resolvedMessage, notificationType);
         this.logDownloadEvent('info', resolvedMessage);
         this.clearPendingDownload(url, bitrate, destinationFolderId, options);
-        return { success: true, alreadyQueued: true, linkType };
+        const reasonCodes = Array.isArray(result?.reasonCodes)
+            ? result.reasonCodes
+            : (result?.reasonCode ? [result.reasonCode] : Object.keys(result?.skippedReasons || {}));
+        return { success: true, alreadyQueued: true, linkType, reasonCodes };
     },
     handleQueuedResult(result, {
         url,
@@ -1540,59 +1546,116 @@ DeezSpoTag.Download = {
             return;
         }
 
+        const dedupedUrls = [];
+        const seenUrls = new Set();
+        let inputDuplicates = 0;
+        for (const rawUrl of urls) {
+            const normalizedUrl = String(rawUrl || '').trim();
+            if (!normalizedUrl) {
+                continue;
+            }
+            if (seenUrls.has(normalizedUrl)) {
+                inputDuplicates++;
+                continue;
+            }
+            seenUrls.add(normalizedUrl);
+            dedupedUrls.push(normalizedUrl);
+        }
+
+        if (dedupedUrls.length === 0) {
+            const duplicateOnlyMessage = inputDuplicates > 0
+                ? `No new URLs to add (${inputDuplicates} duplicate input(s) removed).`
+                : 'No valid URLs to add.';
+            this.showNotification(duplicateOnlyMessage, inputDuplicates > 0 ? 'warning' : 'error');
+            return;
+        }
+
         const results = {
             success: 0,
             deferred: 0,
             failed: 0,
             alreadyQueued: 0,
+            inputDuplicates,
+            reasonCounts: {},
             errors: []
         };
 
-        this.enqueuePendingQueueItems(urls, bitrate, destinationId);
-        this.showNotification(`Adding ${urls.length} items to download queue...`, 'info');
+        const inputSummary = inputDuplicates > 0
+            ? ` (+${inputDuplicates} duplicates removed)`
+            : '';
+        this.showNotification(`Adding ${dedupedUrls.length}${inputSummary} items to download queue...`, 'info');
 
-        for (const url of urls) {
-            try {
-                const outcome = await this.addToQueue(url, bitrate, destinationId, { skipPending: true, silent: true });
-                this.recordBatchQueueOutcome(results, outcome, url, bitrate, destinationId);
-            } catch (error) {
-                this.recordBatchQueueError(results, url, error);
-            }
+        const chunkSize = 20;
+        const concurrency = 4;
+        for (let index = 0; index < dedupedUrls.length; index += chunkSize) {
+            const chunk = dedupedUrls.slice(index, index + chunkSize);
+            await this.enqueueBatchChunk(chunk, bitrate, destinationId, results, concurrency);
         }
 
         this.showBatchQueueSummary(results);
     },
+    async enqueueBatchChunk(urls, bitrate, destinationId, results, concurrency) {
+        const queue = [...urls];
+        const workers = Array.from({ length: Math.max(1, Math.min(concurrency, queue.length)) }, async () => {
+            while (queue.length > 0) {
+                const url = queue.shift();
+                if (!url) {
+                    continue;
+                }
+
+                try {
+                    const outcome = await this.addToQueue(url, bitrate, destinationId, { skipPending: true, silent: true });
+                    this.recordBatchQueueOutcome(results, outcome, url, bitrate, destinationId);
+                } catch (error) {
+                    this.recordBatchQueueError(results, url, error);
+                }
+            }
+        });
+
+        await Promise.all(workers);
+    },
     recordBatchQueueOutcome(results, outcome, url, bitrate, destinationId) {
-        const pendingRef = { url, bitrate, destinationFolderId: destinationId };
         if (outcome?.alreadyQueued) {
             results.alreadyQueued++;
-            this.removePendingQueueItem(pendingRef);
+            this.mergeBatchReasonCounts(results, outcome);
             return;
         }
         if (outcome?.deferred) {
             results.deferred++;
-            this.removePendingQueueItem(pendingRef);
             return;
         }
         if (outcome?.success) {
             results.success++;
-            this.removePendingQueueItem(pendingRef);
             return;
         }
         results.failed++;
         results.errors.push(`${url}: ${outcome?.errorMessage || 'Unknown error'}`);
+        this.mergeBatchReasonCounts(results, outcome);
     },
     recordBatchQueueError(results, url, error) {
         results.failed++;
         results.errors.push(`${url}: ${error?.message || 'Unknown error'}`);
+    },
+    mergeBatchReasonCounts(results, outcome) {
+        const reasonCodes = Array.isArray(outcome?.reasonCodes) && outcome.reasonCodes.length > 0
+            ? outcome.reasonCodes
+            : (outcome?.reasonCode ? [outcome.reasonCode] : []);
+        reasonCodes.forEach((reasonCode) => {
+            const normalized = String(reasonCode || '').trim();
+            if (!normalized) {
+                return;
+            }
+            results.reasonCounts[normalized] = (results.reasonCounts[normalized] || 0) + 1;
+        });
     },
     showBatchQueueSummary(results) {
         if (results.success > 0) {
             const deferredSummary = results.deferred > 0 ? ` (${results.deferred} deferred)` : '';
             const alreadyQueuedSummary = results.alreadyQueued > 0 ? ` (${results.alreadyQueued} already queued)` : '';
             const failedSummary = results.failed > 0 ? ` (${results.failed} failed)` : '';
+            const duplicateSummary = results.inputDuplicates > 0 ? ` (${results.inputDuplicates} input duplicates removed)` : '';
             this.showQueueToast(
-                `Successfully added ${results.success} items to queue${deferredSummary}${alreadyQueuedSummary}${failedSummary}`,
+                `Successfully added ${results.success} items to queue${duplicateSummary}${deferredSummary}${alreadyQueuedSummary}${failedSummary}`,
                 results.failed > 0 || results.alreadyQueued > 0 || results.deferred > 0 ? 'warning' : 'success'
             );
             return;
@@ -1607,11 +1670,31 @@ DeezSpoTag.Download = {
         }
 
         if (results.alreadyQueued > 0 && results.failed === 0) {
-            this.showNotification(`All ${results.alreadyQueued} items were already queued`, 'warning');
+            const reasonSummary = this.formatBatchReasonSummary(results.reasonCounts);
+            const duplicateSummary = results.inputDuplicates > 0 ? ` and ${results.inputDuplicates} duplicate input(s)` : '';
+            this.showNotification(
+                `All ${results.alreadyQueued} items were already queued${duplicateSummary}${reasonSummary}`,
+                'warning'
+            );
             return;
         }
 
-        this.showNotification('Failed to add any items to queue', 'error');
+        const reasonSummary = this.formatBatchReasonSummary(results.reasonCounts);
+        const duplicateSummary = results.inputDuplicates > 0 ? ` (${results.inputDuplicates} duplicate input(s) removed)` : '';
+        this.showNotification(`Failed to add any items to queue${duplicateSummary}${reasonSummary}`, 'error');
+    },
+    formatBatchReasonSummary(reasonCounts) {
+        const entries = Object.entries(reasonCounts || {});
+        if (entries.length === 0) {
+            return '';
+        }
+
+        const summary = entries
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3)
+            .map(([reason, count]) => `${reason} (${count})`)
+            .join(', ');
+        return summary ? ` [${summary}]` : '';
     },
     loadPendingQueue() {
         try {
