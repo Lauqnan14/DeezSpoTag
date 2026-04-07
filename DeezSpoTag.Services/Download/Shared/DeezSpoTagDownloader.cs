@@ -408,7 +408,10 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
             {
                 var profile = await resolver.ResolveProfileAsync(DownloadObject.DestinationFolderId, _cancellationTokenSource.Token);
                 _resolvedTagSettings = TagSettingsMerge.UseProfileOnly(profile?.TagSettings);
-                _resolvedDownloadTagSource = NormalizeDownloadTagSource(profile?.DownloadTagSource);
+                _resolvedDownloadTagSource = DownloadTagSourceHelper.ResolveMetadataSource(
+                    profile?.DownloadTagSource,
+                    DeezerSource,
+                    Settings.Service);
                 Settings.MetadataSource = _resolvedDownloadTagSource ?? string.Empty;
             }
 
@@ -425,17 +428,6 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
 
         return _resolvedTagSettings ?? Settings.Tags ?? new TagSettings();
     }
-
-    private static string? NormalizeDownloadTagSource(string? downloadTagSource)
-    {
-        return downloadTagSource?.Trim().ToLowerInvariant() switch
-        {
-            SpotifySource => SpotifySource,
-            DeezerSource => DeezerSource,
-            _ => null
-        };
-    }
-
     private async Task<string?> ResolveEpisodeStreamUrlAsync(string? episodeId, string? showId)
     {
         if (string.IsNullOrWhiteSpace(episodeId))

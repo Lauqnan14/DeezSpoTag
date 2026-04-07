@@ -196,6 +196,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             payload.DestinationFolderId,
             _logger,
             itemToken,
+            currentEngine: EngineName,
             wrapResolutionExceptions: false);
         await _folderConversionSettingsOverlay.ApplyAsync(settings, payload.DestinationFolderId, itemToken);
 

@@ -196,7 +196,6 @@ public sealed class DownloadIntentService
     private const string EnglishUsLocale = "en-US";
     private const string SongsField = "songs";
     private const string SonglinkSpotifyKey = "songlink-spotify";
-    private const string DefaultDownloadMetadataSource = DeezerPlatform;
     private const string AppleMusicDomain = "music.apple.com";
     private const string DeezerDomain = "deezer.com";
     private const string QobuzDomain = "qobuz.com";
@@ -814,11 +813,12 @@ public sealed class DownloadIntentService
     }
 
     private async Task<(bool Applied, string? Error)> ApplyDownloadProfileOverridesAsync(
+        DownloadIntent intent,
         DeezSpoTagSettings settings,
         long? destinationFolderId,
         CancellationToken cancellationToken)
     {
-        settings.MetadataSource = DefaultDownloadMetadataSource;
+        settings.MetadataSource = string.Empty;
 
         try
         {
@@ -828,9 +828,13 @@ public sealed class DownloadIntentService
                 return (false, "Destination music folder requires a valid AutoTag profile.");
             }
 
-            var normalizedSource = NormalizeMetadataSource(profile.DownloadTagSource) ?? DefaultDownloadMetadataSource;
+            var normalizedSource = DownloadTagSourceHelper.ResolveMetadataSource(
+                profile.DownloadTagSource,
+                intent.PreferredEngine,
+                settings.Service,
+                intent.SourceService);
 
-            DownloadEngineSettingsHelper.ApplyResolvedProfileToSettings(settings, profile, normalizedSource);
+            DownloadEngineSettingsHelper.ApplyResolvedProfileToSettings(settings, profile, metadataSourceOverride: normalizedSource ?? string.Empty);
             return (true, null);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1040,9 +1044,7 @@ public sealed class DownloadIntentService
             settings.FallbackBitrate = true;
         }
 
-        settings.MetadataSource = string.IsNullOrWhiteSpace(settings.MetadataSource)
-            ? DefaultDownloadMetadataSource
-            : settings.MetadataSource;
+        settings.MetadataSource = NormalizeMetadataSource(settings.MetadataSource) ?? string.Empty;
     }
 
     private static bool NormalizeIntentContentType(DownloadIntent intent)
@@ -1519,7 +1521,7 @@ public sealed class DownloadIntentService
             return null;
         }
 
-        var profileResult = await ApplyDownloadProfileOverridesAsync(preparation.Settings, preparation.MetadataDestinationFolderId, cancellationToken);
+        var profileResult = await ApplyDownloadProfileOverridesAsync(intent, preparation.Settings, preparation.MetadataDestinationFolderId, cancellationToken);
         if (profileResult.Applied)
         {
             return null;
@@ -2449,8 +2451,11 @@ public sealed class DownloadIntentService
         var isBoomplaySource = BoomplayMetadataService.IsBoomplayUrl(sourceUrl)
             || string.Equals(intent.SourceService, "boomplay", StringComparison.OrdinalIgnoreCase);
 
-        var metadataSource = NormalizeMetadataSource(settings.MetadataSource) ?? DefaultDownloadMetadataSource;
-        await PopulatePreferredMetadataSourceAsync(intent, metadataSource, sourceUrl, cancellationToken);
+        var metadataSource = NormalizeMetadataSource(settings.MetadataSource);
+        if (!string.IsNullOrWhiteSpace(metadataSource))
+        {
+            await PopulatePreferredMetadataSourceAsync(intent, metadataSource, sourceUrl, cancellationToken);
+        }
 
         if (isBoomplaySource)
         {
@@ -2592,12 +2597,7 @@ public sealed class DownloadIntentService
 
     private static string? NormalizeMetadataSource(string? metadataSource)
     {
-        return metadataSource?.Trim().ToLowerInvariant() switch
-        {
-            SpotifyPlatform => SpotifyPlatform,
-            DeezerPlatform => DeezerPlatform,
-            _ => null
-        };
+        return DownloadTagSourceHelper.NormalizeMetadataResolverSource(metadataSource);
     }
 
     private static bool ShouldOverwriteString(bool overwriteExisting, string? existingValue, string? resolvedValue) =>
