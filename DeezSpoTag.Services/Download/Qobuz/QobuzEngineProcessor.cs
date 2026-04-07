@@ -129,9 +129,14 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         var progressReporter = CreateProgressReporter(next.QueueUuid, itemToken);
         _activityLog.Info($"Download start: {next.QueueUuid} engine={EngineName} quality={request.Quality}");
 
+        var explicitQobuzTrackId = ExtractQobuzTrackId(payload.SourceUrl) ?? ExtractQobuzTrackId(payload.Url);
+        if (explicitQobuzTrackId.HasValue && string.IsNullOrWhiteSpace(payload.QobuzId))
+        {
+            payload.QobuzId = explicitQobuzTrackId.Value.ToString();
+        }
+
         var resolvedIsrc = await ResolveIsrcAsync(payload, itemToken);
-        var resolvedTrack = await ResolveAndPersistPreferredTrackAsync(next.QueueUuid, payload, resolvedIsrc, itemToken);
-        request.Quality = CapRequestedQualityByTrackCapabilities(request.Quality, resolvedTrack?.Track);
+        await ResolveAndPersistPreferredTrackAsync(next.QueueUuid, payload, resolvedIsrc, itemToken);
         payload.QobuzResolvedQuality = request.Quality;
         payload.Quality = request.Quality;
         await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, next.QueueUuid, payload, cancellationToken: itemToken);
@@ -244,6 +249,17 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         string? resolvedIsrc,
         CancellationToken cancellationToken)
     {
+        if (!string.IsNullOrWhiteSpace(payload.QobuzId))
+        {
+            if (ResolveQobuzSource(payload).HasTrackUrl)
+            {
+                payload.QobuzResolutionSource = "direct_url";
+                payload.QobuzResolutionScore = null;
+                await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
+                return null;
+            }
+        }
+
         var resolvedTrack = await ResolvePreferredQobuzTrackAsync(payload, resolvedIsrc, cancellationToken);
         if (resolvedTrack == null)
         {
@@ -702,41 +718,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             request,
             cancellationToken);
     }
-
-    private static string CapRequestedQualityByTrackCapabilities(string requestedQuality, DeezSpoTag.Core.Models.Qobuz.QobuzTrack? resolvedTrack)
-    {
-        var normalizedRequested = QobuzQualityCodeNormalizer.Normalize(requestedQuality, "6");
-        if (resolvedTrack == null)
-        {
-            return normalizedRequested;
-        }
-
-        var availableMax = InferMaxAvailableQobuzQuality(resolvedTrack);
-        return QobuzQualityRank(normalizedRequested) > QobuzQualityRank(availableMax)
-            ? availableMax
-            : normalizedRequested;
-    }
-
-    private static string InferMaxAvailableQobuzQuality(DeezSpoTag.Core.Models.Qobuz.QobuzTrack track)
-    {
-        var bitDepth = Math.Max(0, track.MaximumBitDepth);
-        var sampleRate = Math.Max(0d, track.MaximumSamplingRate);
-        if (bitDepth >= 24)
-        {
-            return sampleRate >= 96d ? "27" : "7";
-        }
-
-        return "6";
-    }
-
-    private static int QobuzQualityRank(string qualityCode)
-        => qualityCode switch
-        {
-            "27" => 3,
-            "7" => 2,
-            "6" => 1,
-            _ => 0
-        };
 
     private string? TryInferActualQobuzQuality(string filePath)
     {
