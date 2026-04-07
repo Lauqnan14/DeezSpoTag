@@ -394,12 +394,14 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
     {
         if (_tagSettingsResolved)
         {
-            Settings.MetadataSource = _resolvedDownloadTagSource ?? string.Empty;
+            Settings.MetadataSource = _resolvedDownloadTagSource
+                ?? DownloadTagSourceHelper.NormalizeMetadataResolverSource(Settings.MetadataSource)
+                ?? string.Empty;
             return _resolvedTagSettings ?? Settings.Tags ?? new TagSettings();
         }
 
         _tagSettingsResolved = true;
-        Settings.MetadataSource = string.Empty;
+        Settings.MetadataSource = DownloadTagSourceHelper.NormalizeMetadataResolverSource(Settings.MetadataSource) ?? string.Empty;
         try
         {
             using var scope = _serviceProvider.CreateScope();
@@ -412,7 +414,7 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
                     profile?.DownloadTagSource,
                     DeezerSource,
                     Settings.Service);
-                Settings.MetadataSource = _resolvedDownloadTagSource ?? string.Empty;
+                Settings.MetadataSource = _resolvedDownloadTagSource ?? Settings.MetadataSource;
             }
 
             var conversionOverlay = scope.ServiceProvider.GetService<IFolderConversionSettingsOverlay>();

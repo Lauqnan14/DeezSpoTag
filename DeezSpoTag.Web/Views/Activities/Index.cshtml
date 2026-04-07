@@ -4545,7 +4545,7 @@ function startQueuePolling() {
 }
 
 function mapQueueItem(item) {
-    const resolvedEngine = item.sourceService || item.source_service || item.engine;
+    const resolvedEngine = resolveQueueDisplayEngine(item);
     const rawQuality = item.quality || item.Quality || item.bitrate || item.Bitrate || '';
     const contentType = String(item.contentType || item.ContentType || '').toLowerCase();
     const isVideo = contentType === 'video' || String(rawQuality).toLowerCase().startsWith('video-');
@@ -4565,6 +4565,20 @@ function mapQueueItem(item) {
         lyricsBadges: getLyricsBadges(item),
         cover: getCoverFromPayload(item)
     };
+}
+
+function resolveQueueDisplayEngine(item) {
+    if (!item || typeof item !== 'object') {
+        return '';
+    }
+
+    // The queue engine is the resolved downloader currently assigned to the item.
+    // sourceService can be the originating link source and may legitimately differ.
+    return item.engine
+        || item.Engine
+        || item.sourceService
+        || item.source_service
+        || '';
 }
 
 function resolveVideoBadges(item, rawQuality) {
@@ -5056,6 +5070,12 @@ function applyQueueRealtimeUpdate(payload) {
     if (task) {
         if (status && task.status !== status) {
             task.status = status;
+            taskChanged = true;
+        }
+        const nextEngineRaw = resolveQueueDisplayEngine(update);
+        const nextEngine = nextEngineRaw ? normalizeEngine(nextEngineRaw) : '';
+        if (nextEngine && task.engine !== nextEngine) {
+            task.engine = nextEngine;
             taskChanged = true;
         }
         if (nextProgress !== null && task.progress !== nextProgress) {

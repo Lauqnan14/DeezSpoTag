@@ -16,8 +16,6 @@ public static class DownloadEngineSettingsHelper
         bool wrapResolutionExceptions = true,
         bool requireProfile = true)
     {
-        settings.MetadataSource = string.Empty;
-
         if (!wrapResolutionExceptions)
         {
             var unwrappedProfile = await resolver.ResolveProfileAsync(destinationFolderId, cancellationToken);
@@ -107,7 +105,9 @@ public static class DownloadEngineSettingsHelper
         var normalizedSource = metadataSourceOverride != null
             ? DownloadTagSourceHelper.NormalizeMetadataResolverSource(metadataSourceOverride)
             : DownloadTagSourceHelper.ResolveMetadataSource(profile.DownloadTagSource, currentEngine, settings.Service);
-        settings.MetadataSource = normalizedSource ?? string.Empty;
+        settings.MetadataSource = normalizedSource
+            ?? DownloadTagSourceHelper.NormalizeMetadataResolverSource(settings.MetadataSource)
+            ?? string.Empty;
         TechnicalLyricsSettingsApplier.Apply(settings, profile.Technical);
 
         var folder = profile.FolderStructure;

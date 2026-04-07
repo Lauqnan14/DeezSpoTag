@@ -199,9 +199,13 @@ namespace DeezSpoTag.Web.Controllers.Api
         private static bool ShouldBypassDirectDeezerRouting(string url, string inferredSourceService, DownloadIntent? inputMetadata)
         {
             var isDirectDeezerPodcastUrl = IsDeezerShowUrl(url) || IsDeezerEpisodeUrl(url);
+            var hasNonDeezerSourceOverride = !string.IsNullOrWhiteSpace(inputMetadata?.SourceService)
+                && !string.Equals(inputMetadata!.SourceService, DeezerSource, StringComparison.OrdinalIgnoreCase);
+            var hasNonDeezerEngineOverride = !string.IsNullOrWhiteSpace(inputMetadata?.PreferredEngine)
+                && !string.Equals(inputMetadata!.PreferredEngine, DeezerSource, StringComparison.OrdinalIgnoreCase);
+
             return string.Equals(inferredSourceService, DeezerSource, StringComparison.OrdinalIgnoreCase)
-                && !string.IsNullOrWhiteSpace(inputMetadata?.SourceService)
-                && !string.Equals(inputMetadata!.SourceService, DeezerSource, StringComparison.OrdinalIgnoreCase)
+                && (hasNonDeezerSourceOverride || hasNonDeezerEngineOverride)
                 && !isDirectDeezerPodcastUrl;
         }
 
@@ -1196,6 +1200,7 @@ namespace DeezSpoTag.Web.Controllers.Api
             {
                 SourceService = ReadString(metadata, "sourceService") ?? string.Empty,
                 SourceUrl = ReadString(metadata, "sourceUrl") ?? string.Empty,
+                PreferredEngine = ReadString(metadata, "preferredEngine") ?? string.Empty,
                 DeezerId = ReadString(metadata, "deezerId") ?? string.Empty,
                 DeezerAlbumId = ReadString(metadata, "deezerAlbumId") ?? string.Empty,
                 DeezerArtistId = ReadString(metadata, "deezerArtistId") ?? string.Empty,
@@ -1279,6 +1284,8 @@ namespace DeezSpoTag.Web.Controllers.Api
 
         private static void CopyBehaviorMetadata(DownloadIntent target, DownloadIntent metadata)
         {
+            SetTextIfEmpty(target.PreferredEngine, metadata.PreferredEngine, value => target.PreferredEngine = value);
+
             if (!target.HasAtmos && metadata.HasAtmos)
             {
                 target.HasAtmos = true;

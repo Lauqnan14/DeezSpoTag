@@ -3322,6 +3322,14 @@ async function saveSettings(showSuccessToast = true) {
         if (response.ok && result?.result !== false) {
             await saveLibraryScanSettings();
             currentSettings = settings;
+            if (window.DeezSpoTagDownload && typeof window.DeezSpoTagDownload.applyUpdatedSettings === 'function') {
+                window.DeezSpoTagDownload.applyUpdatedSettings(settings);
+            }
+            window.dispatchEvent(new CustomEvent('deezspotag:settings-updated', {
+                detail: {
+                    settings
+                }
+            }));
             persistAppleNotificationPreference();
             if (showSuccessToast) {
                 showToast('Settings saved successfully!', 'success');
