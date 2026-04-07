@@ -23,9 +23,11 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
+[Collection("Settings Config Isolation")]
 public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
 {
     private string _tempRoot = string.Empty;
+    private TestConfigRootScope _configScope = default!;
     private LibraryRepository _repository = default!;
     private LibraryConfigStore _configStore = default!;
     private PlaylistVisualService _playlistVisualService = default!;
@@ -36,6 +38,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     {
         _tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-watch-hosted-tests-" + Path.GetRandomFileName());
         Directory.CreateDirectory(_tempRoot);
+        _configScope = new TestConfigRootScope(_tempRoot);
 
         var dbPath = Path.Join(_tempRoot, "library.db");
         var config = new ConfigurationBuilder()
@@ -108,6 +111,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     public Task DisposeAsync()
     {
         _provider?.Dispose();
+        _configScope?.Dispose();
         try
         {
             if (!string.IsNullOrWhiteSpace(_tempRoot) && Directory.Exists(_tempRoot))

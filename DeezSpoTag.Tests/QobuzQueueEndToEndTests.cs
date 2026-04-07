@@ -12,6 +12,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
+[Collection("Settings Config Isolation")]
 public sealed class QobuzQueueEndToEndTests
 {
     [Fact]
@@ -19,6 +20,7 @@ public sealed class QobuzQueueEndToEndTests
     {
         var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-qobuz-test-" + Path.GetRandomFileName());
         Directory.CreateDirectory(tempRoot);
+        using var configScope = new TestConfigRootScope(tempRoot);
         try
         {
             var queueDb = Path.Join(tempRoot, "queue.db");
