@@ -2967,6 +2967,7 @@ let queueState = 'paused';
 let tasks = [];
 let queuePollTimeoutId = null;
 let queuePollInFlight = false;
+let queueLoadRequestSequence = 0;
 let queueVisibilityHandlerAttached = false;
 const queueProgressCache = {};
 const queueProgressTextAnimationByTask = {};
@@ -4459,6 +4460,7 @@ async function loadQueueFromServer(options) {
     if (queuePollInFlight && !force) {
         return;
     }
+    const requestSequence = ++queueLoadRequestSequence;
     queuePollInFlight = true;
     try {
         const cacheBuster = Date.now();
@@ -4480,6 +4482,10 @@ async function loadQueueFromServer(options) {
         const queueOrder = payload.data?.queueOrder || [];
         const ordered = [];
 
+        if (requestSequence !== queueLoadRequestSequence) {
+            return;
+        }
+
         queueOrder.forEach(uuid => {
             if (queue[uuid]) {
                 ordered.push(mapQueueItem(queue[uuid]));
@@ -4492,14 +4498,16 @@ async function loadQueueFromServer(options) {
 	            }
 	        });
 
-	        tasks = ordered;
-	        clearMissingQueueActivity(tasks);
-	        scheduleRenderTasks();
-	        updateStats();
-	        queueState = deriveQueueState(tasks);
-	        updateQueueButtons();
-	        updateToggleQueueUi(queueState);
-	    } catch (error) {
+        if (requestSequence === queueLoadRequestSequence) {
+            tasks = ordered;
+            clearMissingQueueActivity(tasks);
+            scheduleRenderTasks();
+            updateStats();
+            queueState = deriveQueueState(tasks);
+            updateQueueButtons();
+            updateToggleQueueUi(queueState);
+        }
+    } catch (error) {
         console.error('Failed to load queue:', error);
     } finally {
         queuePollInFlight = false;
