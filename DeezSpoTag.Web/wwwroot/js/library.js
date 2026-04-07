@@ -2007,8 +2007,7 @@ function clearPreviewPlayingMarkers(exceptButton = null) {
             return;
         }
 
-        activeButton.classList.remove('is-playing');
-        activeButton.classList.remove('is-starting');
+        activeButton.classList.remove('is-playing', 'is-starting');
         delete activeButton.dataset.playbackState;
         const row = activeButton.closest('.top-song-item, .home-top-song-item');
         if (row) {

@@ -120,7 +120,7 @@
         return {
             ...payload,
             available,
-            deezerId: available ? deezerId : deezerId,
+            deezerId,
             reasonCode: String(payload.reasonCode || payload.reason || (available ? '' : fallbackReasonCode)).trim()
         };
     }

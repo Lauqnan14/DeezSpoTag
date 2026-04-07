@@ -3212,33 +3212,6 @@
         return isPlatformAuthenticated(platform.id);
     }
 
-    function enforceAuthenticatedPlatformSelection(options = {}) {
-        if (!Array.isArray(state.config.platforms) || !state.platforms.length) {
-            return false;
-        }
-
-        const allowPendingAuth = options.allowPendingAuth === true;
-        const allowed = new Set(
-            state.platforms
-                .filter((platform) => {
-                    if (!platform?.requiresAuth) {
-                        return true;
-                    }
-                    if (!state.authReady && allowPendingAuth) {
-                        return true;
-                    }
-                    return isPlatformAuthenticated(platform.id);
-                })
-                .map((platform) => platform.id));
-        const filtered = state.config.platforms.filter((id) => allowed.has(id));
-        const changed = filtered.length !== state.config.platforms.length
-            || filtered.some((id, index) => state.config.platforms[index] !== id);
-        if (changed) {
-            state.config.platforms = filtered;
-        }
-        return changed;
-    }
-
     function mergeStoredAuth(config, data) {
         if (!data) {
             return;
