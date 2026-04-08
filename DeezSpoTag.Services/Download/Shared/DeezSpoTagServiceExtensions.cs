@@ -23,6 +23,7 @@ public static class DeezSpoTagServiceExtensions
     public static IServiceCollection AddDeezSpoTagQueue(this IServiceCollection services)
     {
         services.AddSingleton<DownloadQueueRepository>();
+        services.AddSingleton<DownloadQueueRecoveryRuntime>();
         services.AddSingleton<DownloadQueueRecoveryService>();
         services.TryAddSingleton<IDownloadTagSettingsResolver, NullDownloadTagSettingsResolver>();
         services.AddSingleton<PostDownloadTaskScheduler>();

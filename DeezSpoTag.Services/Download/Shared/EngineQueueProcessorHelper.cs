@@ -48,6 +48,21 @@ internal static class EngineQueueProcessorHelper
         ILogger Logger,
         string EngineName);
 
+    private readonly record struct ExecutionState(
+        object Request,
+        EngineAudioPostDownloadHelper.EngineTrackContext? Context,
+        Func<double, double, Task> ProgressReporter);
+
+    private readonly record struct QueueWorkContext<TPayload>(
+        DownloadQueueItem Item,
+        TPayload Payload,
+        string EngineName,
+        ProcessorDeps Deps,
+        ProcessorCallbacks<TPayload> Callbacks,
+        DeezSpoTagSettings Settings,
+        CancellationToken ItemToken)
+        where TPayload : EngineQueueItemBase;
+
     public static async Task ProcessQueueItemAsync<TPayload>(
         DownloadQueueItem next,
         string engineName,
@@ -66,232 +81,345 @@ internal static class EngineQueueProcessorHelper
 
         try
         {
-            var initializeContext = new EngineAudioPostDownloadHelper.InitializeQueueItemContext<TPayload>(
-                deps.QueueRepository,
-                deps.RetryScheduler,
-                deps.ActivityLog,
-                deps.TagSettingsResolver,
-                deps.FolderConversionSettingsOverlay,
-                deps.Listener,
-                deps.FallbackCoordinator.TryAdvanceAsync,
-                callbacks.ToQueuePayload,
-                settings,
-                engineName,
-                deps.Logger);
-            payload = await EngineAudioPostDownloadHelper.InitializeQueueItemAsync(
-                next,
-                next.PayloadJson,
-                QueueHelperUtils.DeserializeQueueItem<TPayload>,
-                initializeContext,
-                itemToken);
+            payload = await InitializePayloadAsync(next, engineName, deps, callbacks, settings, itemToken);
             if (payload == null)
             {
                 return;
             }
 
-            if (callbacks.PreparePayloadAsync is not null)
-            {
-                await callbacks.PreparePayloadAsync(payload, itemToken);
-            }
-
-            EngineAudioPostDownloadHelper.EngineTrackContext? context = null;
-            using (var scope = deps.ServiceProvider.CreateScope())
-            {
-                var pathProcessor = scope.ServiceProvider.GetRequiredService<EnhancedPathTemplateProcessor>();
-                context = BuildTrackContext(payload, settings, pathProcessor, engineName, callbacks.ResolveSourceId(payload));
-            }
-
-            var request = callbacks.BuildRequest(payload, settings);
-            if (context != null)
-            {
-                callbacks.ApplyContextToRequest(request, context);
-            }
-
-            var progressReporter = QueueHelperUtils.CreateProgressReporter(
-                deps.QueueRepository,
-                deps.Listener,
-                next.QueueUuid,
-                deps.Logger,
-                "Failed to report progress for {QueueUuid}",
-                itemToken);
-
-            deps.ActivityLog.Info(callbacks.BuildStartLogMessage(request));
-            if (context != null)
-            {
-                    var expectedOutputPath = !string.IsNullOrWhiteSpace(context.PathResult.WritePath)
-                        ? DownloadPathResolver.ResolveIoPath(context.PathResult.WritePath)
-                        : Path.Join(
-                            DownloadPathResolver.ResolveIoPath(context.PathResult.FilePath),
-                            context.PathResult.Filename);
-                var prefetchRequest = CreatePrefetchRequest(
-                    new PrefetchContext(
-                        next.QueueUuid,
-                        context,
-                        payload,
-                        settings,
-                        expectedOutputPath,
-                        deps.ServiceProvider,
-                        deps.Listener,
-                        deps.ActivityLog,
-                        deps.Logger,
-                        engineName));
-                await EngineAudioPostDownloadHelper.QueueParallelPostDownloadPrefetchAsync(prefetchRequest, itemToken);
-            }
-
-            var outputPath = await callbacks.DownloadAsync(payload, request, settings, progressReporter, itemToken);
-
-            if (context != null)
-            {
-                try
-                {
-                    using var scope = deps.ServiceProvider.CreateScope();
-                    var postDownloadRequest = new EngineAudioPostDownloadHelper.PostDownloadSettingsRequest(
-                        context,
-                        payload,
-                        outputPath,
-                        settings,
-                        scope.ServiceProvider,
-                        engineName,
-                        deps.Logger);
-                    outputPath = await EngineAudioPostDownloadHelper.ApplyPostDownloadSettingsAsync(
-                        postDownloadRequest,
-                        itemToken);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    deps.Logger.LogWarning(ex, "{Engine} post-download settings failed for {QueueUuid}", engineName, next.QueueUuid);
-                }
-            }
-
-            var finalSize = QueueHelperUtils.TryGetFileSizeMb(outputPath);
-            if (finalSize <= 0 || !QueueHelperUtils.OutputExists(outputPath))
-            {
-                throw new InvalidOperationException($"Downloaded file missing or empty: {outputPath}");
-            }
-
-            await deps.QueueRepository.UpdateStatusAsync(next.QueueUuid, "completed", downloaded: 1, progress: 100, cancellationToken: itemToken);
-            await QueueHelperUtils.UpdateFinalDestinationPayloadAsync(
-                new QueueHelperUtils.UpdateFinalDestinationPayloadRequest<TPayload>(
-                    deps.QueueRepository,
-                    next.QueueUuid,
-                    payload,
-                    outputPath,
-                    finalSize,
-                    payload.Size,
-                    payload.Files,
-                    new QueueHelperUtils.FinalDestinationMutators<TPayload>(
-                        item => item.FinalDestinations,
-                        (item, value) => item.FinalDestinations = value,
-                        new QueueHelperUtils.PayloadUpdateMutators<TPayload>(
-                            (item, value) => item.FilePath = value,
-                            (item, value) => item.TotalSize = value,
-                            (item, value) => item.Progress = value,
-                            (item, value) => item.Downloaded = value))),
-                itemToken);
-            await EngineAudioPostDownloadHelper.UpdateWatchlistTrackStatusAsync(
+            var workContext = new QueueWorkContext<TPayload>(
+                next,
                 payload,
-                "completed",
-                deps.ServiceProvider,
+                engineName,
+                deps,
+                callbacks,
+                settings,
                 itemToken);
-            deps.RetryScheduler.Clear(next.QueueUuid);
-
-            deps.Listener.Send("updateQueue", new
-            {
-                uuid = next.QueueUuid,
-                progress = 100,
-                downloaded = 1,
-                failed = 0,
-                engine = payload.Engine
-            });
-            deps.Listener.SendFinishDownload(next.QueueUuid, callbacks.ResolveFinishTitle(payload) ?? string.Empty);
+            var executionState = await PrepareExecutionStateAsync(
+                next,
+                workContext,
+                itemToken);
+            await ExecutePipelineAsync(
+                workContext,
+                executionState,
+                itemToken);
         }
         catch (OperationCanceledException ex) when (itemToken.IsCancellationRequested)
         {
-            if (deps.CancellationRegistry.WasTimedOut(next.QueueUuid))
+            if (payload != null)
             {
-                var timeoutException = new TimeoutException(
-                    DownloadQueueRecoveryPolicy.BuildStallTimeoutMessage(engineName),
-                    ex);
-                var failureContext = new EngineAudioPostDownloadHelper.FailureHandlingContext<TPayload>(
-                    deps.QueueRepository,
-                    deps.ActivityLog,
-                    deps.Listener,
-                    deps.RetryScheduler,
-                    deps.ServiceProvider,
-                    deps.FallbackCoordinator.TryAdvanceAsync,
-                    callbacks.ToQueuePayload,
-                    engineName,
-                    deps.Logger);
-                await EngineAudioPostDownloadHelper.HandleFailureAsync(
-                    timeoutException,
-                    next.QueueUuid,
+                var workContext = new QueueWorkContext<TPayload>(
+                    next,
                     payload,
-                    failureContext,
-                    stoppingToken);
-                return;
+                    engineName,
+                    deps,
+                    callbacks,
+                    settings,
+                    itemToken);
+                await HandleCanceledProcessingAsync(workContext, ex, stoppingToken);
             }
-
-            var cancellationContext = new EngineAudioPostDownloadHelper.CancellationHandlingContext(
-                deps.QueueRepository,
-                deps.CancellationRegistry,
-                deps.Listener,
-                deps.RetryScheduler,
-                engineName,
-                deps.ServiceProvider);
-            await EngineAudioPostDownloadHelper.HandleCancellationAsync(
-                next.QueueUuid,
-                payload,
-                cancellationContext,
-                itemToken);
+            else
+            {
+                await HandleFailedProcessingAsync(next, engineName, deps, callbacks, payload, ex, stoppingToken);
+            }
         }
         catch (OperationCanceledException ex) when (!itemToken.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
         {
-            // Provider/request timeouts can bubble up as OperationCanceledException even when the user did not cancel.
-            // Treat these as retriable failures so the queue keeps processing subsequent items.
             var timeoutException = new TimeoutException(
                 $"{engineName} operation timed out or was canceled by an external provider.",
                 ex);
-            var failureContext = new EngineAudioPostDownloadHelper.FailureHandlingContext<TPayload>(
-                deps.QueueRepository,
-                deps.ActivityLog,
-                deps.Listener,
-                deps.RetryScheduler,
-                deps.ServiceProvider,
-                deps.FallbackCoordinator.TryAdvanceAsync,
-                callbacks.ToQueuePayload,
-                engineName,
-                deps.Logger);
-            await EngineAudioPostDownloadHelper.HandleFailureAsync(
-                timeoutException,
-                next.QueueUuid,
-                payload,
-                failureContext,
-                stoppingToken);
+            await HandleFailedProcessingAsync(next, engineName, deps, callbacks, payload, timeoutException, stoppingToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            var failureContext = new EngineAudioPostDownloadHelper.FailureHandlingContext<TPayload>(
-                deps.QueueRepository,
-                deps.ActivityLog,
-                deps.Listener,
-                deps.RetryScheduler,
-                deps.ServiceProvider,
-                deps.FallbackCoordinator.TryAdvanceAsync,
-                callbacks.ToQueuePayload,
-                engineName,
-                deps.Logger);
-            await EngineAudioPostDownloadHelper.HandleFailureAsync(
-                ex,
-                next.QueueUuid,
-                payload,
-                failureContext,
-                stoppingToken);
+            await HandleFailedProcessingAsync(next, engineName, deps, callbacks, payload, ex, stoppingToken);
         }
         finally
         {
             settings.DownloadLocation = originalDownloadLocation;
             deps.CancellationRegistry.Remove(next.QueueUuid);
         }
+    }
+
+    private static async Task<TPayload?> InitializePayloadAsync<TPayload>(
+        DownloadQueueItem next,
+        string engineName,
+        ProcessorDeps deps,
+        ProcessorCallbacks<TPayload> callbacks,
+        DeezSpoTagSettings settings,
+        CancellationToken itemToken)
+        where TPayload : EngineQueueItemBase
+    {
+        var initializeContext = new EngineAudioPostDownloadHelper.InitializeQueueItemContext<TPayload>(
+            deps.QueueRepository,
+            deps.RetryScheduler,
+            deps.ActivityLog,
+            deps.TagSettingsResolver,
+            deps.FolderConversionSettingsOverlay,
+            deps.Listener,
+            deps.FallbackCoordinator.TryAdvanceAsync,
+            callbacks.ToQueuePayload,
+            settings,
+            engineName,
+            deps.Logger);
+        return await EngineAudioPostDownloadHelper.InitializeQueueItemAsync(
+            next,
+            next.PayloadJson,
+            QueueHelperUtils.DeserializeQueueItem<TPayload>,
+            initializeContext,
+            itemToken);
+    }
+
+    private static async Task<ExecutionState> PrepareExecutionStateAsync<TPayload>(
+        DownloadQueueItem next,
+        QueueWorkContext<TPayload> workContext,
+        CancellationToken itemToken)
+        where TPayload : EngineQueueItemBase
+    {
+        if (workContext.Callbacks.PreparePayloadAsync is not null)
+        {
+            await workContext.Callbacks.PreparePayloadAsync(workContext.Payload, itemToken);
+        }
+
+        var context = BuildTrackContextOrNull(
+            workContext.Payload,
+            workContext.Settings,
+            workContext.Deps.ServiceProvider,
+            workContext.EngineName,
+            workContext.Callbacks.ResolveSourceId(workContext.Payload));
+        var request = workContext.Callbacks.BuildRequest(workContext.Payload, workContext.Settings);
+        if (context != null)
+        {
+            workContext.Callbacks.ApplyContextToRequest(request, context);
+        }
+
+        var progressReporter = QueueHelperUtils.CreateProgressReporter(
+            workContext.Deps.QueueRepository,
+            workContext.Deps.Listener,
+            next.QueueUuid,
+            workContext.Deps.Logger,
+            "Failed to report progress for {QueueUuid}",
+            itemToken);
+        workContext.Deps.ActivityLog.Info(workContext.Callbacks.BuildStartLogMessage(request));
+        await QueuePrefetchIfNeededAsync(workContext, context);
+
+        return new ExecutionState(request, context, progressReporter);
+    }
+
+    private static async Task ExecutePipelineAsync<TPayload>(
+        QueueWorkContext<TPayload> workContext,
+        ExecutionState executionState,
+        CancellationToken itemToken)
+        where TPayload : EngineQueueItemBase
+    {
+        var outputPath = await workContext.Callbacks.DownloadAsync(
+            workContext.Payload,
+            executionState.Request,
+            workContext.Settings,
+            executionState.ProgressReporter,
+            itemToken);
+        outputPath = await ApplyPostDownloadSettingsSafelyAsync(
+            workContext,
+            outputPath,
+            executionState.Context,
+            itemToken);
+        await CompleteProcessingAsync(workContext, outputPath);
+    }
+
+    private static EngineAudioPostDownloadHelper.EngineTrackContext? BuildTrackContextOrNull(
+        EngineQueueItemBase payload,
+        DeezSpoTagSettings settings,
+        IServiceProvider serviceProvider,
+        string engineName,
+        string? sourceId)
+    {
+        using var scope = serviceProvider.CreateScope();
+        var pathProcessor = scope.ServiceProvider.GetRequiredService<EnhancedPathTemplateProcessor>();
+        return BuildTrackContext(payload, settings, pathProcessor, engineName, sourceId);
+    }
+
+    private static async Task QueuePrefetchIfNeededAsync<TPayload>(
+        QueueWorkContext<TPayload> workContext,
+        EngineAudioPostDownloadHelper.EngineTrackContext? context)
+        where TPayload : EngineQueueItemBase
+    {
+        if (context == null)
+        {
+            return;
+        }
+
+        var expectedOutputPath = !string.IsNullOrWhiteSpace(context.PathResult.WritePath)
+            ? DownloadPathResolver.ResolveIoPath(context.PathResult.WritePath)
+            : Path.Join(
+                DownloadPathResolver.ResolveIoPath(context.PathResult.FilePath),
+                context.PathResult.Filename);
+        var prefetchRequest = CreatePrefetchRequest(
+            new PrefetchContext(
+                workContext.Item.QueueUuid,
+                context,
+                workContext.Payload,
+                workContext.Settings,
+                expectedOutputPath,
+                workContext.Deps.ServiceProvider,
+                workContext.Deps.Listener,
+                workContext.Deps.ActivityLog,
+                workContext.Deps.Logger,
+                workContext.EngineName));
+        await EngineAudioPostDownloadHelper.QueueParallelPostDownloadPrefetchAsync(prefetchRequest, workContext.ItemToken);
+    }
+
+    private static async Task<string> ApplyPostDownloadSettingsSafelyAsync<TPayload>(
+        QueueWorkContext<TPayload> workContext,
+        string outputPath,
+        EngineAudioPostDownloadHelper.EngineTrackContext? context,
+        CancellationToken itemToken)
+        where TPayload : EngineQueueItemBase
+    {
+        if (context == null)
+        {
+            return outputPath;
+        }
+
+        try
+        {
+            using var scope = workContext.Deps.ServiceProvider.CreateScope();
+            var postDownloadRequest = new EngineAudioPostDownloadHelper.PostDownloadSettingsRequest(
+                context,
+                workContext.Payload,
+                outputPath,
+                workContext.Settings,
+                scope.ServiceProvider,
+                workContext.EngineName,
+                workContext.Deps.Logger);
+            return await EngineAudioPostDownloadHelper.ApplyPostDownloadSettingsAsync(postDownloadRequest, itemToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            workContext.Deps.Logger.LogWarning(
+                ex,
+                "{Engine} post-download settings failed for {QueueUuid}",
+                workContext.EngineName,
+                workContext.Item.QueueUuid);
+            return outputPath;
+        }
+    }
+
+    private static async Task CompleteProcessingAsync<TPayload>(
+        QueueWorkContext<TPayload> workContext,
+        string outputPath)
+        where TPayload : EngineQueueItemBase
+    {
+        var finalSize = QueueHelperUtils.TryGetFileSizeMb(outputPath);
+        if (finalSize <= 0 || !QueueHelperUtils.OutputExists(outputPath))
+        {
+            throw new InvalidOperationException($"Downloaded file missing or empty: {outputPath}");
+        }
+
+        await workContext.Deps.QueueRepository.UpdateStatusAsync(
+            workContext.Item.QueueUuid,
+            "completed",
+            downloaded: 1,
+            progress: 100,
+            cancellationToken: workContext.ItemToken);
+        await QueueHelperUtils.UpdateFinalDestinationPayloadAsync(
+            new QueueHelperUtils.UpdateFinalDestinationPayloadRequest<TPayload>(
+                workContext.Deps.QueueRepository,
+                workContext.Item.QueueUuid,
+                workContext.Payload,
+                outputPath,
+                finalSize,
+                workContext.Payload.Size,
+                workContext.Payload.Files,
+                new QueueHelperUtils.FinalDestinationMutators<TPayload>(
+                    item => item.FinalDestinations,
+                    (item, value) => item.FinalDestinations = value,
+                    new QueueHelperUtils.PayloadUpdateMutators<TPayload>(
+                        (item, value) => item.FilePath = value,
+                        (item, value) => item.TotalSize = value,
+                        (item, value) => item.Progress = value,
+                        (item, value) => item.Downloaded = value))),
+            workContext.ItemToken);
+        await EngineAudioPostDownloadHelper.UpdateWatchlistTrackStatusAsync(
+            workContext.Payload,
+            "completed",
+            workContext.Deps.ServiceProvider,
+            workContext.ItemToken);
+        workContext.Deps.RetryScheduler.Clear(workContext.Item.QueueUuid);
+        workContext.Deps.Listener.Send("updateQueue", new
+        {
+            uuid = workContext.Item.QueueUuid,
+            progress = 100,
+            downloaded = 1,
+            failed = 0,
+            engine = workContext.Payload.Engine
+        });
+        workContext.Deps.Listener.SendFinishDownload(
+            workContext.Item.QueueUuid,
+            workContext.Callbacks.ResolveFinishTitle(workContext.Payload) ?? string.Empty);
+    }
+
+    private static async Task HandleCanceledProcessingAsync<TPayload>(
+        QueueWorkContext<TPayload> workContext,
+        OperationCanceledException exception,
+        CancellationToken stoppingToken)
+        where TPayload : EngineQueueItemBase
+    {
+        if (workContext.Deps.CancellationRegistry.WasTimedOut(workContext.Item.QueueUuid))
+        {
+            var timeoutException = new TimeoutException(
+                DownloadQueueRecoveryPolicy.BuildStallTimeoutMessage(workContext.EngineName),
+                exception);
+            await HandleFailedProcessingAsync(
+                workContext.Item,
+                workContext.EngineName,
+                workContext.Deps,
+                workContext.Callbacks,
+                workContext.Payload,
+                timeoutException,
+                stoppingToken);
+            return;
+        }
+
+        var cancellationContext = new EngineAudioPostDownloadHelper.CancellationHandlingContext(
+            workContext.Deps.QueueRepository,
+            workContext.Deps.CancellationRegistry,
+            workContext.Deps.Listener,
+            workContext.Deps.RetryScheduler,
+            workContext.EngineName,
+            workContext.Deps.ServiceProvider);
+        await EngineAudioPostDownloadHelper.HandleCancellationAsync(
+            workContext.Item.QueueUuid,
+            workContext.Payload,
+            cancellationContext,
+            workContext.ItemToken);
+    }
+
+    private static async Task HandleFailedProcessingAsync<TPayload>(
+        DownloadQueueItem next,
+        string engineName,
+        ProcessorDeps deps,
+        ProcessorCallbacks<TPayload> callbacks,
+        TPayload? payload,
+        Exception exception,
+        CancellationToken stoppingToken)
+        where TPayload : EngineQueueItemBase
+    {
+        var failureContext = new EngineAudioPostDownloadHelper.FailureHandlingContext<TPayload>(
+            deps.QueueRepository,
+            deps.ActivityLog,
+            deps.Listener,
+            deps.RetryScheduler,
+            deps.ServiceProvider,
+            deps.FallbackCoordinator.TryAdvanceAsync,
+            callbacks.ToQueuePayload,
+            engineName,
+            deps.Logger);
+        await EngineAudioPostDownloadHelper.HandleFailureAsync(
+            exception,
+            next.QueueUuid,
+            payload,
+            failureContext,
+            stoppingToken);
     }
 
     private static EngineAudioPostDownloadHelper.EngineTrackContext BuildTrackContext(

@@ -187,62 +187,11 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
         try
         {
-            queueContext = await InitializeQueueItemAsync(next, itemToken);
-            if (queueContext == null)
-            {
-                return;
-            }
-
-            var requestContext = await BuildDownloadRequestContextAsync(next, queueContext, itemToken);
-            if (!await EnsureWrapperAvailabilityAsync(next, queueContext, requestContext.Request, stoppingToken, itemToken))
-            {
-                return;
-            }
-
-            await QueuePrefetchIfNeededAsync(next.QueueUuid, queueContext, requestContext.TrackContext);
-            var result = await ExecuteDownloadWithFallbackAsync(next.QueueUuid, queueContext.Payload, requestContext.Request, itemToken);
-            if (!result.Success)
-            {
-                await HandleDownloadFailureAsync(next, queueContext.Payload, result.Message, stoppingToken, itemToken);
-                return;
-            }
-
-            ApplyDownloadQualityMetadata(queueContext.Payload, result, next.QueueUuid);
-            var outputPath = await ApplyPostDownloadSettingsSafelyAsync(
-                next.QueueUuid,
-                queueContext,
-                requestContext.TrackContext,
-                result.OutputPath,
-                itemToken);
-            var persisted = await PersistOutputMetadataIfPresentAsync(next.QueueUuid, queueContext.Payload, outputPath, itemToken);
-            if (!persisted)
-            {
-                const string verificationError = "Downloaded file missing or empty after transfer.";
-                _logger.LogWarning("Apple download verification failed for {QueueUuid}: {OutputPath}", next.QueueUuid, outputPath);
-                await HandleDownloadFailureAsync(next, queueContext.Payload, verificationError, stoppingToken, itemToken);
-                return;
-            }
-            await MarkQueueItemCompletedAsync(next.QueueUuid, queueContext.Payload, itemToken);
+            queueContext = await ExecuteQueueItemPipelineAsync(next, stoppingToken, itemToken);
         }
         catch (OperationCanceledException ex) when (itemToken.IsCancellationRequested)
         {
-            if (_cancellationRegistry.WasTimedOut(next.QueueUuid))
-            {
-                var timeoutException = new TimeoutException(
-                    DownloadQueueRecoveryPolicy.BuildStallTimeoutMessage(EngineName),
-                    ex);
-                if (queueContext != null)
-                {
-                    await HandleDownloadFailureAsync(next, queueContext.Payload, timeoutException.Message, stoppingToken, CancellationToken.None);
-                    return;
-                }
-
-                await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, timeoutException.Message, cancellationToken: CancellationToken.None);
-                ScheduleRetryIfEligible(next.QueueUuid, timeoutException.Message);
-                return;
-            }
-
-            await HandleCanceledQueueItemAsync(next.QueueUuid);
+            await HandleItemCanceledAsync(next, queueContext, ex, stoppingToken);
         }
         catch (OperationCanceledException ex) when (!itemToken.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
         {
@@ -250,34 +199,103 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                 $"{EngineName} operation timed out or was canceled by an external provider.",
                 ex);
             _logger.LogError(ex, "Apple download timed out for {QueueUuid}", next.QueueUuid);
-            if (queueContext != null)
-            {
-                await HandleDownloadFailureAsync(next, queueContext.Payload, timeoutException.Message, stoppingToken, CancellationToken.None);
-                return;
-            }
-
-            await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, timeoutException.Message, cancellationToken: CancellationToken.None);
-            ScheduleRetryIfEligible(next.QueueUuid, timeoutException.Message);
+            await HandleQueueItemFailureAsync(next, queueContext, timeoutException.Message, stoppingToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Apple download failed for {QueueUuid}", next.QueueUuid);
-            if (queueContext != null)
-            {
-                await HandleDownloadFailureAsync(next, queueContext.Payload, ex.Message, stoppingToken, CancellationToken.None);
-                return;
-            }
-
-            await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, ex.Message, cancellationToken: CancellationToken.None);
-            ScheduleRetryIfEligible(next.QueueUuid, ex.Message);
+            await HandleQueueItemFailureAsync(next, queueContext, ex.Message, stoppingToken);
         }
         finally
         {
-            if (queueContext?.OriginalDownloadLocation != null)
-            {
-                queueContext.Settings.DownloadLocation = queueContext.OriginalDownloadLocation;
-            }
+            RestoreOriginalDownloadLocation(queueContext);
             _cancellationRegistry.Remove(next.QueueUuid);
+        }
+    }
+
+    private async Task<QueueInitializationContext?> ExecuteQueueItemPipelineAsync(
+        DownloadQueueItem next,
+        CancellationToken stoppingToken,
+        CancellationToken itemToken)
+    {
+        var queueContext = await InitializeQueueItemAsync(next, itemToken);
+        if (queueContext == null)
+        {
+            return null;
+        }
+
+        var requestContext = await BuildDownloadRequestContextAsync(next, queueContext, itemToken);
+        if (!await EnsureWrapperAvailabilityAsync(next, queueContext, requestContext.Request, stoppingToken, itemToken))
+        {
+            return queueContext;
+        }
+
+        await QueuePrefetchIfNeededAsync(next.QueueUuid, queueContext, requestContext.TrackContext);
+        var result = await ExecuteDownloadWithFallbackAsync(next.QueueUuid, queueContext.Payload, requestContext.Request, itemToken);
+        if (!result.Success)
+        {
+            await HandleDownloadFailureAsync(next, queueContext.Payload, result.Message, stoppingToken, itemToken);
+            return queueContext;
+        }
+
+        ApplyDownloadQualityMetadata(queueContext.Payload, result, next.QueueUuid);
+        var outputPath = await ApplyPostDownloadSettingsSafelyAsync(
+            next.QueueUuid,
+            queueContext,
+            requestContext.TrackContext,
+            result.OutputPath,
+            itemToken);
+        if (!await PersistOutputMetadataIfPresentAsync(next.QueueUuid, queueContext.Payload, outputPath, itemToken))
+        {
+            const string verificationError = "Downloaded file missing or empty after transfer.";
+            _logger.LogWarning("Apple download verification failed for {QueueUuid}: {OutputPath}", next.QueueUuid, outputPath);
+            await HandleDownloadFailureAsync(next, queueContext.Payload, verificationError, stoppingToken, itemToken);
+            return queueContext;
+        }
+
+        await MarkQueueItemCompletedAsync(next.QueueUuid, queueContext.Payload, itemToken);
+        return queueContext;
+    }
+
+    private async Task HandleItemCanceledAsync(
+        DownloadQueueItem next,
+        QueueInitializationContext? queueContext,
+        OperationCanceledException exception,
+        CancellationToken stoppingToken)
+    {
+        if (_cancellationRegistry.WasTimedOut(next.QueueUuid))
+        {
+            var timeoutException = new TimeoutException(
+                DownloadQueueRecoveryPolicy.BuildStallTimeoutMessage(EngineName),
+                exception);
+            await HandleQueueItemFailureAsync(next, queueContext, timeoutException.Message, stoppingToken);
+            return;
+        }
+
+        await HandleCanceledQueueItemAsync(next.QueueUuid);
+    }
+
+    private async Task HandleQueueItemFailureAsync(
+        DownloadQueueItem next,
+        QueueInitializationContext? queueContext,
+        string message,
+        CancellationToken stoppingToken)
+    {
+        if (queueContext != null)
+        {
+            await HandleDownloadFailureAsync(next, queueContext.Payload, message, stoppingToken, CancellationToken.None);
+            return;
+        }
+
+        await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, message, cancellationToken: CancellationToken.None);
+        ScheduleRetryIfEligible(next.QueueUuid, message);
+    }
+
+    private static void RestoreOriginalDownloadLocation(QueueInitializationContext? queueContext)
+    {
+        if (queueContext?.OriginalDownloadLocation != null)
+        {
+            queueContext.Settings.DownloadLocation = queueContext.OriginalDownloadLocation;
         }
     }
 
