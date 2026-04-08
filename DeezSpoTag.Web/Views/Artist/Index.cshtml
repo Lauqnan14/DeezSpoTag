@@ -1209,7 +1209,7 @@ function resetArtistPreviewState() {
         artistPreviewState.audio.pause();
     }
     if (artistPreviewState.button) {
-        setArtistPlaybackState(artistPreviewState.button, 'idle');
+        setArtistPreviewButtonState(artistPreviewState.button, false);
     }
     artistPreviewState.trackKey = null;
     artistPreviewState.button = null;
@@ -1220,7 +1220,7 @@ function restoreArtistPreviewState() {
     const audio = artistPreviewState.audio;
     if (!audio || audio.paused || !artistPreviewState.sourceKey) {
         if (artistPreviewState.button) {
-            setArtistPlaybackState(artistPreviewState.button, 'idle');
+            setArtistPreviewButtonState(artistPreviewState.button, false);
         }
         artistPreviewState.button = null;
         return;
@@ -1239,7 +1239,7 @@ function restoreArtistPreviewState() {
     }
 
     artistPreviewState.button = nextButton;
-    setArtistPlaybackState(nextButton, 'playing');
+    setArtistPreviewButtonState(nextButton, true);
 }
 
 function getArtistPlaybackFacade() {
@@ -1259,51 +1259,28 @@ function getArtistPlaybackFacade() {
     return facade;
 }
 
-async function resolveArtistDeezerStreamUrl(deezerId, button) {
-    const normalizedId = String(deezerId || '').trim();
-    if (!normalizedId) {
-        return '';
+function normalizeArtistDeezerPlaybackContext(payload) {
+    if (!window.DeezerPlaybackContext || typeof window.DeezerPlaybackContext.normalize !== 'function') {
+        return null;
     }
-
-    const facade = getArtistPlaybackFacade();
-    if (facade) {
-        const streamUrl = await facade.resolvePlayableStreamUrl(normalizedId, {
-            element: button,
-            cache: artistDeezerPlaybackContextCache,
-            requests: artistDeezerPlaybackContextRequests,
-            fetchContext: true
-        });
-        if (streamUrl) {
-            return await facade.resolvePlayablePreviewUrl(streamUrl, {
-                element: button,
-                cache: artistDeezerPlaybackContextCache,
-                requests: artistDeezerPlaybackContextRequests
-            });
-        }
-    }
-
-    return `/api/deezer/stream/${encodeURIComponent(normalizedId)}`;
+    return window.DeezerPlaybackContext.normalize(payload);
 }
 
-function bootstrapArtistPreviewAudioSource(audio, sourceUrl) {
-    const normalizedSourceUrl = String(sourceUrl || '').trim();
-    if (!audio || !normalizedSourceUrl) {
-        return false;
+function buildArtistDeezerStreamUrl(deezerId, context) {
+    if (!window.DeezerPlaybackContext || typeof window.DeezerPlaybackContext.buildStreamUrl !== 'function') {
+        return '';
     }
+    return window.DeezerPlaybackContext.buildStreamUrl(deezerId, { context: context });
+}
 
-    const facade = getArtistPlaybackFacade();
-    if (facade && typeof facade.configurePreviewAudioSource === 'function') {
-        facade.configurePreviewAudioSource(audio, normalizedSourceUrl);
-        return true;
+async function fetchArtistDeezerPlaybackContext(deezerId) {
+    if (!window.DeezerPlaybackContext || typeof window.DeezerPlaybackContext.fetchContext !== 'function') {
+        return null;
     }
-
-    audio.pause();
-    audio.src = normalizedSourceUrl;
-    if (typeof audio.load === 'function') {
-        audio.load();
-    }
-    audio.currentTime = 0;
-    return true;
+    return await window.DeezerPlaybackContext.fetchContext(deezerId, {
+        cache: artistDeezerPlaybackContextCache,
+        requests: artistDeezerPlaybackContextRequests
+    });
 }
 
 async function playArtistTrackInApp(button) {
@@ -1317,40 +1294,47 @@ async function playArtistTrackInApp(button) {
 
     let streamUrl = '';
     let trackKey = '';
-    const shouldShowRequestedState = Boolean(previewUrl || deezerId || spotifyUrl);
-
-    if (shouldShowRequestedState) {
-        setArtistPlaybackState(button, 'requested');
-    }
 
     if (previewUrl) {
-        const facade = getArtistPlaybackFacade();
-        streamUrl = facade
-            ? await facade.resolvePlayablePreviewUrl(previewUrl, { element: button })
-            : previewUrl;
+        streamUrl = previewUrl;
         trackKey = previewUrl;
     } else if (deezerId) {
-        streamUrl = await resolveArtistDeezerStreamUrl(deezerId, button);
+        if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
+            streamUrl = await window.DeezerPlaybackContext.resolveStreamUrl(deezerId, {
+                element: button,
+                cache: artistDeezerPlaybackContextCache,
+                requests: artistDeezerPlaybackContextRequests
+            });
+        } else {
+            const context = await fetchArtistDeezerPlaybackContext(deezerId);
+            streamUrl = buildArtistDeezerStreamUrl(deezerId, context);
+        }
         trackKey = `deezer:${deezerId}`;
     } else if (spotifyUrl) {
         const resolved = await resolveSpotifyUrlToDeezer(spotifyUrl);
         if (!resolved || resolved.available === false || resolved.type !== 'track' || !resolved.deezerId) {
             showArtistPlaybackMessage('Track not available for streaming.');
-            setArtistPlaybackState(button, 'idle');
             return;
         }
         button.dataset.deezerId = resolved.deezerId;
-        streamUrl = await resolveArtistDeezerStreamUrl(resolved.deezerId, button);
+        if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
+            streamUrl = await window.DeezerPlaybackContext.resolveStreamUrl(resolved.deezerId, {
+                element: button,
+                cache: artistDeezerPlaybackContextCache,
+                requests: artistDeezerPlaybackContextRequests
+            });
+        } else {
+            const context = await fetchArtistDeezerPlaybackContext(resolved.deezerId);
+            streamUrl = buildArtistDeezerStreamUrl(resolved.deezerId, context);
+        }
         trackKey = `deezer:${resolved.deezerId}`;
     } else {
         showArtistPlaybackMessage('Preview unavailable.');
-        setArtistPlaybackState(button, 'idle');
         return;
     }
 
     if (!streamUrl) {
         showArtistPlaybackMessage('Preview unavailable.');
-        setArtistPlaybackState(button, 'idle');
         return;
     }
 
@@ -1371,55 +1355,38 @@ async function playArtistTrackInApp(button) {
     if (artistPreviewState.trackKey === trackKey && !audio.paused) {
         audio.pause();
         if (artistPreviewState.button) {
-            setArtistPlaybackState(artistPreviewState.button, 'idle');
+            setArtistPreviewButtonState(artistPreviewState.button, false);
         }
         return;
     }
 
     if (artistPreviewState.button && artistPreviewState.button !== button) {
-        setArtistPlaybackState(artistPreviewState.button, 'idle');
+        setArtistPreviewButtonState(artistPreviewState.button, false);
     }
 
     artistPreviewState.audio = audio;
     artistPreviewState.trackKey = trackKey;
     artistPreviewState.button = button;
     artistPreviewState.sourceKey = sourceKey;
-    bootstrapArtistPreviewAudioSource(audio, streamUrl);
+    setArtistPreviewButtonState(button, true);
+    audio.src = streamUrl;
+    audio.currentTime = 0;
     audio.onended = () => {
         const nextButton = getNextTopTrackButton();
-        const currentButton = artistPreviewState.button;
-        if (currentButton) {
-            setArtistPlaybackState(currentButton, 'ended');
-        }
-        artistPreviewState.trackKey = null;
-        artistPreviewState.button = null;
-        artistPreviewState.sourceKey = null;
         if (nextButton) {
             playArtistTrackInApp(nextButton);
             return;
         }
-    };
-    audio.onerror = () => {
-        const nextButton = getNextTopTrackButton();
-        const currentButton = artistPreviewState.button;
-        if (currentButton) {
-            setArtistPlaybackState(currentButton, 'error');
+        if (artistPreviewState.button) {
+            setArtistPreviewButtonState(artistPreviewState.button, false);
         }
         artistPreviewState.trackKey = null;
-        artistPreviewState.button = null;
-        artistPreviewState.sourceKey = null;
-        if (nextButton) {
-            playArtistTrackInApp(nextButton);
-            return;
-        }
-        showArtistPlaybackMessage('Playback interrupted.');
     };
 
     try {
         await audio.play();
-        setArtistPlaybackState(button, 'playing');
     } catch {
-        setArtistPlaybackState(button, 'error');
+        setArtistPreviewButtonState(button, false);
         artistPreviewState.trackKey = null;
         if (artistPreviewState.button === button) {
             artistPreviewState.button = null;
@@ -1436,12 +1403,8 @@ async function resolveSpotifyUrlToDeezer(url) {
         return artistSpotifyResolveCache.get(url);
     }
     try {
-        const facade = getArtistPlaybackFacade();
-        if (!facade) {
-            return null;
-        }
-        const resolved = await facade.resolveTrackBySpotifyUrl(url);
-        if (resolved?.type === 'track' && resolved?.available === true && resolved?.deezerId) {
+        const resolved = await fetchJsonOptional(`/api/spotify/resolve-deezer?url=${encodeURIComponent(url)}`);
+        if (resolved) {
             artistSpotifyResolveCache.set(url, resolved);
         }
         return resolved;

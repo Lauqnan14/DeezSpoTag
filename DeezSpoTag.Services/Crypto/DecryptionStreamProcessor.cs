@@ -307,15 +307,24 @@ public class DecryptionStreamProcessor
 
         try
         {
-            await using var streamResources = await OpenDownloadStreamAsync(
-                resolvedDownloadUrl,
-                headers[UserAgentHeader],
-                cancellationToken);
-            complete = streamResources.ContentLength;
+            using var response = await SendRequestWithSslFallbackAsync(resolvedDownloadUrl, headers[UserAgentHeader], cancellationToken);
+            response.EnsureSuccessStatusCode();
+            complete = response.Content.Headers.ContentLength ?? 0;
+            if (complete == 0)
+            {
+                error = DownloadEmptyMessage;
+                throw new InvalidOperationException(DownloadEmptyMessage);
+            }
 
-            using var timeout = CreateDownloadTimeout(() => error = DownloadTimeoutMessage);
+            using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
 
-            var result = await ProcessDeezSpoTagPipelineAsync(streamResources.ResponseStream, outputStream, new PipelineProcessingContext
+            using var timeout = new Timer(_ =>
+            {
+                error = DownloadTimeoutMessage;
+            }, null, Timeout.Infinite, Timeout.Infinite);
+            timeout.Change(DownloadTimeoutMs, Timeout.Infinite);
+
+            var result = await ProcessDeezSpoTagPipelineAsync(responseStream, outputStream, new PipelineProcessingContext
             {
                 IsCryptedStream = isCryptedStream,
                 BlowfishKey = blowfishKey,
@@ -333,12 +342,6 @@ public class DecryptionStreamProcessor
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            if (string.IsNullOrWhiteSpace(error)
-                && ex is InvalidOperationException { Message: DownloadEmptyMessage })
-            {
-                error = DownloadEmptyMessage;
-            }
-
             DeletePartialFileIfExists(writePath);
             await HandleTrackDownloadFailureAsync(
                 ex,
@@ -486,15 +489,21 @@ public class DecryptionStreamProcessor
         _logger.LogInformation("Attempting preview stream from URL: {DownloadUrl}", downloadUrl);
         _logger.LogInformation("Is crypted stream: {IsCryptedStream}", isCryptedStream);
 
-        await using var streamResources = await OpenDownloadStreamAsync(
-            downloadUrl,
-            headers[UserAgentHeader],
-            cancellationToken);
-        complete = streamResources.ContentLength;
+        using var response = await SendRequestWithSslFallbackAsync(downloadUrl, headers[UserAgentHeader], cancellationToken);
+        response.EnsureSuccessStatusCode();
+        complete = response.Content.Headers.ContentLength ?? 0;
+        if (complete == 0)
+        {
+            error = DownloadEmptyMessage;
+            throw new InvalidOperationException(DownloadEmptyMessage);
+        }
 
-        using var timeout = CreateDownloadTimeout(() => error = DownloadTimeoutMessage);
+        using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
 
-        var (_, resultError) = await ProcessDeezSpoTagPipelineAsync(streamResources.ResponseStream, outputStream, new PipelineProcessingContext
+        using var timeout = new Timer(_ => { error = DownloadTimeoutMessage; }, null, Timeout.Infinite, Timeout.Infinite);
+        timeout.Change(DownloadTimeoutMs, Timeout.Infinite);
+
+        var (_, resultError) = await ProcessDeezSpoTagPipelineAsync(responseStream, outputStream, new PipelineProcessingContext
         {
             IsCryptedStream = isCryptedStream,
             BlowfishKey = blowfishKey,
@@ -508,13 +517,6 @@ public class DecryptionStreamProcessor
         }, cancellationToken);
 
         error = resultError;
-    }
-
-    private static Timer CreateDownloadTimeout(Action onTimeout)
-    {
-        var timeout = new Timer(_ => onTimeout(), null, Timeout.Infinite, Timeout.Infinite);
-        timeout.Change(DownloadTimeoutMs, Timeout.Infinite);
-        return timeout;
     }
 
     private static bool IsSslHandshakeError(HttpRequestException exception)
@@ -558,25 +560,6 @@ public class DecryptionStreamProcessor
                 $"Primary and fallback SSL configurations failed for download URL '{downloadUrl}'.",
                 httpEx);
         }
-    }
-
-    private async Task<DownloadStreamResources> OpenDownloadStreamAsync(
-        string downloadUrl,
-        string userAgent,
-        CancellationToken cancellationToken)
-    {
-        var response = await SendRequestWithSslFallbackAsync(downloadUrl, userAgent, cancellationToken);
-        response.EnsureSuccessStatusCode();
-
-        var contentLength = response.Content.Headers.ContentLength ?? 0;
-        if (contentLength == 0)
-        {
-            response.Dispose();
-            throw new InvalidOperationException(DownloadEmptyMessage);
-        }
-
-        var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        return new DownloadStreamResources(response, responseStream, contentLength);
     }
 
     private async Task<HttpResponseMessage?> TryWithFallbackSslAsync(
@@ -757,28 +740,6 @@ public class DecryptionStreamProcessor
         public required DownloadObject DownloadObject { get; init; }
         public required IDownloadListener? Listener { get; init; }
         public required StreamTrackRetryPolicy RetryPolicy { get; init; }
-    }
-
-    private sealed class DownloadStreamResources : IAsyncDisposable
-    {
-        public DownloadStreamResources(HttpResponseMessage response, Stream responseStream, long contentLength)
-        {
-            Response = response;
-            ResponseStream = responseStream;
-            ContentLength = contentLength;
-        }
-
-        public HttpResponseMessage Response { get; }
-
-        public Stream ResponseStream { get; }
-
-        public long ContentLength { get; }
-
-        public async ValueTask DisposeAsync()
-        {
-            await ResponseStream.DisposeAsync();
-            Response.Dispose();
-        }
     }
 
     private static void UpdatePipelineProgress(

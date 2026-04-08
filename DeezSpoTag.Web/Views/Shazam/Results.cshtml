@@ -705,19 +705,7 @@
         const durationMs = (card.dataset.durationMs || '').trim();
         const spotifyUrl = (card.dataset.spotifyUrl || '').trim();
         if (spotifyUrl) {
-            const facade = getShazamPlaybackFacade();
-            if (!facade) {
-                return null;
-            }
-            const resolved = await facade.resolveTrackBySpotifyUrl(spotifyUrl, {
-                metadata: {
-                    title: titleValue,
-                    artist: artistValue,
-                    album: albumValue,
-                    isrc,
-                    durationMs: Number.parseInt(durationMs, 10) || 0
-                }
-            });
+            const resolved = await fetchJsonOptional(`/api/spotify/resolve-deezer?url=${encodeURIComponent(spotifyUrl)}`);
             if (resolved?.available && resolved?.deezerId) {
                 card.dataset.deezerId = resolved.deezerId;
                 card.dataset.deezerUrl = resolved.deezerUrl || `https://www.deezer.com/track/${resolved.deezerId}`;
@@ -834,7 +822,7 @@
             previewState.audio.pause();
         }
         if (previewState.button) {
-            setShazamPlaybackState(previewState.button, 'idle');
+            setPreviewButtonState(previewState.button, false);
         }
         previewState.trackId = null;
         previewState.button = null;
@@ -846,11 +834,8 @@
             return;
         }
 
-        setShazamPlaybackState(button, 'requested');
-
         const deezerId = await resolveDeezerId(card);
         if (!deezerId) {
-            setShazamPlaybackState(button, 'idle');
             notify('Preview unavailable for this track.', 'warning');
             return;
         }
@@ -863,42 +848,28 @@
             return;
         }
 
-        const facade = getShazamPlaybackFacade();
-        const streamCandidate = facade
-            ? await facade.resolvePlayableStreamUrl(deezerId, {
-                element: button,
-                fetchContext: true
-            })
-            : `/api/deezer/stream/${encodeURIComponent(deezerId)}`;
-        const streamUrl = facade
-            ? await facade.resolvePlayablePreviewUrl(streamCandidate, { element: button })
-            : streamCandidate;
-        if (!streamUrl) {
-            setShazamPlaybackState(button, 'idle');
-            notify('Preview unavailable for this track.', 'warning');
-            return;
-        }
-
         const previousButton = previewState.button;
         previewState.trackId = deezerId;
         previewState.button = button;
-        setShazamPlaybackState(button, 'requested');
+        setPreviewButtonState(button, true);
 
         if (previousButton && previousButton !== button) {
-            setShazamPlaybackState(previousButton, 'idle');
+            setPreviewButtonState(previousButton, false);
         }
-        audio.src = streamUrl;
+
+        if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
+            audio.src = await window.DeezerPlaybackContext.resolveStreamUrl(deezerId, { element: button });
+        } else {
+            audio.src = `/api/deezer/stream/${encodeURIComponent(deezerId)}`;
+        }
         audio.currentTime = 0;
         audio.onended = () => {
-            setShazamPlaybackState(button, 'ended');
             stopPreview();
         };
 
         try {
             await audio.play();
-            setShazamPlaybackState(button, 'playing');
         } catch {
-            setShazamPlaybackState(button, 'error');
             stopPreview();
             notify('Unable to start playback.', 'error');
         }
