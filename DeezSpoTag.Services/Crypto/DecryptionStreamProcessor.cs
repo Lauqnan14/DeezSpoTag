@@ -42,6 +42,12 @@ public class DecryptionStreamProcessor
             => this with { Attempt = Attempt + 1 };
     }
 
+    public readonly record struct StreamResponseHeaders(
+        int StatusCode,
+        string ContentType,
+        long? ContentLength,
+        string? ContentRange);
+
     public DecryptionStreamProcessor(ILogger<DecryptionStreamProcessor> logger, CryptoService cryptoService, IHttpClientFactory httpClientFactory)
     {
         _logger = logger;
@@ -307,7 +313,7 @@ public class DecryptionStreamProcessor
 
         try
         {
-            using var response = await SendRequestWithSslFallbackAsync(resolvedDownloadUrl, headers[UserAgentHeader], cancellationToken);
+            using var response = await SendRequestWithSslFallbackAsync(resolvedDownloadUrl, headers[UserAgentHeader], rangeHeader: null, cancellationToken);
             response.EnsureSuccessStatusCode();
             complete = response.Content.Headers.ContentLength ?? 0;
             if (complete == 0)
@@ -334,7 +340,9 @@ public class DecryptionStreamProcessor
                 ChunkLength = chunkLength,
                 Error = error,
                 Timeout = timeout,
-                BufferSize = 8192
+                BufferSize = 8192,
+                DropBytes = 0,
+                IsDepadderStart = true
             }, cancellationToken);
 
             chunkLength = result.chunkLength;
@@ -489,7 +497,7 @@ public class DecryptionStreamProcessor
         _logger.LogInformation("Attempting preview stream from URL: {DownloadUrl}", downloadUrl);
         _logger.LogInformation("Is crypted stream: {IsCryptedStream}", isCryptedStream);
 
-        using var response = await SendRequestWithSslFallbackAsync(downloadUrl, headers[UserAgentHeader], cancellationToken);
+        using var response = await SendRequestWithSslFallbackAsync(downloadUrl, headers[UserAgentHeader], rangeHeader: null, cancellationToken);
         response.EnsureSuccessStatusCode();
         complete = response.Content.Headers.ContentLength ?? 0;
         if (complete == 0)
@@ -513,10 +521,85 @@ public class DecryptionStreamProcessor
             ChunkLength = chunkLength,
             Error = error,
             Timeout = timeout,
-            BufferSize = 2048
+            BufferSize = 2048,
+            DropBytes = 0,
+            IsDepadderStart = true
         }, cancellationToken);
 
         error = resultError;
+    }
+
+    public async Task StreamTrackToStreamAsync(
+        Stream outputStream,
+        Track track,
+        string downloadUrl,
+        DownloadObject downloadObject,
+        IDownloadListener? listener,
+        long startBytes,
+        long? endBytes,
+        Func<StreamResponseHeaders, Task>? configureResponse,
+        CancellationToken cancellationToken = default)
+    {
+        if (downloadObject.IsCanceled)
+        {
+            throw new OperationCanceledException(DownloadCanceledMessage);
+        }
+
+        if (string.IsNullOrWhiteSpace(downloadUrl))
+        {
+            throw new ArgumentNullException(nameof(downloadUrl));
+        }
+
+        var isCryptedStream = downloadUrl.Contains("/mobile/") || downloadUrl.Contains("/media/");
+        var requestedStartBytes = Math.Max(0, startBytes);
+        long? requestedEndBytes = endBytes.HasValue && endBytes.Value >= requestedStartBytes
+            ? endBytes.Value
+            : null;
+        var upstreamStartBytes = isCryptedStream && requestedStartBytes > 0
+            ? requestedStartBytes - (requestedStartBytes % 2048)
+            : requestedStartBytes;
+        var dropBytes = isCryptedStream ? (int)(requestedStartBytes - upstreamStartBytes) : 0;
+        var rangeHeader = requestedStartBytes > 0 || requestedEndBytes.HasValue
+            ? $"bytes={upstreamStartBytes}-{(requestedEndBytes.HasValue ? requestedEndBytes.Value.ToString() : string.Empty)}"
+            : null;
+        var blowfishKey = isCryptedStream
+            ? CryptoService.GenerateBlowfishKeyString(ResolveStreamTrackId(track))
+            : null;
+
+        using var response = await SendRequestWithSslFallbackAsync(downloadUrl, LinuxChrome79UserAgent, rangeHeader, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        var sourceLength = response.Content.Headers.ContentLength;
+        var sourceTotalLength = response.Content.Headers.ContentRange?.Length;
+        long? outputLength = sourceLength.HasValue ? Math.Max(0L, sourceLength.Value - dropBytes) : null;
+
+        if (configureResponse != null)
+        {
+            await configureResponse(new StreamResponseHeaders(
+                requestedStartBytes > 0 || requestedEndBytes.HasValue ? (int)HttpStatusCode.PartialContent : (int)HttpStatusCode.OK,
+                ResolveContentType(downloadObject),
+                outputLength,
+                BuildContentRangeHeaderValue(requestedStartBytes, outputLength, sourceTotalLength)));
+        }
+
+        using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var timeout = new Timer(_ => { }, null, Timeout.Infinite, Timeout.Infinite);
+        timeout.Change(DownloadTimeoutMs, Timeout.Infinite);
+
+        await ProcessDeezSpoTagPipelineAsync(responseStream, outputStream, new PipelineProcessingContext
+        {
+            IsCryptedStream = isCryptedStream,
+            BlowfishKey = blowfishKey,
+            Complete = sourceLength ?? 0,
+            DownloadObject = downloadObject,
+            Listener = listener,
+            ChunkLength = 0L,
+            Error = string.Empty,
+            Timeout = timeout,
+            BufferSize = 2048,
+            DropBytes = dropBytes,
+            IsDepadderStart = requestedStartBytes == 0
+        }, cancellationToken);
     }
 
     private static bool IsSslHandshakeError(HttpRequestException exception)
@@ -529,10 +612,15 @@ public class DecryptionStreamProcessor
     private async Task<HttpResponseMessage> SendRequestWithSslFallbackAsync(
         string downloadUrl,
         string userAgent,
+        string? rangeHeader,
         CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
         request.Headers.Add(UserAgentHeader, userAgent);
+        if (!string.IsNullOrWhiteSpace(rangeHeader))
+        {
+            request.Headers.TryAddWithoutValidation("Range", rangeHeader);
+        }
 
         try
         {
@@ -543,13 +631,13 @@ public class DecryptionStreamProcessor
         {
             _logger.LogWarning(httpEx, "Primary SSL configuration failed for {Url}, trying fallback configurations", downloadUrl);
 
-            var response = await TryWithFallbackSslAsync(downloadUrl, userAgent, SslProtocols.Tls13, cancellationToken);
+            var response = await TryWithFallbackSslAsync(downloadUrl, userAgent, rangeHeader, SslProtocols.Tls13, cancellationToken);
             if (response == null)
             {
-                response = await TryWithFallbackSslAsync(downloadUrl, userAgent, SslProtocols.Tls12, cancellationToken);
+                response = await TryWithFallbackSslAsync(downloadUrl, userAgent, rangeHeader, SslProtocols.Tls12, cancellationToken);
             }
 
-            response ??= await TryWithFallbackSslAsync(downloadUrl, userAgent, SslProtocols.None, cancellationToken);
+            response ??= await TryWithFallbackSslAsync(downloadUrl, userAgent, rangeHeader, SslProtocols.None, cancellationToken);
             if (response != null)
             {
                 _logger.LogInformation("Fallback SSL configuration succeeded for {Url}", downloadUrl);
@@ -565,6 +653,7 @@ public class DecryptionStreamProcessor
     private async Task<HttpResponseMessage?> TryWithFallbackSslAsync(
         string url,
         string userAgent,
+        string? rangeHeader,
         SslProtocols sslProtocol,
         CancellationToken cancellationToken)
     {
@@ -587,6 +676,10 @@ public class DecryptionStreamProcessor
 
             using var fallbackRequest = new HttpRequestMessage(HttpMethod.Get, url);
             fallbackRequest.Headers.Add(UserAgentHeader, userAgent);
+            if (!string.IsNullOrWhiteSpace(rangeHeader))
+            {
+                fallbackRequest.Headers.TryAddWithoutValidation("Range", rangeHeader);
+            }
 
             var response = await fallbackClient.SendAsync(fallbackRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
 
@@ -644,7 +737,8 @@ public class DecryptionStreamProcessor
             context.ChunkLength,
             context.Error,
             new List<byte>(),
-            isDepadderStart: true,
+            isDepadderStart: context.IsDepadderStart,
+            dropBytes: context.DropBytes,
             decryptChunkCounter: 0,
             flushedFirstChunk: false);
         var bufferSize = context.BufferSize >= 1024 ? context.BufferSize : 1024;
@@ -698,6 +792,8 @@ public class DecryptionStreamProcessor
         public required string Error { get; set; }
         public required Timer? Timeout { get; init; }
         public required int BufferSize { get; init; }
+        public required int DropBytes { get; init; }
+        public required bool IsDepadderStart { get; init; }
     }
 
     private sealed class PipelineState(
@@ -705,6 +801,7 @@ public class DecryptionStreamProcessor
         string error,
         List<byte> modifiedStream,
         bool isDepadderStart,
+        int dropBytes,
         long decryptChunkCounter,
         bool flushedFirstChunk)
     {
@@ -712,6 +809,7 @@ public class DecryptionStreamProcessor
         public string Error = error;
         public List<byte> ModifiedStream { get; } = modifiedStream;
         public bool IsDepadderStart = isDepadderStart;
+        public int DropBytes = dropBytes;
         public long DecryptChunkCounter = decryptChunkCounter;
         public bool FlushedFirstChunk = flushedFirstChunk;
     }
@@ -783,7 +881,8 @@ public class DecryptionStreamProcessor
 
         foreach (var decryptedChunk in decryptedChunks)
         {
-            var depaddedChunk = ProcessDeezSpoTagDepadder(decryptedChunk, ref state.IsDepadderStart);
+            var rangedChunk = ApplyInitialDropBytes(decryptedChunk, ref state.DropBytes);
+            var depaddedChunk = ProcessDeezSpoTagDepadder(rangedChunk, ref state.IsDepadderStart);
             if (depaddedChunk.Length == 0)
             {
                 continue;
@@ -853,6 +952,39 @@ public class DecryptionStreamProcessor
 
         isStart = false;
         return chunk;
+    }
+
+    private static byte[] ApplyInitialDropBytes(byte[] chunk, ref int dropBytes)
+    {
+        if (chunk.Length == 0 || dropBytes <= 0)
+        {
+            return chunk;
+        }
+
+        if (dropBytes >= chunk.Length)
+        {
+            dropBytes -= chunk.Length;
+            return Array.Empty<byte>();
+        }
+
+        var result = new byte[chunk.Length - dropBytes];
+        Array.Copy(chunk, dropBytes, result, 0, result.Length);
+        dropBytes = 0;
+        return result;
+    }
+
+    private static string ResolveContentType(DownloadObject downloadObject)
+        => downloadObject.Bitrate >= 1000 ? "audio/flac" : "audio/mpeg";
+
+    private static string? BuildContentRangeHeaderValue(long startBytes, long? contentLength, long? totalLength)
+    {
+        if (!contentLength.HasValue || !totalLength.HasValue || contentLength.Value <= 0)
+        {
+            return null;
+        }
+
+        var endBytes = startBytes + contentLength.Value - 1;
+        return $"bytes {startBytes}-{endBytes}/{totalLength.Value}";
     }
 
     private static byte[] RemoveLeadingPaddingIfNeeded(byte[] chunk, bool isStart)

@@ -55,7 +55,6 @@
     const SESSION_KEY = 'deezspotag-shazam-last';
     const SESSION_MAX_AGE_MS = 5 * 60 * 1000;
     const previewState = {
-        audio: null,
         trackId: null,
         button: null
     };
@@ -818,8 +817,10 @@
     };
 
     const stopPreview = () => {
-        if (previewState.audio && !previewState.audio.paused) {
-            previewState.audio.pause();
+        const player = window.DeezerUnifiedPlayback;
+        const session = player && typeof player.getSession === 'function' ? player.getSession() : null;
+        if (session?.page === 'shazam' && player && typeof player.stop === 'function') {
+            void player.stop('idle');
         }
         if (previewState.button) {
             setPreviewButtonState(previewState.button, false);
@@ -840,39 +841,34 @@
             return;
         }
 
-        const audio = previewState.audio || new Audio();
-        previewState.audio = audio;
-
-        if (previewState.trackId === deezerId && !audio.paused) {
-            stopPreview();
+        const player = window.DeezerUnifiedPlayback;
+        if (!player || typeof player.play !== 'function') {
             return;
         }
 
-        const previousButton = previewState.button;
-        previewState.trackId = deezerId;
-        previewState.button = button;
-        setPreviewButtonState(button, true);
-
-        if (previousButton && previousButton !== button) {
-            setPreviewButtonState(previousButton, false);
-        }
-
-        if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function') {
-            audio.src = await window.DeezerPlaybackContext.resolveStreamUrl(deezerId, { element: button });
-        } else {
-            audio.src = `/api/deezer/stream/${encodeURIComponent(deezerId)}`;
-        }
-        audio.currentTime = 0;
-        audio.onended = () => {
-            stopPreview();
-        };
-
-        try {
-            await audio.play();
-        } catch {
-            stopPreview();
-            notify('Unable to start playback.', 'error');
-        }
+        await player.play({
+            page: 'shazam',
+            button,
+            deezerId,
+            sourceKey: deezerId,
+            unavailableMessage: 'Preview unavailable for this track.',
+            startFailedMessage: 'Unable to start playback.',
+            interruptedMessage: 'Playback interrupted.',
+            onStateChange: (state, context) => {
+                setShazamPlaybackState(button, state);
+                if (state === 'requested' || state === 'playing') {
+                    previewState.trackId = deezerId;
+                    previewState.button = button;
+                    return;
+                }
+                if (previewState.button === button) {
+                    previewState.button = null;
+                }
+                if (previewState.trackId === deezerId || previewState.trackId === context?.session?.deezerId) {
+                    previewState.trackId = null;
+                }
+            }
+        });
     };
 
     const handleDownload = async (button) => {

@@ -671,7 +671,6 @@ let appleHasMoreVideos = false;
 let appleLoadingMore = false;
 const selectedVideoKeys = new Set();
 let showSelectedOnly = false;
-const searchPreviewCache = new Map();
 const libraryExistenceCache = new Map();
 const searchMode = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SearchMode"]?.ToString() ?? string.Empty));
 const searchModeNormalized = String(searchMode || '').trim().toLowerCase();
@@ -2045,8 +2044,8 @@ function openUnifiedTracklist(id, type, source) {
 }
 
 async function playSearchPreview(deezerId, spotifyId, appleUrl, appleId, nativePreviewUrl = '', source = '') {
-    const audio = document.getElementById('search-preview');
-    if (!audio) {
+    const player = window.DeezerUnifiedPlayback;
+    if (!player || typeof player.play !== 'function') {
         return;
     }
 
@@ -2059,70 +2058,37 @@ async function playSearchPreview(deezerId, spotifyId, appleUrl, appleId, nativeP
             }
             return;
         }
-
-        audio.pause();
-        audio.src = normalizedPreviewUrl;
-        audio.load();
-        audio.play().catch(() => {});
+        await player.play({
+            page: 'search',
+            sourceKey: normalizedPreviewUrl,
+            previewUrl: normalizedPreviewUrl,
+            unavailableMessage: 'No Apple preview available.',
+            startFailedMessage: 'Unable to start playback.',
+            interruptedMessage: 'Playback interrupted.'
+        });
         return;
     }
 
-    let resolvedId = deezerId || '';
-    if (!resolvedId) {
-        const cacheKey = `${deezerId}|${spotifyId}|${appleUrl}|${appleId}`;
-        if (searchPreviewCache.has(cacheKey)) {
-            resolvedId = searchPreviewCache.get(cacheKey) || '';
-        } else {
-            try {
-                if (window.DeezerResolver && typeof window.DeezerResolver.resolveTrack === 'function') {
-                    if (spotifyId) {
-                        const url = `https://open.spotify.com/track/${spotifyId}`;
-                        const data = await window.DeezerResolver.resolveTrack(
-                            { source: 'spotify', url },
-                            { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: true }
-                        );
-                        resolvedId = data?.deezerId || '';
-                    } else if (appleUrl || appleId) {
-                        const url = appleUrl || `https://music.apple.com/us/track/${appleId}`;
-                        const data = await window.DeezerResolver.resolveTrack(
-                            { source: 'apple', url },
-                            { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: false }
-                        );
-                        resolvedId = data?.deezerId || '';
-                    }
-                }
-            } catch (error) {
-                console.warn('Preview resolve failed:', error);
-            }
-            searchPreviewCache.set(cacheKey, resolvedId || '');
-        }
-    }
-
-    if (!resolvedId) {
+    const resolvedId = String(deezerId || '').trim();
+    const spotifyTrackUrl = spotifyId ? `https://open.spotify.com/track/${spotifyId}` : '';
+    const appleTrackUrl = appleUrl || (appleId ? `https://music.apple.com/us/track/${appleId}` : '');
+    if (!resolvedId && !spotifyTrackUrl && !appleTrackUrl) {
         if (window.DeezSpoTag?.ui?.showToast) {
             window.DeezSpoTag.ui.showToast('No Deezer match for preview.', { type: 'warning' });
         }
         return;
     }
 
-    const previewCandidate = (window.DeezerResolver && typeof window.DeezerResolver.resolvePlayableStreamUrl === 'function')
-        ? await window.DeezerResolver.resolvePlayableStreamUrl({ deezerId: resolvedId }, { fetchContext: true })
-        : ((window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.resolveStreamUrl === 'function')
-            ? await window.DeezerPlaybackContext.resolveStreamUrl(resolvedId, { fetchContext: true })
-            : `/api/deezer/stream/${resolvedId}`);
-    const previewUrl = (window.DeezerPlaybackFacade && typeof window.DeezerPlaybackFacade.resolvePlayablePreviewUrl === 'function')
-        ? await window.DeezerPlaybackFacade.resolvePlayablePreviewUrl(previewCandidate, { fetchContext: true })
-        : previewCandidate;
-    if (!previewUrl) {
-        if (window.DeezSpoTag?.ui?.showToast) {
-            window.DeezSpoTag.ui.showToast('Preview unavailable.', { type: 'warning' });
-        }
-        return;
-    }
-    audio.pause();
-    audio.src = previewUrl;
-    audio.load();
-    audio.play().catch(() => {});
+    await player.play({
+        page: 'search',
+        deezerId: resolvedId,
+        resolveUrl: resolvedId ? '' : (spotifyTrackUrl || appleTrackUrl),
+        resolverSource: resolvedId ? '' : (spotifyTrackUrl ? 'spotify' : 'apple'),
+        sourceKey: resolvedId || spotifyTrackUrl || appleTrackUrl,
+        unavailableMessage: 'Preview unavailable.',
+        startFailedMessage: 'Unable to start playback.',
+        interruptedMessage: 'Playback interrupted.'
+    });
 }
 
 function getAppleStorefront() {

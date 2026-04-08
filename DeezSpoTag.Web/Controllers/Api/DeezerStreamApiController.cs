@@ -23,7 +23,10 @@ public class DeezerStreamApiController : ControllerBase
     private const string Mp3320Format = "MP3_320";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan PlaybackContextTtl = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan PreparedMediaTtl = TimeSpan.FromMinutes(10);
     private static readonly ConcurrentDictionary<string, CachedPlaybackContext> PlaybackContextCache =
+        new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, CachedPreparedMediaResult> PreparedMediaCache =
         new(StringComparer.Ordinal);
 
     private readonly DeezerClient _deezerClient;
@@ -52,6 +55,7 @@ public class DeezerStreamApiController : ControllerBase
     public static void ClearPlaybackContextCache()
     {
         PlaybackContextCache.Clear();
+        PreparedMediaCache.Clear();
     }
 
     [HttpGet("{id}")]
@@ -125,6 +129,75 @@ public class DeezerStreamApiController : ControllerBase
         });
     }
 
+    [HttpGet("warmup/session")]
+    public async Task<IActionResult> WarmSession()
+    {
+        await EnsureLoggedInAsync();
+        return Ok(new
+        {
+            authenticated = _deezerClient.LoggedIn
+        });
+    }
+
+    [HttpPost("warmup/context")]
+    public async Task<IActionResult> WarmPlaybackContexts([FromBody] DeezerPlaybackWarmupRequest? request)
+    {
+        await EnsureLoggedInAsync();
+        if (!_deezerClient.LoggedIn)
+        {
+            return Unauthorized(new { authenticated = false, items = Array.Empty<object>() });
+        }
+
+        var ids = request?.Ids?
+            .Select(static id => NormalizeOptional(id))
+            .Where(static id => !string.IsNullOrWhiteSpace(id) && id.All(char.IsDigit))
+            .Distinct(StringComparer.Ordinal)
+            .Take(24)
+            .ToArray()
+            ?? Array.Empty<string>();
+
+        if (ids.Length == 0)
+        {
+            return Ok(new
+            {
+                authenticated = true,
+                items = Array.Empty<object>()
+            });
+        }
+
+        var items = new List<object>(ids.Length);
+        foreach (var deezerId in ids)
+        {
+            var context = await ResolvePlaybackContextAsync(deezerId, forceRefresh: false);
+            if (context == null)
+            {
+                continue;
+            }
+
+            await PrimePreparedMediaResultAsync(context.DeezerId, context, ResolvePreviewFormat(qualityHint: null));
+
+            items.Add(new
+            {
+                available = true,
+                deezerId = context.DeezerId,
+                streamTrackId = context.StreamTrackId,
+                trackToken = context.TrackToken,
+                md5origin = context.Md5Origin,
+                mv = context.MediaVersion,
+                previewUrl = BuildPreparedStreamUrl(
+                    context.DeezerId,
+                    context,
+                    ResolvePreviewFormat(qualityHint: null))
+            });
+        }
+
+        return Ok(new
+        {
+            authenticated = true,
+            items
+        });
+    }
+
     private async Task<bool> TryStreamAuthenticatedTrackAsync(
         string id,
         int? qualityHint,
@@ -192,14 +265,31 @@ public class DeezerStreamApiController : ControllerBase
                 Bitrate = format == Mp3320Format ? 320 : 128
             };
 
-            Response.ContentType = "audio/mpeg";
-            await Response.StartAsync(cancellationToken);
+            var hasRange = TryParseSingleRangeHeader(Request.Headers.Range, out var range);
+
             await _streamProcessor.StreamTrackToStreamAsync(
                 Response.Body,
                 track,
                 mediaResult.Url,
                 downloadObject,
                 listener: null,
+                startBytes: hasRange ? range.Start : 0,
+                endBytes: hasRange ? range.End : null,
+                configureResponse: async headers =>
+                {
+                    Response.StatusCode = headers.StatusCode;
+                    Response.ContentType = headers.ContentType;
+                    Response.Headers["Accept-Ranges"] = "bytes";
+                    if (!string.IsNullOrWhiteSpace(headers.ContentRange))
+                    {
+                        Response.Headers["Content-Range"] = headers.ContentRange;
+                    }
+                    if (headers.ContentLength.HasValue && headers.ContentLength.Value >= 0)
+                    {
+                        Response.ContentLength = headers.ContentLength.Value;
+                    }
+                    await Response.StartAsync(cancellationToken);
+                },
                 cancellationToken: cancellationToken);
 
             return true;
@@ -216,7 +306,13 @@ public class DeezerStreamApiController : ControllerBase
         DeezerPlaybackContext context,
         string format)
     {
+        if (TryGetCachedPreparedMediaResult(context.TrackToken, format, out var cachedMediaResult))
+        {
+            return (context, cachedMediaResult);
+        }
+
         var mediaResult = await _deezerClient.GetTrackUrlWithStatusAsync(context.TrackToken, format);
+        CachePreparedMediaResult(context.TrackToken, format, mediaResult);
         if (!string.IsNullOrWhiteSpace(mediaResult.Url) || mediaResult.ErrorCode != 2001)
         {
             return (context, mediaResult);
@@ -230,7 +326,20 @@ public class DeezerStreamApiController : ControllerBase
 
         mediaResult = await _deezerClient.GetTrackUrlWithStatusAsync(refreshedContext.TrackToken, format);
         CachePlaybackContext(refreshedContext);
+        CachePreparedMediaResult(refreshedContext.TrackToken, format, mediaResult);
         return (refreshedContext, mediaResult);
+    }
+
+    private async Task PrimePreparedMediaResultAsync(string deezerId, DeezerPlaybackContext context, string format)
+    {
+        try
+        {
+            await FetchMediaResultAsync(deezerId, context, format);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to prime prepared media result for track {TrackId}", deezerId);
+        }
     }
 
     private async Task<DeezerPlaybackContext?> ResolvePlaybackContextAsync(
@@ -352,6 +461,83 @@ public class DeezerStreamApiController : ControllerBase
         PlaybackContextCache[context.DeezerId] = new CachedPlaybackContext(context, DateTimeOffset.UtcNow);
     }
 
+    private static string BuildPreparedStreamUrl(string deezerId, DeezerPlaybackContext context, string format)
+    {
+        var qs = new Dictionary<string, string?>
+        {
+            ["q"] = string.Equals(format, Mp3320Format, StringComparison.OrdinalIgnoreCase) ? "3" : "1",
+            ["streamTrackId"] = context.StreamTrackId,
+            ["trackToken"] = context.TrackToken,
+            ["md5origin"] = context.Md5Origin,
+            ["mv"] = context.MediaVersion
+        };
+
+        var query = string.Join("&", qs
+            .Where(static kvp => !string.IsNullOrWhiteSpace(kvp.Value))
+            .Select(static kvp => $"{Uri.EscapeDataString(kvp.Key)}={Uri.EscapeDataString(kvp.Value!)}"));
+
+        return string.IsNullOrWhiteSpace(query)
+            ? $"/api/deezer/stream/{Uri.EscapeDataString(deezerId)}"
+            : $"/api/deezer/stream/{Uri.EscapeDataString(deezerId)}?{query}";
+    }
+
+    private static bool TryGetCachedPreparedMediaResult(string trackToken, string format, out DeezerMediaResult mediaResult)
+    {
+        mediaResult = DeezerMediaResult.Empty();
+        var key = BuildPreparedMediaCacheKey(trackToken, format);
+        if (!PreparedMediaCache.TryGetValue(key, out var entry))
+        {
+            return false;
+        }
+
+        if (DateTimeOffset.UtcNow - entry.CachedAt > PreparedMediaTtl)
+        {
+            PreparedMediaCache.TryRemove(key, out _);
+            return false;
+        }
+
+        mediaResult = entry.Result;
+        return !string.IsNullOrWhiteSpace(mediaResult.Url);
+    }
+
+    private static void CachePreparedMediaResult(string trackToken, string format, DeezerMediaResult mediaResult)
+    {
+        if (string.IsNullOrWhiteSpace(trackToken) || string.IsNullOrWhiteSpace(format) || string.IsNullOrWhiteSpace(mediaResult.Url))
+        {
+            return;
+        }
+
+        PreparedMediaCache[BuildPreparedMediaCacheKey(trackToken, format)] =
+            new CachedPreparedMediaResult(mediaResult, DateTimeOffset.UtcNow);
+    }
+
+    private static string BuildPreparedMediaCacheKey(string trackToken, string format)
+        => $"{format}:{trackToken}";
+
+    private static bool TryParseSingleRangeHeader(string? rangeHeader, out StreamRange range)
+    {
+        range = default;
+        if (string.IsNullOrWhiteSpace(rangeHeader))
+        {
+            return false;
+        }
+
+        var match = Regex.Match(rangeHeader, @"bytes=(\d+)-(\d*)", RegexOptions.CultureInvariant, RegexTimeout);
+        if (!match.Success || !long.TryParse(match.Groups[1].Value, out var start))
+        {
+            return false;
+        }
+
+        long? end = null;
+        if (!string.IsNullOrWhiteSpace(match.Groups[2].Value) && long.TryParse(match.Groups[2].Value, out var parsedEnd))
+        {
+            end = parsedEnd;
+        }
+
+        range = new StreamRange(start, end);
+        return true;
+    }
+
     private static string ResolveStreamTrackId(GwTrack track)
     {
         if (track.FallbackId.HasValue && track.FallbackId.Value > 0)
@@ -427,6 +613,12 @@ public class DeezerStreamApiController : ControllerBase
         DeezerPlaybackContext Context,
         DateTimeOffset CachedAt);
 
+    private sealed record CachedPreparedMediaResult(
+        DeezerMediaResult Result,
+        DateTimeOffset CachedAt);
+
+    private readonly record struct StreamRange(long Start, long? End);
+
     public sealed class DeezerStreamQuery
     {
         [FromQuery]
@@ -446,6 +638,11 @@ public class DeezerStreamApiController : ControllerBase
 
         [FromQuery(Name = "mv")]
         public string? MediaVersion { get; set; }
+    }
+
+    public sealed class DeezerPlaybackWarmupRequest
+    {
+        public List<string>? Ids { get; set; }
     }
 
     private async Task<IActionResult> StreamEpisodeAsync(string id, CancellationToken cancellationToken)
