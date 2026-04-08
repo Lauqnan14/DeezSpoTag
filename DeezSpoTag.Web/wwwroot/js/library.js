@@ -2137,11 +2137,13 @@ async function playDirectPreviewInApp(previewUrl, button) {
         return;
     }
 
+    setLibraryPlaybackState(button, 'requested');
     const facade = getLibraryPlaybackFacade();
     const resolvedPreviewUrl = facade
         ? await facade.resolvePlayablePreviewUrl(normalizedPreviewUrl, { element: button })
         : normalizedPreviewUrl;
     if (!resolvedPreviewUrl) {
+        resetPreviewState(button, 'idle');
         showToast('Preview unavailable.', true);
         return;
     }
@@ -2186,8 +2188,10 @@ async function playSpotifyTrackInApp(url, button) {
         return;
     }
 
+    setLibraryPlaybackState(button, 'requested');
     const resolved = await resolvePlayableSpotifyTrack(url, button);
     if (!resolved || resolved.available === false || resolved.type !== 'track' || !resolved.deezerId) {
+        resetPreviewState(button, 'idle');
         showToast('Track not available for streaming.', true);
         return;
     }
@@ -2205,6 +2209,7 @@ async function playSpotifyTrackInApp(url, button) {
         ? await facade.resolvePlayablePreviewUrl(resolvedStreamUrl, { element: button })
         : resolvedStreamUrl;
     if (!streamUrl) {
+        resetPreviewState(button, 'idle');
         showToast('Track not available for streaming.', true);
         return;
     }

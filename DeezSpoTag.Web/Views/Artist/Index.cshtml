@@ -1331,6 +1331,7 @@ async function playArtistTrackInApp(button) {
         const resolved = await resolveSpotifyUrlToDeezer(spotifyUrl);
         if (!resolved || resolved.available === false || resolved.type !== 'track' || !resolved.deezerId) {
             showArtistPlaybackMessage('Track not available for streaming.');
+            setArtistPlaybackState(button, 'idle');
             return;
         }
         button.dataset.deezerId = resolved.deezerId;
@@ -1338,11 +1339,13 @@ async function playArtistTrackInApp(button) {
         trackKey = `deezer:${resolved.deezerId}`;
     } else {
         showArtistPlaybackMessage('Preview unavailable.');
+        setArtistPlaybackState(button, 'idle');
         return;
     }
 
     if (!streamUrl) {
         showArtistPlaybackMessage('Preview unavailable.');
+        setArtistPlaybackState(button, 'idle');
         return;
     }
 
@@ -1372,11 +1375,11 @@ async function playArtistTrackInApp(button) {
         setArtistPlaybackState(artistPreviewState.button, 'idle');
     }
 
+    setArtistPlaybackState(button, 'requested');
     artistPreviewState.audio = audio;
     artistPreviewState.trackKey = trackKey;
     artistPreviewState.button = button;
     artistPreviewState.sourceKey = sourceKey;
-    setArtistPlaybackState(button, 'requested');
     bootstrapArtistPreviewAudioSource(audio, streamUrl);
     audio.onended = () => {
         const nextButton = getNextTopTrackButton();
