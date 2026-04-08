@@ -1045,7 +1045,17 @@ function renderTopTracks(tracks) {
         const trackActionLabel = safeTitle ? `Open ${safeTitle}` : 'Open track';
         const spotifyUrl = source === 'spotify' ? String(trackLink || '') : '';
         const deezerId = source === 'deezer' ? String(track.id || track.deezer_id || '').trim() : '';
-        const previewUrl = String(track.preview || '');
+        const deezerPlaybackContext = deezerId
+            ? normalizeArtistDeezerPlaybackContext({
+                streamTrackId: track.stream_track_id || track.streamTrackId || '',
+                trackToken: track.track_token || track.trackToken || '',
+                md5origin: track.md5_origin || track.md5Origin || track.md5origin || '',
+                mv: track.media_version || track.mediaVersion || track.mv || ''
+            })
+            : null;
+        const previewUrl = deezerId && deezerPlaybackContext
+            ? buildArtistDeezerStreamUrl(deezerId, deezerPlaybackContext)
+            : String(track.preview || '');
         const safeSpotifyUrl = spotifyUrl ? escapeHtml(spotifyUrl) : '';
         const safePreviewUrl = previewUrl ? escapeHtml(previewUrl) : '';
         const explicitBadge = track.explicit_lyrics ? '<span class="top-song-item__explicit" aria-label="Explicit">E</span>' : '';
@@ -1062,6 +1072,18 @@ function renderTopTracks(tracks) {
         }
         if (deezerId) {
             playAttrs.push(`data-deezer-id="${deezerId}"`);
+            if (deezerPlaybackContext) {
+                playAttrs.push(
+                    `data-stream-track-id="${escapeHtml(deezerPlaybackContext.streamTrackId)}"`,
+                    `data-track-token="${escapeHtml(deezerPlaybackContext.trackToken)}"`
+                );
+                if (deezerPlaybackContext.md5origin) {
+                    playAttrs.push(`data-md5-origin="${escapeHtml(deezerPlaybackContext.md5origin)}"`);
+                }
+                if (deezerPlaybackContext.mv) {
+                    playAttrs.push(`data-media-version="${escapeHtml(deezerPlaybackContext.mv)}"`);
+                }
+            }
         }
         if (safePreviewUrl) {
             playAttrs.push(`data-preview-url="${safePreviewUrl}"`);
@@ -1260,16 +1282,6 @@ function buildArtistDeezerStreamUrl(deezerId, context) {
         return '';
     }
     return window.DeezerPlaybackContext.buildStreamUrl(deezerId, { context: context });
-}
-
-async function fetchArtistDeezerPlaybackContext(deezerId) {
-    if (!window.DeezerPlaybackContext || typeof window.DeezerPlaybackContext.fetchContext !== 'function') {
-        return null;
-    }
-    return await window.DeezerPlaybackContext.fetchContext(deezerId, {
-        cache: artistDeezerPlaybackContextCache,
-        requests: artistDeezerPlaybackContextRequests
-    });
 }
 
 function buildArtistPlaybackRequest(button, getNextTopTrackButton) {
