@@ -1317,6 +1317,11 @@ async function playArtistTrackInApp(button) {
 
     let streamUrl = '';
     let trackKey = '';
+    const shouldShowRequestedState = Boolean(previewUrl || deezerId || spotifyUrl);
+
+    if (shouldShowRequestedState) {
+        setArtistPlaybackState(button, 'requested');
+    }
 
     if (previewUrl) {
         const facade = getArtistPlaybackFacade();
@@ -1375,7 +1380,6 @@ async function playArtistTrackInApp(button) {
         setArtistPlaybackState(artistPreviewState.button, 'idle');
     }
 
-    setArtistPlaybackState(button, 'requested');
     artistPreviewState.audio = audio;
     artistPreviewState.trackKey = trackKey;
     artistPreviewState.button = button;

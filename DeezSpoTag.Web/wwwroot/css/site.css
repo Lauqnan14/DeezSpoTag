@@ -60,6 +60,18 @@ body {
     -webkit-font-smoothing: antialiased;
 }
 
+@keyframes playback-request-pulse {
+    0%,
+    100% {
+        opacity: 1;
+        filter: brightness(1);
+    }
+    50% {
+        opacity: 0.82;
+        filter: brightness(1.12);
+    }
+}
+
 /* Global sliding toggle theme (Watchlist style) */
 .switch {
     position: relative;
