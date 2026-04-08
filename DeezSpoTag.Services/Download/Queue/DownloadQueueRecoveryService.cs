@@ -19,30 +19,18 @@ public sealed class DownloadQueueRecoveryService
     private const string InQueueStatus = "inQueue";
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DownloadCancellationRegistry _cancellationRegistry;
-    private readonly DownloadRetryScheduler _retryScheduler;
-    private readonly EngineFallbackCoordinator _fallbackCoordinator;
-    private readonly DeezSpoTagSettingsService _settingsService;
-    private readonly IActivityLogWriter _activityLog;
-    private readonly IDeezSpoTagListener _listener;
+    private readonly DownloadQueueRecoveryRuntime _runtime;
     private readonly ILogger<DownloadQueueRecoveryService> _logger;
 
     public DownloadQueueRecoveryService(
         DownloadQueueRepository queueRepository,
         DownloadCancellationRegistry cancellationRegistry,
-        DownloadRetryScheduler retryScheduler,
-        EngineFallbackCoordinator fallbackCoordinator,
-        DeezSpoTagSettingsService settingsService,
-        IActivityLogWriter activityLog,
-        IDeezSpoTagListener listener,
+        DownloadQueueRecoveryRuntime runtime,
         ILogger<DownloadQueueRecoveryService> logger)
     {
         _queueRepository = queueRepository;
         _cancellationRegistry = cancellationRegistry;
-        _retryScheduler = retryScheduler;
-        _fallbackCoordinator = fallbackCoordinator;
-        _settingsService = settingsService;
-        _activityLog = activityLog;
-        _listener = listener;
+        _runtime = runtime;
         _logger = logger;
     }
 
@@ -89,9 +77,9 @@ public sealed class DownloadQueueRecoveryService
             item.QueueUuid,
             engine,
             item.UpdatedAt);
-        _activityLog.Warn($"Download stalled: {item.QueueUuid} engine={engine} progress={item.Progress ?? 0:0.#}");
+        _runtime.ActivityLog.Warn($"Download stalled: {item.QueueUuid} engine={engine} progress={item.Progress ?? 0:0.#}");
         _cancellationRegistry.Cancel(item.QueueUuid);
-        _listener.Send("updateQueue", new
+        _runtime.Listener.Send("updateQueue", new
         {
             uuid = item.QueueUuid,
             error = message
@@ -160,7 +148,7 @@ public sealed class DownloadQueueRecoveryService
         }
 
         var currentEngine = NormalizeEngineName(payload.Engine);
-        var advanced = await _fallbackCoordinator.TryAdvanceAsync(
+        var advanced = await _runtime.FallbackCoordinator.TryAdvanceAsync(
             item.QueueUuid,
             currentEngine,
             payload,
@@ -172,8 +160,8 @@ public sealed class DownloadQueueRecoveryService
                 item.QueueUuid,
                 currentEngine,
                 payload.Engine);
-            _activityLog.Warn($"Recovered stale running item: {item.QueueUuid} {currentEngine} -> {payload.Engine}");
-            _listener.Send("updateQueue", new
+            _runtime.ActivityLog.Warn($"Recovered stale running item: {item.QueueUuid} {currentEngine} -> {payload.Engine}");
+            _runtime.Listener.Send("updateQueue", new
             {
                 uuid = item.QueueUuid,
                 status = InQueueStatus,
@@ -196,14 +184,14 @@ public sealed class DownloadQueueRecoveryService
             FailedStatus,
             message,
             cancellationToken: CancellationToken.None);
-        _listener.Send("updateQueue", new
+        _runtime.Listener.Send("updateQueue", new
         {
             uuid = queueUuid,
             status = FailedStatus,
             error = message
         });
-        _activityLog.Error($"Queue recovery failed (engine={engine}): {queueUuid} {message}");
-        _retryScheduler.ScheduleRetry(queueUuid, engine, message);
+        _runtime.ActivityLog.Error($"Queue recovery failed (engine={engine}): {queueUuid} {message}");
+        _runtime.RetryScheduler.ScheduleRetry(queueUuid, engine, message);
     }
 
     private async Task<DownloadQueueItem> NormalizeFallbackPayloadAsync(
@@ -230,7 +218,7 @@ public sealed class DownloadQueueRecoveryService
             return item;
         }
 
-        var settings = _settingsService.LoadSettings();
+        var settings = _runtime.SettingsService.LoadSettings();
         var state = FallbackPayloadNormalizer.ResolveCanonicalState(item, settings, payloadObj);
         var changed = FallbackPayloadNormalizer.ApplyCanonicalState(payloadObj, state, resetIndexAndHistory: false);
         if (!changed)

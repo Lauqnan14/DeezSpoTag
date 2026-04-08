@@ -73,14 +73,16 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
                 NullLogger<DeezerIsrcResolver>.Instance),
             new NullActivityLogWriter());
 
-        _recoveryService = new DownloadQueueRecoveryService(
-            _queueRepository,
-            _cancellationRegistry,
+        var runtime = new DownloadQueueRecoveryRuntime(
             retryScheduler,
             fallbackCoordinator,
             _settingsService,
             new NullActivityLogWriter(),
-            new DeezSpoTagListener(),
+            new DeezSpoTagListener());
+        _recoveryService = new DownloadQueueRecoveryService(
+            _queueRepository,
+            _cancellationRegistry,
+            runtime,
             NullLogger<DownloadQueueRecoveryService>.Instance);
     }
 
