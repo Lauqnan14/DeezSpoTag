@@ -4762,6 +4762,15 @@
     color: var(--primary-color);
 }
 
+.album-page .track-row .library-track-play.is-starting {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    background: color-mix(in srgb, var(--primary-color) 10%, transparent);
+    color: var(--primary-color);
+    animation: playback-request-pulse 0.9s ease-in-out infinite;
+}
+
 .album-page .track-row .library-track-play .preview-controls {
     display: block;
     font-size: 22px;
@@ -5332,6 +5341,14 @@
 .artist-page #spotifyTopTracksList .top-song-item__play:focus-visible {
     background: transparent;
     color: var(--primary-color);
+}
+
+.artist-page #spotifyTopTracksList .top-song-item__play.is-starting {
+    opacity: 1;
+    pointer-events: auto;
+    background: color-mix(in srgb, var(--primary-color) 10%, transparent);
+    color: var(--primary-color);
+    animation: playback-request-pulse 0.9s ease-in-out infinite;
 }
 
 .artist-page #spotifyTopTracksList .top-song-item__placeholder {

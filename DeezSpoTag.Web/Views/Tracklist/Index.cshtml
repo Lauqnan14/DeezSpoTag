@@ -559,6 +559,13 @@
     cursor: pointer;
 }
 
+.track-number .preview-controls.is-starting {
+    opacity: 1;
+    pointer-events: auto;
+    color: var(--primary-color);
+    animation: playback-request-pulse 0.9s ease-in-out infinite;
+}
+
 .track-number .preview-controls.is-resolving {
     color: var(--primary-color);
     animation: track-preview-resolving-pulse 0.9s ease-in-out infinite;

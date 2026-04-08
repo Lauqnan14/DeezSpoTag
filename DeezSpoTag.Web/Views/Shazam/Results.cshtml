@@ -846,6 +846,8 @@
             return;
         }
 
+        setShazamPlaybackState(button, 'requested');
+
         const deezerId = await resolveDeezerId(card);
         if (!deezerId) {
             setShazamPlaybackState(button, 'idle');
@@ -855,7 +857,6 @@
 
         const audio = previewState.audio || new Audio();
         previewState.audio = audio;
-        setShazamPlaybackState(button, 'requested');
 
         if (previewState.trackId === deezerId && !audio.paused) {
             stopPreview();

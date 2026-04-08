@@ -217,6 +217,13 @@
     color: var(--primary-color);
 }
 
+.shz-action.is-starting {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+    background: color-mix(in srgb, var(--primary-color) 10%, var(--bg-quaternary));
+    animation: playback-request-pulse 0.9s ease-in-out infinite;
+}
+
 .shz-action.is-loading {
     opacity: 0.7;
     cursor: wait;

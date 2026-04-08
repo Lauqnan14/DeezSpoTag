@@ -223,6 +223,15 @@
     background: transparent;
     color: var(--primary-color);
 }
+
+.home-top-song-item__play.is-starting {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    color: var(--primary-color);
+    background: color-mix(in srgb, var(--primary-color) 10%, transparent);
+    animation: playback-request-pulse 0.9s ease-in-out infinite;
+}
 .home-top-song-item__placeholder {
     width: 100%;
     height: 100%;
