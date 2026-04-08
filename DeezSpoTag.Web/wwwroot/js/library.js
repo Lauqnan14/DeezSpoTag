@@ -15,7 +15,6 @@ const libraryState = {
         defaultFileProfile: null,
         librarySchedules: {}
     },
-    previewAudio: null,
     previewTrackId: null,
     previewButton: null,
     deezerAlbumIndex: new Map(),
@@ -2062,50 +2061,6 @@ function setLibraryPlaybackState(button, state) {
     setPreviewButtonState(button, isPlaying);
 }
 
-function clearActivePreviewButton() {
-    if (!libraryState.previewButton) {
-        return;
-    }
-
-    setPreviewButtonState(libraryState.previewButton, false);
-    libraryState.previewButton = null;
-}
-
-function resetPreviewState(button, state = 'idle') {
-    setPreviewButtonState(button, false);
-    libraryState.previewTrackId = null;
-    if (libraryState.previewButton === button) {
-        libraryState.previewButton = null;
-    }
-}
-
-function configurePreviewAudio(audio, previewKey, button, sourceUrl, onEnded, onError = null) {
-    if (libraryState.previewButton !== button) {
-        clearActivePreviewButton();
-    }
-
-    libraryState.previewAudio = audio;
-    libraryState.previewTrackId = previewKey;
-    libraryState.previewButton = button;
-    setPreviewButtonState(button, true);
-    audio.pause();
-    audio.src = sourceUrl;
-    audio.currentTime = 0;
-    audio.onended = onEnded;
-    audio.onerror = null;
-}
-
-async function startPreviewPlayback(audio, button, message) {
-    try {
-        await audio.play();
-        return true;
-    } catch {
-        resetPreviewState(button);
-        showToast(message, true);
-        return false;
-    }
-}
-
 async function playDirectPreviewInApp(previewUrl, button) {
     const normalizedPreviewUrl = String(previewUrl || '').trim();
     if (!normalizedPreviewUrl) {
@@ -2113,37 +2068,75 @@ async function playDirectPreviewInApp(previewUrl, button) {
         return;
     }
 
-    const audio = libraryState.previewAudio ?? new Audio();
-    if (libraryState.previewTrackId === normalizedPreviewUrl && !audio.paused) {
-        audio.pause();
-        clearActivePreviewButton();
+    const player = globalThis.DeezerUnifiedPlayback;
+    if (!player || typeof player.play !== 'function') {
         return;
     }
 
-    configurePreviewAudio(audio, normalizedPreviewUrl, button, normalizedPreviewUrl, () => {
-        clearActivePreviewButton();
-        libraryState.previewTrackId = null;
+    await player.play({
+        page: 'library',
+        button,
+        previewUrl: normalizedPreviewUrl,
+        sourceKey: normalizedPreviewUrl,
+        unavailableMessage: 'Preview unavailable.',
+        startFailedMessage: 'Unable to start playback.',
+        interruptedMessage: 'Playback interrupted.',
+        onStateChange: buildLibraryPlaybackStateHandler(button, normalizedPreviewUrl)
     });
-    await startPreviewPlayback(audio, button, 'Unable to start playback.');
 }
 
-function getNextSpotifyTopTrackButton() {
+function getNextSpotifyTopTrackButton(currentButton = null) {
     const list = document.getElementById('spotifyTopTracksList');
-    if (!list || !libraryState.previewButton) {
+    const activeButton = currentButton || libraryState.previewButton;
+    if (!list || !activeButton) {
         return null;
     }
     const buttons = Array.from(list.querySelectorAll('button.track-play'));
-    const index = buttons.indexOf(libraryState.previewButton);
+    const index = buttons.indexOf(activeButton);
     return index === -1 ? null : buttons[index + 1] || null;
 }
 
-async function resolvePlayableSpotifyTrack(url, button) {
-    const cachedDeezerId = button?.dataset?.deezerId;
-    if (cachedDeezerId) {
-        return { deezerId: cachedDeezerId, type: 'track', available: true };
+function buildLibraryPlaybackStateHandler(button, fallbackKey) {
+    return (state, context) => {
+        setLibraryPlaybackState(button, state);
+        if (state === 'requested' || state === 'playing') {
+            libraryState.previewButton = button;
+            libraryState.previewTrackId = context?.session?.key || fallbackKey;
+            return;
+        }
+        if (libraryState.previewButton === button) {
+            libraryState.previewButton = null;
+        }
+        if (libraryState.previewTrackId === (context?.session?.key || libraryState.previewTrackId)) {
+            libraryState.previewTrackId = null;
+        }
+    };
+}
+
+function buildLibrarySpotifyPlaybackRequest(url, button) {
+    if (!button) {
+        return null;
     }
 
-    return resolveSpotifyUrlToDeezer(url);
+    const fallbackKey = button.dataset.deezerId ? `deezer:${button.dataset.deezerId}` : url;
+    return {
+        page: 'library',
+        button,
+        deezerId: button.dataset.deezerId || '',
+        spotifyUrl: url,
+        sourceKey: button.dataset.deezerId || url,
+        unavailableMessage: 'Track not available for streaming.',
+        startFailedMessage: 'Unable to start playback.',
+        interruptedMessage: 'Playback interrupted.',
+        onStateChange: buildLibraryPlaybackStateHandler(button, fallbackKey),
+        getNextRequest: () => {
+            const nextButton = getNextSpotifyTopTrackButton(button);
+            if (!nextButton?.dataset?.spotifyUrl) {
+                return null;
+            }
+            return buildLibrarySpotifyPlaybackRequest(nextButton.dataset.spotifyUrl, nextButton);
+        }
+    };
 }
 
 async function playSpotifyTrackInApp(url, button) {
@@ -2153,40 +2146,16 @@ async function playSpotifyTrackInApp(url, button) {
         return;
     }
 
-    const resolved = await resolvePlayableSpotifyTrack(url, button);
-    if (!resolved || resolved.available === false || resolved.type !== 'track' || !resolved.deezerId) {
-        showToast('Track not available for streaming.', true);
+    const player = globalThis.DeezerUnifiedPlayback;
+    if (!player || typeof player.play !== 'function') {
         return;
     }
 
-    const trackId = resolved.deezerId.toString();
-    const previewKey = `deezer:${trackId}`;
-    const playbackContext = globalThis.DeezerPlaybackContext;
-    const resolvedStreamUrl = (playbackContext && typeof playbackContext.resolveStreamUrl === 'function')
-        ? await playbackContext.resolveStreamUrl(trackId, { element: button })
-        : `/api/deezer/stream/${encodeURIComponent(trackId)}`;
-    if (!resolvedStreamUrl) {
-        showToast('Track not available for streaming.', true);
+    const request = buildLibrarySpotifyPlaybackRequest(url, button);
+    if (!request) {
         return;
     }
-    const audio = libraryState.previewAudio ?? new Audio();
-
-    if (libraryState.previewTrackId === previewKey && !audio.paused) {
-        audio.pause();
-        clearActivePreviewButton();
-        return;
-    }
-
-    configurePreviewAudio(audio, previewKey, button, resolvedStreamUrl, () => {
-        const nextButton = getNextSpotifyTopTrackButton();
-        if (nextButton?.dataset?.spotifyUrl) {
-            playSpotifyTrackInApp(nextButton.dataset.spotifyUrl, nextButton);
-            return;
-        }
-        clearActivePreviewButton();
-        libraryState.previewTrackId = null;
-    });
-    await startPreviewPlayback(audio, button, 'Unable to start playback.');
+    await player.play(request);
 }
 
 async function playLocalLibraryTrackInApp(trackId, button, preferredPath) {
@@ -2199,19 +2168,21 @@ async function playLocalLibraryTrackInApp(trackId, button, preferredPath) {
     const previewUrl = normalizedPreferredPath
         ? `/api/library/analysis/track/${encodeURIComponent(trackId)}/audio?filePath=${encodeURIComponent(normalizedPreferredPath)}`
         : `/api/library/analysis/track/${encodeURIComponent(trackId)}/audio`;
-    const audio = libraryState.previewAudio ?? new Audio();
-
-    if (libraryState.previewTrackId === previewKey && !audio.paused) {
-        audio.pause();
-        clearActivePreviewButton();
+    const player = globalThis.DeezerUnifiedPlayback;
+    if (!player || typeof player.play !== 'function') {
         return;
     }
 
-    configurePreviewAudio(audio, previewKey, button, previewUrl, () => {
-        clearActivePreviewButton();
-        libraryState.previewTrackId = null;
+    await player.play({
+        page: 'library',
+        button,
+        previewUrl,
+        sourceKey: previewKey,
+        unavailableMessage: 'Preview unavailable.',
+        startFailedMessage: 'Unable to start playback.',
+        interruptedMessage: 'Playback interrupted.',
+        onStateChange: buildLibraryPlaybackStateHandler(button, previewKey)
     });
-    await startPreviewPlayback(audio, button, 'Unable to start playback.');
 }
 
 
