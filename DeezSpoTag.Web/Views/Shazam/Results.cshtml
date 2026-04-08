@@ -848,12 +848,14 @@
 
         const deezerId = await resolveDeezerId(card);
         if (!deezerId) {
+            setShazamPlaybackState(button, 'idle');
             notify('Preview unavailable for this track.', 'warning');
             return;
         }
 
         const audio = previewState.audio || new Audio();
         previewState.audio = audio;
+        setShazamPlaybackState(button, 'requested');
 
         if (previewState.trackId === deezerId && !audio.paused) {
             stopPreview();
@@ -871,6 +873,7 @@
             ? await facade.resolvePlayablePreviewUrl(streamCandidate, { element: button })
             : streamCandidate;
         if (!streamUrl) {
+            setShazamPlaybackState(button, 'idle');
             notify('Preview unavailable for this track.', 'warning');
             return;
         }

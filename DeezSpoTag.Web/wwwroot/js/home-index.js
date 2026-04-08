@@ -814,10 +814,10 @@ async function playHomeTrendingTrackInApp(target, options = {}) {
         return;
     }
 
-    const { isStaleRequest } = playbackRequest;
     setHomeTrendingPlaybackState(button, 'requested');
 
     try {
+        const { isStaleRequest } = playbackRequest;
         const candidate = await resolveHomeTrendingStreamCandidate(
             button,
             deezerId,
