@@ -22,6 +22,7 @@ public sealed class DeezerSessionManager : IDisposable
     private const string DefaultCountry = "US";
     private const string DefaultLanguage = "en";
     private const int MaxRetries = 3;
+    private static readonly TimeSpan HttpRequestTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(2);
     private static readonly bool AllowInsecureSsl = string.Equals(
         Environment.GetEnvironmentVariable("DEEZSPOTAG_ALLOW_INSECURE_SSL"),
@@ -635,7 +636,10 @@ public sealed class DeezerSessionManager : IDisposable
         handler.ServerCertificateCustomValidationCallback = static (message, cert, chain, errors) =>
             errors == SslPolicyErrors.None || AllowInsecureSsl;
 
-        var httpClient = new HttpClient(handler);
+        var httpClient = new HttpClient(handler)
+        {
+            Timeout = HttpRequestTimeout
+        };
         
         // Apply all shared headers
         foreach (var header in _httpHeaders)

@@ -356,33 +356,6 @@
         return items;
     }
 
-    function collectPlaybackTargets(root = document, options = {}) {
-        const limit = Number.isFinite(Number(options.limit)) ? Math.max(1, Number(options.limit)) : 16;
-        const visibleOnly = options.visibleOnly !== false;
-        const selectors = [
-            '[data-home-trending-track="true"][data-deezer-id]',
-            '#artistTopTracksList button.track-play[data-deezer-id]',
-            '#spotifyTopTracksList button.track-play[data-deezer-id]',
-            '.preview-controls'
-        ];
-        const nodes = Array.from(root.querySelectorAll(selectors.join(',')));
-        const results = [];
-        for (const node of nodes) {
-            if (visibleOnly && !isElementVisible(node)) {
-                continue;
-            }
-            const details = getPlaybackTargetDetails(node);
-            if (!details) {
-                continue;
-            }
-            results.push(details.target);
-            if (results.length >= limit) {
-                break;
-            }
-        }
-        return results;
-    }
-
     function scheduleStartupWarmup() {
         if (startupWarmScheduled) {
             return;
@@ -391,18 +364,6 @@
 
         const runWarmup = function () {
             void warmSession();
-            const kick = function () {
-                const targets = collectPlaybackTargets(document, { limit: 18, visibleOnly: true });
-                if (targets.length) {
-                    void primePlaybackTargets(targets, { includeSession: false });
-                }
-            };
-
-            if (typeof global.requestIdleCallback === 'function') {
-                global.requestIdleCallback(kick, { timeout: 1200 });
-                return;
-            }
-            global.setTimeout(kick, 180);
         };
 
         if (document.readyState === 'loading') {
@@ -468,8 +429,7 @@
         readContextFromElement: readContextFromElement,
         applyContextToElement: applyContextToElement,
         warmContext: warmContext,
-        primePlaybackTargets: primePlaybackTargets,
-        collectPlaybackTargets: collectPlaybackTargets
+        primePlaybackTargets: primePlaybackTargets
     };
 
     scheduleStartupWarmup();

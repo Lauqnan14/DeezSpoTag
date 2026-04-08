@@ -174,8 +174,6 @@ public class DeezerStreamApiController : ControllerBase
                 continue;
             }
 
-            await PrimePreparedMediaResultAsync(context.DeezerId, context, ResolvePreviewFormat(qualityHint: null));
-
             items.Add(new
             {
                 available = true,
@@ -328,18 +326,6 @@ public class DeezerStreamApiController : ControllerBase
         CachePlaybackContext(refreshedContext);
         CachePreparedMediaResult(refreshedContext.TrackToken, format, mediaResult);
         return (refreshedContext, mediaResult);
-    }
-
-    private async Task PrimePreparedMediaResultAsync(string deezerId, DeezerPlaybackContext context, string format)
-    {
-        try
-        {
-            await FetchMediaResultAsync(deezerId, context, format);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Failed to prime prepared media result for track {TrackId}", deezerId);
-        }
     }
 
     private async Task<DeezerPlaybackContext?> ResolvePlaybackContextAsync(
