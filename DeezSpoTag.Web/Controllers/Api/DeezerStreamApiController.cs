@@ -28,6 +28,7 @@ public class DeezerStreamApiController : ControllerBase
         new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, CachedPreparedMediaResult> PreparedMediaCache =
         new(StringComparer.Ordinal);
+    private static readonly SemaphoreSlim LoginGate = new(1, 1);
 
     private readonly DeezerClient _deezerClient;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -224,12 +225,6 @@ public class DeezerStreamApiController : ControllerBase
             var (resolvedContext, mediaResult) = await FetchMediaResultAsync(id, context, format);
             context = resolvedContext;
 
-            if (string.IsNullOrWhiteSpace(mediaResult.Url) && format != Mp3128Format)
-            {
-                format = Mp3128Format;
-                (context, mediaResult) = await FetchMediaResultAsync(id, context, format);
-            }
-
             if (string.IsNullOrWhiteSpace(mediaResult.Url)
                 && !string.IsNullOrWhiteSpace(context.Md5Origin)
                 && !string.IsNullOrWhiteSpace(context.MediaVersion))
@@ -260,7 +255,7 @@ public class DeezerStreamApiController : ControllerBase
             {
                 Track = track,
                 Title = context.Title,
-                Bitrate = format == Mp3320Format ? 320 : 128
+                Bitrate = 128
             };
 
             var hasRange = TryParseSingleRangeHeader(Request.Headers.Range, out var range);
@@ -411,12 +406,9 @@ public class DeezerStreamApiController : ControllerBase
 
     private string ResolvePreviewFormat(int? qualityHint)
     {
-        if (qualityHint.HasValue && qualityHint.Value <= 1)
-        {
-            return Mp3128Format;
-        }
-
-        return _deezerClient.CanStreamAtBitrate(3) ? Mp3320Format : Mp3128Format;
+        // Playback is currently fixed to MP3_128 until user-facing quality controls are implemented.
+        _ = qualityHint;
+        return Mp3128Format;
     }
 
     private static bool TryGetCachedPlaybackContext(string deezerId, out DeezerPlaybackContext context)
@@ -860,8 +852,14 @@ public class DeezerStreamApiController : ControllerBase
             return;
         }
 
+        await LoginGate.WaitAsync();
         try
         {
+            if (_deezerClient.LoggedIn)
+            {
+                return;
+            }
+
             var loginData = await _loginStorage.LoadLoginCredentialsAsync();
             if (!string.IsNullOrWhiteSpace(loginData?.Arl))
             {
@@ -871,6 +869,10 @@ public class DeezerStreamApiController : ControllerBase
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to auto-login Deezer client for streaming.");
+        }
+        finally
+        {
+            LoginGate.Release();
         }
     }
 }
