@@ -116,12 +116,16 @@ public class SpotifyPlaylistTracklistApiController : ControllerBase
         var allowFallbackSearch = settings.FallbackSearch
             || string.Equals(settings.SpotifyPlaylistTrackSource, LibrespotTrackSource, StringComparison.OrdinalIgnoreCase)
             || IsPathfinderTrackSource(settings.SpotifyPlaylistTrackSource);
-        var tracks = await _tracklistService.ResolveVisibleTracksAsync(
+
+        // Render-first: return mapped Spotify rows immediately, then warm Deezer matches in background.
+        var tracks = SpotifyTracklistMapper.MapTracks(page.Tracks.ToList(), offset);
+
+        _ = _tracklistService.WarmVisibleTrackMatchesAsync(
             page.Tracks,
             offset,
             page.SnapshotId,
             allowFallbackSearch,
-            cancellationToken);
+            CancellationToken.None);
         if (IsPathfinderTrackSource(settings.SpotifyPlaylistTrackSource))
         {
             var token = $"spotify:playlist:{playlistId}";
