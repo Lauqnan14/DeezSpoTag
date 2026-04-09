@@ -174,7 +174,7 @@ public class SpotifyPlaylistTracklistApiController : ControllerBase
     }
 
     [HttpPost("playlist/match")]
-    public async Task<IActionResult> PlaylistMatch([FromQuery] string url, CancellationToken cancellationToken = default)
+    public IActionResult PlaylistMatch([FromQuery] string url)
     {
         var playlistId = ParsePlaylistId(url, out var validationError);
         if (validationError != null)
@@ -187,7 +187,7 @@ public class SpotifyPlaylistTracklistApiController : ControllerBase
             return Ok(new { available = false });
         }
 
-        var result = await _tracklistService.StartPlaylistMatchingAsync(url, cancellationToken);
+        var result = _tracklistService.StartPlaylistMatching(url);
         if (result == null)
         {
             return Ok(new { available = false });

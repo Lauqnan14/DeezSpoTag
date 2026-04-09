@@ -27,6 +27,7 @@ public sealed class SpotifyTracklistService
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyTracklistMatchSnapshot Snapshot)> SnapshotCache = new();
     private static readonly TimeSpan DeezerSnapshotTtl = TimeSpan.FromHours(2);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DeezerSnapshotCacheEntry> DeezerSnapshotCache = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _playlistMatchPreparationInFlight = new(StringComparer.Ordinal);
     private readonly SpotifyMetadataService _metadataService;
     private readonly DeezerClient _deezerClient;
     private readonly SongLinkResolver _songLinkResolver;
@@ -58,9 +59,7 @@ public sealed class SpotifyTracklistService
         return GetTracklistAsync(url, cancellationToken);
     }
 
-    public async Task<SpotifyTracklistMatchStart?> StartPlaylistMatchingAsync(
-        string url,
-        CancellationToken cancellationToken)
+    public SpotifyTracklistMatchStart? StartPlaylistMatching(string url)
     {
         if (!SpotifyMetadataService.TryParseSpotifyUrl(url, out var type, out var playlistId)
             || !string.Equals(type, PlaylistType, StringComparison.OrdinalIgnoreCase))
@@ -68,56 +67,17 @@ public sealed class SpotifyTracklistService
             return null;
         }
 
-        var metadata = await _metadataService.FetchPlaylistMetadataAsync(playlistId, cancellationToken);
-        if (metadata is null)
+        var token = BuildMatchToken(PlaylistType, playlistId);
+        var existing = _matchStore.GetSnapshot(token);
+        if (existing is { Pending: > 0 })
         {
-            return null;
+            return new SpotifyTracklistMatchStart(token, existing.Pending);
         }
 
-        var settings = _settingsService.LoadSettings();
-        var tracks = await _metadataService.FetchPlaylistTracksForSourceAsync(
-            playlistId,
-            settings.SpotifyPlaylistTrackSource,
-            cancellationToken);
-        if (tracks.Count == 0)
-        {
-            return new SpotifyTracklistMatchStart(
-                BuildMatchToken(PlaylistType, metadata.Id),
-                0);
-        }
-
-        tracks = await _metadataService.HydrateTrackIsrcsWithPathfinderAsync(
-            tracks,
-            cancellationToken,
-            settings.SpotifyIsrcHydrationConcurrency);
-        if (tracks.Any(t => string.IsNullOrWhiteSpace(t.Name)))
-        {
-            tracks = await _metadataService.HydrateTrackDetailsWithBlobAsync(tracks, cancellationToken);
-        }
-
-        var token = BuildMatchToken(PlaylistType, metadata.Id);
-        var signature = BuildPlaylistSignature(tracks);
-        var strictSpotifyDeezerMode = settings.StrictSpotifyDeezerMode;
-        var allowFallbackSearch = !strictSpotifyDeezerMode
-            && (settings.FallbackSearch
-                || string.Equals(settings.SpotifyPlaylistTrackSource, "librespot", StringComparison.OrdinalIgnoreCase));
-        if (!strictSpotifyDeezerMode && IsPathfinderTrackSource(settings.SpotifyPlaylistTrackSource))
-        {
-            allowFallbackSearch = true;
-        }
-        var conversion = new SpotifyTracklistConversion(
-            SpotifyTracklistMapper.MapTracks(tracks, 0),
-            tracks.Select((track, index) => new SpotifyTracklistPending(index, track)).ToList());
-
-        if (!string.IsNullOrWhiteSpace(signature))
-        {
-            conversion = ApplyStoredSnapshot(signature, conversion);
-        }
-        conversion = ApplyStoredMatches(token, conversion);
-
-        StartOrSeedMatches(token, signature, conversion, allowFallbackSearch);
-
-        return new SpotifyTracklistMatchStart(token, conversion.Pending.Count);
+        _matchStore.Activate(token);
+        _matchStore.Start(token, pendingCount: 1, signature: null);
+        QueuePlaylistMatchPreparation(token, playlistId);
+        return new SpotifyTracklistMatchStart(token, 1);
     }
 
     public async Task<SpotifyTracklistPayload?> GetTracklistAsync(string url, CancellationToken cancellationToken)
@@ -251,6 +211,9 @@ public sealed class SpotifyTracklistService
             return;
         }
 
+        _matchStore.Activate(token);
+        _matchStore.Start(token, pendingCount: 0, signature);
+
         var entries = conversion.Tracks
             .Select(track => new SpotifyTracklistMatchEntry(
                 track.Index,
@@ -261,6 +224,85 @@ public sealed class SpotifyTracklistService
                 1))
             .ToList();
         _matchStore.CacheSignatureSnapshot(signature, entries);
+    }
+
+    private void QueuePlaylistMatchPreparation(string token, string playlistId)
+    {
+        if (!_playlistMatchPreparationInFlight.TryAdd(token, 0))
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await PreparePlaylistMatchingAsync(token, playlistId);
+            }
+            finally
+            {
+                _playlistMatchPreparationInFlight.TryRemove(token, out _);
+            }
+        }, CancellationToken.None);
+    }
+
+    private async Task PreparePlaylistMatchingAsync(string token, string playlistId)
+    {
+        try
+        {
+            var metadata = await _metadataService.FetchPlaylistMetadataAsync(playlistId, CancellationToken.None);
+            if (metadata is null)
+            {
+                _matchStore.Start(token, pendingCount: 0, signature: null);
+                return;
+            }
+
+            var settings = _settingsService.LoadSettings();
+            var tracks = await _metadataService.FetchPlaylistTracksForSourceAsync(
+                playlistId,
+                settings.SpotifyPlaylistTrackSource,
+                CancellationToken.None);
+            if (tracks.Count == 0)
+            {
+                _matchStore.Start(token, pendingCount: 0, signature: null);
+                return;
+            }
+
+            tracks = await _metadataService.HydrateTrackIsrcsWithPathfinderAsync(
+                tracks,
+                CancellationToken.None,
+                settings.SpotifyIsrcHydrationConcurrency);
+            if (tracks.Any(t => string.IsNullOrWhiteSpace(t.Name)))
+            {
+                tracks = await _metadataService.HydrateTrackDetailsWithBlobAsync(tracks, CancellationToken.None);
+            }
+
+            var signature = BuildPlaylistSignature(tracks);
+            var strictSpotifyDeezerMode = settings.StrictSpotifyDeezerMode;
+            var allowFallbackSearch = !strictSpotifyDeezerMode
+                && (settings.FallbackSearch
+                    || string.Equals(settings.SpotifyPlaylistTrackSource, "librespot", StringComparison.OrdinalIgnoreCase));
+            if (!strictSpotifyDeezerMode && IsPathfinderTrackSource(settings.SpotifyPlaylistTrackSource))
+            {
+                allowFallbackSearch = true;
+            }
+
+            var conversion = new SpotifyTracklistConversion(
+                SpotifyTracklistMapper.MapTracks(tracks, 0),
+                tracks.Select((track, index) => new SpotifyTracklistPending(index, track)).ToList());
+
+            if (!string.IsNullOrWhiteSpace(signature))
+            {
+                conversion = ApplyStoredSnapshot(signature, conversion);
+            }
+            conversion = ApplyStoredMatches(token, conversion);
+            StartOrSeedMatches(token, signature, conversion, allowFallbackSearch);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to prepare Spotify playlist matching for token {Token}.", token);
+            _matchStore.Start(token, pendingCount: 0, signature: null);
+        }
     }
 
     private async Task<(SpotifyUrlMetadata Metadata, List<SpotifyTrackSummary> Tracks)> ResolveTracksForContentAsync(
