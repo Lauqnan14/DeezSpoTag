@@ -844,6 +844,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
             var stopped = await _autoTagService.StopJobAsync(jobId);
             if (stopped)
             {
+                await QueueResumeFoldersForPausedEnhancementJobAsync(jobId, cancellationToken);
                 _logger.LogInformation("Automation enhancement job {JobId} pause requested for incoming download.", jobId);
             }
             else
@@ -862,6 +863,110 @@ public sealed class DownloadOrchestrationService : BackgroundService
         {
             _enhancementPauseLock.Release();
         }
+    }
+
+    private async Task QueueResumeFoldersForPausedEnhancementJobAsync(string jobId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(jobId))
+        {
+            return;
+        }
+
+        var job = _autoTagService.GetJob(jobId);
+        if (job == null)
+        {
+            return;
+        }
+
+        if (string.Equals(job.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(job.RootPath))
+        {
+            return;
+        }
+
+        var normalizedJobRoot = NormalizePathScope(job.RootPath);
+        if (string.IsNullOrWhiteSpace(normalizedJobRoot))
+        {
+            return;
+        }
+
+        var profileContext = await BuildAutomationProfileContextAsync(cancellationToken);
+        var resumeFolderIds = profileContext.FoldersById.Values
+            .Where(IsEnhancementEligibleFolder)
+            .Where(folder => PathScopesOverlap(folder.RootPath, normalizedJobRoot))
+            .Select(folder => folder.Id.ToString(CultureInfo.InvariantCulture))
+            .ToList();
+
+        if (resumeFolderIds.Count == 0)
+        {
+            return;
+        }
+
+        QueueEnhancementResumeFolders(resumeFolderIds);
+    }
+
+    private static bool PathScopesOverlap(string candidateScope, string comparisonScope)
+    {
+        if (string.IsNullOrWhiteSpace(candidateScope) || string.IsNullOrWhiteSpace(comparisonScope))
+        {
+            return false;
+        }
+
+        var normalizedCandidate = NormalizePathScope(candidateScope);
+        var normalizedComparison = NormalizePathScope(comparisonScope);
+        if (string.IsNullOrWhiteSpace(normalizedCandidate) || string.IsNullOrWhiteSpace(normalizedComparison))
+        {
+            return false;
+        }
+
+        return IsPathWithinScope(normalizedCandidate, normalizedComparison)
+               || IsPathWithinScope(normalizedComparison, normalizedCandidate);
+    }
+
+    private static bool IsPathWithinScope(string candidatePath, string scopePath)
+    {
+        if (string.Equals(candidatePath, scopePath, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var scopeWithSeparator = EnsureTrailingDirectorySeparator(scopePath);
+        return candidatePath.StartsWith(scopeWithSeparator, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizePathScope(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            return Path.GetFullPath(path.Trim())
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return path.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+    }
+
+    private static string EnsureTrailingDirectorySeparator(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return string.Empty;
+        }
+
+        return path.EndsWith(Path.DirectorySeparatorChar)
+            || path.EndsWith(Path.AltDirectorySeparatorChar)
+            ? path
+            : path + Path.DirectorySeparatorChar;
     }
 
     private async Task<bool> TryPauseEnrichmentForIncomingDownloadAsync(string? enrichmentJobId)
