@@ -307,10 +307,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
         var context = await PreparePipelineRunContextAsync(cancellationToken);
         if (context is null)
         {
-            // Resume-only path: enrichment context can be unavailable (for example, no
-            // pending completed downloads), but an interrupted enhancement run may still
-            // need to continue once the queue is idle.
-            await ResumeInterruptedEnhancementAfterEnrichmentAsync(cancellationToken);
             return;
         }
 
@@ -320,28 +316,22 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return;
         }
 
-        await ResumeInterruptedEnhancementAfterEnrichmentAsync(cancellationToken);
-        if (!await EnsurePipelineStillIdleAsync(cancellationToken))
-        {
-            return;
-        }
-
         await RunPostAutoTagStagesAsync(cancellationToken);
         _lastPipelineCompletedAt = context.PipelineStartedAt;
     }
 
-    private async Task ResumeInterruptedEnhancementAfterEnrichmentAsync(CancellationToken cancellationToken)
+    private async Task<bool> ResumeInterruptedEnhancementAsync(CancellationToken cancellationToken)
     {
         var resumeFolderIds = ConsumeEnhancementResumeFolders();
         if (resumeFolderIds.Count == 0)
         {
-            return;
+            return false;
         }
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            $"Automation: resuming interrupted enhancement after enrichment for folder(s): {string.Join(", ", resumeFolderIds)}."));
+            $"Automation: resuming interrupted enhancement for folder(s): {string.Join(", ", resumeFolderIds)}."));
 
         var pausedAgain = await RunEnhancementStageAsync(
             forceRunEvenIfNotDue: true,
@@ -355,6 +345,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
             _pipelineRequested = true;
             _queueIdleSince = null;
         }
+
+        return pausedAgain;
     }
 
     private async Task<PipelineRunContext?> PreparePipelineRunContextAsync(CancellationToken cancellationToken)
@@ -527,6 +519,12 @@ public sealed class DownloadOrchestrationService : BackgroundService
         }
 
         if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+        {
+            return;
+        }
+
+        var pausedWhileResuming = await ResumeInterruptedEnhancementAsync(cancellationToken);
+        if (pausedWhileResuming || _pipelineRequested)
         {
             return;
         }
