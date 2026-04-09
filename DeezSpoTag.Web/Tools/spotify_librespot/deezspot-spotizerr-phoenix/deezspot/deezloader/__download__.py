@@ -74,6 +74,9 @@ from deezspot.models.callback.playlist import playlistObject as playlistCbObject
 from deezspot.models.callback.common import IDs, Service
 from deezspot.models.callback.user import userObject
 
+UNKNOWN_ARTIST_NAME = "Unknown Artist"
+UNKNOWN_EPISODE_TITLE = "Unknown Episode"
+
 # Use unified metadata converter
 def _track_object_to_dict(track_obj: trackCbObject) -> dict:
     """
@@ -90,7 +93,7 @@ def _album_object_to_dict(album_obj: albumCbObject) -> dict:
     """
     return album_object_to_dict(album_obj, source_type='deezer')
 
-class Download_JOB:
+class DownloadJob:
     progress_reporter = None
     
     @classmethod
@@ -129,8 +132,6 @@ class Download_JOB:
                     raise ValueError("MD5_ORIGIN is missing")
                 if not track_id:
                     raise ValueError("Track ID is missing")
-                
-                n_quality = qualities[quality_download]['n_quality']
                 
                 # Create the song hash using the correct parameter order
                 # Note: For legacy Deezer API, the order is: MD5 + Media Version + Track ID
@@ -197,7 +198,7 @@ class Download_JOB:
                             pass
                 non_episode_medias.extend(chunk_medias)
             except NoRightOnMedia:
-                for c_track in tokens_chunk:
+                for _ in tokens_chunk:
                     # Find the corresponding full track info from non_episode_tracks
                     track_index = len(non_episode_medias)
                     c_media_json = cls.__get_url(non_episode_tracks[track_index], quality_download)
@@ -218,7 +219,7 @@ class Download_JOB:
 
         return final_medias
 
-class EASY_DW:
+class EasyDw:
     progress_reporter = None
     
     @classmethod
@@ -239,10 +240,8 @@ class EASY_DW:
         self.__ids = preferences.ids
         self.__link = preferences.link
         self.__output_dir = preferences.output_dir
-        self.__not_interface = preferences.not_interface
         self.__quality_download = preferences.quality_download
         self.__recursive_quality = preferences.recursive_quality
-        self.__recursive_download = preferences.recursive_download
         self.__convert_to = getattr(preferences, 'convert_to', None)
         self.__bitrate = getattr(preferences, 'bitrate', None) # Added for consistency
 
@@ -259,7 +258,6 @@ class EASY_DW:
                 'duration': int(self.__infos_dw.get('DURATION', 0)),
                 'isrc': None
             }
-            self.__download_type = "episode"
         else:
             # Get the track object from preferences
             self.__track_obj: trackCbObject = preferences.song_metadata
@@ -275,7 +273,6 @@ class EASY_DW:
             self.__song_metadata_dict = track_object_to_dict(self.__track_obj, source_type=source_type, artist_separator=artist_separator)
             # Maintain legacy attribute expected elsewhere
             self.__song_metadata = self.__song_metadata_dict
-            self.__download_type = "track"
             # Backfill missing album fields when using Spotify minimal track objects
             try:
                 if use_spotify and 'album' not in self.__song_metadata_dict and getattr(preferences, 'spotify_album_obj', None):
@@ -476,8 +473,6 @@ class EASY_DW:
         
         # Process image data using unified utility
         self.__song_metadata = enhance_metadata_with_image(self.__song_metadata)
-        song = f"{self.__song_metadata['music']} - {self.__song_metadata['artist']}"
-
         # Check if track already exists based on metadata
         current_title = self.__song_metadata['music']
         current_album = self.__song_metadata['album']
@@ -529,10 +524,10 @@ class EASY_DW:
 
         # Initialize success to False for the item being processed
         if self.__infos_dw.get('__TYPE__') == 'episode':
-            if hasattr(self, '_EASY_DW__c_episode') and self.__c_episode:
+            if hasattr(self, '_EasyDw__c_episode') and self.__c_episode:
                  self.__c_episode.success = False
         else:
-            if hasattr(self, '_EASY_DW__c_track') and self.__c_track:
+            if hasattr(self, '_EasyDw__c_track') and self.__c_track:
                  self.__c_track.success = False
 
         try:
@@ -548,7 +543,11 @@ class EASY_DW:
                     final_path_val = getattr(self.__c_track, 'song_path', None)
                     # Deezer quality is directly the selected key or final file format
                     dz_quality_key = self.__quality_download
-                    download_quality_val = dz_quality_key if dz_quality_key else (self.__c_track.file_format.upper().lstrip('.') if getattr(self.__c_track, 'file_format', None) else None)
+                    download_quality_val = dz_quality_key
+                    if not download_quality_val:
+                        file_format = getattr(self.__c_track, 'file_format', None)
+                        if file_format:
+                            download_quality_val = file_format.upper().lstrip('.')
 
                     done_status = doneObject(
                         ids=self.__track_obj.ids,
@@ -603,7 +602,7 @@ class EASY_DW:
         except Exception as e:
             item_type = "Episode" if self.__infos_dw.get('__TYPE__') == 'episode' else "Track"
             item_name = self.__song_metadata.get('music', f'Unknown {item_type}')
-            artist_name = self.__song_metadata.get('artist', 'Unknown Artist')
+            artist_name = self.__song_metadata.get('artist', UNKNOWN_ARTIST_NAME)
             error_message = f"Download process failed for {item_type.lower()} '{item_name}' by '{artist_name}' (URL: {self.__link}). Error: {str(e)}"
             logger.error(error_message)
             
@@ -645,7 +644,7 @@ class EASY_DW:
         # Final check for non-skipped items that might have failed.
         if not current_item.success:
             item_name = self.__song_metadata.get('music', f'Unknown {item_type_str.capitalize()}')
-            artist_name = self.__song_metadata.get('artist', 'Unknown Artist')
+            artist_name = self.__song_metadata.get('artist', UNKNOWN_ARTIST_NAME)
             original_error_msg = getattr(current_item, 'error_message', f"Download failed for an unspecified reason after {item_type_str} processing attempt.")
             error_msg_template = "Cannot download {type} '{title}' by '{artist}'. Reason: {reason}"
             final_error_msg = error_msg_template.format(type=item_type_str, title=item_name, artist=artist_name, reason=original_error_msg)
@@ -977,11 +976,11 @@ class EASY_DW:
 
         except Exception as e:
             song_title = self.__song_metadata.get('music', 'Unknown Song')
-            artist_name = self.__song_metadata.get('artist', 'Unknown Artist')
+            artist_name = self.__song_metadata.get('artist', UNKNOWN_ARTIST_NAME)
             error_message = f"Download failed for '{song_title}' by '{artist_name}' (Link: {self.__link}). Error: {str(e)}"
             logger.error(error_message)
             unregister_active_download(self.__song_path)
-            if hasattr(self, '_EASY_DW__c_track') and self.__c_track:
+            if hasattr(self, '_EasyDw__c_track') and self.__c_track:
                 self.__c_track.success = False
                 self.__c_track.error_message = str(e)
             raise TrackNotFound(message=error_message, url=self.__link) from e
@@ -999,15 +998,10 @@ class EASY_DW:
                 response = requests.get(direct_url, stream=True)
                 response.raise_for_status()
 
-                content_length = response.headers.get('content-length')
-                total_size = int(content_length) if content_length else None
-
-                downloaded = 0
                 with open(self.__song_path, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:
-                            size = f.write(chunk)
-                            downloaded += size
+                            f.write(chunk)
                             
                             # Download progress reporting could be added here
                 
@@ -1018,7 +1012,7 @@ class EASY_DW:
                 # Build episode progress report
                 progress_data = {
                     "type": "episode",
-                    "song": self.__song_metadata.get('music', 'Unknown Episode'),
+                    "song": self.__song_metadata.get('music', UNKNOWN_EPISODE_TITLE),
                     "artist": self.__song_metadata.get('artist', 'Unknown Show'),
                     "status": "done"
                 }
@@ -1055,7 +1049,7 @@ class EASY_DW:
                     except OSError:
                         logger.warning(f"Could not remove episode file on error: {self.__song_path}")
                 self.__c_track.success = False # Mark as failed
-                episode_title = self.__preferences.song_metadata.get('music', 'Unknown Episode')
+                episode_title = self.__preferences.song_metadata.get('music', UNKNOWN_EPISODE_TITLE)
                 err_msg = f"Episode download failed for '{episode_title}' (URL: {self.__link}). Error: {str(e_dw_ep)}"
                 logger.error(err_msg)
                 self.__c_track.error_message = str(e_dw_ep)
@@ -1065,7 +1059,7 @@ class EASY_DW:
             if isfile(self.__song_path):
                 os.remove(self.__song_path)
             self.__c_track.success = False
-            episode_title = self.__preferences.song_metadata.get('music', 'Unknown Episode')
+            episode_title = self.__preferences.song_metadata.get('music', UNKNOWN_EPISODE_TITLE)
             err_msg = f"Episode download failed for '{episode_title}' (URL: {self.__link}). Error: {str(e)}"
             logger.error(err_msg)
             # Store error on track object
@@ -1103,7 +1097,7 @@ class EASY_DW:
 
     # Removed __add_more_tags() - now handled by unified libutils/taggers.py
 
-class DW_TRACK:
+class DwTrack:
     def __init__(
         self,
         preferences: Preferences,
@@ -1113,7 +1107,6 @@ class DW_TRACK:
         self.__preferences = preferences
         self.__parent = parent
         self.__ids = self.__preferences.ids
-        self.__song_metadata = self.__preferences.song_metadata
         self.__quality_download = self.__preferences.quality_download
 
     def dw(self) -> Track:
@@ -1133,7 +1126,7 @@ class DW_TRACK:
 
         return track
 
-class DW_ALBUM:
+class DwAlbum:
     def _album_object_to_dict(self, album_obj: albumCbObject) -> dict:
         """Converts an albumObject to a dictionary for tagging and path generation."""
         # Use the unified metadata converter
@@ -1174,9 +1167,7 @@ class DW_ALBUM:
         self.__ids = self.__preferences.ids
         self.__make_zip = self.__preferences.make_zip
         self.__output_dir = self.__preferences.output_dir
-        self.__not_interface = self.__preferences.not_interface
         self.__quality_download = self.__preferences.quality_download
-        self.__recursive_quality = self.__preferences.recursive_quality
         album_obj: albumCbObject = self.__preferences.song_metadata
         self.__song_metadata = self._album_object_to_dict(album_obj)
         self.__song_metadata['artist_separator'] = getattr(self.__preferences, 'artist_separator', '; ')
@@ -1394,7 +1385,7 @@ class DW_ALBUM:
         
         return album
 
-class DW_PLAYLIST:
+class DwPlaylist:
     def __init__(
         self,
         preferences: Preferences
@@ -1402,10 +1393,8 @@ class DW_PLAYLIST:
 
         self.__preferences = preferences
         self.__ids = self.__preferences.ids
-        self.__json_data = preferences.json_data
         self.__make_zip = self.__preferences.make_zip
         self.__output_dir = self.__preferences.output_dir
-        self.__song_metadata = self.__preferences.song_metadata
         self.__quality_download = self.__preferences.quality_download
 
     def _track_object_to_dict(self, track_obj: any) -> dict:
@@ -1425,7 +1414,6 @@ class DW_PLAYLIST:
         
         from deezspot.deezloader.deegw_api import API_GW
         infos_dw = API_GW.get_playlist_data(self.__ids)['data']
-        playlist_name_sanitized = sanitize_name(playlist_obj.title)
         
         playlist = Playlist()
         tracks = playlist.tracks
@@ -1549,7 +1537,7 @@ class DW_PLAYLIST:
         
         return playlist
 
-class DW_EPISODE:
+class DwEpisode:
     def __init__(
         self,
         preferences: Preferences
@@ -1557,7 +1545,6 @@ class DW_EPISODE:
         self.__preferences = preferences
         self.__ids = preferences.ids
         self.__output_dir = preferences.output_dir
-        self.__not_interface = preferences.not_interface
         self.__quality_download = preferences.quality_download
         
     def dw(self) -> Track:
@@ -1580,7 +1567,6 @@ class DW_EPISODE:
             if not direct_url:
                 raise TrackNotFound("No direct URL found")
             
-            from deezspot.libutils.utils import sanitize_name
             from pathlib import Path
             safe_filename = sanitize_name(self.__preferences.song_metadata['music'])
             Path(self.__output_dir).mkdir(parents=True, exist_ok=True)
@@ -1589,26 +1575,18 @@ class DW_EPISODE:
             response = requests.get(direct_url, stream=True)
             response.raise_for_status()
 
-            content_length = response.headers.get('content-length')
-            total_size = int(content_length) if content_length else None
-
-            downloaded = 0
-            total_size = int(response.headers.get('content-length', 0))
-            
             # Send initial progress status
-            parent = {
-                "type": "show",
-                "title": self.__preferences.song_metadata.get('artist', ''),
-                "artist": self.__preferences.song_metadata.get('artist', '')
-            }
+            callback_track = trackCbObject(
+                title=self.__preferences.song_metadata.get('music', UNKNOWN_EPISODE_TITLE),
+                artists=[artistTrackObject(name=self.__preferences.song_metadata.get('artist', 'Unknown Show'))],
+                ids=IDs(deezer=self.__ids),
+            )
             report_progress(
                 reporter=Download_JOB.progress_reporter,
-                report_type="episode",
-                song=self.__preferences.song_metadata.get('music', ''),
-                artist=self.__preferences.song_metadata.get('artist', ''),
-                status="initializing",
-                url=f"https://www.deezer.com/episode/{self.__ids}",
-                parent=parent
+                callback_obj=trackCallbackObject(
+                    track=callback_track,
+                    status_info=initializingObject(ids=callback_track.ids),
+                ),
             )
             
             with open(output_path, 'wb') as f:
@@ -1627,19 +1605,12 @@ class DW_EPISODE:
             episode.success = True
             
             # Send completion status
-            parent = {
-                "type": "show",
-                "title": self.__preferences.song_metadata.get('artist', ''),
-                "artist": self.__preferences.song_metadata.get('artist', '')
-            }
             report_progress(
                 reporter=Download_JOB.progress_reporter,
-                report_type="episode",
-                song=self.__preferences.song_metadata.get('music', ''),
-                artist=self.__preferences.song_metadata.get('artist', ''),
-                status="done",
-                url=f"https://www.deezer.com/episode/{self.__ids}",
-                parent=parent
+                callback_obj=trackCallbackObject(
+                    track=callback_track,
+                    status_info=doneObject(ids=callback_track.ids),
+                ),
             )
             
             # Save cover image for the episode
@@ -1658,8 +1629,17 @@ class DW_EPISODE:
         except Exception as e:
             if 'output_path' in locals() and os.path.exists(output_path):
                 os.remove(output_path)
-            episode_title = self.__preferences.song_metadata.get('music', 'Unknown Episode')
+            episode_title = self.__preferences.song_metadata.get('music', UNKNOWN_EPISODE_TITLE)
             err_msg = f"Episode download failed for '{episode_title}' (URL: {self.__preferences.link}). Error: {str(e)}"
             logger.error(err_msg)
             # Add original error to exception
             raise TrackNotFound(message=err_msg, url=self.__preferences.link) from e
+
+
+# Backward-compatible aliases for existing imports/usages.
+Download_JOB = DownloadJob
+EASY_DW = EasyDw
+DW_TRACK = DwTrack
+DW_ALBUM = DwAlbum
+DW_PLAYLIST = DwPlaylist
+DW_EPISODE = DwEpisode

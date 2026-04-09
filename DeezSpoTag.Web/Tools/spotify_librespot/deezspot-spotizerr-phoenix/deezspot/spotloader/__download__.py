@@ -64,6 +64,8 @@ from deezspot.models.callback import (
 from deezspot.spotloader.__spo_api__ import tracking, json_to_track_playlist_object
 from deezspot.models.callback.common import Service
 
+UNKNOWN_TRACK_TITLE = "Unknown Track"
+
 # --- Global retry counter variables ---
 GLOBAL_RETRY_COUNT = 0
 GLOBAL_MAX_RETRIES = 100  # Adjust this value as needed
@@ -81,7 +83,7 @@ def _album_object_to_dict(album_obj: albumObject) -> dict:
     """Converts an albumObject into a dictionary for legacy functions."""
     return album_object_to_dict(album_obj, source_type='spotify')
 
-class Download_JOB:
+class DownloadJob:
     session = None
     progress_reporter = None
 
@@ -93,7 +95,7 @@ class Download_JOB:
     def set_progress_reporter(cls, reporter):
         cls.progress_reporter = reporter
 
-class EASY_DW:
+class EasyDw:
     def __init__(
         self,
         preferences: Preferences,
@@ -109,14 +111,12 @@ class EASY_DW:
         self.__song_metadata = preferences.song_metadata
         # Convert song metadata to dict with configured artist separator
         artist_separator = getattr(preferences, 'artist_separator', '; ')
-        if parent == 'album' and hasattr(self.__song_metadata, 'album'):
-            # When iterating album tracks later we will still need the separator, but for initial dict, use track conversion
-            self.__song_metadata_dict = track_object_to_dict(self.__song_metadata, source_type='spotify', artist_separator=artist_separator)
-        else:
-            self.__song_metadata_dict = track_object_to_dict(self.__song_metadata, source_type='spotify', artist_separator=artist_separator)
-        self.__not_interface = preferences.not_interface
+        self.__song_metadata_dict = track_object_to_dict(
+            self.__song_metadata,
+            source_type='spotify',
+            artist_separator=artist_separator,
+        )
         self.__quality_download = preferences.quality_download or "NORMAL"
-        self.__recursive_download = preferences.recursive_download
         self.__type = "episode" if preferences.is_episode else "track"  # New type parameter
         self.__real_time_dl = preferences.real_time_dl
         self.__convert_to = getattr(preferences, 'convert_to', None)
@@ -260,7 +260,7 @@ class EASY_DW:
 
         # Move original .ogg to .tmp
         os_replace(og_song_path_for_ogg_output, temp_filename)
-        register_active_download(temp_filename) # CURRENT_DOWNLOAD = temp_filename
+        register_active_download(temp_filename)
         
         try:
             # Step 1: First convert the OGG file to standard format (copy operation)
@@ -292,7 +292,7 @@ class EASY_DW:
             # The primary file is now og_song_path_for_ogg_output. Register it.
             # Ensure self.__song_path reflects this, as it might be used by other parts of the class or returned.
             self.__song_path = og_song_path_for_ogg_output
-            register_active_download(self.__song_path) # CURRENT_DOWNLOAD = self.__song_path (the .ogg)
+            register_active_download(self.__song_path)
             
             # Step 2: Convert to requested format if specified (e.g., MP3, FLAC)
             conversion_to_another_format_occurred_and_cleared_state = False
@@ -365,9 +365,9 @@ class EASY_DW:
 
         try:
             # Initialize success to False, it will be set to True if download_try is successful
-            if hasattr(self, '_EASY_DW__c_track') and self.__c_track:
+            if hasattr(self, '_EasyDw__c_track') and self.__c_track:
                 self.__c_track.success = False
-            elif hasattr(self, '_EASY_DW__c_episode') and self.__c_episode: # For episodes
+            elif hasattr(self, '_EasyDw__c_episode') and self.__c_episode: # For episodes
                 self.__c_episode.success = False
             
             self.download_try() # This should set self.__c_track.success = True if successful
@@ -379,7 +379,7 @@ class EASY_DW:
             logger.error(error_message)
             traceback.print_exc()
             # Store the error message on the track object if it exists
-            if hasattr(self, '_EASY_DW__c_track') and self.__c_track:
+            if hasattr(self, '_EasyDw__c_track') and self.__c_track:
                 self.__c_track.success = False
                 self.__c_track.error_message = error_message # Store the more detailed error message
             # Removed problematic elif for __c_episode here as easy_dw in spotloader is focused on tracks.
@@ -388,12 +388,12 @@ class EASY_DW:
         
         # If the track was skipped (e.g. file already exists), return it immediately.
         # download_try sets success=False and was_skipped=True in this case.
-        if hasattr(self, '_EASY_DW__c_track') and self.__c_track and getattr(self.__c_track, 'was_skipped', False):
+        if hasattr(self, '_EasyDw__c_track') and self.__c_track and getattr(self.__c_track, 'was_skipped', False):
             return self.__c_track
 
         # Final check for non-skipped tracks that might have failed after download_try returned.
         # This handles cases where download_try didn't raise an exception but self.__c_track.success is still False.
-        if hasattr(self, '_EASY_DW__c_track') and self.__c_track and not self.__c_track.success:
+        if hasattr(self, '_EasyDw__c_track') and self.__c_track and not self.__c_track.success:
             song_title = self.__song_metadata.title
             artist_name = getattr(self.__preferences, 'artist_separator', '; ').join([a.name for a in self.__song_metadata.artists])
             original_error_msg = getattr(self.__c_track, 'error_message', "Download failed for an unspecified reason after attempt.")
@@ -405,7 +405,7 @@ class EASY_DW:
             raise TrackNotFound(message=final_error_msg, url=current_link)
             
         # If we reach here, the track should be successful and not skipped.
-        if hasattr(self, '_EASY_DW__c_track') and self.__c_track and self.__c_track.success:
+        if hasattr(self, '_EasyDw__c_track') and self.__c_track and self.__c_track.success:
             # Apply tags using unified utility
             process_and_tag_track(
                 track=self.__c_track,
@@ -661,10 +661,10 @@ class EASY_DW:
                     artist_name = getattr(self.__preferences, 'artist_separator', '; ').join([a.name for a in self.__song_metadata.artists])
                     final_error_msg = f"Maximum retry limit reached for '{track_name}' by '{artist_name}' (local: {max_retries}, global: {GLOBAL_MAX_RETRIES}). Last error: {str(e)}"
                     # Store error on track object
-                    if hasattr(self, '_EASY_DW__c_track') and self.__c_track:
+                    if hasattr(self, '_EasyDw__c_track') and self.__c_track:
                         self.__c_track.success = False
                         self.__c_track.error_message = final_error_msg
-                    raise Exception(final_error_msg) from e
+                    raise TrackNotFound(message=final_error_msg, url=self.__link) from e
                 time.sleep(retry_delay)
                 retry_delay += retry_delay_increase  # Use the custom retry delay increase
                 # Cap retry delay at 60 seconds to prevent session token expiration during long waits
@@ -672,7 +672,7 @@ class EASY_DW:
                 retry_delay = min(retry_delay, max_retry_delay)
                 
         # Save cover image if requested, after successful download and before conversion
-        if self.__preferences.save_cover and hasattr(self, '_EASY_DW__song_path') and self.__song_path:
+        if self.__preferences.save_cover and hasattr(self, '_EasyDw__song_path') and self.__song_path:
             save_cover_image_for_track(self.__song_metadata_dict, self.__song_path, self.__preferences.save_cover)
 
         try:
@@ -723,12 +723,12 @@ class EASY_DW:
                 if os.path.exists(self.__song_path):
                     os.remove(self.__song_path)
                 # Store error on track object
-                if hasattr(self, '_EASY_DW__c_track') and self.__c_track:
+                if hasattr(self, '_EasyDw__c_track') and self.__c_track:
                     self.__c_track.success = False
                     self.__c_track.error_message = error_msg_2
                 raise TrackNotFound(message=error_msg, url=self.__link) from conv_e
 
-        if hasattr(self, '_EASY_DW__c_track') and self.__c_track: 
+        if hasattr(self, '_EasyDw__c_track') and self.__c_track: 
             self.__c_track.success = True
             # Apply tags using unified utility
             process_and_tag_track(
@@ -796,7 +796,7 @@ class EASY_DW:
         # Compute final path and quality label
         final_path_val = getattr(self.__c_track, 'song_path', None)
         # Map Spotify quality to OGG bitrate label
-        quality_key = self.__quality_download if hasattr(self, '_EASY_DW__quality_download') else getattr(self, '_EASY_DW__quality_download', None)
+        quality_key = self.__quality_download if hasattr(self, '_EasyDw__quality_download') else getattr(self, '_EasyDw__quality_download', None)
         quality_key = self.__quality_download if quality_key is None else quality_key
         sp_quality_map = {
             'NORMAL': 'OGG_96',
@@ -815,7 +815,7 @@ class EASY_DW:
             download_quality=download_quality_val
         )
 
-        if hasattr(self, '_EASY_DW__c_track') and self.__c_track and self.__c_track.success:
+        if hasattr(self, '_EasyDw__c_track') and self.__c_track and self.__c_track.success:
             # Unregister the final successful file path after all operations are done.
             unregister_active_download(self.__c_track.song_path)
 
@@ -829,14 +829,14 @@ class EASY_DW:
         
         retries = 0
         # Initialize success to False for the episode, to be set True on completion
-        if hasattr(self, '_EASY_DW__c_episode') and self.__c_episode:
+        if hasattr(self, '_EasyDw__c_episode') and self.__c_episode:
             self.__c_episode.success = False
 
         if isfile(self.__song_path) and check_track(self.__c_episode):
             ans = input(
                 f"Episode \"{self.__song_path}\" already exists, do you want to redownload it?(y or n):"
             )
-            if not ans in answers:
+            if ans not in answers:
                  # If user chooses not to redownload, and file exists, consider it 'successful' for cleanup purposes if needed.
                  # However, the main .success might be for actual download processing.
                  # For now, just return. The file isn't in ACTIVE_DOWNLOADS from *this* run.
@@ -877,10 +877,10 @@ class EASY_DW:
                     track_name = self.__song_metadata.title
                     artist_name = getattr(self.__preferences, 'artist_separator', '; ').join([a.name for a in self.__song_metadata.artists])
                     final_error_msg = f"Maximum retry limit reached for '{track_name}' by '{artist_name}' (local: {max_retries}, global: {GLOBAL_MAX_RETRIES}). Last error: {str(e)}"
-                    if hasattr(self, '_EASY_DW__c_episode') and self.__c_episode:
+                    if hasattr(self, '_EasyDw__c_episode') and self.__c_episode:
                         self.__c_episode.success = False
                         self.__c_episode.error_message = final_error_msg
-                    raise Exception(final_error_msg) from e
+                    raise TrackNotFound(message=final_error_msg, url=self.__link) from e
                 time.sleep(retry_delay)
                 retry_delay += retry_delay_increase
         
@@ -931,20 +931,20 @@ class EASY_DW:
                         if not c_stream.closed:
                             try: 
                                 c_stream.close()
-                            except: 
+                            except Exception:
                                 pass
                         # f.close() is handled by with statement, but an explicit one might be here if not using with.
                         if os.path.exists(self.__song_path):
                             try: 
                                 os.remove(self.__song_path) 
-                            except: 
+                            except Exception:
                                 pass
                         unregister_active_download(self.__song_path)
                         episode_title = self.__song_metadata.title
                         artist_name = getattr(self.__preferences, 'artist_separator', '; ').join([a.name for a in self.__song_metadata.artists])
                         final_error_msg = f"Error during real-time download for episode '{episode_title}' by '{artist_name}' (URL: {self.__link}). Error: {str(e_realtime)}"
                         logger.error(final_error_msg)
-                        if hasattr(self, '_EASY_DW__c_episode') and self.__c_episode:
+                        if hasattr(self, '_EasyDw__c_episode') and self.__c_episode:
                             self.__c_episode.success = False
                             self.__c_episode.error_message = final_error_msg
                         raise TrackNotFound(message=final_error_msg, url=self.__link) from e_realtime
@@ -958,19 +958,19 @@ class EASY_DW:
                         if not c_stream.closed:
                             try: 
                                 c_stream.close()
-                            except: 
+                            except Exception:
                                 pass
                         if os.path.exists(self.__song_path):
                             try: 
                                 os.remove(self.__song_path) 
-                            except: 
+                            except Exception:
                                 pass
                         unregister_active_download(self.__song_path)
                         episode_title = self.__song_metadata.title
                         artist_name = getattr(self.__preferences, 'artist_separator', '; ').join([a.name for a in self.__song_metadata.artists])
                         final_error_msg = f"Error during standard download for episode '{episode_title}' by '{artist_name}' (URL: {self.__link}). Error: {str(e_standard)}"
                         logger.error(final_error_msg)
-                        if hasattr(self, '_EASY_DW__c_episode') and self.__c_episode:
+                        if hasattr(self, '_EasyDw__c_episode') and self.__c_episode:
                             self.__c_episode.success = False
                             self.__c_episode.error_message = final_error_msg
                         raise TrackNotFound(message=final_error_msg, url=self.__link) from e_standard
@@ -987,15 +987,17 @@ class EASY_DW:
             # Cleanup for download part if an unexpected error occurs outside the inner try-excepts
             if 'c_stream' in locals() and hasattr(c_stream, 'closed') and not c_stream.closed:
                 try: c_stream.close() 
-                except: pass
+                except Exception:
+                    pass
             if os.path.exists(self.__song_path):
                 try: os.remove(self.__song_path) 
-                except: pass
+                except Exception:
+                    pass
             unregister_active_download(self.__song_path)
             episode_title = self.__song_metadata.title
             error_message = f"Failed to download episode '{episode_title}' (URL: {self.__link}) during file operations. Error: {str(e_outer)}"
             logger.error(error_message)
-            if hasattr(self, '_EASY_DW__c_episode') and self.__c_episode:
+            if hasattr(self, '_EasyDw__c_episode') and self.__c_episode:
                 self.__c_episode.success = False
                 self.__c_episode.error_message = error_message
             raise TrackNotFound(message=error_message, url=self.__link) from e_outer
@@ -1029,13 +1031,13 @@ class EASY_DW:
                 unregister_active_download(self.__song_path) # Unregister it as it failed/was removed
             
             logger.error(error_message)
-            if hasattr(self, '_EASY_DW__c_episode') and self.__c_episode:
+            if hasattr(self, '_EasyDw__c_episode') and self.__c_episode:
                 self.__c_episode.success = False
                 self.__c_episode.error_message = error_message
             raise TrackNotFound(message=error_message, url=self.__link) from conv_e
                 
         # If we reach here, download and any conversion were successful.
-        if hasattr(self, '_EASY_DW__c_episode') and self.__c_episode:
+        if hasattr(self, '_EasyDw__c_episode') and self.__c_episode:
             self.__c_episode.success = True 
             # Apply tags using unified utility
             process_and_tag_episode(
@@ -1077,7 +1079,7 @@ def download_cli(preferences: Preferences) -> None:
     except Exception as e:
         logger.error(f"Failed to execute deez-dw.py: {e}")
 
-class DW_TRACK:
+class DwTrack:
     def __init__(
         self,
         preferences: Preferences
@@ -1090,7 +1092,7 @@ class DW_TRACK:
         # it's an intentional skip, not an error
         return track
 
-class DW_ALBUM:
+class DwAlbum:
     def __init__(
         self,
         preferences: Preferences
@@ -1100,7 +1102,6 @@ class DW_ALBUM:
         self.__make_zip = self.__preferences.make_zip
         self.__output_dir = self.__preferences.output_dir
         self.__album_metadata = self.__preferences.song_metadata
-        self.__not_interface = self.__preferences.not_interface
 
     def dw(self) -> Album:
         # Report album initializing status
@@ -1127,9 +1128,6 @@ class DW_ALBUM:
             pad_tracks=self.__preferences.pad_tracks
         )
         
-        # Calculate total number of discs for proper metadata tagging
-        total_discs = max((track.disc_number for track in album_obj.tracks), default=1)
-        
         for a, track_in_album in enumerate(album_obj.tracks):
             
             c_preferences = deepcopy(self.__preferences)
@@ -1154,9 +1152,9 @@ class DW_ALBUM:
 
                 track = EASY_DW(c_preferences, parent='album').easy_dw()
 
-            except (TrackNotFound, Exception) as e:
+            except Exception as e:
                 # Create a failed track object for the summary
-                song_tags = _track_object_to_dict(track_in_album) if isinstance(track_in_album, trackObject) else {'music': 'Unknown Track'}
+                song_tags = _track_object_to_dict(track_in_album) if isinstance(track_in_album, trackObject) else {'music': UNKNOWN_TRACK_TITLE}
                 track = Track(tags=song_tags, song_path=None, file_format=None, quality=None, link=None, ids=track_in_album.ids)
                 track.success = False
                 track.error_message = str(e)
@@ -1185,7 +1183,7 @@ class DW_ALBUM:
         for track in tracks:
             # track.tags is a dict.
             track_obj_for_cb = trackObject(
-                title=track.tags.get('music', 'Unknown Track'),
+                title=track.tags.get('music', UNKNOWN_TRACK_TITLE),
                 artists=[artistTrackObject(name=artist.strip()) for artist in track.tags.get('artist', '').split(';')]
             )
 
@@ -1234,7 +1232,7 @@ class DW_ALBUM:
         
         return album
 
-class DW_PLAYLIST:
+class DwPlaylist:
     def __init__(
         self,
         preferences: Preferences
@@ -1285,7 +1283,7 @@ class DW_PLAYLIST:
             track = None
 
             if isinstance(c_song_metadata, dict) and 'error_type' in c_song_metadata:
-                track_title = c_song_metadata.get('name', 'Unknown Track')
+                track_title = c_song_metadata.get('name', UNKNOWN_TRACK_TITLE)
                 track_ids = c_song_metadata.get('ids')
                 error_message = c_song_metadata.get('error_message', 'Unknown error during metadata retrieval.')
                 logger.warning(f"Skipping download for track '{track_title}' (ID: {track_ids}) from playlist '{playlist_name}' due to error: {error_message}")
@@ -1310,7 +1308,7 @@ class DW_PLAYLIST:
 
             try:
                 track = easy_dw_instance.easy_dw()
-            except (TrackNotFound, Exception) as e:
+            except Exception as e:
                 track = easy_dw_instance.get_no_dw_track()
                 if not isinstance(track, Track):
                     track = Track(_track_object_to_dict(c_song_metadata), None, None, None, c_preferences.link, c_preferences.ids)
@@ -1340,7 +1338,7 @@ class DW_PLAYLIST:
             # Create a trackObject for the callback from the internal Track object's tags
             track_tags = track.tags
             track_obj_for_cb = trackObject(
-                title=track_tags.get('music', 'Unknown Track'),
+                title=track_tags.get('music', UNKNOWN_TRACK_TITLE),
                 artists=[artistTrackObject(name=artist.strip()) for artist in track_tags.get('artist', '').split(';')]
             )
 
@@ -1390,7 +1388,7 @@ class DW_PLAYLIST:
         
         return playlist
 
-class DW_EPISODE:
+class DwEpisode:
     def __init__(
         self,
         preferences: Preferences
@@ -1419,3 +1417,12 @@ class DW_EPISODE:
         )
         
         return episode
+
+
+# Backward-compatible aliases for existing imports/usages.
+Download_JOB = DownloadJob
+EASY_DW = EasyDw
+DW_TRACK = DwTrack
+DW_ALBUM = DwAlbum
+DW_PLAYLIST = DwPlaylist
+DW_EPISODE = DwEpisode

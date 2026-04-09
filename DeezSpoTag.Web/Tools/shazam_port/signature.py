@@ -1,9 +1,9 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 from base64 import b64decode, b64encode
 from math import exp, sqrt
 from binascii import crc32
 from io import BytesIO
-from ctypes import *
+from ctypes import LittleEndianStructure, c_uint32, sizeof
 from .enums import FrequencyBand, SampleRate
 
 DATA_URI_PREFIX = "data:audio/vnd.shazam.sig;base64,"
@@ -38,10 +38,10 @@ class RawSignatureHeader(LittleEndianStructure):
 
 
 class FrequencyPeak:
-    fft_pass_number: int = None
-    peak_magnitude: int = None
-    corrected_peak_frequency_bin: int = None
-    sample_rate_hz: int = None
+    fft_pass_number: Optional[int] = None
+    peak_magnitude: Optional[int] = None
+    corrected_peak_frequency_bin: Optional[int] = None
+    sample_rate_hz: Optional[int] = None
 
     def __init__(
         self,
@@ -75,10 +75,10 @@ class FrequencyPeak:
 
 
 class DecodedMessage:
-    sample_rate_hz: int = None
-    number_samples: int = None
+    sample_rate_hz: Optional[int] = None
+    number_samples: Optional[int] = None
 
-    frequency_band_to_sound_peaks: Dict[FrequencyBand, List[FrequencyPeak]] = None
+    frequency_band_to_sound_peaks: Optional[Dict[FrequencyBand, List[FrequencyPeak]]] = None
 
     @classmethod
     def decode_from_binary(cls, data: bytes):
@@ -92,8 +92,11 @@ class DecodedMessage:
 
         # Read and check the header
 
-        header = RawSignatureHeader()
-        buf.readinto(header)
+        header_size = sizeof(RawSignatureHeader)
+        header_raw = buf.read(header_size)
+        if len(header_raw) != header_size:
+            raise ValueError("Invalid signature payload: truncated header")
+        header = RawSignatureHeader.from_buffer_copy(header_raw)
 
         assert header.magic1 == 0xCAFE2580
         assert header.size_minus_header == len(data) - 48
@@ -211,7 +214,7 @@ class DecodedMessage:
         header.size_minus_header = len(contents_buf.getvalue()) + 8
 
         buf = BytesIO()
-        buf.write(header)  # We will rewrite it just after in order to include the final CRC-32
+        buf.write(bytes(header))  # We will rewrite it just after in order to include the final CRC-32
 
         buf.write((0x40000000).to_bytes(4, "little"))
         buf.write((len(contents_buf.getvalue()) + 8).to_bytes(4, "little"))
@@ -221,7 +224,7 @@ class DecodedMessage:
         buf.seek(8)
         header.crc32 = crc32(buf.read()) & 0xFFFFFFFF
         buf.seek(0)
-        buf.write(header)
+        buf.write(bytes(header))
 
         return buf.getvalue()
 
