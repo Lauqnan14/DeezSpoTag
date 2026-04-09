@@ -230,7 +230,7 @@
                 element: request.element || request.button || null,
                 cache: request.cache,
                 requests: request.requests,
-                fetchContext: request.fetchContext !== false,
+                fetchContext: request.fetchContext === true,
                 type: request.type || ''
             });
         }
@@ -241,7 +241,7 @@
                 element: request.element || request.button || null,
                 cache: request.cache,
                 requests: request.requests,
-                fetchContext: request.fetchContext !== false,
+                fetchContext: request.fetchContext === true,
                 type: request.type || ''
             });
         }
@@ -261,7 +261,7 @@
                 element: request.element || request.button || null,
                 cache: request.cache,
                 requests: request.requests,
-                fetchContext: request.fetchContext !== false,
+                fetchContext: request.fetchContext === true,
                 type: request.type || ''
             });
         }

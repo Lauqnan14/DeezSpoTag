@@ -257,15 +257,10 @@
 
         const resolvedStreamUrl = await resolvePlayableStreamUrl(parsed.deezerId, {
             ...options,
-            fetchContext: true
+            fetchContext: options.fetchContext === true
         });
         if (!resolvedStreamUrl) {
-            return '';
-        }
-
-        const resolvedPreview = parsePlayablePreviewUrl(resolvedStreamUrl);
-        if (resolvedPreview && !resolvedPreview.hasContext) {
-            return '';
+            return normalizedPreviewUrl;
         }
 
         return resolvedStreamUrl;

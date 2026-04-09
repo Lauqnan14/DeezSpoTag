@@ -5682,10 +5682,22 @@ function preloadDeezerPlaybackContextsForRows(rows, limit = 48) {
             setDeezerPlaybackContextOnRow(row, deezerId, existing);
             continue;
         }
-        targets.push({ row, deezerId });
+        const previewControl = row.querySelector('.preview-controls');
+        if (previewControl) {
+            targets.push(previewControl);
+        }
     }
 
     if (!targets.length) {
+        return;
+    }
+
+    if (window.DeezerPlaybackContext?.primePlaybackTargets) {
+        void window.DeezerPlaybackContext.primePlaybackTargets(targets, {
+            includeSession: true,
+            cache: deezerPlaybackContextCache,
+            requests: deezerPlaybackContextRequests
+        });
         return;
     }
 
@@ -5693,8 +5705,13 @@ function preloadDeezerPlaybackContextsForRows(rows, limit = 48) {
     let cursor = 0;
     const workers = Array.from({ length: Math.min(concurrency, targets.length) }, async () => {
         while (cursor < targets.length) {
-            const current = targets[cursor++];
-            await ensureDeezerPlaybackContextForRow(current.row, current.deezerId);
+            const target = targets[cursor++];
+            const row = target?.closest?.('tr');
+            const deezerId = String(row?.querySelector('.track-checkbox')?.dataset.trackId || row?.dataset.availabilityDeezerId || '').trim();
+            if (!row || !deezerId) {
+                continue;
+            }
+            await ensureDeezerPlaybackContextForRow(row, deezerId);
         }
     });
 
@@ -6193,20 +6210,6 @@ function buildTracklistPlaybackRequest(control) {
             const currentRow = control.closest('tr');
             if (!currentRow) {
                 return { url: '', silentUnavailable: true };
-            }
-
-            if (resolvedPreviewUrl && resolvedPreviewUrl.includes('/api/deezer/stream/')) {
-                const hasContextParams = /[?&](trackToken|streamTrackId)=/i.test(resolvedPreviewUrl);
-                if (!hasContextParams) {
-                    const playbackType = getRowPlaybackTypeHint(currentRow);
-                    if (playbackType !== 'episode') {
-                        const currentDeezerId = String(currentRow.querySelector('.track-checkbox')?.dataset.trackId || currentRow.dataset.availabilityDeezerId || '').trim();
-                        if (currentDeezerId && /^\d+$/.test(currentDeezerId)) {
-                            resolvedPreviewUrl = await resolveDeezerPlaybackUrlForRow(currentRow, currentDeezerId, playbackType);
-                            control.setAttribute('data-preview', resolvedPreviewUrl);
-                        }
-                    }
-                }
             }
 
             if (!resolvedPreviewUrl) {
