@@ -2812,8 +2812,8 @@ async function loadSpotifyPlaylistTracklist(spotifyUrl) {
     };
     updateSpotifyNotice();
 
-    void startSpotifyPlaylistMatching(spotifyUrl);
     await loadSpotifyPlaylistTracksPage();
+    void startSpotifyPlaylistMatching(spotifyUrl);
     await ignoredTracksPromise;
     scheduleSpotifyNextPage();
 }
