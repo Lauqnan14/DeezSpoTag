@@ -260,6 +260,120 @@ check_sonar_server() {
   fi
 }
 
+extract_ce_task_id_from_log() {
+  local log_file="$1"
+  grep -Eo 'api/ce/task\?id=[A-Za-z0-9-]+' "$log_file" | tail -n1 | sed -E 's/.*id=//' || true
+}
+
+fetch_current_ce_task_id() {
+  if ! command -v curl >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local ce_url="${host_url%/}/api/ce/component"
+  local response
+  if ! response="$(
+    curl --silent --show-error --fail --max-time 20 \
+      -u "${token}:" \
+      --get "$ce_url" \
+      --data-urlencode "component=${project_key}"
+  )"; then
+    return 1
+  fi
+
+  printf '%s' "$response" | sed -n 's/.*"current":{[^}]*"id":"\([^"]*\)".*/\1/p' | head -n1
+}
+
+wait_for_ce_task_completion() {
+  local task_id="$1"
+
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "curl not found; cannot wait for SonarQube processing." >&2
+    return 1
+  fi
+
+  local task_url="${host_url%/}/api/ce/task"
+  local attempt response status
+  echo "Waiting for SonarQube report processing (task: $task_id)..."
+
+  for ((attempt = 1; attempt <= 120; attempt++)); do
+    if ! response="$(
+      curl --silent --show-error --fail --max-time 20 \
+        -u "${token}:" \
+        --get "$task_url" \
+        --data-urlencode "id=${task_id}"
+    )"; then
+      echo "Failed to query CE task status (attempt $attempt/120)." >&2
+      sleep 2
+      continue
+    fi
+
+    status="$(printf '%s' "$response" | sed -n 's/.*"task":{[^}]*"status":"\([A-Z_]*\)".*/\1/p' | head -n1)"
+
+    case "$status" in
+      SUCCESS)
+        echo "SonarQube report processing complete."
+        return 0
+        ;;
+      FAILED|CANCELED)
+        echo "SonarQube report processing ended with status: $status." >&2
+        return 1
+        ;;
+      PENDING|IN_PROGRESS|"")
+        ;;
+      *)
+        echo "Unexpected CE task status: $status" >&2
+        ;;
+    esac
+
+    sleep 2
+  done
+
+  echo "Timed out waiting for SonarQube report processing (task: $task_id)." >&2
+  return 1
+}
+
+check_quality_gate_status() {
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "curl not found; cannot verify quality gate status." >&2
+    return 1
+  fi
+
+  local gate_url="${host_url%/}/api/qualitygates/project_status"
+  local response gate_status failing_conditions condition metric threshold actual
+  if ! response="$(
+    curl --silent --show-error --fail --max-time 20 \
+      -u "${token}:" \
+      --get "$gate_url" \
+      --data-urlencode "projectKey=${project_key}"
+  )"; then
+    echo "Failed to query SonarQube quality gate status." >&2
+    return 1
+  fi
+
+  gate_status="$(printf '%s' "$response" | sed -n 's/.*"projectStatus":{"status":"\([^"]*\)".*/\1/p' | head -n1)"
+  if [[ "$gate_status" == "OK" ]]; then
+    echo "Quality Gate: PASSED"
+    return 0
+  fi
+
+  echo "Quality Gate: FAILED (status: ${gate_status:-unknown})." >&2
+  failing_conditions="$(printf '%s' "$response" | grep -Eo '\{"status":"ERROR","metricKey":"[^"]+","comparator":"[^"]+","errorThreshold":"[^"]+","actualValue":"[^"]*"\}' || true)"
+
+  if [[ -n "$failing_conditions" ]]; then
+    while IFS= read -r condition; do
+      metric="$(printf '%s' "$condition" | sed -n 's/.*"metricKey":"\([^"]*\)".*/\1/p')"
+      threshold="$(printf '%s' "$condition" | sed -n 's/.*"errorThreshold":"\([^"]*\)".*/\1/p')"
+      actual="$(printf '%s' "$condition" | sed -n 's/.*"actualValue":"\([^"]*\)".*/\1/p')"
+      echo "  - ${metric}: actual=${actual}, threshold=${threshold}" >&2
+    done <<< "$failing_conditions"
+  else
+    echo "  Unable to parse failing conditions from SonarQube response." >&2
+  fi
+
+  return 1
+}
+
 check_system_resources() {
   if [[ ! -r /proc/meminfo ]]; then
     return
@@ -411,6 +525,26 @@ fi
 
 restore_legacy_platform_auth_placeholder
 
-run_scanner end /d:sonar.token="$token"
+end_log_file="$(mktemp)"
+if ! run_scanner end /d:sonar.token="$token" 2>&1 | tee "$end_log_file"; then
+  rm -f "$end_log_file"
+  echo "Sonar scanner end step failed." >&2
+  exit 1
+fi
+
+ce_task_id="$(extract_ce_task_id_from_log "$end_log_file")"
+rm -f "$end_log_file"
+
+if [[ -z "$ce_task_id" ]]; then
+  ce_task_id="$(fetch_current_ce_task_id || true)"
+fi
+
+if [[ -z "$ce_task_id" ]]; then
+  echo "Unable to determine SonarQube report task id; cannot verify quality gate." >&2
+  exit 1
+fi
+
+wait_for_ce_task_completion "$ce_task_id"
+check_quality_gate_status
 
 echo "SonarQube scan complete."

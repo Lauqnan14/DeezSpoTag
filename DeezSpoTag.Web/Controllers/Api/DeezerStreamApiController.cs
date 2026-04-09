@@ -262,28 +262,29 @@ public class DeezerStreamApiController : ControllerBase
 
             await _streamProcessor.StreamTrackToStreamAsync(
                 Response.Body,
-                track,
-                mediaResult.Url,
-                downloadObject,
-                listener: null,
-                startBytes: hasRange ? range.Start : 0,
-                endBytes: hasRange ? range.End : null,
-                configureResponse: async headers =>
-                {
-                    Response.StatusCode = headers.StatusCode;
-                    Response.ContentType = headers.ContentType;
-                    Response.Headers["Accept-Ranges"] = "bytes";
-                    if (!string.IsNullOrWhiteSpace(headers.ContentRange))
+                new DecryptionStreamProcessor.StreamTrackRequest(
+                    Track: track,
+                    DownloadUrl: mediaResult.Url,
+                    DownloadObject: downloadObject,
+                    Listener: null,
+                    StartBytes: hasRange ? range.Start : 0,
+                    EndBytes: hasRange ? range.End : null,
+                    ConfigureResponse: async headers =>
                     {
-                        Response.Headers["Content-Range"] = headers.ContentRange;
-                    }
-                    if (headers.ContentLength.HasValue && headers.ContentLength.Value >= 0)
-                    {
-                        Response.ContentLength = headers.ContentLength.Value;
-                    }
-                    await Response.StartAsync(cancellationToken);
-                },
-                cancellationToken: cancellationToken);
+                        Response.StatusCode = headers.StatusCode;
+                        Response.ContentType = headers.ContentType;
+                        Response.Headers.AcceptRanges = "bytes";
+                        if (!string.IsNullOrWhiteSpace(headers.ContentRange))
+                        {
+                            Response.Headers.ContentRange = headers.ContentRange;
+                        }
+                        if (headers.ContentLength.HasValue && headers.ContentLength.Value >= 0)
+                        {
+                            Response.ContentLength = headers.ContentLength.Value;
+                        }
+                        await Response.StartAsync(cancellationToken);
+                    }),
+                cancellationToken);
 
             return true;
         }
@@ -404,7 +405,7 @@ public class DeezerStreamApiController : ControllerBase
         return context;
     }
 
-    private string ResolvePreviewFormat(int? qualityHint)
+    private static string ResolvePreviewFormat(int? qualityHint)
     {
         // Playback is currently fixed to MP3_128 until user-facing quality controls are implemented.
         _ = qualityHint;

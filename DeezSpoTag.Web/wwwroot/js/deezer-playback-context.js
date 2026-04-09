@@ -248,20 +248,6 @@
         return resolvedItems;
     }
 
-    function isElementVisible(element) {
-        if (!element || typeof element.getBoundingClientRect !== 'function') {
-            return false;
-        }
-
-        const rect = element.getBoundingClientRect();
-        const viewportHeight = global.innerHeight || document.documentElement?.clientHeight || 0;
-        const viewportWidth = global.innerWidth || document.documentElement?.clientWidth || 0;
-        return rect.bottom >= -120
-            && rect.right >= -120
-            && rect.top <= viewportHeight + 240
-            && rect.left <= viewportWidth + 240;
-    }
-
     function getPlaybackTargetDetails(element) {
         if (!element) {
             return null;
@@ -292,12 +278,11 @@
             return;
         }
 
-        if (target.classList?.contains('preview-controls')) {
-            target.setAttribute('data-preview', normalizedPreviewUrl);
-            return;
-        }
-
         if (target.dataset) {
+            if (target.classList?.contains('preview-controls')) {
+                target.dataset.preview = normalizedPreviewUrl;
+                return;
+            }
             target.dataset.previewUrl = normalizedPreviewUrl;
         }
     }
@@ -356,22 +341,22 @@
         return items;
     }
 
+    function runStartupWarmup() {
+        void warmSession();
+    }
+
     function scheduleStartupWarmup() {
         if (startupWarmScheduled) {
             return;
         }
         startupWarmScheduled = true;
 
-        const runWarmup = function () {
-            void warmSession();
-        };
-
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', runWarmup, { once: true });
+            document.addEventListener('DOMContentLoaded', runStartupWarmup, { once: true });
             return;
         }
 
-        runWarmup();
+        runStartupWarmup();
     }
 
     function bindPlaybackHoverWarmup() {
