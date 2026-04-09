@@ -176,7 +176,7 @@ class DeeLogin:
         ids = get_ids(link_track)
         track_obj = None
 
-        def report_error(e, current_ids, url):
+        def report_error(e, current_ids, _url):
             error_status = errorObject(ids=IDs(deezer=current_ids), error=str(e))
             summary = summaryObject(
                 failed_tracks=[failedTrackObject(track=trackCbObject(title=f"Track ID {current_ids}"), reason=str(e))],
@@ -290,7 +290,7 @@ class DeeLogin:
         link_is_valid(link_album)
         ids = get_ids(link_album)
 
-        def report_error(e, current_ids, url):
+        def report_error(e, current_ids, _url):
             error_status = errorObject(ids=IDs(deezer=current_ids), error=str(e))
             callback_obj = albumCallbackObject(
                 album=albumCbObject(title=f"Album ID {current_ids}", ids=IDs(deezer=current_ids)),
@@ -687,7 +687,7 @@ class DeeLogin:
 
         link_dee = self.convert_spoty_to_dee_link_album(link_album)
 
-        spotify_album_obj = None
+        resolved_spotify_album_obj = spotify_album_obj
         if spotify_metadata:
             # Only initialize Spotify session when we actually need Spotify metadata
             self._ensure_spotify_session()
@@ -697,9 +697,9 @@ class DeeLogin:
                 spo_ids = get_ids(link_album)
                 spotify_album_json = Spo.get_album(spo_ids)
                 if spotify_album_json:
-                    spotify_album_obj = spo_tracking_album(spotify_album_json)
+                    resolved_spotify_album_obj = spo_tracking_album(spotify_album_json)
             except Exception:
-                spotify_album_obj = None
+                resolved_spotify_album_obj = None
 
         album = self.download_albumdee(
             link_dee, output_dir,
@@ -719,7 +719,7 @@ class DeeLogin:
             playlist_context=playlist_context,
             artist_separator=artist_separator,
             spotify_metadata=spotify_metadata,
-            spotify_album_obj=spotify_album_obj,
+            spotify_album_obj=resolved_spotify_album_obj,
             pad_number_width=pad_number_width
         )
 
@@ -911,9 +911,6 @@ class DeeLogin:
                     'total_tracks': total_tracks,
                     'spotify_url': link_track
                 }
-                # Attach Spotify track object for tagging if requested
-                if False: # placeholder, will be handled via spotify_metadata in download_trackspo
-                    pass
                 downloaded_track = self.download_trackspo(
                     link_track,
                     output_dir=output_dir, quality_download=quality_download,
@@ -1055,6 +1052,13 @@ class DeeLogin:
     ) -> Episode:
         
         logger.warning("Episode download logic is not fully refactored and might not work as expected with new reporting.")
+        _ = (
+            custom_dir_format,
+            custom_track_format,
+            pad_tracks,
+            initial_retry_delay,
+            retry_delay_increase,
+        )
         link_is_valid(link_episode)
         ids = get_ids(link_episode)
         

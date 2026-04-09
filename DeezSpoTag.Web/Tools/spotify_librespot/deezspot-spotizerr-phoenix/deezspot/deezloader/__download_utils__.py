@@ -83,7 +83,7 @@ def __calcbfkey(songid):
 		logger.error(f"Error calculating Blowfish key: {str(e)}")
 		raise
 
-def __blowfishDecrypt(data, key):
+def __blowfish_decrypt(data, key):
 	"""
 	Decrypt a single block of data using Blowfish in CBC mode.
 	
@@ -117,14 +117,14 @@ def __blowfishDecrypt(data, key):
 		logger.error(f"Error in Blowfish decryption: {str(e)}")
 		raise
 
-def decrypt_blowfish_track(crypted_audio, song_id, md5_origin, song_path):
+def decrypt_blowfish_track(crypted_audio, song_id, _md5_origin, song_path):
     """
     Decrypt the audio file using Blowfish encryption.
     
     Args:
         crypted_audio: The encrypted audio data
         song_id: The song ID for generating the key
-        md5_origin: The MD5 hash of the track
+        _md5_origin: The MD5 hash of the track
         song_path: Path where to save the decrypted file
     """
     try:
@@ -251,7 +251,7 @@ def decryptfile(crypted_audio, ids, song_path):
         logger.error(f"Failed to decrypt file: {str(e)}")
         raise
 
-def decrypt_blowfish_flac(crypted_audio, song_id, md5_origin, song_path):
+def decrypt_blowfish_flac(crypted_audio, song_id, _md5_origin, song_path):
     """
     Special decryption function for FLAC files using Blowfish encryption.
     This implementation follows Deezer's encryption scheme exactly.
@@ -266,7 +266,7 @@ def decrypt_blowfish_flac(crypted_audio, song_id, md5_origin, song_path):
     Args:
         crypted_audio: Iterator of the encrypted audio data chunks
         song_id: The song ID for generating the key
-        md5_origin: The MD5 hash of the track
+        _md5_origin: The MD5 hash of the track
         song_path: Path where to save the decrypted file
     """
     try:
@@ -329,7 +329,7 @@ def decrypt_blowfish_flac(crypted_audio, song_id, md5_origin, song_path):
         if os.path.getsize(song_path) > 0:
             with open(song_path, 'rb') as f:
                 if f.read(4) == b'fLaC':
-                    logger.info(f"FLAC file header verification passed")
+                    logger.info("FLAC file header verification passed")
                 else:
                     logger.warning("FLAC file doesn't begin with proper 'fLaC' signature")
             

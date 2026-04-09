@@ -53,9 +53,8 @@ RUN set -eux; \
       exit 1; \
     fi; \
     cp -f "$bundle_wrapper" /opt/apple-wrapper/wrapper; \
-    rm -rf "$tmpdir"
-
-RUN set -eux; \
+    rm -rf "$tmpdir"; \
+    set -eux; \
     mkdir -p \
       /opt/apple-wrapper/rootfs/apex/com.android.tzdata/etc/tz \
       /opt/apple-wrapper/rootfs/dev \
@@ -88,8 +87,12 @@ RUN set -eux; \
     printf 'UTC\n' > /opt/apple-wrapper/rootfs/etc/timezone; \
     chmod 755 /opt/apple-wrapper/entrypoint.sh; \
     chmod 755 /opt/apple-wrapper/wrapper; \
-    if [ -f /opt/apple-wrapper/rootfs/system/bin/main ]; then chmod 755 /opt/apple-wrapper/rootfs/system/bin/main; fi; \
-    if [ -f /opt/apple-wrapper/rootfs/system/bin/linker64 ]; then chmod 755 /opt/apple-wrapper/rootfs/system/bin/linker64; fi
+    if [ -f /opt/apple-wrapper/rootfs/system/bin/main ]; then \
+      chmod 755 /opt/apple-wrapper/rootfs/system/bin/main; \
+    fi; \
+    if [ -f /opt/apple-wrapper/rootfs/system/bin/linker64 ]; then \
+      chmod 755 /opt/apple-wrapper/rootfs/system/bin/linker64; \
+    fi
 
 EXPOSE 10020 20020 30020
 
