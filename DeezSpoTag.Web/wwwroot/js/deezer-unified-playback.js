@@ -87,7 +87,18 @@
             return `source:${spotifyUrl}`;
         }
 
-        return `request:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+        return `request:${Date.now()}:${buildRequestNonce()}`;
+    }
+
+    function buildRequestNonce() {
+        const cryptoApi = global.crypto;
+        if (cryptoApi && typeof cryptoApi.getRandomValues === 'function') {
+            const randomValues = new Uint32Array(2);
+            cryptoApi.getRandomValues(randomValues);
+            return `${randomValues[0].toString(16)}${randomValues[1].toString(16)}`;
+        }
+
+        return `${Date.now().toString(16)}${requestSequence.toString(16)}`;
     }
 
     function buildResultKey(request, result) {
@@ -374,7 +385,7 @@
         emitState(finished.request, 'idle', { reason: state });
 
         if (nextRequest) {
-            await play(nextRequest, { triggeredBy: state });
+            await play(nextRequest);
             return;
         }
 
@@ -402,44 +413,49 @@
         };
     }
 
-    async function play(request) {
-        if (!request || typeof request !== 'object') {
-            return false;
+    function isSessionCurrent(requestId) {
+        return currentSession?.id === requestId;
+    }
+
+    async function tryToggleCurrentSession(requestKey, request) {
+        if (currentSession?.key !== requestKey) {
+            return { handled: false, played: false };
         }
 
-        const requestId = ++requestSequence;
-        const requestKey = buildDefaultKey(request);
+        if (!audio.paused) {
+            await stop('idle');
+            return { handled: true, played: false };
+        }
 
-        if (currentSession && currentSession.key === requestKey) {
-            if (!audio.paused) {
-                await stop('idle');
-                return false;
+        const activeSession = currentSession;
+        try {
+            await audio.play();
+            if (currentSession !== activeSession) {
+                return { handled: true, played: false };
             }
+            emitState(currentSession.request, 'playing', { resumed: true });
+            return { handled: true, played: true };
+        } catch {
+            notify(trim(request.startFailedMessage || 'Unable to start playback.'), 'warning');
+            emitState(currentSession.request, 'error', { resumed: true });
+            await stop('idle');
+            return { handled: true, played: false };
+        }
+    }
 
-            const activeSession = currentSession;
-            try {
-                await audio.play();
-                if (currentSession !== activeSession) {
-                    return false;
-                }
-                emitState(currentSession.request, 'playing', { resumed: true });
-                return true;
-            } catch {
-                notify(trim(request.startFailedMessage || 'Unable to start playback.'), 'warning');
-                emitState(currentSession.request, 'error', { resumed: true });
-                await stop('idle');
-                return false;
-            }
+    function clearCurrentSessionForSwitch() {
+        if (!currentSession) {
+            return;
         }
 
-        if (currentSession) {
-            const previous = currentSession;
-            currentSession = null;
-            clearAudioSource();
-            emitState(previous.request, 'idle', { reason: 'switch' });
-        }
+        const previous = currentSession;
+        currentSession = null;
+        clearAudioSource();
+        emitState(previous.request, 'idle', { reason: 'switch' });
+    }
 
-        const session = {
+    function createSession(requestId, requestKey, request) {
+        return {
             id: requestId,
             key: requestKey,
             deezerId: trim(request.deezerId),
@@ -447,47 +463,38 @@
             page: trim(request.page),
             request
         };
-        currentSession = session;
-        emitState(request, 'requested', { reason: 'start' });
+    }
 
-        let resolved;
+    async function resolveRequestForPlayback(request, requestId) {
         try {
-            resolved = await resolveRequest(request);
+            return await resolveRequest(request);
         } catch (error) {
-            if (currentSession?.id !== requestId) {
-                return false;
+            if (!isSessionCurrent(requestId)) {
+                return null;
             }
             console.warn('Playback request resolution failed:', error);
             emitState(request, 'error', { phase: 'resolve' });
             currentSession = null;
             notify(trim(request.unavailableMessage || 'Preview unavailable.'), 'warning');
-            return false;
+            return null;
         }
+    }
 
-        if (currentSession?.id !== requestId) {
-            return false;
-        }
-
-        if (!trim(resolved?.url)) {
-            emitState(request, 'idle', { phase: 'resolve' });
-            currentSession = null;
-            if (!resolved?.silentUnavailable) {
-                notify(trim(request.unavailableMessage || 'Preview unavailable.'), 'warning');
-            }
-            return false;
-        }
-
+    function applyResolvedSession(session, request, resolved) {
         session.key = buildResultKey(request, resolved);
         session.deezerId = trim(resolved?.deezerId || session.deezerId);
         session.sourceKey = trim(request.sourceKey || resolved?.sourceKey || session.key);
+    }
 
-        if (!configureAudioSource(resolved.url, request)) {
-            emitState(request, 'idle', { phase: 'configure' });
-            currentSession = null;
+    function handleUnavailableResolution(request, resolved) {
+        emitState(request, 'idle', { phase: 'resolve' });
+        currentSession = null;
+        if (!resolved?.silentUnavailable) {
             notify(trim(request.unavailableMessage || 'Preview unavailable.'), 'warning');
-            return false;
         }
+    }
 
+    async function startConfiguredPlayback(request, requestId, resolvedUrl) {
         audio.onended = () => {
             void handleTerminalState('ended', requestId);
         };
@@ -497,14 +504,14 @@
 
         try {
             await audio.play();
-            if (currentSession?.id !== requestId) {
+            if (!isSessionCurrent(requestId)) {
                 audio.pause();
                 return false;
             }
-            emitState(request, 'playing', { url: resolved.url });
+            emitState(request, 'playing', { url: resolvedUrl });
             return true;
         } catch {
-            if (currentSession?.id !== requestId) {
+            if (!isSessionCurrent(requestId)) {
                 return false;
             }
             emitState(request, 'error', { phase: 'play' });
@@ -513,6 +520,44 @@
             clearAudioSource();
             return false;
         }
+    }
+
+    async function play(request) {
+        if (!request || typeof request !== 'object') {
+            return false;
+        }
+
+        const requestId = ++requestSequence;
+        const requestKey = buildDefaultKey(request);
+        const toggleResult = await tryToggleCurrentSession(requestKey, request);
+        if (toggleResult.handled) {
+            return toggleResult.played;
+        }
+
+        clearCurrentSessionForSwitch();
+
+        const session = createSession(requestId, requestKey, request);
+        currentSession = session;
+        emitState(request, 'requested', { reason: 'start' });
+
+        const resolved = await resolveRequestForPlayback(request, requestId);
+        if (!isSessionCurrent(requestId)) {
+            return false;
+        }
+        if (!resolved || !trim(resolved.url)) {
+            handleUnavailableResolution(request, resolved);
+            return false;
+        }
+
+        applyResolvedSession(session, request, resolved);
+        if (!configureAudioSource(resolved.url, request)) {
+            emitState(request, 'idle', { phase: 'configure' });
+            currentSession = null;
+            notify(trim(request.unavailableMessage || 'Preview unavailable.'), 'warning');
+            return false;
+        }
+
+        return await startConfiguredPlayback(request, requestId, resolved.url);
     }
 
     global.DeezerUnifiedPlayback = {

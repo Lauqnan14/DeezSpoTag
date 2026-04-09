@@ -48,6 +48,15 @@ public class DecryptionStreamProcessor
         long? ContentLength,
         string? ContentRange);
 
+    public sealed record StreamTrackRequest(
+        Track Track,
+        string DownloadUrl,
+        DownloadObject DownloadObject,
+        IDownloadListener? Listener,
+        long StartBytes = 0,
+        long? EndBytes = null,
+        Func<StreamResponseHeaders, Task>? ConfigureResponse = null);
+
     public DecryptionStreamProcessor(ILogger<DecryptionStreamProcessor> logger, CryptoService cryptoService, IHttpClientFactory httpClientFactory)
     {
         _logger = logger;
@@ -531,56 +540,45 @@ public class DecryptionStreamProcessor
 
     public async Task StreamTrackToStreamAsync(
         Stream outputStream,
-        Track track,
-        string downloadUrl,
-        DownloadObject downloadObject,
-        IDownloadListener? listener,
-        long startBytes,
-        long? endBytes,
-        Func<StreamResponseHeaders, Task>? configureResponse,
+        StreamTrackRequest request,
         CancellationToken cancellationToken = default)
     {
-        if (downloadObject.IsCanceled)
+        ArgumentNullException.ThrowIfNull(outputStream);
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (request.DownloadObject.IsCanceled)
         {
             throw new OperationCanceledException(DownloadCanceledMessage);
         }
 
-        if (string.IsNullOrWhiteSpace(downloadUrl))
+        if (string.IsNullOrWhiteSpace(request.DownloadUrl))
         {
-            throw new ArgumentNullException(nameof(downloadUrl));
+            throw new ArgumentException("A download URL is required.", nameof(request));
         }
 
-        var isCryptedStream = downloadUrl.Contains("/mobile/") || downloadUrl.Contains("/media/");
-        var requestedStartBytes = Math.Max(0, startBytes);
-        long? requestedEndBytes = endBytes.HasValue && endBytes.Value >= requestedStartBytes
-            ? endBytes.Value
-            : null;
-        var upstreamStartBytes = isCryptedStream && requestedStartBytes > 0
-            ? requestedStartBytes - (requestedStartBytes % 2048)
-            : requestedStartBytes;
-        var dropBytes = isCryptedStream ? (int)(requestedStartBytes - upstreamStartBytes) : 0;
-        var rangeHeader = requestedStartBytes > 0 || requestedEndBytes.HasValue
-            ? $"bytes={upstreamStartBytes}-{(requestedEndBytes.HasValue ? requestedEndBytes.Value.ToString() : string.Empty)}"
-            : null;
+        var isCryptedStream = IsCryptedStreamUrl(request.DownloadUrl);
+        var rangeRequest = BuildStreamRangeRequest(request.StartBytes, request.EndBytes, isCryptedStream);
         var blowfishKey = isCryptedStream
-            ? CryptoService.GenerateBlowfishKeyString(ResolveStreamTrackId(track))
+            ? CryptoService.GenerateBlowfishKeyString(ResolveStreamTrackId(request.Track))
             : null;
 
-        using var response = await SendRequestWithSslFallbackAsync(downloadUrl, LinuxChrome79UserAgent, rangeHeader, cancellationToken);
+        using var response = await SendRequestWithSslFallbackAsync(
+            request.DownloadUrl,
+            LinuxChrome79UserAgent,
+            rangeRequest.RangeHeader,
+            cancellationToken);
         response.EnsureSuccessStatusCode();
 
         var sourceLength = response.Content.Headers.ContentLength;
         var sourceTotalLength = response.Content.Headers.ContentRange?.Length;
-        long? outputLength = sourceLength.HasValue ? Math.Max(0L, sourceLength.Value - dropBytes) : null;
+        long? outputLength = sourceLength.HasValue ? Math.Max(0L, sourceLength.Value - rangeRequest.DropBytes) : null;
 
-        if (configureResponse != null)
-        {
-            await configureResponse(new StreamResponseHeaders(
-                requestedStartBytes > 0 || requestedEndBytes.HasValue ? (int)HttpStatusCode.PartialContent : (int)HttpStatusCode.OK,
-                ResolveContentType(downloadObject),
-                outputLength,
-                BuildContentRangeHeaderValue(requestedStartBytes, outputLength, sourceTotalLength)));
-        }
+        await ConfigureStreamResponseAsync(
+            request.ConfigureResponse,
+            request.DownloadObject,
+            rangeRequest,
+            outputLength,
+            sourceTotalLength);
 
         using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var timeout = new Timer(_ => { }, null, Timeout.Infinite, Timeout.Infinite);
@@ -591,15 +589,73 @@ public class DecryptionStreamProcessor
             IsCryptedStream = isCryptedStream,
             BlowfishKey = blowfishKey,
             Complete = sourceLength ?? 0,
-            DownloadObject = downloadObject,
-            Listener = listener,
+            DownloadObject = request.DownloadObject,
+            Listener = request.Listener,
             ChunkLength = 0L,
             Error = string.Empty,
             Timeout = timeout,
             BufferSize = 2048,
-            DropBytes = dropBytes,
-            IsDepadderStart = requestedStartBytes == 0
+            DropBytes = rangeRequest.DropBytes,
+            IsDepadderStart = rangeRequest.RequestedStartBytes == 0
         }, cancellationToken);
+    }
+
+    private static bool IsCryptedStreamUrl(string downloadUrl)
+        => downloadUrl.Contains("/mobile/", StringComparison.OrdinalIgnoreCase)
+           || downloadUrl.Contains("/media/", StringComparison.OrdinalIgnoreCase);
+
+    private static StreamRangeRequest BuildStreamRangeRequest(long startBytes, long? endBytes, bool isCryptedStream)
+    {
+        var requestedStartBytes = Math.Max(0, startBytes);
+        long? requestedEndBytes = null;
+        if (endBytes.HasValue && endBytes.Value >= requestedStartBytes)
+        {
+            requestedEndBytes = endBytes.Value;
+        }
+
+        var upstreamStartBytes = requestedStartBytes;
+        if (isCryptedStream && requestedStartBytes > 0)
+        {
+            upstreamStartBytes = requestedStartBytes - (requestedStartBytes % 2048);
+        }
+
+        var dropBytes = isCryptedStream ? (int)(requestedStartBytes - upstreamStartBytes) : 0;
+        var rangeHeader = BuildRangeHeaderValue(upstreamStartBytes, requestedStartBytes, requestedEndBytes);
+        return new StreamRangeRequest(requestedStartBytes, requestedEndBytes, upstreamStartBytes, dropBytes, rangeHeader);
+    }
+
+    private static string? BuildRangeHeaderValue(long upstreamStartBytes, long requestedStartBytes, long? requestedEndBytes)
+    {
+        if (requestedStartBytes <= 0 && !requestedEndBytes.HasValue)
+        {
+            return null;
+        }
+
+        var endValue = requestedEndBytes?.ToString() ?? string.Empty;
+        return $"bytes={upstreamStartBytes}-{endValue}";
+    }
+
+    private static async Task ConfigureStreamResponseAsync(
+        Func<StreamResponseHeaders, Task>? configureResponse,
+        DownloadObject downloadObject,
+        StreamRangeRequest rangeRequest,
+        long? outputLength,
+        long? sourceTotalLength)
+    {
+        if (configureResponse == null)
+        {
+            return;
+        }
+
+        var statusCode = (rangeRequest.RequestedStartBytes > 0 || rangeRequest.RequestedEndBytes.HasValue)
+            ? (int)HttpStatusCode.PartialContent
+            : (int)HttpStatusCode.OK;
+
+        await configureResponse(new StreamResponseHeaders(
+            statusCode,
+            ResolveContentType(downloadObject),
+            outputLength,
+            BuildContentRangeHeaderValue(rangeRequest.RequestedStartBytes, outputLength, sourceTotalLength)));
     }
 
     private static bool IsSslHandshakeError(HttpRequestException exception)
@@ -780,6 +836,13 @@ public class DecryptionStreamProcessor
 
         return (state.ChunkLength, state.Error);
     }
+
+    private readonly record struct StreamRangeRequest(
+        long RequestedStartBytes,
+        long? RequestedEndBytes,
+        long UpstreamStartBytes,
+        int DropBytes,
+        string? RangeHeader);
 
     private sealed class PipelineProcessingContext
     {
