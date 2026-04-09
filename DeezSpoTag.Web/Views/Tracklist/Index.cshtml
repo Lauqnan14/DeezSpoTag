@@ -2790,9 +2790,14 @@ async function loadSpotifyPlaylistTracklist(spotifyUrl) {
     const trackSource = ((payload.trackSource || 'pathfinder').toLowerCase() === 'spotiflac' ? 'pathfinder' : (payload.trackSource || 'pathfinder').toLowerCase());
     spotifyPageSize = trackSource === 'librespot' ? 1000 : 50;
     renderTracklist(payload.tracklist, { allowEmptyTracks: true });
-    await loadIgnoredTracks();
-    applyIgnoredTrackState();
-    bindIgnoreButtons();
+    const ignoredTracksPromise = loadIgnoredTracks()
+        .catch(() => {
+            ignoredTrackIds = new Set();
+        })
+        .finally(() => {
+            applyIgnoredTrackState();
+            bindIgnoreButtons();
+        });
 
     spotifyLazyState = {
         url: spotifyUrl,
@@ -2807,8 +2812,9 @@ async function loadSpotifyPlaylistTracklist(spotifyUrl) {
     };
     updateSpotifyNotice();
 
-    await loadSpotifyPlaylistTracksPage();
     void startSpotifyPlaylistMatching(spotifyUrl);
+    await loadSpotifyPlaylistTracksPage();
+    await ignoredTracksPromise;
     scheduleSpotifyNextPage();
 }
 
@@ -2897,22 +2903,26 @@ function scheduleSpotifyNextPage() {
 }
 
 async function startSpotifyPlaylistMatching(spotifyUrl) {
-    const response = await fetch(
-        `/api/spotify/tracklist/playlist/match?url=${encodeURIComponent(spotifyUrl)}`,
-        buildCsrfFetchOptions({
-            method: 'POST'
-        }));
-    if (!response.ok) {
-        return;
-    }
-    const payload = await response.json();
-    if (!payload.available) {
-        return;
-    }
-    if (payload.matching?.pending > 0 && payload.matching?.token) {
-        startSpotifyMatchPolling(payload.matching.token, payload.matching.pending);
-    } else {
-        updateSpotifyNotice();
+    try {
+        const response = await fetch(
+            `/api/spotify/tracklist/playlist/match?url=${encodeURIComponent(spotifyUrl)}`,
+            buildCsrfFetchOptions({
+                method: 'POST'
+            }));
+        if (!response.ok) {
+            return;
+        }
+        const payload = await response.json();
+        if (!payload.available) {
+            return;
+        }
+        if (payload.matching?.pending > 0 && payload.matching?.token) {
+            startSpotifyMatchPolling(payload.matching.token, payload.matching.pending);
+        } else {
+            updateSpotifyNotice();
+        }
+    } catch (error) {
+        console.warn('Spotify playlist matching start failed', error);
     }
 }
 
@@ -3547,9 +3557,21 @@ function appendSpotifyTrackRows(tracks) {
     const isLocalSource = monitorSource === 'plex' || monitorSource === 'mix' || monitorSource === 'radio';
     const isPlaylistLike = tracklistLayoutIsPlaylistLike;
     const base = spotifyLazyState?.offset ?? 0;
-    const filtered = tracks.filter((track, index) => {
+    const existingTrackIndices = new Set(
+        Array.from(tableBody.querySelectorAll('tr[data-track-index]'))
+            .map(row => Number.parseInt(row.dataset.trackIndex || '', 10))
+            .filter(Number.isFinite)
+    );
+    const filtered = [];
+    const appendedIndices = [];
+    tracks.forEach((track, index) => {
         const trackIndex = typeof track.index === 'number' ? track.index : base + index;
-        return !tableBody.querySelector(`tr[data-track-index="${trackIndex}"]`);
+        if (existingTrackIndices.has(trackIndex)) {
+            return;
+        }
+        existingTrackIndices.add(trackIndex);
+        filtered.push(track);
+        appendedIndices.push(trackIndex);
     });
     if (filtered.length === 0) {
         return;
@@ -3559,18 +3581,12 @@ function appendSpotifyTrackRows(tracks) {
         return;
     }
     tableBody.insertAdjacentHTML('beforeend', rows);
-    applyIgnoredTrackState();
-    bindIgnoreButtons();
+    const appendedRows = getTrackRowsByIndices(appendedIndices);
+    applyIgnoredTrackStateForRows(appendedRows);
+    bindIgnoreButtonsForRows(appendedRows);
     scheduleAvailabilityChecks(filtered, isLocalSource);
-    preloadDeezerPlaybackContextsForVisibleRows(32);
-
-    const indices = filtered.map((track, index) => {
-        if (typeof track.index === 'number') {
-            return track.index;
-        }
-        return base + index;
-    });
-    applySpotifyMatchesToRows(indices);
+    preloadDeezerPlaybackContextsForRows(appendedRows, 32);
+    applySpotifyMatchesToRows(appendedIndices);
 }
 
 function appendBoomplayTrackRows(tracks) {
@@ -3587,9 +3603,21 @@ function appendBoomplayTrackRows(tracks) {
     const isLocalSource = monitorSource === 'plex' || monitorSource === 'mix' || monitorSource === 'radio';
     const isPlaylistLike = tracklistLayoutIsPlaylistLike;
     const base = boomplayLazyState?.offset ?? 0;
-    const filtered = tracks.filter((track, index) => {
+    const existingTrackIndices = new Set(
+        Array.from(tableBody.querySelectorAll('tr[data-track-index]'))
+            .map(row => Number.parseInt(row.dataset.trackIndex || '', 10))
+            .filter(Number.isFinite)
+    );
+    const filtered = [];
+    const appendedIndices = [];
+    tracks.forEach((track, index) => {
         const trackIndex = typeof track.index === 'number' ? track.index : base + index;
-        return !tableBody.querySelector(`tr[data-track-index="${trackIndex}"]`);
+        if (existingTrackIndices.has(trackIndex)) {
+            return;
+        }
+        existingTrackIndices.add(trackIndex);
+        filtered.push(track);
+        appendedIndices.push(trackIndex);
     });
     if (filtered.length === 0) {
         return [];
@@ -3599,10 +3627,11 @@ function appendBoomplayTrackRows(tracks) {
         return [];
     }
     tableBody.insertAdjacentHTML('beforeend', rows);
-    applyIgnoredTrackState();
-    bindIgnoreButtons();
+    const appendedRows = getTrackRowsByIndices(appendedIndices);
+    applyIgnoredTrackStateForRows(appendedRows);
+    bindIgnoreButtonsForRows(appendedRows);
     scheduleAvailabilityChecks(filtered, isLocalSource);
-    preloadDeezerPlaybackContextsForVisibleRows(32);
+    preloadDeezerPlaybackContextsForRows(appendedRows, 32);
     return filtered;
 }
 
@@ -5632,10 +5661,13 @@ async function ensureDeezerPlaybackContextForRow(row, deezerId) {
 
 function preloadDeezerPlaybackContextsForVisibleRows(limit = 48) {
     const rows = Array.from(document.querySelectorAll('#tracks-table-body tr[data-track-index]'));
-    if (!rows.length) {
+    preloadDeezerPlaybackContextsForRows(rows, limit);
+}
+
+function preloadDeezerPlaybackContextsForRows(rows, limit = 48) {
+    if (!Array.isArray(rows) || rows.length === 0) {
         return;
     }
-
     const targets = [];
     for (const row of rows) {
         if (targets.length >= limit) {
@@ -5942,16 +5974,52 @@ function formatDuration(seconds) {
     return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
 }
 
+function getTrackRowsByIndices(indices) {
+    if (!Array.isArray(indices) || indices.length === 0) {
+        return [];
+    }
+
+    const rows = [];
+    indices.forEach((index) => {
+        const row = document.querySelector(`#tracks-table-body tr[data-track-index="${index}"]`);
+        if (row) {
+            rows.push(row);
+        }
+    });
+    return rows;
+}
+
 function applyIgnoredTrackState() {
-    if (!ignoredTrackIds || ignoredTrackIds.size === 0) {
+    const buttons = Array.from(document.querySelectorAll('.track-ignore-btn'));
+    applyIgnoredTrackStateForButtons(buttons);
+}
+
+function applyIgnoredTrackStateForRows(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) {
         return;
     }
-    document.querySelectorAll('.track-ignore-btn').forEach(button => {
+    const buttons = rows
+        .map(row => row?.querySelector('.track-ignore-btn'))
+        .filter(Boolean);
+    applyIgnoredTrackStateForButtons(buttons);
+}
+
+function applyIgnoredTrackStateForButtons(buttons) {
+    if (!ignoredTrackIds || ignoredTrackIds.size === 0 || !Array.isArray(buttons) || buttons.length === 0) {
+        return;
+    }
+    buttons.forEach(button => {
         const trackId = button.getAttribute('data-ignore-track-id');
-        if (trackId && ignoredTrackIds.has(trackId)) {
+        if (!trackId) {
+            return;
+        }
+        if (ignoredTrackIds.has(trackId)) {
             button.classList.add('ignored');
             button.textContent = 'Ignored';
+            return;
         }
+        button.classList.remove('ignored');
+        button.textContent = 'Ignore';
     });
 }
 
@@ -5962,8 +6030,20 @@ function bindIgnoreButtons() {
         return;
     }
 
-    document.querySelectorAll('.track-ignore-btn').forEach(button => {
-        if (button.dataset.ignoreBound === 'true') {
+    const rows = Array.from(document.querySelectorAll('#tracks-table-body tr[data-track-index]'));
+    bindIgnoreButtonsForRows(rows);
+}
+
+function bindIgnoreButtonsForRows(rows) {
+    const playlistSource = currentTracklistMeta?.source;
+    const playlistSourceId = currentTracklistMeta?.sourceId;
+    if (!playlistSource || !playlistSourceId || !Array.isArray(rows) || rows.length === 0) {
+        return;
+    }
+
+    rows.forEach((row) => {
+        const button = row?.querySelector('.track-ignore-btn');
+        if (!button || button.dataset.ignoreBound === 'true') {
             return;
         }
         button.dataset.ignoreBound = 'true';
