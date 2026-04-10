@@ -161,30 +161,64 @@ def _json_to_track_album_object(track_json: dict) -> trackAlbumObject:
     )
 
 
+def _extract_album_artists(album_json: dict) -> list[artistAlbumObject]:
+    contributors = album_json.get('contributors')
+    if contributors:
+        main_artists = [c for c in contributors if c.get('role') == 'Main']
+        source_artists = main_artists or contributors
+        return [
+            artistAlbumObject(
+                name=c.get('name', ''),
+                ids=IDs(deezer=c.get('id'))
+            )
+            for c in source_artists
+        ]
+
+    album_artist = album_json.get('artist')
+    if not album_artist:
+        return []
+
+    return [
+        artistAlbumObject(
+            name=album_artist.get('name', ''),
+            ids=IDs(deezer=album_artist.get('id'))
+        )
+    ]
+
+
+def _create_album_track(track_data: dict) -> trackAlbumObject:
+    track_artists = []
+    track_artist = track_data.get('artist')
+    if track_artist:
+        track_artists.append(artistTrackAlbumObject(
+            name=track_artist.get('name'),
+            ids=IDs(deezer=track_artist.get('id'))
+        ))
+
+    track_position = track_data.get('track_position')
+    if track_position is None:
+        track_position = track_data.get('track_number', 0)
+
+    disc_number = track_data.get('disk_number')
+    if disc_number is None:
+        disc_number = track_data.get('disc_number', 1)
+
+    return trackAlbumObject(
+        title=track_data.get('title'),
+        duration_ms=track_data.get('duration', 0) * 1000,
+        explicit=track_data.get('explicit_lyrics', False),
+        track_number=track_position,
+        disc_number=disc_number,
+        ids=IDs(deezer=track_data.get('id'), isrc=track_data.get('isrc')),
+        artists=track_artists
+    )
+
+
 def tracking_album(album_json: dict) -> Optional[albumObject]:
     if not album_json or 'id' not in album_json:
         return None
 
-    # Determine album artists from contributors or artist field
-    album_artists = []
-    if 'contributors' in album_json:
-        main_artists = [c for c in album_json['contributors'] if c.get('role') == 'Main']
-        if main_artists:
-            album_artists = [artistAlbumObject(
-                name=c.get('name', ''),
-                ids=IDs(deezer=c.get('id'))
-            ) for c in main_artists]
-        else:
-            # Fallback to all contributors if no main artist is specified
-            album_artists = [artistAlbumObject(
-                name=c.get('name', ''),
-                ids=IDs(deezer=c.get('id'))
-            ) for c in album_json['contributors']]
-    elif 'artist' in album_json:
-        album_artists.append(artistAlbumObject(
-            name=album_json['artist'].get('name', ''),
-            ids=IDs(deezer=album_json['artist'].get('id'))
-        ))
+    album_artists = _extract_album_artists(album_json)
 
     # Extract album metadata
     album_obj = albumObject(
@@ -198,42 +232,8 @@ def tracking_album(album_json: dict) -> Optional[albumObject]:
         artists=album_artists
     )
     
-    # Process tracks
-    album_tracks = []
     tracks_data = album_json.get('tracks', {}).get('data', [])
-    
-    for track_data in tracks_data:
-        # Ensure we have detailed track information
-        # The /album/{id}/tracks endpoint provides ISRC, explicit flags, etc.
-        
-        # Create track artists with main artist
-        track_artists = []
-        if "artist" in track_data:
-            track_artists.append(artistTrackAlbumObject(
-                name=track_data['artist'].get('name'),
-                ids=IDs(deezer=track_data['artist'].get('id'))
-            ))
-        
-        # Ensure track position and disc number are properly extracted
-        track_position = track_data.get('track_position')
-        if track_position is None:
-            track_position = track_data.get('track_number', 0)
-        
-        disc_number = track_data.get('disk_number')
-        if disc_number is None:
-            disc_number = track_data.get('disc_number', 1)
-        
-        # Create the track object with enhanced metadata
-        track = trackAlbumObject(
-            title=track_data.get('title'),
-            duration_ms=track_data.get('duration', 0) * 1000,
-            explicit=track_data.get('explicit_lyrics', False),
-            track_number=track_position,
-            disc_number=disc_number,
-            ids=IDs(deezer=track_data.get('id'), isrc=track_data.get('isrc')),
-            artists=track_artists
-        )
-        album_tracks.append(track)
+    album_tracks = [_create_album_track(track_data) for track_data in tracks_data]
 
     # Calculate total discs by finding the maximum disc number
     total_discs = 1

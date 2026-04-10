@@ -2,7 +2,7 @@
 
 import logging
 import sys
-from typing import Optional, Callable, Dict, Any, Union
+from typing import Any, Callable
 import json
 from dataclasses import asdict
 
@@ -30,7 +30,7 @@ logger = logging.getLogger('deezspot')
 
 def configure_logger(
     level: int = logging.INFO,
-    to_file: Optional[str] = None,
+    to_file: str | None = None,
     to_console: bool = True,
     format_string: str = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 ) -> None:
@@ -66,7 +66,7 @@ class ProgressReporter:
     """
     def __init__(
         self, 
-        callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        callback: Callable[[dict[str, Any]], None] | None = None,
         silent: bool = False,
         log_level: int = logging.INFO
     ):
@@ -74,7 +74,7 @@ class ProgressReporter:
         self.silent = silent
         self.log_level = log_level
 
-    def report(self, progress_data: Dict[str, Any]) -> None:
+    def report(self, progress_data: dict[str, Any]) -> None:
         """
         Report progress using the configured method.
         
@@ -167,8 +167,8 @@ def _remove_nulls(data):
     return data
 
 def report_progress(
-    reporter: Optional["ProgressReporter"],
-    callback_obj: Union[TrackCallbackObject, AlbumCallbackObject, PlaylistCallbackObject]
+    reporter: "ProgressReporter" | None,
+    callback_obj: TrackCallbackObject | AlbumCallbackObject | PlaylistCallbackObject
 ):
     """
     Reports progress using a standardized callback object.

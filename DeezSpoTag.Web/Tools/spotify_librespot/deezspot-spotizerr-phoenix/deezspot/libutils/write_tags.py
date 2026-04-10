@@ -87,6 +87,149 @@ def _format_date_for_mp4(year_obj):
 	# For simplicity, just using year, but full date like YYYY-MM-DD is also valid
 	return str(year_obj.year) 
 
+def _id3_add_text(tags, frame_class, value):
+	if value:
+		tags.add(frame_class(encoding=3, text=str(value)))
+
+def _mp4_set_or_delete_text(tags, atom_key, value):
+	if value is not None:
+		tags[atom_key] = [str(value)]
+	elif atom_key in tags:
+		del tags[atom_key]
+
+def _mp4_set_or_delete_pair(tags, atom_key, number, total):
+	if number is not None:
+		tags[atom_key] = [[int(number), int(total)]]
+	elif atom_key in tags:
+		del tags[atom_key]
+
+def _embed_vorbis_cover(tags, filepath, audio_format_class, img_bytes):
+	if not img_bytes:
+		return
+	if audio_format_class == FLAC:
+		pic = FLACPicture()
+		pic.type = 3
+		pic.mime = JPEG_MIME if img_bytes.startswith(b'\xff\xd8') else 'image/png'
+		pic.data = img_bytes
+		tags.clear_pictures()
+		tags.add_picture(pic)
+		return
+	if audio_format_class in [OggVorbis, OggOpus]:
+		try:
+			pic_for_ogg = FLACPicture()
+			pic_for_ogg.type = 3
+			pic_for_ogg.mime = JPEG_MIME if img_bytes.startswith(b'\xff\xd8') else 'image/png'
+			pic_for_ogg.data = img_bytes
+			tags['METADATA_BLOCK_PICTURE'] = [b64encode(pic_for_ogg.write()).decode('ascii')]
+		except Exception as e_ogg_pic:
+			logger.warning(f"Could not prepare/embed cover art for OGG/Opus in {filepath}: {e_ogg_pic}")
+
+def _resolve_media_filepath(media):
+	if isinstance(media, Track):
+		return media.song_path
+	if isinstance(media, Episode):
+		return getattr(media, 'episode_path', getattr(media, 'song_path', None))
+	logger.error(f"Unsupported media type for tagging: {type(media)}")
+	return None
+
+def _resolve_file_extension(media, filepath):
+	file_ext = getattr(media, 'file_format', None)
+	if file_ext:
+		return file_ext.lower()
+	logger.warning(f"File format not specified in media object for {filepath}. Attempting to guess from filepath.")
+	_, guessed_ext = os.path.splitext(filepath)
+	if not guessed_ext:
+		return None
+	return guessed_ext.lower()
+
+def _dispatch_tag_writer(file_ext, filepath, song_metadata):
+	if file_ext == ".mp3":
+		__write_mp3(filepath, song_metadata)
+		return True
+	if file_ext == ".flac":
+		__write_vorbis(filepath, song_metadata, FLAC)
+		return True
+	if file_ext == ".ogg":
+		__write_vorbis(filepath, song_metadata, OggVorbis)
+		return True
+	if file_ext == ".opus":
+		__write_vorbis(filepath, song_metadata, OggOpus)
+		return True
+	if file_ext == ".m4a":
+		__write_m4a(filepath, song_metadata)
+		return True
+	if file_ext == ".wav":
+		__write_wav(filepath, song_metadata)
+		return True
+	return False
+
+def _id3_add_position(tags, frame_class, number, total):
+	number_str = str(number or '')
+	total_str = str(total or '')
+	if not number_str:
+		return
+	value = f"{number_str}{f'/{total_str}' if total_str else ''}"
+	tags.add(frame_class(encoding=3, text=value))
+
+def _id3_add_year(tags, year_obj):
+	year_str = _format_year_for_id3(year_obj)
+	if year_str:
+		tags.add(TYER(encoding=3, text=year_str))
+
+def _id3_add_duration(tags, duration_sec):
+	if isinstance(duration_sec, (int, float)) and duration_sec > 0:
+		tags.add(TLEN(encoding=3, text=str(int(duration_sec * 1000))))
+
+def _id3_add_optional_lyrics(tags, lyric):
+	if lyric:
+		tags.add(USLT(encoding=3, lang='eng', desc='', text=str(lyric)))
+
+def _id3_add_cover(tags, image_data):
+	img_bytes = _get_image_bytes(image_data)
+	if img_bytes:
+		tags.add(APIC(encoding=3, mime=JPEG_MIME, type=3, desc='Cover', data=img_bytes))
+
+def _id3_add_optional_numeric_txxx(tags, value, desc):
+	if value and str(value).isdigit():
+		tags.add(TXXX(encoding=3, desc=desc, text=str(value)))
+
+def _id3_add_optional_author(tags, author):
+	if author:
+		tags.add(TXXX(encoding=3, desc='LYRICIST', text=str(author)))
+
+def _open_mp4_for_tagging(filepath):
+	try:
+		mp4 = MP4(filepath)
+		return mp4, mp4.tags
+	except Exception as e:
+		logger.warning(f"Could not open M4A file {filepath} for tagging, trying to create new: {e}")
+		try:
+			mp4 = MP4()
+			return mp4, mp4.tags
+		except Exception as e_create:
+			logger.error(f"Failed to initialize MP4 tags for {filepath}: {e_create}")
+	return None, None
+
+def _mp4_set_optional_int_atom(tags, atom_key, raw_value):
+	if raw_value and str(raw_value).isdigit():
+		tags[atom_key] = [int(raw_value)]
+	elif atom_key in tags:
+		del tags[atom_key]
+
+def _mp4_set_optional_cover(tags, image_data):
+	img_bytes = _get_image_bytes(image_data)
+	if img_bytes:
+		img_format = MP4Cover.FORMAT_JPEG if img_bytes.startswith(b'\xff\xd8') else MP4Cover.FORMAT_PNG
+		tags['covr'] = [MP4Cover(img_bytes, imageformat=img_format)]
+	elif 'covr' in tags:
+		del tags['covr']
+
+def _mp4_set_optional_isrc(tags, isrc):
+	if isrc:
+		tags[ITUNES_ISRC_TAG] = bytes(str(isrc), 'utf-8')
+	elif ITUNES_ISRC_TAG in tags:
+		del tags[ITUNES_ISRC_TAG]
+
 # --- MP3 (ID3 Tags) ---
 def __write_mp3(filepath, data):
 	try:
@@ -96,65 +239,39 @@ def __write_mp3(filepath, data):
 	tags.delete(filepath, delete_v1=True, delete_v2=True) # Clear existing tags
 	tags = ID3() # Re-initialize
 
-	if data.get('music'): tags.add(TIT2(encoding=3, text=str(data['music'])))
-	if data.get('artist'): tags.add(TPE1(encoding=3, text=str(data['artist'])))
-	if data.get('album'): tags.add(TALB(encoding=3, text=str(data['album'])))
-	if data.get('ar_album'): tags.add(TPE2(encoding=3, text=str(data['ar_album']))) # Album Artist
+	for data_key, frame_class in [
+		('music', TIT2),
+		('artist', TPE1),
+		('album', TALB),
+		('ar_album', TPE2),
+		('genre', TCON),
+		('composer', TCOM),
+		('copyright', TCOP),
+		('label', TPUB),
+		('isrc', TSRC),
+	]:
+		_id3_add_text(tags, frame_class, data.get(data_key))
 
-	track_num_str = str(data.get('tracknum', ''))
-	tracks_total_str = str(data.get('nb_tracks', ''))
-	if track_num_str:
-		tags.add(TRCK(encoding=3, text=f"{track_num_str}{f'/{tracks_total_str}' if tracks_total_str else ''}"))
-
-	disc_num_str = str(data.get('discnum', ''))
-	discs_total_str = str(data.get('nb_discs', '')) # Assuming 'nb_discs' if available
-	if disc_num_str:
-		tags.add(TPOS(encoding=3, text=f"{disc_num_str}{f'/{discs_total_str}' if discs_total_str else ''}"))
-
-	if data.get('genre'): tags.add(TCON(encoding=3, text=str(data['genre'])))
-	
-	year_str = _format_year_for_id3(data.get('year'))
-	if year_str: tags.add(TYER(encoding=3, text=year_str))
+	_id3_add_position(tags, TRCK, data.get('tracknum'), data.get('nb_tracks'))
+	_id3_add_position(tags, TPOS, data.get('discnum'), data.get('nb_discs'))
+	_id3_add_year(tags, data.get('year'))
 
 	comment_text = data.get('comment', 'Downloaded by DeezSpot')
 	tags.add(COMM(encoding=3, lang='eng', desc='', text=comment_text))
-		
-	if data.get('composer'): tags.add(TCOM(encoding=3, text=str(data['composer'])))
-	if data.get('copyright'): tags.add(TCOP(encoding=3, text=str(data['copyright'])))
-	if data.get('label'): tags.add(TPUB(encoding=3, text=str(data['label']))) # Publisher/Label
-	if data.get('isrc'): tags.add(TSRC(encoding=3, text=str(data['isrc'])))
-	
-	duration_sec = data.get('duration')
-	if isinstance(duration_sec, (int, float)) and duration_sec > 0:
-		tags.add(TLEN(encoding=3, text=str(int(duration_sec * 1000))))
 
-	if data.get('lyric'): tags.add(USLT(encoding=3, lang='eng', desc='', text=str(data['lyric'])))
-	# SYLT for synced lyrics would need specific format for its text field
-
-	img_bytes = _get_image_bytes(data.get('image'))
-	if img_bytes:
-		tags.add(APIC(encoding=3, mime=JPEG_MIME, type=3, desc='Cover', data=img_bytes))
-	
-	if data.get('bpm') and str(data.get('bpm', '')).isdigit(): 
-		tags.add(TXXX(encoding=3, desc='BPM', text=str(data['bpm'])))
-	if data.get('author'): # Lyricist
-		tags.add(TXXX(encoding=3, desc='LYRICIST', text=str(data['author'])))
+	_id3_add_duration(tags, data.get('duration'))
+	_id3_add_optional_lyrics(tags, data.get('lyric'))
+	_id3_add_cover(tags, data.get('image'))
+	_id3_add_optional_numeric_txxx(tags, data.get('bpm'), 'BPM')
+	_id3_add_optional_author(tags, data.get('author'))
 
 	tags.save(filepath, v2_version=3)
 
 # --- M4A (AAC/ALAC in MP4 Container) ---
 def __write_m4a(filepath, data):
-	try:
-		mp4 = MP4(filepath)
-		tags = mp4.tags
-	except Exception as e:
-		logger.warning(f"Could not open M4A file {filepath} for tagging, trying to create new: {e}")
-		try:
-			mp4 = MP4() # Create a new MP4 object if loading fails
-			tags = mp4.tags # Get its tags attribute (will be empty or None)
-		except Exception as e_create:
-			logger.error(f"Failed to initialize MP4 tags for {filepath}: {e_create}")
-			return
+	mp4, tags = _open_mp4_for_tagging(filepath)
+	if mp4 is None or tags is None:
+		return
 
 	# Atom names (ensure they are bytes for mutagen for older versions, strings for newer)
 	# Mutagen generally handles this; use strings for keys for clarity.
@@ -165,48 +282,23 @@ def __write_m4a(filepath, data):
 	}
 
 	for data_key, atom_key in TAG_MAP.items():
-		if data.get(data_key) is not None:
-			tags[atom_key] = [str(data[data_key])]
-		else:
-			if atom_key in tags: del tags[atom_key]
+		_mp4_set_or_delete_text(tags, atom_key, data.get(data_key))
 
 	mp4_date = _format_date_for_mp4(data.get('year'))
-	if mp4_date: tags['\xa9day'] = [mp4_date]
-	else: 
-		if '\xa9day' in tags: del tags['\xa9day']
+	_mp4_set_or_delete_text(tags, '\xa9day', mp4_date)
 
 	track_num = data.get('tracknum')
 	tracks_total = data.get('nb_tracks', 0)
-	if track_num is not None:
-		tags['trkn'] = [[int(track_num), int(tracks_total)]]
-	else:
-		if 'trkn' in tags: del tags['trkn']
+	_mp4_set_or_delete_pair(tags, 'trkn', track_num, tracks_total)
 
 	disc_num = data.get('discnum')
 	discs_total = data.get('nb_discs', 0) # Assuming 'nb_discs' if available
-	if disc_num is not None:
-		tags['disk'] = [[int(disc_num), int(discs_total)]]
-	else:
-		if 'disk' in tags: del tags['disk']
-		
-	if data.get('bpm') and str(data.get('bpm','')).isdigit():
-		tags['tmpo'] = [int(data['bpm'])]
-	elif 'tmpo' in tags: del tags['tmpo']
+	_mp4_set_or_delete_pair(tags, 'disk', disc_num, discs_total)
 
-	if data.get('lyric'):
-		tags['\xa9lyr'] = [str(data['lyric'])]
-	elif '\xa9lyr' in tags: del tags['\xa9lyr']
-
-	img_bytes = _get_image_bytes(data.get('image'))
-	if img_bytes:
-		img_format = MP4Cover.FORMAT_JPEG if img_bytes.startswith(b'\xff\xd8') else MP4Cover.FORMAT_PNG
-		tags['covr'] = [MP4Cover(img_bytes, imageformat=img_format)]
-	elif 'covr' in tags: del tags['covr']
-	
-	# For ISRC - often stored in a custom way
-	if data.get('isrc'):
-		tags[ITUNES_ISRC_TAG] = bytes(str(data['isrc']), 'utf-8')
-	elif ITUNES_ISRC_TAG in tags: del tags[ITUNES_ISRC_TAG]
+	_mp4_set_optional_int_atom(tags, 'tmpo', data.get('bpm'))
+	_mp4_set_or_delete_text(tags, '\xa9lyr', data.get('lyric'))
+	_mp4_set_optional_cover(tags, data.get('image'))
+	_mp4_set_optional_isrc(tags, data.get('isrc'))
 
 	try:
 		mp4.save(filepath) # Use the MP4 object's save method
@@ -254,24 +346,7 @@ def __write_vorbis(filepath, data, audio_format_class):
 		tags['LENGTH'] = str(duration_sec) # Store as seconds string
 
 	img_bytes = _get_image_bytes(data.get('image'))
-	if img_bytes:
-		if audio_format_class == FLAC:
-			pic = FLACPicture()
-			pic.type = 3
-			pic.mime = JPEG_MIME if img_bytes.startswith(b'\xff\xd8') else 'image/png'
-			pic.data = img_bytes
-			tags.clear_pictures()
-			tags.add_picture(pic)
-		elif audio_format_class in [OggVorbis, OggOpus]:
-			try:
-				# For OGG/Opus, METADATA_BLOCK_PICTURE is a base64 encoded FLAC Picture block
-				pic_for_ogg = FLACPicture() # Use FLACPicture structure
-				pic_for_ogg.type = 3
-				pic_for_ogg.mime = JPEG_MIME if img_bytes.startswith(b'\xff\xd8') else 'image/png'
-				pic_for_ogg.data = img_bytes
-				tags['METADATA_BLOCK_PICTURE'] = [b64encode(pic_for_ogg.write()).decode('ascii')]
-			except Exception as e_ogg_pic:
-				logger.warning(f"Could not prepare/embed cover art for OGG/Opus in {filepath}: {e_ogg_pic}")
+	_embed_vorbis_cover(tags, filepath, audio_format_class, img_bytes)
 	try:
 		tags.save()
 	except Exception as e:
@@ -285,16 +360,8 @@ def __write_wav(filepath, data):
 
 # --- Main Dispatcher ---
 def write_tags(media):
-	if isinstance(media, Track):
-		filepath = media.song_path
-	elif isinstance(media, Episode):
-		filepath = getattr(media, 'episode_path', getattr(media, 'song_path', None)) # Episode model might vary
-	else:
-		logger.error(f"Unsupported media type for tagging: {type(media)}")
-		return
-
+	filepath = _resolve_media_filepath(media)
 	if not filepath:
-		logger.error(f"Filepath is missing for tagging media object: {media}")
 		return
 
 	song_metadata = getattr(media, 'tags', None)
@@ -319,31 +386,14 @@ def write_tags(media):
 		logger.error(f"write_tags: File not found after wait, skipping tagging: {filepath}")
 		return
 		
-	file_ext = getattr(media, 'file_format', None) 
+	file_ext = _resolve_file_extension(media, filepath)
 	if not file_ext:
-		logger.warning(f"File format not specified in media object for {filepath}. Attempting to guess from filepath.")
-		_, file_ext = os.path.splitext(filepath)
-		if not file_ext:
-			logger.error(f"Could not determine file format for {filepath}. Skipping tagging.")
-			return
-
-	file_ext = file_ext.lower()
+		logger.error(f"Could not determine file format for {filepath}. Skipping tagging.")
+		return
 	logger.info(f"Writing tags for: {filepath} (Format: {file_ext})")
 
 	try:
-		if file_ext == ".mp3":
-			__write_mp3(filepath, song_metadata)
-		elif file_ext == ".flac":
-			__write_vorbis(filepath, song_metadata, FLAC)
-		elif file_ext == ".ogg":
-			__write_vorbis(filepath, song_metadata, OggVorbis)
-		elif file_ext == ".opus":
-			__write_vorbis(filepath, song_metadata, OggOpus)
-		elif file_ext == ".m4a": # Handles AAC and ALAC
-			__write_m4a(filepath, song_metadata)
-		elif file_ext == ".wav":
-			__write_wav(filepath, song_metadata)
-		else:
+		if not _dispatch_tag_writer(file_ext, filepath, song_metadata):
 			logger.warning(f"Unsupported file format for tagging: {file_ext} for file {filepath}")
 	except Exception as e:
 		logger.error(f"General error during tagging for {filepath}: {e}")

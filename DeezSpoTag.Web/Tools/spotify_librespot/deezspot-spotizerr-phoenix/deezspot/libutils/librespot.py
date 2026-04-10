@@ -102,37 +102,36 @@ class LibrespotClient:
     # ---------- ID parsing helpers ----------
 
     @staticmethod
+    def _extract_open_spotify_id(value: str, segment: str) -> str:
+        token = f"open.spotify.com/{segment}/"
+        if token not in value:
+            return ""
+        return value.split(token)[-1].split("?")[0].split("#")[0].strip("/")
+
+    @staticmethod
     def parse_input_id(kind: str, value: str) -> TrackId | AlbumId | ArtistId | PlaylistId:
         s = value.strip()
-        if kind == "track":
-            if s.startswith(SPOTIFY_TRACK_URI_PREFIX):
-                return TrackId.from_uri(s)
-            if "open.spotify.com/track/" in s:
-                base = s.split("open.spotify.com/track/")[-1].split("?")[0].split("#")[0].strip("/")
-                return TrackId.from_base62(base)
-            return TrackId.from_base62(s)
-        if kind == "album":
-            if s.startswith("spotify:album:"):
-                return AlbumId.from_uri(s)
-            if "open.spotify.com/album/" in s:
-                base = s.split("open.spotify.com/album/")[-1].split("?")[0].split("#")[0].strip("/")
-                return AlbumId.from_base62(base)
-            return AlbumId.from_base62(s)
-        if kind == "artist":
-            if s.startswith("spotify:artist:"):
-                return ArtistId.from_uri(s)
-            if "open.spotify.com/artist/" in s:
-                base = s.split("open.spotify.com/artist/")[-1].split("?")[0].split("#")[0].strip("/")
-                return ArtistId.from_base62(base)
-            return ArtistId.from_base62(s)
-        if kind == "playlist":
-            if s.startswith("spotify:playlist:"):
-                return PlaylistId.from_uri(s)
-            if "open.spotify.com/playlist/" in s:
-                base = s.split("open.spotify.com/playlist/")[-1].split("?")[0].split("#")[0].strip("/")
-                return PlaylistId(base)
-            return PlaylistId(s)
-        raise RuntimeError(f"Unknown kind: {kind}")
+
+        parser_map = {
+            "track": (SPOTIFY_TRACK_URI_PREFIX, "track", TrackId.from_uri, TrackId.from_base62),
+            "album": ("spotify:album:", "album", AlbumId.from_uri, AlbumId.from_base62),
+            "artist": ("spotify:artist:", "artist", ArtistId.from_uri, ArtistId.from_base62),
+            "playlist": ("spotify:playlist:", "playlist", PlaylistId.from_uri, PlaylistId),
+        }
+
+        cfg = parser_map.get(kind)
+        if cfg is None:
+            raise RuntimeError(f"Unknown kind: {kind}")
+
+        uri_prefix, segment, uri_parser, base_parser = cfg
+        if s.startswith(uri_prefix):
+            return uri_parser(s)
+
+        extracted = LibrespotClient._extract_open_spotify_id(s, segment)
+        if extracted:
+            return base_parser(extracted)
+
+        return base_parser(s)
 
     # ---------- Private: session ----------
 

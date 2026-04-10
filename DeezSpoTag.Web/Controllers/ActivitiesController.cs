@@ -523,7 +523,7 @@ public class ActivitiesController : Controller
             return false;
         }
 
-        payload = new Dictionary<string, object>(cached.Payload, StringComparer.OrdinalIgnoreCase);
+        payload = ClonePayloadDictionary(cached.Payload);
         return true;
     }
 
@@ -531,8 +531,19 @@ public class ActivitiesController : Controller
     {
         QueuePayloadCache[cacheKey] = new CachedQueuePayload(
             DateTimeOffset.UtcNow,
-            new Dictionary<string, object>(payload, StringComparer.OrdinalIgnoreCase));
+            ClonePayloadDictionary(payload));
         PruneQueuePayloadCache();
+    }
+
+    internal static Dictionary<string, object> ClonePayloadDictionary(Dictionary<string, object> payload)
+    {
+        var clone = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in payload)
+        {
+            clone[entry.Key] = entry.Value;
+        }
+
+        return clone;
     }
 
     private static void PruneQueuePayloadCache()
