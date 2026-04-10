@@ -4,7 +4,7 @@ import base64
 import datetime
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from google.protobuf.descriptor import FieldDescriptor
 from google.protobuf.message import Message
@@ -14,6 +14,8 @@ from librespot.metadata import AlbumId, ArtistId, PlaylistId, TrackId
 from librespot import util
 from librespot.proto import Metadata_pb2 as Metadata
 from librespot.proto import Playlist4External_pb2 as P4
+
+SPOTIFY_TRACK_URI_PREFIX = "spotify:track:"
 
 
 class LibrespotClient:
@@ -49,22 +51,22 @@ class LibrespotClient:
             except Exception:
                 pass
 
-    def get_album(self, album: Union[str, AlbumId], include_tracks: bool = False) -> Dict[str, Any]:
+    def get_album(self, album: str | AlbumId, include_tracks: bool = False) -> Dict[str, Any]:
         album_id = self._ensure_album_id(album)
         album_proto = self._session.api().get_metadata_4_album(album_id)
         return self._album_proto_to_object(album_proto, include_tracks=include_tracks, for_embed=False)
 
-    def get_track(self, track: Union[str, TrackId]) -> Dict[str, Any]:
+    def get_track(self, track: str | TrackId) -> Dict[str, Any]:
         track_id = self._ensure_track_id(track)
         track_proto = self._session.api().get_metadata_4_track(track_id)
         return self._track_proto_to_object(track_proto)
 
-    def get_artist(self, artist: Union[str, ArtistId]) -> Dict[str, Any]:
+    def get_artist(self, artist: str | ArtistId) -> Dict[str, Any]:
         artist_id = self._ensure_artist_id(artist)
         artist_proto = self._session.api().get_metadata_4_artist(artist_id)
         return self._proto_to_full_json(artist_proto)
 
-    def get_playlist(self, playlist: Union[str, PlaylistId], expand_items: bool = False) -> Dict[str, Any]:
+    def get_playlist(self, playlist: str | PlaylistId, expand_items: bool = False) -> Dict[str, Any]:
         playlist_id = self._ensure_playlist_id(playlist)
         playlist_proto = self._session.api().get_playlist(playlist_id)
         return self._playlist_proto_to_object(playlist_proto, include_track_objects=expand_items)
@@ -100,10 +102,10 @@ class LibrespotClient:
     # ---------- ID parsing helpers ----------
 
     @staticmethod
-    def parse_input_id(kind: str, value: str) -> Union[TrackId, AlbumId, ArtistId, PlaylistId]:
+    def parse_input_id(kind: str, value: str) -> TrackId | AlbumId | ArtistId | PlaylistId:
         s = value.strip()
         if kind == "track":
-            if s.startswith("spotify:track:"):
+            if s.startswith(SPOTIFY_TRACK_URI_PREFIX):
                 return TrackId.from_uri(s)
             if "open.spotify.com/track/" in s:
                 base = s.split("open.spotify.com/track/")[-1].split("?")[0].split("#")[0].strip("/")
@@ -170,22 +172,22 @@ class LibrespotClient:
 
     # ---------- Private: ID coercion ----------
 
-    def _ensure_track_id(self, v: Union[str, TrackId]) -> TrackId:
+    def _ensure_track_id(self, v: str | TrackId) -> TrackId:
         if isinstance(v, TrackId):
             return v
         return self.parse_input_id("track", v)  # type: ignore[return-value]
 
-    def _ensure_album_id(self, v: Union[str, AlbumId]) -> AlbumId:
+    def _ensure_album_id(self, v: str | AlbumId) -> AlbumId:
         if isinstance(v, AlbumId):
             return v
         return self.parse_input_id("album", v)  # type: ignore[return-value]
 
-    def _ensure_artist_id(self, v: Union[str, ArtistId]) -> ArtistId:
+    def _ensure_artist_id(self, v: str | ArtistId) -> ArtistId:
         if isinstance(v, ArtistId):
             return v
         return self.parse_input_id("artist", v)  # type: ignore[return-value]
 
-    def _ensure_playlist_id(self, v: Union[str, PlaylistId]) -> PlaylistId:
+    def _ensure_playlist_id(self, v: str | PlaylistId) -> PlaylistId:
         if isinstance(v, PlaylistId):
             return v
         return self.parse_input_id("playlist", v)  # type: ignore[return-value]
@@ -454,7 +456,7 @@ class LibrespotClient:
                     else:
                         expanded.append({
                             "id": b62,
-                            "uri": f"spotify:track:{b62}",
+                            "uri": f"{SPOTIFY_TRACK_URI_PREFIX}{b62}",
                             "type": "track",
                             "external_urls": {"spotify": f"https://open.spotify.com/track/{b62}"},
                         })
@@ -545,8 +547,6 @@ class LibrespotClient:
         name = getattr(attrs, "name", "") if attrs else ""
         description = getattr(attrs, "description", "") if attrs else ""
         collaborative = bool(getattr(attrs, "collaborative", False)) if attrs else False
-        picture_bytes = getattr(attrs, "picture", b"") if attrs else b""
-
         images: List[Dict[str, Any]] = []
         picture_url: Optional[str] = None
         # Derive picture URL from attributes.picture with header-aware parsing
@@ -566,7 +566,7 @@ class LibrespotClient:
         if contents is not None:
             for it in getattr(contents, "items", []):
                 uri = getattr(it, "uri", "") or ""
-                if uri.startswith("spotify:track:"):
+                if uri.startswith(SPOTIFY_TRACK_URI_PREFIX):
                     b62 = uri.split(":")[-1]
                     to_fetch.append(b62)
         if to_fetch and self._session is not None:
@@ -582,11 +582,14 @@ class LibrespotClient:
                 added_at_iso = None
                 if isinstance(ts_ms, int) and ts_ms > 0:
                     try:
-                        added_at_iso = datetime.datetime.utcfromtimestamp(ts_ms / 1000.0).isoformat() + "Z"
+                        added_at_iso = datetime.datetime.fromtimestamp(
+                            ts_ms / 1000.0,
+                            tz=datetime.UTC,
+                        ).isoformat().replace("+00:00", "Z")
                     except Exception:
                         added_at_iso = None
                 track_obj: Optional[Dict[str, Any]] = None
-                if include_track_objects and uri.startswith("spotify:track:"):
+                if include_track_objects and uri.startswith(SPOTIFY_TRACK_URI_PREFIX):
                     b62 = uri.split(":")[-1]
                     obj = fetched_tracks.get(b62)
                     if obj is not None:
@@ -599,7 +602,7 @@ class LibrespotClient:
                             "external_urls": {"spotify": f"https://open.spotify.com/track/{b62}"},
                         }
                 else:
-                    if uri.startswith("spotify:track:"):
+                    if uri.startswith(SPOTIFY_TRACK_URI_PREFIX):
                         b62 = uri.split(":")[-1]
                         track_obj = {
                             "id": b62,

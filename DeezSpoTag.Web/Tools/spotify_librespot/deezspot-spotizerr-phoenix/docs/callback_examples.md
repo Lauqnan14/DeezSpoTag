@@ -17,9 +17,9 @@ For example:
 *   `playlistTrackObject`: This represents a `playlist` object within a `track` reporting context. It's a simplified version of a full `playlistObject` and is used as the parent for a track being processed as part of a playlist operation (more on what a "parent" is later).
 *   `artistAlbumTrackPlaylistObject`: This represents an `artist` object, nested within an `album` object, which is inside a `track` object that is part of a `playlist`. This shows the full hierarchy of contexts.
 
-## `trackCallbackObject` Examples
+## `TrackCallbackObject` Examples
 
-A `trackCallbackObject` is sent to provide updates on the status of a single track's processing.
+A `TrackCallbackObject` is sent to provide updates on the status of a single track's processing.
 
 ### Status: `initializing`
 
@@ -100,7 +100,7 @@ Indicates that the track processing is starting.
 
 ### Track with Parent Context
 
-When a track is processed as part of a larger operation (like downloading an album or playlist), the `parent` field in the `trackCallbackObject` will be populated. This provides context about the containing entity. `current_track` and `total_tracks` will also be populated accordingly.
+When a track is processed as part of a larger operation (like downloading an album or playlist), the `parent` field in the `TrackCallbackObject` will be populated. This provides context about the containing entity. `current_track` and `total_tracks` will also be populated accordingly.
 
 #### Parent: `albumTrackObject`
 
@@ -580,9 +580,9 @@ Indicates that the track has been processed successfully.
 
 Note: When a single-track operation is performed (not part of an album/playlist), the `summary` field may be populated. In that case, it can also include `final_path`, `download_quality`, `service`, `quality`, and `bitrate` as additional convenience fields indicating the final output.
 
-## `albumCallbackObject` Examples
+## `AlbumCallbackObject` Examples
 
-An `albumCallbackObject` provides status updates for a whole album.
+An `AlbumCallbackObject` provides status updates for a whole album.
 
 ### Status: `initializing`
 
@@ -736,9 +736,9 @@ The `done` status for an album includes a summary of all track operations.
 }
 ```
 
-## `playlistCallbackObject` Examples
+## `PlaylistCallbackObject` Examples
 
-A `playlistCallbackObject` provides status updates for a playlist.
+A `PlaylistCallbackObject` provides status updates for a playlist.
 
 ### Status: `initializing`
 

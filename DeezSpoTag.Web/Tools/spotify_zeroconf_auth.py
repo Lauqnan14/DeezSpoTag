@@ -68,7 +68,7 @@ def main():
             return 1
 
     try:
-        ZeroconfServer = _load_librespot()
+        zeroconf_server_cls = _load_librespot()
     except Exception as exc:
         _write_result(False, error=str(exc))
         return 1
@@ -78,7 +78,7 @@ def main():
     server = None
     for attempt in range(5):
         try:
-            server = ZeroconfServer.Builder().set_device_name(device_name).create()
+            server = zeroconf_server_cls.Builder().set_device_name(device_name).create()
             logging.info("Zeroconf server started with device name: %s", device_name)
             break
         except Exception as exc:

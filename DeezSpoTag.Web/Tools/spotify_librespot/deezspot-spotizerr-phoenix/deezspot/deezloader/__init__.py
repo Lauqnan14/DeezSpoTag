@@ -50,14 +50,14 @@ import requests
 from librespot.core import Session
 
 from deezspot.models.callback.callbacks import (
-    trackCallbackObject,
-    albumCallbackObject,
-    playlistCallbackObject,
-    errorObject,
-    summaryObject,
-    failedTrackObject,
-    initializingObject,
-    doneObject,
+    TrackCallbackObject,
+    AlbumCallbackObject,
+    PlaylistCallbackObject,
+    ErrorObject,
+    SummaryObject,
+    FailedTrackObject,
+    InitializingObject,
+    DoneObject,
 )
 from deezspot.models.callback.track import trackObject as trackCbObject, artistTrackObject
 from deezspot.models.callback.album import albumObject as albumCbObject
@@ -84,6 +84,128 @@ API()
 logger = logging.getLogger('deezspot')
 
 class DeeLogin:
+    _TRACK_OPTION_ORDER = [
+        "output_dir", "quality_download", "recursive_quality", "recursive_download",
+        "not_interface", "custom_dir_format", "custom_track_format", "pad_tracks",
+        "initial_retry_delay", "retry_delay_increase", "max_retries", "convert_to",
+        "bitrate", "save_cover", "market", "playlist_context", "artist_separator",
+        "spotify_metadata", "pad_number_width",
+    ]
+    _TRACK_OPTION_DEFAULTS = {
+        "output_dir": stock_output,
+        "quality_download": stock_quality,
+        "recursive_quality": stock_recursive_quality,
+        "recursive_download": stock_recursive_download,
+        "not_interface": stock_not_interface,
+        "custom_dir_format": None,
+        "custom_track_format": None,
+        "pad_tracks": True,
+        "initial_retry_delay": 30,
+        "retry_delay_increase": 30,
+        "max_retries": 5,
+        "convert_to": None,
+        "bitrate": None,
+        "save_cover": stock_save_cover,
+        "market": stock_market,
+        "playlist_context": None,
+        "artist_separator": "; ",
+        "spotify_metadata": False,
+        "pad_number_width": "auto",
+    }
+    _ALBUM_OPTION_ORDER = [
+        "output_dir", "quality_download", "recursive_quality", "recursive_download",
+        "not_interface", "make_zip", "custom_dir_format", "custom_track_format",
+        "pad_tracks", "initial_retry_delay", "retry_delay_increase", "max_retries",
+        "convert_to", "bitrate", "save_cover", "market", "playlist_context",
+        "artist_separator", "spotify_metadata", "spotify_album_obj", "pad_number_width",
+    ]
+    _ALBUM_OPTION_DEFAULTS = {
+        "output_dir": stock_output,
+        "quality_download": stock_quality,
+        "recursive_quality": stock_recursive_quality,
+        "recursive_download": stock_recursive_download,
+        "not_interface": stock_not_interface,
+        "make_zip": stock_zip,
+        "custom_dir_format": None,
+        "custom_track_format": None,
+        "pad_tracks": True,
+        "initial_retry_delay": 30,
+        "retry_delay_increase": 30,
+        "max_retries": 5,
+        "convert_to": None,
+        "bitrate": None,
+        "save_cover": stock_save_cover,
+        "market": stock_market,
+        "playlist_context": None,
+        "artist_separator": "; ",
+        "spotify_metadata": False,
+        "spotify_album_obj": None,
+        "pad_number_width": "auto",
+    }
+    _PLAYLIST_OPTION_ORDER = [
+        "output_dir", "quality_download", "recursive_quality", "recursive_download",
+        "not_interface", "make_zip", "custom_dir_format", "custom_track_format",
+        "pad_tracks", "initial_retry_delay", "retry_delay_increase", "max_retries",
+        "convert_to", "bitrate", "save_cover", "market", "artist_separator",
+        "pad_number_width",
+    ]
+    _PLAYLIST_OPTION_DEFAULTS = {
+        "output_dir": stock_output,
+        "quality_download": stock_quality,
+        "recursive_quality": stock_recursive_quality,
+        "recursive_download": stock_recursive_download,
+        "not_interface": stock_not_interface,
+        "make_zip": stock_zip,
+        "custom_dir_format": None,
+        "custom_track_format": None,
+        "pad_tracks": True,
+        "initial_retry_delay": 30,
+        "retry_delay_increase": 30,
+        "max_retries": 5,
+        "convert_to": None,
+        "bitrate": None,
+        "save_cover": stock_save_cover,
+        "market": stock_market,
+        "artist_separator": "; ",
+        "pad_number_width": "auto",
+    }
+    _SPOTIFY_PLAYLIST_OPTION_ORDER = [
+        "output_dir", "quality_download", "recursive_quality", "recursive_download",
+        "not_interface", "make_zip", "custom_dir_format", "custom_track_format",
+        "pad_tracks", "initial_retry_delay", "retry_delay_increase", "max_retries",
+        "convert_to", "bitrate", "save_cover", "market", "artist_separator",
+        "spotify_metadata", "pad_number_width",
+    ]
+    _SPOTIFY_PLAYLIST_OPTION_DEFAULTS = {
+        **_PLAYLIST_OPTION_DEFAULTS,
+        "spotify_metadata": False,
+    }
+    _SMART_OPTION_ORDER = [
+        "output_dir", "quality_download", "recursive_quality", "recursive_download",
+        "not_interface", "make_zip", "custom_dir_format", "custom_track_format",
+        "pad_tracks", "initial_retry_delay", "retry_delay_increase", "max_retries",
+        "convert_to", "bitrate", "save_cover", "market", "artist_separator",
+    ]
+    _SMART_OPTION_DEFAULTS = {
+        "output_dir": stock_output,
+        "quality_download": stock_quality,
+        "recursive_quality": stock_recursive_quality,
+        "recursive_download": stock_recursive_download,
+        "not_interface": stock_not_interface,
+        "make_zip": stock_zip,
+        "custom_dir_format": None,
+        "custom_track_format": None,
+        "pad_tracks": True,
+        "initial_retry_delay": 30,
+        "retry_delay_increase": 30,
+        "max_retries": 5,
+        "convert_to": None,
+        "bitrate": None,
+        "save_cover": stock_save_cover,
+        "market": stock_market,
+        "artist_separator": "; ",
+    }
+
     def __init__(
         self,
         arl=None,
@@ -149,71 +271,269 @@ class DeeLogin:
         session = builder.stored_file().create()
         Spo.set_session(session)
 
-    def download_trackdee(
-        self, link_track,
-        output_dir=stock_output,
-        quality_download=stock_quality,
-        recursive_quality=stock_recursive_quality,
-        recursive_download=stock_recursive_download,
-        not_interface=stock_not_interface,
-        custom_dir_format=None,
-        custom_track_format=None,
-        pad_tracks=True,
-        initial_retry_delay=30,
-        retry_delay_increase=30,
-        max_retries=5,
-        convert_to=None,
-        bitrate=None,
-        save_cover=stock_save_cover,
-        market=stock_market,
-        playlist_context=None,
-        artist_separator: str = "; ",
-        spotify_metadata: bool = False,
-        pad_number_width: int | str = 'auto'
-    ) -> Track:
-
-        link_is_valid(link_track)
-        ids = get_ids(link_track)
-        track_obj = None
-
-        def report_error(e, current_ids, _url):
-            error_status = errorObject(ids=IDs(deezer=current_ids), error=str(e))
-            summary = summaryObject(
-                failed_tracks=[failedTrackObject(track=trackCbObject(title=f"Track ID {current_ids}"), reason=str(e))],
-                total_failed=1
+    @staticmethod
+    def _merge_options(
+        *,
+        legacy_args: tuple,
+        kwargs: dict,
+        param_order: list[str],
+        defaults: dict
+    ) -> dict:
+        """Merge legacy positional/keyword options while preserving old call semantics."""
+        if len(legacy_args) > len(param_order):
+            raise TypeError(
+                f"Expected at most {len(param_order)} positional option(s), got {len(legacy_args)}."
             )
-            error_status.summary = summary
-            callback_obj = trackCallbackObject(
-                track=trackCbObject(title=f"Track ID {current_ids}", ids=IDs(deezer=current_ids)),
-                status_info=error_status
-            )
-            report_progress(reporter=self.progress_reporter, callback_obj=callback_obj)
 
+        merged = dict(defaults)
+        assigned_from_args = set()
+        for key, value in zip(param_order, legacy_args):
+            merged[key] = value
+            assigned_from_args.add(key)
+
+        unexpected = [key for key in kwargs if key not in defaults]
+        if unexpected:
+            raise TypeError(f"Unexpected option(s): {', '.join(sorted(unexpected))}")
+
+        duplicates = [key for key in kwargs if key in assigned_from_args]
+        if duplicates:
+            raise TypeError(f"Multiple values for option(s): {', '.join(sorted(duplicates))}")
+
+        merged.update(kwargs)
+        return merged
+
+    def _resolve_options(
+        self,
+        *,
+        legacy_args: tuple,
+        kwargs: dict,
+        param_order: list[str],
+        defaults: dict,
+        bool_keys: tuple[str, ...] = (),
+    ) -> dict:
+        options = self._merge_options(
+            legacy_args=legacy_args,
+            kwargs=kwargs,
+            param_order=param_order,
+            defaults=defaults,
+        )
+        for key in bool_keys:
+            options[key] = bool(options.get(key))
+        return options
+
+    def _resolve_track_options(self, legacy_args: tuple, kwargs: dict) -> dict:
+        return self._resolve_options(
+            legacy_args=legacy_args,
+            kwargs=kwargs,
+            param_order=self._TRACK_OPTION_ORDER,
+            defaults=self._TRACK_OPTION_DEFAULTS,
+            bool_keys=("spotify_metadata",),
+        )
+
+    def _resolve_album_options(self, legacy_args: tuple, kwargs: dict) -> dict:
+        return self._resolve_options(
+            legacy_args=legacy_args,
+            kwargs=kwargs,
+            param_order=self._ALBUM_OPTION_ORDER,
+            defaults=self._ALBUM_OPTION_DEFAULTS,
+            bool_keys=("spotify_metadata",),
+        )
+
+    def _resolve_playlist_options(self, legacy_args: tuple, kwargs: dict) -> dict:
+        return self._resolve_options(
+            legacy_args=legacy_args,
+            kwargs=kwargs,
+            param_order=self._PLAYLIST_OPTION_ORDER,
+            defaults=self._PLAYLIST_OPTION_DEFAULTS,
+        )
+
+    def _resolve_spotify_playlist_options(self, legacy_args: tuple, kwargs: dict) -> dict:
+        return self._resolve_options(
+            legacy_args=legacy_args,
+            kwargs=kwargs,
+            param_order=self._SPOTIFY_PLAYLIST_OPTION_ORDER,
+            defaults=self._SPOTIFY_PLAYLIST_OPTION_DEFAULTS,
+            bool_keys=("spotify_metadata",),
+        )
+
+    def _resolve_smart_options(self, legacy_args: tuple, kwargs: dict) -> dict:
+        return self._resolve_options(
+            legacy_args=legacy_args,
+            kwargs=kwargs,
+            param_order=self._SMART_OPTION_ORDER,
+            defaults=self._SMART_OPTION_DEFAULTS,
+        )
+
+    def _report_track_download_error(self, error: Exception, current_ids) -> None:
+        error_status = ErrorObject(ids=IDs(deezer=current_ids), error=str(error))
+        summary = SummaryObject(
+            failed_tracks=[FailedTrackObject(track=trackCbObject(title=f"Track ID {current_ids}"), reason=str(error))],
+            total_failed=1
+        )
+        error_status.summary = summary
+        callback_obj = TrackCallbackObject(
+            track=trackCbObject(title=f"Track ID {current_ids}", ids=IDs(deezer=current_ids)),
+            status_info=error_status
+        )
+        report_progress(reporter=self.progress_reporter, callback_obj=callback_obj)
+
+    def _get_track_with_fallback(self, track_id, link_track):
         try:
-            # Default: Get standardized Deezer track object for tagging
-            track_obj = API.get_track(ids)
-        except (NoDataApi, MarketAvailabilityError) as e:
-            # Try to get fallback track information
-            infos = self.__gw_api.get_song_data(ids)
+            return API.get_track(track_id), track_id
+        except (NoDataApi, MarketAvailabilityError) as error:
+            infos = self.__gw_api.get_song_data(track_id)
             if "FALLBACK" not in infos:
-                report_error(e, ids, link_track)
-                raise TrackNotFound(link_track) from e
+                self._report_track_download_error(error, track_id)
+                raise TrackNotFound(link_track) from error
 
             fallback_id = infos['FALLBACK']['SNG_ID']
             try:
-                # Try again with fallback ID
                 track_obj = API.get_track(fallback_id)
                 if not track_obj or not track_obj.available:
                     raise MarketAvailabilityError(f"Fallback track {fallback_id} not available.")
-                # Update the ID to use the fallback
-                ids = fallback_id
-            except (NoDataApi, MarketAvailabilityError) as e_fallback:
-                report_error(e_fallback, fallback_id, link_track)
-                raise TrackNotFound(url=link_track, message=str(e_fallback)) from e_fallback
+                return track_obj, fallback_id
+            except (NoDataApi, MarketAvailabilityError) as fallback_error:
+                self._report_track_download_error(fallback_error, fallback_id)
+                raise TrackNotFound(url=link_track, message=str(fallback_error)) from fallback_error
+
+    @staticmethod
+    def _track_title_match(source_title: str, candidate: dict) -> float:
+        return max(
+            _sim(_remove_parentheses(source_title), _remove_parentheses(candidate.get('title', ''))),
+            _sim(_remove_parentheses(source_title), _remove_parentheses(candidate.get('title_short', '')))
+        )
+
+    def _find_deezer_track_via_isrc(
+        self,
+        *,
+        spo_isrc: str,
+        spo_title: str,
+        spo_album_title: str,
+        spo_tracknum: int,
+    ) -> str | None:
+        if not spo_isrc:
+            return None
+
+        try:
+            dz = API.get_track_json(f"isrc:{spo_isrc}")
+        except Exception:
+            return None
+
+        if not dz or not dz.get('id'):
+            return None
+
+        tn = (dz.get('track_position') or dz.get('track_number') or 0)
+        title_match = self._track_title_match(spo_title, dz)
+        album_match = _sim(spo_album_title, (dz.get('album') or {}).get('title', ''))
+        t_isrc = (dz.get('isrc') or '').upper()
+
+        if t_isrc and t_isrc == spo_isrc and title_match >= 0.90 and album_match >= 0.90 and tn == spo_tracknum:
+            return str(dz.get('id'))
+        return None
+
+    def _find_deezer_track_via_search(
+        self,
+        *,
+        spo_title: str,
+        spo_main_artist: str,
+        spo_album_title: str,
+        spo_tracknum: int,
+        spo_isrc: str,
+    ) -> str | None:
+        query = f'"track:\'{spo_title}\' artist:\'{spo_main_artist}\' album:\'{spo_album_title}\'"'
+        try:
+            candidates = API.search_tracks_raw(query, limit=5)
+        except Exception:
+            return None
+
+        for cand in candidates:
+            if self._track_title_match(spo_title, cand) < 0.90:
+                continue
+            c_id = cand.get('id')
+            if not c_id:
+                continue
+            try:
+                dzc = API.get_track_json(str(c_id))
+            except Exception:
+                continue
+
+            tn = (dzc.get('track_position') or dzc.get('track_number') or 0)
+            t_isrc = (dzc.get('isrc') or '').upper()
+            if tn == spo_tracknum and spo_isrc and t_isrc == spo_isrc:
+                return str(c_id)
+        return None
+
+    def _find_deezer_album_via_upc(self, *, spo_upc: str, spo_album_title: str) -> str | None:
+        if not spo_upc:
+            return None
+
+        try:
+            dz_album = API.get_album_json(f"upc:{spo_upc}")
+        except Exception:
+            return None
+
+        if dz_album.get('id') and _sim(spo_album_title, dz_album.get('title', '')) >= 0.90:
+            return str(dz_album.get('id'))
+        return None
+
+    def _find_deezer_album_via_search(
+        self,
+        *,
+        spo_album_title: str,
+        spo_main_artist: str,
+        spo_upc: str,
+    ) -> str | None:
+        query = f'"{spo_album_title}" {spo_main_artist}'.strip()
+        try:
+            candidates = API.search_albums_raw(query, limit=5)
+        except Exception:
+            return None
+
+        for cand in candidates:
+            if _sim(spo_album_title, cand.get('title', '')) < 0.90:
+                continue
+            c_id = cand.get('id')
+            if not c_id:
+                continue
+            try:
+                dzc = API.get_album_json(str(c_id))
+            except Exception:
+                continue
+            upc = str(dzc.get('upc') or '').strip().lstrip('0')
+            if spo_upc and upc and spo_upc != upc:
+                continue
+            return str(c_id)
+        return None
+
+    def download_trackdee(self, link_track, *args, **kwargs) -> Track:
+        options = self._resolve_track_options(args, kwargs)
+        output_dir = options["output_dir"]
+        quality_download = options["quality_download"]
+        recursive_quality = options["recursive_quality"]
+        recursive_download = options["recursive_download"]
+        not_interface = options["not_interface"]
+        custom_dir_format = options["custom_dir_format"]
+        custom_track_format = options["custom_track_format"]
+        pad_tracks = options["pad_tracks"]
+        initial_retry_delay = options["initial_retry_delay"]
+        retry_delay_increase = options["retry_delay_increase"]
+        max_retries = options["max_retries"]
+        convert_to = options["convert_to"]
+        bitrate = options["bitrate"]
+        save_cover = options["save_cover"]
+        market = options["market"]
+        playlist_context = options["playlist_context"]
+        artist_separator = options["artist_separator"]
+        spotify_metadata = options["spotify_metadata"]
+        pad_number_width = options["pad_number_width"]
+
+        link_is_valid(link_track)
+        ids = get_ids(link_track)
+        track_obj, ids = self._get_track_with_fallback(ids, link_track)
         
         if not track_obj:
             e = TrackNotFound(f"Could not retrieve track metadata for {link_track}")
-            report_error(e, ids, link_track)
+            self._report_track_download_error(e, ids)
             raise e
 
         # If requested and provided via context, override with Spotify metadata for tagging
@@ -259,40 +579,39 @@ class DeeLogin:
             return track
         except Exception as e:
             logger.error(f"Failed to download track: {str(e)}")
-            report_error(e, ids, link_track)
+            self._report_track_download_error(e, ids)
             raise e
 
-    def download_albumdee(
-        self, link_album,
-        output_dir=stock_output,
-        quality_download=stock_quality,
-        recursive_quality=stock_recursive_quality,
-        recursive_download=stock_recursive_download,
-        not_interface=stock_not_interface,
-        make_zip=stock_zip,
-        custom_dir_format=None,
-        custom_track_format=None,
-        pad_tracks=True,
-        initial_retry_delay=30,
-        retry_delay_increase=30,
-        max_retries=5,
-        convert_to=None,
-        bitrate=None,
-        save_cover=stock_save_cover,
-        market=stock_market,
-        playlist_context=None,
-        artist_separator: str = "; ",
-        spotify_metadata: bool = False,
-        spotify_album_obj=None,
-        pad_number_width: int | str = 'auto'
-    ) -> Album:
+    def download_albumdee(self, link_album, *args, **kwargs) -> Album:
+        options = self._resolve_album_options(args, kwargs)
+        output_dir = options["output_dir"]
+        quality_download = options["quality_download"]
+        recursive_quality = options["recursive_quality"]
+        recursive_download = options["recursive_download"]
+        not_interface = options["not_interface"]
+        make_zip = options["make_zip"]
+        custom_dir_format = options["custom_dir_format"]
+        custom_track_format = options["custom_track_format"]
+        pad_tracks = options["pad_tracks"]
+        initial_retry_delay = options["initial_retry_delay"]
+        retry_delay_increase = options["retry_delay_increase"]
+        max_retries = options["max_retries"]
+        convert_to = options["convert_to"]
+        bitrate = options["bitrate"]
+        save_cover = options["save_cover"]
+        market = options["market"]
+        playlist_context = options["playlist_context"]
+        artist_separator = options["artist_separator"]
+        spotify_metadata = options["spotify_metadata"]
+        spotify_album_obj = options["spotify_album_obj"]
+        pad_number_width = options["pad_number_width"]
 
         link_is_valid(link_album)
         ids = get_ids(link_album)
 
         def report_error(e, current_ids, _url):
-            error_status = errorObject(ids=IDs(deezer=current_ids), error=str(e))
-            callback_obj = albumCallbackObject(
+            error_status = ErrorObject(ids=IDs(deezer=current_ids), error=str(e))
+            callback_obj = AlbumCallbackObject(
                 album=albumCbObject(title=f"Album ID {current_ids}", ids=IDs(deezer=current_ids)),
                 status_info=error_status
             )
@@ -350,27 +669,26 @@ class DeeLogin:
             report_error(e, ids, link_album)
             raise e
 
-    def download_playlistdee(
-        self, link_playlist,
-        output_dir=stock_output,
-        quality_download=stock_quality,
-        recursive_quality=stock_recursive_quality,
-        recursive_download=stock_recursive_download,
-        not_interface=stock_not_interface,
-        make_zip=stock_zip,
-        custom_dir_format=None,
-        custom_track_format=None,
-        pad_tracks=True,
-        initial_retry_delay=30,
-        retry_delay_increase=30,
-        max_retries=5,
-        convert_to=None,
-        bitrate=None,
-        save_cover=stock_save_cover,
-        market=stock_market,
-        artist_separator: str = "; ",
-        pad_number_width: int | str = 'auto'
-    ) -> Playlist:
+    def download_playlistdee(self, link_playlist, *args, **kwargs) -> Playlist:
+        options = self._resolve_playlist_options(args, kwargs)
+        output_dir = options["output_dir"]
+        quality_download = options["quality_download"]
+        recursive_quality = options["recursive_quality"]
+        recursive_download = options["recursive_download"]
+        not_interface = options["not_interface"]
+        make_zip = options["make_zip"]
+        custom_dir_format = options["custom_dir_format"]
+        custom_track_format = options["custom_track_format"]
+        pad_tracks = options["pad_tracks"]
+        initial_retry_delay = options["initial_retry_delay"]
+        retry_delay_increase = options["retry_delay_increase"]
+        max_retries = options["max_retries"]
+        convert_to = options["convert_to"]
+        bitrate = options["bitrate"]
+        save_cover = options["save_cover"]
+        market = options["market"]
+        artist_separator = options["artist_separator"]
+        pad_number_width = options["pad_number_width"]
 
         link_is_valid(link_playlist)
         ids = get_ids(link_playlist)
@@ -410,22 +728,44 @@ class DeeLogin:
 
         return playlist
 
-    def download_artisttopdee(
-        self, link_artist,
-        output_dir=stock_output,
-        quality_download=stock_quality,
-        recursive_quality=stock_recursive_quality,
-        recursive_download=stock_recursive_download,
-        not_interface=stock_not_interface,
-        custom_dir_format=None,
-        custom_track_format=None,
-        pad_tracks=True,
-        convert_to=None,
-        bitrate=None,
-        save_cover=stock_save_cover,
-        market=stock_market,
-        pad_number_width: int | str = 'auto'
-    ) -> list[Track]:
+    def download_artisttopdee(self, link_artist, *args, **kwargs) -> list[Track]:
+        options = self._merge_options(
+            legacy_args=args,
+            kwargs=kwargs,
+            param_order=[
+                "output_dir", "quality_download", "recursive_quality", "recursive_download",
+                "not_interface", "custom_dir_format", "custom_track_format", "pad_tracks",
+                "convert_to", "bitrate", "save_cover", "market", "pad_number_width"
+            ],
+            defaults={
+                "output_dir": stock_output,
+                "quality_download": stock_quality,
+                "recursive_quality": stock_recursive_quality,
+                "recursive_download": stock_recursive_download,
+                "not_interface": stock_not_interface,
+                "custom_dir_format": None,
+                "custom_track_format": None,
+                "pad_tracks": True,
+                "convert_to": None,
+                "bitrate": None,
+                "save_cover": stock_save_cover,
+                "market": stock_market,
+                "pad_number_width": "auto",
+            },
+        )
+        output_dir = options["output_dir"]
+        quality_download = options["quality_download"]
+        recursive_quality = options["recursive_quality"]
+        recursive_download = options["recursive_download"]
+        not_interface = options["not_interface"]
+        custom_dir_format = options["custom_dir_format"]
+        custom_track_format = options["custom_track_format"]
+        pad_tracks = options["pad_tracks"]
+        convert_to = options["convert_to"]
+        bitrate = options["bitrate"]
+        save_cover = options["save_cover"]
+        market = options["market"]
+        pad_number_width = options["pad_number_width"]
 
         link_is_valid(link_artist)
         ids = get_ids(link_artist)
@@ -469,57 +809,22 @@ class DeeLogin:
         spo_tracknum = int(track_json.get('track_number') or 0)
         spo_artists = track_json.get('artists') or []
         spo_main_artist = (spo_artists[0].get('name') if spo_artists else '') or ''
-
-        try:
-            dz = API.get_track_json(f"isrc:{spo_isrc}")
-            if dz and dz.get('id'):
-                dz_json = dz
-                tn = (dz_json.get('track_position') or dz_json.get('track_number') or 0)
-                title_match = max(
-                    _sim(_remove_parentheses(spo_title), _remove_parentheses(dz_json.get('title', ''))),
-                    _sim(_remove_parentheses(spo_title), _remove_parentheses(dz_json.get('title_short', '')))
-                )
-                album_match = _sim(spo_album_title, (dz_json.get('album') or {}).get('title', ''))
-                t_isrc = (dz_json.get('isrc') or '').upper()
-                # Enforce ISRC match strictly in ISRC lookup path
-                if (
-                    t_isrc and spo_isrc and t_isrc == spo_isrc and
-                    title_match >= 0.90 and album_match >= 0.90 and tn == spo_tracknum
-                ):
-                    return f"https://www.deezer.com/track/{dz_json.get('id')}"
-        except Exception:
-            pass
-        
-        # Fallback: search by title + artist + album
-        query = f'"track:\'{spo_title}\' artist:\'{spo_main_artist}\' album:\'{spo_album_title}\'"'
-        try:
-            candidates = API.search_tracks_raw(query, limit=5)
-        except Exception:
-            candidates = []
-        
-        for cand in candidates:
-            title_match = max(
-                _sim(_remove_parentheses(spo_title), _remove_parentheses(cand.get('title', ''))),
-                _sim(_remove_parentheses(spo_title), _remove_parentheses(cand.get('title_short', '')))
+        deezer_track_id = self._find_deezer_track_via_isrc(
+            spo_isrc=spo_isrc,
+            spo_title=spo_title,
+            spo_album_title=spo_album_title,
+            spo_tracknum=spo_tracknum,
+        )
+        if not deezer_track_id:
+            deezer_track_id = self._find_deezer_track_via_search(
+                spo_title=spo_title,
+                spo_main_artist=spo_main_artist,
+                spo_album_title=spo_album_title,
+                spo_tracknum=spo_tracknum,
+                spo_isrc=spo_isrc,
             )
-            if title_match < 0.90:
-                continue
-            c_id = cand.get('id')
-            if not c_id:
-                continue
-            try:
-                dzc = API.get_track_json(str(c_id))
-            except Exception:
-                continue
-            # Validate using track number and ISRC to be safe
-            tn = (dzc.get('track_position') or dzc.get('track_number') or 0)
-            if tn != spo_tracknum:
-                continue
-            t_isrc = (dzc.get('isrc') or '').upper()
-            # Enforce ISRC strictly in fallback path as well: require present and equal
-            if not spo_isrc or not t_isrc or t_isrc != spo_isrc:
-                continue
-            return f"https://www.deezer.com/track/{c_id}"
+        if deezer_track_id:
+            return f"https://www.deezer.com/track/{deezer_track_id}"
         
         raise TrackNotFound(url=link_track, message=f"Failed to find Deezer equivalent for ISRC {spo_isrc} from Spotify track {link_track}")
 
@@ -561,63 +866,23 @@ class DeeLogin:
         spo_main_artist = (spo_artists[0].get('name') if spo_artists else '') or ''
         external_ids = spotify_album_data.get('external_ids') or {}
         spo_upc = str(external_ids.get('upc') or '').strip().lstrip('0')
-        
-        # Try UPC first
-        if spo_upc:
-            try:
-                dz_album = API.get_album_json(f"upc:{spo_upc}")
-                if dz_album.get('id') and _sim(spo_album_title, dz_album.get('title', '')) >= 0.90:
-                    return f"https://www.deezer.com/album/{dz_album.get('id')}"
-            except Exception:
-                pass
-        
-        # Fallback: title search
-        q = f'"{spo_album_title}" {spo_main_artist}'.strip()
-        try:
-            candidates = API.search_albums_raw(q, limit=5)
-        except Exception:
-            candidates = []
 
-        for cand in candidates:
-            if _sim(spo_album_title, cand.get('title', '')) < 0.90:
-                continue
-            c_id = cand.get('id')
-            if not c_id:
-                continue
-            try:
-                dzc = API.get_album_json(str(c_id))
-            except Exception:
-                continue
-            upc = str(dzc.get('upc') or '').strip().lstrip('0')
-            if spo_upc and upc and spo_upc != upc:
-                continue
-            link_dee = f"https://www.deezer.com/album/{c_id}"
-            return link_dee
+        deezer_album_id = self._find_deezer_album_via_upc(spo_upc=spo_upc, spo_album_title=spo_album_title)
+        if not deezer_album_id:
+            deezer_album_id = self._find_deezer_album_via_search(
+                spo_album_title=spo_album_title,
+                spo_main_artist=spo_main_artist,
+                spo_upc=spo_upc,
+            )
+        if deezer_album_id:
+            return f"https://www.deezer.com/album/{deezer_album_id}"
 
         raise AlbumNotFound(f"Failed to convert Spotify album link {link_album} to a Deezer link after all attempts.")
 
-    def download_trackspo(
-        self, link_track,
-        output_dir=stock_output,
-        quality_download=stock_quality,
-        recursive_quality=stock_recursive_quality,
-        recursive_download=stock_recursive_download,
-        not_interface=stock_not_interface,
-        custom_dir_format=None,
-        custom_track_format=None,
-        pad_tracks=True,
-        initial_retry_delay=30,
-        retry_delay_increase=30,
-        max_retries=5,
-        convert_to=None,
-        bitrate=None,
-        save_cover=stock_save_cover,
-        market=stock_market,
-        playlist_context=None,
-        artist_separator: str = "; ",
-        spotify_metadata: bool = False,
-        pad_number_width: int | str = 'auto'
-    ) -> Track:
+    def download_trackspo(self, link_track, *args, **kwargs) -> Track:
+        options = self._resolve_track_options(args, kwargs)
+        playlist_context = options["playlist_context"]
+        spotify_metadata = options["spotify_metadata"]
 
         link_dee = self.convert_spoty_to_dee_link_track(link_track)
 
@@ -635,59 +900,17 @@ class DeeLogin:
             except Exception:
                 pass
 
-        track = self.download_trackdee(
-            link_dee,
-            output_dir=output_dir,
-            quality_download=quality_download,
-            recursive_quality=recursive_quality,
-            recursive_download=recursive_download,
-            not_interface=not_interface,
-            custom_dir_format=custom_dir_format,
-            custom_track_format=custom_track_format,
-            pad_tracks=pad_tracks,
-            initial_retry_delay=initial_retry_delay,
-            retry_delay_increase=retry_delay_increase,
-            max_retries=max_retries,
-            convert_to=convert_to,
-            bitrate=bitrate,
-            save_cover=save_cover,
-            market=market,
-            playlist_context=playlist_context,
-            artist_separator=artist_separator,
-            spotify_metadata=spotify_metadata,
-            pad_number_width=pad_number_width
-        )
+        dee_track_options = dict(options)
+        dee_track_options["playlist_context"] = playlist_context
+        return self.download_trackdee(link_dee, **dee_track_options)
 
-        return track
-
-    def download_albumspo(
-        self, link_album,
-        output_dir=stock_output,
-        quality_download=stock_quality,
-        recursive_quality=stock_recursive_quality,
-        recursive_download=stock_recursive_download,
-        not_interface=stock_not_interface,
-        make_zip=stock_zip,
-        custom_dir_format=None,
-        custom_track_format=None,
-        pad_tracks=True,
-        initial_retry_delay=30,
-        retry_delay_increase=30,
-        max_retries=5,
-        convert_to=None,
-        bitrate=None,
-        save_cover=stock_save_cover,
-        market=stock_market,
-        playlist_context=None,
-        artist_separator: str = "; ",
-        spotify_metadata: bool = False,
-        spotify_album_obj=None,
-        pad_number_width: int | str = 'auto'
-    ) -> Album:
+    def download_albumspo(self, link_album, *args, **kwargs) -> Album:
+        options = self._resolve_album_options(args, kwargs)
+        spotify_metadata = options["spotify_metadata"]
+        resolved_spotify_album_obj = options["spotify_album_obj"]
 
         link_dee = self.convert_spoty_to_dee_link_album(link_album)
 
-        resolved_spotify_album_obj = spotify_album_obj
         if spotify_metadata:
             # Only initialize Spotify session when we actually need Spotify metadata
             self._ensure_spotify_session()
@@ -701,52 +924,203 @@ class DeeLogin:
             except Exception:
                 resolved_spotify_album_obj = None
 
-        album = self.download_albumdee(
-            link_dee, output_dir,
-            quality_download, recursive_quality,
-            recursive_download, not_interface,
-            make_zip, 
-            custom_dir_format=custom_dir_format,
-            custom_track_format=custom_track_format,
-            pad_tracks=pad_tracks,
-            initial_retry_delay=initial_retry_delay,
-            retry_delay_increase=retry_delay_increase,
-            max_retries=max_retries,
-            convert_to=convert_to,
-            bitrate=bitrate,
-            save_cover=save_cover,
-            market=market,
-            playlist_context=playlist_context,
-            artist_separator=artist_separator,
-            spotify_metadata=spotify_metadata,
-            spotify_album_obj=resolved_spotify_album_obj,
-            pad_number_width=pad_number_width
+        dee_album_options = dict(options)
+        dee_album_options["spotify_album_obj"] = resolved_spotify_album_obj
+        return self.download_albumdee(link_dee, **dee_album_options)
+
+    def _enrich_playlist_items_with_full_tracks(self, playlist_json: dict) -> None:
+        try:
+            items = playlist_json.get('tracks', {}).get('items', []) or []
+            track_ids = [it.get('track', {}).get('id') for it in items if it.get('track') and it['track'].get('id')]
+            full = Spo.get_tracks(track_ids) if track_ids else {'tracks': []}
+            full_list = full.get('tracks') or []
+            full_by_id = {t.get('id'): t for t in full_list if t and t.get('id')}
+            playlist_json['tracks']['items'] = [
+                {'track': full_by_id.get((it.get('track') or {}).get('id'))}
+                if full_by_id.get((it.get('track') or {}).get('id'))
+                else it
+                for it in items
+            ]
+        except Exception:
+            # If enrichment fails, continue with minimal ids
+            return
+
+    def _build_playlist_track_callback(self, track_info: dict):
+        from deezspot.models.callback.playlist import (
+            artistTrackPlaylistObject,
+            albumTrackPlaylistObject,
+            artistAlbumTrackPlaylistObject,
+            trackPlaylistObject
         )
 
-        return album
+        track_artists = [
+            artistTrackPlaylistObject(name=artist['name'], ids=IDs(spotify=artist.get('id')))
+            for artist in track_info.get('artists', [])
+        ]
 
-    def download_playlistspo(
-        self, link_playlist,
-        output_dir=stock_output,
-        quality_download=stock_quality,
-        recursive_quality=stock_recursive_quality,
-        recursive_download=stock_recursive_download,
-        not_interface=stock_not_interface,
-        make_zip=stock_zip,
-        custom_dir_format=None,
-        custom_track_format=None,
-        pad_tracks=True,
-        initial_retry_delay=30,
-        retry_delay_increase=30,
-        max_retries=5,
-        convert_to=None,
-        bitrate=None,
-        save_cover=stock_save_cover,
-        market=stock_market,
-        artist_separator: str = "; ",
-        spotify_metadata: bool = False,
-        pad_number_width: int | str = 'auto'
-    ) -> Playlist:
+        album_info = track_info.get('album', {})
+        album_images = [
+            {"url": img.get('url'), "height": img.get('height'), "width": img.get('width')}
+            for img in album_info.get('images', [])
+        ]
+        album_artists = [
+            artistAlbumTrackPlaylistObject(name=artist.get('name'), ids=IDs(spotify=artist.get('id')))
+            for artist in album_info.get('artists', [])
+        ]
+
+        release_date = album_info.get('release_date')
+        release_parts = release_date.split('-') if release_date else []
+        release_date_obj = {
+            "year": int(release_parts[0]) if len(release_parts) > 0 else 0,
+            "month": int(release_parts[1]) if len(release_parts) > 1 else 0,
+            "day": int(release_parts[2]) if len(release_parts) > 2 else 0,
+        }
+
+        album_obj = albumTrackPlaylistObject(
+            title=album_info.get('name', 'Unknown Album'),
+            ids=IDs(spotify=album_info.get('id')),
+            images=album_images,
+            artists=album_artists,
+            album_type=album_info.get('album_type', ''),
+            release_date=release_date_obj,
+            total_tracks=album_info.get('total_tracks', 0)
+        )
+
+        return trackPlaylistObject(
+            title=track_info.get('name', 'Unknown Track'),
+            artists=track_artists,
+            album=album_obj,
+            duration_ms=track_info.get('duration_ms', 0),
+            explicit=track_info.get('explicit', False),
+            ids=IDs(
+                spotify=track_info.get('id'),
+                isrc=track_info.get('external_ids', {}).get('isrc')
+            ),
+            disc_number=track_info.get('disc_number', 1),
+            track_number=track_info.get('track_number', 0)
+        )
+
+    def _build_playlist_callback_tracks(self, playlist_json: dict) -> list:
+        tracks = []
+        for item in playlist_json.get('tracks', {}).get('items', []):
+            track_info = item.get('track')
+            if not track_info:
+                continue
+            tracks.append(self._build_playlist_track_callback(track_info))
+        return tracks
+
+    @staticmethod
+    def _playlist_track_for_callback(playlist_obj: playlistCbObject, index: int, fallback_title: str, fallback_artist: str):
+        if index - 1 < len(playlist_obj.tracks):
+            return playlist_obj.tracks[index - 1]
+        return trackCbObject(title=fallback_title, artists=[artistTrackObject(name=fallback_artist)])
+
+    def _process_spotify_playlist_item(
+        self,
+        *,
+        item: dict,
+        index: int,
+        total_tracks: int,
+        playlist_json: dict,
+        playlist_obj: playlistCbObject,
+        options: dict
+    ):
+        is_track = item.get('track')
+        if not is_track:
+            reason = "Playlist item was not a valid track object or is not available in your region."
+            unknown_track = trackCbObject(title="Unknown Skipped Item", artists=[artistTrackObject(name="")])
+            failed_track = Track(
+                tags={'music': 'Unknown Skipped Item', 'artist': 'Unknown'},
+                song_path=None, file_format=None, quality=None, link=None, ids=None
+            )
+            failed_track.success = False
+            failed_track.error_message = reason
+            return failed_track, 'failed', unknown_track, reason
+
+        track_info = is_track
+        track_name = track_info.get('name', 'Unknown Track')
+        artist_name = track_info['artists'][0]['name'] if track_info.get('artists') else 'Unknown Artist'
+        link_track = track_info.get('external_urls', {}).get('spotify')
+        if not link_track:
+            track_id = track_info.get('id')
+            if track_id:
+                link_track = f"https://open.spotify.com/track/{track_id}"
+
+        if not link_track:
+            logger.warning(f"The track \"{track_name}\" is not available on Spotify :(")
+            return None, 'ignored', None, None
+
+        callback_track = self._playlist_track_for_callback(playlist_obj, index, track_name, artist_name)
+
+        try:
+            playlist_ctx = {
+                'json_data': playlist_json,
+                'track_number': index,
+                'total_tracks': total_tracks,
+                'spotify_url': link_track
+            }
+            downloaded_track = self.download_trackspo(
+                link_track,
+                output_dir=options["output_dir"],
+                quality_download=options["quality_download"],
+                recursive_quality=options["recursive_quality"],
+                recursive_download=options["recursive_download"],
+                not_interface=options["not_interface"],
+                custom_dir_format=options["custom_dir_format"],
+                custom_track_format=options["custom_track_format"],
+                pad_tracks=options["pad_tracks"],
+                initial_retry_delay=options["initial_retry_delay"],
+                retry_delay_increase=options["retry_delay_increase"],
+                max_retries=options["max_retries"],
+                convert_to=options["convert_to"],
+                bitrate=options["bitrate"],
+                save_cover=options["save_cover"],
+                market=options["market"],
+                playlist_context=playlist_ctx,
+                artist_separator=options["artist_separator"],
+                spotify_metadata=False,
+                pad_number_width=options["pad_number_width"]
+            )
+
+            if getattr(downloaded_track, 'was_skipped', False):
+                return downloaded_track, 'skipped', callback_track, None
+            if downloaded_track.success:
+                return downloaded_track, 'success', callback_track, None
+            return downloaded_track, 'failed', callback_track, getattr(downloaded_track, 'error_message', 'Unknown reason')
+        except Exception as error:
+            logger.error(f"Track '{track_name}' in playlist '{playlist_obj.title}' failed: {error}")
+            current_track_object = Track({'music': track_name, 'artist': artist_name}, None, None, None, link_track, None)
+            current_track_object.success = False
+            current_track_object.error_message = str(error)
+            return current_track_object, 'failed', callback_track, str(error)
+
+    @staticmethod
+    def _append_playlist_status(
+        *,
+        status: str,
+        callback_track,
+        reason: str | None,
+        successful_tracks_cb: list,
+        skipped_tracks_cb: list,
+        failed_tracks_cb: list
+    ) -> None:
+        if status == 'success':
+            successful_tracks_cb.append(callback_track)
+        elif status == 'skipped':
+            skipped_tracks_cb.append(callback_track)
+        elif status == 'failed' and callback_track is not None:
+            failed_tracks_cb.append(FailedTrackObject(track=callback_track, reason=reason or 'Unknown reason'))
+
+    @staticmethod
+    def _warn_if_playlist_count_mismatch(playlist_title: str, total_from_spotify: int, processed_count: int) -> None:
+        if total_from_spotify != processed_count:
+            logger.warning(
+                f"Playlist '{playlist_title}' metadata reports {total_from_spotify} tracks, "
+                f"but only {processed_count} were processed. This might indicate that not all pages of tracks were retrieved from Spotify."
+            )
+
+    def download_playlistspo(self, link_playlist, *args, **kwargs) -> Playlist:
+        options = self._resolve_spotify_playlist_options(args, kwargs)
 
         link_is_valid(link_playlist)
         ids = get_ids(link_playlist)
@@ -758,99 +1132,9 @@ class DeeLogin:
         # Ensure we keep the playlist ID for callbacks
         if 'id' not in playlist_json:
             playlist_json['id'] = ids
-        
-        # Enrich items with full track objects so downstream expects Web API shape
-        try:
-            items = playlist_json.get('tracks', {}).get('items', []) or []
-            track_ids = [it.get('track', {}).get('id') for it in items if it.get('track') and it['track'].get('id')]
-            full = Spo.get_tracks(track_ids) if track_ids else {'tracks': []}
-            full_list = full.get('tracks') or []
-            full_by_id = {t.get('id'): t for t in full_list if t and t.get('id')}
-            new_items = []
-            for it in items:
-                tid = (it.get('track') or {}).get('id')
-                full_track = full_by_id.get(tid)
-                if full_track:
-                    new_items.append({'track': full_track})
-                else:
-                    new_items.append(it)
-            playlist_json['tracks']['items'] = new_items
-        except Exception:
-            # If enrichment fails, continue with minimal ids
-            pass
 
-        
-        # Extract track metadata for playlist callback object
-        playlist_tracks_for_callback = []
-        for item in playlist_json['tracks']['items']:
-            if not item.get('track'):
-                continue
-            
-            track_info = item['track']
-            
-            # Import the correct playlist-specific objects
-            from deezspot.models.callback.playlist import (
-                artistTrackPlaylistObject, 
-                albumTrackPlaylistObject,
-                artistAlbumTrackPlaylistObject,
-                trackPlaylistObject
-            )
-            
-            # Create artists with proper type
-            track_artists = [artistTrackPlaylistObject(
-                name=artist['name'],
-                ids=IDs(spotify=artist.get('id'))
-            ) for artist in track_info.get('artists', [])]
-            
-            # Process album with proper type and include images
-            album_info = track_info.get('album', {})
-            album_images = []
-            if album_info.get('images'):
-                album_images = [
-                    {"url": img.get('url'), "height": img.get('height'), "width": img.get('width')}
-                    for img in album_info.get('images', [])
-                ]
-            
-            # Process album artists
-            album_artists = []
-            if album_info.get('artists'):
-                album_artists = [
-                    artistAlbumTrackPlaylistObject(
-                        name=artist.get('name'),
-                        ids=IDs(spotify=artist.get('id'))
-                    )
-                    for artist in album_info.get('artists', [])
-                ]
-            
-            album_obj = albumTrackPlaylistObject(
-                title=album_info.get('name', 'Unknown Album'),
-                ids=IDs(spotify=album_info.get('id')),
-                images=album_images,
-                artists=album_artists,
-                album_type=album_info.get('album_type', ''),
-                release_date={
-                    "year": int(album_info.get('release_date', '0').split('-')[0]) if album_info.get('release_date') else 0,
-                    "month": int(album_info.get('release_date', '0-0').split('-')[1]) if album_info.get('release_date') and len(album_info.get('release_date').split('-')) > 1 else 0,
-                    "day": int(album_info.get('release_date', '0-0-0').split('-')[2]) if album_info.get('release_date') and len(album_info.get('release_date').split('-')) > 2 else 0
-                },
-                total_tracks=album_info.get('total_tracks', 0)
-            )
-            
-            # Create track with proper playlist-specific type
-            track_obj = trackPlaylistObject(
-                title=track_info.get('name', 'Unknown Track'),
-                artists=track_artists,
-                album=album_obj,
-                duration_ms=track_info.get('duration_ms', 0),
-                explicit=track_info.get('explicit', False),
-                ids=IDs(
-                    spotify=track_info.get('id'), 
-                    isrc=track_info.get('external_ids', {}).get('isrc')
-                ),
-                disc_number=track_info.get('disc_number', 1),
-                track_number=track_info.get('track_number', 0)
-            )
-            playlist_tracks_for_callback.append(track_obj)
+        self._enrich_playlist_items_with_full_tracks(playlist_json)
+        playlist_tracks_for_callback = self._build_playlist_callback_tracks(playlist_json)
         
         playlist_obj = playlistCbObject(
             title=playlist_json['name'],
@@ -859,8 +1143,8 @@ class DeeLogin:
             tracks=playlist_tracks_for_callback  # Populate tracks array with track objects
         )
 
-        status_obj_init = initializingObject(ids=playlist_obj.ids)
-        callback_obj_init = playlistCallbackObject(playlist=playlist_obj, status_info=status_obj_init)
+        status_obj_init = InitializingObject(ids=playlist_obj.ids)
+        callback_obj_init = PlaylistCallbackObject(playlist=playlist_obj, status_info=status_obj_init)
         report_progress(reporter=self.progress_reporter, callback_obj=callback_obj_init)
 
         total_tracks = playlist_json['tracks']['total']
@@ -872,89 +1156,60 @@ class DeeLogin:
         failed_tracks_cb = []
         skipped_tracks_cb = []
 
+        download_options = {
+            "output_dir": options["output_dir"],
+            "quality_download": options["quality_download"],
+            "recursive_quality": options["recursive_quality"],
+            "recursive_download": options["recursive_download"],
+            "not_interface": options["not_interface"],
+            "custom_dir_format": options["custom_dir_format"],
+            "custom_track_format": options["custom_track_format"],
+            "pad_tracks": options["pad_tracks"],
+            "initial_retry_delay": options["initial_retry_delay"],
+            "retry_delay_increase": options["retry_delay_increase"],
+            "max_retries": options["max_retries"],
+            "convert_to": options["convert_to"],
+            "bitrate": options["bitrate"],
+            "save_cover": options["save_cover"],
+            "market": options["market"],
+            "artist_separator": options["artist_separator"],
+            "pad_number_width": options["pad_number_width"],
+        }
+
         for index, item in enumerate(playlist_tracks, 1):
-            is_track = item.get('track')
-            if not is_track:
-                logger.warning(f"Skipping an item in playlist {playlist_obj.title} as it's not a valid track (likely unavailable in region).")
-                unknown_track = trackCbObject(title="Unknown Skipped Item", artists=[artistTrackObject(name="")])
-                reason = "Playlist item was not a valid track object or is not available in your region."
-                
-                failed_tracks_cb.append(failedTrackObject(track=unknown_track, reason=reason))
-                
-                # Create a placeholder for the failed item
-                failed_track = Track(
-                    tags={'music': 'Unknown Skipped Item', 'artist': 'Unknown'},
-                    song_path=None, file_format=None, quality=None, link=None, ids=None
-                )
-                failed_track.success = False
-                failed_track.error_message = reason
-                tracks.append(failed_track)
-                continue
+            downloaded_track, status, callback_track, reason = self._process_spotify_playlist_item(
+                item=item,
+                index=index,
+                total_tracks=total_tracks,
+                playlist_json=playlist_json,
+                playlist_obj=playlist_obj,
+                options=download_options
+            )
 
-            track_info = is_track
-            track_name = track_info.get('name', 'Unknown Track')
-            artist_name = track_info['artists'][0]['name'] if track_info.get('artists') else 'Unknown Artist'
-            link_track = track_info.get('external_urls', {}).get('spotify')
-            if not link_track:
-                tid = track_info.get('id')
-                if tid:
-                    link_track = f"https://open.spotify.com/track/{tid}"
-
-            if not link_track:
-                logger.warning(f"The track \"{track_name}\" is not available on Spotify :(")
-                continue
-
-            try:
-                playlist_ctx = {
-                    'json_data': playlist_json,
-                    'track_number': index,
-                    'total_tracks': total_tracks,
-                    'spotify_url': link_track
-                }
-                downloaded_track = self.download_trackspo(
-                    link_track,
-                    output_dir=output_dir, quality_download=quality_download,
-                    recursive_quality=recursive_quality, recursive_download=recursive_download,
-                    not_interface=not_interface, custom_dir_format=custom_dir_format,
-                    custom_track_format=custom_track_format, pad_tracks=pad_tracks,
-                    initial_retry_delay=initial_retry_delay, retry_delay_increase=retry_delay_increase,
-                    max_retries=max_retries, convert_to=convert_to, bitrate=bitrate,
-                    save_cover=save_cover, market=market, playlist_context=playlist_ctx,
-                    artist_separator=artist_separator, spotify_metadata=False,
-                    pad_number_width=pad_number_width
-                )
+            if downloaded_track is not None:
                 tracks.append(downloaded_track)
-                
-                # After download, check status for summary
-                if getattr(downloaded_track, 'was_skipped', False):
-                    skipped_tracks_cb.append(playlist_obj.tracks[index-1])
-                elif downloaded_track.success:
-                    successful_tracks_cb.append(playlist_obj.tracks[index-1])
-                else:
-                    failed_tracks_cb.append(failedTrackObject(track=playlist_obj.tracks[index-1], reason=getattr(downloaded_track, 'error_message', 'Unknown reason')))
-            except Exception as e:
-                logger.error(f"Track '{track_name}' in playlist '{playlist_obj.title}' failed: {e}")
-                failed_tracks_cb.append(failedTrackObject(track=playlist_obj.tracks[index-1], reason=str(e)))
-                current_track_object = Track({'music': track_name, 'artist': artist_name}, None, None, None, link_track, None)
-                current_track_object.success = False
-                current_track_object.error_message = str(e)
-                tracks.append(current_track_object)
+
+            if status == 'ignored':
+                continue
+            self._append_playlist_status(
+                status=status,
+                callback_track=callback_track,
+                reason=reason,
+                successful_tracks_cb=successful_tracks_cb,
+                skipped_tracks_cb=skipped_tracks_cb,
+                failed_tracks_cb=failed_tracks_cb,
+            )
 
         # Finalize summary and callbacks (existing logic continues below in file)...
 
         total_from_spotify = playlist_json['tracks']['total']
         processed_count = len(successful_tracks_cb) + len(skipped_tracks_cb) + len(failed_tracks_cb)
-
-        if total_from_spotify != processed_count:
-            logger.warning(
-                f"Playlist '{playlist_obj.title}' metadata reports {total_from_spotify} tracks, "
-                f"but only {processed_count} were processed. This might indicate that not all pages of tracks were retrieved from Spotify."
-            )
+        self._warn_if_playlist_count_mismatch(playlist_obj.title, total_from_spotify, processed_count)
 
         from deezspot.libutils.write_m3u import write_tracks_to_m3u
-        m3u_path = write_tracks_to_m3u(output_dir, playlist_obj.title, tracks)
+        m3u_path = write_tracks_to_m3u(options["output_dir"], playlist_obj.title, tracks)
 
-        summary_obj = summaryObject(
+        summary_obj = SummaryObject(
             successful_tracks=successful_tracks_cb,
             skipped_tracks=skipped_tracks_cb,
             failed_tracks=failed_tracks_cb,
@@ -964,37 +1219,64 @@ class DeeLogin:
         )
         # Include m3u path in summary and callback
         summary_obj.m3u_path = m3u_path
-        status_obj_done = doneObject(ids=playlist_obj.ids, summary=summary_obj)
-        callback_obj_done = playlistCallbackObject(playlist=playlist_obj, status_info=status_obj_done)
+        status_obj_done = DoneObject(ids=playlist_obj.ids, summary=summary_obj)
+        callback_obj_done = PlaylistCallbackObject(playlist=playlist_obj, status_info=status_obj_done)
         report_progress(reporter=self.progress_reporter, callback_obj=callback_obj_done)
 
-        if make_zip:
-            zip_name = f"{output_dir}/playlist_{sanitize_name(playlist_obj.title)}.zip"
+        if options["make_zip"]:
+            zip_name = f"{options['output_dir']}/playlist_{sanitize_name(playlist_obj.title)}.zip"
             create_zip(tracks, zip_name=zip_name)
             playlist.zip_path = zip_name
 
         return playlist
 
-    def download_name(
-        self, artist, song,
-        output_dir=stock_output,
-        quality_download=stock_quality,
-        recursive_quality=stock_recursive_quality,
-        recursive_download=stock_recursive_download,
-        not_interface=stock_not_interface,
-        custom_dir_format=None,
-        custom_track_format=None,
-        initial_retry_delay=30,
-        retry_delay_increase=30,
-        max_retries=5,
-        pad_tracks=True,
-        convert_to=None,
-        bitrate=None,
-        save_cover=stock_save_cover,
-        market=stock_market,
-        artist_separator: str = "; ",
-        pad_number_width: int | str = 'auto'
-    ) -> Track:
+    def download_name(self, artist, song, *args, **kwargs) -> Track:
+        options = self._merge_options(
+            legacy_args=args,
+            kwargs=kwargs,
+            param_order=[
+                "output_dir", "quality_download", "recursive_quality", "recursive_download",
+                "not_interface", "custom_dir_format", "custom_track_format", "initial_retry_delay",
+                "retry_delay_increase", "max_retries", "pad_tracks", "convert_to", "bitrate",
+                "save_cover", "market", "artist_separator", "pad_number_width"
+            ],
+            defaults={
+                "output_dir": stock_output,
+                "quality_download": stock_quality,
+                "recursive_quality": stock_recursive_quality,
+                "recursive_download": stock_recursive_download,
+                "not_interface": stock_not_interface,
+                "custom_dir_format": None,
+                "custom_track_format": None,
+                "initial_retry_delay": 30,
+                "retry_delay_increase": 30,
+                "max_retries": 5,
+                "pad_tracks": True,
+                "convert_to": None,
+                "bitrate": None,
+                "save_cover": stock_save_cover,
+                "market": stock_market,
+                "artist_separator": "; ",
+                "pad_number_width": "auto",
+            },
+        )
+        output_dir = options["output_dir"]
+        quality_download = options["quality_download"]
+        recursive_quality = options["recursive_quality"]
+        recursive_download = options["recursive_download"]
+        not_interface = options["not_interface"]
+        custom_dir_format = options["custom_dir_format"]
+        custom_track_format = options["custom_track_format"]
+        initial_retry_delay = options["initial_retry_delay"]
+        retry_delay_increase = options["retry_delay_increase"]
+        max_retries = options["max_retries"]
+        pad_tracks = options["pad_tracks"]
+        convert_to = options["convert_to"]
+        bitrate = options["bitrate"]
+        save_cover = options["save_cover"]
+        market = options["market"]
+        artist_separator = options["artist_separator"]
+        pad_number_width = options["pad_number_width"]
 
         query = f"track:{song} artist:{artist}"
         search = self.__spo.search(query)
@@ -1030,26 +1312,51 @@ class DeeLogin:
 
         return track
 
-    def download_episode(
-        self,
-        link_episode,
-        output_dir=stock_output,
-        quality_download=stock_quality,
-        recursive_quality=stock_recursive_quality,
-        recursive_download=stock_recursive_download,
-        not_interface=stock_not_interface,
-        custom_dir_format=None,
-        custom_track_format=None,
-        pad_tracks=True,
-        initial_retry_delay=30,
-        retry_delay_increase=30,
-        max_retries=5,
-        convert_to=None,
-        bitrate=None,
-        save_cover=stock_save_cover,
-        market=stock_market,
-        artist_separator: str = "; "
-    ) -> Episode:
+    def download_episode(self, link_episode, *args, **kwargs) -> Episode:
+        options = self._merge_options(
+            legacy_args=args,
+            kwargs=kwargs,
+            param_order=[
+                "output_dir", "quality_download", "recursive_quality", "recursive_download",
+                "not_interface", "custom_dir_format", "custom_track_format", "pad_tracks",
+                "initial_retry_delay", "retry_delay_increase", "max_retries", "convert_to",
+                "bitrate", "save_cover", "market", "artist_separator"
+            ],
+            defaults={
+                "output_dir": stock_output,
+                "quality_download": stock_quality,
+                "recursive_quality": stock_recursive_quality,
+                "recursive_download": stock_recursive_download,
+                "not_interface": stock_not_interface,
+                "custom_dir_format": None,
+                "custom_track_format": None,
+                "pad_tracks": True,
+                "initial_retry_delay": 30,
+                "retry_delay_increase": 30,
+                "max_retries": 5,
+                "convert_to": None,
+                "bitrate": None,
+                "save_cover": stock_save_cover,
+                "market": stock_market,
+                "artist_separator": "; ",
+            },
+        )
+        output_dir = options["output_dir"]
+        quality_download = options["quality_download"]
+        recursive_quality = options["recursive_quality"]
+        recursive_download = options["recursive_download"]
+        not_interface = options["not_interface"]
+        custom_dir_format = options["custom_dir_format"]
+        custom_track_format = options["custom_track_format"]
+        pad_tracks = options["pad_tracks"]
+        initial_retry_delay = options["initial_retry_delay"]
+        retry_delay_increase = options["retry_delay_increase"]
+        max_retries = options["max_retries"]
+        convert_to = options["convert_to"]
+        bitrate = options["bitrate"]
+        save_cover = options["save_cover"]
+        market = options["market"]
+        artist_separator = options["artist_separator"]
         
         logger.warning("Episode download logic is not fully refactored and might not work as expected with new reporting.")
         _ = (
@@ -1101,26 +1408,8 @@ class DeeLogin:
 
         return episode
         
-    def download_smart(
-        self, link,
-        output_dir=stock_output,
-        quality_download=stock_quality,
-        recursive_quality=stock_recursive_quality,
-        recursive_download=stock_recursive_download,
-        not_interface=stock_not_interface,
-        make_zip=stock_zip,
-        custom_dir_format=None,
-        custom_track_format=None,
-        pad_tracks=True,
-        initial_retry_delay=30,
-        retry_delay_increase=30,
-        max_retries=5,
-        convert_to=None,
-        bitrate=None,
-        save_cover=stock_save_cover,
-        market=stock_market,
-        artist_separator: str = "; "
-    ) -> Smart:
+    def download_smart(self, link, *args, **kwargs) -> Smart:
+        options = self._resolve_smart_options(args, kwargs)
 
         link_is_valid(link)
         link = what_kind(link)
@@ -1139,46 +1428,85 @@ class DeeLogin:
         # For now, the individual download functions will do the reporting.
 
         if "track/" in link:
+            track_options = {
+                key: options[key]
+                for key in (
+                    "output_dir",
+                    "quality_download",
+                    "recursive_quality",
+                    "recursive_download",
+                    "not_interface",
+                    "custom_dir_format",
+                    "custom_track_format",
+                    "pad_tracks",
+                    "initial_retry_delay",
+                    "retry_delay_increase",
+                    "max_retries",
+                    "convert_to",
+                    "bitrate",
+                    "save_cover",
+                    "market",
+                    "artist_separator",
+                )
+            }
             func = self.download_trackspo if source == 'spotify' else self.download_trackdee
-            track = func(
-                link, output_dir=output_dir, quality_download=quality_download,
-                recursive_quality=recursive_quality, recursive_download=recursive_download,
-                not_interface=not_interface, custom_dir_format=custom_dir_format,
-                custom_track_format=custom_track_format, pad_tracks=pad_tracks,
-                initial_retry_delay=initial_retry_delay, retry_delay_increase=retry_delay_increase,
-                max_retries=max_retries, convert_to=convert_to, bitrate=bitrate,
-                save_cover=save_cover, market=market, artist_separator=artist_separator
-            )
+            track = func(link, **track_options)
             smart.type = "track"
             smart.track = track
 
         elif "album/" in link:
+            collection_options = {
+                key: options[key]
+                for key in (
+                    "output_dir",
+                    "quality_download",
+                    "recursive_quality",
+                    "recursive_download",
+                    "not_interface",
+                    "make_zip",
+                    "custom_dir_format",
+                    "custom_track_format",
+                    "pad_tracks",
+                    "initial_retry_delay",
+                    "retry_delay_increase",
+                    "max_retries",
+                    "convert_to",
+                    "bitrate",
+                    "save_cover",
+                    "market",
+                    "artist_separator",
+                )
+            }
             func = self.download_albumspo if source == 'spotify' else self.download_albumdee
-            album = func(
-                link, output_dir=output_dir, quality_download=quality_download,
-                recursive_quality=recursive_quality, recursive_download=recursive_download,
-                not_interface=not_interface, make_zip=make_zip,
-                custom_dir_format=custom_dir_format, custom_track_format=custom_track_format,
-                pad_tracks=pad_tracks, initial_retry_delay=initial_retry_delay,
-                retry_delay_increase=retry_delay_increase, max_retries=max_retries,
-                convert_to=convert_to, bitrate=bitrate, save_cover=save_cover,
-                market=market, artist_separator=artist_separator
-            )
+            album = func(link, **collection_options)
             smart.type = "album"
             smart.album = album
 
         elif "playlist/" in link:
+            collection_options = {
+                key: options[key]
+                for key in (
+                    "output_dir",
+                    "quality_download",
+                    "recursive_quality",
+                    "recursive_download",
+                    "not_interface",
+                    "make_zip",
+                    "custom_dir_format",
+                    "custom_track_format",
+                    "pad_tracks",
+                    "initial_retry_delay",
+                    "retry_delay_increase",
+                    "max_retries",
+                    "convert_to",
+                    "bitrate",
+                    "save_cover",
+                    "market",
+                    "artist_separator",
+                )
+            }
             func = self.download_playlistspo if source == 'spotify' else self.download_playlistdee
-            playlist = func(
-                link, output_dir=output_dir, quality_download=quality_download,
-                recursive_quality=recursive_quality, recursive_download=recursive_download,
-                not_interface=not_interface, make_zip=make_zip,
-                custom_dir_format=custom_dir_format, custom_track_format=custom_track_format,
-                pad_tracks=pad_tracks, initial_retry_delay=initial_retry_delay,
-                retry_delay_increase=retry_delay_increase, max_retries=max_retries,
-                convert_to=convert_to, bitrate=bitrate, save_cover=save_cover,
-                market=market, artist_separator=artist_separator
-            )
+            playlist = func(link, **collection_options)
             smart.type = "playlist"
             smart.playlist = playlist
 

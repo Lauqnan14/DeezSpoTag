@@ -36,6 +36,10 @@ from deezspot.libutils.utils import (
 )
 from deezspot.libutils.write_m3u import create_m3u_file, append_track_to_m3u
 from deezspot.libutils.metadata_converter import track_object_to_dict, album_object_to_dict
+from deezspot.libutils.download_helpers import (
+    build_song_path_with_preferences,
+    resolve_spotify_summary_media,
+)
 from deezspot.libutils.progress_reporter import (
     report_track_initializing, report_track_skipped, report_track_retrying,
     report_track_realtime_progress, report_track_error, report_track_done,
@@ -53,9 +57,9 @@ from deezspot.libutils.cleanup_utils import (
 from deezspot.libutils.skip_detection import check_track_exists
 from deezspot.models.callback import (
     trackObject, albumTrackObject, playlistTrackObject, artistTrackObject,
-    trackCallbackObject, albumCallbackObject, playlistCallbackObject,
-    initializingObject, skippedObject, retryingObject, realTimeObject, errorObject, doneObject,
-    failedTrackObject, summaryObject,
+    TrackCallbackObject, AlbumCallbackObject, PlaylistCallbackObject,
+    InitializingObject, SkippedObject, RetryingObject, RealTimeObject, ErrorObject, DoneObject,
+    FailedTrackObject, SummaryObject,
     albumObject, artistAlbumObject,
     playlistObject,
     userObject,
@@ -141,54 +145,15 @@ class EasyDw:
         self.__song_quality = self.__c_quality['s_quality']
 
     def __set_song_path(self) -> None:
-        # Retrieve custom formatting strings from preferences, if any.
-        custom_dir_format = getattr(self.__preferences, 'custom_dir_format', None)
-        custom_track_format = getattr(self.__preferences, 'custom_track_format', None)
-        pad_tracks = getattr(self.__preferences, 'pad_tracks', True)
-        # Ensure the separator is available to formatting utils for indexed placeholders
-        self.__song_metadata_dict['artist_separator'] = getattr(self.__preferences, 'artist_separator', '; ')
-        # Determine pad width (supports 'auto' mode)
-        pad_number_width = None
-        try:
-            pnw = getattr(self.__preferences, 'pad_number_width', None)
-            if isinstance(pnw, str) and pnw.lower() == 'auto':
-                total = None
-                if self.__parent == 'album' and hasattr(self.__song_metadata, 'album') and getattr(self.__song_metadata.album, 'total_tracks', None):
-                    total = self.__song_metadata.album.total_tracks
-                elif self.__parent == 'playlist' and hasattr(self.__preferences, 'json_data') and self.__preferences.json_data:
-                    try:
-                        total = self.__preferences.json_data.get('tracks', {}).get('total')
-                    except Exception:
-                        total = None
-                if isinstance(total, int) and total and total > 0:
-                    pad_number_width = max(2, len(str(total)))
-            elif isinstance(pnw, int) and pnw >= 1:
-                pad_number_width = pnw
-        except Exception:
-            pad_number_width = None
-        # Inject playlist placeholders if in playlist context
-        try:
-            if self.__parent == 'playlist' and hasattr(self.__preferences, 'json_data') and self.__preferences.json_data:
-                playlist_data = self.__preferences.json_data
-                playlist_name = None
-                if isinstance(playlist_data, dict):
-                    playlist_name = playlist_data.get('name') or playlist_data.get('title')
-                if not playlist_name and hasattr(playlist_data, 'title'):
-                    playlist_name = getattr(playlist_data, 'title')
-                self.__song_metadata_dict['playlist'] = playlist_name or 'unknown'
-                self.__song_metadata_dict['playlistnum'] = getattr(self.__preferences, 'track_number', None) or 0
-        except Exception:
-            # If playlist info missing, skip silently
-            pass
-        self.__song_path = set_path(
-            self.__song_metadata_dict,
-            self.__output_dir,
-            self.__song_quality,
-            self.__file_format,
-            custom_dir_format=custom_dir_format,
-            custom_track_format=custom_track_format,
-            pad_tracks=pad_tracks,
-            pad_number_width=pad_number_width
+        self.__song_path = build_song_path_with_preferences(
+            set_path_func=set_path,
+            song_metadata_dict=self.__song_metadata_dict,
+            output_dir=self.__output_dir,
+            song_quality=self.__song_quality,
+            file_format=self.__file_format,
+            preferences=self.__preferences,
+            parent=self.__parent,
+            song_metadata=self.__song_metadata,
         )
 
     def __set_episode_path(self) -> None:
@@ -747,7 +712,7 @@ class EasyDw:
             successful_track_list = [track_obj] if self.__c_track.success and not getattr(self.__c_track, 'was_skipped', False) else []
             skipped_track_list = [track_obj] if getattr(self.__c_track, 'was_skipped', False) else []
             
-            summary_obj = summaryObject(
+            summary_obj = SummaryObject(
                 successful_tracks=successful_track_list,
                 skipped_tracks=skipped_track_list,
                 failed_tracks=[],
@@ -857,7 +822,7 @@ class EasyDw:
                 GLOBAL_RETRY_COUNT += 1
                 
                 track_obj = self.__song_metadata
-                status_obj = retryingObject(
+                status_obj = RetryingObject(
                     ids=track_obj.ids,
                     retry_count=retries,
                     seconds_left=retry_delay,
@@ -865,7 +830,7 @@ class EasyDw:
                     convert_to=self.__convert_to,
                     bitrate=self.__bitrate
                 )
-                callback_obj = trackCallbackObject(track=track_obj, status_info=status_obj)
+                callback_obj = TrackCallbackObject(track=track_obj, status_info=status_obj)
                 # Log retry attempt with structured data
                 report_progress(
                     reporter=Download_JOB.progress_reporter,
@@ -1014,13 +979,13 @@ class EasyDw:
             error_message = f"Audio conversion for episode '{episode_title}' failed. Original error: {str(conv_e)}"
             
             track_obj = self.__song_metadata
-            status_obj = errorObject(
+            status_obj = ErrorObject(
                 ids=track_obj.ids,
                 error=error_message,
                 convert_to=self.__convert_to,
                 bitrate=self.__bitrate
             )
-            callback_obj = trackCallbackObject(track=track_obj, status_info=status_obj)
+            callback_obj = TrackCallbackObject(track=track_obj, status_info=status_obj)
             report_progress(
                 reporter=Download_JOB.progress_reporter,
                 callback_obj=callback_obj
@@ -1192,12 +1157,12 @@ class DwAlbum:
             elif track.success:
                 successful_tracks.append(track_obj_for_cb)
             else:
-                failed_tracks.append(failedTrackObject(
+                failed_tracks.append(FailedTrackObject(
                     track=track_obj_for_cb,
                     reason=getattr(track, 'error_message', 'Unknown reason')
                 ))
 
-        summary_obj = summaryObject(
+        summary_obj = SummaryObject(
             successful_tracks=successful_tracks,
             skipped_tracks=skipped_tracks,
             failed_tracks=failed_tracks,
@@ -1207,24 +1172,11 @@ class DwAlbum:
             service=Service.SPOTIFY
         )
         # Compute final quality/bitrate for album summary
-        quality_val = None
-        bitrate_val = None
-        conv = getattr(self.__preferences, 'convert_to', None)
-        if conv:
-            quality_val = conv.lower()
-            br_raw = getattr(self.__preferences, 'bitrate', None)
-            if br_raw:
-                digits = ''.join([c for c in str(br_raw) if c.isdigit()])
-                bitrate_val = f"{digits}k" if digits else None
-        else:
-            quality_val = 'ogg'
-            qkey = (getattr(self.__preferences, 'quality_download', None) or 'NORMAL').upper()
-            if qkey == 'NORMAL':
-                bitrate_val = '96k'
-            elif qkey == 'HIGH':
-                bitrate_val = '160k'
-            elif qkey == 'VERY_HIGH':
-                bitrate_val = '320k'
+        quality_val, bitrate_val = resolve_spotify_summary_media(
+            quality_download=getattr(self.__preferences, 'quality_download', None),
+            convert_to=getattr(self.__preferences, 'convert_to', None),
+            bitrate=getattr(self.__preferences, 'bitrate', None),
+        )
         summary_obj.quality = quality_val
         summary_obj.bitrate = bitrate_val
         
@@ -1347,12 +1299,12 @@ class DwPlaylist:
             elif track.success:
                 successful_tracks_cb.append(track_obj_for_cb)
             else:
-                failed_tracks_cb.append(failedTrackObject(
+                failed_tracks_cb.append(FailedTrackObject(
                     track=track_obj_for_cb,
                     reason=getattr(track, 'error_message', 'Unknown reason')
                 ))
 
-        summary_obj = summaryObject(
+        summary_obj = SummaryObject(
             successful_tracks=successful_tracks_cb,
             skipped_tracks=skipped_tracks_cb,
             failed_tracks=failed_tracks_cb,
@@ -1362,24 +1314,11 @@ class DwPlaylist:
             service=Service.SPOTIFY
         )
         # Compute final quality/bitrate for playlist summary
-        quality_val = None
-        bitrate_val = None
-        conv = getattr(self.__preferences, 'convert_to', None)
-        if conv:
-            quality_val = conv.lower()
-            br_raw = getattr(self.__preferences, 'bitrate', None)
-            if br_raw:
-                digits = ''.join([c for c in str(br_raw) if c.isdigit()])
-                bitrate_val = f"{digits}k" if digits else None
-        else:
-            quality_val = 'ogg'
-            qkey = (getattr(self.__preferences, 'quality_download', None) or 'NORMAL').upper()
-            if qkey == 'NORMAL':
-                bitrate_val = '96k'
-            elif qkey == 'HIGH':
-                bitrate_val = '160k'
-            elif qkey == 'VERY_HIGH':
-                bitrate_val = '320k'
+        quality_val, bitrate_val = resolve_spotify_summary_media(
+            quality_download=getattr(self.__preferences, 'quality_download', None),
+            convert_to=getattr(self.__preferences, 'convert_to', None),
+            bitrate=getattr(self.__preferences, 'bitrate', None),
+        )
         summary_obj.quality = quality_val
         summary_obj.bitrate = bitrate_val
         
@@ -1399,8 +1338,8 @@ class DwEpisode:
         episode_obj = self.__preferences.song_metadata # This is a trackObject
         
         # Build status object
-        status_obj_init = initializingObject(ids=episode_obj.ids)
-        callback_obj_init = trackCallbackObject(track=episode_obj, status_info=status_obj_init)
+        status_obj_init = InitializingObject(ids=episode_obj.ids)
+        callback_obj_init = TrackCallbackObject(track=episode_obj, status_info=status_obj_init)
         report_progress(
             reporter=Download_JOB.progress_reporter,
             callback_obj=callback_obj_init
@@ -1409,8 +1348,8 @@ class DwEpisode:
         episode = EASY_DW(self.__preferences).download_eps()
         
         # Build status object
-        status_obj_done = doneObject(ids=episode_obj.ids)
-        callback_obj_done = trackCallbackObject(track=episode_obj, status_info=status_obj_done)
+        status_obj_done = DoneObject(ids=episode_obj.ids)
+        callback_obj_done = TrackCallbackObject(track=episode_obj, status_info=status_obj_done)
         report_progress(
             reporter=Download_JOB.progress_reporter,
             callback_obj=callback_obj_done

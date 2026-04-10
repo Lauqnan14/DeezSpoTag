@@ -19,7 +19,7 @@ from deezspot.models.download import (
 	Smart,
 	Episode
 )
-from deezspot.models.callback import trackCallbackObject, errorObject
+from deezspot.models.callback import TrackCallbackObject, ErrorObject
 from deezspot.spotloader.__download__ import (
 	DW_TRACK,
 	DW_ALBUM,
@@ -39,6 +39,8 @@ from deezspot.libutils.others_settings import (
 	stock_real_time_multiplier
 )
 from deezspot.libutils.logging_utils import logger, ProgressReporter, report_progress
+
+SPOTIFY_DOMAIN = "spotify.com"
 
 class SpoLogin:
 	def __init__(
@@ -83,6 +85,49 @@ class SpoLogin:
 			logger.error(f"Failed to initialize Spotify session: {str(e)}")
 			raise
 
+	@staticmethod
+	def _apply_collection_preferences(
+		preferences: Preferences,
+		*,
+		recursive_quality,
+		recursive_download,
+		not_interface,
+		make_zip,
+		custom_dir_format,
+		custom_track_format,
+		pad_tracks,
+		initial_retry_delay,
+		retry_delay_increase,
+		max_retries,
+		convert_to,
+		bitrate,
+		save_cover,
+		market,
+		artist_separator,
+		pad_number_width
+	) -> None:
+		preferences.recursive_quality = recursive_quality
+		preferences.recursive_download = recursive_download
+		preferences.not_interface = not_interface
+		preferences.make_zip = make_zip
+		preferences.is_episode = False
+		preferences.custom_dir_format = custom_dir_format
+		preferences.custom_track_format = custom_track_format
+		preferences.pad_tracks = pad_tracks
+		preferences.initial_retry_delay = initial_retry_delay
+		preferences.retry_delay_increase = retry_delay_increase
+		preferences.max_retries = max_retries
+		if convert_to is None:
+			preferences.convert_to = None
+			preferences.bitrate = None
+		else:
+			preferences.convert_to = convert_to
+			preferences.bitrate = bitrate
+		preferences.save_cover = save_cover
+		preferences.market = market
+		preferences.artist_separator = artist_separator
+		preferences.pad_number_width = pad_number_width
+
 	def download_track(
 		self, link_track,
 		output_dir=stock_output,
@@ -112,7 +157,7 @@ class SpoLogin:
 			song_metadata = tracking(ids, market=market)
 			
 			if song_metadata is None:
-				raise Exception(f"Could not retrieve metadata for track {link_track}. It might not be available or an API error occurred.")
+				raise RuntimeError(f"Could not retrieve metadata for track {link_track}. It might not be available or an API error occurred.")
 
 			logger.info(f"Starting download for track: {song_metadata.title} - {artist_separator.join([a.name for a in song_metadata.artists])}")
 
@@ -151,8 +196,8 @@ class SpoLogin:
 		except MarketAvailabilityError as e:
 			logger.error(f"Track download failed due to market availability: {str(e)}")
 			if song_metadata:
-				status_obj = errorObject(ids=song_metadata.ids, error=str(e))
-				callback_obj = trackCallbackObject(track=song_metadata, status_info=status_obj)
+				status_obj = ErrorObject(ids=song_metadata.ids, error=str(e))
+				callback_obj = TrackCallbackObject(track=song_metadata, status_info=status_obj)
 				report_progress(
 					reporter=self.progress_reporter,
 					callback_obj=callback_obj
@@ -162,8 +207,8 @@ class SpoLogin:
 			logger.error(f"Failed to download track: {str(e)}")
 			traceback.print_exc()
 			if song_metadata:
-				status_obj = errorObject(ids=song_metadata.ids, error=str(e))
-				callback_obj = trackCallbackObject(track=song_metadata, status_info=status_obj)
+				status_obj = ErrorObject(ids=song_metadata.ids, error=str(e))
+				callback_obj = TrackCallbackObject(track=song_metadata, status_info=status_obj)
 				report_progress(
 					reporter=self.progress_reporter,
 					callback_obj=callback_obj
@@ -198,11 +243,11 @@ class SpoLogin:
 			ids = get_ids(link_album)
 			album_json = Spo.get_album(ids)
 			if not album_json:
-				raise Exception(f"Could not retrieve album data for {link_album}.")
+				raise RuntimeError(f"Could not retrieve album data for {link_album}.")
 			
 			song_metadata = tracking_album(album_json, market=market)
 			if song_metadata is None:
-				raise Exception(f"Could not process album metadata for {link_album}. It might not be available in the specified market(s) or an API error occurred.")
+				raise RuntimeError(f"Could not process album metadata for {link_album}. It might not be available in the specified market(s) or an API error occurred.")
 
 			logger.info(f"Starting download for album: {song_metadata.title} - {artist_separator.join([a.name for a in song_metadata.artists])}")
 
@@ -215,27 +260,25 @@ class SpoLogin:
 			preferences.output_dir = output_dir
 			preferences.ids = ids
 			preferences.json_data = album_json
-			preferences.recursive_quality = recursive_quality
-			preferences.recursive_download = recursive_download
-			preferences.not_interface = not_interface
-			preferences.make_zip = make_zip
-			preferences.is_episode = False
-			preferences.custom_dir_format = custom_dir_format
-			preferences.custom_track_format = custom_track_format
-			preferences.pad_tracks = pad_tracks
-			preferences.initial_retry_delay = initial_retry_delay
-			preferences.retry_delay_increase = retry_delay_increase
-			preferences.max_retries = max_retries
-			if convert_to is None:
-				preferences.convert_to = None
-				preferences.bitrate = None
-			else:
-				preferences.convert_to = convert_to
-				preferences.bitrate = bitrate
-			preferences.save_cover = save_cover
-			preferences.market = market
-			preferences.artist_separator = artist_separator
-			preferences.pad_number_width = pad_number_width
+			self._apply_collection_preferences(
+				preferences,
+				recursive_quality=recursive_quality,
+				recursive_download=recursive_download,
+				not_interface=not_interface,
+				make_zip=make_zip,
+				custom_dir_format=custom_dir_format,
+				custom_track_format=custom_track_format,
+				pad_tracks=pad_tracks,
+				initial_retry_delay=initial_retry_delay,
+				retry_delay_increase=retry_delay_increase,
+				max_retries=max_retries,
+				convert_to=convert_to,
+				bitrate=bitrate,
+				save_cover=save_cover,
+				market=market,
+				artist_separator=artist_separator,
+				pad_number_width=pad_number_width,
+			)
 
 			album = DW_ALBUM(preferences).dw()
 
@@ -278,7 +321,7 @@ class SpoLogin:
 			song_metadata = []
 			playlist_json = Spo.get_playlist(ids)
 			if not playlist_json:
-				raise Exception(f"Could not retrieve playlist data for {link_playlist}.")
+				raise RuntimeError(f"Could not retrieve playlist data for {link_playlist}.")
 			
 			logger.info(f"Starting download for playlist: {playlist_json.get('name', 'Unknown')}")
 
@@ -327,27 +370,25 @@ class SpoLogin:
 			preferences.ids = ids
 			preferences.json_data = playlist_json
 			preferences.playlist_tracks_json = playlist_tracks_data
-			preferences.recursive_quality = recursive_quality
-			preferences.recursive_download = recursive_download
-			preferences.not_interface = not_interface
-			preferences.make_zip = make_zip
-			preferences.is_episode = False
-			preferences.custom_dir_format = custom_dir_format
-			preferences.custom_track_format = custom_track_format
-			preferences.pad_tracks = pad_tracks
-			preferences.initial_retry_delay = initial_retry_delay
-			preferences.retry_delay_increase = retry_delay_increase
-			preferences.max_retries = max_retries
-			if convert_to is None:
-				preferences.convert_to = None
-				preferences.bitrate = None
-			else:
-				preferences.convert_to = convert_to
-				preferences.bitrate = bitrate
-			preferences.save_cover = save_cover
-			preferences.market = market
-			preferences.artist_separator = artist_separator
-			preferences.pad_number_width = pad_number_width
+			self._apply_collection_preferences(
+				preferences,
+				recursive_quality=recursive_quality,
+				recursive_download=recursive_download,
+				not_interface=not_interface,
+				make_zip=make_zip,
+				custom_dir_format=custom_dir_format,
+				custom_track_format=custom_track_format,
+				pad_tracks=pad_tracks,
+				initial_retry_delay=initial_retry_delay,
+				retry_delay_increase=retry_delay_increase,
+				max_retries=max_retries,
+				convert_to=convert_to,
+				bitrate=bitrate,
+				save_cover=save_cover,
+				market=market,
+				artist_separator=artist_separator,
+				pad_number_width=pad_number_width,
+			)
 			
 			playlist = DW_PLAYLIST(preferences).dw()
 
@@ -386,11 +427,11 @@ class SpoLogin:
 			ids = get_ids(link_episode)
 			episode_json = Spo.get_episode(ids)
 			if not episode_json:
-				raise Exception(f"Could not retrieve episode data for {link_episode} from API.")
+				raise RuntimeError(f"Could not retrieve episode data for {link_episode} from API.")
 
 			episode_metadata = tracking_episode(ids, market=market)
 			if episode_metadata is None:
-				raise Exception(f"Could not process episode metadata for {link_episode}. It might not be available in the specified market(s) or an API error occurred.")
+				raise RuntimeError(f"Could not process episode metadata for {link_episode}. It might not be available in the specified market(s) or an API error occurred.")
 			
 			logger.info(f"Starting download for episode: {episode_metadata.title} - {episode_metadata.album.title}")
 
@@ -467,7 +508,7 @@ class SpoLogin:
 			albums = discography.get('items', [])
 			if not albums:
 				logger.warning("No albums found for the provided artist")
-				raise Exception("No albums found for the provided artist.")
+				raise RuntimeError("No albums found for the provided artist.")
 				
 			logger.info(f"Starting download for artist discography: {discography.get('name', 'Unknown')}")
 			
@@ -533,14 +574,15 @@ class SpoLogin:
 			link = what_kind(link)
 			smart = Smart()
 
-			if "spotify.com" in link:
-				source = "https://spotify.com"
+			source = link
+			if SPOTIFY_DOMAIN in link:
+				source = f"https://{SPOTIFY_DOMAIN}"
 			smart.source = source
 			
 			logger.info(f"Starting smart download for: {link}")
 
 			if "track/" in link:
-				if not "spotify.com" in link:
+				if SPOTIFY_DOMAIN not in link:
 					raise InvalidLink(link)
 				track = self.download_track(
 					link,
@@ -567,7 +609,7 @@ class SpoLogin:
 				smart.track = track
 
 			elif "album/" in link:
-				if not "spotify.com" in link:
+				if SPOTIFY_DOMAIN not in link:
 					raise InvalidLink(link)
 				album = self.download_album(
 					link,
@@ -595,7 +637,7 @@ class SpoLogin:
 				smart.album = album
 
 			elif "playlist/" in link:
-				if not "spotify.com" in link:
+				if SPOTIFY_DOMAIN not in link:
 					raise InvalidLink(link)
 				playlist = self.download_playlist(
 					link,
@@ -623,7 +665,7 @@ class SpoLogin:
 				smart.playlist = playlist
 
 			elif "episode/" in link:
-				if not "spotify.com" in link:
+				if SPOTIFY_DOMAIN not in link:
 					raise InvalidLink(link)
 				episode = self.download_episode(
 					link,

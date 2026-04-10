@@ -891,12 +891,14 @@ DESCRIPTOR.message_types_by_name["LoginResponse"] = _LOGINRESPONSE
 DESCRIPTOR.enum_types_by_name["LoginError"] = _LOGINERROR
 _sym_db.RegisterFileDescriptor(DESCRIPTOR)
 
+LOGIN5_MODULE_NAME = "spotify.login5.v3.login5_pb2"
+
 Challenges = _reflection.GeneratedProtocolMessageType(
     "Challenges",
     (_message.Message, ),
     {
         "DESCRIPTOR": _CHALLENGES,
-        "__module__": "spotify.login5.v3.login5_pb2"
+        "__module__": LOGIN5_MODULE_NAME
         # @@protoc_insertion_point(class_scope:spotify.login5.v3.Challenges)
     },
 )
@@ -907,7 +909,7 @@ Challenge = _reflection.GeneratedProtocolMessageType(
     (_message.Message, ),
     {
         "DESCRIPTOR": _CHALLENGE,
-        "__module__": "spotify.login5.v3.login5_pb2"
+        "__module__": LOGIN5_MODULE_NAME
         # @@protoc_insertion_point(class_scope:spotify.login5.v3.Challenge)
     },
 )
@@ -918,7 +920,7 @@ ChallengeSolutions = _reflection.GeneratedProtocolMessageType(
     (_message.Message, ),
     {
         "DESCRIPTOR": _CHALLENGESOLUTIONS,
-        "__module__": "spotify.login5.v3.login5_pb2"
+        "__module__": LOGIN5_MODULE_NAME
         # @@protoc_insertion_point(class_scope:spotify.login5.v3.ChallengeSolutions)
     },
 )
@@ -929,7 +931,7 @@ ChallengeSolution = _reflection.GeneratedProtocolMessageType(
     (_message.Message, ),
     {
         "DESCRIPTOR": _CHALLENGESOLUTION,
-        "__module__": "spotify.login5.v3.login5_pb2"
+        "__module__": LOGIN5_MODULE_NAME
         # @@protoc_insertion_point(class_scope:spotify.login5.v3.ChallengeSolution)
     },
 )
@@ -940,7 +942,7 @@ LoginRequest = _reflection.GeneratedProtocolMessageType(
     (_message.Message, ),
     {
         "DESCRIPTOR": _LOGINREQUEST,
-        "__module__": "spotify.login5.v3.login5_pb2"
+        "__module__": LOGIN5_MODULE_NAME
         # @@protoc_insertion_point(class_scope:spotify.login5.v3.LoginRequest)
     },
 )
@@ -951,7 +953,7 @@ LoginOk = _reflection.GeneratedProtocolMessageType(
     (_message.Message, ),
     {
         "DESCRIPTOR": _LOGINOK,
-        "__module__": "spotify.login5.v3.login5_pb2"
+        "__module__": LOGIN5_MODULE_NAME
         # @@protoc_insertion_point(class_scope:spotify.login5.v3.LoginOk)
     },
 )
@@ -962,7 +964,7 @@ LoginResponse = _reflection.GeneratedProtocolMessageType(
     (_message.Message, ),
     {
         "DESCRIPTOR": _LOGINRESPONSE,
-        "__module__": "spotify.login5.v3.login5_pb2"
+        "__module__": LOGIN5_MODULE_NAME
         # @@protoc_insertion_point(class_scope:spotify.login5.v3.LoginResponse)
     },
 )

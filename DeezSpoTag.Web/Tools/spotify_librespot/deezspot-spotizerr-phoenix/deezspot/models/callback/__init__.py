@@ -11,16 +11,16 @@ from .track import trackObject, artistTrackObject, albumTrackObject, playlistTra
 from .playlist import playlistObject, trackPlaylistObject, albumTrackPlaylistObject, artistTrackPlaylistObject 
 from .callbacks import (
     BaseStatusObject, 
-    initializingObject, 
-    skippedObject, 
-    retryingObject, 
-    realTimeObject, 
-    errorObject, 
-    doneObject,
-    summaryObject,
-    failedTrackObject,
-    trackCallbackObject, 
-    albumCallbackObject, 
-    playlistCallbackObject
+    InitializingObject, 
+    SkippedObject, 
+    RetryingObject, 
+    RealTimeObject, 
+    ErrorObject, 
+    DoneObject,
+    SummaryObject,
+    FailedTrackObject,
+    TrackCallbackObject, 
+    AlbumCallbackObject, 
+    PlaylistCallbackObject
 ) 
 from .user import userObject

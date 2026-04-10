@@ -6,6 +6,10 @@ from deezspot.libutils.utils import sanitize_name
 from deezspot.libutils.logging_utils import logger
 from deezspot.models.download import Track
 
+M3U_HEADER = "#EXTM3U\n"
+UNKNOWN_ARTIST = "Unknown Artist"
+UNKNOWN_TITLE = "Unknown Title"
+
 
 def create_m3u_file(output_dir: str, playlist_name: str) -> str:
     """
@@ -19,7 +23,7 @@ def create_m3u_file(output_dir: str, playlist_name: str) -> str:
     # Always ensure header exists (idempotent)
     if not os.path.exists(m3u_path):
         with open(m3u_path, "w", encoding="utf-8") as m3u_file:
-            m3u_file.write("#EXTM3U\n")
+            m3u_file.write(M3U_HEADER)
         logger.debug(f"Created m3u playlist file: {m3u_path}")
     return m3u_path
 
@@ -29,7 +33,7 @@ def ensure_m3u_header(m3u_path: str) -> None:
     if not os.path.exists(m3u_path):
         os.makedirs(os.path.dirname(m3u_path), exist_ok=True)
         with open(m3u_path, "w", encoding="utf-8") as m3u_file:
-            m3u_file.write("#EXTM3U\n")
+            m3u_file.write(M3U_HEADER)
 
 
 # Prefer the actual file that exists on disk; if the stored path doesn't exist,
@@ -69,8 +73,8 @@ def _get_track_duration_seconds(track: Track) -> int:
 def _get_track_info(track: Track) -> tuple:
     try:
         if hasattr(track, 'tags') and track.tags:
-            artist = track.tags.get('artist', 'Unknown Artist')
-            title = track.tags.get('music', track.tags.get('title', 'Unknown Title'))
+            artist = track.tags.get('artist', UNKNOWN_ARTIST)
+            title = track.tags.get('music', track.tags.get('title', UNKNOWN_TITLE))
             return artist, title
         elif hasattr(track, 'song_metadata'):
             sep = ", "
@@ -79,13 +83,13 @@ def _get_track_info(track: Track) -> tuple:
             if hasattr(track.song_metadata, 'artists') and track.song_metadata.artists:
                 artist = sep.join([a.name for a in track.song_metadata.artists])
             else:
-                artist = 'Unknown Artist'
-            title = getattr(track.song_metadata, 'title', 'Unknown Title')
+                artist = UNKNOWN_ARTIST
+            title = getattr(track.song_metadata, 'title', UNKNOWN_TITLE)
             return artist, title
         else:
-            return 'Unknown Artist', 'Unknown Title'
+            return UNKNOWN_ARTIST, UNKNOWN_TITLE
     except (AttributeError, TypeError):
-        return 'Unknown Artist', 'Unknown Title'
+        return UNKNOWN_ARTIST, UNKNOWN_TITLE
 
 
 def _read_m3u_entries(m3u_path: str) -> List[tuple]:
@@ -126,7 +130,7 @@ def _write_m3u_entries(m3u_path: str, entries: List[tuple]) -> None:
     # Ensure folder exists
     os.makedirs(os.path.dirname(m3u_path), exist_ok=True)
     with open(m3u_path, "w", encoding="utf-8") as m3u_file:
-        m3u_file.write("#EXTM3U\n")
+        m3u_file.write(M3U_HEADER)
         for extinf, path in entries:
             # Skip empty placeholders
             if not path and not extinf:

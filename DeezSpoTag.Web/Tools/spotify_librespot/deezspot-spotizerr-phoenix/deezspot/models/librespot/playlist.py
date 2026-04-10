@@ -7,6 +7,42 @@ from .types import ExternalUrls, _str, _int
 from .track import Track as TrackModel
 
 
+def _user_like_from_dict(obj: Any, default_type: str = "user") -> Dict[str, Any]:
+	if not isinstance(obj, dict):
+		return {
+			"id": None,
+			"type": default_type,
+			"uri": None,
+			"display_name": None,
+			"external_urls": ExternalUrls(),
+		}
+	return {
+		"id": _str(obj.get("id")),
+		"type": _str(obj.get("type")) or default_type,
+		"uri": _str(obj.get("uri")),
+		"display_name": _str(obj.get("display_name")),
+		"external_urls": ExternalUrls.from_dict(obj.get("external_urls", {})),
+	}
+
+
+def _user_like_to_dict(
+	*,
+	id_value: Optional[str],
+	type_value: str,
+	uri_value: Optional[str],
+	display_name_value: Optional[str],
+	external_urls_value: ExternalUrls,
+) -> Dict[str, Any]:
+	out = {
+		"id": id_value,
+		"type": type_value,
+		"uri": uri_value,
+		"display_name": display_name_value,
+		"external_urls": external_urls_value.to_dict(),
+	}
+	return {k: v for k, v in out.items() if v not in (None, {}, [], "")}
+
+
 @dataclass
 class UserMini:
 	id: Optional[str] = None
@@ -17,25 +53,16 @@ class UserMini:
 
 	@staticmethod
 	def from_dict(obj: Any) -> "UserMini":
-		if not isinstance(obj, dict):
-			return UserMini()
-		return UserMini(
-			id=_str(obj.get("id")),
-			type=_str(obj.get("type")) or "user",
-			uri=_str(obj.get("uri")),
-			display_name=_str(obj.get("display_name")),
-			external_urls=ExternalUrls.from_dict(obj.get("external_urls", {})),
-		)
+		return UserMini(**_user_like_from_dict(obj))
 
 	def to_dict(self) -> Dict[str, Any]:
-		out = {
-			"id": self.id,
-			"type": self.type,
-			"uri": self.uri,
-			"display_name": self.display_name,
-			"external_urls": self.external_urls.to_dict(),
-		}
-		return {k: v for k, v in out.items() if v not in (None, {}, [], "")}
+		return _user_like_to_dict(
+			id_value=self.id,
+			type_value=self.type,
+			uri_value=self.uri,
+			display_name_value=self.display_name,
+			external_urls_value=self.external_urls,
+		)
 
 
 @dataclass
@@ -141,25 +168,16 @@ class Owner:
 
 	@staticmethod
 	def from_dict(obj: Any) -> "Owner":
-		if not isinstance(obj, dict):
-			return Owner()
-		return Owner(
-			id=_str(obj.get("id")),
-			type=_str(obj.get("type")) or "user",
-			uri=_str(obj.get("uri")),
-			display_name=_str(obj.get("display_name")),
-			external_urls=ExternalUrls.from_dict(obj.get("external_urls", {})),
-		)
+		return Owner(**_user_like_from_dict(obj))
 
 	def to_dict(self) -> Dict[str, Any]:
-		out = {
-			"id": self.id,
-			"type": self.type,
-			"uri": self.uri,
-			"display_name": self.display_name,
-			"external_urls": self.external_urls.to_dict(),
-		}
-		return {k: v for k, v in out.items() if v not in (None, {}, [], "")}
+		return _user_like_to_dict(
+			id_value=self.id,
+			type_value=self.type,
+			uri_value=self.uri,
+			display_name_value=self.display_name,
+			external_urls_value=self.external_urls,
+		)
 
 
 @dataclass

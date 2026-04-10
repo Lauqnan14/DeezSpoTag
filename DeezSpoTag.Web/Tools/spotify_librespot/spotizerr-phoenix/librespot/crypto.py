@@ -296,6 +296,26 @@ class Shannon:
         self.gen_konst()
         self.nbuf = 0
 
+    def _process_pending_bytes(
+        self,
+        buffer: bytearray,
+        i: int,
+        n: int,
+        *,
+        decrypt_first: bool,
+    ) -> tuple[int, int]:
+        while self.nbuf != 0 and n != 0:
+            if decrypt_first:
+                buffer[i] ^= (self.sbuf >> (32 - self.nbuf)) & 0xff
+                self.mbuf ^= (buffer[i] & 0xff) << (32 - self.nbuf)
+            else:
+                self.mbuf ^= (buffer[i] & 0xff) << (32 - self.nbuf)
+                buffer[i] ^= (self.sbuf >> (32 - self.nbuf)) & 0xff
+            i += 1
+            self.nbuf -= 8
+            n -= 1
+        return i, n
+
     def encrypt(self, buffer: bytes, n: int = None) -> bytes:
         if n is None:
             return self.encrypt(buffer, len(buffer))
@@ -304,12 +324,7 @@ class Shannon:
         j: int
         t: int
         if self.nbuf != 0:
-            while self.nbuf != 0 and n != 0:
-                self.mbuf ^= (buffer[i] & 0xff) << (32 - self.nbuf)
-                buffer[i] ^= (self.sbuf >> (32 - self.nbuf)) & 0xff
-                i += 1
-                self.nbuf -= 8
-                n -= 1
+            i, n = self._process_pending_bytes(buffer, i, n, decrypt_first=False)
             if self.nbuf != 0:
                 return b""
             self.mac_func(self.mbuf)
@@ -332,12 +347,7 @@ class Shannon:
             self.cycle()
             self.mbuf = 0
             self.nbuf = 32
-            while self.nbuf != 0 and n != 0:
-                self.mbuf ^= (buffer[i] & 0xff) << (32 - self.nbuf)
-                buffer[i] ^= (self.sbuf >> (32 - self.nbuf)) & 0xff
-                i += 1
-                self.nbuf -= 8
-                n -= 1
+            i, n = self._process_pending_bytes(buffer, i, n, decrypt_first=False)
         return bytes(buffer)
 
     def decrypt(self, buffer: bytes, n: int = None) -> bytes:
@@ -348,12 +358,7 @@ class Shannon:
         j: int
         t: int
         if self.nbuf != 0:
-            while self.nbuf != 0 and n != 0:
-                buffer[i] ^= (self.sbuf >> (32 - self.nbuf)) & 0xff
-                self.mbuf ^= (buffer[i] & 0xff) << (32 - self.nbuf)
-                i += 1
-                self.nbuf -= 8
-                n -= 1
+            i, n = self._process_pending_bytes(buffer, i, n, decrypt_first=True)
             if self.nbuf != 0:
                 return b""
             self.mac_func(self.mbuf)
@@ -376,12 +381,7 @@ class Shannon:
             self.cycle()
             self.mbuf = 0
             self.nbuf = 32
-            while self.nbuf != 0 and n != 0:
-                buffer[i] ^= (self.sbuf >> (32 - self.nbuf)) & 0xff
-                self.mbuf ^= (buffer[i] & 0xff) << (32 - self.nbuf)
-                i += 1
-                self.nbuf -= 8
-                n -= 1
+            i, n = self._process_pending_bytes(buffer, i, n, decrypt_first=True)
         return bytes(buffer)
 
     def finish(self, n: int) -> bytes:

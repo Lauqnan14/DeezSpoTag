@@ -8,17 +8,17 @@ from dataclasses import asdict
 
 from deezspot.models.callback.callbacks import (
     BaseStatusObject, 
-    initializingObject, 
-    skippedObject, 
-    retryingObject, 
-    realTimeObject, 
-    errorObject, 
-    doneObject,
-    summaryObject,
-    failedTrackObject,
-    trackCallbackObject, 
-    albumCallbackObject, 
-    playlistCallbackObject
+    InitializingObject, 
+    SkippedObject, 
+    RetryingObject, 
+    RealTimeObject, 
+    ErrorObject, 
+    DoneObject,
+    SummaryObject,
+    FailedTrackObject,
+    TrackCallbackObject, 
+    AlbumCallbackObject, 
+    PlaylistCallbackObject
 )
 from deezspot.models.callback.track import trackObject, albumTrackObject, playlistTrackObject, artistTrackObject
 from deezspot.models.callback.album import albumObject
@@ -168,18 +168,18 @@ def _remove_nulls(data):
 
 def report_progress(
     reporter: Optional["ProgressReporter"],
-    callback_obj: Union[trackCallbackObject, albumCallbackObject, playlistCallbackObject]
+    callback_obj: Union[TrackCallbackObject, AlbumCallbackObject, PlaylistCallbackObject]
 ):
     """
     Reports progress using a standardized callback object.
     
     Args:
         reporter: The ProgressReporter to use for reporting
-        callback_obj: A callback object of type trackCallbackObject, albumCallbackObject, or playlistCallbackObject
+        callback_obj: A callback object of type TrackCallbackObject, AlbumCallbackObject, or PlaylistCallbackObject
     """
     # Validate the callback object type
-    if not isinstance(callback_obj, (trackCallbackObject, albumCallbackObject, playlistCallbackObject)):
-        raise TypeError(f"callback_obj must be of type trackCallbackObject, albumCallbackObject, or playlistCallbackObject, got {type(callback_obj)}")
+    if not isinstance(callback_obj, (TrackCallbackObject, AlbumCallbackObject, PlaylistCallbackObject)):
+        raise TypeError(f"callback_obj must be of type TrackCallbackObject, AlbumCallbackObject, or PlaylistCallbackObject, got {type(callback_obj)}")
     
     # Convert the callback object to a dictionary and filter out null values
     report_dict = _remove_nulls(asdict(callback_obj))

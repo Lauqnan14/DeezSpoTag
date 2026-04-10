@@ -70,8 +70,9 @@ from librespot.structure import SubListener
 class ApiClient(Closeable):
     """ """
     logger = logging.getLogger("Librespot:ApiClient")
+    CONTENT_TYPE_PROTOBUF = "application/x-protobuf"
     __base_url: str
-    __client_token_str: str = None
+    __client_token_str: typing.Optional[str] = None
     __session: Session
 
     def __init__(self, session: Session):
@@ -140,11 +141,15 @@ class ApiClient(Closeable):
             )
 
     def get_ext_metadata(self, extension_kind: ExtensionKind, uri: str):
-        headers = CaseInsensitiveDict({"content-type": "application/x-protobuf"})
+        headers = CaseInsensitiveDict({"content-type": ApiClient.CONTENT_TYPE_PROTOBUF})
         req = EntityRequest(entity_uri=uri, query=[ExtensionQuery(extension_kind=extension_kind),])
 
-        response = self.send("POST", "/extended-metadata/v0/extended-metadata",
-                             headers, BatchedEntityRequest(entity_request=[req,]).SerializeToString())
+        response = self.send(
+            "POST",
+            "/extended-metadata/v0/extended-metadata",
+            dict(headers),
+            BatchedEntityRequest(entity_request=[req, ]).SerializeToString(),
+        )
         ApiClient.StatusCodeException.check_status(response)
 
         body = response.content
@@ -229,7 +234,7 @@ class ApiClient(Closeable):
             "https://clienttoken.spotify.com/v1/clienttoken",
             proto_req.SerializeToString(),
             headers={
-                "Accept": "application/x-protobuf",
+                "Accept": ApiClient.CONTENT_TYPE_PROTOBUF,
                 "Content-Encoding": "",
             },
         )
@@ -267,11 +272,10 @@ class ApResolver:
         """
         response = requests.get("{}?type={}".format(ApResolver.base_url,
                                                     service_type))
-        if response.status_code != 200:
-            if response.status_code == 502:
-                raise RuntimeError(
-                    f"ApResolve request failed with the following return value: {response.content}. Servers might be down!"
-                )
+        if response.status_code == 502:
+            raise RuntimeError(
+                f"ApResolve request failed with the following return value: {response.content}. Servers might be down!"
+            )
         return response.json()
 
     @staticmethod
@@ -457,7 +461,7 @@ class DealerClient(Closeable):
                     listener = self.__request_listeners.get(mid_prefix)
                     interesting = True
 
-                    def anonymous():
+                    def anonymous(listener=listener):
                         """ """
                         result = listener.on_request(mid, pid, sender, command)
                         if self.__connection is not None:
@@ -531,7 +535,7 @@ class DealerClient(Closeable):
             if self.__last_scheduled_ping is not None:
                 self.__scheduler.cancel(self.__last_scheduled_ping)
 
-        def on_failure(self, ws: websocket.WebSocketApp, error):
+        def on_failure(self, _ws: websocket.WebSocketApp, _error):
             """
 
             :param ws: websocket.WebSocketApp:
@@ -544,7 +548,7 @@ class DealerClient(Closeable):
                 "An exception occurred. Reconnecting...")
             self.close()
 
-        def on_message(self, ws: websocket.WebSocketApp, text: str):
+        def on_message(self, _ws: websocket.WebSocketApp, text: str):
             """
 
             :param ws: websocket.WebSocketApp:
@@ -561,12 +565,12 @@ class DealerClient(Closeable):
             elif typ == MessageType.PONG:
                 self.__received_pong = True
             elif typ == MessageType.PING:
-                pass
+                self.__dealer_client.logger.debug("Received ping frame")
             else:
                 raise RuntimeError("Unknown message type for {}".format(
                     typ.value))
 
-        def on_open(self, ws: websocket.WebSocketApp):
+        def on_open(self, _ws: websocket.WebSocketApp):
             """
 
             :param ws: websocket.WebSocketApp:
@@ -786,10 +790,12 @@ class MessageType(enum.Enum):
 class Session(Closeable, MessageListener, SubListener):
     """ """
     CLIENT_ID = "65b708073fc0480ea92a077233ca87bd"  # Spotify client ID for librespot
+    LOGGER_NAME = "Librespot:Session"
+    SESSION_NOT_AUTHENTICATED_MSG = "Session isn't authenticated!"
     cipher_pair: typing.Union[CipherPair, None]
     country_code: str = "EN"
     connection: typing.Union[ConnectionHolder, None]
-    logger = logging.getLogger("Librespot:Session")
+    logger = logging.getLogger(LOGGER_NAME)
     scheduled_reconnect: typing.Union[sched.Event, None] = None
     scheduler = sched.scheduler(time.time)
     __api: ApiClient
@@ -841,21 +847,21 @@ class Session(Closeable, MessageListener, SubListener):
         """ """
         self.__wait_auth_lock()
         if self.__api is None:
-            raise RuntimeError("Session isn't authenticated!")
+            raise RuntimeError(Session.SESSION_NOT_AUTHENTICATED_MSG)
         return self.__api
 
     def ap_welcome(self):
         """ """
         self.__wait_auth_lock()
         if self.__ap_welcome is None:
-            raise RuntimeError("Session isn't authenticated!")
+            raise RuntimeError(Session.SESSION_NOT_AUTHENTICATED_MSG)
         return self.__ap_welcome
 
     def audio_key(self) -> AudioKeyManager:
         """ """
         self.__wait_auth_lock()
         if self.__audio_key_manager is None:
-            raise RuntimeError("Session isn't authenticated!")
+            raise RuntimeError(Session.SESSION_NOT_AUTHENTICATED_MSG)
         return self.__audio_key_manager
 
     def authenticate(self,
@@ -892,21 +898,21 @@ class Session(Closeable, MessageListener, SubListener):
         """ """
         self.__wait_auth_lock()
         if self.__cache_manager is None:
-            raise RuntimeError("Session isn't authenticated!")
+            raise RuntimeError(Session.SESSION_NOT_AUTHENTICATED_MSG)
         return self.__cache_manager
 
     def cdn(self) -> CdnManager:
         """ """
         self.__wait_auth_lock()
         if self.__cdn_manager is None:
-            raise RuntimeError("Session isn't authenticated!")
+            raise RuntimeError(Session.SESSION_NOT_AUTHENTICATED_MSG)
         return self.__cdn_manager
 
     def channel(self) -> ChannelManager:
         """ """
         self.__wait_auth_lock()
         if self.__channel_manager is None:
-            raise RuntimeError("Session isn't authenticated!")
+            raise RuntimeError(Session.SESSION_NOT_AUTHENTICATED_MSG)
         return self.__channel_manager
 
     def client(self) -> requests.Session:
@@ -1039,7 +1045,7 @@ class Session(Closeable, MessageListener, SubListener):
         """ """
         self.__wait_auth_lock()
         if self.__content_feeder is None:
-            raise RuntimeError("Session isn't authenticated!")
+            raise RuntimeError(Session.SESSION_NOT_AUTHENTICATED_MSG)
         return self.__content_feeder
 
     @staticmethod
@@ -1056,7 +1062,7 @@ class Session(Closeable, MessageListener, SubListener):
         """ """
         self.__wait_auth_lock()
         if self.__dealer_client is None:
-            raise RuntimeError("Session isn't authenticated!")
+            raise RuntimeError(Session.SESSION_NOT_AUTHENTICATED_MSG)
         return self.__dealer_client
 
     def device_id(self) -> str:
@@ -1106,7 +1112,7 @@ class Session(Closeable, MessageListener, SubListener):
         """ """
         self.__wait_auth_lock()
         if self.__mercury_client is None:
-            raise RuntimeError("Session isn't authenticated!")
+            raise RuntimeError(Session.SESSION_NOT_AUTHENTICATED_MSG)
         return self.__mercury_client
 
     def on_message(self, uri: str, headers: typing.Dict[str, str],
@@ -1129,8 +1135,6 @@ class Session(Closeable, MessageListener, SubListener):
 
         """
         products = defusedxml.ElementTree.fromstring(data)
-        if products is None:
-            return
         product = products[0]
         if product is None:
             return
@@ -1170,7 +1174,7 @@ class Session(Closeable, MessageListener, SubListener):
         """ """
         self.__wait_auth_lock()
         if self.__search is None:
-            raise RuntimeError("Session isn't authenticated!")
+            raise RuntimeError(Session.SESSION_NOT_AUTHENTICATED_MSG)
         return self.__search
 
     def send(self, cmd: bytes, payload: bytes):
@@ -1196,7 +1200,7 @@ class Session(Closeable, MessageListener, SubListener):
         """ """
         self.__wait_auth_lock()
         if self.__token_provider is None:
-            raise RuntimeError("Session isn't authenticated!")
+            raise RuntimeError(Session.SESSION_NOT_AUTHENTICATED_MSG)
         return self.__token_provider
 
     def username(self):
@@ -1255,7 +1259,7 @@ class Session(Closeable, MessageListener, SubListener):
                     raise TypeError(
                         "The file path to be saved is not specified")
                 try:
-                    logging.getLogger("Librespot:Session").info(
+                    logging.getLogger(Session.LOGGER_NAME).info(
                         "Storing credentials to %s for user %s (type=%s)",
                         self.__inner.conf.stored_credentials_file,
                         self.__ap_welcome.canonical_username,
@@ -1282,7 +1286,7 @@ class Session(Closeable, MessageListener, SubListener):
                         f,
                     )
                 try:
-                    logging.getLogger("Librespot:Session").info(
+                    logging.getLogger(Session.LOGGER_NAME).info(
                         "Stored credentials written for user %s",
                         self.__ap_welcome.canonical_username,
                     )
@@ -1597,14 +1601,6 @@ class Session(Closeable, MessageListener, SubListener):
 
     class Configuration:
         """ """
-        # Proxy
-        # proxyEnabled: bool
-        # proxyType: Proxy.Type
-        # proxyAddress: str
-        # proxyPort: int
-        # proxyAuth: bool
-        # proxyUsername: str
-        # proxyPassword: str
 
         # Cache
         cache_enabled: bool
@@ -1620,13 +1616,6 @@ class Session(Closeable, MessageListener, SubListener):
 
         def __init__(
             self,
-            # proxy_enabled: bool,
-            # proxy_type: Proxy.Type,
-            # proxy_address: str,
-            # proxy_port: int,
-            # proxy_auth: bool,
-            # proxy_username: str,
-            # proxy_password: str,
             cache_enabled: bool,
             cache_dir: str,
             do_cache_clean_up: bool,
@@ -1634,13 +1623,6 @@ class Session(Closeable, MessageListener, SubListener):
             stored_credentials_file: str,
             retry_on_chunk_error: bool,
         ):
-            # self.proxyEnabled = proxy_enabled
-            # self.proxyType = proxy_type
-            # self.proxyAddress = proxy_address
-            # self.proxyPort = proxy_port
-            # self.proxyAuth = proxy_auth
-            # self.proxyUsername = proxy_username
-            # self.proxyPassword = proxy_password
             self.cache_enabled = cache_enabled
             self.cache_dir = cache_dir
             self.do_cache_clean_up = do_cache_clean_up
@@ -1650,14 +1632,6 @@ class Session(Closeable, MessageListener, SubListener):
 
         class Builder:
             """ """
-            # Proxy
-            # proxyEnabled: bool = False
-            # proxyType: Proxy.Type = Proxy.Type.DIRECT
-            # proxyAddress: str = None
-            # proxyPort: int = None
-            # proxyAuth: bool = None
-            # proxyUsername: str = None
-            # proxyPassword: str = None
 
             # Cache
             cache_enabled: bool = True
@@ -1671,40 +1645,6 @@ class Session(Closeable, MessageListener, SubListener):
 
             # Fetching
             retry_on_chunk_error: bool = True
-
-            # def set_proxy_enabled(
-            #         self,
-            #         proxy_enabled: bool) -> Session.Configuration.Builder:
-            #     self.proxyEnabled = proxy_enabled
-            #     return self
-
-            # def set_proxy_type(
-            #         self,
-            #         proxy_type: Proxy.Type) -> Session.Configuration.Builder:
-            #     self.proxyType = proxy_type
-            #     return self
-
-            # def set_proxy_address(
-            #         self, proxy_address: str) -> Session.Configuration.Builder:
-            #     self.proxyAddress = proxy_address
-            #     return self
-
-            # def set_proxy_auth(
-            #         self, proxy_auth: bool) -> Session.Configuration.Builder:
-            #     self.proxyAuth = proxy_auth
-            #     return self
-
-            # def set_proxy_username(
-            #         self,
-            #         proxy_username: str) -> Session.Configuration.Builder:
-            #     self.proxyUsername = proxy_username
-            #     return self
-
-            # def set_proxy_password(
-            #         self,
-            #         proxy_password: str) -> Session.Configuration.Builder:
-            #     self.proxyPassword = proxy_password
-            #     return self
 
             def set_cache_enabled(
                     self,
@@ -1785,13 +1725,6 @@ class Session(Closeable, MessageListener, SubListener):
 
                 """
                 return Session.Configuration(
-                    # self.proxyEnabled,
-                    # self.proxyType,
-                    # self.proxyAddress,
-                    # self.proxyPort,
-                    # self.proxyAuth,
-                    # self.proxyUsername,
-                    # self.proxyPassword,
                     self.cache_enabled,
                     self.cache_dir,
                     self.do_cache_clean_up,
@@ -2261,8 +2194,8 @@ class TokenProvider:
                 "https://login5.spotify.com/v3/login",
                 data=login5_request.SerializeToString(),
                 headers=CaseInsensitiveDict({
-                    "Content-Type": "application/x-protobuf",
-                    "Accept": "application/x-protobuf"
+                    "Content-Type": ApiClient.CONTENT_TYPE_PROTOBUF,
+                    "Accept": ApiClient.CONTENT_TYPE_PROTOBUF
                     }))
 
             if response.status_code == 200:

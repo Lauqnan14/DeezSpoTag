@@ -50,13 +50,7 @@ def read_metadata_from_file(file_path, logger):
                     album = album_frame.text[0] if album_frame.text else None
             else:
                 logger.debug(f"No tags found in MP3 file: {file_path}")
-        elif isinstance(audio, OggVorbis): # OGG
-            title = audio.get('TITLE', [None])[0] # Vorbis tags are case-insensitive but typically uppercase
-            album = audio.get('ALBUM', [None])[0]
-        elif isinstance(audio, OggOpus): # OPUS
-            title = audio.get('TITLE', [None])[0] # Opus files use Vorbis comments, similar to OGG
-            album = audio.get('ALBUM', [None])[0]
-        elif isinstance(audio, FLAC): # FLAC
+        elif isinstance(audio, (OggVorbis, OggOpus, FLAC)): # OGG/OPUS/FLAC
             title = audio.get('TITLE', [None])[0]
             album = audio.get('ALBUM', [None])[0]
         elif file_path.lower().endswith('.m4a'): # M4A (AAC/ALAC)

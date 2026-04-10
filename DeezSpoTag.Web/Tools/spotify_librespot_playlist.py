@@ -1,24 +1,14 @@
 #!/usr/bin/env python3
 import argparse
-import json
-import pathlib
-import sys
+from spotify_librespot_common import ensure_vendor_paths
+from spotify_librespot_common import resolve_credentials
+from spotify_librespot_common import write_result
 
-
-def _write_result(ok, payload=None, error=None):
-    body = {"ok": ok}
-    if payload is not None:
-        body["payload"] = payload
-    if error is not None:
-        body["error"] = error
-    print(json.dumps(body))
+PLAYLIST_URI_PREFIX = "spotify:playlist:"
 
 
 def _load_librespot():
-    script_path = pathlib.Path(__file__).resolve()
-    librespot_root = script_path.parent / "spotify_librespot" / "spotizerr-phoenix"
-    if librespot_root.is_dir():
-        sys.path.insert(0, str(librespot_root))
+    ensure_vendor_paths(include_deezspot=False, include_crypto=False)
 
     try:
         from librespot.core import Session  # type: ignore
@@ -53,46 +43,46 @@ def main():
     args = parser.parse_args()
 
     try:
-        Session, PlaylistId = _load_librespot()
+        session_cls, playlist_id_cls = _load_librespot()
     except Exception as exc:
-        _write_result(False, error=str(exc))
+        write_result(False, error=str(exc))
         return 1
 
-    credentials_path = pathlib.Path(args.credentials).expanduser().resolve()
-    if not credentials_path.exists():
-        _write_result(False, error="credentials_not_found")
+    credentials_path = resolve_credentials(args.credentials)
+    if credentials_path is None:
+        write_result(False, error="credentials_not_found")
         return 1
 
     playlist_arg = args.playlist_id.strip()
-    if "spotify:playlist:" in playlist_arg:
+    if PLAYLIST_URI_PREFIX in playlist_arg:
         playlist_uri = playlist_arg
     elif "open.spotify.com/playlist/" in playlist_arg:
-        playlist_uri = "spotify:playlist:" + playlist_arg.split("/playlist/")[1].split("?")[0].strip()
+        playlist_uri = PLAYLIST_URI_PREFIX + playlist_arg.split("/playlist/")[1].split("?")[0].strip()
     else:
-        playlist_uri = "spotify:playlist:" + playlist_arg
+        playlist_uri = PLAYLIST_URI_PREFIX + playlist_arg
 
     try:
-        playlist_id = PlaylistId.from_uri(playlist_uri)
+        playlist_id = playlist_id_cls.from_uri(playlist_uri)
     except Exception as exc:
-        _write_result(False, error=f"invalid_playlist_id: {exc}")
+        write_result(False, error=f"invalid_playlist_id: {exc}")
         return 1
 
     try:
-        session = Session.Builder().stored_file(credentials_path.as_posix()).create()
+        session = session_cls.Builder().stored_file(credentials_path.as_posix()).create()
     except Exception as exc:
-        _write_result(False, error=f"librespot_session_error: {exc}")
+        write_result(False, error=f"librespot_session_error: {exc}")
         return 1
 
     try:
         playlist = session.api().get_playlist(playlist_id)
         payload = _to_json_message(playlist)
         if payload is None:
-            _write_result(False, error="protobuf_json_unavailable")
+            write_result(False, error="protobuf_json_unavailable")
             return 1
-        _write_result(True, payload=payload)
+        write_result(True, payload=payload)
         return 0
     except Exception as exc:
-        _write_result(False, error=f"librespot_playlist_error: {exc}")
+        write_result(False, error=f"librespot_playlist_error: {exc}")
         return 1
 
 
