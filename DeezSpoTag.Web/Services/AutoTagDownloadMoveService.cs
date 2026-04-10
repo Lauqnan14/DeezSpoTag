@@ -407,62 +407,7 @@ public sealed class AutoTagDownloadMoveService
 
         foreach (var filePath in fileSet)
         {
-            var sourceDisplay = DownloadPathResolver.NormalizeDisplayPath(DownloadPathResolver.ResolveIoPath(filePath) ?? filePath);
-            try
-            {
-                var qualityBucket = TryResolveBucket(maps.FileBucketsByDestination, context.DestinationKey, filePath);
-                var movedPath = MoveFileUnderRoot(
-                    context.RootPath,
-                    filePath,
-                    context.DestinationRoot,
-                    context.Settings,
-                    qualityBucket);
-                if (string.IsNullOrWhiteSpace(movedPath))
-                {
-                    summary.SkippedCount++;
-                    continue;
-                }
-
-                string finalPath;
-                try
-                {
-                    finalPath = await ApplyDestinationConversionIfNeededAsync(
-                        movedPath,
-                        context.ConversionPlan,
-                        context.CancellationToken);
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    summary.FailedCount++;
-                    _logger.LogWarning(ex, "Auto-move conversion failed for destination file {Path}", movedPath);
-                    finalPath = movedPath;
-                }
-
-                var owners = ResolvePathOwners(maps.FileOwnersByDestination, context.DestinationKey, filePath);
-                RememberTransitionsForOwners(context.TransitionsByQueue, owners, filePath, finalPath);
-
-                if (DidPathChange(sourceDisplay, movedPath))
-                {
-                    summary.MovedCount++;
-                }
-                else
-                {
-                    summary.SkippedCount++;
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                summary.FailedCount++;
-                _logger.LogWarning(ex, "Auto-move destination file failed for {Path}", filePath);
-            }
+            await ProcessDestinationFileAsync(filePath, context, maps, summary);
         }
     }
 
@@ -483,62 +428,148 @@ public sealed class AutoTagDownloadMoveService
 
         foreach (var root in rootSet)
         {
-            var candidateCount = TryCountFiles(root);
-            try
-            {
-                var qualityBucket = TryResolveBucket(maps.RootBucketsByDestination, context.DestinationKey, root);
-                var movedPaths = MoveDirectoryTreeUnderRoot(
-                    context.RootPath,
-                    root,
-                    context.DestinationRoot,
-                    context.Settings,
-                    qualityBucket);
-                if (movedPaths.Count == 0)
-                {
-                    summary.SkippedCount += candidateCount;
-                    continue;
-                }
+            await ProcessDestinationRootAsync(root, context, maps, summary);
+        }
+    }
 
-                summary.MovedCount += movedPaths.Count;
-                if (candidateCount > movedPaths.Count)
-                {
-                    summary.SkippedCount += candidateCount - movedPaths.Count;
-                }
-
-                var owners = ResolvePathOwners(maps.RootOwnersByDestination, context.DestinationKey, root);
-                foreach (var transition in movedPaths)
-                {
-                    string finalPath;
-                    try
-                    {
-                        finalPath = await ApplyDestinationConversionIfNeededAsync(
-                            transition.Value,
-                            context.ConversionPlan,
-                            context.CancellationToken);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw;
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        summary.FailedCount++;
-                        _logger.LogWarning(ex, "Auto-move conversion failed for destination root item {Path}", transition.Value);
-                        finalPath = transition.Value;
-                    }
-
-                    RememberTransitionsForOwners(context.TransitionsByQueue, owners, transition.Key, finalPath);
-                }
-            }
-            catch (OperationCanceledException)
+    private async Task ProcessDestinationFileAsync(
+        string filePath,
+        DestinationMoveContext context,
+        PayloadSourceMaps maps,
+        AutoTagMoveSummary summary)
+    {
+        var sourceDisplay = DownloadPathResolver.NormalizeDisplayPath(DownloadPathResolver.ResolveIoPath(filePath) ?? filePath);
+        try
+        {
+            var qualityBucket = TryResolveBucket(maps.FileBucketsByDestination, context.DestinationKey, filePath);
+            var movedPath = MoveFileUnderRoot(
+                context.RootPath,
+                filePath,
+                context.DestinationRoot,
+                context.Settings,
+                qualityBucket);
+            if (string.IsNullOrWhiteSpace(movedPath))
             {
-                throw;
+                summary.SkippedCount++;
+                return;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+
+            var finalPath = await ApplyDestinationConversionWithFallbackAsync(
+                movedPath,
+                context,
+                summary,
+                isRootItem: false);
+
+            var owners = ResolvePathOwners(maps.FileOwnersByDestination, context.DestinationKey, filePath);
+            RememberTransitionsForOwners(context.TransitionsByQueue, owners, filePath, finalPath);
+            if (DidPathChange(sourceDisplay, movedPath))
             {
-                summary.FailedCount += Math.Max(1, candidateCount);
-                _logger.LogWarning(ex, "Auto-move destination root failed for {Root}", root);
+                summary.MovedCount++;
+                return;
             }
+
+            summary.SkippedCount++;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            summary.FailedCount++;
+            _logger.LogWarning(ex, "Auto-move destination file failed for {Path}", filePath);
+        }
+    }
+
+    private async Task ProcessDestinationRootAsync(
+        string root,
+        DestinationMoveContext context,
+        PayloadSourceMaps maps,
+        AutoTagMoveSummary summary)
+    {
+        var candidateCount = TryCountFiles(root);
+        try
+        {
+            var qualityBucket = TryResolveBucket(maps.RootBucketsByDestination, context.DestinationKey, root);
+            var movedPaths = MoveDirectoryTreeUnderRoot(
+                context.RootPath,
+                root,
+                context.DestinationRoot,
+                context.Settings,
+                qualityBucket);
+            if (movedPaths.Count == 0)
+            {
+                summary.SkippedCount += candidateCount;
+                return;
+            }
+
+            summary.MovedCount += movedPaths.Count;
+            if (candidateCount > movedPaths.Count)
+            {
+                summary.SkippedCount += candidateCount - movedPaths.Count;
+            }
+
+            var owners = ResolvePathOwners(maps.RootOwnersByDestination, context.DestinationKey, root);
+            await RememberDestinationRootTransitionsAsync(movedPaths, owners, context, summary);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            summary.FailedCount += Math.Max(1, candidateCount);
+            _logger.LogWarning(ex, "Auto-move destination root failed for {Root}", root);
+        }
+    }
+
+    private async Task RememberDestinationRootTransitionsAsync(
+        IReadOnlyDictionary<string, string> movedPaths,
+        IReadOnlyCollection<string> owners,
+        DestinationMoveContext context,
+        AutoTagMoveSummary summary)
+    {
+        foreach (var transition in movedPaths)
+        {
+            var finalPath = await ApplyDestinationConversionWithFallbackAsync(
+                transition.Value,
+                context,
+                summary,
+                isRootItem: true);
+            RememberTransitionsForOwners(context.TransitionsByQueue, owners, transition.Key, finalPath);
+        }
+    }
+
+    private async Task<string> ApplyDestinationConversionWithFallbackAsync(
+        string movedPath,
+        DestinationMoveContext context,
+        AutoTagMoveSummary summary,
+        bool isRootItem)
+    {
+        try
+        {
+            return await ApplyDestinationConversionIfNeededAsync(
+                movedPath,
+                context.ConversionPlan,
+                context.CancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            summary.FailedCount++;
+            if (isRootItem)
+            {
+                _logger.LogWarning(ex, "Auto-move conversion failed for destination root item {Path}", movedPath);
+            }
+            else
+            {
+                _logger.LogWarning(ex, "Auto-move conversion failed for destination file {Path}", movedPath);
+            }
+
+            return movedPath;
         }
     }
 
