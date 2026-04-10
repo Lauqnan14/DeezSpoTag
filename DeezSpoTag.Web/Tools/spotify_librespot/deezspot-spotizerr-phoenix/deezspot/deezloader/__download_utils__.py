@@ -2,24 +2,13 @@
 
 from hashlib import md5 as __md5
 
-from binascii import (
-	a2b_hex as __a2b_hex,
-	b2a_hex as __b2a_hex
-)
-
-from Crypto.Cipher.Blowfish import (
-	new as __newBlowfish,
-	MODE_CBC as __MODE_CBC
-)
-
 from Crypto.Cipher import AES
 from Crypto.Util import Counter
 import os
 from deezspot.libutils.logging_utils import logger
 
-__secret_key = "g4el58wc0zvf9na1"
-__secret_key2 = b"jo6aey6haid2Teih"
-__idk = __a2b_hex("0001020304050607")
+class InsecureCipherError(RuntimeError):
+    """Raised when legacy insecure ciphers are requested."""
 
 def md5hex(data: str):
 	hashed = __md5(
@@ -54,111 +43,16 @@ def gen_song_hash(song_id, song_md5, media_version):
         logger.error(f"Failed to generate song hash: {str(e)}")
         raise
 
-def __calcbfkey(songid):
-	"""
-	Calculate the Blowfish decrypt key for a given song ID.
-	
-	Args:
-		songid: String song ID
-		
-	Returns:
-		The Blowfish decryption key
-	"""
-	try:
-		h = md5hex(songid)
-		logger.debug(f"MD5 hash of song ID '{songid}': {h}")
+def _raise_insecure_blowfish_error(song_path: str) -> None:
+    message = (
+        "Blocked insecure Blowfish/CBC media decryption for "
+        f"{song_path}. Re-download using AES-encrypted source."
+    )
+    logger.error(message)
+    raise InsecureCipherError(message)
 
-		# Build the key through XOR operations as per Deezer's algorithm
-		bfkey = "".join(
-			chr(
-				ord(h[i]) ^ ord(h[i + 16]) ^ ord(__secret_key[i])
-			)
-			for i in range(16)
-		)
-
-		# Log the generated key in hex format for debugging
-		logger.debug(f"Generated Blowfish key: {bfkey.encode().hex()}")
-		return bfkey
-	except Exception as e:
-		logger.error(f"Error calculating Blowfish key: {str(e)}")
-		raise
-
-def _decrypt_block_if_needed(block, bf_key, block_count, block_size):
-    if block_count % 3 != 0:
-        return block
-    if len(block) != block_size or len(block) % 8 != 0:
-        return block
-    try:
-        cipher = __newBlowfish(bf_key.encode(), __MODE_CBC, __idk)
-        decrypted = cipher.decrypt(block)
-        logger.debug(f"Decrypted block {block_count} (size: {len(decrypted)})")
-        return decrypted
-    except Exception as e:
-        logger.error(f"Failed to decrypt block {block_count}: {str(e)}")
-        # Continue with the original encrypted block rather than failing completely
-        return block
-
-def decrypt_blowfish_track(crypted_audio, song_id, _md5_origin, song_path):
-    """
-    Decrypt the audio file using Blowfish encryption.
-    
-    Args:
-        crypted_audio: The encrypted audio data
-        song_id: The song ID for generating the key
-        _md5_origin: The MD5 hash of the track
-        song_path: Path where to save the decrypted file
-    """
-    try:
-        # Calculate the Blowfish key
-        bf_key = __calcbfkey(song_id)
-        
-        # For debugging - log the key being used
-        logger.debug(f"Using Blowfish key for decryption: {bf_key.encode().hex()}")
-        
-        # Prepare to process the file
-        block_size = 2048  # Size of each block to process
-        
-        # We need to reconstruct the data from potentially variable-sized chunks into
-        # fixed-size blocks for proper decryption
-        buffer = bytearray()
-        block_count = 0  # Count of completed blocks
-        
-        # Open the output file
-        with open(song_path, 'wb') as output_file:
-            # Process each incoming chunk of data
-            for chunk in crypted_audio:
-                if not chunk:
-                    continue
-                
-                # Add current chunk to our buffer
-                buffer.extend(chunk)
-                
-                # Process as many complete blocks as we can
-                while len(buffer) >= block_size:
-                    # Extract a block from buffer
-                    block = buffer[:block_size]
-                    buffer = buffer[block_size:]
-                    
-                    # Only decrypt every third block
-                    is_encrypted = (block_count % 3 == 0)
-                    
-                    if is_encrypted:
-                        block = _decrypt_block_if_needed(block, bf_key, block_count, block_size)
-                    
-                    # Write the block (decrypted or not) to the output file
-                    output_file.write(block)
-                    block_count += 1
-            
-            # Write any remaining data in the buffer (this won't be decrypted as it's a partial block)
-            if buffer:
-                logger.debug(f"Writing final partial block of size {len(buffer)}")
-                output_file.write(buffer)
-            
-        logger.debug(f"Successfully decrypted and saved Blowfish-encrypted file to {song_path}")
-        
-    except Exception as e:
-        logger.error(f"Failed to decrypt Blowfish file: {str(e)}")
-        raise
+def decrypt_blowfish_track(_crypted_audio, _song_id, _md5_origin, song_path):
+    _raise_insecure_blowfish_error(song_path)
 
 def decryptfile(crypted_audio, ids, song_path):
     """
@@ -172,9 +66,6 @@ def decryptfile(crypted_audio, ids, song_path):
     try:
         # Check encryption type
         encryption_type = ids.get('encryption_type', 'aes')
-        # Check if this is a FLAC file based on file extension
-        is_flac = song_path.lower().endswith('.flac')
-        
         if encryption_type == 'aes':
             # Get the AES encryption key and nonce
             key = bytes.fromhex(ids['key'])
@@ -196,23 +87,7 @@ def decryptfile(crypted_audio, ids, song_path):
             logger.debug(f"Successfully decrypted and saved AES-encrypted file to {song_path}")
             
         elif encryption_type == 'blowfish':
-            # Customize Blowfish decryption based on file type
-            if is_flac:
-                logger.debug("Detected FLAC file - using special FLAC decryption handling")
-                decrypt_blowfish_flac(
-                    crypted_audio, 
-                    str(ids['track_id']), 
-                    ids['md5_origin'], 
-                    song_path
-                )
-            else:
-                # Use standard Blowfish decryption for MP3
-                decrypt_blowfish_track(
-                    crypted_audio, 
-                    str(ids['track_id']), 
-                    ids['md5_origin'], 
-                    song_path
-                )
+            _raise_insecure_blowfish_error(song_path)
         else:
             raise ValueError(f"Unknown encryption type: {encryption_type}")
             
@@ -220,91 +95,8 @@ def decryptfile(crypted_audio, ids, song_path):
         logger.error(f"Failed to decrypt file: {str(e)}")
         raise
 
-def decrypt_blowfish_flac(crypted_audio, song_id, _md5_origin, song_path):
-    """
-    Special decryption function for FLAC files using Blowfish encryption.
-    This implementation follows Deezer's encryption scheme exactly.
-    
-    In Deezer's encryption scheme:
-    - Data is processed in 2048-byte blocks
-    - Only every third block is encrypted (blocks 0, 3, 6, etc.)
-    - Partial blocks at the end of the file are not encrypted
-    - FLAC file structure must be preserved exactly
-    - The initialization vector is reset for each encrypted block
-    
-    Args:
-        crypted_audio: Iterator of the encrypted audio data chunks
-        song_id: The song ID for generating the key
-        _md5_origin: The MD5 hash of the track
-        song_path: Path where to save the decrypted file
-    """
-    try:
-        # Calculate the Blowfish key
-        bf_key = __calcbfkey(song_id)
-        
-        # For debugging - log the key being used
-        logger.debug(f"Using Blowfish key for decryption: {bf_key.encode().hex()}")
-        
-        # Prepare to process the file
-        block_size = 2048  # Size of each block to process
-        
-        # We need to reconstruct the data from potentially variable-sized chunks into
-        # fixed-size blocks for proper decryption
-        buffer = bytearray()
-        block_count = 0  # Count of completed blocks
-        
-        # Open the output file
-        with open(song_path, 'wb') as output_file:
-            # Process each incoming chunk of data
-            for chunk in crypted_audio:
-                if not chunk:
-                    continue
-                
-                # Add current chunk to our buffer
-                buffer.extend(chunk)
-                
-                # Process as many complete blocks as we can
-                while len(buffer) >= block_size:
-                    # Extract a block from buffer
-                    block = buffer[:block_size]
-                    buffer = buffer[block_size:]
-                    
-                    # Determine if this block should be decrypted (every third block)
-                    if block_count % 3 == 0:
-                        block = _decrypt_block_if_needed(block, bf_key, block_count, block_size)
-                    
-                    # Write the block (decrypted or not) to the output file
-                    output_file.write(block)
-                    block_count += 1
-            
-            # Write any remaining data in the buffer (this won't be decrypted as it's a partial block)
-            if buffer:
-                logger.debug(f"Writing final partial block of size {len(buffer)}")
-                output_file.write(buffer)
-        
-        # Final validation
-        if os.path.getsize(song_path) > 0:
-            with open(song_path, 'rb') as f:
-                if f.read(4) == b'fLaC':
-                    logger.info("FLAC file header verification passed")
-                else:
-                    logger.warning("FLAC file doesn't begin with proper 'fLaC' signature")
-            
-            logger.info(f"Successfully decrypted FLAC file to {song_path} ({os.path.getsize(song_path)} bytes)")
-            
-            # Run the detailed analysis
-            analysis = analyze_flac_file(song_path)
-            if analysis.get("potential_issues"):
-                logger.warning(f"Decryption completed but analysis found issues: {analysis['potential_issues']}")
-            else:
-                logger.info("FLAC analysis indicates the file structure is valid")
-                
-        else:
-            logger.error("Decrypted file is empty - decryption likely failed")
-            
-    except Exception as e:
-        logger.error(f"Failed to decrypt Blowfish FLAC file: {str(e)}")
-        raise
+def decrypt_blowfish_flac(_crypted_audio, _song_id, _md5_origin, song_path):
+    _raise_insecure_blowfish_error(song_path)
 
 def analyze_flac_file(file_path, limit=100):
     """

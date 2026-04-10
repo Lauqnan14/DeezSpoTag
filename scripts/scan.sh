@@ -30,6 +30,7 @@ Environment fallbacks:
   SONAR_INCLUDE_TESTS
   SONAR_INCLUDE_COVERAGE
   SONAR_COVERAGE_EXCLUSIONS
+  SONAR_KEEP_LOCAL_SCAN_STATE
 
 Example:
   SONAR_TOKEN=xxxx ./scan.sh
@@ -54,6 +55,7 @@ sonar_lightweight="${SONAR_LIGHTWEIGHT:-false}"
 sonar_include_tests="${SONAR_INCLUDE_TESTS:-false}"
 sonar_include_coverage="${SONAR_INCLUDE_COVERAGE:-false}"
 sonar_coverage_exclusions="${SONAR_COVERAGE_EXCLUSIONS:-**/DeezSpoTag.Tests/**,**/DeezSpoTag.CoverPortTests/**,**/Tools/**,**/References/**,**/bin/**,**/obj/**}"
+sonar_keep_local_scan_state="${SONAR_KEEP_LOCAL_SCAN_STATE:-false}"
 coverage_dir="${ROOT_DIR}/.sonar-coverage"
 coverage_opencover_reports_path="${coverage_dir}/**/coverage.opencover.xml"
 scan_lock_file="${ROOT_DIR}/.scan.lock"
@@ -62,7 +64,9 @@ cleanup_local_scan_state() {
   rm -rf "${ROOT_DIR}/.sonarqube" "$coverage_dir"
 }
 
-trap cleanup_local_scan_state EXIT
+if [[ "$sonar_keep_local_scan_state" != "true" ]]; then
+  trap cleanup_local_scan_state EXIT
+fi
 
 acquire_scan_lock() {
   if ! command -v flock >/dev/null 2>&1; then
@@ -93,9 +97,12 @@ declare -a default_sonar_exclusions=(
   "**/.gocache/**"
   "**/.venv/**"
   "**/venv/**"
+  "**/__pycache__/**"
+  "**/*.pyc"
   "**/site-packages/**"
   "**/lib/python*/site-packages/**"
   "**/lib64/python*/site-packages/**"
+  "**/build/**"
   "**/.playwright/**"
   "**/node_modules/**"
   "**/bin/**"
@@ -104,7 +111,6 @@ declare -a default_sonar_exclusions=(
   "**/test-results/**"
   "**/coverage-report/**"
   "**/reports/**"
-  "**/Tools/**"
   "**/*Tests*/**"
   "**/DeezSpoTag.Tests/**"
   "**/DeezSpoTag.CoverPortTests/**"
@@ -131,6 +137,10 @@ declare -a default_sonar_exclusions=(
   "**/Data/spotify/**"
   "**/Data/*.db"
   "**/Data/*.json"
+)
+declare -a default_sonar_cpd_generated_exclusions=(
+  "**/*_pb2.py"
+  "**/*_pb2.pyi"
 )
 declare -a lightweight_sonar_exclusions=(
   "**/*.js"
@@ -196,6 +206,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 default_sonar_exclusions_csv="$(IFS=,; echo "${default_sonar_exclusions[*]}")"
+default_sonar_cpd_generated_exclusions_csv="$(IFS=,; echo "${default_sonar_cpd_generated_exclusions[*]}")"
 lightweight_sonar_exclusions_csv="$(IFS=,; echo "${lightweight_sonar_exclusions[*]}")"
 if [[ -z "$sonar_exclusions" ]]; then
   sonar_exclusions="$default_sonar_exclusions_csv"
@@ -209,6 +220,9 @@ fi
 
 if [[ -z "$sonar_cpd_exclusions" ]]; then
   sonar_cpd_exclusions="$sonar_exclusions"
+  if [[ -n "$default_sonar_cpd_generated_exclusions_csv" ]]; then
+    sonar_cpd_exclusions="${sonar_cpd_exclusions},${default_sonar_cpd_generated_exclusions_csv}"
+  fi
 fi
 
 if [[ -z "$sonar_python_version" ]] && command -v python3 >/dev/null 2>&1; then
@@ -446,6 +460,7 @@ echo "Lightweight : $sonar_lightweight"
 echo "Include tests: $sonar_include_tests"
 echo "Include coverage: $sonar_include_coverage"
 echo "Coverage exclusions: $sonar_coverage_exclusions"
+echo "Keep local scan state: $sonar_keep_local_scan_state"
 echo "Entry point : ./scan.sh"
 
 check_sonar_server
