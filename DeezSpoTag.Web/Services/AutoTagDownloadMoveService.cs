@@ -18,6 +18,45 @@ using IOFile = System.IO.File;
 
 namespace DeezSpoTag.Web.Services;
 
+public sealed class AutoTagMoveSummary
+{
+    public int MovedCount { get; set; }
+    public int SkippedCount { get; set; }
+    public int FailedCount { get; set; }
+    public List<string> DestinationRoots { get; set; } = new();
+    public bool RecoveryCleanup { get; set; }
+    public string? Error { get; set; }
+
+    public void AddDestinationRoot(string? rootPath)
+    {
+        if (string.IsNullOrWhiteSpace(rootPath))
+        {
+            return;
+        }
+
+        var normalized = DownloadPathResolver.NormalizeDisplayPath(rootPath);
+        if (DestinationRoots.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        DestinationRoots.Add(normalized);
+    }
+
+    public AutoTagMoveSummary Clone()
+    {
+        return new AutoTagMoveSummary
+        {
+            MovedCount = MovedCount,
+            SkippedCount = SkippedCount,
+            FailedCount = FailedCount,
+            DestinationRoots = DestinationRoots.ToList(),
+            RecoveryCleanup = RecoveryCleanup,
+            Error = Error
+        };
+    }
+}
+
 public sealed class AutoTagDownloadMoveService
 {
     private sealed record ResidualMoveContext(
@@ -130,7 +169,7 @@ public sealed class AutoTagDownloadMoveService
 
     public async Task MoveForRootAsync(string rootPath, AutoTagOrganizerOptions options, CancellationToken cancellationToken)
     {
-        await MoveForRootAsync(
+        _ = await MoveForRootWithSummaryAsync(
             rootPath,
             options,
             Array.Empty<string>(),
@@ -145,18 +184,48 @@ public sealed class AutoTagDownloadMoveService
         IReadOnlyCollection<string> failedFiles,
         CancellationToken cancellationToken)
     {
+        _ = await MoveForRootWithSummaryAsync(
+            rootPath,
+            options,
+            taggedFiles,
+            failedFiles,
+            cancellationToken);
+    }
+
+    public Task<AutoTagMoveSummary> MoveForRootWithSummaryAsync(string rootPath, CancellationToken cancellationToken)
+    {
+        return MoveForRootWithSummaryAsync(rootPath, new AutoTagOrganizerOptions(), Array.Empty<string>(), Array.Empty<string>(), cancellationToken);
+    }
+
+    public Task<AutoTagMoveSummary> MoveForRootWithSummaryAsync(
+        string rootPath,
+        AutoTagOrganizerOptions options,
+        CancellationToken cancellationToken)
+    {
+        return MoveForRootWithSummaryAsync(rootPath, options, Array.Empty<string>(), Array.Empty<string>(), cancellationToken);
+    }
+
+    public async Task<AutoTagMoveSummary> MoveForRootWithSummaryAsync(
+        string rootPath,
+        AutoTagOrganizerOptions options,
+        IReadOnlyCollection<string> taggedFiles,
+        IReadOnlyCollection<string> failedFiles,
+        CancellationToken cancellationToken)
+    {
+        var summary = new AutoTagMoveSummary();
         if (string.IsNullOrWhiteSpace(rootPath))
         {
-            return;
+            return summary;
         }
 
         var normalizedRootPath = ResolveExistingDirectoryPath(rootPath);
         var settings = _settingsService.LoadSettings();
         var items = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
         var foldersById = await LoadFoldersByIdAsync(cancellationToken);
-        await MoveRemainingContentByDestinationAsync(items, normalizedRootPath, settings, foldersById, cancellationToken);
+        await MoveRemainingContentByDestinationAsync(items, normalizedRootPath, settings, foldersById, summary, cancellationToken);
         var residualDestinationFolderId = ResolveResidualDestinationFolderId(items, normalizedRootPath);
         var residualDestination = await ResolveDestinationRootAsync(residualDestinationFolderId, cancellationToken);
+        summary.AddDestinationRoot(residualDestination);
         var residualConversion = BuildConversionPlan(
             settings,
             residualDestinationFolderId.HasValue && foldersById.TryGetValue(residualDestinationFolderId.Value, out var residualFolder)
@@ -172,6 +241,7 @@ public sealed class AutoTagDownloadMoveService
                 residualConversion,
                 taggedFiles,
                 failedFiles),
+            summary,
             cancellationToken);
         await PersistFinalDestinationsByPayloadLookupAsync(items, residualTransitions, cancellationToken);
 
@@ -179,6 +249,8 @@ public sealed class AutoTagDownloadMoveService
         {
             DeleteEmptyDirectories(normalizedRootPath, BuildProtectedQualityBucketDirectories(normalizedRootPath));
         }
+
+        return summary;
     }
 
     private static bool IsUnderRoot(string rootPath, string candidatePath)
@@ -224,6 +296,7 @@ public sealed class AutoTagDownloadMoveService
         string rootPath,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         IReadOnlyDictionary<long, FolderDto> foldersById,
+        AutoTagMoveSummary summary,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(rootPath))
@@ -261,6 +334,7 @@ public sealed class AutoTagDownloadMoveService
             {
                 continue;
             }
+            summary.AddDestinationRoot(destinationRoot);
             var conversionPlan = BuildConversionPlan(
                 settings,
                 destinationKey > 0 && foldersById.TryGetValue(destinationKey, out var destinationFolder)
@@ -275,8 +349,8 @@ public sealed class AutoTagDownloadMoveService
                 conversionPlan,
                 transitionsByQueue,
                 cancellationToken);
-            await MoveDestinationFilesAsync(destinationContext, payloadSourceMaps);
-            await MoveDestinationRootsAsync(destinationContext, payloadSourceMaps);
+            await MoveDestinationFilesAsync(destinationContext, payloadSourceMaps, summary);
+            await MoveDestinationRootsAsync(destinationContext, payloadSourceMaps, summary);
         }
 
         await PersistFinalDestinationsAsync(items, transitionsByQueue, cancellationToken);
@@ -318,7 +392,8 @@ public sealed class AutoTagDownloadMoveService
 
     private async Task MoveDestinationFilesAsync(
         DestinationMoveContext context,
-        PayloadSourceMaps maps)
+        PayloadSourceMaps maps,
+        AutoTagMoveSummary summary)
     {
         if (!maps.FilesByDestination.TryGetValue(context.DestinationKey, out var fileSet) || fileSet.Count == 0)
         {
@@ -332,30 +407,69 @@ public sealed class AutoTagDownloadMoveService
 
         foreach (var filePath in fileSet)
         {
-            var qualityBucket = TryResolveBucket(maps.FileBucketsByDestination, context.DestinationKey, filePath);
-            var movedPath = MoveFileUnderRoot(
-                context.RootPath,
-                filePath,
-                context.DestinationRoot,
-                context.Settings,
-                qualityBucket);
-            if (string.IsNullOrWhiteSpace(movedPath))
+            var sourceDisplay = DownloadPathResolver.NormalizeDisplayPath(DownloadPathResolver.ResolveIoPath(filePath) ?? filePath);
+            try
             {
-                continue;
-            }
+                var qualityBucket = TryResolveBucket(maps.FileBucketsByDestination, context.DestinationKey, filePath);
+                var movedPath = MoveFileUnderRoot(
+                    context.RootPath,
+                    filePath,
+                    context.DestinationRoot,
+                    context.Settings,
+                    qualityBucket);
+                if (string.IsNullOrWhiteSpace(movedPath))
+                {
+                    summary.SkippedCount++;
+                    continue;
+                }
 
-            var finalPath = await ApplyDestinationConversionIfNeededAsync(
-                movedPath,
-                context.ConversionPlan,
-                context.CancellationToken);
-            var owners = ResolvePathOwners(maps.FileOwnersByDestination, context.DestinationKey, filePath);
-            RememberTransitionsForOwners(context.TransitionsByQueue, owners, filePath, finalPath);
+                string finalPath;
+                try
+                {
+                    finalPath = await ApplyDestinationConversionIfNeededAsync(
+                        movedPath,
+                        context.ConversionPlan,
+                        context.CancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    summary.FailedCount++;
+                    _logger.LogWarning(ex, "Auto-move conversion failed for destination file {Path}", movedPath);
+                    finalPath = movedPath;
+                }
+
+                var owners = ResolvePathOwners(maps.FileOwnersByDestination, context.DestinationKey, filePath);
+                RememberTransitionsForOwners(context.TransitionsByQueue, owners, filePath, finalPath);
+
+                if (DidPathChange(sourceDisplay, movedPath))
+                {
+                    summary.MovedCount++;
+                }
+                else
+                {
+                    summary.SkippedCount++;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                summary.FailedCount++;
+                _logger.LogWarning(ex, "Auto-move destination file failed for {Path}", filePath);
+            }
         }
     }
 
     private async Task MoveDestinationRootsAsync(
         DestinationMoveContext context,
-        PayloadSourceMaps maps)
+        PayloadSourceMaps maps,
+        AutoTagMoveSummary summary)
     {
         if (!maps.RootsByDestination.TryGetValue(context.DestinationKey, out var rootSet) || rootSet.Count == 0)
         {
@@ -369,32 +483,68 @@ public sealed class AutoTagDownloadMoveService
 
         foreach (var root in rootSet)
         {
-            var qualityBucket = TryResolveBucket(maps.RootBucketsByDestination, context.DestinationKey, root);
-            var movedPaths = MoveDirectoryTreeUnderRoot(
-                context.RootPath,
-                root,
-                context.DestinationRoot,
-                context.Settings,
-                qualityBucket);
-            if (movedPaths.Count == 0)
+            var candidateCount = TryCountFiles(root);
+            try
             {
-                continue;
-            }
+                var qualityBucket = TryResolveBucket(maps.RootBucketsByDestination, context.DestinationKey, root);
+                var movedPaths = MoveDirectoryTreeUnderRoot(
+                    context.RootPath,
+                    root,
+                    context.DestinationRoot,
+                    context.Settings,
+                    qualityBucket);
+                if (movedPaths.Count == 0)
+                {
+                    summary.SkippedCount += candidateCount;
+                    continue;
+                }
 
-            var owners = ResolvePathOwners(maps.RootOwnersByDestination, context.DestinationKey, root);
-            foreach (var transition in movedPaths)
+                summary.MovedCount += movedPaths.Count;
+                if (candidateCount > movedPaths.Count)
+                {
+                    summary.SkippedCount += candidateCount - movedPaths.Count;
+                }
+
+                var owners = ResolvePathOwners(maps.RootOwnersByDestination, context.DestinationKey, root);
+                foreach (var transition in movedPaths)
+                {
+                    string finalPath;
+                    try
+                    {
+                        finalPath = await ApplyDestinationConversionIfNeededAsync(
+                            transition.Value,
+                            context.ConversionPlan,
+                            context.CancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        summary.FailedCount++;
+                        _logger.LogWarning(ex, "Auto-move conversion failed for destination root item {Path}", transition.Value);
+                        finalPath = transition.Value;
+                    }
+
+                    RememberTransitionsForOwners(context.TransitionsByQueue, owners, transition.Key, finalPath);
+                }
+            }
+            catch (OperationCanceledException)
             {
-                var finalPath = await ApplyDestinationConversionIfNeededAsync(
-                    transition.Value,
-                    context.ConversionPlan,
-                    context.CancellationToken);
-                RememberTransitionsForOwners(context.TransitionsByQueue, owners, transition.Key, finalPath);
+                throw;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                summary.FailedCount += Math.Max(1, candidateCount);
+                _logger.LogWarning(ex, "Auto-move destination root failed for {Root}", root);
             }
         }
     }
 
     private async Task<IReadOnlyDictionary<string, string>> MoveResidualFilesAsync(
         ResidualMoveContext context,
+        AutoTagMoveSummary summary,
         CancellationToken cancellationToken)
     {
         var moved = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -404,17 +554,44 @@ public sealed class AutoTagDownloadMoveService
             return moved;
         }
 
+        summary.AddDestinationRoot(runtime.Paths.SuccessIo);
+        summary.AddDestinationRoot(runtime.Paths.FailedIo);
+
         var buckets = BuildResidualBuckets(runtime);
         foreach (var file in runtime.Files)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (IsAudioExtension(file))
+            var movedBefore = moved.Count;
+            try
             {
-                await ProcessResidualAudioFileAsync(file, runtime, buckets, moved, cancellationToken);
+                if (IsAudioExtension(file))
+                {
+                    await ProcessResidualAudioFileAsync(file, runtime, buckets, moved, cancellationToken);
+                }
+                else
+                {
+                    ProcessResidualSidecarFile(file, runtime, buckets, moved);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                summary.FailedCount++;
+                _logger.LogWarning(ex, "Auto-move residual processing failed for {Path}", file);
                 continue;
             }
 
-            ProcessResidualSidecarFile(file, runtime, buckets, moved);
+            if (moved.Count > movedBefore)
+            {
+                summary.MovedCount += moved.Count - movedBefore;
+            }
+            else
+            {
+                summary.SkippedCount++;
+            }
         }
 
         if (!runtime.Options.OrganizerOptions.DryRun && runtime.Options.OrganizerOptions.RemoveEmptyFolders)
@@ -423,6 +600,31 @@ public sealed class AutoTagDownloadMoveService
         }
 
         return moved;
+    }
+
+    private static bool DidPathChange(string sourcePath, string destinationPath)
+    {
+        return !string.Equals(
+            DownloadPathResolver.NormalizeDisplayPath(sourcePath),
+            DownloadPathResolver.NormalizeDisplayPath(destinationPath),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int TryCountFiles(string rootPath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
+            {
+                return 0;
+            }
+
+            return Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories).Count();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return 0;
+        }
     }
 
     private async Task<ResidualRuntime?> BuildResidualRuntimeAsync(
