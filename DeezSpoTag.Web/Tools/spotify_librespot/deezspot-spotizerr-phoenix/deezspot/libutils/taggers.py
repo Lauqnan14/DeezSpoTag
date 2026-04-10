@@ -116,7 +116,7 @@ def add_deezer_enhanced_metadata(
     return metadata_dict
 
 
-def add_spotify_enhanced_metadata(metadata_dict: Dict[str, Any], track_obj: Any) -> Dict[str, Any]:
+def add_spotify_enhanced_metadata(metadata_dict: Dict[str, Any], _track_obj: Any) -> Dict[str, Any]:
     """
     Add Spotify-specific enhanced metadata.
     

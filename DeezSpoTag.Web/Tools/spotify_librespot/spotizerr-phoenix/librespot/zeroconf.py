@@ -368,9 +368,12 @@ class ZeroconfServer(Closeable):
         device_type_name = Connect.DeviceType.Name(self.__inner.device_type)
         info["deviceType"] = device_type_name.title()
         with self.__connection_lock:
-            info[
-                "activeUser"] = self.__connecting_username if self.__connecting_username is not None else self.__session.username(
-                ) if self.has_valid_session() else ""
+            active_user = ""
+            if self.__connecting_username is not None:
+                active_user = self.__connecting_username
+            elif self.has_valid_session():
+                active_user = self.__session.username()
+            info["activeUser"] = active_user
         __socket.send(http_version.encode())
         __socket.send(b" 200 OK")
         __socket.send(self.__eol)
@@ -426,15 +429,25 @@ class ZeroconfServer(Closeable):
                     port))
 
         def close(self) -> None:
-            pass
+            self.__should_stop = True
+            try:
+                self.__socket.close()
+            except OSError:
+                pass
+            self.__worker.shutdown(wait=False)
 
         def run(self):
             while not self.__should_stop:
-                __socket, address = self.__socket.accept()
+                try:
+                    __socket, _ = self.__socket.accept()
+                except OSError:
+                    if self.__should_stop:
+                        return
+                    raise
 
-                def anonymous():
-                    self.__handle(__socket)
-                    __socket.close()
+                def anonymous(client_socket=__socket):
+                    self.__handle(client_socket)
+                    client_socket.close()
 
                 self.__worker.submit(anonymous)
 

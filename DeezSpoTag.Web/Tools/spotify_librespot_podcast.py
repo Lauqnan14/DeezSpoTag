@@ -34,22 +34,23 @@ def main():
     parser.add_argument("--type", required=True, choices=["show", "episode"], help="Metadata type")
     parser.add_argument("--id", required=True, help="Spotify show/episode ID (base62)")
     args = parser.parse_args()
+    exit_code = 1
 
     try:
         librespot_client = load_deezspot_librespot_client()
     except Exception as exc:
         write_result(False, error=f"librespot client loader failed: {exc}")
-        return 1
+        return exit_code
 
     credentials_path = resolve_credentials(args.credentials)
     if credentials_path is None:
         write_result(False, error="credentials_not_found")
-        return 1
+        return exit_code
 
     spotify_id = args.id.strip()
     if not is_valid_spotify_id(spotify_id):
         write_result(False, error="invalid_spotify_id")
-        return 1
+        return exit_code
 
     client = None
     try:
@@ -59,15 +60,15 @@ def main():
         else:
             payload = _fetch_episode_payload(client, spotify_id)
         write_result(True, payload=payload)
-        return 0
+        exit_code = 0
     except Exception as exc:
         write_result(False, error=f"librespot_{args.type}_error: {exc}")
-        return 1
     finally:
         try:
             close_if_possible(client)
         except Exception:
             pass
+    return exit_code
 
 
 if __name__ == "__main__":

@@ -76,7 +76,7 @@ def main():
 
     device_name = args.device_name
     server = None
-    for attempt in range(5):
+    for _ in range(5):
         try:
             server = zeroconf_server_cls.Builder().set_device_name(device_name).create()
             logging.info("Zeroconf server started with device name: %s", device_name)

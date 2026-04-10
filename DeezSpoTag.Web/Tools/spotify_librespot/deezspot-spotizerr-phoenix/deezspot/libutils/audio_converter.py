@@ -228,7 +228,7 @@ def convert_audio(input_path, format_name=None, bitrate=None, register_func=None
         logger.info(f"Successfully converted to {format_name_upper}" + (f" at {effective_bitrate}" if effective_bitrate else ""))
         return output_path
         
-    except FileNotFoundError as fnf:
+    except FileNotFoundError:
         logger.error(f"FFmpeg executable not found at '{ffmpeg_path}'. Conversion aborted.")
         if exists(temp_output):
             try:

@@ -22,7 +22,7 @@ class ChannelManager(Closeable, PacketsReceiver):
     logger = logging.getLogger("Librespot:ChannelManager")
     seq_holder = 0
     seq_holder_lock = threading.Condition()
-    __session: Session = None
+    __session: typing.Optional[Session] = None
 
     def __init__(self, session: Session):
         self.__session = session
@@ -106,7 +106,7 @@ class ChannelManager(Closeable, PacketsReceiver):
                 length: int
                 while len(payload.buffer) > 0:
                     length = payload.read_short()
-                    if not length > 0:
+                    if length <= 0:
                         break
                     header_id = payload.read_byte()
                     header_data = payload.read(length - 1)

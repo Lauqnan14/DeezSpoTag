@@ -1,9 +1,10 @@
 #!/usr/bin/python3
+from typing import Optional
 
 class Preferences:
     def __init__(self) -> None:
         self.link = None
-        self.song_metadata: dict = None
+        self.song_metadata: Optional[dict] = None
         self.quality_download = None
         self.output_dir = None
         self.ids = None

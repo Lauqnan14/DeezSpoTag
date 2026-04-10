@@ -405,7 +405,7 @@ class AudioAnalyzer:
 
         return result
 
-    def _safe_predict(self, model, embeddings, model_name: str) -> Tuple[float, float]:
+    def _safe_predict(self, model, embeddings, _model_name: str) -> Tuple[float, float]:
         try:
             preds = np.array(model(embeddings))
             if preds.ndim == 2 and preds.shape[1] > 1:
