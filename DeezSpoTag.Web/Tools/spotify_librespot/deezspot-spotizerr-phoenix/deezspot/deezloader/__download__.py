@@ -37,6 +37,10 @@ from deezspot.libutils.utils import (
 )
 from deezspot.libutils.write_m3u import create_m3u_file, append_track_to_m3u
 from deezspot.libutils.metadata_converter import track_object_to_dict, album_object_to_dict
+from deezspot.libutils.download_helpers import (
+    build_song_path_with_preferences,
+    resolve_deezer_summary_media,
+)
 from deezspot.libutils.progress_reporter import (
     report_track_initializing, report_track_skipped, report_track_retrying,
     report_track_realtime_progress, report_track_error, report_track_done,
@@ -56,17 +60,17 @@ from deezspot.libutils.skip_detection import check_track_exists
 from deezspot.libutils.cleanup_utils import register_active_download, unregister_active_download
 from deezspot.libutils.audio_converter import AUDIO_FORMATS # Added for parse_format_string
 from deezspot.models.callback.callbacks import (
-    trackCallbackObject,
-    albumCallbackObject,
-    playlistCallbackObject,
-    initializingObject,
-    skippedObject,
-    retryingObject,
-    realTimeObject,
-    errorObject,
-    doneObject,
-    summaryObject,
-    failedTrackObject,
+    TrackCallbackObject,
+    AlbumCallbackObject,
+    PlaylistCallbackObject,
+    InitializingObject,
+    SkippedObject,
+    RetryingObject,
+    RealTimeObject,
+    ErrorObject,
+    DoneObject,
+    SummaryObject,
+    FailedTrackObject,
 )
 from deezspot.models.callback.track import trackObject as trackCbObject, albumTrackObject, artistTrackObject, playlistTrackObject
 from deezspot.models.callback.album import albumObject as albumCbObject
@@ -373,48 +377,15 @@ class EasyDw:
         self.__song_quality = self.__c_quality['s_quality']
 
     def __set_song_path(self) -> None:
-        # If the Preferences object has custom formatting strings, pass them on.
-        custom_dir_format = getattr(self.__preferences, 'custom_dir_format', None)
-        custom_track_format = getattr(self.__preferences, 'custom_track_format', None)
-        pad_tracks = getattr(self.__preferences, 'pad_tracks', True)
-        self.__song_metadata_dict['artist_separator'] = getattr(self.__preferences, 'artist_separator', '; ')
-        # Determine pad width (supports 'auto' mode) based on context
-        pad_number_width = None
-        try:
-            pnw = getattr(self.__preferences, 'pad_number_width', None)
-            if isinstance(pnw, str) and pnw.lower() == 'auto':
-                total = getattr(self.__preferences, 'total_tracks', None)
-                if isinstance(total, int) and total and total > 0:
-                    pad_number_width = max(2, len(str(total)))
-            elif isinstance(pnw, int) and pnw >= 1:
-                pad_number_width = pnw
-        except Exception:
-            pad_number_width = None
-        # Inject playlist placeholders if in playlist context
-        try:
-            if self.__parent == 'playlist' and hasattr(self.__preferences, 'json_data') and self.__preferences.json_data:
-                playlist_data = self.__preferences.json_data
-                # Support both Deezer playlistObject and raw dict (Spotify metadata case)
-                if isinstance(playlist_data, dict):
-                    playlist_name = playlist_data.get('name') or playlist_data.get('title') or 'unknown'
-                else:
-                    # playlistObject has 'title'
-                    playlist_name = getattr(playlist_data, 'title', 'unknown')
-                self.__song_metadata_dict['playlist'] = playlist_name
-                # 1-based index already stored in preferences during iteration
-                self.__song_metadata_dict['playlistnum'] = getattr(self.__preferences, 'track_number', None) or 0
-        except Exception:
-            # Non-fatal if playlist metadata is not available
-            pass
-        self.__song_path = set_path(
-            self.__song_metadata_dict,
-            self.__output_dir,
-            self.__song_quality,
-            self.__file_format,
-            custom_dir_format=custom_dir_format,
-            custom_track_format=custom_track_format,
-            pad_tracks=pad_tracks,
-            pad_number_width=pad_number_width
+        self.__song_path = build_song_path_with_preferences(
+            set_path_func=set_path,
+            song_metadata_dict=self.__song_metadata_dict,
+            output_dir=self.__output_dir,
+            song_quality=self.__song_quality,
+            file_format=self.__file_format,
+            preferences=self.__preferences,
+            parent=self.__parent,
+            song_metadata=self.__track_obj,
         )
     
     def __set_episode_path(self) -> None:
@@ -549,7 +520,7 @@ class EasyDw:
                         if file_format:
                             download_quality_val = file_format.upper().lstrip('.')
 
-                    done_status = doneObject(
+                    done_status = DoneObject(
                         ids=self.__track_obj.ids,
                         convert_to=self.__convert_to,
                         final_path=final_path_val,
@@ -557,7 +528,7 @@ class EasyDw:
                     )
                     
                     if self.__parent is None:
-                        summary = summaryObject(
+                        summary = SummaryObject(
                             successful_tracks=[self.__track_obj],
                             total_successful=1,
                             service=Service.DEEZER,
@@ -565,29 +536,16 @@ class EasyDw:
                         summary.final_path = final_path_val
                         summary.download_quality = download_quality_val
                         # Compute final quality/bitrate
-                        quality_val = None
-                        bitrate_val = None
-                        if self.__convert_to:
-                            fmt, brp = self._parse_format_string(self.__convert_to)
-                            if fmt:
-                                quality_val = fmt.lower()
-                            if brp:
-                                bitrate_val = brp.lower().replace('kbps', 'k')
-                        else:
-                            qkey = (self.__quality_download or '').upper()
-                            if qkey.startswith('MP3'):
-                                quality_val = 'mp3'
-                                try:
-                                    bitrate_val = f"{qkey.split('_')[1]}k"
-                                except Exception:
-                                    bitrate_val = None
-                            elif qkey == 'FLAC':
-                                quality_val = 'flac'
+                        quality_val, bitrate_val = resolve_deezer_summary_media(
+                            quality_download=self.__quality_download,
+                            convert_to=self.__convert_to,
+                            bitrate=self.__bitrate,
+                        )
                         summary.quality = quality_val
                         summary.bitrate = bitrate_val
                         done_status.summary = summary
                         
-                    callback_obj = trackCallbackObject(
+                    callback_obj = TrackCallbackObject(
                         track=self.__track_obj,
                         status_info=done_status,
                         parent=parent_obj,
@@ -614,11 +572,11 @@ class EasyDw:
             if item_type == "Track":
                 parent_obj, current_track_val, total_tracks_val = self._get_parent_context()
                 
-                error_obj = errorObject(
+                error_obj = ErrorObject(
                     ids=self.__track_obj.ids,
                     error=error_message
                 )
-                callback_obj = trackCallbackObject(
+                callback_obj = TrackCallbackObject(
                     track=self.__track_obj,
                     status_info=error_obj,
                     parent=parent_obj,
@@ -837,13 +795,13 @@ class EasyDw:
                     self.__c_track.error_message = f"Decryption failed: {str(e_decrypt)}"
                     
                     # Ensure error callback uses the same parent_obj that was created earlier
-                    error_status = errorObject(
+                    error_status = ErrorObject(
                         ids=self.__track_obj.ids,
                         error=f"Decryption failed: {str(e_decrypt)}",
                         convert_to=self.__convert_to
                     )
                     
-                    error_callback_obj = trackCallbackObject(
+                    error_callback_obj = TrackCallbackObject(
                         track=self.__track_obj,
                         status_info=error_status,
                         parent=parent_obj,  # Use the same parent_obj created earlier
@@ -948,13 +906,13 @@ class EasyDw:
                 elif "403" in error_msg or "Forbidden" in error_msg: error_msg = "Access denied - Track might be region-restricted or premium-only"
                 elif "404" in error_msg or "Not Found" in error_msg: error_msg = "Track not found - It might have been removed"
                 
-                error_status = errorObject(
+                error_status = ErrorObject(
                     ids=self.__track_obj.ids,
                     error=error_msg,
                     convert_to=self.__convert_to
                 )
                 
-                callback_obj = trackCallbackObject(
+                callback_obj = TrackCallbackObject(
                     track=self.__track_obj,
                     status_info=error_status,
                     parent=parent_obj,  # Use the same parent_obj created earlier
@@ -1342,12 +1300,12 @@ class DwAlbum:
             elif track.success:
                 successful_tracks_cb.append(track_obj)
             else:
-                failed_tracks_cb.append(failedTrackObject(
+                failed_tracks_cb.append(FailedTrackObject(
                     track=track_obj,
                     reason=getattr(track, 'error_message', 'Unknown reason')
                 ))
 
-        summary_obj = summaryObject(
+        summary_obj = SummaryObject(
             successful_tracks=successful_tracks_cb,
             skipped_tracks=skipped_tracks_cb,
             failed_tracks=failed_tracks_cb,
@@ -1357,26 +1315,11 @@ class DwAlbum:
             service=Service.DEEZER
         )
         # Compute and attach final media characteristics
-        quality_val = None
-        bitrate_val = None
-        if getattr(self.__preferences, 'convert_to', None):
-            fmt = getattr(self.__preferences, 'convert_to', None)
-            if fmt:
-                quality_val = fmt.lower()
-            br_raw = getattr(self.__preferences, 'bitrate', None)
-            if br_raw:
-                digits = ''.join([c for c in str(br_raw) if c.isdigit()])
-                bitrate_val = f"{digits}k" if digits else None
-        else:
-            qkey = (self.__quality_download or '').upper()
-            if qkey.startswith('MP3'):
-                quality_val = 'mp3'
-                try:
-                    bitrate_val = f"{qkey.split('_')[1]}k"
-                except Exception:
-                    bitrate_val = None
-            elif qkey == 'FLAC':
-                quality_val = 'flac'
+        quality_val, bitrate_val = resolve_deezer_summary_media(
+            quality_download=self.__quality_download,
+            convert_to=getattr(self.__preferences, 'convert_to', None),
+            bitrate=getattr(self.__preferences, 'bitrate', None),
+        )
         summary_obj.quality = quality_val
         summary_obj.bitrate = bitrate_val
         
@@ -1405,8 +1348,8 @@ class DwPlaylist:
     def dw(self) -> Playlist:
         playlist_obj: playlistCbObject = self.__preferences.json_data
         
-        status_obj_init = initializingObject(ids=playlist_obj.ids)
-        callback_obj_init = playlistCallbackObject(playlist=playlist_obj, status_info=status_obj_init)
+        status_obj_init = InitializingObject(ids=playlist_obj.ids)
+        callback_obj_init = PlaylistCallbackObject(playlist=playlist_obj, status_info=status_obj_init)
         report_progress(
             reporter=Download_JOB.progress_reporter,
             callback_obj=callback_obj_init
@@ -1440,7 +1383,7 @@ class DwPlaylist:
                 unknown_track = trackCbObject(title="Unknown Skipped Item")
                 reason = "Playlist item was not a valid track object."
                 
-                failed_tracks_cb.append(failedTrackObject(track=unknown_track, reason=reason))
+                failed_tracks_cb.append(FailedTrackObject(track=unknown_track, reason=reason))
                 
                 failed_track_model = Track(
                     tags={'music': 'Unknown Skipped Item', 'artist': 'Unknown'},
@@ -1471,13 +1414,13 @@ class DwPlaylist:
                 elif current_track_object.success:
                     successful_tracks_cb.append(c_track_obj)
                 else:
-                    failed_tracks_cb.append(failedTrackObject(
+                    failed_tracks_cb.append(FailedTrackObject(
                         track=c_track_obj,
                         reason=getattr(current_track_object, 'error_message', 'Unknown reason')
                     ))
             except Exception as e:
                 logger.error(f"Track '{c_track_obj.title}' in playlist '{playlist_obj.title}' failed: {e}")
-                failed_tracks_cb.append(failedTrackObject(track=c_track_obj, reason=str(e)))
+                failed_tracks_cb.append(FailedTrackObject(track=c_track_obj, reason=str(e)))
                 current_track_object = Track(self._track_object_to_dict(c_track_obj), None, None, None, c_preferences.link, c_preferences.ids)
                 current_track_object.success = False
                 current_track_object.error_message = str(e)
@@ -1492,7 +1435,7 @@ class DwPlaylist:
             create_zip(tracks, zip_name=zip_name)
             playlist.zip_path = zip_name
  
-        summary_obj = summaryObject(
+        summary_obj = SummaryObject(
             successful_tracks=successful_tracks_cb,
             skipped_tracks=skipped_tracks_cb,
             failed_tracks=failed_tracks_cb,
@@ -1502,34 +1445,19 @@ class DwPlaylist:
             service=Service.DEEZER
         )
         # Compute and attach final media characteristics
-        quality_val = None
-        bitrate_val = None
-        if getattr(self.__preferences, 'convert_to', None):
-            fmt = getattr(self.__preferences, 'convert_to', None)
-            if fmt:
-                quality_val = fmt.lower()
-            br_raw = getattr(self.__preferences, 'bitrate', None)
-            if br_raw:
-                digits = ''.join([c for c in str(br_raw) if c.isdigit()])
-                bitrate_val = f"{digits}k" if digits else None
-        else:
-            qkey = (self.__quality_download or '').upper()
-            if qkey.startswith('MP3'):
-                quality_val = 'mp3'
-                try:
-                    bitrate_val = f"{qkey.split('_')[1]}k"
-                except Exception:
-                    bitrate_val = None
-            elif qkey == 'FLAC':
-                quality_val = 'flac'
+        quality_val, bitrate_val = resolve_deezer_summary_media(
+            quality_download=self.__quality_download,
+            convert_to=getattr(self.__preferences, 'convert_to', None),
+            bitrate=getattr(self.__preferences, 'bitrate', None),
+        )
         summary_obj.quality = quality_val
         summary_obj.bitrate = bitrate_val
         
         # Attach m3u path to summary
         summary_obj.m3u_path = m3u_path
         
-        status_obj_done = doneObject(ids=playlist_obj.ids, summary=summary_obj)
-        callback_obj_done = playlistCallbackObject(playlist=playlist_obj, status_info=status_obj_done)
+        status_obj_done = DoneObject(ids=playlist_obj.ids, summary=summary_obj)
+        callback_obj_done = PlaylistCallbackObject(playlist=playlist_obj, status_info=status_obj_done)
         report_progress(
             reporter=Download_JOB.progress_reporter,
             callback_obj=callback_obj_done
@@ -1583,9 +1511,9 @@ class DwEpisode:
             )
             report_progress(
                 reporter=Download_JOB.progress_reporter,
-                callback_obj=trackCallbackObject(
+                callback_obj=TrackCallbackObject(
                     track=callback_track,
-                    status_info=initializingObject(ids=callback_track.ids),
+                    status_info=InitializingObject(ids=callback_track.ids),
                 ),
             )
             
@@ -1607,9 +1535,9 @@ class DwEpisode:
             # Send completion status
             report_progress(
                 reporter=Download_JOB.progress_reporter,
-                callback_obj=trackCallbackObject(
+                callback_obj=TrackCallbackObject(
                     track=callback_track,
-                    status_info=doneObject(ids=callback_track.ids),
+                    status_info=DoneObject(ids=callback_track.ids),
                 ),
             )
             

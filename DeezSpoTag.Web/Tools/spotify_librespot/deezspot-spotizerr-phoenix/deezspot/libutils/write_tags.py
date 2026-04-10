@@ -20,6 +20,8 @@ import time
 import unicodedata
 
 logger = logging.getLogger("deezspot.taggers")
+JPEG_MIME = "image/jpeg"
+ITUNES_ISRC_TAG = "----:com.apple.iTunes:ISRC"
 
 # Helper: wait for a file to appear on disk (and preferably become non-empty)
 def _wait_for_file(path: str, timeout: float = 3.0, interval: float = 0.1) -> bool:
@@ -131,7 +133,7 @@ def __write_mp3(filepath, data):
 
 	img_bytes = _get_image_bytes(data.get('image'))
 	if img_bytes:
-		tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=img_bytes))
+		tags.add(APIC(encoding=3, mime=JPEG_MIME, type=3, desc='Cover', data=img_bytes))
 	
 	if data.get('bpm') and str(data.get('bpm', '')).isdigit(): 
 		tags.add(TXXX(encoding=3, desc='BPM', text=str(data['bpm'])))
@@ -203,8 +205,8 @@ def __write_m4a(filepath, data):
 	
 	# For ISRC - often stored in a custom way
 	if data.get('isrc'):
-		tags['----:com.apple.iTunes:ISRC'] = bytes(str(data['isrc']), 'utf-8')
-	elif '----:com.apple.iTunes:ISRC' in tags: del tags['----:com.apple.iTunes:ISRC']
+		tags[ITUNES_ISRC_TAG] = bytes(str(data['isrc']), 'utf-8')
+	elif ITUNES_ISRC_TAG in tags: del tags[ITUNES_ISRC_TAG]
 
 	try:
 		mp4.save(filepath) # Use the MP4 object's save method
@@ -256,7 +258,7 @@ def __write_vorbis(filepath, data, audio_format_class):
 		if audio_format_class == FLAC:
 			pic = FLACPicture()
 			pic.type = 3
-			pic.mime = 'image/jpeg' if img_bytes.startswith(b'\xff\xd8') else 'image/png'
+			pic.mime = JPEG_MIME if img_bytes.startswith(b'\xff\xd8') else 'image/png'
 			pic.data = img_bytes
 			tags.clear_pictures()
 			tags.add_picture(pic)
@@ -265,7 +267,7 @@ def __write_vorbis(filepath, data, audio_format_class):
 				# For OGG/Opus, METADATA_BLOCK_PICTURE is a base64 encoded FLAC Picture block
 				pic_for_ogg = FLACPicture() # Use FLACPicture structure
 				pic_for_ogg.type = 3
-				pic_for_ogg.mime = 'image/jpeg' if img_bytes.startswith(b'\xff\xd8') else 'image/png'
+				pic_for_ogg.mime = JPEG_MIME if img_bytes.startswith(b'\xff\xd8') else 'image/png'
 				pic_for_ogg.data = img_bytes
 				tags['METADATA_BLOCK_PICTURE'] = [b64encode(pic_for_ogg.write()).decode('ascii')]
 			except Exception as e_ogg_pic:

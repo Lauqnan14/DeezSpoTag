@@ -23,6 +23,9 @@ import urllib.parse
 if typing.TYPE_CHECKING:
     from librespot.core import Session
 
+STREAM_CLOSED_MESSAGE = "Stream is closed!"
+RESPONSE_BODY_EMPTY_MESSAGE = "Response body is empty!"
+
 
 class AbsChunkedInputStream(io.BytesIO, HaltListener):
     chunk_exception = None
@@ -76,7 +79,7 @@ class AbsChunkedInputStream(io.BytesIO, HaltListener):
         if where < 0:
             raise TypeError()
         if self.closed:
-            raise IOError("Stream is closed!")
+            raise IOError(STREAM_CLOSED_MESSAGE)
         self.__pos = where
         self.check_availability(int(self.__pos / (128 * 1024)), False, False)
 
@@ -84,7 +87,7 @@ class AbsChunkedInputStream(io.BytesIO, HaltListener):
         if n < 0:
             raise TypeError()
         if self.closed:
-            raise IOError("Stream is closed!")
+            raise IOError(STREAM_CLOSED_MESSAGE)
         k = self.size() - self.__pos
         if n < k:
             k = n
@@ -149,7 +152,7 @@ class AbsChunkedInputStream(io.BytesIO, HaltListener):
 
     def read(self, __size: int = 0) -> bytes:
         if self.closed:
-            raise IOError("Stream is closed!")
+            raise IOError(STREAM_CLOSED_MESSAGE)
         if __size <= 0:
             if self.__pos == self.size():
                 return b""
@@ -418,7 +421,7 @@ class CdnManager:
             raise IOError("{}".format(response.status_code))
         body = response.content
         if body is None:
-            raise IOError("Response body is empty!")
+            raise IOError(RESPONSE_BODY_EMPTY_MESSAGE)
         return body
 
     def stream_external_episode(self, episode: Metadata.Episode,
@@ -453,7 +456,7 @@ class CdnManager:
             raise IOError(response.status_code)
         body = response.content
         if body is None:
-            raise IOError("Response body is empty!")
+            raise IOError(RESPONSE_BODY_EMPTY_MESSAGE)
         proto = StorageResolve.StorageResolveResponse()
         proto.ParseFromString(body)
         if proto.result == StorageResolve.StorageResolveResponse.Result.CDN:
@@ -639,7 +642,7 @@ class CdnManager:
                 raise IOError(response.status_code)
             body = response.content
             if body is None:
-                raise IOError("Response body is empty!")
+                raise IOError(RESPONSE_BODY_EMPTY_MESSAGE)
             return CdnManager.InternalResponse(body, dict(response.headers))
 
         class InternalStream(AbsChunkedInputStream):
@@ -845,7 +848,7 @@ class PlayableContentFeeder:
             raise RuntimeError(resp.status_code)
         body = resp.content
         if body is None:
-            raise RuntimeError("Response body is empty!")
+            raise RuntimeError(RESPONSE_BODY_EMPTY_MESSAGE)
         storage_resolve_response = StorageResolve.StorageResolveResponse()
         storage_resolve_response.ParseFromString(body)
         return storage_resolve_response

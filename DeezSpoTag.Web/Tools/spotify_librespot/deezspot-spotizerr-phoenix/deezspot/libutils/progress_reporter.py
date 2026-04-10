@@ -3,9 +3,9 @@
 from typing import Optional, Any, Dict, List
 from deezspot.libutils.logging_utils import report_progress
 from deezspot.models.callback import (
-    trackCallbackObject, albumCallbackObject, playlistCallbackObject,
-    initializingObject, skippedObject, retryingObject, realTimeObject, 
-    errorObject, doneObject, summaryObject
+    TrackCallbackObject, AlbumCallbackObject, PlaylistCallbackObject,
+    InitializingObject, SkippedObject, RetryingObject, RealTimeObject, 
+    ErrorObject, DoneObject, SummaryObject
 )
 
 
@@ -46,13 +46,13 @@ def report_track_initializing(
         current_track: Current track number for progress
         total_tracks: Total tracks for progress
     """
-    status_obj = initializingObject(
+    status_obj = InitializingObject(
         ids=getattr(track_obj, 'ids', None),
         convert_to=getattr(preferences, 'convert_to', None),
         bitrate=getattr(preferences, 'bitrate', None)
     )
     
-    callback_obj = trackCallbackObject(
+    callback_obj = TrackCallbackObject(
         track=track_obj,
         status_info=status_obj,
         current_track=current_track or getattr(preferences, 'track_number', None),
@@ -84,14 +84,14 @@ def report_track_skipped(
         current_track: Current track number for progress
         total_tracks: Total tracks for progress
     """
-    status_obj = skippedObject(
+    status_obj = SkippedObject(
         ids=getattr(track_obj, 'ids', None),
         reason=reason,
         convert_to=getattr(preferences, 'convert_to', None),
         bitrate=getattr(preferences, 'bitrate', None)
     )
     
-    callback_obj = trackCallbackObject(
+    callback_obj = TrackCallbackObject(
         track=track_obj,
         status_info=status_obj,
         current_track=current_track or getattr(preferences, 'track_number', None),
@@ -127,7 +127,7 @@ def report_track_retrying(
         current_track: Current track number for progress
         total_tracks: Total tracks for progress
     """
-    status_obj = retryingObject(
+    status_obj = RetryingObject(
         ids=getattr(track_obj, 'ids', None),
         retry_count=retry_count,
         seconds_left=seconds_left,
@@ -136,7 +136,7 @@ def report_track_retrying(
         bitrate=getattr(preferences, 'bitrate', None)
     )
     
-    callback_obj = trackCallbackObject(
+    callback_obj = TrackCallbackObject(
         track=track_obj,
         status_info=status_obj,
         current_track=current_track or getattr(preferences, 'track_number', None),
@@ -170,7 +170,7 @@ def report_track_realtime_progress(
         current_track: Current track number for progress
         total_tracks: Total tracks for progress
     """
-    status_obj = realTimeObject(
+    status_obj = RealTimeObject(
         ids=getattr(track_obj, 'ids', None),
         time_elapsed=time_elapsed,
         progress=progress,
@@ -178,7 +178,7 @@ def report_track_realtime_progress(
         bitrate=getattr(preferences, 'bitrate', None)
     )
     
-    callback_obj = trackCallbackObject(
+    callback_obj = TrackCallbackObject(
         track=track_obj,
         status_info=status_obj,
         current_track=current_track or getattr(preferences, 'track_number', None),
@@ -210,14 +210,14 @@ def report_track_error(
         current_track: Current track number for progress
         total_tracks: Total tracks for progress
     """
-    status_obj = errorObject(
+    status_obj = ErrorObject(
         ids=getattr(track_obj, 'ids', None),
         error=error,
         convert_to=getattr(preferences, 'convert_to', None),
         bitrate=getattr(preferences, 'bitrate', None)
     )
     
-    callback_obj = trackCallbackObject(
+    callback_obj = TrackCallbackObject(
         track=track_obj,
         status_info=status_obj,
         current_track=current_track or getattr(preferences, 'track_number', None),
@@ -233,7 +233,7 @@ def report_track_error(
 def report_track_done(
     track_obj: Any,
     preferences: Any,
-    summary: Optional[summaryObject] = None,
+    summary: Optional[SummaryObject] = None,
     parent_obj: Optional[Any] = None,
     current_track: Optional[int] = None,
     total_tracks: Optional[int] = None,
@@ -254,7 +254,7 @@ def report_track_done(
         final_path: Final filesystem path of the produced file
         download_quality: String label of the used download quality (e.g., OGG_160, OGG_320 or FLAC/MP3_320)
     """
-    status_obj = doneObject(
+    status_obj = DoneObject(
         ids=getattr(track_obj, 'ids', None),
         summary=summary,
         convert_to=getattr(preferences, 'convert_to', None),
@@ -263,7 +263,7 @@ def report_track_done(
         download_quality=download_quality
     )
     
-    callback_obj = trackCallbackObject(
+    callback_obj = TrackCallbackObject(
         track=track_obj,
         status_info=status_obj,
         current_track=current_track or getattr(preferences, 'track_number', None),
@@ -283,15 +283,15 @@ def report_album_initializing(album_obj: Any) -> None:
     Args:
         album_obj: Album object being initialized
     """
-    status_obj = initializingObject(ids=getattr(album_obj, 'ids', None))
-    callback_obj = albumCallbackObject(album=album_obj, status_info=status_obj)
+    status_obj = InitializingObject(ids=getattr(album_obj, 'ids', None))
+    callback_obj = AlbumCallbackObject(album=album_obj, status_info=status_obj)
     
     reporter = _get_reporter()
     if reporter:
         report_progress(reporter=reporter, callback_obj=callback_obj)
 
 
-def report_album_done(album_obj: Any, summary: summaryObject) -> None:
+def report_album_done(album_obj: Any, summary: SummaryObject) -> None:
     """
     Report album completion status.
     
@@ -299,8 +299,8 @@ def report_album_done(album_obj: Any, summary: summaryObject) -> None:
         album_obj: Album object that completed
         summary: Summary of track download results
     """
-    status_obj = doneObject(ids=getattr(album_obj, 'ids', None), summary=summary)
-    callback_obj = albumCallbackObject(album=album_obj, status_info=status_obj)
+    status_obj = DoneObject(ids=getattr(album_obj, 'ids', None), summary=summary)
+    callback_obj = AlbumCallbackObject(album=album_obj, status_info=status_obj)
     
     reporter = _get_reporter()
     if reporter:
@@ -314,15 +314,15 @@ def report_playlist_initializing(playlist_obj: Any) -> None:
     Args:
         playlist_obj: Playlist object being initialized
     """
-    status_obj = initializingObject(ids=getattr(playlist_obj, 'ids', None))
-    callback_obj = playlistCallbackObject(playlist=playlist_obj, status_info=status_obj)
+    status_obj = InitializingObject(ids=getattr(playlist_obj, 'ids', None))
+    callback_obj = PlaylistCallbackObject(playlist=playlist_obj, status_info=status_obj)
     
     reporter = _get_reporter()
     if reporter:
         report_progress(reporter=reporter, callback_obj=callback_obj)
 
 
-def report_playlist_done(playlist_obj: Any, summary: summaryObject, *, m3u_path: Optional[str] = None) -> None:
+def report_playlist_done(playlist_obj: Any, summary: SummaryObject, *, m3u_path: Optional[str] = None) -> None:
     """
     Report playlist completion status.
     
@@ -333,8 +333,8 @@ def report_playlist_done(playlist_obj: Any, summary: summaryObject, *, m3u_path:
     """
     if m3u_path:
         summary.m3u_path = m3u_path
-    status_obj = doneObject(ids=getattr(playlist_obj, 'ids', None), summary=summary)
-    callback_obj = playlistCallbackObject(playlist=playlist_obj, status_info=status_obj)
+    status_obj = DoneObject(ids=getattr(playlist_obj, 'ids', None), summary=summary)
+    callback_obj = PlaylistCallbackObject(playlist=playlist_obj, status_info=status_obj)
     
     reporter = _get_reporter()
     if reporter:

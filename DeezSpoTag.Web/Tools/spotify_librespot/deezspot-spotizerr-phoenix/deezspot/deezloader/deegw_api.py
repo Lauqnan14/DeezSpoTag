@@ -16,7 +16,7 @@ from deezspot.libutils.logging_utils import logger
 import re
 from urllib.parse import urlparse, urlunparse
 
-class API_GW:
+class ApiGw:
 
     @classmethod
     def __init__(
@@ -37,7 +37,7 @@ class API_GW:
 
         cls.__get_lyric = "song.getLyrics"
         cls.__get_song_data = "song.getData"
-        cls.__get_user_getArl = "user.getArl"
+        cls.__get_user_get_arl = "user.getArl"
         cls.__get_page_track = "deezer.pageTrack"
         cls.__get_user_data = "deezer.getUserData"
         cls.__get_album_data = "song.getListByAlbum"
@@ -58,7 +58,7 @@ class API_GW:
             (not cls.__email) and
             (not cls.__password)
         ):
-            msg = f"NO LOGIN STUFF INSERTED :)))"
+            msg = "NO LOGIN STUFF INSERTED :)))"
 
             raise BadCredentials(msg = msg)
 
@@ -76,7 +76,7 @@ class API_GW:
         }
 
         cls.__req.get(cls.__try_link, headers = c_headers).json()
-        cls.__arl = cls.__get_api(cls.__get_user_getArl)
+        cls.__arl = cls.__get_api(cls.__get_user_get_arl)
 
     @classmethod
     def __get_access_token(cls):
@@ -107,23 +107,6 @@ class API_GW:
 
         return access_token
 
-    def __cool_api(cls):
-        guest_sid = cls.__req.cookies.get("sid")
-        url = "https://api.deezer.com/1.0/gateway.php"
-
-        params = {
-            'api_key': "4VCYIJUCDLOUELGD1V8WBVYBNVDYOXEWSLLZDONGBBDFVXTZJRXPR29JRLQFO6ZE",
-            'sid': guest_sid,
-            'input': '3',
-            'output': '3',
-            'method': 'song_getData'
-        }
-
-        json = {'sng_id': 302127}
-
-        json = req_post(url, params = params, json = json).json()
-        print(json)
-
     @classmethod
     def __get_api(
         cls, method,
@@ -146,7 +129,7 @@ class API_GW:
         if not results and repeats != 0:
             cls.__refresh_token()
 
-            cls.__get_api(
+            return cls.__get_api(
                 method, json_data,
                 repeats = repeats - 1
             )
@@ -163,9 +146,9 @@ class API_GW:
     def __refresh_token(cls):
         cls.__req.cookies.clear_session_cookies()
 
-        if not cls.amIlog():
+        if not cls.is_logged_in():
             cls.__login()
-            cls.am_I_log()
+            cls.ensure_logged_in()
 
         data = cls.get_user()
         cls.__token = data['checkForm']
@@ -179,7 +162,7 @@ class API_GW:
         return license_token
 
     @classmethod
-    def amIlog(cls):
+    def is_logged_in(cls):
         data = cls.get_user()
         user_id = data['USER']['USER_ID']
         is_logged = False
@@ -190,8 +173,8 @@ class API_GW:
         return is_logged
 
     @classmethod
-    def am_I_log(cls):
-        if not cls.amIlog():
+    def ensure_logged_in(cls):
+        if not cls.is_logged_in():
             raise BadCredentials(arl = cls.__arl)
 
     @classmethod
@@ -268,39 +251,75 @@ class API_GW:
 
         return song_url
 
+    @staticmethod
+    def __is_spreaker_link(song_link):
+        return bool(song_link and 'spreaker.com' in song_link)
+
+    @staticmethod
+    def __is_empty_response(response):
+        return len(response.content) == 0
+
+    @classmethod
+    def __fetch_song_link(cls, song_link):
+        crypted_audio = req_get(song_link, stream=True, timeout=15)
+        if cls.__is_empty_response(crypted_audio):
+            raise TrackNotFound
+        return crypted_audio
+
+    @staticmethod
+    def __iter_dzcdn_fallback_links(song_link):
+        parsed = urlparse(song_link)
+        host = parsed.netloc
+        if not re.search(r"e-cdns-proxy-\d+\.dzcdn\.net", host):
+            return []
+
+        match = re.search(r"e-cdns-proxy-(\d+)\.dzcdn\.net", host)
+        original_idx = int(match.group(1)) if match else -1
+        fallback_links = []
+        for index in range(0, 8):
+            if index == original_idx:
+                continue
+
+            new_host = re.sub(
+                r"e-cdns-proxy-\d+\.dzcdn\.net",
+                f"e-cdns-proxy-{index}.dzcdn.net",
+                host
+            )
+            fallback_links.append(
+                urlunparse(
+                    (
+                        parsed.scheme,
+                        new_host,
+                        parsed.path,
+                        parsed.params,
+                        parsed.query,
+                        parsed.fragment
+                    )
+                )
+            )
+        return fallback_links
+
+    @classmethod
+    def __try_fallback_song_hosts(cls, song_link):
+        for fallback_link in cls.__iter_dzcdn_fallback_links(song_link):
+            try:
+                return cls.__fetch_song_link(fallback_link)
+            except Exception:
+                continue
+
+        return None
+
     @classmethod 
     def song_exist(cls, song_link):
-        if song_link and 'spreaker.com' in song_link:
+        if cls.__is_spreaker_link(song_link):
             return req_get(song_link, stream=True)
-        
+
         try:
-            crypted_audio = req_get(song_link, stream=True, timeout=15)
-            if len(crypted_audio.content) == 0:
-                raise TrackNotFound
-            return crypted_audio
-        except Exception as e:
-            # DNS fallback across dzcdn proxy hosts (e-cdns-proxy-0..7)
-            try:
-                parsed = urlparse(song_link)
-                host = parsed.netloc
-                if re.search(r"e-cdns-proxy-\d+\.dzcdn\.net", host):
-                    m = re.search(r"e-cdns-proxy-(\d+)\.dzcdn\.net", host)
-                    original_idx = int(m.group(1)) if m else -1
-                    for i in range(0, 8):
-                        if i == original_idx:
-                            continue
-                        new_host = re.sub(r"e-cdns-proxy-\d+\.dzcdn\.net", f"e-cdns-proxy-{i}.dzcdn.net", host)
-                        new_url = urlunparse((parsed.scheme, new_host, parsed.path, parsed.params, parsed.query, parsed.fragment))
-                        try:
-                            alt_resp = req_get(new_url, stream=True, timeout=15)
-                            if len(alt_resp.content) == 0:
-                                continue
-                            return alt_resp
-                        except Exception:
-                            continue
-            except Exception:
-                pass
-            # If all fallbacks failed, re-raise as TrackNotFound/Connection error
+            return cls.__fetch_song_link(song_link)
+        except Exception:
+            fallback_response = cls.__try_fallback_song_hosts(song_link)
+            if fallback_response is not None:
+                return fallback_response
             raise
 
     @classmethod
@@ -335,3 +354,6 @@ class API_GW:
         medias = infos['data']
 
         return medias
+
+
+API_GW = ApiGw

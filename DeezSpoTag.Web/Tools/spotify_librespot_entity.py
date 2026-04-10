@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 import argparse
+
 from spotify_librespot_common import close_if_possible
 from spotify_librespot_common import load_deezspot_librespot_client
-from spotify_librespot_common import parse_csv_values
 from spotify_librespot_common import resolve_credentials
 from spotify_librespot_common import write_result
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Fetch Spotify track metadata via librespot.")
+def run_entity_query(*, description, id_argument, id_help, fetch_payload, error_prefix, add_arguments=None):
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--credentials", required=True, help="Path to librespot credentials.json")
-    parser.add_argument("--track-ids", required=True, help="Comma-separated Spotify track IDs")
+    parser.add_argument(f"--{id_argument}", required=True, help=id_help)
+    if add_arguments is not None:
+        add_arguments(parser)
     args = parser.parse_args()
 
     try:
@@ -24,36 +26,26 @@ def main():
         write_result(False, error="credentials_not_found")
         return 1
 
-    ids = parse_csv_values(args.track_ids)
-    if not ids:
-        write_result(False, error="missing_track_ids")
-        return 1
-
     try:
         client = librespot_client(stored_credentials_path=credentials_path.as_posix(), max_workers=2)
     except Exception as exc:
         write_result(False, error=f"librespot_client_error: {exc}")
         return 1
 
-    results = []
-    for track_id in ids:
+    try:
+        payload = fetch_payload(client, args)
+    except Exception as exc:
+        write_result(False, error=f"{error_prefix}: {exc}")
         try:
-            track = client.get_track(track_id)
-            if not track:
-                results.append({"id": track_id, "error": "librespot_track_empty"})
-                continue
-            results.append({"id": track_id, "track": track})
-        except Exception as exc:
-            results.append({"id": track_id, "error": f"librespot_track_error: {exc}"})
+            close_if_possible(client)
+        except Exception:
+            pass
+        return 1
 
     try:
         close_if_possible(client)
     except Exception:
         pass
 
-    write_result(True, payload=results)
+    write_result(True, payload=payload)
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

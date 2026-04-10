@@ -413,12 +413,14 @@ DESCRIPTOR.message_types_by_name[
     "AppleSignInCredential"] = _APPLESIGNINCREDENTIAL
 _sym_db.RegisterFileDescriptor(DESCRIPTOR)
 
+CREDENTIALS_MODULE_NAME = "spotify.login5.v3.credentials.credentials_pb2"
+
 StoredCredential = _reflection.GeneratedProtocolMessageType(
     "StoredCredential",
     (_message.Message, ),
     {
         "DESCRIPTOR": _STOREDCREDENTIAL,
-        "__module__": "spotify.login5.v3.credentials.credentials_pb2"
+        "__module__": CREDENTIALS_MODULE_NAME
         # @@protoc_insertion_point(class_scope:spotify.login5.v3.credentials.StoredCredential)
     },
 )
@@ -429,7 +431,7 @@ Password = _reflection.GeneratedProtocolMessageType(
     (_message.Message, ),
     {
         "DESCRIPTOR": _PASSWORD,
-        "__module__": "spotify.login5.v3.credentials.credentials_pb2"
+        "__module__": CREDENTIALS_MODULE_NAME
         # @@protoc_insertion_point(class_scope:spotify.login5.v3.credentials.Password)
     },
 )
@@ -440,7 +442,7 @@ FacebookAccessToken = _reflection.GeneratedProtocolMessageType(
     (_message.Message, ),
     {
         "DESCRIPTOR": _FACEBOOKACCESSTOKEN,
-        "__module__": "spotify.login5.v3.credentials.credentials_pb2"
+        "__module__": CREDENTIALS_MODULE_NAME
         # @@protoc_insertion_point(class_scope:spotify.login5.v3.credentials.FacebookAccessToken)
     },
 )
@@ -451,7 +453,7 @@ OneTimeToken = _reflection.GeneratedProtocolMessageType(
     (_message.Message, ),
     {
         "DESCRIPTOR": _ONETIMETOKEN,
-        "__module__": "spotify.login5.v3.credentials.credentials_pb2"
+        "__module__": CREDENTIALS_MODULE_NAME
         # @@protoc_insertion_point(class_scope:spotify.login5.v3.credentials.OneTimeToken)
     },
 )
@@ -462,7 +464,7 @@ ParentChildCredential = _reflection.GeneratedProtocolMessageType(
     (_message.Message, ),
     {
         "DESCRIPTOR": _PARENTCHILDCREDENTIAL,
-        "__module__": "spotify.login5.v3.credentials.credentials_pb2"
+        "__module__": CREDENTIALS_MODULE_NAME
         # @@protoc_insertion_point(class_scope:spotify.login5.v3.credentials.ParentChildCredential)
     },
 )
@@ -473,7 +475,7 @@ AppleSignInCredential = _reflection.GeneratedProtocolMessageType(
     (_message.Message, ),
     {
         "DESCRIPTOR": _APPLESIGNINCREDENTIAL,
-        "__module__": "spotify.login5.v3.credentials.credentials_pb2"
+        "__module__": CREDENTIALS_MODULE_NAME
         # @@protoc_insertion_point(class_scope:spotify.login5.v3.credentials.AppleSignInCredential)
     },
 )

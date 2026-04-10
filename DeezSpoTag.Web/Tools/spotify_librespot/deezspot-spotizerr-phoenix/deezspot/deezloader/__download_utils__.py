@@ -117,6 +117,21 @@ def __blowfish_decrypt(data, key):
 		logger.error(f"Error in Blowfish decryption: {str(e)}")
 		raise
 
+def _decrypt_block_if_needed(block, bf_key, block_count, block_size):
+    if block_count % 3 != 0:
+        return block
+    if len(block) != block_size or len(block) % 8 != 0:
+        return block
+    try:
+        cipher = __newBlowfish(bf_key.encode(), __MODE_CBC, __idk)
+        decrypted = cipher.decrypt(block)
+        logger.debug(f"Decrypted block {block_count} (size: {len(decrypted)})")
+        return decrypted
+    except Exception as e:
+        logger.error(f"Failed to decrypt block {block_count}: {str(e)}")
+        # Continue with the original encrypted block rather than failing completely
+        return block
+
 def decrypt_blowfish_track(crypted_audio, song_id, _md5_origin, song_path):
     """
     Decrypt the audio file using Blowfish encryption.
@@ -162,19 +177,7 @@ def decrypt_blowfish_track(crypted_audio, song_id, _md5_origin, song_path):
                     is_encrypted = (block_count % 3 == 0)
                     
                     if is_encrypted:
-                        # Ensure the block is a multiple of 8 bytes (Blowfish block size)
-                        if len(block) == block_size and len(block) % 8 == 0:
-                            try:
-                                # Create a fresh cipher with the initialization vector for each block
-                                # This is crucial - we need to reset the IV for each encrypted block
-                                cipher = __newBlowfish(bf_key.encode(), __MODE_CBC, __idk)
-                                
-                                # Decrypt the block
-                                block = cipher.decrypt(block)
-                                logger.debug(f"Decrypted block {block_count} (size: {len(block)})")
-                            except Exception as e:
-                                logger.error(f"Failed to decrypt block {block_count}: {str(e)}")
-                                # Continue with the encrypted block rather than failing completely
+                        block = _decrypt_block_if_needed(block, bf_key, block_count, block_size)
                     
                     # Write the block (decrypted or not) to the output file
                     output_file.write(block)
@@ -302,19 +305,7 @@ def decrypt_blowfish_flac(crypted_audio, song_id, _md5_origin, song_path):
                     
                     # Determine if this block should be decrypted (every third block)
                     if block_count % 3 == 0:
-                        # Ensure we have a complete block for decryption and it's a multiple of 8 bytes
-                        if len(block) == block_size and len(block) % 8 == 0:
-                            try:
-                                # Create a fresh cipher with the initialization vector for each block
-                                # This is crucial - we need to reset the IV for each encrypted block
-                                cipher = __newBlowfish(bf_key.encode(), __MODE_CBC, __idk)
-                                
-                                # Decrypt the block
-                                block = cipher.decrypt(block)
-                                logger.debug(f"Decrypted block {block_count} (size: {len(block)})")
-                            except Exception as e:
-                                logger.error(f"Failed to decrypt block {block_count}: {str(e)}")
-                                # Continue with the encrypted block rather than failing completely
+                        block = _decrypt_block_if_needed(block, bf_key, block_count, block_size)
                     
                     # Write the block (decrypted or not) to the output file
                     output_file.write(block)

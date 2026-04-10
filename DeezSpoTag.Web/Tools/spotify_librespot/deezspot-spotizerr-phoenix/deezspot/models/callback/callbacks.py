@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional
 
 from .common import IDs, Service
 from .track import trackObject, albumTrackObject, playlistTrackObject
@@ -18,20 +18,20 @@ class BaseStatusObject:
 
 
 @dataclass
-class initializingObject(BaseStatusObject):
+class InitializingObject(BaseStatusObject):
     """Status object for 'initializing' state."""
     status: str = "initializing"
 
 
 @dataclass
-class skippedObject(BaseStatusObject):
+class SkippedObject(BaseStatusObject):
     """Status object for 'skipped' state."""
     status: str = "skipped"
     reason: str = ""
 
 
 @dataclass
-class retryingObject(BaseStatusObject):
+class RetryingObject(BaseStatusObject):
     """Status object for 'retrying' state."""
     status: str = "retrying"
     retry_count: int = 0
@@ -40,7 +40,7 @@ class retryingObject(BaseStatusObject):
 
 
 @dataclass
-class realTimeObject(BaseStatusObject):
+class RealTimeObject(BaseStatusObject):
     """Status object for 'real-time' state."""
     status: str = "real-time"
     time_elapsed: int = 0
@@ -48,25 +48,25 @@ class realTimeObject(BaseStatusObject):
 
 
 @dataclass
-class errorObject(BaseStatusObject):
+class ErrorObject(BaseStatusObject):
     """Status object for 'error' state."""
     status: str = "error"
     error: str = ""
 
 
 @dataclass
-class failedTrackObject:
+class FailedTrackObject:
     """Represents a failed track with a reason."""
     track: trackObject = field(default_factory=trackObject)
     reason: str = ""
 
 
 @dataclass
-class summaryObject:
+class SummaryObject:
     """Summary of a download operation for an album or playlist."""
     successful_tracks: List[trackObject] = field(default_factory=list)
     skipped_tracks: List[trackObject] = field(default_factory=list)
-    failed_tracks: List[failedTrackObject] = field(default_factory=list)
+    failed_tracks: List[FailedTrackObject] = field(default_factory=list)
     total_successful: int = 0
     total_skipped: int = 0
     total_failed: int = 0
@@ -81,64 +81,64 @@ class summaryObject:
 
 
 @dataclass
-class doneObject(BaseStatusObject):
+class DoneObject(BaseStatusObject):
     """Status object for 'done' state."""
     status: str = "done"
-    summary: Optional[summaryObject] = None
+    summary: Optional[SummaryObject] = None
     # Extended info for final artifact
     final_path: Optional[str] = None
     download_quality: Optional[str] = None
 
 
 @dataclass
-class trackCallbackObject:
+class TrackCallbackObject:
     """
     Track callback object that combines trackObject with status-specific fields.
     Used for progress reporting during track processing.
     """
     track: trackObject = field(default_factory=trackObject)
-    status_info: Union[
-        initializingObject,
-        skippedObject,
-        retryingObject,
-        realTimeObject,
-        errorObject,
-        doneObject
-    ] = field(default_factory=initializingObject)
+    status_info: (
+        InitializingObject
+        | SkippedObject
+        | RetryingObject
+        | RealTimeObject
+        | ErrorObject
+        | DoneObject
+    ) = field(default_factory=InitializingObject)
     current_track: Optional[int] = None
     total_tracks: Optional[int] = None
-    parent: Optional[Union[albumTrackObject, playlistTrackObject]] = None
+    parent: Optional[albumTrackObject | playlistTrackObject] = None
 
 
 @dataclass
-class albumCallbackObject:
+class AlbumCallbackObject:
     """
     Album callback object that combines albumObject with status-specific fields.
     Used for progress reporting during album processing.
     """
     album: albumObject = field(default_factory=albumObject)
-    status_info: Union[
-        initializingObject,
-        skippedObject,
-        retryingObject,
-        realTimeObject,
-        errorObject,
-        doneObject
-    ] = field(default_factory=initializingObject)
+    status_info: (
+        InitializingObject
+        | SkippedObject
+        | RetryingObject
+        | RealTimeObject
+        | ErrorObject
+        | DoneObject
+    ) = field(default_factory=InitializingObject)
 
 
 @dataclass
-class playlistCallbackObject:
+class PlaylistCallbackObject:
     """
     Playlist callback object that combines playlistObject with status-specific fields.
     Used for progress reporting during playlist processing.
     """
     playlist: playlistObject = field(default_factory=playlistObject)
-    status_info: Union[
-        initializingObject,
-        skippedObject,
-        retryingObject,
-        realTimeObject,
-        errorObject,
-        doneObject
-    ] = field(default_factory=initializingObject) 
+    status_info: (
+        InitializingObject
+        | SkippedObject
+        | RetryingObject
+        | RealTimeObject
+        | ErrorObject
+        | DoneObject
+    ) = field(default_factory=InitializingObject)

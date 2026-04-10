@@ -3543,20 +3543,21 @@ function setTracksEmptyMessage(message) {
     tableBody.innerHTML = `<tr class="tracks-empty"><td colspan="${columnCount}">${escapeHtml(message)}</td></tr>`;
 }
 
-function appendSpotifyTrackRows(tracks) {
+function appendExternalTrackRows(tracks, options = {}) {
     if (!tracks || tracks.length === 0) {
-        return;
+        return [];
     }
     const tableBody = document.getElementById('tracks-table-body');
     if (!tableBody) {
-        return;
+        return [];
     }
     tableBody.querySelectorAll('.tracks-loading, .tracks-empty').forEach(row => row.remove());
 
     const monitorSource = (requestSource || tracklistSource || 'deezer').toLowerCase();
     const isLocalSource = monitorSource === 'plex' || monitorSource === 'mix' || monitorSource === 'radio';
     const isPlaylistLike = tracklistLayoutIsPlaylistLike;
-    const base = spotifyLazyState?.offset ?? 0;
+    const base = Number.isFinite(options.baseOffset) ? options.baseOffset : 0;
+
     const existingTrackIndices = new Set(
         Array.from(tableBody.querySelectorAll('tr[data-track-index]'))
             .map(row => Number.parseInt(row.dataset.trackIndex || '', 10))
@@ -3574,11 +3575,11 @@ function appendSpotifyTrackRows(tracks) {
         appendedIndices.push(trackIndex);
     });
     if (filtered.length === 0) {
-        return;
+        return [];
     }
     const rows = renderTrackRows(filtered, isPlaylistLike, isLocalSource);
     if (!rows) {
-        return;
+        return [];
     }
     tableBody.insertAdjacentHTML('beforeend', rows);
     const appendedRows = getTrackRowsByIndices(appendedIndices);
@@ -3586,53 +3587,24 @@ function appendSpotifyTrackRows(tracks) {
     bindIgnoreButtonsForRows(appendedRows);
     scheduleAvailabilityChecks(filtered, isLocalSource);
     preloadDeezerPlaybackContextsForRows(appendedRows, 32);
-    applySpotifyMatchesToRows(appendedIndices);
+    if (options.applySpotifyMatches) {
+        applySpotifyMatchesToRows(appendedIndices);
+    }
+    return filtered;
+}
+
+function appendSpotifyTrackRows(tracks) {
+    appendExternalTrackRows(tracks, {
+        baseOffset: spotifyLazyState?.offset ?? 0,
+        applySpotifyMatches: true
+    });
 }
 
 function appendBoomplayTrackRows(tracks) {
-    if (!tracks || tracks.length === 0) {
-        return [];
-    }
-    const tableBody = document.getElementById('tracks-table-body');
-    if (!tableBody) {
-        return [];
-    }
-    tableBody.querySelectorAll('.tracks-loading, .tracks-empty').forEach(row => row.remove());
-
-    const monitorSource = (requestSource || tracklistSource || 'deezer').toLowerCase();
-    const isLocalSource = monitorSource === 'plex' || monitorSource === 'mix' || monitorSource === 'radio';
-    const isPlaylistLike = tracklistLayoutIsPlaylistLike;
-    const base = boomplayLazyState?.offset ?? 0;
-    const existingTrackIndices = new Set(
-        Array.from(tableBody.querySelectorAll('tr[data-track-index]'))
-            .map(row => Number.parseInt(row.dataset.trackIndex || '', 10))
-            .filter(Number.isFinite)
-    );
-    const filtered = [];
-    const appendedIndices = [];
-    tracks.forEach((track, index) => {
-        const trackIndex = typeof track.index === 'number' ? track.index : base + index;
-        if (existingTrackIndices.has(trackIndex)) {
-            return;
-        }
-        existingTrackIndices.add(trackIndex);
-        filtered.push(track);
-        appendedIndices.push(trackIndex);
+    return appendExternalTrackRows(tracks, {
+        baseOffset: boomplayLazyState?.offset ?? 0,
+        applySpotifyMatches: false
     });
-    if (filtered.length === 0) {
-        return [];
-    }
-    const rows = renderTrackRows(filtered, isPlaylistLike, isLocalSource);
-    if (!rows) {
-        return [];
-    }
-    tableBody.insertAdjacentHTML('beforeend', rows);
-    const appendedRows = getTrackRowsByIndices(appendedIndices);
-    applyIgnoredTrackStateForRows(appendedRows);
-    bindIgnoreButtonsForRows(appendedRows);
-    scheduleAvailabilityChecks(filtered, isLocalSource);
-    preloadDeezerPlaybackContextsForRows(appendedRows, 32);
-    return filtered;
 }
 
 function reconcileExternalMatchesFromCache() {

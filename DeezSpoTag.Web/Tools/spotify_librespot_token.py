@@ -2,8 +2,9 @@
 import argparse
 import json
 import pathlib
-import sys
 import time
+from spotify_librespot_common import ensure_vendor_paths
+from spotify_librespot_common import resolve_credentials
 
 
 def _write_result(ok, access_token=None, expires_at_unix_ms=None, error=None):
@@ -18,10 +19,7 @@ def _write_result(ok, access_token=None, expires_at_unix_ms=None, error=None):
 
 
 def _load_librespot():
-    script_path = pathlib.Path(__file__).resolve()
-    librespot_root = script_path.parent / "spotify_librespot" / "spotizerr-phoenix"
-    if librespot_root.is_dir():
-        sys.path.insert(0, str(librespot_root))
+    ensure_vendor_paths(include_deezspot=False, include_crypto=False)
     try:
         from librespot.core import Session  # type: ignore
     except Exception as exc:
@@ -63,19 +61,19 @@ def main():
     parser.add_argument("--scopes", nargs="+", default=["playlist-read"], help="Token scopes")
     args = parser.parse_args()
 
-    credentials_path = pathlib.Path(args.credentials).expanduser().resolve()
-    if not credentials_path.exists():
-        _write_result(False, error=f"credentials_not_found: {credentials_path}")
+    credentials_path = resolve_credentials(args.credentials)
+    if credentials_path is None:
+        _write_result(False, error="credentials_not_found")
         return 1
 
     try:
-        Session = _load_librespot()
+        session_cls = _load_librespot()
     except Exception as exc:
         _write_result(False, error=str(exc))
         return 1
 
     try:
-        session = _create_session(Session, credentials_path)
+        session = _create_session(session_cls, credentials_path)
     except Exception as exc:
         _write_result(False, error=f"librespot_session_error: {exc}")
         return 1
