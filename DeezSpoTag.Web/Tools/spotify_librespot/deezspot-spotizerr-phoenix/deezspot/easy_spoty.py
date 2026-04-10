@@ -11,8 +11,6 @@ from typing import Any, Dict, List, Optional
 from deezspot.libutils import LibrespotClient
 
 class Spo:
-    __error_codes = [404, 400]
-
     # Class-level references
     __session: Optional[Session] = None
     __client: Optional[LibrespotClient] = None
@@ -204,12 +202,10 @@ class Spo:
                     images = []
                 # Build simplified tracks list by disc order
                 items: List[Dict[str, Any]] = []
-                total_tracks = 0
                 try:
                     for disc in getattr(a_proto, 'disc', []) or []:
                         disc_number = getattr(disc, 'number', 1)
                         for t in getattr(disc, 'track', []) or []:
-                            total_tracks += 1
                             setattr(t, 'disc_number', disc_number)
                             item = cls.get_track(cls.__base62_from_gid(getattr(t, 'gid', None), 'track') or "")
                             if isinstance(item, dict):
@@ -463,21 +459,6 @@ class Spo:
             raise InvalidLink(ids)
 
     # ------------------------- search (optional) -------------------------
-    @classmethod
-    def __get_session_country_code(cls) -> str:
-        try:
-            if cls.__session is None:
-                return ""
-            cc = getattr(cls.__session, "_Session__country_code", None)
-            if isinstance(cc, str) and len(cc) == 2:
-                return cc
-            cc2 = getattr(cls.__session, "country_code", None)
-            if isinstance(cc2, str) and len(cc2) == 2:
-                return cc2
-        except Exception:
-            pass
-        return ""
-
     @classmethod
     def search(cls, query, search_type='track', limit=10, country: Optional[str] = None, locale: Optional[str] = None, catalogue: Optional[str] = None, image_size: Optional[str] = None, client_id=None, client_secret=None):
         # Reverted: use spotipy Web API search; librespot search is not supported here.

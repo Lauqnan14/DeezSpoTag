@@ -113,36 +113,38 @@ def main():
     parser.add_argument("--credentials", required=True, help="Path to librespot credentials.json")
     parser.add_argument("--scopes", nargs="+", default=["playlist-read"], help="Token scopes")
     args = parser.parse_args()
+    exit_code = 1
 
     credentials_path = resolve_credentials(args.credentials)
     if credentials_path is None:
         _write_result(False, error="credentials_not_found")
-        return 1
+        return exit_code
 
     try:
         session_cls = _load_librespot()
     except Exception as exc:
         _write_result(False, error=str(exc))
-        return 1
+        return exit_code
 
     try:
         session = _create_session(session_cls, credentials_path)
     except Exception as exc:
         _write_result(False, error=f"librespot_session_error: {exc}")
-        return 1
+        return exit_code
 
     try:
         access_token, expires_at_ms, error_msg = _fetch_token_with_retry(session, args.scopes)
         if access_token:
             _write_result(True, access_token=access_token, expires_at_unix_ms=expires_at_ms)
-            return 0
-        _write_result(False, error=error_msg)
-        return 1
+            exit_code = 0
+        else:
+            _write_result(False, error=error_msg)
     finally:
         try:
             session.close()
         except Exception:
             pass
+    return exit_code
 
 
 if __name__ == "__main__":

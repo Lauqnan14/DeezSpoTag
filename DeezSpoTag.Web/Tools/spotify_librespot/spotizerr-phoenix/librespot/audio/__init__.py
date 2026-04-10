@@ -66,7 +66,7 @@ class AbsChunkedInputStream(io.BytesIO, HaltListener):
     def mark_supported(self) -> bool:
         return True
 
-    def mark(self, read_ahead_limit: int) -> None:
+    def mark(self, _read_ahead_limit: int) -> None:
         self.__mark = self.__pos
 
     def reset(self) -> None:
@@ -794,7 +794,10 @@ class PlayableContentFeeder:
                                               response, preload, halt_lister)
         if response.result == StorageResolve.StorageResolveResponse.Result.STORAGE:
             if track is None:
-                pass
+                raise RuntimeError(
+                    "Episode content is unavailable via STORAGE backend."
+                )
+            raise RuntimeError("Track content is unavailable via STORAGE backend.")
         elif response.result == StorageResolve.StorageResolveResponse.Result.RESTRICTED:
             raise RuntimeError("Content is restricted!")
         elif response.result == StorageResolve.StorageResolveResponse.Response.UNRECOGNIZED:

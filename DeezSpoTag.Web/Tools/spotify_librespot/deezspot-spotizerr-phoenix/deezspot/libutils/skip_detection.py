@@ -7,7 +7,6 @@ from mutagen.oggvorbis import OggVorbis
 from mutagen.oggopus import OggOpus
 from mutagen.flac import FLAC
 from mutagen.mp3 import MP3 # Added for explicit MP3 type checking
-# from mutagen.mp4 import MP4 # MP4 is usually handled by File for .m4a
 
 # AUDIO_FORMATS and get_output_path will be imported from audio_converter
 # We need to ensure this doesn't create circular dependencies.

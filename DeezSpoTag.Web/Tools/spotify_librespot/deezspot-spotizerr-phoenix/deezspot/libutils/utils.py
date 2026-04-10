@@ -292,7 +292,7 @@ def create_zip(
     if zip_name:
         # If zip_name is a full path, use it as is.
         # Otherwise, prepend output_dir.
-        if not basename(zip_name) == zip_name: # Checks if it's just a filename
+        if basename(zip_name) != zip_name: # Checks if it's just a filename
             actual_zip_path = zip_name
         else:
             # Ensure output_dir exists for placing the zip file

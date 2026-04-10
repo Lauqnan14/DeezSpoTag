@@ -45,8 +45,8 @@ class PlayableId:
     @staticmethod
     def is_supported(uri: str):
         return (not uri.startswith("spotify:local:")
-                and not uri == "spotify:delimiter"
-                and not uri == "spotify:meta:delimiter")
+                and uri != "spotify:delimiter"
+                and uri != "spotify:meta:delimiter")
 
     @staticmethod
     def should_play(track: ContextTrack):

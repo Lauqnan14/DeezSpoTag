@@ -374,7 +374,6 @@ class DealerClient(Closeable):
     def connect(self) -> None:
         """ """
         self.__connection = DealerClient.ConnectionHolder(
-            self.__session,
             self,
             "wss://{}/?access_token={}".format(
                 ApResolver.get_random_dealer(),
@@ -530,13 +529,10 @@ class DealerClient(Closeable):
         __last_scheduled_ping: sched.Event
         __received_pong = False
         __scheduler = sched.scheduler()
-        __session: Session
         __url: str
         __ws: websocket.WebSocketApp
 
-        def __init__(self, session: Session, dealer_client: DealerClient,
-                     url: str):
-            self.__session = session
+        def __init__(self, dealer_client: DealerClient, url: str):
             self.__dealer_client = dealer_client
             self.__url = url
             self.__ws = websocket.WebSocketApp(url)
@@ -1855,7 +1851,7 @@ class Session(Closeable, MessageListener, SubListener):
                         format(util.bytes_to_hex(packet.cmd), packet.payload))
                     return None, None
                 return packet, cmd
-            except (RuntimeError, ConnectionResetError, OSError) as ex:
+            except (RuntimeError, OSError) as ex:
                 if self.__running:
                     self.__session.logger.fatal(
                         "Failed reading packet! {}".format(ex))
@@ -1967,13 +1963,11 @@ class SearchManager:
             request.build_url_path("hm://searchview/km/v4/search/"),
         ]
         last_status = None
-        last_payload = None
         for url in urls:
             response = self.__session.mercury().send_sync(
                 RawMercuryRequest.new_builder().set_method("GET").set_uri(
                     url).build())
             last_status = response.status_code
-            last_payload = response.payload
             if response.status_code == 200:
                 return json.loads(response.payload)
             if response.status_code != 404:
@@ -2183,7 +2177,9 @@ class TokenProvider:
                 login5_response.ParseFromString(response.content)
 
                 if login5_response.HasField('ok'):
-                    self.logger.info("Login5 authentication successful, got access token".format(login5_response.ok.access_token))
+                    self.logger.info(
+                        "Login5 authentication successful, got access token"
+                    )
                     token = TokenProvider.StoredToken({
                         "expiresIn": login5_response.ok.access_token_expires_in, # approximately one hour
                         "accessToken": login5_response.ok.access_token,
