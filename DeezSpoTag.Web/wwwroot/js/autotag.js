@@ -6312,6 +6312,59 @@
         }
     }
 
+    function getTagActionToastMessage(action) {
+        if (action === "enable") {
+            return "All tags enabled.";
+        }
+        if (action === "disable") {
+            return "All tags disabled.";
+        }
+        if (action === "toggle") {
+            return "Tags toggled.";
+        }
+        return null;
+    }
+
+    function tryApplyTagAction(action, targetName) {
+        const current = Array.isArray(state.config[targetName]) ? state.config[targetName] : [];
+        const list = targetName === "downloadTags" ? getDownloadTagsList() : TAGS;
+        if (action === "enable") {
+            state.config[targetName] = list.map((t) => t.tag);
+            return true;
+        }
+        if (action === "disable") {
+            state.config[targetName] = [];
+            return true;
+        }
+        if (action === "toggle") {
+            state.config[targetName] = list.map((t) => t.tag).filter((tag) => !current.includes(tag));
+            return true;
+        }
+        return false;
+    }
+
+    function handleTagsActionButton(target) {
+        const action = target.dataset.tagsAction;
+        const targetName = target.dataset.tagsTarget || "tags";
+        if (targetName === "gapFillTags") {
+            syncEnhancementTagsWithDownloadAndEnrichment();
+            loadConfigToUI();
+            showToast("Enhancement tags mirror Download and Enrichment tags.", "info");
+            return;
+        }
+
+        if (!tryApplyTagAction(action, targetName)) {
+            return;
+        }
+
+        syncEnhancementTagsWithDownloadAndEnrichment();
+        loadConfigToUI();
+        const toastMessage = getTagActionToastMessage(action);
+        if (toastMessage) {
+            showToast(toastMessage, "info");
+        }
+    }
+
     document.addEventListener("change", (event) => {
         const target = event.target;
         if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) {
@@ -6345,32 +6398,7 @@
         }
 
         if (target.matches("button[data-tags-action]")) {
-            const action = target.dataset.tagsAction;
-            const targetName = target.dataset.tagsTarget || "tags";
-            if (targetName === "gapFillTags") {
-                syncEnhancementTagsWithDownloadAndEnrichment();
-                loadConfigToUI();
-                showToast("Enhancement tags mirror Download and Enrichment tags.", "info");
-                return;
-            }
-            const current = Array.isArray(state.config[targetName]) ? state.config[targetName] : [];
-            const list = targetName === "downloadTags" ? getDownloadTagsList() : TAGS;
-            if (action === "enable") {
-                state.config[targetName] = list.map((t) => t.tag);
-            } else if (action === "disable") {
-                state.config[targetName] = [];
-            } else if (action === "toggle") {
-                state.config[targetName] = list.map((t) => t.tag).filter((tag) => !current.includes(tag));
-            }
-            syncEnhancementTagsWithDownloadAndEnrichment();
-            loadConfigToUI();
-            if (action === "enable") {
-                showToast("All tags enabled.", "info");
-            } else if (action === "disable") {
-                showToast("All tags disabled.", "info");
-            } else if (action === "toggle") {
-                showToast("Tags toggled.", "info");
-            }
+            handleTagsActionButton(target);
         }
     });
 

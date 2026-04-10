@@ -3017,20 +3017,14 @@ public class AutoTagService
         var merged = new JsonArray();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var tag in downloadTags)
+        foreach (var tag in downloadTags.Where(seen.Add))
         {
-            if (seen.Add(tag))
-            {
-                merged.Add(tag);
-            }
+            merged.Add(tag);
         }
 
-        foreach (var tag in enrichmentTags)
+        foreach (var tag in enrichmentTags.Where(seen.Add))
         {
-            if (seen.Add(tag))
-            {
-                merged.Add(tag);
-            }
+            merged.Add(tag);
         }
 
         root["gapFillTags"] = merged;
