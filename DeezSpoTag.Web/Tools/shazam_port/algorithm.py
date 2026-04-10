@@ -178,6 +178,65 @@ class SignatureGenerator:
 
         self.spread_fft_output.append(list(origin_last_fft_np))
 
+    @staticmethod
+    def _max_neighbor_in_fft(fft_minus_49: List[float], bin_position: int) -> float:
+        max_neighbor = 0
+        for neighbor_offset in [*range(-10, -3, 3), -3, 1, *range(2, 9, 3)]:
+            max_neighbor = max(
+                fft_minus_49[bin_position + neighbor_offset],
+                max_neighbor,
+            )
+        return max_neighbor
+
+    def _max_neighbor_in_adjacent_ffts(self, bin_position: int, current_max: float) -> float:
+        max_neighbor = current_max
+        for other_offset in [
+            -53,
+            -45,
+            *range(165, 201, 7),
+            *range(214, 250, 7),
+        ]:
+            max_neighbor = max(
+                self.spread_fft_output[
+                    (self.spread_fft_output.position + other_offset)
+                    % self.spread_fft_output.buffer_size
+                ][bin_position - 1],
+                max_neighbor,
+            )
+        return max_neighbor
+
+    @staticmethod
+    def _compute_peak_metrics(fft_minus_46: List[float], bin_position: int) -> tuple[float, float, float, float]:
+        peak_magnitude = (
+            np.log(max(1 / 64, fft_minus_46[bin_position])) * 1477.3 + 6144
+        )
+        peak_magnitude_before = (
+            np.log(max(1 / 64, fft_minus_46[bin_position - 1])) * 1477.3 + 6144
+        )
+        peak_magnitude_after = (
+            np.log(max(1 / 64, fft_minus_46[bin_position + 1])) * 1477.3 + 6144
+        )
+        peak_variation_1 = (
+            peak_magnitude * 2 - peak_magnitude_before - peak_magnitude_after
+        )
+        peak_variation_2 = (
+            (peak_magnitude_after - peak_magnitude_before) * 32 / peak_variation_1
+        )
+        corrected_peak_frequency_bin = bin_position * 64 + peak_variation_2
+        return peak_magnitude, peak_variation_1, corrected_peak_frequency_bin, peak_variation_2
+
+    @staticmethod
+    def _frequency_to_band(frequency_hz: float):
+        if 250 < frequency_hz < 520:
+            return FrequencyBand.hz_250_520
+        if 520 < frequency_hz < 1450:
+            return FrequencyBand.hz_520_1450
+        if 1450 < frequency_hz < 3500:
+            return FrequencyBand.hz_1450_3500
+        if 3500 < frequency_hz <= 5500:
+            return FrequencyBand.hz_3500_5500
+        return None
+
     def do_peak_recognition(self):
         fft_minus_46 = self.fft_outputs[
             (self.fft_outputs.position - 46) % self.fft_outputs.buffer_size
@@ -188,76 +247,30 @@ class SignatureGenerator:
 
         for bin_position in range(10, 1015):
             # Ensure that the bin is large enough to be a peak
-
             if fft_minus_46[bin_position] >= 1 / 64 and (
                 fft_minus_46[bin_position] >= fft_minus_49[bin_position - 1]
             ):
                 # Ensure that it is frequency-domain local minimum
-
-                max_neighbor_in_fft_minus_49 = 0
-
-                for neighbor_offset in [*range(-10, -3, 3), -3, 1, *range(2, 9, 3)]:
-                    max_neighbor_in_fft_minus_49 = max(
-                        fft_minus_49[bin_position + neighbor_offset],
-                        max_neighbor_in_fft_minus_49,
-                    )
-
+                max_neighbor_in_fft_minus_49 = self._max_neighbor_in_fft(fft_minus_49, bin_position)
                 if fft_minus_46[bin_position] > max_neighbor_in_fft_minus_49:
                     # Ensure that it is a time-domain local minimum
-
-                    max_neighbor_in_other_adjacent_ffts = max_neighbor_in_fft_minus_49
-
-                    for other_offset in [
-                        -53,
-                        -45,
-                        *range(165, 201, 7),
-                        *range(214, 250, 7),
-                    ]:
-                        max_neighbor_in_other_adjacent_ffts = max(
-                            self.spread_fft_output[
-                                (self.spread_fft_output.position + other_offset)
-                                % self.spread_fft_output.buffer_size
-                            ][bin_position - 1],
-                            max_neighbor_in_other_adjacent_ffts,
-                        )
-
+                    max_neighbor_in_other_adjacent_ffts = self._max_neighbor_in_adjacent_ffts(
+                        bin_position,
+                        max_neighbor_in_fft_minus_49,
+                    )
                     if fft_minus_46[bin_position] > max_neighbor_in_other_adjacent_ffts:
                         # This is a peak, store the peak
 
                         fft_number = self.spread_fft_output.num_written - 46
 
-                        peak_magnitude = (
-                            np.log(max(1 / 64, fft_minus_46[bin_position])) * 1477.3 + 6144
+                        peak_magnitude, peak_variation_1, corrected_peak_frequency_bin, _ = (
+                            self._compute_peak_metrics(fft_minus_46, bin_position)
                         )
-                        peak_magnitude_before = (
-                            np.log(max(1 / 64, fft_minus_46[bin_position - 1])) * 1477.3 + 6144
-                        )
-                        peak_magnitude_after = (
-                            np.log(max(1 / 64, fft_minus_46[bin_position + 1])) * 1477.3 + 6144
-                        )
-
-                        peak_variation_1 = (
-                            peak_magnitude * 2 - peak_magnitude_before - peak_magnitude_after
-                        )
-                        peak_variation_2 = (
-                            (peak_magnitude_after - peak_magnitude_before) * 32 / peak_variation_1
-                        )
-
-                        corrected_peak_frequency_bin = bin_position * 64 + peak_variation_2
-
                         assert peak_variation_1 > 0
-
                         frequency_hz = corrected_peak_frequency_bin * (16000 / 2 / 1024 / 64)
 
-                        if 250 < frequency_hz < 520:
-                            band = FrequencyBand.hz_250_520
-                        elif 520 < frequency_hz < 1450:
-                            band = FrequencyBand.hz_520_1450
-                        elif 1450 < frequency_hz < 3500:
-                            band = FrequencyBand.hz_1450_3500
-                        elif 3500 < frequency_hz <= 5500:
-                            band = FrequencyBand.hz_3500_5500
-                        else:
+                        band = self._frequency_to_band(frequency_hz)
+                        if band is None:
                             continue
 
                         if band not in self.next_signature.frequency_band_to_sound_peaks:
