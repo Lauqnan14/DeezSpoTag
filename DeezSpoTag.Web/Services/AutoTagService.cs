@@ -66,6 +66,7 @@ public abstract class AutoTagRunState
     public string RunIntent { get; set; } = AutoTagLiterals.RunIntentDefault;
     public string? ProfileId { get; set; }
     public string? ProfileName { get; set; }
+    public AutoTagMoveSummary? AutoMoveSummary { get; set; }
 }
 
 public class AutoTagJob : AutoTagRunState
@@ -152,11 +153,13 @@ public sealed class AutoTagPlatformDiffSnapshot
 public class AutoTagService
 {
     private readonly record struct EnrichmentBuildContext(string RunIntent, string JobId);
+    private readonly record struct AutoMoveExecutionResult(bool Completed, AutoTagMoveSummary Summary);
 
     private readonly ConcurrentDictionary<string, AutoTagJob> _jobs = new();
     private readonly ConcurrentDictionary<string, byte> _activeJobIds = new();
     private readonly ConcurrentDictionary<string, string> _activeJobStages = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _lastActivityLines = new();
+    private readonly ConcurrentDictionary<string, byte> _staleRecoveryCleanupJobs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ILogger<AutoTagService> _logger;
     private readonly LibraryConfigStore _activityLog;
     private readonly AuthenticatedDeezerService _deezerAuth;
@@ -1271,7 +1274,7 @@ public class AutoTagService
     {
         var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
         AppendLog(job, "tagging completed, auto-move starting");
-        var autoMoveCompleted = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
+        var autoMove = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
         AppendLog(job, "auto-move completed, organizer starting");
         await OrganizeJobAsync(job, path, configPath);
         await RunIntegratedEnhancementWorkflowsAsync(
@@ -1281,7 +1284,7 @@ public class AutoTagService
             includesEnhancementStage,
             CancellationToken.None);
         await TriggerLibraryScanAfterEnhancementAsync(job, includesEnhancementStage, CancellationToken.None);
-        if (autoMoveCompleted)
+        if (autoMove.Completed)
         {
             await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
         }
@@ -1304,10 +1307,10 @@ public class AutoTagService
 
         var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
         AppendLog(job, "tagging failed, auto-move starting");
-        var autoMoveCompleted = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
+        var autoMove = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
         AppendLog(job, "auto-move completed, organizer starting");
         await OrganizeJobAsync(job, path, configPath);
-        if (autoMoveCompleted)
+        if (autoMove.Completed)
         {
             await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
         }
@@ -2746,7 +2749,7 @@ public class AutoTagService
         }
     }
 
-    private async Task<bool> MoveAfterAutoTagAsync(
+    private async Task<AutoMoveExecutionResult> MoveAfterAutoTagAsync(
         AutoTagJob job,
         string rootPath,
         string configPath,
@@ -2757,7 +2760,12 @@ public class AutoTagService
         {
             _logger.LogInformation("AutoTag job {JobId}: auto-move skipped (disabled).", job.Id);
             AppendLog(job, "auto-move skipped: disabled");
-            return false;
+            var disabledSummary = new AutoTagMoveSummary
+            {
+                Error = "auto-move disabled by configuration."
+            };
+            ApplyAutoMoveSummary(job, disabledSummary);
+            return new AutoMoveExecutionResult(false, disabledSummary);
         }
 
         try
@@ -2765,7 +2773,7 @@ public class AutoTagService
             _logger.LogInformation("AutoTag job JobId: auto-move started for RootPath");
             AppendLog(job, "auto-move started");
             var organizerOptions = LoadOrganizerOptions(configPath);
-            await _downloadMoveService.MoveForRootAsync(
+            var summary = await _downloadMoveService.MoveForRootWithSummaryAsync(
                 rootPath,
                 organizerOptions,
                 taggedFiles,
@@ -2773,14 +2781,39 @@ public class AutoTagService
                 CancellationToken.None);
             _logger.LogInformation("AutoTag job JobId: auto-move finished for RootPath");
             AppendLog(job, "auto-move finished");
-            return true;
+            ApplyAutoMoveSummary(job, summary);
+            return new AutoMoveExecutionResult(true, summary);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "AutoTag job {JobId}: auto-move failed.", job.Id);
             AppendLog(job, $"auto-move failed: {ex.Message}");
-            return false;
+            var failedSummary = new AutoTagMoveSummary
+            {
+                FailedCount = 1,
+                Error = ex.Message
+            };
+            ApplyAutoMoveSummary(job, failedSummary);
+            return new AutoMoveExecutionResult(false, failedSummary);
         }
+    }
+
+    private void ApplyAutoMoveSummary(AutoTagJob job, AutoTagMoveSummary summary)
+    {
+        job.AutoMoveSummary = summary.Clone();
+        var destinations = summary.DestinationRoots.Count > 0
+            ? string.Join(", ", summary.DestinationRoots)
+            : "<none>";
+        var label = summary.RecoveryCleanup ? "auto-move recovery summary" : "auto-move summary";
+        AppendLog(
+            job,
+            $"{label}: moved={summary.MovedCount}, skipped={summary.SkippedCount}, failed={summary.FailedCount}, destinations=[{destinations}]");
+        if (!string.IsNullOrWhiteSpace(summary.Error))
+        {
+            AppendLog(job, $"{label}: error={summary.Error}");
+        }
+
+        SaveJob(job);
     }
 
     private async Task TriggerPlexScanAfterMoveAsync(AutoTagJob job, CancellationToken cancellationToken)
@@ -4511,6 +4544,7 @@ public class AutoTagService
             RunIntent = NormalizeRunIntent(job.RunIntent),
             ProfileId = job.ProfileId,
             ProfileName = job.ProfileName,
+            AutoMoveSummary = job.AutoMoveSummary?.Clone(),
             LogCount = GetArchivedLogCount(job.Id, job.Logs.Count),
             StatusEntryCount = GetArchivedStatusCount(job.Id, job.StatusHistory.Count)
         };
@@ -5076,5 +5110,139 @@ public class AutoTagService
         job.FinishedAt ??= DateTimeOffset.UtcNow;
         job.Error ??= "AutoTag job was interrupted and recovered as stale running state.";
         SaveJob(job);
+        TryQueueStaleRecoveryCleanup(job);
+    }
+
+    private void TryQueueStaleRecoveryCleanup(AutoTagJob job)
+    {
+        if (!string.Equals(job.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(job.RootPath))
+        {
+            return;
+        }
+
+        if (!_staleRecoveryCleanupJobs.TryAdd(job.Id, 0))
+        {
+            return;
+        }
+
+        AppendLog(job, "stale recovery: cleanup auto-move queued");
+        _ = Task.Run(() => RunStaleRecoveryCleanupAsync(job));
+    }
+
+    private async Task RunStaleRecoveryCleanupAsync(AutoTagJob job)
+    {
+        try
+        {
+            if (!await WaitForDownloadsToIdleForRecoveryAsync(CancellationToken.None))
+            {
+                var skippedSummary = new AutoTagMoveSummary
+                {
+                    RecoveryCleanup = true,
+                    Error = "cleanup auto-move skipped: downloads remained active."
+                };
+                ApplyAutoMoveSummary(job, skippedSummary);
+                return;
+            }
+
+            if (_disableAutoMove)
+            {
+                var disabledSummary = new AutoTagMoveSummary
+                {
+                    RecoveryCleanup = true,
+                    Error = "cleanup auto-move skipped: disabled by configuration."
+                };
+                ApplyAutoMoveSummary(job, disabledSummary);
+                return;
+            }
+
+            AppendLog(job, "stale recovery: cleanup auto-move starting");
+            var runtimeConfigPath = TryFindRuntimeConfigPath(job.Id, "base");
+            var organizerOptions = string.IsNullOrWhiteSpace(runtimeConfigPath)
+                ? new AutoTagOrganizerOptions()
+                : LoadOrganizerOptions(runtimeConfigPath);
+            var summary = await _downloadMoveService.MoveForRootWithSummaryAsync(
+                job.RootPath!,
+                organizerOptions,
+                Array.Empty<string>(),
+                Array.Empty<string>(),
+                CancellationToken.None);
+            summary.RecoveryCleanup = true;
+            ApplyAutoMoveSummary(job, summary);
+            AppendLog(job, "stale recovery: cleanup auto-move finished");
+
+            if (summary.MovedCount > 0 && string.IsNullOrWhiteSpace(summary.Error))
+            {
+                await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // No-op: service-level recovery path is best-effort.
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "AutoTag stale recovery cleanup failed for {JobId}.", job.Id);
+            var failedSummary = new AutoTagMoveSummary
+            {
+                RecoveryCleanup = true,
+                FailedCount = 1,
+                Error = ex.Message
+            };
+            ApplyAutoMoveSummary(job, failedSummary);
+            AppendLog(job, $"stale recovery: cleanup auto-move failed: {ex.Message}");
+        }
+        finally
+        {
+            _staleRecoveryCleanupJobs.TryRemove(job.Id, out _);
+        }
+    }
+
+    private async Task<bool> WaitForDownloadsToIdleForRecoveryAsync(CancellationToken cancellationToken)
+    {
+        const int attempts = 12;
+        for (var attempt = 0; attempt < attempts; attempt++)
+        {
+            if (!await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+            {
+                return true;
+            }
+
+            if (attempt == attempts - 1)
+            {
+                return false;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+        }
+
+        return false;
+    }
+
+    private string? TryFindRuntimeConfigPath(string jobId, string stage)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(jobId) || string.IsNullOrWhiteSpace(stage) || !Directory.Exists(_runtimeConfigDir))
+            {
+                return null;
+            }
+
+            var stageToken = NormalizeConfigKeyForRedaction(stage);
+            var pattern = $"autotag-{jobId}-{stageToken}-*.json";
+            return Directory
+                .EnumerateFiles(_runtimeConfigDir, pattern, SearchOption.TopDirectoryOnly)
+                .OrderByDescending(path => File.GetLastWriteTimeUtc(path))
+                .FirstOrDefault();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to locate runtime config for stale recovery job {JobId}.", jobId);
+            return null;
+        }
     }
 }
