@@ -20,9 +20,4 @@ __all__ = [
 	"Owner",
 	"UserMini",
 	"Artist",
-	"SearchResult",
-	"SearchTracksPage",
-	"SearchAlbumsPage",
-	"SearchArtistsPage",
-	"SearchPlaylistsPage",
-] 
+]
