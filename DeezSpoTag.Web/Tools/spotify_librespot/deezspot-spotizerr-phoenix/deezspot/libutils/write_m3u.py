@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 import os
-from typing import List, Union
+from typing import List
 from deezspot.libutils.utils import sanitize_name
 from deezspot.libutils.logging_utils import logger
 from deezspot.models.download import Track
@@ -43,7 +43,7 @@ _AUDIO_EXTS_TRY = [
 ]
 
 
-def _resolve_existing_song_path(song_path: str) -> Union[str, None]:
+def _resolve_existing_song_path(song_path: str) -> str | None:
     if not song_path:
         return None
     if os.path.exists(song_path):
@@ -140,8 +140,53 @@ def _write_m3u_entries(m3u_path: str, entries: List[tuple]) -> None:
             if path:
                 m3u_file.write(f"{path}\n")
 
+def _remove_entries_for_path(entries: List[tuple], relative_path: str) -> List[tuple]:
+    return [(extinf, path) for (extinf, path) in entries if path != relative_path]
 
-def append_track_to_m3u(m3u_path: str, track: Union[str, Track]) -> None:
+def _resolve_relative_path(playlist_m3u_dir: str, song_path: str) -> str | None:
+    resolved = _resolve_existing_song_path(song_path)
+    if not resolved:
+        return None
+    return os.path.relpath(resolved, start=playlist_m3u_dir)
+
+def _extract_playlist_position(track: Track) -> int:
+    if not (hasattr(track, 'tags') and track.tags):
+        return 0
+    raw_pos = track.tags.get('playlistnum')
+    if raw_pos is None:
+        return 0
+    try:
+        return int(raw_pos)
+    except (ValueError, TypeError):
+        return 0
+
+def _upsert_entry(entries: List[tuple], new_entry: tuple, position: int) -> tuple[List[tuple], bool]:
+    if position >= 1 and position - 1 < len(entries):
+        if entries[position - 1] == new_entry:
+            return entries, False
+        updated = list(entries)
+        updated[position - 1] = new_entry
+        return updated, True
+    if any(entry == new_entry for entry in entries):
+        return entries, False
+    updated = list(entries)
+    updated.append(new_entry)
+    return updated, True
+
+def _is_valid_track(track: str | Track) -> bool:
+    return isinstance(track, Track) and track.success and hasattr(track, 'song_path')
+
+def _build_track_entry(track: Track, playlist_m3u_dir: str) -> tuple[tuple, str] | None:
+    relative_path = _resolve_relative_path(playlist_m3u_dir, track.song_path)
+    if not relative_path:
+        return None
+    duration = _get_track_duration_seconds(track)
+    artist, title = _get_track_info(track)
+    extinf_line = f"#EXTINF:{duration},{artist} - {title}"
+    return (extinf_line, relative_path), relative_path
+
+
+def append_track_to_m3u(m3u_path: str, track: str | Track) -> None:
     """Append a single track to m3u with EXTINF and a resolved path.
     Idempotent behavior: if entry for same path exists, it is updated/moved to the desired position; if an entry exists at the desired position but differs, it is overwritten.
     """
@@ -152,63 +197,28 @@ def append_track_to_m3u(m3u_path: str, track: Union[str, Track]) -> None:
 
     # Handle simple string path case: dedupe by path, append if new
     if isinstance(track, str):
-        resolved = _resolve_existing_song_path(track)
-        if not resolved:
+        relative_path = _resolve_relative_path(playlist_m3u_dir, track)
+        if not relative_path:
             return
-        relative_path = os.path.relpath(resolved, start=playlist_m3u_dir)
-        # Remove existing entries with same path
-        new_entries = [(e, p) for (e, p) in entries if p != relative_path]
-        # If nothing changed and path already existed identically, skip write
-        if len(new_entries) == len(entries) and any(p == relative_path for _, p in entries):
-            return
+        new_entries = _remove_entries_for_path(entries, relative_path)
         new_entries.append(("", relative_path))
         _write_m3u_entries(m3u_path, new_entries)
         return
 
     # Validate Track object
-    if (not isinstance(track, Track) or 
-        not track.success or 
-        not hasattr(track, 'song_path')):
+    if not _is_valid_track(track):
         return
 
-    resolved = _resolve_existing_song_path(track.song_path)
-    if not resolved:
+    track_entry = _build_track_entry(track, playlist_m3u_dir)
+    if not track_entry:
         return
-
-    relative_path = os.path.relpath(resolved, start=playlist_m3u_dir)
-    duration = _get_track_duration_seconds(track)
-    artist, title = _get_track_info(track)
-    extinf_line = f"#EXTINF:{duration},{artist} - {title}"
-    new_entry = (extinf_line, relative_path)
-
-    # Determine target playlist position (1-based). Fallback to 0 (append behavior) if missing/invalid.
-    position = 0
-    try:
-        if hasattr(track, 'tags') and track.tags:
-            raw_pos = track.tags.get('playlistnum')
-            if raw_pos is not None:
-                position = int(raw_pos)
-    except (ValueError, TypeError):
-        position = 0
+    new_entry, relative_path = track_entry
 
     # Remove duplicates by path first (to avoid multiple occurrences upon re-download)
-    entries = [(e, p) for (e, p) in entries if p != relative_path]
-
-    if position >= 1 and position - 1 < len(entries):
-        # If there is already something at that position, only overwrite if different
-        current = entries[position - 1]
-        if current != new_entry:
-            entries[position - 1] = new_entry
-        else:
-            # Exact match at the correct position: nothing to do
-            return
-    else:
-        # If position beyond current length or not provided: append unless identical exists (path dedup above already handled)
-        # Avoid appending if an identical entry already exists (by both extinf and path)
-        if any(e == new_entry for e in entries):
-            return
-        # If position is within range but entries is shorter, we won't insert placeholders; we simply append to end.
-        entries.append(new_entry)
+    entries = _remove_entries_for_path(entries, relative_path)
+    entries, changed = _upsert_entry(entries, new_entry, _extract_playlist_position(track))
+    if not changed:
+        return
 
     _write_m3u_entries(m3u_path, entries)
 

@@ -115,73 +115,82 @@ class AbsChunkedInputStream(io.BytesIO, HaltListener):
             return False
         return self.retry_on_chunk_error
 
-    def check_availability(self, chunk: int, wait: bool, halted: bool) -> None:
-        if halted and not wait:
-            raise TypeError()
-        if not self.requested_chunks()[chunk]:
-            self.request_chunk_from_stream(chunk)
-            self.requested_chunks()[chunk] = True
+    def __preload_chunks(self, chunk: int) -> None:
         for i in range(chunk + 1,
                        min(self.chunks() - 1, chunk + self.preload_ahead) + 1):
             if (self.requested_chunks()[i]
                     and self.retries[i] < self.preload_chunk_retries):
                 self.request_chunk_from_stream(i)
                 self.requested_chunks()[chunk] = True
-        if wait:
-            if self.available_chunks()[chunk]:
-                return
-            retry = False
-            with self.wait_lock:
-                if not halted:
-                    self.stream_read_halted(chunk, int(time.time() * 1000))
-                self.chunk_exception = None
-                self.wait_for_chunk = chunk
-                self.wait_lock.wait_for(lambda: self.available_chunks()[chunk])
-                if self.closed:
-                    return
-                if self.chunk_exception is not None:
-                    if self.should_retry(chunk):
-                        retry = True
-                    else:
-                        raise AbsChunkedInputStream.ChunkException
-                if not retry:
-                    self.stream_read_halted(chunk, int(time.time() * 1000))
-            if retry:
-                time.sleep(math.log10(self.retries[chunk]))
-                self.check_availability(chunk, True, True)
 
-    def read(self, __size: int = 0) -> bytes:
-        if self.closed:
-            raise IOError(STREAM_CLOSED_MESSAGE)
-        if __size <= 0:
-            if self.__pos == self.size():
-                return b""
-            buffer = io.BytesIO()
-            total_size = self.size()
-            chunk = int(self.__pos / (128 * 1024))
-            chunk_off = int(self.__pos % (128 * 1024))
-            chunk_total = int(math.ceil(total_size / (128 * 1024)))
-            self.check_availability(chunk, True, False)
-            buffer.write(self.buffer()[chunk][chunk_off:])
-            chunk += 1
-            if chunk != chunk_total:
-                while chunk <= chunk_total - 1:
-                    self.check_availability(chunk, True, False)
-                    buffer.write(self.buffer()[chunk])
-                    chunk += 1
-            buffer.seek(0)
-            self.__pos += buffer.getbuffer().nbytes
-            return buffer.read()
+    def __wait_for_chunk_availability(self, chunk: int, halted: bool) -> None:
+        if self.available_chunks()[chunk]:
+            return
+        retry = False
+        with self.wait_lock:
+            if not halted:
+                self.stream_read_halted(chunk, int(time.time() * 1000))
+            self.chunk_exception = None
+            self.wait_for_chunk = chunk
+            self.wait_lock.wait_for(lambda: self.available_chunks()[chunk])
+            if self.closed:
+                return
+            if self.chunk_exception is not None:
+                if self.should_retry(chunk):
+                    retry = True
+                else:
+                    raise AbsChunkedInputStream.ChunkException
+            if not retry:
+                self.stream_read_halted(chunk, int(time.time() * 1000))
+        if retry:
+            time.sleep(math.log10(self.retries[chunk]))
+            self.check_availability(chunk, True, True)
+
+    def check_availability(self, chunk: int, wait: bool, halted: bool) -> None:
+        if halted and not wait:
+            raise TypeError()
+        if not self.requested_chunks()[chunk]:
+            self.request_chunk_from_stream(chunk)
+            self.requested_chunks()[chunk] = True
+        self.__preload_chunks(chunk)
+        if wait:
+            self.__wait_for_chunk_availability(chunk, halted)
+
+    def __read_remaining(self) -> bytes:
+        if self.__pos == self.size():
+            return b""
         buffer = io.BytesIO()
+        total_size = self.size()
         chunk = int(self.__pos / (128 * 1024))
         chunk_off = int(self.__pos % (128 * 1024))
-        chunk_end = int(__size / (128 * 1024))
-        chunk_end_off = int(__size % (128 * 1024))
+        chunk_total = int(math.ceil(total_size / (128 * 1024)))
+        self.check_availability(chunk, True, False)
+        buffer.write(self.buffer()[chunk][chunk_off:])
+        chunk += 1
+        if chunk != chunk_total:
+            while chunk <= chunk_total - 1:
+                self.check_availability(chunk, True, False)
+                buffer.write(self.buffer()[chunk])
+                chunk += 1
+        buffer.seek(0)
+        self.__pos += buffer.getbuffer().nbytes
+        return buffer.read()
+
+    def __resolve_chunk_end(self, requested_size: int) -> tuple[int, int]:
+        chunk_end = int(requested_size / (128 * 1024))
+        chunk_end_off = int(requested_size % (128 * 1024))
         if chunk_end > self.size():
             chunk_end = int(self.size() / (128 * 1024))
             chunk_end_off = int(self.size() % (128 * 1024))
+        return chunk_end, chunk_end_off
+
+    def __read_sized(self, requested_size: int) -> bytes:
+        buffer = io.BytesIO()
+        chunk = int(self.__pos / (128 * 1024))
+        chunk_off = int(self.__pos % (128 * 1024))
+        chunk_end, chunk_end_off = self.__resolve_chunk_end(requested_size)
         self.check_availability(chunk, True, False)
-        if chunk_off + __size > len(self.buffer()[chunk]):
+        if chunk_off + requested_size > len(self.buffer()[chunk]):
             buffer.write(self.buffer()[chunk][chunk_off:])
             chunk += 1
             while chunk <= chunk_end:
@@ -192,10 +201,17 @@ class AbsChunkedInputStream(io.BytesIO, HaltListener):
                     buffer.write(self.buffer()[chunk])
                 chunk += 1
         else:
-            buffer.write(self.buffer()[chunk][chunk_off:chunk_off + __size])
+            buffer.write(self.buffer()[chunk][chunk_off:chunk_off + requested_size])
         buffer.seek(0)
         self.__pos += buffer.getbuffer().nbytes
         return buffer.read()
+
+    def read(self, __size: int = 0) -> bytes:
+        if self.closed:
+            raise IOError(STREAM_CLOSED_MESSAGE)
+        if __size <= 0:
+            return self.__read_remaining()
+        return self.__read_sized(__size)
 
     def notify_chunk_available(self, index: int) -> None:
         self.available_chunks()[index] = True
@@ -331,8 +347,8 @@ class CdnFeedHelper:
     @staticmethod
     def load_track(
             session: Session, track: Metadata.Track, file: Metadata.AudioFile,
-            resp_or_url: typing.Union[StorageResolve.StorageResolveResponse,
-                                      str], preload: bool,
+            resp_or_url: StorageResolve.StorageResolveResponse | str,
+            preload: bool,
             halt_listener: HaltListener) -> PlayableContentFeeder.LoadedStream:
         if type(resp_or_url) is str:
             url = resp_or_url
@@ -381,7 +397,7 @@ class CdnFeedHelper:
         session: Session,
         episode: Metadata.Episode,
         file: Metadata.AudioFile,
-        resp_or_url: typing.Union[StorageResolve.StorageResolveResponse, str],
+        resp_or_url: StorageResolve.StorageResolveResponse | str,
         preload: bool,
         halt_listener: HaltListener,
     ) -> PlayableContentFeeder.LoadedStream:
@@ -484,7 +500,7 @@ class CdnManager:
         __expiration: int
         url: str
 
-        def __init__(self, cdn_manager, file_id: typing.Union[bytes, None],
+        def __init__(self, cdn_manager, file_id: bytes | None,
                      url: str):
             self.__cdn_manager: CdnManager = cdn_manager
             self.__file_id = file_id
@@ -497,59 +513,74 @@ class CdnManager:
                 self.url = self.__cdn_manager.get_audio_url(self.__file_id)
             return self.url
 
+        @staticmethod
+        def __first_query_value(token_query: dict[str, typing.Any],
+                                key: str) -> str:
+            values = token_query.get(key)
+            if not values:
+                return ""
+            try:
+                return str(values[0])
+            except (TypeError, IndexError):
+                return ""
+
+        def __set_expiration_from_token(self, token_str: str, url: str) -> bool:
+            if token_str == "None" or len(token_str) == 0:
+                return False
+            expire_at = None
+            for token_part in token_str.split("~"):
+                try:
+                    sep_index = token_part.index("=")
+                except ValueError:
+                    continue
+                if token_part[:sep_index] == "exp":
+                    expire_at = int(token_part[sep_index + 1:])
+                    break
+            if expire_at is None:
+                self.__expiration = -1
+                self.__cdn_manager.logger.warning(
+                    "Invalid __token__ in CDN url: {}".format(url))
+                return True
+            self.__expiration = expire_at * 1000
+            return True
+
+        def __set_expiration_from_expires(self, expires_str: str,
+                                          url: str) -> bool:
+            if expires_str == "None" or len(expires_str) == 0:
+                return False
+            expires_at = int(expires_str.split("~")[0])
+            if expires_at is None:
+                self.__expiration = -1
+                self.__cdn_manager.logger.warning(
+                    "Invalid Expires param in CDN url: {}".format(url))
+                return True
+            self.__expiration = expires_at * 1000
+            return True
+
+        def __set_fallback_expiration(self, token_url, url: str) -> None:
+            try:
+                i = token_url.query.index("_")
+            except ValueError:
+                self.__expiration = -1
+                self.__cdn_manager.logger.warning(
+                    "Couldn't extract expiration, invalid parameter in CDN url: {}".format(url))
+                return
+            self.__expiration = int(token_url.query[:i]) * 1000
+
         def set_url(self, url: str):
             self.url = url
             if self.__file_id is not None:
                 token_url = urllib.parse.urlparse(url)
                 token_query = urllib.parse.parse_qs(token_url.query)
-                token_list = token_query.get("__token__")
-                try:
-                    token_str = str(token_list[0])
-                except TypeError:
-                    token_str = ""
-                expires_list = token_query.get("Expires")
-                try:
-                    expires_str = str(expires_list[0])
-                except TypeError:
-                    expires_str = ""
-                if token_str != "None" and len(token_str) != 0:
-                    expire_at = None
-                    split = token_str.split("~")
-                    for s in split:
-                        try:
-                            i = s.index("=")
-                        except ValueError:
-                            continue
-                        if s[:i] == "exp":
-                            expire_at = int(s[i + 1:])
-                            break
-                    if expire_at is None:
-                        self.__expiration = -1
-                        self.__cdn_manager.logger.warning(
-                            "Invalid __token__ in CDN url: {}".format(url))
-                        return
-                    self.__expiration = expire_at * 1000
-                elif expires_str != "None" and len(expires_str) != 0:
-                    expires_at = None
-                    expires_str = expires_str.split("~")[0]
-                    expires_at = int(expires_str)
-                    if expires_at is None:
-                        self.__expiration = -1
-                        self.__cdn_manager.logger.warning("Invalid Expires param in CDN url: {}".format(url))
-                        return
-                    self.__expiration = expires_at * 1000
-                else:
-                    try:
-                        i = token_url.query.index("_")
-                    except ValueError:
-                        self.__expiration = -1
-                        self.__cdn_manager.logger \
-                            .warning("Couldn't extract expiration, invalid parameter in CDN url: {}".format(url))
-                        return
-                    self.__expiration = int(token_url.query[:i]) * 1000
-
-            else:
-                self.__expiration = -1
+                token_str = self.__first_query_value(token_query, "__token__")
+                expires_str = self.__first_query_value(token_query, "Expires")
+                if self.__set_expiration_from_token(token_str, url):
+                    return
+                if self.__set_expiration_from_expires(expires_str, url):
+                    return
+                self.__set_fallback_expiration(token_url, url)
+                return
+            self.__expiration = -1
 
     class Streamer(GeneralAudioStream, GeneralWritableStream):
         available: typing.List[bool]
@@ -737,7 +768,7 @@ class PlayableContentFeeder:
 
     def load(self, playable_id: PlayableId,
              audio_quality_picker: AudioQualityPicker, preload: bool,
-             halt_listener: typing.Union[HaltListener, None]):
+             halt_listener: HaltListener | None):
         if type(playable_id) is TrackId:
             return self.load_track(playable_id, audio_quality_picker, preload,
                                    halt_listener)
@@ -785,8 +816,7 @@ class PlayableContentFeeder:
             raise FeederException("Cannot find suitable audio file")
         return self.load_stream(file, None, episode, preload, halt_listener)
 
-    def load_track(self, track_id_or_track: typing.Union[TrackId,
-                                                         Metadata.Track],
+    def load_track(self, track_id_or_track: TrackId | Metadata.Track,
                    audio_quality_picker: AudioQualityPicker, preload: bool,
                    halt_listener: HaltListener):
         if type(track_id_or_track) is TrackId:
@@ -806,7 +836,7 @@ class PlayableContentFeeder:
         return self.load_stream(file, track, None, preload, halt_listener)
 
     def pick_alternative_if_necessary(
-            self, track: Metadata.Track) -> typing.Union[Metadata.Track, None]:
+            self, track: Metadata.Track) -> Metadata.Track | None:
         if len(track.file) > 0:
             return track
         for alt in track.alternative:
@@ -866,16 +896,16 @@ class LoadedStream:
         preloaded_audio_key: bool
         audio_key_time: int
 
-        def __init__(self, file_id: typing.Union[bytes, None],
+        def __init__(self, file_id: bytes | None,
                      preloaded_audio_key: bool, audio_key_time: int):
             self.file_id = None if file_id is None else util.bytes_to_hex(
                 file_id)
             self.preloaded_audio_key = preloaded_audio_key
             self.audio_key_time = -1 if preloaded_audio_key else audio_key_time
 
-    def __init__(self, track_or_episode: typing.Union[Metadata.Track, Metadata.Episode],
+    def __init__(self, track_or_episode: Metadata.Track | Metadata.Episode,
                  input_stream: GeneralAudioStream,
-                 normalization_data: typing.Union[NormalizationData, None],
+                 normalization_data: NormalizationData | None,
                  file_id: str, preloaded_audio_key: bool, audio_key_time: int):
         if type(track_or_episode) is Metadata.Track:
             self.track = track_or_episode

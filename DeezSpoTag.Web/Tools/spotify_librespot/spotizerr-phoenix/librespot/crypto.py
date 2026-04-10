@@ -166,7 +166,7 @@ class Packet:
         unknown_0x10 = b"\x10"
 
         @staticmethod
-        def parse(val: typing.Union[bytes, None]) -> typing.Union[bytes, None]:
+        def parse(val: bytes | None) -> bytes | None:
             for cmd in [
                     Packet.Type.__dict__[attr] for attr in Packet.Type.__dict__
                     if re.search("__.+?__", attr) is None
@@ -287,7 +287,7 @@ class Shannon:
         self.save_state()
         self.nbuf = 0
 
-    def nonce(self, nonce: typing.Union[bytes, int]) -> None:
+    def nonce(self, nonce: bytes | int) -> None:
         if type(nonce) is int:
             nonce = bytes(struct.pack(">I", nonce))
         self.reload_state()

@@ -33,7 +33,7 @@ class ZeroconfServer(Closeable):
     logger.setLevel(logging.INFO)
     
     service = "_spotify-connect._tcp.local."
-    __connecting_username: typing.Union[str, None] = None
+    __connecting_username: str | None = None
     __connection_lock = threading.Condition()
     __default_get_info_fields = {
         "status": 101,
@@ -63,7 +63,7 @@ class ZeroconfServer(Closeable):
     __min_port = 1024
     __runner: HttpRunner
     __service_info: zeroconf.ServiceInfo
-    __session: typing.Union[Session, None] = None
+    __session: Session | None = None
     __session_listeners: typing.List[SessionListener] = []
     __zeroconf: zeroconf.Zeroconf
 
@@ -213,37 +213,40 @@ class ZeroconfServer(Closeable):
         self.__session.close()
         self.__session = None
 
-    def handle_add_user(self, __socket: socket.socket, params: dict[str, str],
-                        http_version: str) -> None:
-        username = params.get("userName")
-        if not username:
-            self.logger.error("Missing userName!")
-            return
-        blob_str = params.get("blob")
-        if not blob_str:
-            self.logger.error("Missing blob!")
-            return
-        client_key_str = params.get("clientKey")
-        if not client_key_str:
-            self.logger.error("Missing clientKey!")
-        with self.__connection_lock:
-            if username == self.__connecting_username:
-                self.logger.info(
-                    "{} is already trying to connect.".format(username))
-                __socket.send(http_version.encode())
-                __socket.send(b" 403 Forbidden")
-                __socket.send(self.__eol)
-                __socket.send(self.__eol)
-                return
-            self.__connecting_username = username
-            self.logger.info("Beginning login handshake for user: %s", username)
+    def _send_status_response(self, client_socket: socket.socket, http_version: str,
+                              status_line: bytes) -> None:
+        client_socket.send(http_version.encode())
+        client_socket.send(status_line)
+        client_socket.send(self.__eol)
+        client_socket.send(self.__eol)
+
+    def _send_json_response(self, client_socket: socket.socket, http_version: str,
+                            status_line: bytes, payload: dict) -> None:
+        response = json.dumps(payload)
+        client_socket.send(http_version.encode())
+        client_socket.send(status_line)
+        client_socket.send(self.__eol)
+        client_socket.send(b"Content-Length: ")
+        client_socket.send(str(len(response)).encode())
+        client_socket.send(self.__eol)
+        client_socket.send(self.__eol)
+        client_socket.send(response.encode())
+
+    @staticmethod
+    def _is_transient_connect_error(err: Exception) -> bool:
+        if isinstance(err, (ConnectionResetError, TimeoutError, socket.timeout, ConnectionAbortedError)):
+            return True
+        return isinstance(err, OSError) and err.errno in (104, 110, 111, 113)
+
+    def _decrypt_blob_payload(self, client_key_str: str, blob_str: str) -> bytes | None:
         shared_key = util.int_to_bytes(
-            self.__keys.compute_shared_key(
-                base64.b64decode(client_key_str.encode())))
+            self.__keys.compute_shared_key(base64.b64decode(client_key_str.encode()))
+        )
         blob_bytes = base64.b64decode(blob_str)
         iv = blob_bytes[:16]
         encrypted = blob_bytes[16:len(blob_bytes) - 20]
         checksum = blob_bytes[len(blob_bytes) - 20:]
+
         sha1 = SHA1.new()
         sha1.update(shared_key)
         base_key = sha1.digest()[:16]
@@ -257,76 +260,98 @@ class ZeroconfServer(Closeable):
         hmac.update(encrypted)
         mac = hmac.digest()
         if mac != checksum:
-            self.logger.error("Mac and checksum don't match!")
-            __socket.send(http_version.encode())
-            __socket.send(b" 400 Bad Request")
-            __socket.send(self.__eol)
-            __socket.send(self.__eol)
-            return
-        aes = AES.new(encryption_key[:16],
-                      AES.MODE_CTR,
-                      counter=Counter.new(128,
-                                          initial_value=int.from_bytes(
-                                              iv, "big")))
-        decrypted = aes.decrypt(encrypted)
-        self.close_session()
-        self.logger.info("Accepted new user from {}. [deviceId: {}]".format(
-            params.get("deviceName"), self.__inner.device_id))
-        response = json.dumps(self.__default_successful_add_user)
-        __socket.send(http_version.encode())
-        __socket.send(b" 200 OK")
-        __socket.send(self.__eol)
-        __socket.send(b"Content-Length: ")
-        __socket.send(str(len(response)).encode())
-        __socket.send(self.__eol)
-        __socket.send(self.__eol)
-        __socket.send(response.encode())
-        def _is_transient_connect_error(err: Exception) -> bool:
-            if isinstance(err, (ConnectionResetError, TimeoutError, socket.timeout, ConnectionAbortedError)):
-                return True
-            if isinstance(err, OSError) and err.errno in (104, 110, 111, 113):
-                return True
-            return False
+            return None
 
+        aes = AES.new(
+            encryption_key[:16],
+            AES.MODE_CTR,
+            counter=Counter.new(128, initial_value=int.from_bytes(iv, "big")),
+        )
+        return aes.decrypt(encrypted)
+
+    def _create_session_with_retry(self, username: str, decrypted: bytes) -> None:
         retries = 3
         backoff_seconds = 0.5
-        try:
-            for attempt in range(1, retries + 1):
-                try:
-                    self.logger.info(
-                        "Creating librespot session for user: %s (attempt %d/%d)",
-                        username,
+        self.__session = None
+        for attempt in range(1, retries + 1):
+            try:
+                self.logger.info(
+                    "Creating librespot session for user: %s (attempt %d/%d)",
+                    username,
+                    attempt,
+                    retries,
+                )
+                self.__session = Session.Builder(self.__inner.conf) \
+                    .set_device_id(self.__inner.device_id) \
+                    .set_device_name(self.__inner.device_name) \
+                    .set_device_type(self.__inner.device_type) \
+                    .set_preferred_locale(self.__inner.preferred_locale) \
+                    .blob(username, decrypted) \
+                    .create()
+                self.logger.info(
+                    "Librespot session created. username=%s stored_credentials_file=%s",
+                    self.__session.username(),
+                    getattr(self.__inner.conf, "stored_credentials_file", None),
+                )
+                return
+            except Exception as exc:
+                self.__session = None
+                if self._is_transient_connect_error(exc) and attempt < retries:
+                    self.logger.warning(
+                        "Transient librespot session error: %s (attempt %d/%d). Retrying in %.1fs.",
+                        exc,
                         attempt,
                         retries,
+                        backoff_seconds,
                     )
-                    self.__session = Session.Builder(self.__inner.conf) \
-                        .set_device_id(self.__inner.device_id) \
-                        .set_device_name(self.__inner.device_name) \
-                        .set_device_type(self.__inner.device_type) \
-                        .set_preferred_locale(self.__inner.preferred_locale) \
-                        .blob(username, decrypted) \
-                        .create()
-                    self.logger.info(
-                        "Librespot session created. username=%s stored_credentials_file=%s",
-                        self.__session.username(),
-                        getattr(self.__inner.conf, "stored_credentials_file", None),
-                    )
-                    break
-                except Exception as exc:
-                    self.__session = None
-                    if _is_transient_connect_error(exc) and attempt < retries:
-                        self.logger.warning(
-                            "Transient librespot session error: %s (attempt %d/%d). Retrying in %.1fs.",
-                            exc,
-                            attempt,
-                            retries,
-                            backoff_seconds,
-                        )
-                        time.sleep(backoff_seconds)
-                        backoff_seconds *= 2
-                        continue
-                    self.logger.exception("Failed to create librespot session: %s", exc)
-                    break
+                    time.sleep(backoff_seconds)
+                    backoff_seconds *= 2
+                    continue
+                self.logger.exception("Failed to create librespot session: %s", exc)
+                return
+
+    def handle_add_user(self, __socket: socket.socket, params: dict[str, str],
+                        http_version: str) -> None:
+        username = params.get("userName")
+        if not username:
+            self.logger.error("Missing userName!")
+            return
+        blob_str = params.get("blob")
+        if not blob_str:
+            self.logger.error("Missing blob!")
+            return
+        client_key_str = params.get("clientKey")
+        if not client_key_str:
+            self.logger.error("Missing clientKey!")
+            return
+        with self.__connection_lock:
+            if username == self.__connecting_username:
+                self.logger.info(
+                    "{} is already trying to connect.".format(username))
+                self._send_status_response(__socket, http_version, b" 403 Forbidden")
+                return
+            self.__connecting_username = username
+            self.logger.info("Beginning login handshake for user: %s", username)
+        try:
+            decrypted = self._decrypt_blob_payload(client_key_str, blob_str)
+            if decrypted is None:
+                self.logger.error("Mac and checksum don't match!")
+                self._send_status_response(__socket, http_version, b" 400 Bad Request")
+                return
+
+            self.close_session()
+            self.logger.info("Accepted new user from {}. [deviceId: {}]".format(
+                params.get("deviceName"), self.__inner.device_id))
+            self._send_json_response(
+                __socket,
+                http_version,
+                b" 200 OK",
+                self.__default_successful_add_user,
+            )
+            self._create_session_with_retry(username, decrypted)
+        except Exception as exc:
+            self.logger.exception("Failed to process addUser request: %s", exc)
+            self._send_status_response(__socket, http_version, b" 400 Bad Request")
         finally:
             with self.__connection_lock:
                 self.__connecting_username = None

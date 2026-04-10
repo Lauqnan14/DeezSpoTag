@@ -72,7 +72,7 @@ class ApiClient(Closeable):
     logger = logging.getLogger("Librespot:ApiClient")
     CONTENT_TYPE_PROTOBUF = "application/x-protobuf"
     __base_url: str
-    __client_token_str: typing.Optional[str] = None
+    __client_token_str: str | None = None
     __session: Session
 
     def __init__(self, session: Session):
@@ -83,8 +83,8 @@ class ApiClient(Closeable):
         self,
         method: str,
         suffix: str,
-        headers: typing.Union[None, typing.Dict[str, str]],
-        body: typing.Union[None, bytes],
+        headers: typing.Dict[str, str] | None,
+        body: bytes | None,
     ) -> requests.PreparedRequest:
         if self.__client_token_str is None:
             resp = self.__client_token()
@@ -111,8 +111,8 @@ class ApiClient(Closeable):
         self,
         method: str,
         suffix: str,
-        headers: typing.Union[None, typing.Dict[str, str]],
-        body: typing.Union[None, bytes],
+        headers: typing.Dict[str, str] | None,
+        body: bytes | None,
     ) -> requests.Response:
         response = self.__session.client().send(
             self.build_request(method, suffix, headers, body)
@@ -326,8 +326,8 @@ class ApResolver:
 class DealerClient(Closeable):
     """ """
     logger = logging.getLogger("Librespot:DealerClient")
-    __connection: typing.Union[ConnectionHolder, None]
-    __last_scheduled_reconnection: typing.Union[sched.Event, None]
+    __connection: ConnectionHolder | None
+    __last_scheduled_reconnection: sched.Event | None
     __message_listeners: typing.Dict[MessageListener, typing.List[str]] = {}
     __message_listeners_lock = threading.Condition()
     __request_listeners: typing.Dict[str, RequestListener] = {}
@@ -396,6 +396,39 @@ class DealerClient(Closeable):
         self.__last_scheduled_reconnection = self.__scheduler.enter(
             10, 1, anonymous)
 
+    @staticmethod
+    def __decode_payloads(headers: dict[str, str], payloads: typing.Any) -> typing.Any:
+        if payloads is None:
+            return b""
+        content_type = headers.get("Content-Type")
+        if content_type in ("application/json", "plain/text"):
+            return payloads
+        decoded_payloads = base64.b64decode(payloads)
+        if headers.get("Transfer-Encoding") == "gzip":
+            decoded_payloads = gzip.decompress(decoded_payloads)
+        return decoded_payloads
+
+    def __submit_message(self, listener: MessageListener, uri: str,
+                         headers: dict[str, str],
+                         decoded_payloads: typing.Any) -> None:
+
+        def anonymous():
+            """ """
+            listener.on_message(uri, headers, decoded_payloads)
+
+        self.__worker.submit(anonymous)
+
+    def __dispatch_message(self, uri: str, headers: dict[str, str],
+                           decoded_payloads: typing.Any) -> bool:
+        interesting = False
+        with self.__message_listeners_lock:
+            for listener, keys in self.__message_listeners.items():
+                if any(uri.startswith(key) for key in keys):
+                    interesting = True
+                    self.__submit_message(listener, uri, headers,
+                                          decoded_payloads)
+        return interesting
+
     def handle_message(self, obj: typing.Any) -> None:
         """
 
@@ -405,33 +438,8 @@ class DealerClient(Closeable):
         uri = obj.get("uri")
         headers = self.__get_headers(obj)
         payloads = obj.get("payloads")
-        decoded_payloads: typing.Any
-        if payloads is not None:
-            if headers.get("Content-Type") == "application/json":
-                decoded_payloads = payloads
-            elif headers.get("Content-Type") == "plain/text":
-                decoded_payloads = payloads
-            else:
-                decoded_payloads = base64.b64decode(payloads)
-                if headers.get("Transfer-Encoding") == "gzip":
-                    decoded_payloads = gzip.decompress(decoded_payloads)
-        else:
-            decoded_payloads = b""
-        interesting = False
-        with self.__message_listeners_lock:
-            for listener in self.__message_listeners:
-                dispatched = False
-                keys = self.__message_listeners.get(listener)
-                for key in keys:
-                    if uri.startswith(key) and not dispatched:
-                        interesting = True
-
-                        def anonymous():
-                            """ """
-                            listener.on_message(uri, headers, decoded_payloads)
-
-                        self.__worker.submit(anonymous)
-                        dispatched = True
+        decoded_payloads = self.__decode_payloads(headers, payloads)
+        interesting = self.__dispatch_message(uri, headers, decoded_payloads)
         if not interesting:
             self.logger.debug("Couldn't dispatch message: {}".format(uri))
 
@@ -661,8 +669,7 @@ class EventService(Closeable):
             self.logger.error("Failed sending event: {} {}".format(
                 event_builder, ex))
 
-    def send_event(self, event_or_builder: typing.Union[GenericEvent,
-                                                        EventBuilder]):
+    def send_event(self, event_or_builder: GenericEvent | EventBuilder):
         """
 
         :param event_or_builder: typing.Union[GenericEvent:
@@ -792,30 +799,30 @@ class Session(Closeable, MessageListener, SubListener):
     CLIENT_ID = "65b708073fc0480ea92a077233ca87bd"  # Spotify client ID for librespot
     LOGGER_NAME = "Librespot:Session"
     SESSION_NOT_AUTHENTICATED_MSG = "Session isn't authenticated!"
-    cipher_pair: typing.Union[CipherPair, None]
+    cipher_pair: CipherPair | None
     country_code: str = "EN"
-    connection: typing.Union[ConnectionHolder, None]
+    connection: ConnectionHolder | None
     logger = logging.getLogger(LOGGER_NAME)
-    scheduled_reconnect: typing.Union[sched.Event, None] = None
+    scheduled_reconnect: sched.Event | None = None
     scheduler = sched.scheduler(time.time)
     __api: ApiClient
     __ap_welcome: Authentication.APWelcome
-    __audio_key_manager: typing.Union[AudioKeyManager, None] = None
+    __audio_key_manager: AudioKeyManager | None = None
     __auth_lock = threading.Condition()
     __auth_lock_bool = False
-    __cache_manager: typing.Union[CacheManager, None]
-    __cdn_manager: typing.Union[CdnManager, None]
-    __channel_manager: typing.Union[ChannelManager, None] = None
-    __client: typing.Union[requests.Session, None]
+    __cache_manager: CacheManager | None
+    __cdn_manager: CdnManager | None
+    __channel_manager: ChannelManager | None = None
+    __client: requests.Session | None
     __closed = False
     __closing = False
-    __content_feeder: typing.Union[PlayableContentFeeder, None]
-    __dealer_client: typing.Union[DealerClient, None] = None
-    __event_service: typing.Union[EventService, None] = None
+    __content_feeder: PlayableContentFeeder | None
+    __dealer_client: DealerClient | None = None
+    __event_service: EventService | None = None
     __keys: DiffieHellman
     __mercury_client: MercuryClient
-    __receiver: typing.Union[Receiver, None] = None
-    __search: typing.Union[SearchManager, None]
+    __receiver: Receiver | None = None
+    __search: SearchManager | None
     __server_key = (b"\xac\xe0F\x0b\xff\xc20\xaf\xf4k\xfe\xc3\xbf\xbf\x86="
                     b"\xa1\x91\xc6\xcc3l\x93\xa1O\xb3\xb0\x16\x12\xac\xacj"
                     b"\xf1\x80\xe7\xf6\x14\xd9B\x9d\xbe.4fC\xe3b\xd22z\x1a"
@@ -832,7 +839,7 @@ class Session(Closeable, MessageListener, SubListener):
                     b"\x9d\xb3\x08l\x19\x0eH\xb3\x9df\xeb\x00\x06\xa2Z\xee\xa1"
                     b"\x1b\x13\x87<\xd7\x19\xe6U\xbd")
     __stored_str: str = ""
-    __token_provider: typing.Union[TokenProvider, None]
+    __token_provider: TokenProvider | None
     __user_attributes = {}
 
     def __init__(self, inner: Inner, address: str) -> None:
@@ -1211,6 +1218,64 @@ class Session(Closeable, MessageListener, SubListener):
         """ """
         return self.__stored_str
 
+    def __send_preferred_locale(self) -> None:
+        preferred_locale = io.BytesIO()
+        preferred_locale.write(b"\x00\x00\x10\x00\x02preferred-locale" +
+                               self.__inner.preferred_locale.encode())
+        preferred_locale.seek(0)
+        self.__send_unchecked(Packet.Type.preferred_locale,
+                              preferred_locale.read())
+
+    def __unlock_auth(self) -> None:
+        with self.__auth_lock:
+            self.__auth_lock_bool = False
+            self.__auth_lock.notify_all()
+
+    def __store_reusable_credentials(self) -> None:
+        reusable = self.__ap_welcome.reusable_auth_credentials
+        reusable_type = Authentication.AuthenticationType.Name(
+            self.__ap_welcome.reusable_auth_credentials_type)
+        if self.__inner.conf.stored_credentials_file is None:
+            raise TypeError("The file path to be saved is not specified")
+        try:
+            logging.getLogger(Session.LOGGER_NAME).info(
+                "Storing credentials to %s for user %s (type=%s)",
+                self.__inner.conf.stored_credentials_file,
+                self.__ap_welcome.canonical_username,
+                reusable_type,
+            )
+        except Exception:
+            pass
+
+        credentials_payload = {
+            "username": self.__ap_welcome.canonical_username,
+            "credentials": base64.b64encode(reusable).decode(),
+            "type": reusable_type,
+        }
+        self.__stored_str = base64.b64encode(
+            json.dumps(credentials_payload).encode()).decode()
+        with open(self.__inner.conf.stored_credentials_file, "w") as f:
+            json.dump(credentials_payload, f)
+        try:
+            logging.getLogger(Session.LOGGER_NAME).info(
+                "Stored credentials written for user %s",
+                self.__ap_welcome.canonical_username,
+            )
+        except Exception:
+            pass
+
+    def __handle_ap_welcome(self, payload: bytes, remove_lock: bool) -> None:
+        self.__ap_welcome = Authentication.APWelcome()
+        self.__ap_welcome.ParseFromString(payload)
+        self.__receiver = Session.Receiver(self)
+        self.__send_unchecked(Packet.Type.unknown_0x0f,
+                              Random.get_random_bytes(0x14))
+        self.__send_preferred_locale()
+        if remove_lock:
+            self.__unlock_auth()
+        if self.__inner.conf.store_credentials:
+            self.__store_reusable_credentials()
+
     def __authenticate_partial(self,
                                credential: Authentication.LoginCredentials,
                                remove_lock: bool) -> None:
@@ -1236,70 +1301,14 @@ class Session(Closeable, MessageListener, SubListener):
             client_response_encrypted_proto.SerializeToString())
         packet = self.cipher_pair.receive_encoded(self.connection)
         if packet.is_cmd(Packet.Type.ap_welcome):
-            self.__ap_welcome = Authentication.APWelcome()
-            self.__ap_welcome.ParseFromString(packet.payload)
-            self.__receiver = Session.Receiver(self)
-            bytes0x0f = Random.get_random_bytes(0x14)
-            self.__send_unchecked(Packet.Type.unknown_0x0f, bytes0x0f)
-            preferred_locale = io.BytesIO()
-            preferred_locale.write(b"\x00\x00\x10\x00\x02preferred-locale" +
-                                   self.__inner.preferred_locale.encode())
-            preferred_locale.seek(0)
-            self.__send_unchecked(Packet.Type.preferred_locale,
-                                  preferred_locale.read())
-            if remove_lock:
-                with self.__auth_lock:
-                    self.__auth_lock_bool = False
-                    self.__auth_lock.notify_all()
-            if self.__inner.conf.store_credentials:
-                reusable = self.__ap_welcome.reusable_auth_credentials
-                reusable_type = Authentication.AuthenticationType.Name(
-                    self.__ap_welcome.reusable_auth_credentials_type)
-                if self.__inner.conf.stored_credentials_file is None:
-                    raise TypeError(
-                        "The file path to be saved is not specified")
-                try:
-                    logging.getLogger(Session.LOGGER_NAME).info(
-                        "Storing credentials to %s for user %s (type=%s)",
-                        self.__inner.conf.stored_credentials_file,
-                        self.__ap_welcome.canonical_username,
-                        reusable_type,
-                    )
-                except Exception:
-                    pass
-                self.__stored_str = base64.b64encode(
-                    json.dumps({
-                        "username":
-                        self.__ap_welcome.canonical_username,
-                        "credentials":
-                        base64.b64encode(reusable).decode(),
-                        "type":
-                        reusable_type,
-                    }).encode()).decode()
-                with open(self.__inner.conf.stored_credentials_file, "w") as f:
-                    json.dump(
-                        {
-                            "username": self.__ap_welcome.canonical_username,
-                            "credentials": base64.b64encode(reusable).decode(),
-                            "type": reusable_type,
-                        },
-                        f,
-                    )
-                try:
-                    logging.getLogger(Session.LOGGER_NAME).info(
-                        "Stored credentials written for user %s",
-                        self.__ap_welcome.canonical_username,
-                    )
-                except Exception:
-                    pass
-
-        elif packet.is_cmd(Packet.Type.auth_failure):
+            self.__handle_ap_welcome(packet.payload, remove_lock)
+            return
+        if packet.is_cmd(Packet.Type.auth_failure):
             ap_login_failed = Keyexchange.APLoginFailed()
             ap_login_failed.ParseFromString(packet.payload)
             self.close()
             raise Session.SpotifyAuthenticationException(ap_login_failed)
-        else:
-            raise RuntimeError("Unknown CMD 0x" + packet.cmd.hex())
+        raise RuntimeError("Unknown CMD 0x" + packet.cmd.hex())
 
     def __send_unchecked(self, cmd: bytes, payload: bytes) -> None:
         self.cipher_pair.send_encoded(self.connection, cmd, payload)
@@ -1482,7 +1491,7 @@ class Session(Closeable, MessageListener, SubListener):
                 username=username,
             )
 
-        def _maybe_base64_decode_blob(self, encrypted_blob: typing.Union[str, bytes]) -> bytes:
+        def _maybe_base64_decode_blob(self, encrypted_blob: str | bytes) -> bytes:
             if isinstance(encrypted_blob, str):
                 return base64.b64decode(encrypted_blob)
             if not isinstance(encrypted_blob, (bytes, bytearray)):
@@ -1862,6 +1871,17 @@ class Session(Closeable, MessageListener, SubListener):
         __session: Session
         __thread: threading.Thread
         __running: bool = True
+        __mercury_commands = {
+            Packet.Type.mercury_sub,
+            Packet.Type.mercury_unsub,
+            Packet.Type.mercury_event,
+            Packet.Type.mercury_req,
+        }
+        __audio_key_commands = {Packet.Type.aes_key, Packet.Type.aes_key_error}
+        __channel_commands = {
+            Packet.Type.channel_error,
+            Packet.Type.stream_chunk_res,
+        }
 
         def __init__(self, session):
             self.__session = session
@@ -1874,82 +1894,92 @@ class Session(Closeable, MessageListener, SubListener):
             """ """
             self.__running = False
 
+        def __read_packet(self) -> tuple[typing.Optional[Packet], typing.Optional[bytes]]:
+            try:
+                packet = self.__session.cipher_pair.receive_encoded(
+                    self.__session.connection)
+                cmd = Packet.Type.parse(packet.cmd)
+                if cmd is None:
+                    self.__session.logger.info(
+                        "Skipping unknown command cmd: 0x{}, payload: {}".
+                        format(util.bytes_to_hex(packet.cmd), packet.payload))
+                    return None, None
+                return packet, cmd
+            except (RuntimeError, ConnectionResetError, OSError) as ex:
+                if self.__running:
+                    self.__session.logger.fatal(
+                        "Failed reading packet! {}".format(ex))
+                    self.__session.reconnect()
+                self.__running = False
+                return None, None
+
+        def __handle_ping(self, packet: Packet) -> None:
+            if self.__session.scheduled_reconnect is not None:
+                self.__session.scheduler.cancel(
+                    self.__session.scheduled_reconnect)
+
+            def anonymous():
+                """ """
+                self.__session.logger.warning("Socket timed out. Reconnecting...")
+                self.__session.reconnect()
+
+            self.__session.scheduled_reconnect = self.__session.scheduler.enter(
+                2 * 60 + 5, 1, anonymous)
+            self.__session.send(Packet.Type.pong, packet.payload)
+
+        def __handle_license_version(self, packet: Packet) -> None:
+            license_version = io.BytesIO(packet.payload)
+            license_id = struct.unpack(">h", license_version.read(2))[0]
+            if license_id != 0:
+                buffer = license_version.read()
+                self.__session.logger.info(
+                    "Received license_version: {}, {}".format(
+                        license_id, buffer.decode()))
+                return
+            self.__session.logger.info(
+                "Received license_version: {}".format(license_id))
+
+        def __dispatch_packet(self, cmd: bytes, packet: Packet) -> bool:
+            if cmd == Packet.Type.ping:
+                self.__handle_ping(packet)
+                return True
+            if cmd == Packet.Type.pong_ack:
+                return True
+            if cmd == Packet.Type.country_code:
+                self.__session.__country_code = packet.payload.decode()
+                self.__session.logger.info(
+                    "Received country_code: {}".format(
+                        self.__session.__country_code))
+                return True
+            if cmd == Packet.Type.license_version:
+                self.__handle_license_version(packet)
+                return True
+            if cmd == Packet.Type.unknown_0x10:
+                self.__session.logger.debug("Received 0x10: {}".format(
+                    util.bytes_to_hex(packet.payload)))
+                return True
+            if cmd in self.__mercury_commands:
+                self.__session.mercury().dispatch(packet)
+                return True
+            if cmd in self.__audio_key_commands:
+                self.__session.audio_key().dispatch(packet)
+                return True
+            if cmd in self.__channel_commands:
+                self.__session.channel().dispatch(packet)
+                return True
+            if cmd == Packet.Type.product_info:
+                self.__session.parse_product_info(packet.payload)
+                return True
+            return False
+
         def run(self) -> None:
             """Receive Packet thread function"""
             self.__session.logger.info("Session.Receiver started")
             while self.__running:
-                packet: Packet
-                cmd: bytes
-                try:
-                    packet = self.__session.cipher_pair.receive_encoded(
-                        self.__session.connection)
-                    cmd = Packet.Type.parse(packet.cmd)
-                    if cmd is None:
-                        self.__session.logger.info(
-                            "Skipping unknown command cmd: 0x{}, payload: {}".
-                            format(util.bytes_to_hex(packet.cmd),
-                                   packet.payload))
-                        continue
-                except (RuntimeError, ConnectionResetError, OSError) as ex:
-                    if self.__running:
-                        self.__session.logger.fatal(
-                            "Failed reading packet! {}".format(ex))
-                        self.__session.reconnect()
-                    break
-                if not self.__running:
-                    break
-                if cmd == Packet.Type.ping:
-                    if self.__session.scheduled_reconnect is not None:
-                        self.__session.scheduler.cancel(
-                            self.__session.scheduled_reconnect)
-
-                    def anonymous():
-                        """ """
-                        self.__session.logger.warning(
-                            "Socket timed out. Reconnecting...")
-                        self.__session.reconnect()
-
-                    self.__session.scheduled_reconnect = self.__session.scheduler.enter(
-                        2 * 60 + 5, 1, anonymous)
-                    self.__session.send(Packet.Type.pong, packet.payload)
-                elif cmd == Packet.Type.pong_ack:
+                packet, cmd = self.__read_packet()
+                if packet is None or cmd is None:
                     continue
-                elif cmd == Packet.Type.country_code:
-                    self.__session.__country_code = packet.payload.decode()
-                    self.__session.logger.info(
-                        "Received country_code: {}".format(
-                            self.__session.__country_code))
-                elif cmd == Packet.Type.license_version:
-                    license_version = io.BytesIO(packet.payload)
-                    license_id = struct.unpack(">h",
-                                               license_version.read(2))[0]
-                    if license_id != 0:
-                        buffer = license_version.read()
-                        self.__session.logger.info(
-                            "Received license_version: {}, {}".format(
-                                license_id, buffer.decode()))
-                    else:
-                        self.__session.logger.info(
-                            "Received license_version: {}".format(license_id))
-                elif cmd == Packet.Type.unknown_0x10:
-                    self.__session.logger.debug("Received 0x10: {}".format(
-                        util.bytes_to_hex(packet.payload)))
-                elif cmd in [
-                        Packet.Type.mercury_sub,
-                        Packet.Type.mercury_unsub,
-                        Packet.Type.mercury_event,
-                        Packet.Type.mercury_req,
-                ]:
-                    self.__session.mercury().dispatch(packet)
-                elif cmd in [Packet.Type.aes_key, Packet.Type.aes_key_error]:
-                    self.__session.audio_key().dispatch(packet)
-                elif cmd in [
-                        Packet.Type.channel_error, Packet.Type.stream_chunk_res
-                ]:
-                    self.__session.channel().dispatch(packet)
-                elif cmd == Packet.Type.product_info:
-                    self.__session.parse_product_info(packet.payload)
-                else:
+                if not self.__dispatch_packet(cmd, packet):
                     self.__session.logger.info("Skipping {}".format(
                         util.bytes_to_hex(cmd)))
 
@@ -2134,7 +2164,7 @@ class TokenProvider:
         self.__session = session
 
     def find_token_with_all_scopes(
-            self, scopes: typing.List[str]) -> typing.Union[StoredToken, None]:
+            self, scopes: typing.List[str]) -> StoredToken | None:
         """
 
         :param scopes: typing.List[str]:
@@ -2177,7 +2207,7 @@ class TokenProvider:
             self.logger.debug("Using Login5 access token for scopes: {}".format(scopes))
         return token
 
-    def login5(self, scopes: typing.List[str]) -> typing.Union[StoredToken, None]:
+    def login5(self, scopes: typing.List[str]) -> StoredToken | None:
         """Submit Login5 request for a fresh access token"""
         
         if self.__session.ap_welcome():

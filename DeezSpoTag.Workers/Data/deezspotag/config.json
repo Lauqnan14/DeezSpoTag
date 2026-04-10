@@ -1,5 +1,5 @@
 {
-  "downloadLocation": "/tmp/deezspotag-qobuz-test-rb1sag2b.tln/downloads",
+  "downloadLocation": "/home/edzoh/Music/Test/Downs",
   "executeCommand": "",
   "tags": {
     "title": true,
@@ -153,7 +153,7 @@
   "convertWarnLossyToLossless": false,
   "convertSkipLossyToLossless": false,
   "mvFileFormat": "{ArtistName} - {VideoName} [{ReleaseYear}]",
-  "service": "tidal",
+  "service": "auto",
   "metadataSource": "spotify",
   "fallback": false,
   "librespotConcurrency": 2,

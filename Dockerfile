@@ -194,7 +194,8 @@ RUN set -eux; \
     fetch_if_missing "genre_discogs400-discogs-effnet-1.pb" "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.pb"; \
     fetch_if_missing "genre_discogs400-discogs-effnet-1.json" "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.json"; \
     if [ "${model_fetch_failures}" -gt 0 ]; then \
-      echo "WARNING: ${model_fetch_failures} model file(s) were not fetched during image build. Runtime will retry provisioning." >&2; \
+      echo "WARNING: ${model_fetch_failures} model file(s) were not fetched during image build." \
+        "Runtime will retry provisioning." >&2; \
     fi
 
 EXPOSE 8668

@@ -54,6 +54,59 @@ def _create_session(session_cls, credentials_path, max_retries=3):
 
     raise RuntimeError(f"Failed to create session after {max_retries} attempts: {last_error}")
 
+def _extract_token(provider, scopes):
+    token_obj = None
+    access_token = None
+    expires_at_ms = None
+
+    if hasattr(provider, "get_token"):
+        token_obj = provider.get_token(*scopes)
+        access_token = getattr(token_obj, "access_token", None)
+        expires_in = getattr(token_obj, "expires_in", None)
+        if expires_in is None:
+            expires_in = getattr(token_obj, "expires_in_s", None)
+        if expires_in is not None:
+            expires_at_ms = int((time.time() + float(expires_in)) * 1000)
+
+    if access_token is None and hasattr(provider, "get"):
+        access_token = provider.get(scopes[0])
+
+    return access_token, expires_at_ms
+
+def _reconnect_session(session):
+    if hasattr(session, "reconnect"):
+        session.reconnect()
+    time.sleep(2)
+
+def _safe_reconnect_session(session):
+    try:
+        _reconnect_session(session)
+    except Exception:
+        pass
+
+def _attempt_token_fetch(session, scopes):
+    try:
+        provider = session.tokens()
+        access_token, expires_at_ms = _extract_token(provider, scopes)
+        return access_token, expires_at_ms, None
+    except Exception as exc:
+        return None, None, exc
+
+def _fetch_token_with_retry(session, scopes, max_retries=3):
+    last_token_error = None
+    for token_attempt in range(max_retries):
+        access_token, expires_at_ms, error = _attempt_token_fetch(session, scopes)
+        if access_token:
+            return access_token, expires_at_ms, None
+        if error is not None:
+            last_token_error = error
+        if token_attempt < max_retries - 1:
+            _safe_reconnect_session(session)
+
+    if last_token_error is not None:
+        return None, None, f"librespot_token_error: {last_token_error}"
+    return None, None, "librespot_token_unavailable"
+
 
 def main():
     parser = argparse.ArgumentParser(description="Fetch Spotify access token via librespot credentials.")
@@ -79,51 +132,10 @@ def main():
         return 1
 
     try:
-        # Token retrieval with retry logic
-        max_token_retries = 3
-        last_token_error = None
-
-        for token_attempt in range(max_token_retries):
-            try:
-                provider = session.tokens()
-                token_obj = None
-                access_token = None
-                expires_at_ms = None
-
-                if hasattr(provider, "get_token"):
-                    token_obj = provider.get_token(*args.scopes)
-                    access_token = getattr(token_obj, "access_token", None)
-                    expires_in = getattr(token_obj, "expires_in", None)
-                    if expires_in is None:
-                        expires_in = getattr(token_obj, "expires_in_s", None)
-                    if expires_in is not None:
-                        expires_at_ms = int((time.time() + float(expires_in)) * 1000)
-                if access_token is None and hasattr(provider, "get"):
-                    access_token = provider.get(args.scopes[0])
-
-                if access_token:
-                    _write_result(True, access_token=access_token, expires_at_unix_ms=expires_at_ms)
-                    return 0
-
-                # No token received, but no exception - try reconnecting session
-                if token_attempt < max_token_retries - 1 and hasattr(session, "reconnect"):
-                    session.reconnect()
-                    time.sleep(2)
-                    continue
-
-            except Exception as exc:
-                last_token_error = exc
-                if token_attempt < max_token_retries - 1:
-                    # Try to reconnect session on error
-                    try:
-                        if hasattr(session, "reconnect"):
-                            session.reconnect()
-                    except Exception:
-                        pass
-                    time.sleep(2)
-                    continue
-
-        error_msg = f"librespot_token_error: {last_token_error}" if last_token_error else "librespot_token_unavailable"
+        access_token, expires_at_ms, error_msg = _fetch_token_with_retry(session, args.scopes)
+        if access_token:
+            _write_result(True, access_token=access_token, expires_at_unix_ms=expires_at_ms)
+            return 0
         _write_result(False, error=error_msg)
         return 1
     finally:

@@ -1,14 +1,14 @@
 #!/usr/bin/python3
 
 import os
-from typing import Dict, Any, Optional, Union
+from typing import Any, Dict
 from deezspot.libutils.utils import request
 from deezspot.libutils.logging_utils import logger
 from deezspot.libutils.write_tags import write_tags
 from deezspot.models.download import Track, Episode
 
 
-def fetch_and_process_image(image_url_or_bytes: Union[str, bytes, None]) -> Optional[bytes]:
+def fetch_and_process_image(image_url_or_bytes: str | bytes | None) -> bytes | None:
     """
     Fetch and process image data from URL or return bytes directly.
     
@@ -137,9 +137,9 @@ def add_spotify_enhanced_metadata(metadata_dict: Dict[str, Any], track_obj: Any)
 def prepare_track_metadata(
     metadata_dict: Dict[str, Any],
     source_type: str = 'unknown',
-    enhanced_data: Optional[Dict[str, Any]] = None,
+    enhanced_data: Dict[str, Any] | None = None,
     api_instance: Any = None,
-    track_ids: Optional[str] = None
+    track_ids: str | None = None
 ) -> Dict[str, Any]:
     """
     Prepare and enhance track metadata for tagging based on source type.
@@ -255,9 +255,9 @@ def process_and_tag_track(
     track: Track,
     metadata_dict: Dict[str, Any],
     source_type: str = 'unknown',
-    enhanced_data: Optional[Dict[str, Any]] = None,
+    enhanced_data: Dict[str, Any] | None = None,
     api_instance: Any = None,
-    track_ids: Optional[str] = None,
+    track_ids: str | None = None,
     save_cover: bool = False
 ) -> None:
     """
@@ -293,9 +293,9 @@ def process_and_tag_episode(
     episode: Episode,
     metadata_dict: Dict[str, Any],
     source_type: str = 'unknown',
-    enhanced_data: Optional[Dict[str, Any]] = None,
+    enhanced_data: Dict[str, Any] | None = None,
     api_instance: Any = None,
-    track_ids: Optional[str] = None,
+    track_ids: str | None = None,
     save_cover: bool = False
 ) -> None:
     """
