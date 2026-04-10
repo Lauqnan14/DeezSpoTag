@@ -8,6 +8,7 @@ public static class TaggingProfileCanonicalizer
 {
     private const string DownloadTagsKey = "downloadTags";
     private const string EnrichmentTagsKey = "tags";
+    private const string EnhancementTagsKey = "gapFillTags";
 
     private sealed record TagDescriptor(
         string CanonicalKey,
@@ -114,6 +115,10 @@ public static class TaggingProfileCanonicalizer
             changed |= WriteTagArray(data, enrichmentKey, enrichmentTags);
         }
 
+        var enhancementKey = ResolveTagArrayKey(data, EnhancementTagsKey);
+        var enhancementTags = BuildEnhancementTagParityList(downloadTags, enrichmentTags);
+        changed |= WriteTagArray(data, enhancementKey, enhancementTags);
+
         var effectiveConfig = BuildTagConfig(baseConfig, data);
         if (!TagConfigsEqual(profile.TagConfig, effectiveConfig))
         {
@@ -137,8 +142,11 @@ public static class TaggingProfileCanonicalizer
 
         var data = profile.AutoTag.Data;
         var changed = false;
-        changed |= WriteTagArray(data, ResolveTagArrayKey(data, DownloadTagsKey), BuildTagListFromConfig(profile.TagConfig, includeDownloadSource: true));
-        changed |= WriteTagArray(data, ResolveTagArrayKey(data, EnrichmentTagsKey), BuildTagListFromConfig(profile.TagConfig, includeAutoTagSource: true));
+        var downloadTags = BuildTagListFromConfig(profile.TagConfig, includeDownloadSource: true);
+        var enrichmentTags = BuildTagListFromConfig(profile.TagConfig, includeAutoTagSource: true);
+        changed |= WriteTagArray(data, ResolveTagArrayKey(data, DownloadTagsKey), downloadTags);
+        changed |= WriteTagArray(data, ResolveTagArrayKey(data, EnrichmentTagsKey), enrichmentTags);
+        changed |= WriteTagArray(data, ResolveTagArrayKey(data, EnhancementTagsKey), BuildEnhancementTagParityList(downloadTags, enrichmentTags));
         return changed;
     }
 
@@ -153,9 +161,14 @@ public static class TaggingProfileCanonicalizer
 
         var downloadKey = ResolveTagArrayKey(data, DownloadTagsKey);
         var enrichmentKey = ResolveTagArrayKey(data, EnrichmentTagsKey);
+        var enhancementKey = ResolveTagArrayKey(data, EnhancementTagsKey);
 
-        WriteTagArray(data, downloadKey, BuildTagListFromConfig(config, includeDownloadSource: true));
-        WriteTagArray(data, enrichmentKey, BuildTagListFromConfig(config, includeAutoTagSource: true));
+        var downloadTags = BuildTagListFromConfig(config, includeDownloadSource: true);
+        var enrichmentTags = BuildTagListFromConfig(config, includeAutoTagSource: true);
+
+        WriteTagArray(data, downloadKey, downloadTags);
+        WriteTagArray(data, enrichmentKey, enrichmentTags);
+        WriteTagArray(data, enhancementKey, BuildEnhancementTagParityList(downloadTags, enrichmentTags));
 
         return data;
     }
@@ -308,6 +321,16 @@ public static class TaggingProfileCanonicalizer
         }
 
         return tags;
+    }
+
+    private static List<string> BuildEnhancementTagParityList(
+        IReadOnlyCollection<string> downloadTags,
+        IReadOnlyCollection<string> enrichmentTags)
+    {
+        var merged = new List<string>(downloadTags.Count + enrichmentTags.Count);
+        merged.AddRange(downloadTags);
+        merged.AddRange(enrichmentTags);
+        return NormalizeTagList(merged);
     }
 
     private static void ApplyTags(UnifiedTagConfig config, IEnumerable<string> tags, TagSource source)
