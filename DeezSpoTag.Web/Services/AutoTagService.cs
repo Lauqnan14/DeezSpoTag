@@ -381,6 +381,17 @@ public class AutoTagService
             return true;
         }
 
+        foreach (var activeJobId in _activeJobIds.Keys)
+        {
+            if (_jobs.TryGetValue(activeJobId, out var activeJob)
+                && string.Equals(activeJob.Status, "running", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(activeJob.RunIntent, AutoTagLiterals.RunIntentEnhancementOnly, StringComparison.OrdinalIgnoreCase))
+            {
+                jobId = activeJobId;
+                return true;
+            }
+        }
+
         jobId = null;
         return false;
     }

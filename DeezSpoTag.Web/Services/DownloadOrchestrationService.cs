@@ -80,6 +80,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
     private bool _taggingInProgress;
     private volatile bool _enhancementStageRunning;
     private volatile bool _enhancementPauseRequested;
+    private volatile bool _enhancementResumeAwaitingPipelineCompletion;
     private string? _activeEnhancementJobId;
 
     public DownloadOrchestrationService(
@@ -206,6 +207,10 @@ public sealed class DownloadOrchestrationService : BackgroundService
     public void MarkDownloadQueued()
     {
         _queueIdleSince = null;
+        if (HasPendingEnhancementResumeFolders())
+        {
+            _enhancementResumeAwaitingPipelineCompletion = true;
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -523,6 +528,11 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return;
         }
 
+        if (await ShouldDeferEnhancementResumeForDownloadPipelineAsync(cancellationToken))
+        {
+            return;
+        }
+
         var pausedWhileResuming = await ResumeInterruptedEnhancementAsync(cancellationToken);
         if (pausedWhileResuming || _pipelineRequested)
         {
@@ -834,6 +844,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
             }
 
             _enhancementPauseRequested = true;
+            _enhancementResumeAwaitingPipelineCompletion = true;
             _pipelineRequested = true;
             _queueIdleSince = null;
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
@@ -863,6 +874,50 @@ public sealed class DownloadOrchestrationService : BackgroundService
         {
             _enhancementPauseLock.Release();
         }
+    }
+
+    private bool HasPendingEnhancementResumeFolders()
+    {
+        lock (_enhancementResumeLock)
+        {
+            return _pendingEnhancementResumeFolderIds.Count > 0;
+        }
+    }
+
+    private async Task<bool> ShouldDeferEnhancementResumeForDownloadPipelineAsync(CancellationToken cancellationToken)
+    {
+        if (!_enhancementResumeAwaitingPipelineCompletion)
+        {
+            return false;
+        }
+
+        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+        {
+            return true;
+        }
+
+        if (_autoTagService.HasRunningJobs())
+        {
+            return true;
+        }
+
+        if (await HasPendingPostDownloadEnrichmentAsync(cancellationToken))
+        {
+            _pipelineRequested = true;
+            return true;
+        }
+
+        if (_pipelineRequested)
+        {
+            return true;
+        }
+
+        _enhancementResumeAwaitingPipelineCompletion = false;
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            "Automation: download pipeline settled; enhancement resume unlocked."));
+        return false;
     }
 
     private async Task QueueResumeFoldersForPausedEnhancementJobAsync(string jobId, CancellationToken cancellationToken)
