@@ -15,17 +15,23 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
     private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly TaggingProfileService _profileService;
     private readonly LibraryRepository _libraryRepository;
+    private readonly AutoTagService _autoTagService;
+    private readonly ILogger<AutoTagDefaultsApiController> _logger;
 
     public AutoTagDefaultsApiController(
         AutoTagDefaultsStore store,
         AutoTagProfileResolutionService profileResolutionService,
         TaggingProfileService profileService,
-        LibraryRepository libraryRepository)
+        LibraryRepository libraryRepository,
+        AutoTagService autoTagService,
+        ILogger<AutoTagDefaultsApiController> logger)
     {
         _store = store;
         _profileResolutionService = profileResolutionService;
         _profileService = profileService;
         _libraryRepository = libraryRepository;
+        _autoTagService = autoTagService;
+        _logger = logger;
     }
 
     [HttpGet]
@@ -43,6 +49,7 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
     public async Task<IActionResult> Update([FromBody] UpdateDefaultsRequest request, CancellationToken cancellationToken)
     {
         var state = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
+        var previousSchedules = state.Defaults.LibrarySchedules;
         var profiles = state.Profiles;
 
         var requestedDefaultReference = request.DefaultFileProfile?.Trim();
@@ -98,6 +105,74 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
         await _store.SaveAsync(defaults);
 
         var normalizedState = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
+        if (!AreSchedulesEquivalent(previousSchedules, normalizedState.Defaults.LibrarySchedules))
+        {
+            await StopRunningEnhancementForScheduleChangeAsync();
+        }
+
         return Ok(normalizedState.Defaults);
+    }
+
+    private async Task StopRunningEnhancementForScheduleChangeAsync()
+    {
+        if (!_autoTagService.TryGetRunningEnhancementJobId(out var runningEnhancementJobId)
+            || string.IsNullOrWhiteSpace(runningEnhancementJobId))
+        {
+            return;
+        }
+
+        var stopped = await _autoTagService.StopJobAsync(runningEnhancementJobId);
+        if (stopped)
+        {
+            _logger.LogInformation(
+                "Stopped running enhancement job {JobId} after schedule update.",
+                runningEnhancementJobId);
+        }
+    }
+
+    private static bool AreSchedulesEquivalent(
+        IReadOnlyDictionary<string, string>? left,
+        IReadOnlyDictionary<string, string>? right)
+    {
+        var normalizedLeft = NormalizeScheduleMap(left);
+        var normalizedRight = NormalizeScheduleMap(right);
+        if (normalizedLeft.Count != normalizedRight.Count)
+        {
+            return false;
+        }
+
+        foreach (var (folderId, schedule) in normalizedLeft)
+        {
+            if (!normalizedRight.TryGetValue(folderId, out var rightSchedule)
+                || !string.Equals(schedule, rightSchedule, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static Dictionary<string, string> NormalizeScheduleMap(IReadOnlyDictionary<string, string>? source)
+    {
+        var normalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (source == null)
+        {
+            return normalized;
+        }
+
+        foreach (var (rawFolderId, rawSchedule) in source)
+        {
+            var folderId = rawFolderId?.Trim();
+            var schedule = rawSchedule?.Trim();
+            if (string.IsNullOrWhiteSpace(folderId) || string.IsNullOrWhiteSpace(schedule))
+            {
+                continue;
+            }
+
+            normalized[folderId] = schedule;
+        }
+
+        return normalized;
     }
 }
