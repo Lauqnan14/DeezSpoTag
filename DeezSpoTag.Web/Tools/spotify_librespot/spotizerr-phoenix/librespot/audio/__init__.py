@@ -529,13 +529,13 @@ class CdnManager:
                 return False
             expire_at = None
             for token_part in token_str.split("~"):
-                try:
-                    sep_index = token_part.index("=")
-                except ValueError:
+                if not token_part.startswith("exp="):
                     continue
-                if token_part[:sep_index] == "exp":
-                    expire_at = int(token_part[sep_index + 1:])
-                    break
+                try:
+                    expire_at = int(token_part[4:])
+                except ValueError:
+                    expire_at = None
+                break
             if expire_at is None:
                 self.__expiration = -1
                 self.__cdn_manager.logger.warning(
@@ -548,8 +548,9 @@ class CdnManager:
                                           url: str) -> bool:
             if expires_str == "None" or len(expires_str) == 0:
                 return False
-            expires_at = int(expires_str.split("~")[0])
-            if expires_at is None:
+            try:
+                expires_at = int(expires_str.split("~")[0])
+            except ValueError:
                 self.__expiration = -1
                 self.__cdn_manager.logger.warning(
                     "Invalid Expires param in CDN url: {}".format(url))

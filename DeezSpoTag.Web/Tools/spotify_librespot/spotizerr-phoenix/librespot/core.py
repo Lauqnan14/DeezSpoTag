@@ -338,6 +338,7 @@ class DealerClient(Closeable):
 
     def __init__(self, session: Session):
         self.__session = session
+        self.__last_scheduled_reconnection = None
 
     def add_message_listener(self, listener: MessageListener,
                              uris: list[str]) -> None:
@@ -387,6 +388,13 @@ class DealerClient(Closeable):
         """ """
         self.__connection = None
         self.logger.debug("Scheduled reconnection attempt in 10 seconds...")
+
+        if self.__last_scheduled_reconnection is not None:
+            try:
+                self.__scheduler.cancel(self.__last_scheduled_reconnection)
+            except ValueError:
+                # Event already executed or cancelled.
+                pass
 
         def anonymous():
             """ """

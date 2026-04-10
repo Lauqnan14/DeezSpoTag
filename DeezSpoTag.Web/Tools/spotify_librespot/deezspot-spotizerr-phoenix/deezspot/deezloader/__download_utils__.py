@@ -83,40 +83,6 @@ def __calcbfkey(songid):
 		logger.error(f"Error calculating Blowfish key: {str(e)}")
 		raise
 
-def __blowfish_decrypt(data, key):
-	"""
-	Decrypt a single block of data using Blowfish in CBC mode.
-	
-	Args:
-		data: The encrypted data block (must be a multiple of 8 bytes)
-		key: The Blowfish key as a string
-		
-	Returns:
-		The decrypted data
-	"""
-	try:
-		# Ensure data is a multiple of Blowfish block size (8 bytes)
-		if len(data) % 8 != 0:
-			logger.warning(f"Data length {len(data)} is not a multiple of 8 bytes - Blowfish requires 8-byte blocks")
-			# Pad data to a multiple of 8 if needed (though this should be avoided)
-			padding = 8 - (len(data) % 8)
-			data += b'\x00' * padding
-			logger.warning(f"Padded data with {padding} null bytes")
-		
-		# Create Blowfish cipher in CBC mode with initialization vector
-		c = __newBlowfish(
-			key.encode(), __MODE_CBC, __idk	
-		)
-		
-		# Decrypt the data
-		decrypted = c.decrypt(data)
-		logger.debug(f"Decrypted {len(data)} bytes of data")
-		
-		return decrypted
-	except Exception as e:
-		logger.error(f"Error in Blowfish decryption: {str(e)}")
-		raise
-
 def _decrypt_block_if_needed(block, bf_key, block_count, block_size):
     if block_count % 3 != 0:
         return block
