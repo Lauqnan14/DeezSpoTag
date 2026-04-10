@@ -636,6 +636,7 @@
         const container = el(containerId);
         container.innerHTML = "";
         const list = name === "downloadTags" ? getDownloadTagsList() : TAGS;
+        const enhancementMirrorOnly = name === "gapFillTags";
         list.forEach((tag) => {
             const label = document.createElement("label");
             const input = document.createElement("input");
@@ -649,6 +650,11 @@
             if (!supported) {
                 input.disabled = true;
                 label.classList.add("tag-disabled");
+            }
+            if (enhancementMirrorOnly) {
+                input.disabled = true;
+                label.classList.add("tag-disabled");
+                label.title = "Enhancement tags mirror Download and Enrichment tag selections.";
             }
             label.appendChild(input);
             label.appendChild(document.createTextNode(tag.label));
@@ -1403,6 +1409,36 @@
         return selected || [];
     }
 
+    function buildMergedTagSelection(primary, secondary) {
+        const merged = [];
+        const seen = new Set();
+        [primary, secondary].forEach((source) => {
+            (source || []).forEach((value) => {
+                const tag = String(value || "").trim();
+                if (!tag) {
+                    return;
+                }
+                const key = tag.toLowerCase();
+                if (seen.has(key)) {
+                    return;
+                }
+                seen.add(key);
+                merged.push(tag);
+            });
+        });
+        return merged;
+    }
+
+    function syncEnhancementTagsWithDownloadAndEnrichment() {
+        const enrichmentTags = Array.isArray(state.config.tags) ? state.config.tags : [];
+        const normalizedDownloadTags = normalizeDownloadTags(
+            Array.isArray(state.config.downloadTags) ? state.config.downloadTags : []
+        );
+        state.config.tags = enrichmentTags;
+        state.config.downloadTags = normalizedDownloadTags;
+        state.config.gapFillTags = buildMergedTagSelection(normalizedDownloadTags, enrichmentTags);
+    }
+
     function isDownloadTagSupported(tagKey) {
         if (isHiddenSpotifyAudioFeatureTag(tagKey)) {
             return false;
@@ -1423,13 +1459,20 @@
     function refreshDownloadTagsForSource() {
         renderDownloadTagSourceContext();
         updateDownloadTagsVisibility();
+        const downloadTagsContainer = el("autotag-download-tags");
         if (!getDownloadTagSource() || getDownloadTagIds().length === 0) {
-            el("autotag-download-tags").innerHTML = "";
+            if (downloadTagsContainer) {
+                downloadTagsContainer.innerHTML = "";
+            }
+            syncEnhancementTagsWithDownloadAndEnrichment();
+            renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
             return;
         }
         const selected = normalizeDownloadTags(state.config.downloadTags || []);
         state.config.downloadTags = selected;
+        syncEnhancementTagsWithDownloadAndEnrichment();
         renderTags("autotag-download-tags", selected, "downloadTags");
+        renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
     }
 
     function updateDownloadTagsVisibility() {
@@ -2065,6 +2108,7 @@
         }
         storeSelectedPlatforms();
         renderPlatforms();
+        syncEnhancementTagsWithDownloadAndEnrichment();
         renderTags("autotag-tags", state.config.tags, "tags");
         renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
         renderTags("autotag-overwrite-tags", state.config.overwriteTags, "overwriteTags");
@@ -2467,9 +2511,9 @@
         renderEnhancementFolderOptions();
         renderPlatforms();
         setDownloadTagSource(state.config.downloadTagSource || "engine");
-        renderTags("autotag-tags", state.config.tags, "tags");
+        syncEnhancementTagsWithDownloadAndEnrichment();
+        renderTags("autotag-tags", state.config.tags || [], "tags");
         refreshDownloadTagsForSource();
-        renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
         renderTags("autotag-overwrite-tags", state.config.overwriteTags, "overwriteTags");
         updateDownloadSourceAvailability();
 
@@ -3007,6 +3051,7 @@
         state.config = merged;
         ensureCustomDefaults();
         ensurePlatformCustomDefaults();
+        syncEnhancementTagsWithDownloadAndEnrichment();
         loadConfigToUI();
     }
 
@@ -3333,7 +3378,7 @@
         ensureEnhancementDefaults();
         state.config.tags = getCheckedTags("tags");
         state.config.downloadTags = normalizeDownloadTags(getCheckedTags("downloadTags"));
-        state.config.gapFillTags = getCheckedTags("gapFillTags");
+        syncEnhancementTagsWithDownloadAndEnrichment();
         state.config.overwriteTags = getCheckedTags("overwriteTags");
 
         const getChecked = (id, fallback = false) => el(id)?.checked ?? fallback;
@@ -6273,6 +6318,14 @@
             if (target.closest("#autotagTabsContent") && !target.closest("#autotag-folders-panel")) {
                 updateConditionalSections();
             }
+            if (target instanceof HTMLInputElement
+                && target.type === "checkbox"
+                && ["tags", "downloadTags", "gapFillTags"].includes(target.name)) {
+                state.config.tags = getCheckedTags("tags");
+                state.config.downloadTags = normalizeDownloadTags(getCheckedTags("downloadTags"));
+                syncEnhancementTagsWithDownloadAndEnrichment();
+                renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
+            }
         }
         if (event.isTrusted && isProfileAutoSaveTarget(event.target)) {
             scheduleProfileAutoSave();
@@ -6294,6 +6347,12 @@
         if (target.matches("button[data-tags-action]")) {
             const action = target.dataset.tagsAction;
             const targetName = target.dataset.tagsTarget || "tags";
+            if (targetName === "gapFillTags") {
+                syncEnhancementTagsWithDownloadAndEnrichment();
+                loadConfigToUI();
+                showToast("Enhancement tags mirror Download and Enrichment tags.", "info");
+                return;
+            }
             const current = Array.isArray(state.config[targetName]) ? state.config[targetName] : [];
             const list = targetName === "downloadTags" ? getDownloadTagsList() : TAGS;
             if (action === "enable") {
@@ -6303,6 +6362,7 @@
             } else if (action === "toggle") {
                 state.config[targetName] = list.map((t) => t.tag).filter((tag) => !current.includes(tag));
             }
+            syncEnhancementTagsWithDownloadAndEnrichment();
             loadConfigToUI();
             if (action === "enable") {
                 showToast("All tags enabled.", "info");
@@ -6470,6 +6530,7 @@
                 renderPlatforms();
                 updateDownloadSourceAvailability();
                 refreshDownloadTagsForSource();
+                syncEnhancementTagsWithDownloadAndEnrichment();
                 renderTags("autotag-tags", state.config.tags, "tags");
                 renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
                 renderTags("autotag-overwrite-tags", state.config.overwriteTags, "overwriteTags");

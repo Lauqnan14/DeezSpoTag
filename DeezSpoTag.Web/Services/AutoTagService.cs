@@ -2883,6 +2883,7 @@ public class AutoTagService
             EnsureEffectivePlatforms(node);
             EnsureSupportedDownloadTagSource(node);
             EnsureOverwriteDefaults(node);
+            EnsureEnhancementTagsMirrorEnrichmentAndDownload(node);
             EnsureEnhancementFolderScopesCanonical(node);
             EnsureLegacyFolderUniformityStructureMirrorsRemoved(node);
             EnsureSpotifySecret(node);
@@ -3002,6 +3003,65 @@ public class AutoTagService
         CanonicalizeEnhancementFolderScopeSection(enhancement, "folderUniformity");
         CanonicalizeEnhancementFolderScopeSection(enhancement, "coverMaintenance");
         CanonicalizeEnhancementFolderScopeSection(enhancement, "qualityChecks");
+    }
+
+    private static void EnsureEnhancementTagsMirrorEnrichmentAndDownload(JsonNode node)
+    {
+        if (node is not JsonObject root)
+        {
+            return;
+        }
+
+        var downloadTags = ReadCanonicalTagArray(root, "downloadTags");
+        var enrichmentTags = ReadCanonicalTagArray(root, "tags");
+        var merged = new JsonArray();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var tag in downloadTags)
+        {
+            if (seen.Add(tag))
+            {
+                merged.Add(tag);
+            }
+        }
+
+        foreach (var tag in enrichmentTags)
+        {
+            if (seen.Add(tag))
+            {
+                merged.Add(tag);
+            }
+        }
+
+        root["gapFillTags"] = merged;
+    }
+
+    private static List<string> ReadCanonicalTagArray(JsonObject root, string propertyName)
+    {
+        if (root[propertyName] is not JsonArray array)
+        {
+            return new List<string>();
+        }
+
+        var tags = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var value in array)
+        {
+            if (value is not JsonValue tagValue || !tagValue.TryGetValue<string>(out var rawTag))
+            {
+                continue;
+            }
+
+            var tag = rawTag?.Trim();
+            if (string.IsNullOrWhiteSpace(tag) || !seen.Add(tag))
+            {
+                continue;
+            }
+
+            tags.Add(tag);
+        }
+
+        return tags;
     }
 
     private static void CanonicalizeEnhancementFolderScopeSection(JsonObject enhancement, string sectionName)
