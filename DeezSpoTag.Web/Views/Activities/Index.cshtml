@@ -4385,13 +4385,11 @@ function retryTask(taskId) {
         if (target._retryInFlight) {
             return;
         }
-        target._retryOriginalIndex = tasks.indexOf(target);
         target._retryPreviousStatus = target.status;
         target._retryPreviousError = target.error;
         target._retryInFlight = true;
         target.status = 'retrying';
         target.error = null;
-        tasks = [target, ...tasks.filter(task => task.taskId !== taskId)];
         scheduleRenderTasks();
         updateStats();
     }
@@ -4426,18 +4424,7 @@ function retryTask(taskId) {
                 if (data?.engine) {
                     target.engine = data.engine;
                 }
-                delete target._retryOriginalIndex;
             }
-            const reordered = [];
-            if (target) {
-                reordered.push(target);
-            }
-            tasks.forEach(task => {
-                if (!target || task.taskId !== target.taskId) {
-                    reordered.push(task);
-                }
-            });
-            tasks = reordered;
             scheduleRenderTasks();
             updateStats();
             loadQueueFromServer({ force: true });
@@ -4447,12 +4434,6 @@ function retryTask(taskId) {
                 target.status = target._retryPreviousStatus || 'failed';
                 target.error = target._retryPreviousError || target.error || null;
                 target._retryInFlight = false;
-                if (Number.isInteger(target._retryOriginalIndex)) {
-                    const index = Math.min(target._retryOriginalIndex, Math.max(tasks.length - 1, 0));
-                    tasks = tasks.filter(task => task.taskId !== taskId);
-                    tasks.splice(index, 0, target);
-                    delete target._retryOriginalIndex;
-                }
                 delete target._retryPreviousError;
                 delete target._retryPreviousStatus;
                 scheduleRenderTasks();
