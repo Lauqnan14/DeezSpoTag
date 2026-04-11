@@ -212,10 +212,10 @@
     "downloadLocation": ""
   },
   "multiQuality": {
-    "enabled": false,
-    "secondaryEnabled": false,
+    "enabled": true,
+    "secondaryEnabled": true,
     "primaryDestinationFolderId": null,
-    "secondaryDestinationFolderId": null,
+    "secondaryDestinationFolderId": 2,
     "secondaryService": "auto",
     "secondaryQuality": "",
     "secondaryExcludeApple": true
