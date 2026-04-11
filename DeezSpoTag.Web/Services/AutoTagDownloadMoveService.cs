@@ -4,7 +4,6 @@ using System.IO;
 using System.Text.RegularExpressions;
 using System.Linq;
 using System.Collections.Generic;
-using System.Security.Cryptography;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Conversion;
@@ -824,13 +823,6 @@ public sealed class AutoTagDownloadMoveService
 
         if (bucket == ResidualBucket.Failed && string.IsNullOrWhiteSpace(runtime.Paths.FailedIo))
         {
-            if (IsTaggedDuplicateArtifact(file, buckets.TaggedAudioKeys))
-            {
-                // Drop failed duplicate artifacts (for example stale *.wav alongside tagged *.flac).
-                TryDeleteDuplicateSource(file);
-                return;
-            }
-
             // No failed target configured: do not strand files in staging.
             bucket = ResidualBucket.Tagged;
         }
@@ -859,12 +851,6 @@ public sealed class AutoTagDownloadMoveService
             runtime.Options.ConversionPlan,
             cancellationToken);
         moved[DownloadPathResolver.NormalizeDisplayPath(file)] = finalPath;
-    }
-
-    private static bool IsTaggedDuplicateArtifact(string file, HashSet<string> taggedAudioKeys)
-    {
-        var sidecarKey = BuildSidecarKey(file);
-        return !string.IsNullOrWhiteSpace(sidecarKey) && taggedAudioKeys.Contains(sidecarKey);
     }
 
     private static void ProcessResidualSidecarFile(
@@ -1432,51 +1418,6 @@ public sealed class AutoTagDownloadMoveService
         return true;
     }
 
-    private static bool TryResolveArtistArtworkConflict(
-        string sourcePath,
-        string destinationPath,
-        string rootIo,
-        string destinationRoot,
-        out (bool IsHandled, string? PathResult, string DestinationPath) result)
-    {
-        result = (false, null, destinationPath);
-        if (!IOFile.Exists(destinationPath) || !IsArtistArtworkFile(sourcePath, rootIo))
-        {
-            return false;
-        }
-
-        var sourceHash = TryComputeSha256(sourcePath);
-        var destinationHash = TryComputeSha256(destinationPath);
-        if (string.IsNullOrWhiteSpace(sourceHash) || string.IsNullOrWhiteSpace(destinationHash))
-        {
-            return false;
-        }
-
-        if (string.Equals(sourceHash, destinationHash, StringComparison.OrdinalIgnoreCase))
-        {
-            TryDeleteDuplicateSource(sourcePath);
-            result = (true, DownloadPathResolver.NormalizeDisplayPath(destinationPath), destinationPath);
-            return true;
-        }
-
-        result = (false, null, GetUniqueDestinationPath(destinationRoot, destinationPath));
-        return true;
-    }
-
-    private static string? TryComputeSha256(string filePath)
-    {
-        try
-        {
-            using var stream = IOFile.OpenRead(filePath);
-            var hash = SHA256.HashData(stream);
-            return Convert.ToHexString(hash);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return null;
-        }
-    }
-
     private static string? MoveResidualFile(
         string sourcePath,
         string rootIo,
@@ -1555,29 +1496,6 @@ public sealed class AutoTagDownloadMoveService
         string overwritePolicy,
         IReadOnlyList<string> preferredExtensions)
     {
-        if (TryResolveArtistArtworkConflict(sourcePath, destinationPath, rootIo, destinationRoot, out var artistResult))
-        {
-            return artistResult;
-        }
-
-        if (!string.Equals(sourcePath, destinationPath, StringComparison.OrdinalIgnoreCase)
-            && AudioCollisionDedupe.IsDuplicate(destinationPath, sourcePath))
-        {
-            if (AudioCollisionDedupe.ShouldPreferIncoming(destinationPath, sourcePath))
-            {
-                if (!ReplaceDuplicateDestination(sourcePath, destinationPath))
-                {
-                    TryDeleteDuplicateSource(sourcePath);
-                }
-            }
-            else
-            {
-                TryDeleteDuplicateSource(sourcePath);
-            }
-
-            return (true, DownloadPathResolver.NormalizeDisplayPath(destinationPath), destinationPath);
-        }
-
         if (preferredExtensions.Count > 0
             && PreferredExtensionComparer.ShouldSkipForPreferredExtension(sourcePath, destinationPath, preferredExtensions))
         {
@@ -2254,29 +2172,6 @@ public sealed class AutoTagDownloadMoveService
             return (false, null, destinationPath);
         }
 
-        if (TryResolveArtistArtworkConflict(sourcePath, destinationPath, stagingRoot, destinationRoot, out var artistResult))
-        {
-            return artistResult;
-        }
-
-        if (!string.Equals(sourcePath, destinationPath, StringComparison.OrdinalIgnoreCase)
-            && AudioCollisionDedupe.IsDuplicate(destinationPath, sourcePath))
-        {
-            if (AudioCollisionDedupe.ShouldPreferIncoming(destinationPath, sourcePath))
-            {
-                if (!ReplaceDuplicateDestination(sourcePath, destinationPath))
-                {
-                    TryDeleteDuplicateSource(sourcePath);
-                }
-            }
-            else
-            {
-                TryDeleteDuplicateSource(sourcePath);
-            }
-
-            return (true, DownloadPathResolver.NormalizeDisplayPath(destinationPath), destinationPath);
-        }
-
         if (overwritePolicy == "b")
         {
             return (false, null, GetUniqueDestinationPath(destinationRoot, destinationPath));
@@ -2411,67 +2306,6 @@ public sealed class AutoTagDownloadMoveService
         var extension = Path.GetExtension(destinationPath);
         var uniqueFilename = DownloadUtils.GenerateUniqueFilename(destinationDir, filename, extension);
         return Path.Join(destinationDir, uniqueFilename + extension);
-    }
-
-    private static void TryDeleteDuplicateSource(string sourcePath)
-    {
-        try
-        {
-            if (IOFile.Exists(sourcePath))
-            {
-                IOFile.Delete(sourcePath);
-            }
-        }
-        catch (IOException ex)
-        {
-            _ = ex.HResult;
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            _ = ex.HResult;
-        }
-        catch (ArgumentException ex)
-        {
-            _ = ex.HResult;
-        }
-        catch (NotSupportedException ex)
-        {
-            _ = ex.HResult;
-        }
-    }
-
-    private static bool ReplaceDuplicateDestination(string sourcePath, string destinationPath)
-    {
-        try
-        {
-            IOFile.Move(sourcePath, destinationPath, overwrite: true);
-            return true;
-        }
-        catch (IOException)
-        {
-            try
-            {
-                IOFile.Copy(sourcePath, destinationPath, overwrite: true);
-                IOFile.Delete(sourcePath);
-                return true;
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception)
-            {
-                return false;
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception)
-        {
-            return false;
-        }
     }
 
     private async Task<string?> ResolveDestinationRootAsync(long? destinationFolderId, CancellationToken cancellationToken)
