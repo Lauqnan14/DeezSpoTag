@@ -692,7 +692,11 @@ public sealed class DownloadIntentService
         payload.AutoIndex = selectedAutoIndex;
         payload.FallbackPlan = request.FallbackInfo.FallbackPlan;
         payload.DestinationFolderId = request.PrimaryDestinationFolderId;
-        payload.QualityBucket = request.UseAtmosStereoDual ? StereoType : string.Empty;
+        var primaryIsAtmos = string.Equals(payload.ContentType, DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase)
+            || IsAtmosQuality(payload.Quality);
+        payload.QualityBucket = request.UseAtmosStereoDual
+            ? (primaryIsAtmos ? AtmosQuality : StereoType)
+            : string.Empty;
 
         var enqueueDecision = await EnqueueItemAsync(
             payload,
@@ -1131,9 +1135,9 @@ public sealed class DownloadIntentService
         }
 
         // Secondary Atmos queueing should not depend solely on pre-hydrated Atmos metadata.
-        // Always attempt the Atmos branch in dual-profile mode for music items, then let
-        // Apple resolution/strict Atmos selection decide per-track capability.
-        var useAtmosStereoDual = useMultiQuality && IsMusicIntent(intent) && !explicitAtmosRequest;
+        // In dual-profile mode we always keep a stereo primary + Atmos secondary path for
+        // music intents (except videos), even when the incoming request explicitly mentions Atmos.
+        var useAtmosStereoDual = useMultiQuality && IsMusicIntent(intent) && !IsVideoIntent(intent);
         var normalizedPreferredEngine = intent.PreferredEngine?.Trim().ToLowerInvariant() ?? string.Empty;
         var intentRequestsAuto = string.Equals(normalizedPreferredEngine, AutoService, StringComparison.OrdinalIgnoreCase);
         var appleOnlyRequired = RequiresAppleOnly(intent, targetQuality);
