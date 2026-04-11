@@ -737,6 +737,10 @@ WHERE (
         )
       )
   AND lower(track_title) = lower(@trackTitle)
+  AND (
+        (@destinationFolderId IS NULL AND destination_folder_id IS NULL)
+        OR destination_folder_id = @destinationFolderId
+      )
   AND (@contentType IS NULL OR lower(content_type) = lower(@contentType))
 ORDER BY updated_at DESC
 LIMIT 1;";
@@ -744,6 +748,7 @@ LIMIT 1;";
         command.Parameters.AddWithValue("artistName", request.ArtistName);
         command.Parameters.AddWithValue("artistPrimaryName", NormalizeId(request.ArtistPrimaryName) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("trackTitle", request.TrackTitle);
+        command.Parameters.AddWithValue("destinationFolderId", (object?)request.DestinationFolderId ?? DBNull.Value);
         command.Parameters.AddWithValue("contentType", NormalizeId(request.ContentType) ?? (object)DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
@@ -759,6 +764,7 @@ LIMIT 1;";
         string artistName,
         string trackTitle,
         string? contentType,
+        long? destinationFolderId = null,
         CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);
@@ -772,6 +778,10 @@ FROM download_task
 WHERE lower(engine) = lower(@engine)
   AND lower(artist_name) = lower(@artistName)
   AND lower(track_title) = lower(@trackTitle)
+  AND (
+        (@destinationFolderId IS NULL AND destination_folder_id IS NULL)
+        OR destination_folder_id = @destinationFolderId
+      )
   AND (@contentType IS NULL OR lower(content_type) = lower(@contentType))
 ORDER BY updated_at DESC
 LIMIT 1;";
@@ -779,6 +789,7 @@ LIMIT 1;";
         command.Parameters.AddWithValue("engine", engine);
         command.Parameters.AddWithValue("artistName", artistName);
         command.Parameters.AddWithValue("trackTitle", trackTitle);
+        command.Parameters.AddWithValue("destinationFolderId", (object?)destinationFolderId ?? DBNull.Value);
         command.Parameters.AddWithValue("contentType", NormalizeId(contentType) ?? (object)DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
@@ -1213,6 +1224,7 @@ public sealed class MetadataLookupRequest
 {
     public required string ArtistName { get; init; }
     public required string TrackTitle { get; init; }
+    public long? DestinationFolderId { get; init; }
     public string? ContentType { get; init; }
     public string? ArtistPrimaryName { get; init; }
 }

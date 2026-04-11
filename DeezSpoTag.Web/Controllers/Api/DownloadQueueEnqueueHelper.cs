@@ -46,7 +46,13 @@ internal static class DownloadQueueEnqueueHelper
             return await HandleDuplicateLookupMatchAsync(payload, queueRepository, listener, logger, cancellationToken);
         }
 
-        var existing = await queueRepository.GetByMetadataAsync(payload.Engine, payload.Artist, payload.Title, payload.ContentType, cancellationToken);
+        var existing = await queueRepository.GetByMetadataAsync(
+            payload.Engine,
+            payload.Artist,
+            payload.Title,
+            payload.ContentType,
+            payload.DestinationFolderId,
+            cancellationToken);
         if (existing is not null)
         {
             return await HandleExistingQueueEntryAsync(payload, existing, queueRepository, cancellationToken);
@@ -88,7 +94,13 @@ internal static class DownloadQueueEnqueueHelper
         CancellationToken cancellationToken)
         where TPayload : EngineQueueItemBase
     {
-        var duplicate = await queueRepository.GetByMetadataAsync(payload.Engine, payload.Artist, payload.Title, payload.ContentType, cancellationToken);
+        var duplicate = await queueRepository.GetByMetadataAsync(
+            payload.Engine,
+            payload.Artist,
+            payload.Title,
+            payload.ContentType,
+            payload.DestinationFolderId,
+            cancellationToken);
         if (duplicate is null)
         {
             logger.LogWarning(
