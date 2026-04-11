@@ -182,9 +182,11 @@ public sealed class SpotifySearchService
         var valid = artists
             .Where(artist => LooksLikeSpotifyArtistId(artist.Id))
             .ToList();
-        var items = valid
+        var page = valid
             .Skip(resolvedOffset)
             .Take(resolvedLimit)
+            .ToList();
+        var items = page
             .Select(MapPathfinderArtist)
             .ToList();
         return new SpotifySearchTypeResponse("artist", items, valid.Count);
