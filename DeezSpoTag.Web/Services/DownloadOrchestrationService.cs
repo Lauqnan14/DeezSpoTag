@@ -388,6 +388,18 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return null;
         }
 
+        var recoveredCount = pendingItems.Count(item => item.UpdatedAt <= _lastPipelineCompletedAt);
+        if (recoveredCount > 0)
+        {
+            _logger.LogInformation(
+                "Orchestration recovered {RecoveredCount} stale completed download task(s) from download root for post-download enrichment.",
+                recoveredCount);
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"Automation: recovered {recoveredCount} stale completed download task(s) from download root for enrichment."));
+        }
+
         return new PipelineRunContext(
             pipelineStartedAt,
             configJson,
@@ -1266,14 +1278,212 @@ public sealed class DownloadOrchestrationService : BackgroundService
     private async Task<List<DownloadQueueItem>> GetPendingPostDownloadItemsAsync(CancellationToken cancellationToken)
     {
         var queueItems = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
-        return queueItems
+        var completedItems = queueItems
             .Where(item =>
                 item.DestinationFolderId.HasValue
-                && string.Equals(item.Status, "completed", StringComparison.OrdinalIgnoreCase)
-                && item.UpdatedAt > _lastPipelineCompletedAt)
+                && string.Equals(item.Status, "completed", StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(item => item.UpdatedAt)
             .ThenByDescending(item => item.Id)
             .ToList();
+
+        var freshItems = completedItems
+            .Where(item => item.UpdatedAt > _lastPipelineCompletedAt)
+            .ToList();
+        if (freshItems.Count > 0)
+        {
+            return freshItems;
+        }
+
+        if (!TryResolveDownloadEnrichmentRoot(out var downloadRootPath, out _))
+        {
+            return freshItems;
+        }
+
+        return completedItems
+            .Where(item => PayloadHasExistingSourceUnderRoot(item.PayloadJson, downloadRootPath))
+            .ToList();
+    }
+
+    private static bool PayloadHasExistingSourceUnderRoot(string? payloadJson, string rootPath)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson) || string.IsNullOrWhiteSpace(rootPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            var candidatePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            CollectPayloadSourcePaths(root, candidatePaths);
+
+            foreach (var candidatePath in candidatePaths)
+            {
+                if (!IsPathUnderRoot(rootPath, candidatePath))
+                {
+                    continue;
+                }
+
+                var ioPath = DownloadPathResolver.ResolveIoPath(candidatePath);
+                if (string.IsNullOrWhiteSpace(ioPath))
+                {
+                    continue;
+                }
+
+                if (File.Exists(ioPath))
+                {
+                    return true;
+                }
+
+                if (Directory.Exists(ioPath)
+                    && Directory.EnumerateFiles(ioPath, "*", SearchOption.AllDirectories).Any())
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    private static void CollectPayloadSourcePaths(JsonElement root, HashSet<string> paths)
+    {
+        if (TryReadStringPropertyIgnoreCase(root, "filePath", out var filePath))
+        {
+            paths.Add(filePath);
+        }
+
+        if (TryReadStringPropertyIgnoreCase(root, "albumPath", out var albumPath))
+        {
+            paths.Add(albumPath);
+        }
+
+        if (TryReadStringPropertyIgnoreCase(root, "artistPath", out var artistPath))
+        {
+            paths.Add(artistPath);
+        }
+
+        if (TryReadStringPropertyIgnoreCase(root, "extrasPath", out var extrasPath))
+        {
+            paths.Add(extrasPath);
+        }
+
+        if (!TryGetPropertyIgnoreCase(root, "files", out var filesElement)
+            || filesElement.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var fileElement in filesElement.EnumerateArray())
+        {
+            if (fileElement.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            if (TryReadStringPropertyIgnoreCase(fileElement, "path", out var path))
+            {
+                paths.Add(path);
+            }
+
+            if (TryReadStringPropertyIgnoreCase(fileElement, "albumPath", out var nestedAlbumPath))
+            {
+                paths.Add(nestedAlbumPath);
+            }
+
+            if (TryReadStringPropertyIgnoreCase(fileElement, "artistPath", out var nestedArtistPath))
+            {
+                paths.Add(nestedArtistPath);
+            }
+        }
+    }
+
+    private static bool TryReadStringPropertyIgnoreCase(JsonElement element, string propertyName, out string value)
+    {
+        value = string.Empty;
+        if (!TryGetPropertyIgnoreCase(element, propertyName, out var property)
+            || property.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        var raw = property.GetString();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        value = raw;
+        return true;
+    }
+
+    private static bool TryGetPropertyIgnoreCase(JsonElement element, string propertyName, out JsonElement value)
+    {
+        value = default;
+        if (element.ValueKind != JsonValueKind.Object || string.IsNullOrWhiteSpace(propertyName))
+        {
+            return false;
+        }
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (!string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            value = property.Value;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsPathUnderRoot(string rootPath, string candidatePath)
+    {
+        if (string.IsNullOrWhiteSpace(rootPath) || string.IsNullOrWhiteSpace(candidatePath))
+        {
+            return false;
+        }
+
+        var rootIo = DownloadPathResolver.ResolveIoPath(rootPath);
+        var candidateIo = DownloadPathResolver.ResolveIoPath(candidatePath);
+        if (string.IsNullOrWhiteSpace(rootIo) || string.IsNullOrWhiteSpace(candidateIo))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (!DownloadPathResolver.IsSmbPath(rootIo))
+            {
+                rootIo = Path.GetFullPath(rootIo);
+            }
+
+            if (!DownloadPathResolver.IsSmbPath(candidateIo))
+            {
+                candidateIo = Path.GetFullPath(candidateIo);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
+
+        var normalizedRoot = rootIo.Replace('\\', '/').TrimEnd('/');
+        var normalizedCandidate = candidateIo.Replace('\\', '/').TrimEnd('/');
+        return string.Equals(normalizedCandidate, normalizedRoot, StringComparison.OrdinalIgnoreCase)
+            || normalizedCandidate.StartsWith(normalizedRoot + "/", StringComparison.OrdinalIgnoreCase);
     }
 
     private TaggingProfile? ResolveAutomationProfileForPendingDownloads(
