@@ -5,6 +5,7 @@ namespace DeezSpoTag.Services.Download.Apple;
 
 public sealed class AppleWrapperDecryptor
 {
+    private static readonly TimeSpan DecryptTimeout = TimeSpan.FromMinutes(2);
     private readonly ILogger<AppleWrapperDecryptor> _logger;
 
     public AppleWrapperDecryptor(ILogger<AppleWrapperDecryptor> logger)
@@ -62,18 +63,44 @@ public sealed class AppleWrapperDecryptor
         using var process = new Process { StartInfo = startInfo };
         process.Start();
 
-        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-        var stderr = await stderrTask;
-
-        if (process.ExitCode != 0)
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(DecryptTimeout);
+        try
         {
-            _logger.LogWarning("Apple wrapper decrypt failed: {Error}", stderr);
+            var stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
+            await process.WaitForExitAsync(timeoutCts.Token);
+            var stderr = await stderrTask;
+
+            if (process.ExitCode != 0)
+            {
+                _logger.LogWarning("Apple wrapper decrypt failed: {Error}", stderr);
+                return false;
+            }
+
+            _logger.LogInformation("Apple wrapper decrypt helper completed successfully using {ToolPath}.", toolPath);
+            return File.Exists(outputPath);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            TryTerminateProcess(process);
+            _logger.LogWarning("Apple wrapper decrypt timed out after {Timeout} for adam id {AdamId}.", DecryptTimeout, adamId);
             return false;
         }
+    }
 
-        _logger.LogInformation("Apple wrapper decrypt helper completed successfully using {ToolPath}.", toolPath);
-        return File.Exists(outputPath);
+    private static void TryTerminateProcess(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception)
+        {
+            // Best effort cleanup.
+        }
     }
 
     private static string ResolveToolPath()
