@@ -1142,44 +1142,6 @@
         width: auto;
     }
 
-    .media-operations-tab .media-ops-hero {
-        grid-template-columns: 1fr;
-        padding: 16px;
-    }
-
-    .media-operations-tab .media-ops-layout {
-        grid-template-columns: 1fr;
-    }
-
-    .media-operations-tab .ops-primary {
-        display: grid;
-    }
-
-    .media-operations-tab #analysis-card,
-    .media-operations-tab #meloday-card,
-    .media-operations-tab .ops-secondary {
-        grid-column: auto;
-    }
-
-    .media-operations-tab .ops-secondary .mini-grid {
-        grid-template-rows: none;
-        height: auto;
-    }
-
-    .media-operations-tab #meloday-card .meloday-summary-grid,
-    .media-operations-tab #meloday-card .meloday-history-grid,
-    .media-operations-tab #meloday-card .meloday-similarity-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .media-operations-tab .analysis-features-grid.analysis-features-grid-main {
-        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-    }
-
-    .media-operations-tab .analysis-summary-grid.analysis-summary-grid-main {
-        grid-template-columns: 1fr;
-    }
-
 }
 
 @@media (max-width: 640px) {
@@ -2158,18 +2120,18 @@
 }
 
 @@media (max-width: 1100px) {
-    .media-operations-tab .media-ops-hero {
+    .media-operations-tab .media-ops-hero,
+    .media-operations-tab .media-ops-layout {
         grid-template-columns: 1fr;
     }
-.media-operations-tab .media-ops-layout {
-    grid-template-columns: 1fr;
-}
 }
 
 /* Responsive */
 @@media (max-width: 900px) {
     .media-operations-tab .settings-grid,
-    .media-operations-tab .media-ops-hero {
+    .media-operations-tab .media-ops-hero,
+    .media-operations-tab .media-ops-layout,
+    .media-operations-tab .ops-secondary .mini-grid {
         grid-template-columns: 1fr;
     }
 
@@ -2177,10 +2139,24 @@
     .media-operations-tab .ops-secondary {
         display: grid;
         gap: 16px;
+        grid-column: 1;
+        min-width: 0;
+    }
+
+    .media-operations-tab #analysis-card,
+    .media-operations-tab #meloday-card,
+    .media-operations-tab .ops-secondary {
+        grid-column: 1;
+    }
+
+    .media-operations-tab .ops-secondary .mini-grid {
+        grid-template-rows: none;
+        height: auto;
     }
 
     .media-operations-tab .tool-card {
         padding: 16px;
+        min-width: 0;
     }
 
     .media-operations-tab .tool-card-header {
@@ -2198,6 +2174,32 @@
     .media-operations-tab .tool-card-actions .btn {
         flex: 1 1 160px;
     }
+
+    .media-operations-tab .analysis-summary-grid.analysis-summary-grid-vibe,
+    .media-operations-tab .analysis-summary-grid.analysis-summary-grid-main,
+    .media-operations-tab .analysis-features-grid.analysis-features-grid-main {
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    }
+
+    .media-operations-tab #meloday-card .meloday-summary-grid,
+    .media-operations-tab #meloday-card .meloday-history-grid,
+    .media-operations-tab #meloday-card .meloday-similarity-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .media-operations-tab .meloday-settings .form-control,
+    .media-operations-tab .vibe-analysis-settings .form-control {
+        min-width: 0;
+        width: 100%;
+    }
+
+    .media-operations-tab .field-group {
+        min-width: 0;
+    }
+
+    .media-operations-tab .field-label {
+        overflow-wrap: anywhere;
+    }
 }
 
 @@media (max-width: 640px) {
@@ -2211,14 +2213,12 @@
     }
 
     .media-operations-tab .media-ops-hero-quick {
-        flex-direction: column;
+        grid-template-columns: 1fr;
         gap: 8px;
-        align-items: flex-start;
     }
 
     .media-operations-tab .media-ops-hero-pill {
         width: 100%;
-        justify-content: space-between;
     }
 
     .media-operations-tab .media-ops-layout {
@@ -2264,6 +2264,24 @@
     .media-operations-tab .tool-card-controls input,
     .media-operations-tab .tool-card-controls button {
         width: 100%;
+        min-width: 0;
+    }
+
+    .media-operations-tab .field-input {
+        flex-direction: column;
+        flex-wrap: wrap;
+        align-items: stretch;
+    }
+
+    .media-operations-tab #meloday-card .meloday-summary-grid,
+    .media-operations-tab #meloday-card .meloday-history-grid,
+    .media-operations-tab #meloday-card .meloday-similarity-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .media-operations-tab .field-unit {
+        min-width: 0;
+        text-align: left;
     }
 
     .media-operations-tab .tool-card-actions {
@@ -2277,13 +2295,22 @@
     }
 
     .media-operations-tab .analysis-summary-grid,
-    .media-operations-tab .analysis-features-grid {
+    .media-operations-tab .analysis-features-grid,
+    .media-operations-tab .analysis-summary-grid.analysis-summary-grid-vibe,
+    .media-operations-tab .analysis-summary-grid.analysis-summary-grid-main,
+    .media-operations-tab .analysis-features-grid.analysis-features-grid-main {
         grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
         gap: 10px;
     }
 
-    .media-operations-tab .analysis-summary-grid.analysis-summary-grid-vibe {
-        grid-template-columns: repeat(5, minmax(0, 1fr));
+    .media-operations-tab .analysis-summary-card,
+    .media-operations-tab .analysis-feature {
+        min-width: 0;
+    }
+
+    .media-operations-tab .analysis-summary-value,
+    .media-operations-tab .analysis-feature-value {
+        overflow-wrap: anywhere;
     }
 
     .media-operations-tab .analysis-recent-list {
@@ -2291,7 +2318,33 @@
     }
 
     .media-operations-tab .analysis-recent-item {
-        padding: 10px 0;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+        padding: 10px 12px;
+    }
+
+    .media-operations-tab .analysis-recent-time {
+        white-space: normal;
+    }
+
+    .media-operations-tab .tool-card-footer {
+        flex-direction: column;
+        align-items: stretch;
+        justify-content: flex-start;
+    }
+
+    .media-operations-tab .ops-primary .tool-card-footer .toggle-row {
+        margin-right: 0;
+    }
+
+    .media-operations-tab .tool-card-action-group {
+        width: 100%;
+        justify-content: stretch;
+    }
+
+    .media-operations-tab .tool-card-action-group .action-btn {
+        width: 100%;
     }
 
     /* Keep toggles inside card bounds on small screens */
@@ -6582,10 +6635,20 @@ function bindActivitiesTabSwitchRefresh() {
     }
     activitiesTabRefreshBound = true;
 
-    const downloadsTab = document.getElementById('activities-downloads-tab');
-    const autotagTab = document.getElementById('activities-autotag-tab');
-    const historyTab = document.getElementById('activities-history-tab');
-    const logsTab = document.getElementById('activities-logs-tab');
+    const activitiesTabs = document.getElementById('activitiesTabs');
+    const keepActivitiesTabVisible = (tab) => {
+        if (!(tab instanceof HTMLElement) || typeof tab.scrollIntoView !== 'function') {
+            return;
+        }
+        if (typeof globalThis.matchMedia === 'function' && !globalThis.matchMedia('(max-width: 992px)').matches) {
+            return;
+        }
+        tab.scrollIntoView({
+            behavior: 'smooth',
+            block: 'nearest',
+            inline: 'center'
+        });
+    };
 
     const refreshByTarget = (targetSelector) => {
         switch (targetSelector) {
@@ -6609,15 +6672,23 @@ function bindActivitiesTabSwitchRefresh() {
         }
     };
 
-    downloadsTab?.addEventListener('shown.bs.tab', () => refreshByTarget('#downloads-content'));
-    autotagTab?.addEventListener('shown.bs.tab', () => refreshByTarget('#autotag-status-content'));
-    historyTab?.addEventListener('shown.bs.tab', () => refreshByTarget('#history-content'));
-    logsTab?.addEventListener('shown.bs.tab', () => refreshByTarget('#logs-content'));
+    activitiesTabs?.addEventListener('shown.bs.tab', (event) => {
+        const trigger = event.target?.closest?.('[data-bs-toggle="tab"]');
+        if (!trigger) {
+            return;
+        }
+        const targetSelector = trigger.dataset?.bsTarget;
+        if (targetSelector) {
+            refreshByTarget(targetSelector);
+        }
+        keepActivitiesTabVisible(trigger);
+    });
 
-    const activeTabTrigger = document.querySelector('[data-bs-toggle="tab"].active');
+    const activeTabTrigger = activitiesTabs?.querySelector('[data-bs-toggle="tab"].active');
     const activeTarget = activeTabTrigger?.dataset?.bsTarget;
     if (activeTarget) {
         refreshByTarget(activeTarget);
+        keepActivitiesTabVisible(activeTabTrigger);
     }
 }
 

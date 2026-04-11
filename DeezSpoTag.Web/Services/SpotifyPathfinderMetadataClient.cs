@@ -204,6 +204,8 @@ public sealed class SpotifyPathfinderMetadataClient
 
 	private const string HeaderImageKey = "headerImage";
 
+	private const string AvatarImageKey = "avatarImage";
+
 	private const string ExplicitLabel = "EXPLICIT";
 
 	private const string ReleaseTypeSingle = "SINGLE";
@@ -2099,61 +2101,90 @@ public sealed class SpotifyPathfinderMetadataClient
 		List<Task> tasks = new List<Task>();
 		for (int i = 0; i < enriched.Length; i++)
 		{
+			if (HasSearchArtistImage(enriched[i]))
+			{
+				continue;
+			}
+
 			SpotifyArtistSearchCandidate current = enriched[i];
-			if (!string.IsNullOrWhiteSpace(current.ImageUrl))
+			if (TryApplyCachedSearchArtistEnrichment(current, out SpotifyArtistSearchCandidate cached))
 			{
+				enriched[i] = cached;
 				continue;
 			}
 
-			if (TryGetArtistSearchEnrichment(current.Id, out var cached))
-			{
-				string? cachedName = string.IsNullOrWhiteSpace(current.Name) ? cached.Name : current.Name;
-				string? cachedImage = string.IsNullOrWhiteSpace(current.ImageUrl) ? cached.ImageUrl : current.ImageUrl;
-				if (!string.IsNullOrWhiteSpace(cachedImage))
-				{
-					enriched[i] = current with
-					{
-						Name = cachedName ?? current.Name,
-						ImageUrl = cachedImage
-					};
-				}
-				continue;
-			}
-
-			int index = i;
-			tasks.Add(Task.Run(async () =>
-			{
-				await gate.WaitAsync(cancellationToken);
-				try
-				{
-					SpotifyArtistSearchCandidate item = enriched[index];
-					(string? name, string? imageUrl) resolved = await ResolveArtistSearchEnrichmentAsync(context, item.Id, cancellationToken);
-					RememberArtistSearchEnrichment(item.Id, resolved.name, resolved.imageUrl);
-					if (!string.IsNullOrWhiteSpace(resolved.imageUrl))
-					{
-						lock (sync)
-						{
-							enriched[index] = item with
-							{
-								Name = string.IsNullOrWhiteSpace(resolved.name) ? item.Name : resolved.name,
-								ImageUrl = resolved.imageUrl
-							};
-						}
-					}
-				}
-				catch (Exception ex) when (!(ex is OperationCanceledException))
-				{
-					_logger.LogDebug(ex, "Spotify search artist enrichment failed for {ArtistId}", current.Id);
-				}
-				finally
-				{
-					gate.Release();
-				}
-			}, cancellationToken));
+			tasks.Add(EnrichSearchSuggestionArtistAsync(context, enriched, i, current.Id, sync, gate, cancellationToken));
 		}
 
 		await Task.WhenAll(tasks);
 		return enriched.ToList();
+	}
+
+	private static bool HasSearchArtistImage(SpotifyArtistSearchCandidate candidate) => !string.IsNullOrWhiteSpace(candidate.ImageUrl);
+
+	private static bool TryApplyCachedSearchArtistEnrichment(
+		SpotifyArtistSearchCandidate candidate,
+		out SpotifyArtistSearchCandidate enrichedCandidate)
+	{
+		enrichedCandidate = candidate;
+		if (!TryGetArtistSearchEnrichment(candidate.Id, out var cached))
+		{
+			return false;
+		}
+
+		string? resolvedImage = string.IsNullOrWhiteSpace(candidate.ImageUrl) ? cached.ImageUrl : candidate.ImageUrl;
+		if (string.IsNullOrWhiteSpace(resolvedImage))
+		{
+			return false;
+		}
+
+		string? resolvedName = string.IsNullOrWhiteSpace(candidate.Name) ? cached.Name : candidate.Name;
+		enrichedCandidate = candidate with
+		{
+			Name = resolvedName ?? candidate.Name,
+			ImageUrl = resolvedImage
+		};
+		return true;
+	}
+
+	private Task EnrichSearchSuggestionArtistAsync(
+		PathfinderAuthContext context,
+		SpotifyArtistSearchCandidate[] enriched,
+		int index,
+		string artistId,
+		object sync,
+		SemaphoreSlim gate,
+		CancellationToken cancellationToken)
+	{
+		return Task.Run(async () =>
+		{
+			await gate.WaitAsync(cancellationToken);
+			try
+			{
+				SpotifyArtistSearchCandidate item = enriched[index];
+				(string? name, string? imageUrl) resolved = await ResolveArtistSearchEnrichmentAsync(context, item.Id, cancellationToken);
+				RememberArtistSearchEnrichment(item.Id, resolved.name, resolved.imageUrl);
+				if (!string.IsNullOrWhiteSpace(resolved.imageUrl))
+				{
+					lock (sync)
+					{
+						enriched[index] = item with
+						{
+							Name = string.IsNullOrWhiteSpace(resolved.name) ? item.Name : resolved.name,
+							ImageUrl = resolved.imageUrl
+						};
+					}
+				}
+			}
+			catch (Exception ex) when (!(ex is OperationCanceledException))
+			{
+				_logger.LogDebug(ex, "Spotify search artist enrichment failed for {ArtistId}", artistId);
+			}
+			finally
+			{
+				gate.Release();
+			}
+		}, cancellationToken);
 	}
 
 	private async Task<(string? name, string? imageUrl)> ResolveArtistSearchEnrichmentAsync(
@@ -4658,7 +4689,7 @@ public sealed class SpotifyPathfinderMetadataClient
 		{
 			return null;
 		}
-		string? imageUrl = ExtractCoverUrl(root, VisualsKey, "avatarImage") ?? ExtractCoverUrl(root, "avatarImage") ?? ExtractCoverUrl(root, ImagesKey);
+		string? imageUrl = ExtractCoverUrl(root, VisualsKey, AvatarImageKey) ?? ExtractCoverUrl(root, AvatarImageKey) ?? ExtractCoverUrl(root, ImagesKey);
 		string sourceUrl = TryGetString(root, "sharingInfo", "shareUrl") ?? BuildSpotifyUrl(ArtistType, artistId);
 		return new SpotifyRelatedArtist(artistId, artistName, BuildSingleImageList(imageUrl), sourceUrl);
 	}
@@ -5630,55 +5661,40 @@ public sealed class SpotifyPathfinderMetadataClient
 
 	private static string? ExtractDirectImageUrl(JsonElement node)
 	{
-		if (node.ValueKind == JsonValueKind.String)
+		return node.ValueKind switch
 		{
-			string? direct = node.GetString();
-			return LooksLikeImageUrl(direct) ? direct : null;
-		}
+			JsonValueKind.String => NormalizeImageUrlCandidate(node.GetString()),
+			JsonValueKind.Array => ExtractDirectImageUrlFromArray(node),
+			JsonValueKind.Object => ExtractDirectImageUrlFromObject(node),
+			_ => null
+		};
+	}
 
-		if (node.ValueKind == JsonValueKind.Array)
+	private static string? ExtractDirectImageUrlFromArray(JsonElement node)
+	{
+		foreach (JsonElement item in node.EnumerateArray())
 		{
-			foreach (JsonElement item in node.EnumerateArray())
+			string? image = ExtractDirectImageUrl(item);
+			if (!string.IsNullOrWhiteSpace(image))
 			{
-				string? image = ExtractDirectImageUrl(item);
-				if (!string.IsNullOrWhiteSpace(image))
-				{
-					return image;
-				}
+				return image;
 			}
+		}
+		return null;
+	}
 
-			return null;
+	private static string? ExtractDirectImageUrlFromObject(JsonElement node)
+	{
+		string? direct = TryExtractDirectImageUrlCandidate(node);
+		if (!string.IsNullOrWhiteSpace(direct))
+		{
+			return direct;
 		}
 
-		if (node.ValueKind != JsonValueKind.Object)
+		string? sourceUrl = TryExtractSourceImageUrl(node);
+		if (!string.IsNullOrWhiteSpace(sourceUrl))
 		{
-			return null;
-		}
-
-		string? url = TryGetString(node, "url")
-			?? TryGetString(node, "imageUrl")
-			?? TryGetString(node, "image_url")
-			?? TryGetString(node, "src")
-			?? TryGetString(node, "picture")
-			?? TryGetString(node, "picture_xl")
-			?? TryGetString(node, "picture_big")
-			?? TryGetString(node, "picture_medium");
-		if (LooksLikeImageUrl(url))
-		{
-			return url;
-		}
-
-		if (TryGetNested(node, out var sources, SourcesKey)
-			&& sources.ValueKind == JsonValueKind.Array)
-		{
-			foreach (JsonElement source in sources.EnumerateArray())
-			{
-				string? sourceUrl = TryGetString(source, "url");
-				if (LooksLikeImageUrl(sourceUrl))
-				{
-					return sourceUrl;
-				}
-			}
+			return sourceUrl;
 		}
 
 		foreach (JsonProperty property in node.EnumerateObject())
@@ -5691,6 +5707,43 @@ public sealed class SpotifyPathfinderMetadataClient
 		}
 
 		return null;
+	}
+
+	private static string? TryExtractDirectImageUrlCandidate(JsonElement node)
+	{
+		string? candidate = TryGetString(node, "url")
+			?? TryGetString(node, "imageUrl")
+			?? TryGetString(node, "image_url")
+			?? TryGetString(node, "src")
+			?? TryGetString(node, "picture")
+			?? TryGetString(node, "picture_xl")
+			?? TryGetString(node, "picture_big")
+			?? TryGetString(node, "picture_medium");
+		return NormalizeImageUrlCandidate(candidate);
+	}
+
+	private static string? TryExtractSourceImageUrl(JsonElement node)
+	{
+		if (!TryGetNested(node, out var sources, SourcesKey) || sources.ValueKind != JsonValueKind.Array)
+		{
+			return null;
+		}
+
+		foreach (JsonElement source in sources.EnumerateArray())
+		{
+			string? sourceUrl = NormalizeImageUrlCandidate(TryGetString(source, "url"));
+			if (!string.IsNullOrWhiteSpace(sourceUrl))
+			{
+				return sourceUrl;
+			}
+		}
+
+		return null;
+	}
+
+	private static string? NormalizeImageUrlCandidate(string? value)
+	{
+		return LooksLikeImageUrl(value) ? value : null;
 	}
 
 	private static bool LooksLikeImageUrl(string? value)
@@ -5739,8 +5792,8 @@ public sealed class SpotifyPathfinderMetadataClient
 	{
 		var candidates = new[]
 		{
-			ExtractCoverOrDirectImageUrl(artistUnion, VisualsKey, "avatarImage"),
-			ExtractCoverOrDirectImageUrl(artistUnion, "avatarImage"),
+			ExtractCoverOrDirectImageUrl(artistUnion, VisualsKey, AvatarImageKey),
+			ExtractCoverOrDirectImageUrl(artistUnion, AvatarImageKey),
 			ExtractCoverOrDirectImageUrl(artistUnion, HeaderImageKey, DataKey),
 			ExtractCoverOrDirectImageUrl(artistUnion, VisualsKey, HeaderImageKey),
 			ExtractCoverOrDirectImageUrl(artistUnion, VisualsKey, "heroImage"),
@@ -5750,15 +5803,7 @@ public sealed class SpotifyPathfinderMetadataClient
 			ExtractCoverOrDirectImageUrl(artistUnion, ImageKey)
 		};
 
-		foreach (string? candidate in candidates)
-		{
-			if (!string.IsNullOrWhiteSpace(candidate))
-			{
-				return candidate;
-			}
-		}
-
-		return null;
+		return candidates.FirstOrDefault(static candidate => !string.IsNullOrWhiteSpace(candidate));
 	}
 
 		private static string? ExtractArtistHeaderImageUrl(JsonElement artistUnion)
