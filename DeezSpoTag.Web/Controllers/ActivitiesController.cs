@@ -352,7 +352,6 @@ public class ActivitiesController : Controller
             }
 
             var settings = _settingsService.LoadSettings();
-            var newestFirst = string.Equals(settings.QueueOrder, "recent", StringComparison.OrdinalIgnoreCase);
 
             // Reset payload using canonical fallback normalization so retry behavior
             // matches queue retry scheduler and engine coordinator expectations.
@@ -371,12 +370,12 @@ public class ActivitiesController : Controller
             // Update the engine column so the correct engine processor picks up the item.
             await _queueRepository.UpdateEngineAsync(request.Uuid, firstStep.Source, HttpContext.RequestAborted);
 
-            await _queueRepository.RequeueAsync(request.Uuid, requeueToFront: true, newestFirst: newestFirst, cancellationToken: HttpContext.RequestAborted);
+            await _queueRepository.RequeueAsync(request.Uuid, requeueToFront: false, newestFirst: false, cancellationToken: HttpContext.RequestAborted);
             _logger.LogInformation(
                 "Retried download with fallback reset: {Uuid} (engine={Engine})",
                 LogSanitizer.OneLine(request.Uuid),
                 LogSanitizer.OneLine(firstStep.Source));
-            _activityLog.Info($"Retry queued (fallback reset to start): {request.Uuid} engine={firstStep.Source}");
+            _activityLog.Info($"Retry queued (fallback reset): {request.Uuid} engine={firstStep.Source}");
             _deezspotagListener.Send("updateQueue", new
             {
                 uuid = request.Uuid,
