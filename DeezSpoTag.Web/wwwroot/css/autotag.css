@@ -1076,15 +1076,11 @@ body.autotag-col-resizing * {
 
     .autotag-hero-actions {
         flex-direction: row;
-        flex-wrap: nowrap;
-        overflow-x: auto;
-        overflow-y: hidden;
+        flex-wrap: wrap;
+        overflow: visible;
         gap: 8px;
-        margin-inline: -2px;
-        padding-bottom: 4px;
-        -webkit-overflow-scrolling: touch;
-        scrollbar-width: none;
-        scroll-snap-type: x proximity;
+        margin-inline: 0;
+        padding-bottom: 0;
     }
 
     .autotag-hero-actions::-webkit-scrollbar {
@@ -1092,9 +1088,33 @@ body.autotag-col-resizing * {
     }
 
     .autotag-hero-actions .action-btn {
-        flex: 0 0 auto;
+        flex: 1 1 calc(50% - 4px);
+        width: auto;
+        min-width: 0;
         min-height: 40px;
-        scroll-snap-align: start;
+        justify-content: center;
+        white-space: nowrap;
+    }
+
+    .autotag-hero-actions #autotag-save {
+        order: 1;
+    }
+
+    .autotag-hero-actions #autotag-view-status {
+        order: 2;
+    }
+
+    .autotag-hero-actions #autotag-tag-editor {
+        order: 3;
+    }
+
+    .autotag-hero-actions #autotag-reset {
+        order: 4;
+    }
+
+    .autotag-hero-actions #autotag-stop {
+        order: 5;
+        flex-basis: 100%;
     }
 
     .form-row {
