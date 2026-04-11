@@ -2834,7 +2834,8 @@ function updateArtistsIncrementalView(collected, totalCount, incrementalRenderEn
     updateLibraryLoadProgressMeta(collected.length, totalCount);
     if (incrementalRenderEnabled && document.getElementById('artistsGrid')) {
         libraryState.filteredArtists = [...collected];
-        renderArtistGrid(collected);
+        const shouldForceWindowing = Number.isFinite(totalCount) && totalCount >= 600;
+        renderArtistGrid(collected, { forceWindowing: shouldForceWindowing });
     }
 }
 
@@ -3051,6 +3052,53 @@ function createArtistCardElement(artist, anchorId = '') {
     return card;
 }
 
+function measureArtistGridLengthPx(container, cssExpression, fallback) {
+    const probe = document.createElement('span');
+    probe.style.position = 'absolute';
+    probe.style.visibility = 'hidden';
+    probe.style.pointerEvents = 'none';
+    probe.style.height = '0';
+    probe.style.overflow = 'hidden';
+    probe.style.width = cssExpression;
+    container.appendChild(probe);
+    const measured = probe.getBoundingClientRect().width;
+    probe.remove();
+    if (Number.isFinite(measured) && measured > 0) {
+        return measured;
+    }
+    return fallback;
+}
+
+function getArtistGridWindowMetrics(container) {
+    const computed = getComputedStyle(container);
+    const gapRaw = computed.columnGap || computed.gap || '';
+    const parsedGap = Number.parseFloat(gapRaw);
+    const gap = Number.isFinite(parsedGap) && parsedGap >= 0 ? parsedGap : 16;
+    const templateColumns = (computed.gridTemplateColumns || '').trim();
+    const columnsFromCss = templateColumns && templateColumns !== 'none'
+        ? templateColumns.split(/\s+/).filter(Boolean).length
+        : 0;
+
+    let columns = columnsFromCss;
+    let cardSize = 0;
+    if (columns > 0) {
+        const totalGap = gap * Math.max(0, columns - 1);
+        cardSize = (container.clientWidth - totalGap) / columns;
+    }
+
+    if (!Number.isFinite(cardSize) || cardSize <= 0) {
+        cardSize = measureArtistGridLengthPx(container, 'var(--art-card-size)', 180);
+    }
+    cardSize = Math.max(120, Math.round(cardSize));
+
+    if (!Number.isFinite(columns) || columns < 1) {
+        const minColumnWidth = cardSize + gap;
+        columns = Math.max(1, Math.floor((container.clientWidth + gap) / Math.max(1, minColumnWidth)));
+    }
+
+    return { columns, cardSize, gap };
+}
+
 function renderArtistGridWindowed(container, artists, letterNav) {
     const renderKey = artists.map(item => `${item.id}:${item.name || ''}`).join('|');
     if (libraryState.artistVirtualizationKey !== renderKey) {
@@ -3059,14 +3107,13 @@ function renderArtistGridWindowed(container, artists, letterNav) {
     libraryState.artistVirtualizationKey = renderKey;
 
     container.innerHTML = '';
+    const metrics = getArtistGridWindowMetrics(container);
+    const columns = metrics.columns;
+    const cardSize = metrics.cardSize;
+    const gap = metrics.gap;
     container.classList.add('artist-grid-windowed');
     container.style.position = 'relative';
-    const cardSizeRaw = getComputedStyle(container).getPropertyValue('--art-card-size').trim();
-    const cardSize = Math.max(120, Number.parseInt(cardSizeRaw || '180', 10) || 180);
-    const gap = 16;
     const rowHeight = cardSize + 48;
-    const minColumnWidth = cardSize + gap;
-    const columns = Math.max(1, Math.floor((container.clientWidth + gap) / minColumnWidth));
     const totalRows = Math.max(1, Math.ceil(artists.length / columns));
     const totalHeight = totalRows * rowHeight;
     container.style.height = `${totalHeight}px`;
@@ -3156,7 +3203,7 @@ function renderArtistGridWindowed(container, artists, letterNav) {
     applyPendingLibraryScrollRestore();
 }
 
-function renderArtistGrid(artists) {
+function renderArtistGrid(artists, options = {}) {
     const container = document.getElementById('artistsGrid');
     const letterNav = document.getElementById('libraryLetterNav');
     if (!container) {
@@ -3177,7 +3224,7 @@ function renderArtistGrid(artists) {
         return;
     }
 
-    const shouldUseWindowing = artists.length >= 600;
+    const shouldUseWindowing = options.forceWindowing === true || artists.length >= 600;
     if (shouldUseWindowing) {
         renderArtistGridWindowed(container, artists, letterNav);
         return;
