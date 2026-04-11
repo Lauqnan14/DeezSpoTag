@@ -36,6 +36,8 @@ ARG ESSENTIA_TF_PACKAGE=essentia-tensorflow==2.1b6.dev1389
 LABEL org.opencontainers.image.source="https://github.com/Lauqnan14/DeezSpoTag" \
       org.opencontainers.image.title="deezspotag"
 
+COPY scripts/mp4decrypt /usr/local/bin/mp4decrypt
+
 RUN apt-get update -o Acquire::Retries=5 \
     && apt-get install -y --no-install-recommends \
        openssl \
@@ -67,20 +69,34 @@ RUN apt-get update -o Acquire::Retries=5 \
     && if [ -z "$mp4box_path" ]; then mp4box_path="$(command -v mp4box || true)"; fi \
     && if [ -z "$mp4box_path" ]; then echo "MP4Box not found after GPAC install." >&2; exit 1; fi \
     && install -m 0755 "$mp4box_path" /usr/local/bin/mp4box \
+    && chmod 0755 /usr/local/bin/mp4decrypt \
     && if [ "${TARGETARCH:-amd64}" = "amd64" ]; then \
-         curl --fail --show-error --silent --location \
+         if curl --fail --show-error --silent --location \
            --retry 6 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 180 \
-           -o /tmp/bento4.zip "$BENTO4_URL_X86_64"; \
-         if [ -n "$BENTO4_SHA256" ]; then echo "$BENTO4_SHA256  /tmp/bento4.zip" | sha256sum -c -; fi; \
-         mkdir -p /tmp/bento4; \
-         unzip -q /tmp/bento4.zip -d /tmp/bento4; \
-         mp4decrypt_path="$(find /tmp/bento4 -type f -name mp4decrypt -perm -111 | head -n 1)"; \
-         if [ -n "$mp4decrypt_path" ]; then install -m 0755 "$mp4decrypt_path" /usr/local/bin/mp4decrypt; fi; \
+           -o /tmp/bento4.zip "$BENTO4_URL_X86_64"; then \
+           checksum_ok=1; \
+           if [ -n "$BENTO4_SHA256" ] && ! echo "$BENTO4_SHA256  /tmp/bento4.zip" | sha256sum -c -; then \
+             checksum_ok=0; \
+             echo "Bento4 checksum validation failed; keeping bundled mp4decrypt compatibility wrapper."; \
+           fi; \
+           if [ "$checksum_ok" = "1" ]; then \
+             mkdir -p /tmp/bento4; \
+             unzip -q /tmp/bento4.zip -d /tmp/bento4; \
+             mp4decrypt_path="$(find /tmp/bento4 -type f -name mp4decrypt -perm -111 | head -n 1)"; \
+             if [ -n "$mp4decrypt_path" ]; then \
+               install -m 0755 "$mp4decrypt_path" /usr/local/bin/mp4decrypt; \
+             else \
+               echo "Bento4 archive did not contain mp4decrypt; keeping bundled compatibility wrapper."; \
+             fi; \
+           fi; \
+         else \
+           echo "Bento4 download unavailable; keeping bundled mp4decrypt compatibility wrapper."; \
+         fi; \
          rm -rf /tmp/bento4 /tmp/bento4.zip; \
        else \
-         echo "Skipping mp4decrypt install for TARGETARCH=${TARGETARCH:-unknown}:" \
-              "no official Bento4 arm64 binary URL is configured."; \
+         echo "Keeping bundled mp4decrypt compatibility wrapper for TARGETARCH=${TARGETARCH:-unknown}."; \
        fi \
+    && command -v mp4decrypt >/dev/null \
     && printf '%s\n' \
       'openssl_conf = openssl_init' \
       '' \
@@ -121,6 +137,8 @@ ENV OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf \
     DEEZSPOTAG_CONFIG_DIR=/data \
     DEEZSPOTAG_DATA_DIR=/data \
     DEEZSPOTAG_BUILD_VERSION=${DEEZSPOTAG_BUILD_VERSION} \
+    DEEZSPOTAG_APPLE_MP4DECRYPT_PATH=/usr/local/bin/mp4decrypt \
+    DEEZSPOTAG_APPLE_MP4BOX_PATH=/usr/local/bin/mp4box \
     APPLE_WRAPPER_RUNV2=/app/Tools/AppleMusicWrapper/runv2/apple-wrapper-runv2 \
     DEEZSPOTAG_SPOTIFY_USE_CONFIG_CREDS=1 \
     DOTNET_SYSTEM_NET_HTTP_USESOCKETSHTTPHANDLER=1 \
