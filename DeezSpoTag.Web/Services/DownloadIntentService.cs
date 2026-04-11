@@ -5160,6 +5160,7 @@ public sealed class DownloadIntentService
         {
             ArtistName = context.Identity.TrackArtist,
             TrackTitle = context.Identity.TrackTitle,
+            DestinationFolderId = context.Identity.DestinationFolderId,
             ContentType = context.Identity.ContentType,
             ArtistPrimaryName = context.Identity.TrackPrimaryArtist
         };

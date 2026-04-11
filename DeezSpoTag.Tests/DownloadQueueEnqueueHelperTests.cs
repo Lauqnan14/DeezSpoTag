@@ -61,26 +61,70 @@ public sealed class DownloadQueueEnqueueHelperTests
         Assert.Equal("queue_recently_downloaded", outcome.ReasonCode);
     }
 
+    [Fact]
+    public async Task EnqueueWithDedupAsync_AllowsSameTrackInDifferentDestinationFolder()
+    {
+        await using var context = await CreateContextAsync();
+        var firstPayload = CreatePayload("dest-queued-1", destinationFolderId: 101);
+        var secondPayload = CreatePayload("dest-queued-2", destinationFolderId: 202);
+
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(firstPayload, "queued"), CancellationToken.None);
+
+        var outcome = await DownloadQueueEnqueueHelper.EnqueueWithDedupAsync(
+            secondPayload,
+            redownloadCooldownMinutes: 720,
+            context.QueueRepository,
+            context.Listener,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        Assert.True(outcome.Success);
+        Assert.False(outcome.AlreadyQueued);
+
+        var queuedItems = await context.QueueRepository.GetTasksAsync(firstPayload.Engine, CancellationToken.None);
+        Assert.Equal(2, queuedItems.Count);
+    }
+
+    [Fact]
+    public async Task EnqueueWithDedupAsync_PersistsDestinationFolderIdAcrossRepositoryInstances()
+    {
+        await using var context = await CreateContextAsync();
+        var payload = CreatePayload("dest-persist-1", destinationFolderId: 909);
+
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(payload, "queued"), CancellationToken.None);
+
+        var restartedRepository = BuildRepository(context.TempRoot, context.QueueDbPath);
+        var persisted = await restartedRepository.GetByUuidAsync(payload.Id, CancellationToken.None);
+
+        Assert.NotNull(persisted);
+        Assert.Equal(payload.DestinationFolderId, persisted!.DestinationFolderId);
+    }
+
     private static Task<TestContext> CreateContextAsync()
     {
         var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-download-queue-tests-" + Path.GetRandomFileName());
         Directory.CreateDirectory(tempRoot);
 
         var queueDb = Path.Join(tempRoot, "queue.db");
+        var queueRepository = BuildRepository(tempRoot, queueDb);
+        var listener = new DeezSpoTag.Services.Download.Shared.Models.DeezSpoTagListener();
+        return Task.FromResult(new TestContext(tempRoot, queueDb, queueRepository, listener));
+    }
+
+    private static DownloadQueueRepository BuildRepository(string tempRoot, string queueDbPath)
+    {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ConnectionStrings:Queue"] = $"Data Source={queueDb}",
+                ["ConnectionStrings:Queue"] = $"Data Source={queueDbPath}",
                 ["DataDirectory"] = tempRoot
             })
             .Build();
 
-        var queueRepository = new DownloadQueueRepository(config, NullLogger<DownloadQueueRepository>.Instance);
-        var listener = new DeezSpoTag.Services.Download.Shared.Models.DeezSpoTagListener();
-        return Task.FromResult(new TestContext(tempRoot, queueRepository, listener));
+        return new DownloadQueueRepository(config, NullLogger<DownloadQueueRepository>.Instance);
     }
 
-    private static QobuzQueueItem CreatePayload(string queueUuid)
+    private static QobuzQueueItem CreatePayload(string queueUuid, long? destinationFolderId = null)
     {
         return new QobuzQueueItem
         {
@@ -93,6 +137,7 @@ public sealed class DownloadQueueEnqueueHelperTests
             Quality = "27",
             SourceUrl = "https://play.qobuz.com/track/123",
             QobuzId = "123",
+            DestinationFolderId = destinationFolderId,
             ContentType = string.Empty,
             DurationSeconds = 0
         };
@@ -133,14 +178,16 @@ public sealed class DownloadQueueEnqueueHelperTests
 
     private sealed class TestContext : IAsyncDisposable
     {
-        public TestContext(string tempRoot, DownloadQueueRepository queueRepository, DeezSpoTag.Services.Download.Shared.Models.DeezSpoTagListener listener)
+        public TestContext(string tempRoot, string queueDbPath, DownloadQueueRepository queueRepository, DeezSpoTag.Services.Download.Shared.Models.DeezSpoTagListener listener)
         {
             TempRoot = tempRoot;
+            QueueDbPath = queueDbPath;
             QueueRepository = queueRepository;
             Listener = listener;
         }
 
         public string TempRoot { get; }
+        public string QueueDbPath { get; }
         public DownloadQueueRepository QueueRepository { get; }
         public DeezSpoTag.Services.Download.Shared.Models.DeezSpoTagListener Listener { get; }
 
