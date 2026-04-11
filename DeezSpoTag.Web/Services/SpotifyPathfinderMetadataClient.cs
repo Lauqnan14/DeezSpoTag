@@ -244,7 +244,11 @@ public sealed class SpotifyPathfinderMetadataClient
 
 	private static readonly ConcurrentDictionary<string, string> IsrcCache = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+	private static readonly ConcurrentDictionary<string, (DateTimeOffset Stamp, string? Name, string? ImageUrl)> ArtistSearchEnrichmentCache = new ConcurrentDictionary<string, (DateTimeOffset, string?, string?)>(StringComparer.OrdinalIgnoreCase);
+
 	private static readonly TimeSpan ShowCacheTtl = TimeSpan.FromMinutes(10.0);
+
+	private static readonly TimeSpan ArtistSearchEnrichmentCacheTtl = TimeSpan.FromMinutes(20.0);
 
 	private static readonly ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyUrlMetadata Data)> ShowCache = new ConcurrentDictionary<string, (DateTimeOffset, SpotifyUrlMetadata)>();
 
@@ -1939,8 +1943,8 @@ public sealed class SpotifyPathfinderMetadataClient
 			}
 		}
 
-		private bool ShouldReturnNullFromQueryResponse(HttpStatusCode status, string? json, string operationName)
-		{
+			private bool ShouldReturnNullFromQueryResponse(HttpStatusCode status, string? json, string operationName)
+			{
 			if (status == HttpStatusCode.OK && !string.IsNullOrWhiteSpace(json))
 			{
 				return false;
@@ -2070,13 +2074,147 @@ public sealed class SpotifyPathfinderMetadataClient
 				if (doc is not null)
 				{
 					List<SpotifyArtistSearchCandidate> artists = ParseSearchSuggestionArtists(doc.RootElement, resolvedLimit);
-				if (artists.Count > 0)
-				{
-					return artists;
+					if (artists.Count > 0)
+					{
+						return await EnrichSearchSuggestionArtistsAsync(context, artists, cancellationToken);
+					}
 				}
 			}
+			return new List<SpotifyArtistSearchCandidate>();
 		}
-		return new List<SpotifyArtistSearchCandidate>();
+
+	private async Task<List<SpotifyArtistSearchCandidate>> EnrichSearchSuggestionArtistsAsync(
+		PathfinderAuthContext context,
+		List<SpotifyArtistSearchCandidate> artists,
+		CancellationToken cancellationToken)
+	{
+		if (artists.Count == 0)
+		{
+			return artists;
+		}
+
+		SpotifyArtistSearchCandidate[] enriched = artists.ToArray();
+		object sync = new object();
+		using SemaphoreSlim gate = new SemaphoreSlim(4, 4);
+		List<Task> tasks = new List<Task>();
+		for (int i = 0; i < enriched.Length; i++)
+		{
+			SpotifyArtistSearchCandidate current = enriched[i];
+			if (!string.IsNullOrWhiteSpace(current.ImageUrl))
+			{
+				continue;
+			}
+
+			if (TryGetArtistSearchEnrichment(current.Id, out var cached))
+			{
+				string? cachedName = string.IsNullOrWhiteSpace(current.Name) ? cached.Name : current.Name;
+				string? cachedImage = string.IsNullOrWhiteSpace(current.ImageUrl) ? cached.ImageUrl : current.ImageUrl;
+				if (!string.IsNullOrWhiteSpace(cachedImage))
+				{
+					enriched[i] = current with
+					{
+						Name = cachedName ?? current.Name,
+						ImageUrl = cachedImage
+					};
+				}
+				continue;
+			}
+
+			int index = i;
+			tasks.Add(Task.Run(async () =>
+			{
+				await gate.WaitAsync(cancellationToken);
+				try
+				{
+					SpotifyArtistSearchCandidate item = enriched[index];
+					(string? name, string? imageUrl) resolved = await ResolveArtistSearchEnrichmentAsync(context, item.Id, cancellationToken);
+					RememberArtistSearchEnrichment(item.Id, resolved.name, resolved.imageUrl);
+					if (!string.IsNullOrWhiteSpace(resolved.imageUrl))
+					{
+						lock (sync)
+						{
+							enriched[index] = item with
+							{
+								Name = string.IsNullOrWhiteSpace(resolved.name) ? item.Name : resolved.name,
+								ImageUrl = resolved.imageUrl
+							};
+						}
+					}
+				}
+				catch (Exception ex) when (!(ex is OperationCanceledException))
+				{
+					_logger.LogDebug(ex, "Spotify search artist enrichment failed for {ArtistId}", current.Id);
+				}
+				finally
+				{
+					gate.Release();
+				}
+			}, cancellationToken));
+		}
+
+		await Task.WhenAll(tasks);
+		return enriched.ToList();
+	}
+
+	private async Task<(string? name, string? imageUrl)> ResolveArtistSearchEnrichmentAsync(
+		PathfinderAuthContext context,
+		string artistId,
+		CancellationToken cancellationToken)
+	{
+		JsonElement? overview = await QueryArtistOverviewAsync(context, artistId, cancellationToken);
+		if (overview.HasValue)
+		{
+			string? overviewName = TryGetString(overview.Value, ProfileKey, "name") ?? TryGetString(overview.Value, "name");
+			string? overviewImageUrl = ExtractArtistImageUrl(overview.Value);
+			if (!string.IsNullOrWhiteSpace(overviewImageUrl))
+			{
+				return (NormalizeOptionalText(overviewName), overviewImageUrl);
+			}
+		}
+
+		JsonElement? artist = await QueryArtistAsync(context, artistId, cancellationToken);
+		if (artist.HasValue)
+		{
+			string? artistName = TryGetString(artist.Value, ProfileKey, "name") ?? TryGetString(artist.Value, "name");
+			string? artistImageUrl = ExtractArtistImageUrl(artist.Value);
+			return (NormalizeOptionalText(artistName), artistImageUrl);
+		}
+
+		return (null, null);
+	}
+
+	private static bool TryGetArtistSearchEnrichment(string artistId, out (string? Name, string? ImageUrl) enrichment)
+	{
+		enrichment = (null, null);
+		if (!ArtistSearchEnrichmentCache.TryGetValue(artistId, out var cached))
+		{
+			return false;
+		}
+
+		if (DateTimeOffset.UtcNow - cached.Stamp > ArtistSearchEnrichmentCacheTtl)
+		{
+			ArtistSearchEnrichmentCache.TryRemove(artistId, out var _);
+			return false;
+		}
+
+		enrichment = (cached.Name, cached.ImageUrl);
+		return true;
+	}
+
+	private static void RememberArtistSearchEnrichment(string artistId, string? name, string? imageUrl)
+	{
+		ArtistSearchEnrichmentCache[artistId] = (DateTimeOffset.UtcNow, NormalizeOptionalText(name), NormalizeOptionalText(imageUrl));
+	}
+
+	private static string? NormalizeOptionalText(string? value)
+	{
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			return null;
+		}
+
+		string normalized = value.Trim();
+		return normalized.Length == 0 ? null : normalized;
 	}
 
 	public async Task<List<SpotifyTrackSummary>> FetchLibraryLikedTracksAsync(int limit, int offset, CancellationToken cancellationToken)
@@ -5453,8 +5591,8 @@ public sealed class SpotifyPathfinderMetadataClient
 		return false;
 	}
 
-		private static string? ExtractCoverUrl(JsonElement root, params string[] path)
-		{
+	private static string? ExtractCoverUrl(JsonElement root, params string[] path)
+	{
 		if (!TryGetNested(root, out var value, path))
 		{
 			return null;
@@ -5472,6 +5610,107 @@ public sealed class SpotifyPathfinderMetadataClient
 		return (from source in list
 			orderby Math.Max(source.Width, source.Height) descending
 			select source.Url).FirstOrDefault((string url) => !string.IsNullOrWhiteSpace(url));
+	}
+
+	private static string? ExtractCoverOrDirectImageUrl(JsonElement root, params string[] path)
+	{
+		string? cover = ExtractCoverUrl(root, path);
+		if (!string.IsNullOrWhiteSpace(cover))
+		{
+			return cover;
+		}
+
+		if (!TryGetNested(root, out var value, path))
+		{
+			return null;
+		}
+
+		return ExtractDirectImageUrl(value);
+	}
+
+	private static string? ExtractDirectImageUrl(JsonElement node)
+	{
+		if (node.ValueKind == JsonValueKind.String)
+		{
+			string? direct = node.GetString();
+			return LooksLikeImageUrl(direct) ? direct : null;
+		}
+
+		if (node.ValueKind == JsonValueKind.Array)
+		{
+			foreach (JsonElement item in node.EnumerateArray())
+			{
+				string? image = ExtractDirectImageUrl(item);
+				if (!string.IsNullOrWhiteSpace(image))
+				{
+					return image;
+				}
+			}
+
+			return null;
+		}
+
+		if (node.ValueKind != JsonValueKind.Object)
+		{
+			return null;
+		}
+
+		string? url = TryGetString(node, "url")
+			?? TryGetString(node, "imageUrl")
+			?? TryGetString(node, "image_url")
+			?? TryGetString(node, "src")
+			?? TryGetString(node, "picture")
+			?? TryGetString(node, "picture_xl")
+			?? TryGetString(node, "picture_big")
+			?? TryGetString(node, "picture_medium");
+		if (LooksLikeImageUrl(url))
+		{
+			return url;
+		}
+
+		if (TryGetNested(node, out var sources, SourcesKey)
+			&& sources.ValueKind == JsonValueKind.Array)
+		{
+			foreach (JsonElement source in sources.EnumerateArray())
+			{
+				string? sourceUrl = TryGetString(source, "url");
+				if (LooksLikeImageUrl(sourceUrl))
+				{
+					return sourceUrl;
+				}
+			}
+		}
+
+		foreach (JsonProperty property in node.EnumerateObject())
+		{
+			string? nested = ExtractDirectImageUrl(property.Value);
+			if (!string.IsNullOrWhiteSpace(nested))
+			{
+				return nested;
+			}
+		}
+
+		return null;
+	}
+
+	private static bool LooksLikeImageUrl(string? value)
+	{
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			return false;
+		}
+
+		if (value.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase))
+		{
+			return true;
+		}
+
+		if (Uri.TryCreate(value, UriKind.Absolute, out var uri))
+		{
+			return uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps;
+		}
+
+		return false;
 	}
 
 		private static string? ExtractPlaylistImageUrl(JsonElement playlistUnion)
@@ -5496,32 +5735,29 @@ public sealed class SpotifyPathfinderMetadataClient
 		return null;
 	}
 
-		private static string? ExtractArtistImageUrl(JsonElement artistUnion)
+	private static string? ExtractArtistImageUrl(JsonElement artistUnion)
+	{
+		var candidates = new[]
 		{
-			if (TryGetNested(artistUnion, out var value, VisualsKey, "avatarImage"))
+			ExtractCoverOrDirectImageUrl(artistUnion, VisualsKey, "avatarImage"),
+			ExtractCoverOrDirectImageUrl(artistUnion, "avatarImage"),
+			ExtractCoverOrDirectImageUrl(artistUnion, HeaderImageKey, DataKey),
+			ExtractCoverOrDirectImageUrl(artistUnion, VisualsKey, HeaderImageKey),
+			ExtractCoverOrDirectImageUrl(artistUnion, VisualsKey, "heroImage"),
+			ExtractCoverOrDirectImageUrl(artistUnion, VisualsKey, "bannerImage"),
+			ExtractCoverOrDirectImageUrl(artistUnion, ImagesKey),
+			ExtractCoverOrDirectImageUrl(artistUnion, "imagesV2"),
+			ExtractCoverOrDirectImageUrl(artistUnion, ImageKey)
+		};
+
+		foreach (string? candidate in candidates)
+		{
+			if (!string.IsNullOrWhiteSpace(candidate))
 			{
-				string? text = ExtractCoverUrl(value);
-				if (!string.IsNullOrWhiteSpace(text))
-				{
-					return text;
-			}
-			}
-			if (TryGetNested(artistUnion, out var value2, HeaderImageKey, DataKey))
-			{
-				string? text2 = ExtractCoverUrl(value2);
-				if (!string.IsNullOrWhiteSpace(text2))
-				{
-					return text2;
-			}
-			}
-			if (TryGetNested(artistUnion, out var value3, VisualsKey, HeaderImageKey))
-			{
-				string? text3 = ExtractCoverUrl(value3);
-				if (!string.IsNullOrWhiteSpace(text3))
-				{
-					return text3;
+				return candidate;
 			}
 		}
+
 		return null;
 	}
 

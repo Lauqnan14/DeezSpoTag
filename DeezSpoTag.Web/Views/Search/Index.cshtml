@@ -1683,13 +1683,13 @@ function renderResultCard(item, type) {
         case 'atmos':
             effectiveType = item.__kind || (type === 'atmos' ? 'track' : type);
             if (effectiveType === 'album') {
-                imageUrl = item.image || '';
+                imageUrl = resolveResultImageUrl(item);
                 title = item.name || '';
                 artist = item.artist || '';
                 meta = item.release_date || '';
                 clickAction = buildUnifiedClick(item, 'album');
             } else {
-                imageUrl = item.image || '';
+                imageUrl = resolveResultImageUrl(item);
                 title = item.name || '';
                 artist = item.artist || '';
                 meta = item.album || '';
@@ -1705,7 +1705,7 @@ function renderResultCard(item, type) {
             break;
             
         case 'album':
-            imageUrl = item.image || '';
+            imageUrl = resolveResultImageUrl(item);
             title = item.name || '';
             artist = item.artist || '';
             meta = item.release_date || '';
@@ -1716,7 +1716,7 @@ function renderResultCard(item, type) {
             break;
             
         case 'artist':
-            imageUrl = item.image || '';
+            imageUrl = resolveResultImageUrl(item);
             title = item.name || '';
             artist = '';
             if (item.followers) {
@@ -1734,7 +1734,7 @@ function renderResultCard(item, type) {
             break;
             
         case 'playlist':
-            imageUrl = item.image || '';
+            imageUrl = resolveResultImageUrl(item);
             title = item.name || '';
             artist = item.owner || '';
             const playlistTracks = item.nb_tracks ?? item.trackCount ?? item.track_count;
@@ -1755,7 +1755,7 @@ function renderResultCard(item, type) {
             break;
 
         case 'station':
-            imageUrl = item.image || '';
+            imageUrl = resolveResultImageUrl(item);
             title = item.name || '';
             artist = '';
             meta = 'Apple Music Station';
@@ -1763,7 +1763,7 @@ function renderResultCard(item, type) {
             break;
 
         case 'video':
-            imageUrl = item.image || '';
+            imageUrl = resolveResultImageUrl(item);
             title = item.name || '';
             artist = item.artist || '';
             videoKey = getVideoKey(item);
@@ -1856,6 +1856,55 @@ function renderResultCard(item, type) {
             ${libraryBadge}
         </div>
     `;
+}
+
+function resolveResultImageUrl(item) {
+    if (!item || typeof item !== 'object') {
+        return '';
+    }
+
+    const firstNonEmpty = (...values) => {
+        for (const value of values) {
+            const normalized = typeof value === 'string' ? value.trim() : '';
+            if (normalized) {
+                return normalized;
+            }
+        }
+        return '';
+    };
+
+    const imageObject = (item.image && typeof item.image === 'object') ? item.image : null;
+    const imageFromObject = imageObject
+        ? firstNonEmpty(imageObject.url, imageObject.fullUrl, imageObject.full, imageObject.thumbUrl, imageObject.thumb)
+        : '';
+    const imageFromImagesArray = Array.isArray(item.images)
+        ? firstNonEmpty(...item.images.map(entry => {
+            if (typeof entry === 'string') {
+                return entry;
+            }
+            if (!entry || typeof entry !== 'object') {
+                return '';
+            }
+            return firstNonEmpty(entry.url, entry.imageUrl, entry.fullUrl, entry.full, entry.thumbUrl, entry.thumb);
+        }))
+        : '';
+
+    return firstNonEmpty(
+        item.image,
+        imageFromObject,
+        item.imageUrl,
+        item.image_url,
+        item.coverUrl,
+        item.cover_url,
+        item.cover,
+        item.artwork,
+        item.picture_xl,
+        item.picture_big,
+        item.picture_medium,
+        item.picture,
+        item.picture_small,
+        imageFromImagesArray
+    );
 }
 
 function toBoolish(value) {
