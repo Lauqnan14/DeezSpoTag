@@ -11,6 +11,7 @@ using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using System.Net.Sockets;
 using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 
 namespace DeezSpoTag.Services.Download.Apple;
@@ -489,6 +490,28 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             return true;
         }
 
+        if (!AreWrapperStreamPortsReachable(request, out var wrapperPortReason))
+        {
+            var allowAudioFallback = !(request.IsVideo || queueContext.VideoPayload);
+            if (allowAudioFallback && CanFallbackToAacStereo(request) && ShouldUseInEngineAppleAacFallback(queueContext.Payload))
+            {
+                ApplyAacStereoFallback(request);
+                _logger.LogInformation(
+                    "Apple wrapper stream ports unavailable; falling back to AAC stereo for {QueueUuid}. Reason: {Reason}",
+                    next.QueueUuid,
+                    wrapperPortReason);
+                _deezspotagListener.SendDownloadWarn(
+                    next.QueueUuid,
+                    new { message = "Wrapper stream ports unavailable, falling back to AAC stereo." },
+                    "wrapper_stream_fallback",
+                    wrapperPortReason);
+                return true;
+            }
+
+            await HandleDownloadFailureAsync(next, queueContext.Payload, wrapperPortReason, stoppingToken, itemToken, quality: null);
+            return false;
+        }
+
         var wrapperStatus = _wrapperStatusProvider.GetStatus();
         if (wrapperStatus.WrapperReady)
         {
@@ -515,6 +538,65 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             : wrapperStatus.Message;
         await HandleDownloadFailureAsync(next, queueContext.Payload, reason, stoppingToken, itemToken, quality: null);
         return false;
+    }
+
+    private static bool AreWrapperStreamPortsReachable(AppleDownloadRequest request, out string reason)
+    {
+        var decryptEndpoint = request.DecryptM3u8Port?.Trim() ?? string.Empty;
+        var m3u8Endpoint = request.GetM3u8Port?.Trim() ?? string.Empty;
+        var decryptReady = IsEndpointReachable(decryptEndpoint, TimeSpan.FromSeconds(2));
+        var m3u8Ready = IsEndpointReachable(m3u8Endpoint, TimeSpan.FromSeconds(2));
+        if (decryptReady && m3u8Ready)
+        {
+            reason = string.Empty;
+            return true;
+        }
+
+        reason = $"Apple wrapper stream ports unavailable (decrypt={decryptEndpoint}, m3u8={m3u8Endpoint}).";
+        return false;
+    }
+
+    private static bool IsEndpointReachable(string endpoint, TimeSpan timeout)
+    {
+        if (!TryParseEndpoint(endpoint, out var host, out var port))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var client = new TcpClient();
+            var task = client.ConnectAsync(host, port);
+            if (!task.Wait(timeout))
+            {
+                return false;
+            }
+
+            return client.Connected;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryParseEndpoint(string endpoint, out string host, out int port)
+    {
+        host = string.Empty;
+        port = 0;
+        if (string.IsNullOrWhiteSpace(endpoint))
+        {
+            return false;
+        }
+
+        var parts = endpoint.Split(':', 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length != 2 || string.IsNullOrWhiteSpace(parts[0]) || !int.TryParse(parts[1], out port))
+        {
+            return false;
+        }
+
+        host = parts[0];
+        return port is > 0 and <= 65535;
     }
 
     private async Task QueuePrefetchIfNeededAsync(

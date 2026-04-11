@@ -15,6 +15,7 @@ namespace DeezSpoTag.Services.Download.Apple;
 public sealed class AppleDownloadService : IAppleDownloadService
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan DeviceM3u8Timeout = TimeSpan.FromSeconds(12);
     private static readonly HttpClient WrapperAccountClient = new()
     {
         Timeout = TimeSpan.FromSeconds(2)
@@ -564,6 +565,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
         if (profile.Contains("aac", StringComparison.OrdinalIgnoreCase))
         {
             return variants
+                .Where(v => !IsAtmosVariantCandidate(v))
                 .Where(v => v.Codecs.Contains("mp4a", StringComparison.OrdinalIgnoreCase))
                 .Where(v => IsMatchingAacGroup(v.AudioGroup, request.AacType));
         }
@@ -578,6 +580,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
         if (profile.Contains("alac", StringComparison.OrdinalIgnoreCase))
         {
             return variants
+                .Where(v => !IsAtmosVariantCandidate(v))
                 .Where(v => v.Codecs.Contains("alac", StringComparison.OrdinalIgnoreCase))
                 .Where(v => IsMatchingAlacGroup(v.AudioGroup, request.AlacMax));
         }
@@ -1161,7 +1164,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
         }
     }
 
-    private static async Task<string?> TryGetDeviceEnhancedHlsAsync(string hostAndPort, string appleId, CancellationToken cancellationToken)
+    private async Task<string?> TryGetDeviceEnhancedHlsAsync(string hostAndPort, string appleId, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(hostAndPort) || string.IsNullOrWhiteSpace(appleId))
         {
@@ -1176,8 +1179,10 @@ public sealed class AppleDownloadService : IAppleDownloadService
 
         try
         {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(DeviceM3u8Timeout);
             using var client = new System.Net.Sockets.TcpClient();
-            await client.ConnectAsync(parts[0], port);
+            await client.ConnectAsync(parts[0], port, timeoutCts.Token);
 
             await using var stream = client.GetStream();
             var idBytes = Encoding.UTF8.GetBytes(appleId);
@@ -1187,12 +1192,20 @@ public sealed class AppleDownloadService : IAppleDownloadService
             }
 
             var idLengthPrefix = new[] { (byte)idBytes.Length };
-            await stream.WriteAsync(idLengthPrefix.AsMemory(), cancellationToken);
-            await stream.WriteAsync(idBytes.AsMemory(0, idBytes.Length), cancellationToken);
+            await stream.WriteAsync(idLengthPrefix.AsMemory(), timeoutCts.Token);
+            await stream.WriteAsync(idBytes.AsMemory(0, idBytes.Length), timeoutCts.Token);
 
             using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1024, leaveOpen: true);
-            var line = await reader.ReadLineAsync(cancellationToken);
+            var line = await reader.ReadLineAsync(timeoutCts.Token);
             return string.IsNullOrWhiteSpace(line) ? null : line.Trim();
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "Apple device M3U8 probe timed out for {AppleId} via {Endpoint}.",
+                appleId,
+                hostAndPort);
+            return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException) {
             return null;
@@ -1928,6 +1941,13 @@ public sealed class AppleDownloadService : IAppleDownloadService
             {
                 context.FailureHandlers.OnKeyFailure?.Invoke();
                 return AppleDownloadResult.Fail(context.KeyFailureMessage);
+            }
+
+            if (!AppleExternalToolRunner.HasMp4Decrypt())
+            {
+                const string mp4DecryptMissing = "mp4decrypt executable not found. Install Bento4 mp4decrypt or set DEEZSPOTAG_APPLE_MP4DECRYPT_PATH.";
+                _logger.LogWarning("Apple decryption prerequisite missing for {AdamId}: {Message}", context.AdamId, mp4DecryptMissing);
+                return AppleDownloadResult.Fail(mp4DecryptMissing);
             }
 
             var outputPath = BuildOutputPath(request, context.AdamId);
@@ -3100,6 +3120,11 @@ public sealed class AppleDownloadService : IAppleDownloadService
         }
 
         var group = audioGroup.Trim().ToLowerInvariant();
+        if (IsAtmosAudioGroup(group))
+        {
+            return false;
+        }
+
         var normalizedType = NormalizeAacType(aacType);
         var isBinauralGroup = group.Contains("binaural", StringComparison.OrdinalIgnoreCase);
         var isDownmixGroup = group.Contains("downmix", StringComparison.OrdinalIgnoreCase);
@@ -3149,8 +3174,24 @@ public sealed class AppleDownloadService : IAppleDownloadService
             return true;
         }
 
-        var sampleRate = ExtractSampleRate(audioGroup);
+        var normalized = audioGroup.Trim().ToLowerInvariant();
+        if (IsAtmosAudioGroup(normalized))
+        {
+            return false;
+        }
+
+        var sampleRate = ExtractSampleRate(normalized);
         return sampleRate == 0 || sampleRate <= maxSampleRate;
+    }
+
+    private static bool IsAtmosAudioGroup(string normalizedAudioGroup)
+    {
+        return normalizedAudioGroup.Contains(AtmosKeyword, StringComparison.OrdinalIgnoreCase)
+            || normalizedAudioGroup.Contains("joc", StringComparison.OrdinalIgnoreCase)
+            || normalizedAudioGroup.Contains("ec-3", StringComparison.OrdinalIgnoreCase)
+            || normalizedAudioGroup.Contains("ec3", StringComparison.OrdinalIgnoreCase)
+            || normalizedAudioGroup.Contains("ac-3", StringComparison.OrdinalIgnoreCase)
+            || normalizedAudioGroup.Contains("ac3", StringComparison.OrdinalIgnoreCase);
     }
 
     private static int ExtractTrailingNumber(string? value)
