@@ -72,11 +72,11 @@ from deezspot.models.callback.callbacks import (
     SummaryObject,
     FailedTrackObject,
 )
-from deezspot.models.callback.track import trackObject as trackCbObject, albumTrackObject, artistTrackObject, playlistTrackObject
-from deezspot.models.callback.album import albumObject as albumCbObject
-from deezspot.models.callback.playlist import playlistObject as playlistCbObject
+from deezspot.models.callback.track import TrackObject as trackCbObject, AlbumTrackObject, ArtistTrackObject, PlaylistTrackObject
+from deezspot.models.callback.album import AlbumObject as albumCbObject
+from deezspot.models.callback.playlist import PlaylistObject as playlistCbObject
 from deezspot.models.callback.common import IDs, Service
-from deezspot.models.callback.user import userObject
+from deezspot.models.callback.user import UserObject
 
 UNKNOWN_ARTIST_NAME = "Unknown Artist"
 UNKNOWN_EPISODE_TITLE = "Unknown Episode"
@@ -157,6 +157,60 @@ class DownloadJob:
                         }
                     ]
                 }
+
+    @staticmethod
+    def _chunk_list(items: list, chunk_size: int):
+        for start in range(0, len(items), chunk_size):
+            yield items[start:start + chunk_size]
+
+    @staticmethod
+    def _normalize_chunk_media(chunk_medias: list) -> list:
+        normalized = []
+        for media_entry in chunk_medias:
+            if "errors" in media_entry:
+                normalized.append({"media": []})
+                continue
+            media_list = media_entry.get('media') if isinstance(media_entry, dict) else None
+            normalized.append(media_entry if media_list else {"media": []})
+        return normalized
+
+    @classmethod
+    def _episode_medias(cls, infos_dw: list, quality_download: str) -> list:
+        episode_medias = []
+        for track in infos_dw:
+            if track.get('__TYPE__') == 'episode':
+                episode_medias.append(cls.__get_url(track, quality_download))
+        return episode_medias
+
+    @classmethod
+    def _non_episode_medias(cls, non_episode_tracks: list, quality_download: str) -> list:
+        from deezspot.deezloader.deegw_api import API_GW
+
+        tokens = [check_track_token(track) for track in non_episode_tracks]
+        medias: list = []
+        for token_chunk in cls._chunk_list(tokens, 25):
+            try:
+                chunk_medias = API_GW.get_medias_url(token_chunk, quality_download)
+                medias.extend(cls._normalize_chunk_media(chunk_medias))
+            except NoRightOnMedia:
+                for _ in token_chunk:
+                    track_index = len(medias)
+                    medias.append(cls.__get_url(non_episode_tracks[track_index], quality_download))
+        return medias
+
+    @staticmethod
+    def _merge_episode_and_track_medias(infos_dw: list, episode_medias: list, non_episode_medias: list) -> list:
+        merged_medias = []
+        episode_idx = 0
+        non_episode_idx = 0
+        for track in infos_dw:
+            if track.get('__TYPE__') == 'episode':
+                merged_medias.append(episode_medias[episode_idx])
+                episode_idx += 1
+                continue
+            merged_medias.append(non_episode_medias[non_episode_idx])
+            non_episode_idx += 1
+        return merged_medias
      
     @classmethod
     def check_sources(
@@ -164,64 +218,10 @@ class DownloadJob:
         infos_dw: list,
         quality_download: str  
     ) -> list:
-        from deezspot.deezloader.deegw_api import API_GW
-        # Preprocess episodes separately
-        medias = []
-        for track in infos_dw:
-            if track.get('__TYPE__') == 'episode':
-                media_json = cls.__get_url(track, quality_download)
-                medias.append(media_json)
-
-        # For non-episodes, gather tokens
-        non_episode_tracks = [c_track for c_track in infos_dw if c_track.get('__TYPE__') != 'episode']
-        tokens = [check_track_token(c_track) for c_track in non_episode_tracks]
-
-        def chunk_list(lst, chunk_size):
-            """Yield successive chunk_size chunks from lst."""
-            for i in range(0, len(lst), chunk_size):
-                yield lst[i:i + chunk_size]
-
-        # Prepare list for media results for non-episodes
-        non_episode_medias = []
-
-        # Split tokens into chunks of 25
-        for tokens_chunk in chunk_list(tokens, 25):
-            try:
-                chunk_medias = API_GW.get_medias_url(tokens_chunk, quality_download)
-                # Post-process each returned media in the chunk
-                for idx in range(len(chunk_medias)):
-                    if "errors" in chunk_medias[idx]:
-                        # Do not fallback to legacy URL; mark as unavailable for this quality
-                        chunk_medias[idx] = {"media": []}
-                    else:
-                        if not chunk_medias[idx]['media']:
-                            # Do not fallback to legacy URL; mark as unavailable
-                            chunk_medias[idx] = {"media": []}
-                        elif len(chunk_medias[idx]['media'][0]['sources']) == 1:
-                            # Keep single-source media as-is; do not fallback
-                            pass
-                non_episode_medias.extend(chunk_medias)
-            except NoRightOnMedia:
-                for _ in tokens_chunk:
-                    # Find the corresponding full track info from non_episode_tracks
-                    track_index = len(non_episode_medias)
-                    c_media_json = cls.__get_url(non_episode_tracks[track_index], quality_download)
-                    non_episode_medias.append(c_media_json)
-
-        # Now, merge the medias. We need to preserve the original order.
-        # We'll create a final list that contains media for each track in infos_dw.
-        final_medias = []
-        episode_idx = 0
-        non_episode_idx = 0
-        for track in infos_dw:
-            if track.get('__TYPE__') == 'episode':
-                final_medias.append(medias[episode_idx])
-                episode_idx += 1
-            else:
-                final_medias.append(non_episode_medias[non_episode_idx])
-                non_episode_idx += 1
-
-        return final_medias
+        episode_medias = cls._episode_medias(infos_dw, quality_download)
+        non_episode_tracks = [track for track in infos_dw if track.get('__TYPE__') != 'episode']
+        non_episode_medias = cls._non_episode_medias(non_episode_tracks, quality_download)
+        return cls._merge_episode_and_track_medias(infos_dw, episode_medias, non_episode_medias)
 
 class EasyDw:
     progress_reporter = None
@@ -229,6 +229,72 @@ class EasyDw:
     @classmethod
     def set_progress_reporter(cls, reporter):
         cls.progress_reporter = reporter
+
+    def _episode_song_metadata(self) -> dict:
+        return {
+            'music': self.__infos_dw.get('EPISODE_TITLE', ''),
+            'artist': self.__infos_dw.get('SHOW_NAME', ''),
+            'album': self.__infos_dw.get('SHOW_NAME', ''),
+            'date': self.__infos_dw.get('EPISODE_PUBLISHED_TIMESTAMP', '').split()[0],
+            'genre': 'Podcast',
+            'explicit': self.__infos_dw.get('SHOW_IS_EXPLICIT', '2'),
+            'disc': 1,
+            'track': 1,
+            'duration': int(self.__infos_dw.get('DURATION', 0)),
+            'isrc': None,
+        }
+
+    def _build_track_song_metadata(self, preferences: Preferences) -> None:
+        self.__track_obj: trackCbObject = preferences.song_metadata
+        if getattr(preferences, 'spotify_metadata', False) and getattr(preferences, 'spotify_track_obj', None):
+            self.__track_obj = preferences.spotify_track_obj
+
+        artist_separator = getattr(preferences, 'artist_separator', '; ')
+        use_spotify = getattr(preferences, 'spotify_metadata', False)
+        source_type = 'spotify' if use_spotify else 'deezer'
+        self.__song_metadata_dict = track_object_to_dict(
+            self.__track_obj,
+            source_type=source_type,
+            artist_separator=artist_separator,
+        )
+        self.__song_metadata = self.__song_metadata_dict
+        self._backfill_spotify_album_fields(preferences, use_spotify, artist_separator)
+
+    def _backfill_spotify_album_fields(self, preferences: Preferences, use_spotify: bool, artist_separator: str) -> None:
+        try:
+            if not use_spotify:
+                return
+            if 'album' in self.__song_metadata_dict:
+                return
+            spotify_album = getattr(preferences, 'spotify_album_obj', None)
+            if not spotify_album:
+                return
+            self.__song_metadata_dict['album'] = getattr(spotify_album, 'title', '')
+            if getattr(spotify_album, 'artists', None):
+                album_artists = [getattr(artist, 'name', '') for artist in spotify_album.artists]
+                self.__song_metadata_dict['ar_album'] = artist_separator.join(album_artists)
+            self.__song_metadata_dict['nb_tracks'] = getattr(spotify_album, 'total_tracks', 0)
+            if hasattr(spotify_album, 'total_discs') and getattr(spotify_album, 'total_discs'):
+                self.__song_metadata_dict['nb_discs'] = getattr(spotify_album, 'total_discs')
+
+            from deezspot.libutils.metadata_converter import _format_release_date, _get_best_image_url
+
+            self.__song_metadata_dict['year'] = _format_release_date(getattr(spotify_album, 'release_date', None), 'spotify')
+            if getattr(spotify_album, 'ids', None):
+                self.__song_metadata_dict['upc'] = getattr(spotify_album.ids, 'upc', None)
+                self.__song_metadata_dict['album_id'] = getattr(spotify_album.ids, 'spotify', None)
+            if getattr(spotify_album, 'images', None):
+                image_url = _get_best_image_url(spotify_album.images, 'spotify')
+                if image_url:
+                    self.__song_metadata_dict['image'] = image_url
+        except Exception:
+            pass
+
+    def _initialize_song_metadata(self, preferences: Preferences) -> None:
+        if self.__infos_dw.get('__TYPE__') == 'episode':
+            self.__song_metadata = self._episode_song_metadata()
+            return
+        self._build_track_song_metadata(preferences)
         
     def __init__(
         self,
@@ -249,60 +315,7 @@ class EasyDw:
         self.__convert_to = getattr(preferences, 'convert_to', None)
         self.__bitrate = getattr(preferences, 'bitrate', None) # Added for consistency
 
-        if self.__infos_dw.get('__TYPE__') == 'episode':
-            self.__song_metadata = {
-                'music': self.__infos_dw.get('EPISODE_TITLE', ''),
-                'artist': self.__infos_dw.get('SHOW_NAME', ''),
-                'album': self.__infos_dw.get('SHOW_NAME', ''),
-                'date': self.__infos_dw.get('EPISODE_PUBLISHED_TIMESTAMP', '').split()[0],
-                'genre': 'Podcast',
-                'explicit': self.__infos_dw.get('SHOW_IS_EXPLICIT', '2'),
-                'disc': 1,
-                'track': 1,
-                'duration': int(self.__infos_dw.get('DURATION', 0)),
-                'isrc': None
-            }
-        else:
-            # Get the track object from preferences
-            self.__track_obj: trackCbObject = preferences.song_metadata
-            # If spotify metadata flag is set and a spotify track object is provided, prefer it for tagging
-            if getattr(preferences, 'spotify_metadata', False) and getattr(preferences, 'spotify_track_obj', None):
-                self.__track_obj = preferences.spotify_track_obj
-            
-            # Convert it to the dictionary format needed for legacy functions
-            artist_separator = getattr(preferences, 'artist_separator', '; ')
-            # Auto-select source type based on preference
-            use_spotify = getattr(preferences, 'spotify_metadata', False)
-            source_type = 'spotify' if use_spotify else 'deezer'
-            self.__song_metadata_dict = track_object_to_dict(self.__track_obj, source_type=source_type, artist_separator=artist_separator)
-            # Maintain legacy attribute expected elsewhere
-            self.__song_metadata = self.__song_metadata_dict
-            # Backfill missing album fields when using Spotify minimal track objects
-            try:
-                if use_spotify and 'album' not in self.__song_metadata_dict and getattr(preferences, 'spotify_album_obj', None):
-                    spo_album = preferences.spotify_album_obj
-                    # Basic album fields
-                    self.__song_metadata_dict['album'] = getattr(spo_album, 'title', '')
-                    if getattr(spo_album, 'artists', None):
-                        self.__song_metadata_dict['ar_album'] = artist_separator.join([getattr(a, 'name', '') for a in spo_album.artists])
-                    self.__song_metadata_dict['nb_tracks'] = getattr(spo_album, 'total_tracks', 0)
-                    # Total discs if available
-                    if hasattr(spo_album, 'total_discs') and getattr(spo_album, 'total_discs'):
-                        self.__song_metadata_dict['nb_discs'] = getattr(spo_album, 'total_discs')
-                    # Year from release date
-                    from deezspot.libutils.metadata_converter import _format_release_date, _get_best_image_url
-                    self.__song_metadata_dict['year'] = _format_release_date(getattr(spo_album, 'release_date', None), 'spotify')
-                    # IDs
-                    if getattr(spo_album, 'ids', None):
-                        self.__song_metadata_dict['upc'] = getattr(spo_album.ids, 'upc', None)
-                        self.__song_metadata_dict['album_id'] = getattr(spo_album.ids, 'spotify', None)
-                    # Prefer Spotify album image
-                    if getattr(spo_album, 'images', None):
-                        img_url = _get_best_image_url(spo_album.images, 'spotify')
-                        if img_url:
-                            self.__song_metadata_dict['image'] = img_url
-            except Exception:
-                pass
+        self._initialize_song_metadata(preferences)
 
         self.__c_quality = qualities[self.__quality_download]
         self.__fallback_ids = self.__ids
@@ -320,16 +333,16 @@ class EasyDw:
             
             if isinstance(playlist_data, dict):
                 # Spotify raw dict
-                parent_obj = playlistTrackObject(
+                parent_obj = PlaylistTrackObject(
                     title=playlist_data.get('name', 'unknown'),
                     description=playlist_data.get('description', ''),
-                    owner=userObject(name=playlist_data.get('owner', {}).get('display_name', 'unknown')),
+                    owner=UserObject(name=playlist_data.get('owner', {}).get('display_name', 'unknown')),
                     ids=IDs(spotify=playlist_data.get('id', ''))
                 )
             else:
-                # Deezer playlistObject
+                # Deezer PlaylistObject
                 playlist_data_obj: playlistCbObject = playlist_data
-                parent_obj = playlistTrackObject(
+                parent_obj = PlaylistTrackObject(
                     title=playlist_data_obj.title,
                     description=playlist_data_obj.description,
                     owner=playlist_data_obj.owner,
@@ -344,7 +357,7 @@ class EasyDw:
             album_id = album_data.ids.deezer
             parent_obj = albumCbObject(
                 title=album_data.title,
-                artists=[artistTrackObject(name=artist.name) for artist in album_data.artists],
+                artists=[ArtistTrackObject(name=artist.name) for artist in album_data.artists],
                 ids=IDs(deezer=album_id)
             )
             total_tracks_val = getattr(self.__preferences, 'total_tracks', 0)
@@ -426,352 +439,423 @@ class EasyDw:
         self.__c_episode.md5_image = self.__ids
         self.__c_episode.set_fallback_ids(self.__fallback_ids)
 
-    def easy_dw(self) -> Track:
-        # Get image URL and enhance metadata
+    def _prepare_image_metadata(self):
         pic = None
         if self.__infos_dw.get('__TYPE__') == 'episode':
             pic = self.__infos_dw.get('EPISODE_IMAGE_MD5', '')
             image = API.choose_img(pic)
+        elif (
+            getattr(self.__preferences, 'spotify_metadata', False)
+            and hasattr(self.__track_obj, 'album')
+            and getattr(self.__track_obj.album, 'images', None)
+        ):
+            from deezspot.libutils.metadata_converter import _get_best_image_url
+            image = _get_best_image_url(self.__track_obj.album.images, 'spotify')
         else:
-            # If using Spotify metadata, prefer the best Spotify image URL from the track object
-            if getattr(self.__preferences, 'spotify_metadata', False) and hasattr(self.__track_obj, 'album') and getattr(self.__track_obj.album, 'images', None):
-                from deezspot.libutils.metadata_converter import _get_best_image_url
-                image = _get_best_image_url(self.__track_obj.album.images, 'spotify')
-            else:
-                pic = self.__infos_dw['ALB_PICTURE']
-                image = API.choose_img(pic)
+            pic = self.__infos_dw['ALB_PICTURE']
+            image = API.choose_img(pic)
         self.__song_metadata['image'] = image
-        
-        # Process image data using unified utility
         self.__song_metadata = enhance_metadata_with_image(self.__song_metadata)
-        # Check if track already exists based on metadata
+        return pic
+
+    def _skipped_track_if_exists(self):
         current_title = self.__song_metadata['music']
         current_album = self.__song_metadata['album']
-        current_artist = self.__song_metadata.get('artist') # For logging
-
-        # Use check_track_exists from skip_detection module
-        # self.__song_path is the original path before any conversion logic in this download attempt.
-        # self.__convert_to is the user's desired final format.
+        current_artist = self.__song_metadata.get('artist')
         exists, existing_file_path = check_track_exists(
             original_song_path=self.__song_path,
             title=current_title,
             album=current_album,
-            convert_to=self.__convert_to, # User's target conversion format
-            logger=logger
+            convert_to=self.__convert_to,
+            logger=logger,
         )
+        if not (exists and existing_file_path):
+            return None
 
-        if exists and existing_file_path:
-            logger.info(f"Track '{current_title}' by '{current_artist}' already exists at '{existing_file_path}'. Skipping download.")
-            
-            self.__c_track.song_path = existing_file_path
-            _, new_ext = os.path.splitext(existing_file_path)
-            self.__c_track.file_format = new_ext.lower()
-            self.__c_track.success = True
-            self.__c_track.was_skipped = True
+        logger.info(f"Track '{current_title}' by '{current_artist}' already exists at '{existing_file_path}'. Skipping download.")
+        self.__c_track.song_path = existing_file_path
+        _, new_ext = os.path.splitext(existing_file_path)
+        self.__c_track.file_format = new_ext.lower()
+        self.__c_track.success = True
+        self.__c_track.was_skipped = True
+        parent_obj, current_track_val, total_tracks_val = self._get_parent_context()
+        report_track_skipped(
+            track_obj=self.__track_obj,
+            reason=f"Track already exists in desired format at {existing_file_path}",
+            preferences=self.__preferences,
+            parent_obj=parent_obj,
+            current_track=current_track_val,
+            total_tracks=total_tracks_val,
+        )
+        skipped_item = Track(
+            self.__song_metadata,
+            existing_file_path,
+            self.__c_track.file_format,
+            self.__song_quality,
+            self.__link,
+            self.__ids,
+        )
+        skipped_item.success = True
+        skipped_item.was_skipped = True
+        self.__c_track = skipped_item
+        return self.__c_track
 
-            parent_obj, current_track_val, total_tracks_val = self._get_parent_context()
-
-            # Report track skipped status
-            report_track_skipped(
-                track_obj=self.__track_obj,
-                reason=f"Track already exists in desired format at {existing_file_path}",
-                preferences=self.__preferences,
-                parent_obj=parent_obj,
-                current_track=current_track_val,
-                total_tracks=total_tracks_val
-            )
-
-            skipped_item = Track(
-                self.__song_metadata,
-                existing_file_path, # Use the path of the existing file
-                self.__c_track.file_format, # Use updated file format
-                self.__song_quality, # Original download quality target
-                self.__link, self.__ids
-            )
-            skipped_item.success = True # Considered successful as file is available
-            skipped_item.was_skipped = True
-            self.__c_track = skipped_item
-            return self.__c_track
-
-        # Initialize success to False for the item being processed
+    def _mark_item_pending(self):
         if self.__infos_dw.get('__TYPE__') == 'episode':
             if hasattr(self, '_EasyDw__c_episode') and self.__c_episode:
-                 self.__c_episode.success = False
-        else:
-            if hasattr(self, '_EasyDw__c_track') and self.__c_track:
-                 self.__c_track.success = False
+                self.__c_episode.success = False
+            return
+        if hasattr(self, '_EasyDw__c_track') and self.__c_track:
+            self.__c_track.success = False
 
-        try:
-            if self.__infos_dw.get('__TYPE__') == 'episode':
-                self.download_episode_try()
-            else:
-                self.download_try()
-                
-                if self.__c_track.success :
-                    parent_obj, current_track_val, total_tracks_val = self._get_parent_context()
-                    
-                    # Compute final path and quality label for Deezer
-                    final_path_val = getattr(self.__c_track, 'song_path', None)
-                    # Deezer quality is directly the selected key or final file format
-                    dz_quality_key = self.__quality_download
-                    download_quality_val = dz_quality_key
-                    if not download_quality_val:
-                        file_format = getattr(self.__c_track, 'file_format', None)
-                        if file_format:
-                            download_quality_val = file_format.upper().lstrip('.')
+    def _report_track_done(self):
+        if not self.__c_track.success:
+            return
+        parent_obj, current_track_val, total_tracks_val = self._get_parent_context()
+        final_path_val = getattr(self.__c_track, 'song_path', None)
+        download_quality_val = self.__quality_download
+        if not download_quality_val:
+            file_format = getattr(self.__c_track, 'file_format', None)
+            if file_format:
+                download_quality_val = file_format.upper().lstrip('.')
 
-                    done_status = DoneObject(
-                        ids=self.__track_obj.ids,
-                        convert_to=self.__convert_to,
-                        final_path=final_path_val,
-                        download_quality=download_quality_val
-                    )
-                    
-                    if self.__parent is None:
-                        summary = SummaryObject(
-                            successful_tracks=[self.__track_obj],
-                            total_successful=1,
-                            service=Service.DEEZER,
-                        )
-                        summary.final_path = final_path_val
-                        summary.download_quality = download_quality_val
-                        # Compute final quality/bitrate
-                        quality_val, bitrate_val = resolve_deezer_summary_media(
-                            quality_download=self.__quality_download,
-                            convert_to=self.__convert_to,
-                            bitrate=self.__bitrate,
-                        )
-                        summary.quality = quality_val
-                        summary.bitrate = bitrate_val
-                        done_status.summary = summary
-                        
-                    callback_obj = TrackCallbackObject(
-                        track=self.__track_obj,
-                        status_info=done_status,
-                        parent=parent_obj,
-                        current_track=current_track_val,
-                        total_tracks=total_tracks_val
-                    )
-                    report_progress(
-                        reporter=Download_JOB.progress_reporter,
-                        callback_obj=callback_obj
-                    )
+        done_status = DoneObject(
+            ids=self.__track_obj.ids,
+            convert_to=self.__convert_to,
+            final_path=final_path_val,
+            download_quality=download_quality_val,
+        )
+        if self.__parent is None:
+            summary = SummaryObject(
+                successful_tracks=[self.__track_obj],
+                total_successful=1,
+                service=Service.DEEZER,
+            )
+            summary.final_path = final_path_val
+            summary.download_quality = download_quality_val
+            quality_val, bitrate_val = resolve_deezer_summary_media(
+                quality_download=self.__quality_download,
+                convert_to=self.__convert_to,
+                bitrate=self.__bitrate,
+            )
+            summary.quality = quality_val
+            summary.bitrate = bitrate_val
+            done_status.summary = summary
 
-        except Exception as e:
-            item_type = "Episode" if self.__infos_dw.get('__TYPE__') == 'episode' else "Track"
-            item_name = self.__song_metadata.get('music', f'Unknown {item_type}')
-            artist_name = self.__song_metadata.get('artist', UNKNOWN_ARTIST_NAME)
-            error_message = f"Download process failed for {item_type.lower()} '{item_name}' by '{artist_name}' (URL: {self.__link}). Error: {str(e)}"
-            logger.error(error_message)
-            
-            current_item_obj = self.__c_episode if self.__infos_dw.get('__TYPE__') == 'episode' else self.__c_track
-            if current_item_obj:
-                current_item_obj.success = False
-                current_item_obj.error_message = error_message
-            
-            if item_type == "Track":
-                parent_obj, current_track_val, total_tracks_val = self._get_parent_context()
-                
-                error_obj = ErrorObject(
-                    ids=self.__track_obj.ids,
-                    error=error_message
-                )
-                callback_obj = TrackCallbackObject(
-                    track=self.__track_obj,
-                    status_info=error_obj,
-                    parent=parent_obj,
-                    current_track=current_track_val,
-                    total_tracks=total_tracks_val
-                )
-                report_progress(
-                    reporter=Download_JOB.progress_reporter,
-                    callback_obj=callback_obj
-                )
+        callback_obj = TrackCallbackObject(
+            track=self.__track_obj,
+            status_info=done_status,
+            parent=parent_obj,
+            current_track=current_track_val,
+            total_tracks=total_tracks_val,
+        )
+        report_progress(reporter=Download_JOB.progress_reporter, callback_obj=callback_obj)
 
-            raise TrackNotFound(message=error_message, url=self.__link) from e
+    def _run_download_flow(self):
+        if self.__infos_dw.get('__TYPE__') == 'episode':
+            self.download_episode_try()
+            return
+        self.download_try()
+        self._report_track_done()
 
-        # --- Handling after download attempt --- 
-
+    def _raise_easy_dw_failure(self, error: Exception):
+        item_type = "Episode" if self.__infos_dw.get('__TYPE__') == 'episode' else "Track"
+        item_name = self.__song_metadata.get('music', f'Unknown {item_type}')
+        artist_name = self.__song_metadata.get('artist', UNKNOWN_ARTIST_NAME)
+        error_message = f"Download process failed for {item_type.lower()} '{item_name}' by '{artist_name}' (URL: {self.__link}). Error: {str(error)}"
+        logger.error(error_message)
         current_item = self.__c_episode if self.__infos_dw.get('__TYPE__') == 'episode' else self.__c_track
-        item_type_str = "episode" if self.__infos_dw.get('__TYPE__') == 'episode' else "track"
+        if current_item:
+            current_item.success = False
+            current_item.error_message = error_message
+        if item_type == "Track":
+            parent_obj, current_track_val, total_tracks_val = self._get_parent_context()
+            error_obj = ErrorObject(ids=self.__track_obj.ids, error=error_message)
+            callback_obj = TrackCallbackObject(
+                track=self.__track_obj,
+                status_info=error_obj,
+                parent=parent_obj,
+                current_track=current_track_val,
+                total_tracks=total_tracks_val,
+            )
+            report_progress(reporter=Download_JOB.progress_reporter, callback_obj=callback_obj)
+        raise TrackNotFound(message=error_message, url=self.__link) from error
 
-        # If the item was skipped (e.g. file already exists), return it immediately.
+    def _current_item(self):
+        return self.__c_episode if self.__infos_dw.get('__TYPE__') == 'episode' else self.__c_track
+
+    def _validate_current_item(self, current_item):
+        if current_item is None:
+            raise TrackNotFound(message="Download did not produce a track/episode object.", url=self.__link)
+        if getattr(current_item, 'was_skipped', False) or current_item.success:
+            return current_item
+        item_type_str = "episode" if self.__infos_dw.get('__TYPE__') == 'episode' else "track"
+        item_name = self.__song_metadata.get('music', f'Unknown {item_type_str.capitalize()}')
+        artist_name = self.__song_metadata.get('artist', UNKNOWN_ARTIST_NAME)
+        original_error_msg = getattr(
+            current_item,
+            'error_message',
+            f"Download failed for an unspecified reason after {item_type_str} processing attempt.",
+        )
+        final_error_msg = "Cannot download {type} '{title}' by '{artist}'. Reason: {reason}".format(
+            type=item_type_str,
+            title=item_name,
+            artist=artist_name,
+            reason=original_error_msg,
+        )
+        current_link = current_item.link if hasattr(current_item, 'link') and current_item.link else self.__link
+        logger.error(f"{final_error_msg} (URL: {current_link})")
+        current_item.error_message = final_error_msg
+        raise TrackNotFound(message=final_error_msg, url=current_link)
+
+    def _tag_current_item(self, current_item, pic):
+        if self.__infos_dw.get('__TYPE__') != 'episode' and pic:
+            current_item.md5_image = pic
+        from deezspot.deezloader.deegw_api import API_GW
+        if getattr(self.__preferences, 'spotify_metadata', False):
+            enhanced_metadata = add_spotify_enhanced_metadata(self.__song_metadata, self.__track_obj)
+            process_and_tag_track(track=current_item, metadata_dict=enhanced_metadata, source_type='spotify')
+            return
+        enhanced_metadata = add_deezer_enhanced_metadata(
+            self.__song_metadata,
+            self.__infos_dw,
+            self.__ids,
+            API_GW,
+        )
+        process_and_tag_track(track=current_item, metadata_dict=enhanced_metadata, source_type='deezer')
+
+    def easy_dw(self) -> Track:
+        pic = self._prepare_image_metadata()
+        skipped_item = self._skipped_track_if_exists()
+        if skipped_item:
+            return skipped_item
+
+        self._mark_item_pending()
+        try:
+            self._run_download_flow()
+        except Exception as error:
+            self._raise_easy_dw_failure(error)
+
+        current_item = self._current_item()
+        current_item = self._validate_current_item(current_item)
         if getattr(current_item, 'was_skipped', False):
             return current_item
-
-        # Final check for non-skipped items that might have failed.
-        if not current_item.success:
-            item_name = self.__song_metadata.get('music', f'Unknown {item_type_str.capitalize()}')
-            artist_name = self.__song_metadata.get('artist', UNKNOWN_ARTIST_NAME)
-            original_error_msg = getattr(current_item, 'error_message', f"Download failed for an unspecified reason after {item_type_str} processing attempt.")
-            error_msg_template = "Cannot download {type} '{title}' by '{artist}'. Reason: {reason}"
-            final_error_msg = error_msg_template.format(type=item_type_str, title=item_name, artist=artist_name, reason=original_error_msg)
-            current_link_attr = current_item.link if hasattr(current_item, 'link') and current_item.link else self.__link
-            logger.error(f"{final_error_msg} (URL: {current_link_attr})")
-            current_item.error_message = final_error_msg
-            raise TrackNotFound(message=final_error_msg, url=current_link_attr)
-
-                # If we reach here, the item should be successful and not skipped.
-        if current_item.success:
-            if self.__infos_dw.get('__TYPE__') != 'episode' and pic: # Assuming pic is for tracks
-                current_item.md5_image = pic # Set md5_image for tracks
-            # Apply tags using unified utility with Deezer or Spotify enhancements
-            from deezspot.deezloader.deegw_api import API_GW
-            use_spotify = getattr(self.__preferences, 'spotify_metadata', False)
-            if use_spotify:
-                enhanced_metadata = add_spotify_enhanced_metadata(self.__song_metadata, self.__track_obj)
-                process_and_tag_track(
-                    track=current_item,
-                    metadata_dict=enhanced_metadata,
-                    source_type='spotify'
-                )
-            else:
-                enhanced_metadata = add_deezer_enhanced_metadata(
-                    self.__song_metadata,
-                    self.__infos_dw,
-                    self.__ids,
-                    API_GW
-                )
-                process_and_tag_track(
-                    track=current_item,
-                    metadata_dict=enhanced_metadata,
-                    source_type='deezer'
-                )
-        
+        self._tag_current_item(current_item, pic)
         return current_item
+
+    def _song_and_artist(self) -> tuple[str, str]:
+        return self.__song_metadata['music'], self.__song_metadata['artist']
+
+    def _switch_to_mp3_320(self) -> None:
+        self.__quality_download = 'MP3_320'
+        self.__file_format = '.mp3'
+        self.__song_path = self.__song_path.rsplit('.', 1)[0] + '.mp3'
+
+    def _ensure_flac_has_media(self) -> None:
+        if self.__file_format != '.flac':
+            return
+        filesize_str = self.__infos_dw.get('FILESIZE_FLAC', '0')
+        try:
+            filesize = int(filesize_str)
+        except ValueError:
+            filesize = 0
+        if filesize != 0:
+            return
+        song, artist = self._song_and_artist()
+        if not self.__recursive_quality:
+            raise QualityNotFound(f"FLAC not available for {song} - {artist} and recursive quality search is disabled.")
+        self._switch_to_mp3_320()
+        media = Download_JOB.check_sources([self.__infos_dw], 'MP3_320')
+        if media:
+            self.__infos_dw['media_url'] = media[0]
+            return
+        raise TrackNotFound(f"Track {song} - {artist} not available in MP3 format after FLAC attempt failed (filesize was 0).")
+
+    @staticmethod
+    def _find_available_stream(media_list: list, api_gw):
+        crypted_audio = None
+        last_error = None
+        for media_entry in media_list:
+            sources = media_entry.get('sources') or []
+            for source in sources:
+                song_link = source.get('url')
+                if not song_link:
+                    continue
+                try:
+                    crypted_audio = api_gw.song_exist(song_link)
+                    if crypted_audio:
+                        return crypted_audio, None
+                except Exception as source_error:
+                    last_error = source_error
+        return None, last_error
+
+    def _find_stream_for_quality(self, quality: str, api_gw):
+        media = Download_JOB.check_sources([self.__infos_dw], quality)
+        if not media:
+            return None, None
+        self.__infos_dw['media_url'] = media[0]
+        media_list = self.__infos_dw['media_url']['media']
+        return self._find_available_stream(media_list, api_gw)
+
+    def _resolve_stream_with_fallbacks(self, api_gw):
+        media_list = self.__infos_dw['media_url']['media']
+        crypted_audio, last_error = self._find_available_stream(media_list, api_gw)
+        if crypted_audio:
+            return crypted_audio, last_error
+
+        song, artist = self._song_and_artist()
+        if self.__file_format == '.flac':
+            if not self.__recursive_quality:
+                raise QualityNotFound(f"FLAC not available for {song} - {artist} and recursive quality search is disabled.")
+            logger.warning(f"\n⚠ {song} - {artist} is not available in FLAC format. Trying MP3...")
+            self._switch_to_mp3_320()
+            crypted_audio, last_error = self._find_stream_for_quality('MP3_320', api_gw)
+            if crypted_audio:
+                return crypted_audio, last_error
+            raise TrackNotFound(
+                f"Track {song} - {artist} not available in MP3 after FLAC attempt failed. Last error: {last_error}"
+            )
+
+        if not self.__recursive_quality:
+            raise QualityNotFound(
+                f"Quality {self.__quality_download} not found for {song} - {artist} and recursive quality search is disabled."
+            )
+        for quality in qualities:
+            if self.__quality_download == quality:
+                continue
+            crypted_audio, last_error = self._find_stream_for_quality(quality, api_gw)
+            if not crypted_audio:
+                continue
+            self.__c_quality = qualities[quality]
+            self.__set_quality()
+            return crypted_audio, last_error
+        raise TrackNotFound(f"Error with {song} - {artist}. All available qualities failed. Last error: {last_error}. Link: {self.__link}")
+
+    def _apply_download_tags(self, save_cover: bool = False) -> None:
+        from deezspot.deezloader.deegw_api import API_GW
+        use_spotify = getattr(self.__preferences, 'spotify_metadata', False)
+        if use_spotify:
+            enhanced_metadata = add_spotify_enhanced_metadata(self.__song_metadata, self.__track_obj)
+            process_and_tag_track(
+                track=self.__c_track,
+                metadata_dict=enhanced_metadata,
+                source_type='spotify',
+                save_cover=save_cover,
+            )
+            return
+        enhanced_metadata = add_deezer_enhanced_metadata(
+            self.__song_metadata,
+            self.__infos_dw,
+            self.__ids,
+            API_GW,
+        )
+        process_and_tag_track(
+            track=self.__c_track,
+            metadata_dict=enhanced_metadata,
+            source_type='deezer',
+            save_cover=save_cover,
+        )
+
+    def _convert_track_if_needed(self) -> None:
+        if not self.__convert_to:
+            return
+        format_name, bitrate = self._parse_format_string(self.__convert_to)
+        if not format_name:
+            return
+        path_before_conversion = self.__song_path
+        try:
+            converted_path = convert_audio(
+                path_before_conversion,
+                format_name,
+                bitrate if bitrate else self.__bitrate,
+                register_active_download,
+                unregister_active_download,
+            )
+        except Exception as conv_error:
+            logger.error(f"Audio conversion error: {str(conv_error)}. Proceeding with original format.")
+            register_active_download(path_before_conversion)
+            return
+        if converted_path == path_before_conversion:
+            return
+        self.__song_path = converted_path
+        self.__c_track.song_path = converted_path
+        _, new_ext = os.path.splitext(converted_path)
+        self.__file_format = new_ext.lower()
+        self.__c_track.file_format = new_ext.lower()
+
+    def _handle_decrypt_failure(self, decrypt_error, parent_obj, current_track_val, total_tracks_val):
+        unregister_active_download(self.__song_path)
+        if isfile(self.__song_path):
+            try:
+                os.remove(self.__song_path)
+            except OSError:
+                logger.warning(f"Could not remove partially downloaded file: {self.__song_path}")
+        self.__c_track.success = False
+        self.__c_track.error_message = f"Decryption failed: {str(decrypt_error)}"
+        error_status = ErrorObject(
+            ids=self.__track_obj.ids,
+            error=f"Decryption failed: {str(decrypt_error)}",
+            convert_to=self.__convert_to,
+        )
+        error_callback_obj = TrackCallbackObject(
+            track=self.__track_obj,
+            status_info=error_status,
+            parent=parent_obj,
+            current_track=current_track_val,
+            total_tracks=total_tracks_val,
+        )
+        report_progress(reporter=Download_JOB.progress_reporter, callback_obj=error_callback_obj)
+        raise TrackNotFound(f"Failed to process {self.__song_path}. Error: {str(decrypt_error)}") from decrypt_error
+
+    @staticmethod
+    def _normalize_processing_error(error: Exception) -> str:
+        error_msg = str(error)
+        if "Data must be padded" in error_msg:
+            return "Decryption error (padding issue) - Try a different quality setting or download format"
+        if isinstance(error, ConnectionError) or "Connection" in error_msg:
+            return "Connection error - Check your internet connection"
+        if "timeout" in error_msg.lower():
+            return "Request timed out - Server may be busy"
+        if "403" in error_msg or "Forbidden" in error_msg:
+            return "Access denied - Track might be region-restricted or premium-only"
+        if "404" in error_msg or "Not Found" in error_msg:
+            return "Track not found - It might have been removed"
+        return error_msg
+
+    def _handle_processing_failure(self, error, parent_obj, current_track_val, total_tracks_val):
+        unregister_active_download(self.__song_path)
+        if isfile(self.__song_path):
+            try:
+                os.remove(self.__song_path)
+            except OSError:
+                logger.warning(f"Could not remove file on error: {self.__song_path}")
+        error_msg = self._normalize_processing_error(error)
+        error_status = ErrorObject(ids=self.__track_obj.ids, error=error_msg, convert_to=self.__convert_to)
+        callback_obj = TrackCallbackObject(
+            track=self.__track_obj,
+            status_info=error_status,
+            parent=parent_obj,
+            current_track=current_track_val,
+            total_tracks=total_tracks_val,
+        )
+        report_progress(reporter=Download_JOB.progress_reporter, callback_obj=callback_obj)
+        logger.error(f"Failed to process track: {error_msg}")
+        self.__c_track.success = False
+        self.__c_track.error_message = error_msg
+        raise TrackNotFound(f"Failed to process {self.__song_path}. Error: {error_msg}. Original Exception: {str(error)}")
 
     def download_try(self) -> Track:
         from deezspot.deezloader.deegw_api import API_GW
-        # Pre-check: if FLAC is requested but filesize is zero, fallback to MP3.
-        if self.__file_format == '.flac':
-            filesize_str = self.__infos_dw.get('FILESIZE_FLAC', '0')
-            try:
-                filesize = int(filesize_str)
-            except ValueError:
-                filesize = 0
-
-            if filesize == 0:
-                song = self.__song_metadata['music']
-                artist = self.__song_metadata['artist']
-                if not self.__recursive_quality:
-                    raise QualityNotFound(f"FLAC not available for {song} - {artist} and recursive quality search is disabled.")
-                # Fallback to MP3_320 if recursive_quality is enabled
-                self.__quality_download = 'MP3_320'
-                self.__file_format = '.mp3'
-                self.__song_path = self.__song_path.rsplit('.', 1)[0] + '.mp3'
-                media = Download_JOB.check_sources([self.__infos_dw], 'MP3_320')
-                if media:
-                    self.__infos_dw['media_url'] = media[0]
-                else:
-                    raise TrackNotFound(f"Track {song} - {artist} not available in MP3 format after FLAC attempt failed (filesize was 0).")
-
-        # Continue with the normal download process.
         try:
-            media_list = self.__infos_dw['media_url']['media']
-
-            # Try all sources for the requested quality before attempting any fallback
-            crypted_audio = None
-            last_error = None
-            for media_entry in media_list:
-                sources = media_entry.get('sources') or []
-                for src in sources:
-                    song_link = src.get('url')
-                    if not song_link:
-                        continue
-                    try:
-                        crypted_audio = API_GW.song_exist(song_link)
-                        if crypted_audio:
-                            last_error = None
-                            break
-                    except Exception as e_try_src:
-                        last_error = e_try_src
-                        continue
-                if crypted_audio:
-                    break
-
-            if not crypted_audio:
-                song = self.__song_metadata['music']
-                artist = self.__song_metadata['artist']
-
-                if self.__file_format == '.flac':
-                    if not self.__recursive_quality:
-                        raise QualityNotFound(f"FLAC not available for {song} - {artist} and recursive quality search is disabled.")
-                    logger.warning(f"\n⚠ {song} - {artist} is not available in FLAC format. Trying MP3...")
-                    self.__quality_download = 'MP3_320'
-                    self.__file_format = '.mp3'
-                    self.__song_path = self.__song_path.rsplit('.', 1)[0] + '.mp3'
-
-                    media = Download_JOB.check_sources([self.__infos_dw], 'MP3_320')
-                    if media:
-                        self.__infos_dw['media_url'] = media[0]
-                        media_list = self.__infos_dw['media_url']['media']
-                        # Try all sources for fallback quality
-                        for media_entry in media_list:
-                            sources = media_entry.get('sources') or []
-                            for src in sources:
-                                song_link = src.get('url')
-                                if not song_link:
-                                    continue
-                                try:
-                                    crypted_audio = API_GW.song_exist(song_link)
-                                    if crypted_audio:
-                                        last_error = None
-                                        break
-                                except Exception as e_try_src2:
-                                    last_error = e_try_src2
-                                    continue
-                            if crypted_audio:
-                                break
-                        if not crypted_audio:
-                            raise TrackNotFound(f"Track {song} - {artist} not available in MP3 after FLAC attempt failed (all sources unreachable). Last error: {last_error}")
-                    else:
-                        raise TrackNotFound(f"Track {song} - {artist} not available in MP3 after FLAC attempt failed (media not found for MP3).")
-                else:
-                    if not self.__recursive_quality:
-                        raise QualityNotFound(f"Quality {self.__quality_download} not found for {song} - {artist} and recursive quality search is disabled.")
-                    for c_quality in qualities:
-                        if self.__quality_download == c_quality:
-                            continue
-                        media = Download_JOB.check_sources([self.__infos_dw], c_quality)
-                        if media:
-                            self.__infos_dw['media_url'] = media[0]
-                            media_list = self.__infos_dw['media_url']['media']
-                            # Try all sources for alternative quality
-                            for media_entry in media_list:
-                                sources = media_entry.get('sources') or []
-                                for src in sources:
-                                    song_link = src.get('url')
-                                    if not song_link:
-                                        continue
-                                    try:
-                                        crypted_audio = API_GW.song_exist(song_link)
-                                        if crypted_audio:
-                                            self.__c_quality = qualities[c_quality]
-                                            self.__set_quality()
-                                            last_error = None
-                                            break
-                                    except Exception as e_try_src3:
-                                        last_error = e_try_src3
-                                        continue
-                                if crypted_audio:
-                                    break
-                        if crypted_audio:
-                            break
-                    if not crypted_audio:
-                        raise TrackNotFound(f"Error with {song} - {artist}. All available qualities failed. Last error: {last_error}. Link: {self.__link}")
-
+            self._ensure_flac_has_media()
+            crypted_audio, _ = self._resolve_stream_with_fallbacks(API_GW)
             c_crypted_audio = crypted_audio.iter_content(2048)
-            
             self.__fallback_ids = check_track_ids(self.__infos_dw)
             encryption_type = self.__fallback_ids.get('encryption_type', 'unknown')
             logger.debug(f"Using encryption type: {encryption_type}")
-
             parent_obj, current_track_val, total_tracks_val = self._get_parent_context()
-
             try:
                 self.__write_track()
-                
-                # Report track initialization status
                 report_track_initializing(
                     track_obj=self.__track_obj,
                     preferences=self.__preferences,
@@ -779,157 +863,20 @@ class EasyDw:
                     current_track=current_track_val,
                     total_tracks=total_tracks_val
                 )
-                
                 register_active_download(self.__song_path)
                 try:
                     decryptfile(c_crypted_audio, self.__fallback_ids, self.__song_path)
                     logger.debug(f"Successfully decrypted track using {encryption_type} encryption")
                 except Exception as e_decrypt:
-                    unregister_active_download(self.__song_path)
-                    if isfile(self.__song_path):
-                        try:
-                            os.remove(self.__song_path)
-                        except OSError:
-                            logger.warning(f"Could not remove partially downloaded file: {self.__song_path}")
-                    self.__c_track.success = False
-                    self.__c_track.error_message = f"Decryption failed: {str(e_decrypt)}"
-                    
-                    # Ensure error callback uses the same parent_obj that was created earlier
-                    error_status = ErrorObject(
-                        ids=self.__track_obj.ids,
-                        error=f"Decryption failed: {str(e_decrypt)}",
-                        convert_to=self.__convert_to
-                    )
-                    
-                    error_callback_obj = TrackCallbackObject(
-                        track=self.__track_obj,
-                        status_info=error_status,
-                        parent=parent_obj,  # Use the same parent_obj created earlier
-                        current_track=current_track_val,
-                        total_tracks=total_tracks_val
-                    )
+                    self._handle_decrypt_failure(e_decrypt, parent_obj, current_track_val, total_tracks_val)
 
-                    report_progress(
-                        reporter=Download_JOB.progress_reporter,
-                        callback_obj=error_callback_obj
-                    )
-                    
-                    raise TrackNotFound(f"Failed to process {self.__song_path}. Error: {str(e_decrypt)}") from e_decrypt
-
-                # Add Deezer-specific enhanced metadata and apply tags
-                from deezspot.deezloader.deegw_api import API_GW
-                # Build metadata: if using Spotify metadata, enhance for Spotify; else Deezer
-                use_spotify = getattr(self.__preferences, 'spotify_metadata', False)
-                if use_spotify:
-                    enhanced_metadata = add_spotify_enhanced_metadata(self.__song_metadata, self.__track_obj)
-                    process_and_tag_track(
-                        track=self.__c_track,
-                        metadata_dict=enhanced_metadata,
-                        source_type='spotify',
-                        save_cover=getattr(self.__preferences, 'save_cover', False)
-                    )
-                else:
-                    enhanced_metadata = add_deezer_enhanced_metadata(
-                        self.__song_metadata,
-                        self.__infos_dw,
-                        self.__ids,
-                        API_GW
-                    )
-                    
-                    # Apply tags using unified utility
-                    process_and_tag_track(
-                        track=self.__c_track,
-                        metadata_dict=enhanced_metadata,
-                        source_type='deezer',
-                        save_cover=getattr(self.__preferences, 'save_cover', False)
-                    )
-
-                if self.__convert_to:
-                    format_name, bitrate = self._parse_format_string(self.__convert_to)
-                    if format_name:
-                        path_before_conversion = self.__song_path
-                        try:
-                            converted_path = convert_audio(
-                                path_before_conversion, 
-                                format_name, 
-                                bitrate if bitrate else self.__bitrate,
-                                register_active_download,
-                                unregister_active_download
-                            )
-                            if converted_path != path_before_conversion:
-                                self.__song_path = converted_path
-                                self.__c_track.song_path = converted_path
-                                _, new_ext = os.path.splitext(converted_path)
-                                self.__file_format = new_ext.lower()
-                                self.__c_track.file_format = new_ext.lower()
-                        except Exception as conv_error:
-                            logger.error(f"Audio conversion error: {str(conv_error)}. Proceeding with original format.")
-                            register_active_download(path_before_conversion)
-
-                # Apply tags using unified utility with Deezer or Spotify enhancements
-                from deezspot.deezloader.deegw_api import API_GW
-                use_spotify = getattr(self.__preferences, 'spotify_metadata', False)
-                if use_spotify:
-                    enhanced_metadata = add_spotify_enhanced_metadata(self.__song_metadata, self.__track_obj)
-                    process_and_tag_track(
-                        track=self.__c_track,
-                        metadata_dict=enhanced_metadata,
-                        source_type='spotify'
-                    )
-                else:
-                    enhanced_metadata = add_deezer_enhanced_metadata(
-                        self.__song_metadata,
-                        self.__infos_dw,
-                        self.__ids,
-                        API_GW
-                    )
-                    process_and_tag_track(
-                        track=self.__c_track,
-                        metadata_dict=enhanced_metadata,
-                        source_type='deezer'
-                    )
+                self._apply_download_tags(save_cover=getattr(self.__preferences, 'save_cover', False))
+                self._convert_track_if_needed()
+                self._apply_download_tags(save_cover=False)
                 self.__c_track.success = True
                 unregister_active_download(self.__song_path)
-
             except Exception as e:
-                unregister_active_download(self.__song_path)
-                if isfile(self.__song_path):
-                    try:
-                        os.remove(self.__song_path)
-                    except OSError:
-                         logger.warning(f"Could not remove file on error: {self.__song_path}")
-                
-                error_msg = str(e)
-                if "Data must be padded" in error_msg: error_msg = "Decryption error (padding issue) - Try a different quality setting or download format"
-                elif isinstance(e, ConnectionError) or "Connection" in error_msg: error_msg = "Connection error - Check your internet connection"
-                elif "timeout" in error_msg.lower(): error_msg = "Request timed out - Server may be busy"
-                elif "403" in error_msg or "Forbidden" in error_msg: error_msg = "Access denied - Track might be region-restricted or premium-only"
-                elif "404" in error_msg or "Not Found" in error_msg: error_msg = "Track not found - It might have been removed"
-                
-                error_status = ErrorObject(
-                    ids=self.__track_obj.ids,
-                    error=error_msg,
-                    convert_to=self.__convert_to
-                )
-                
-                callback_obj = TrackCallbackObject(
-                    track=self.__track_obj,
-                    status_info=error_status,
-                    parent=parent_obj,  # Use the same parent_obj created earlier
-                    current_track=current_track_val,
-                    total_tracks=total_tracks_val
-                )
-
-                report_progress(
-                    reporter=Download_JOB.progress_reporter,
-                    callback_obj=callback_obj
-                )
-                logger.error(f"Failed to process track: {error_msg}")
-                
-                self.__c_track.success = False
-                self.__c_track.error_message = error_msg
-                raise TrackNotFound(f"Failed to process {self.__song_path}. Error: {error_msg}. Original Exception: {str(e)}")
-
+                self._handle_processing_failure(e, parent_obj, current_track_val, total_tracks_val)
             return self.__c_track
 
         except Exception as e:
@@ -1086,18 +1033,18 @@ class DwTrack:
 
 class DwAlbum:
     def _album_object_to_dict(self, album_obj: albumCbObject) -> dict:
-        """Converts an albumObject to a dictionary for tagging and path generation."""
+        """Converts an AlbumObject to a dictionary for tagging and path generation."""
         # Use the unified metadata converter
         artist_separator = getattr(self.__preferences, 'artist_separator', '; ')
         return album_object_to_dict(album_obj, source_type='deezer', artist_separator=artist_separator)
 
     def _track_object_to_dict(self, track_obj: any, album_obj: albumCbObject) -> dict:
         """Converts a track object to a dictionary with album context."""
-        # Check if track_obj is a trackAlbumObject which doesn't have its own album attribute
+        # Check if track_obj is a TrackAlbumObject which doesn't have its own album attribute
         if hasattr(track_obj, 'type') and track_obj.type == 'trackAlbum':
-            # Create a trackObject with album reference from the provided album_obj
-            from deezspot.models.callback.track import trackObject
-            full_track = trackObject(
+            # Create a TrackObject with album reference from the provided album_obj
+            from deezspot.models.callback.track import TrackObject
+            full_track = TrackObject(
                 title=track_obj.title,
                 disc_number=track_obj.disc_number,
                 track_number=track_obj.track_number,
@@ -1115,6 +1062,143 @@ class DwAlbum:
             # Use the unified metadata converter
             artist_separator = getattr(self.__preferences, 'artist_separator', '; ')
             return track_object_to_dict(track_obj, source_type='deezer', artist_separator=artist_separator)
+
+    def _resolve_album_dict(self, album_obj: albumCbObject, image_bytes):
+        artist_separator = getattr(self.__preferences, 'artist_separator', '; ')
+        if self.__use_spotify and self.__spotify_album_obj:
+            album_dict = album_object_to_dict(
+                self.__spotify_album_obj,
+                source_type='spotify',
+                artist_separator=artist_separator,
+            )
+        else:
+            album_dict = self._album_object_to_dict(album_obj)
+        if self.__use_spotify and self.__spotify_album_obj and getattr(self.__spotify_album_obj, 'images', None):
+            from deezspot.libutils.metadata_converter import _get_best_image_url
+            spotify_image_url = _get_best_image_url(self.__spotify_album_obj.images, 'spotify')
+            album_dict['image'] = spotify_image_url if spotify_image_url else image_bytes
+        else:
+            album_dict['image'] = image_bytes
+        return album_dict
+
+    @staticmethod
+    def _resolve_album_image(album_dict: dict, md5_image: str):
+        if isinstance(album_dict['image'], bytes):
+            return album_dict['image']
+        try:
+            from deezspot.libutils.taggers import fetch_and_process_image
+            return fetch_and_process_image(album_dict['image']) or API.choose_img(md5_image, size="1400x1400")
+        except Exception:
+            return API.choose_img(md5_image, size="1400x1400")
+
+    def _spotify_track_maps(self):
+        by_isrc = {}
+        ordered = []
+        if not (self.__use_spotify and self.__spotify_album_obj and getattr(self.__spotify_album_obj, 'tracks', None)):
+            return by_isrc, ordered
+        for spotify_track in self.__spotify_album_obj.tracks:
+            ordered.append(spotify_track)
+            try:
+                isrc_val = getattr(spotify_track.ids, 'isrc', None)
+                if isrc_val:
+                    by_isrc[isrc_val.upper()] = spotify_track
+            except Exception:
+                continue
+        return by_isrc, ordered
+
+    @staticmethod
+    def _apply_album_track_position(track_obj, info_item: dict, index: int) -> None:
+        if 'track_position' in info_item:
+            track_obj.track_number = info_item['track_position']
+        if 'disk_number' in info_item:
+            track_obj.disc_number = info_item['disk_number']
+        if track_obj.track_number is None:
+            track_obj.track_number = index + 1
+        if track_obj.disc_number is None:
+            track_obj.disc_number = 1
+
+    @staticmethod
+    def _full_track_with_album(album_track_obj, album_obj):
+        from deezspot.models.callback.track import TrackObject
+        return TrackObject(
+            title=album_track_obj.title,
+            disc_number=album_track_obj.disc_number,
+            track_number=album_track_obj.track_number,
+            duration_ms=album_track_obj.duration_ms,
+            explicit=album_track_obj.explicit,
+            ids=album_track_obj.ids,
+            artists=album_track_obj.artists,
+            album=album_obj,
+            genres=getattr(album_track_obj, 'genres', []),
+        )
+
+    def _assign_spotify_track_preference(self, c_preferences, info_item: dict, track_index: int, spotify_tracks_by_isrc: dict, spotify_tracks_in_order: list) -> None:
+        if not (self.__use_spotify and spotify_tracks_in_order):
+            return
+        spotify_track = None
+        deezer_isrc = info_item.get('ISRC') or info_item.get('isrc')
+        deezer_isrc = deezer_isrc.upper() if isinstance(deezer_isrc, str) else None
+        if deezer_isrc and deezer_isrc in spotify_tracks_by_isrc:
+            spotify_track = spotify_tracks_by_isrc[deezer_isrc]
+        elif track_index < len(spotify_tracks_in_order):
+            spotify_track = spotify_tracks_in_order[track_index]
+        if spotify_track:
+            c_preferences.spotify_metadata = True
+            c_preferences.spotify_track_obj = spotify_track
+
+    def _download_album_track(
+        self,
+        info_item: dict,
+        album_track_obj,
+        album_obj: albumCbObject,
+        track_index: int,
+        total_tracks: int,
+        spotify_tracks_by_isrc: dict,
+        spotify_tracks_in_order: list,
+    ):
+        c_preferences = deepcopy(self.__preferences)
+        full_track_obj = self._full_track_with_album(album_track_obj, album_obj)
+        c_preferences.song_metadata = full_track_obj
+        c_preferences.ids = full_track_obj.ids.deezer
+        c_preferences.track_number = track_index + 1
+        c_preferences.total_tracks = total_tracks
+        c_preferences.link = f"https://deezer.com/track/{c_preferences.ids}"
+        c_preferences.pad_number_width = getattr(self.__preferences, 'pad_number_width', 'auto')
+        self._assign_spotify_track_preference(
+            c_preferences,
+            info_item,
+            track_index,
+            spotify_tracks_by_isrc,
+            spotify_tracks_in_order,
+        )
+        try:
+            return EASY_DW(info_item, c_preferences, parent='album').easy_dw()
+        except Exception as e:
+            logger.error(f"Track '{album_track_obj.title}' in album '{album_obj.title}' failed: {e}")
+            track_metadata = self._track_object_to_dict(album_track_obj, album_obj)
+            failed_track = Track(track_metadata, None, None, None, c_preferences.link, c_preferences.ids)
+            failed_track.success = False
+            failed_track.error_message = str(e)
+            return failed_track
+
+    @staticmethod
+    def _collect_album_track_summary(tracks: list, album_tracks: list):
+        successful_tracks_cb = []
+        failed_tracks_cb = []
+        skipped_tracks_cb = []
+        for track, track_obj in zip(tracks, album_tracks):
+            if getattr(track, 'was_skipped', False):
+                skipped_tracks_cb.append(track_obj)
+            elif track.success:
+                successful_tracks_cb.append(track_obj)
+            else:
+                failed_tracks_cb.append(
+                    FailedTrackObject(
+                        track=track_obj,
+                        reason=getattr(track, 'error_message', 'Unknown reason'),
+                    )
+                )
+        return successful_tracks_cb, skipped_tracks_cb, failed_tracks_cb
 
     def __init__(
         self,
@@ -1135,42 +1219,16 @@ class DwAlbum:
 
     def dw(self) -> Album:
         from deezspot.deezloader.deegw_api import API_GW
-        # Report album initializing status
         album_obj = self.__preferences.json_data
-        # Report album initialization status
         report_album_initializing(album_obj)
         
         infos_dw = API_GW.get_album_data(self.__ids)['data']
         md5_image = infos_dw[0]['ALB_PICTURE']
         image_bytes = API.choose_img(md5_image, size="1400x1400")
-        
-        # Choose album_dict source: Spotify if requested and available, else Deezer
-        artist_separator = getattr(self.__preferences, 'artist_separator', '; ')
-        if self.__use_spotify and self.__spotify_album_obj:
-            album_dict = album_object_to_dict(self.__spotify_album_obj, source_type='spotify', artist_separator=artist_separator)
-        else:
-            album_dict = self._album_object_to_dict(album_obj)
-        # Prefer Spotify image if requested and available
-        if self.__use_spotify and self.__spotify_album_obj and getattr(self.__spotify_album_obj, 'images', None):
-            from deezspot.libutils.metadata_converter import _get_best_image_url
-            spo_img_url = _get_best_image_url(self.__spotify_album_obj.images, 'spotify')
-            if spo_img_url:
-                album_dict['image'] = spo_img_url
-            else:
-                album_dict['image'] = image_bytes
-        else:
-            album_dict['image'] = image_bytes
+        album_dict = self._resolve_album_dict(album_obj, image_bytes)
         
         album = Album(self.__ids)
-        # album.image should be raw bytes; fetch URL if needed
-        if isinstance(album_dict['image'], bytes):
-            album.image = album_dict['image']
-        else:
-            try:
-                from deezspot.libutils.taggers import fetch_and_process_image
-                album.image = fetch_and_process_image(album_dict['image']) or API.choose_img(md5_image, size="1400x1400")
-            except Exception:
-                album.image = API.choose_img(md5_image, size="1400x1400")
+        album.image = self._resolve_album_image(album_dict, md5_image)
         album.md5_image = md5_image
         album.nb_tracks = album_obj.total_tracks
         album.album_name = album_obj.title
@@ -1192,88 +1250,21 @@ class DwAlbum:
             save_cover_image(album.image, album_base_directory, "cover.jpg")
             
         total_tracks = len(infos_dw)
-        # If spotify album metadata is requested and available, build a map of spotify track objects by ISRC or index
-        spotify_tracks_by_isrc = {}
-        spotify_tracks_in_order = []
-        if self.__use_spotify and self.__spotify_album_obj and getattr(self.__spotify_album_obj, 'tracks', None):
-            # The spotify album object contains trackAlbumObjects with ids (including isrc)
-            for spo_track in self.__spotify_album_obj.tracks:
-                spotify_tracks_in_order.append(spo_track)
-                try:
-                    isrc_val = getattr(spo_track.ids, 'isrc', None)
-                    if isrc_val:
-                        spotify_tracks_by_isrc[isrc_val.upper()] = spo_track
-                except Exception:
-                    pass
+        spotify_tracks_by_isrc, spotify_tracks_in_order = self._spotify_track_maps()
         
         for a, album_track_obj in enumerate(album_obj.tracks):
             c_infos_dw_item = infos_dw[a] 
-            
-            # Update track object with proper track position and disc number from API
-            if 'track_position' in c_infos_dw_item:
-                album_track_obj.track_number = c_infos_dw_item['track_position']
-            if 'disk_number' in c_infos_dw_item:
-                album_track_obj.disc_number = c_infos_dw_item['disk_number']
-            
-            # Ensure we have valid values, not None
-            if album_track_obj.track_number is None:
-                album_track_obj.track_number = a + 1  # Fallback to sequential if API doesn't provide
-            if album_track_obj.disc_number is None:
-                album_track_obj.disc_number = 1
-                
+            self._apply_album_track_position(album_track_obj, c_infos_dw_item, a)
             c_infos_dw_item['media_url'] = medias[a]
-            c_preferences = deepcopy(self.__preferences)
-            
-            try:
-                # Create full track object with album context
-                from deezspot.models.callback.track import trackObject
-                full_track_obj = trackObject(
-                    title=album_track_obj.title,
-                    disc_number=album_track_obj.disc_number,
-                    track_number=album_track_obj.track_number,
-                    duration_ms=album_track_obj.duration_ms,
-                    explicit=album_track_obj.explicit,
-                    ids=album_track_obj.ids,
-                    artists=album_track_obj.artists,
-                    album=album_obj,  # Set the parent album
-                    genres=getattr(album_track_obj, 'genres', [])
-                )
-                
-                c_preferences.song_metadata = full_track_obj
-                c_preferences.ids = full_track_obj.ids.deezer
-                c_preferences.track_number = a + 1  # For progress reporting only
-                c_preferences.total_tracks = total_tracks
-                c_preferences.link = f"https://deezer.com/track/{c_preferences.ids}"
-                # Propagate pad width preference
-                c_preferences.pad_number_width = getattr(self.__preferences, 'pad_number_width', 'auto')
-                # Inject Spotify per-track object if available without extra API calls
-                if self.__use_spotify and spotify_tracks_in_order:
-                    spo_track_for_tag = None
-                    # Prefer ISRC matching if possible
-                    deezer_isrc = None
-                    try:
-                        deezer_isrc = c_infos_dw_item.get('ISRC') or c_infos_dw_item.get('isrc')
-                        deezer_isrc = deezer_isrc.upper() if isinstance(deezer_isrc, str) else None
-                    except Exception:
-                        deezer_isrc = None
-                    if deezer_isrc and deezer_isrc in spotify_tracks_by_isrc:
-                        spo_track_for_tag = spotify_tracks_by_isrc[deezer_isrc]
-                    else:
-                        # Fallback to index position
-                        if a < len(spotify_tracks_in_order):
-                            spo_track_for_tag = spotify_tracks_in_order[a]
-                    if spo_track_for_tag:
-                        c_preferences.spotify_metadata = True
-                        c_preferences.spotify_track_obj = spo_track_for_tag
-                
-                current_track_object = EASY_DW(c_infos_dw_item, c_preferences, parent='album').easy_dw()
-            except Exception as e:
-                logger.error(f"Track '{album_track_obj.title}' in album '{album_obj.title}' failed: {e}")
-                # Create a simple track metadata dict manually since we don't have EASY_DW to process it
-                track_metadata = self._track_object_to_dict(album_track_obj, album_obj)
-                current_track_object = Track(track_metadata, None, None, None, c_preferences.link, c_preferences.ids)
-                current_track_object.success = False
-                current_track_object.error_message = str(e)
+            current_track_object = self._download_album_track(
+                c_infos_dw_item,
+                album_track_obj,
+                album_obj,
+                a,
+                total_tracks,
+                spotify_tracks_by_isrc,
+                spotify_tracks_in_order,
+            )
             
             if current_track_object:
                 tracks.append(current_track_object)
@@ -1290,20 +1281,10 @@ class DwAlbum:
             )
             album.zip_path = zip_name
 
-        successful_tracks_cb = []
-        failed_tracks_cb = []
-        skipped_tracks_cb = []
-        
-        for track, track_obj in zip(tracks, album_obj.tracks):
-            if getattr(track, 'was_skipped', False):
-                skipped_tracks_cb.append(track_obj)
-            elif track.success:
-                successful_tracks_cb.append(track_obj)
-            else:
-                failed_tracks_cb.append(FailedTrackObject(
-                    track=track_obj,
-                    reason=getattr(track, 'error_message', 'Unknown reason')
-                ))
+        successful_tracks_cb, skipped_tracks_cb, failed_tracks_cb = self._collect_album_track_summary(
+            tracks,
+            album_obj.tracks,
+        )
 
         summary_obj = SummaryObject(
             successful_tracks=successful_tracks_cb,
@@ -1345,6 +1326,61 @@ class DwPlaylist:
         artist_separator = getattr(self.__preferences, 'artist_separator', '; ')
         return track_object_to_dict(track_obj, source_type='deezer', artist_separator=artist_separator)
 
+    @staticmethod
+    def _is_valid_playlist_track(track_obj) -> bool:
+        return bool(track_obj and track_obj.ids and track_obj.ids.deezer)
+
+    def _build_invalid_playlist_track(self, reason: str) -> Track:
+        failed_track_model = Track(
+            tags={'music': 'Unknown Skipped Item', 'artist': 'Unknown'},
+            song_path=None,
+            file_format=None,
+            quality=None,
+            link=None,
+            ids=None,
+        )
+        failed_track_model.success = False
+        failed_track_model.error_message = reason
+        return failed_track_model
+
+    def _build_playlist_track_preferences(self, track_obj, idx: int, total_tracks: int):
+        c_preferences = deepcopy(self.__preferences)
+        c_preferences.ids = track_obj.ids.deezer
+        c_preferences.song_metadata = track_obj
+        c_preferences.track_number = idx + 1
+        c_preferences.total_tracks = total_tracks
+        c_preferences.json_data = self.__preferences.json_data
+        c_preferences.link = f"https://deezer.com/track/{c_preferences.ids}"
+        c_preferences.pad_number_width = getattr(self.__preferences, 'pad_number_width', 'auto')
+        return c_preferences
+
+    def _download_playlist_track(self, info_item: dict, track_obj, idx: int, total_tracks: int, playlist_title: str):
+        preferences = self._build_playlist_track_preferences(track_obj, idx, total_tracks)
+        try:
+            track = EASY_DW(info_item, preferences, parent='playlist').easy_dw()
+            return track, None
+        except Exception as e:
+            logger.error(f"Track '{track_obj.title}' in playlist '{playlist_title}' failed: {e}")
+            failed_track = Track(self._track_object_to_dict(track_obj), None, None, None, preferences.link, preferences.ids)
+            failed_track.success = False
+            failed_track.error_message = str(e)
+            return failed_track, str(e)
+
+    @staticmethod
+    def _collect_playlist_track_result(current_track_object, track_obj, successful_tracks_cb, skipped_tracks_cb, failed_tracks_cb):
+        if getattr(current_track_object, 'was_skipped', False):
+            skipped_tracks_cb.append(track_obj)
+            return
+        if current_track_object.success:
+            successful_tracks_cb.append(track_obj)
+            return
+        failed_tracks_cb.append(
+            FailedTrackObject(
+                track=track_obj,
+                reason=getattr(current_track_object, 'error_message', 'Unknown reason'),
+            )
+        )
+
     def dw(self) -> Playlist:
         playlist_obj: playlistCbObject = self.__preferences.json_data
         
@@ -1376,54 +1412,35 @@ class DwPlaylist:
             c_media = medias[idx]
             c_track_obj = playlist_obj.tracks[idx] if idx < len(playlist_obj.tracks) else None
 
-
-            if not c_track_obj or not c_track_obj.ids or not c_track_obj.ids.deezer:
+            if not self._is_valid_playlist_track(c_track_obj):
                 logger.warning(f"Skipping item {idx + 1} in playlist '{playlist_obj.title}' as it's not a valid track object.")
-                from deezspot.models.callback.track import trackObject as trackCbObject
+                from deezspot.models.callback.track import TrackObject as trackCbObject
                 unknown_track = trackCbObject(title="Unknown Skipped Item")
                 reason = "Playlist item was not a valid track object."
                 
                 failed_tracks_cb.append(FailedTrackObject(track=unknown_track, reason=reason))
-                
-                failed_track_model = Track(
-                    tags={'music': 'Unknown Skipped Item', 'artist': 'Unknown'},
-                    song_path=None, file_format=None, quality=None, link=None, ids=None
-                )
-                failed_track_model.success = False
-                failed_track_model.error_message = reason
+                failed_track_model = self._build_invalid_playlist_track(reason)
                 tracks.append(failed_track_model)
                 continue
 
             c_infos_dw_item['media_url'] = c_media
-            c_preferences = deepcopy(self.__preferences)
-            c_preferences.ids = c_track_obj.ids.deezer
-            c_preferences.song_metadata = c_track_obj
-            c_preferences.track_number = idx + 1
-            c_preferences.total_tracks = total_tracks
-            c_preferences.json_data = self.__preferences.json_data
-            c_preferences.link = f"https://deezer.com/track/{c_preferences.ids}"
-            # Propagate pad width preference
-            c_preferences.pad_number_width = getattr(self.__preferences, 'pad_number_width', 'auto')
-
-            current_track_object = None
-            try:
-                current_track_object = EASY_DW(c_infos_dw_item, c_preferences, parent='playlist').easy_dw()
-                
-                if getattr(current_track_object, 'was_skipped', False):
-                    skipped_tracks_cb.append(c_track_obj)
-                elif current_track_object.success:
-                    successful_tracks_cb.append(c_track_obj)
-                else:
-                    failed_tracks_cb.append(FailedTrackObject(
-                        track=c_track_obj,
-                        reason=getattr(current_track_object, 'error_message', 'Unknown reason')
-                    ))
-            except Exception as e:
-                logger.error(f"Track '{c_track_obj.title}' in playlist '{playlist_obj.title}' failed: {e}")
-                failed_tracks_cb.append(FailedTrackObject(track=c_track_obj, reason=str(e)))
-                current_track_object = Track(self._track_object_to_dict(c_track_obj), None, None, None, c_preferences.link, c_preferences.ids)
-                current_track_object.success = False
-                current_track_object.error_message = str(e)
+            current_track_object, download_error = self._download_playlist_track(
+                c_infos_dw_item,
+                c_track_obj,
+                idx,
+                total_tracks,
+                playlist_obj.title,
+            )
+            if download_error is not None:
+                failed_tracks_cb.append(FailedTrackObject(track=c_track_obj, reason=download_error))
+            else:
+                self._collect_playlist_track_result(
+                    current_track_object,
+                    c_track_obj,
+                    successful_tracks_cb,
+                    skipped_tracks_cb,
+                    failed_tracks_cb,
+                )
 
             if current_track_object:
                 tracks.append(current_track_object)
@@ -1506,7 +1523,7 @@ class DwEpisode:
             # Send initial progress status
             callback_track = trackCbObject(
                 title=self.__preferences.song_metadata.get('music', UNKNOWN_EPISODE_TITLE),
-                artists=[artistTrackObject(name=self.__preferences.song_metadata.get('artist', 'Unknown Show'))],
+                artists=[ArtistTrackObject(name=self.__preferences.song_metadata.get('artist', 'Unknown Show'))],
                 ids=IDs(deezer=self.__ids),
             )
             report_progress(

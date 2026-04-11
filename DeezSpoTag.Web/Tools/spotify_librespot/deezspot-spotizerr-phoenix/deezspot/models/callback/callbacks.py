@@ -4,9 +4,9 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from .common import IDs, Service
-from .track import trackObject, albumTrackObject, playlistTrackObject
-from .album import albumObject
-from .playlist import playlistObject
+from .track import TrackObject, AlbumTrackObject, PlaylistTrackObject
+from .album import AlbumObject
+from .playlist import PlaylistObject
 
 
 @dataclass
@@ -57,15 +57,15 @@ class ErrorObject(BaseStatusObject):
 @dataclass
 class FailedTrackObject:
     """Represents a failed track with a reason."""
-    track: trackObject = field(default_factory=trackObject)
+    track: TrackObject = field(default_factory=TrackObject)
     reason: str = ""
 
 
 @dataclass
 class SummaryObject:
     """Summary of a download operation for an album or playlist."""
-    successful_tracks: List[trackObject] = field(default_factory=list)
-    skipped_tracks: List[trackObject] = field(default_factory=list)
+    successful_tracks: List[TrackObject] = field(default_factory=list)
+    skipped_tracks: List[TrackObject] = field(default_factory=list)
     failed_tracks: List[FailedTrackObject] = field(default_factory=list)
     total_successful: int = 0
     total_skipped: int = 0
@@ -93,10 +93,10 @@ class DoneObject(BaseStatusObject):
 @dataclass
 class TrackCallbackObject:
     """
-    Track callback object that combines trackObject with status-specific fields.
+    Track callback object that combines TrackObject with status-specific fields.
     Used for progress reporting during track processing.
     """
-    track: trackObject = field(default_factory=trackObject)
+    track: TrackObject = field(default_factory=TrackObject)
     status_info: (
         InitializingObject
         | SkippedObject
@@ -107,16 +107,16 @@ class TrackCallbackObject:
     ) = field(default_factory=InitializingObject)
     current_track: Optional[int] = None
     total_tracks: Optional[int] = None
-    parent: Optional[albumTrackObject | playlistTrackObject] = None
+    parent: Optional[AlbumTrackObject | PlaylistTrackObject] = None
 
 
 @dataclass
 class AlbumCallbackObject:
     """
-    Album callback object that combines albumObject with status-specific fields.
+    Album callback object that combines AlbumObject with status-specific fields.
     Used for progress reporting during album processing.
     """
-    album: albumObject = field(default_factory=albumObject)
+    album: AlbumObject = field(default_factory=AlbumObject)
     status_info: (
         InitializingObject
         | SkippedObject
@@ -130,10 +130,10 @@ class AlbumCallbackObject:
 @dataclass
 class PlaylistCallbackObject:
     """
-    Playlist callback object that combines playlistObject with status-specific fields.
+    Playlist callback object that combines PlaylistObject with status-specific fields.
     Used for progress reporting during playlist processing.
     """
-    playlist: playlistObject = field(default_factory=playlistObject)
+    playlist: PlaylistObject = field(default_factory=PlaylistObject)
     status_info: (
         InitializingObject
         | SkippedObject

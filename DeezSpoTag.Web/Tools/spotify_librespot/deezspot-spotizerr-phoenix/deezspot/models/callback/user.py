@@ -7,7 +7,7 @@ from .common import IDs
 
 
 @dataclass
-class userObject:
+class UserObject:
     """A user object representation."""
     name: str = ""
     type: str = "user"

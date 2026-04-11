@@ -108,6 +108,74 @@ def _get_best_image_url(images: Any, source_type: str) -> Optional[str]:
     return None
 
 
+def _base_track_tags(track_obj: Any) -> Dict[str, Any]:
+    return {
+        'music': getattr(track_obj, 'title', ''),
+        'tracknum': getattr(track_obj, 'track_number', 0)
+        if getattr(track_obj, 'track_number', None) is not None else 0,
+        'discnum': getattr(track_obj, 'disc_number', 1)
+        if getattr(track_obj, 'disc_number', None) is not None else 1,
+        'duration': (getattr(track_obj, 'duration_ms', 0) // 1000)
+        if getattr(track_obj, 'duration_ms', None) else 0,
+    }
+
+
+def _attach_track_ids(tags: Dict[str, Any], track_obj: Any, source_type: str) -> None:
+    if not hasattr(track_obj, 'ids') or not track_obj.ids:
+        return
+    tags['ids'] = _get_platform_id(track_obj.ids, source_type)
+    tags['isrc'] = getattr(track_obj.ids, 'isrc', None)
+
+
+def _join_artist_names(artists: Any, artist_separator: str) -> str:
+    if not artists:
+        return ''
+    return artist_separator.join([getattr(artist, 'name', '') for artist in artists])
+
+
+def _infer_total_discs(album: Any) -> int:
+    if hasattr(album, 'total_discs') and album.total_discs:
+        return album.total_discs
+    if hasattr(album, 'tracks') and album.tracks:
+        disc_numbers = [
+            getattr(track, 'disc_number', 1)
+            for track in album.tracks
+            if hasattr(track, 'disc_number')
+        ]
+        return max(disc_numbers, default=1)
+    return 1
+
+
+def _apply_album_tags(tags: Dict[str, Any], album: Any, source_type: str, artist_separator: str) -> None:
+    tags['album'] = getattr(album, 'title', '')
+    tags['ar_album'] = _join_artist_names(getattr(album, 'artists', None), artist_separator)
+    tags['nb_tracks'] = getattr(album, 'total_tracks', 0)
+    tags['nb_discs'] = _infer_total_discs(album)
+    tags['year'] = _format_release_date(getattr(album, 'release_date', None), source_type)
+
+    if hasattr(album, 'ids') and album.ids:
+        tags['upc'] = getattr(album.ids, 'upc', None)
+        tags['album_id'] = _get_platform_id(album.ids, source_type)
+
+    tags['image'] = _get_best_image_url(album.images, source_type) if hasattr(album, 'images') else None
+    tags['label'] = getattr(album, 'label', '')
+    tags['copyright'] = getattr(album, 'copyright', '')
+    if hasattr(album, 'genres') and album.genres:
+        tags['genre'] = "; ".join(album.genres) if isinstance(album.genres, list) else str(album.genres)
+    else:
+        tags['genre'] = ""
+
+
+def _apply_compat_defaults(tags: Dict[str, Any]) -> None:
+    tags['bpm'] = tags.get('bpm', 'Unknown')
+    tags['gain'] = tags.get('gain', 'Unknown')
+    tags['lyric'] = tags.get('lyric', '')
+    tags['author'] = tags.get('author', '')
+    tags['composer'] = tags.get('composer', '')
+    tags['lyricist'] = tags.get('lyricist', '')
+    tags['version'] = tags.get('version', '')
+
+
 def track_object_to_dict(track_obj: Any, source_type: Optional[str] = None, artist_separator: str = "; ") -> Dict[str, Any]:
     """
     Convert a track object to a dictionary format for tagging.
@@ -128,85 +196,17 @@ def track_object_to_dict(track_obj: Any, source_type: Optional[str] = None, arti
     if source_type is None:
         source_type = _detect_source_type(track_obj)
     
-    tags = {}
-    
-    # Basic track details
-    tags['music'] = getattr(track_obj, 'title', '')
-    tags['tracknum'] = getattr(track_obj, 'track_number', 0) if getattr(track_obj, 'track_number', None) is not None else 0
-    tags['discnum'] = getattr(track_obj, 'disc_number', 1) if getattr(track_obj, 'disc_number', None) is not None else 1
-    tags['duration'] = (getattr(track_obj, 'duration_ms', 0) // 1000) if getattr(track_obj, 'duration_ms', None) else 0
-    
-    # Platform-specific IDs
-    if hasattr(track_obj, 'ids') and track_obj.ids:
-        tags['ids'] = _get_platform_id(track_obj.ids, source_type)
-        tags['isrc'] = getattr(track_obj.ids, 'isrc', None)
-    
-    # Artist information
-    if hasattr(track_obj, 'artists') and track_obj.artists:
-        tags['artist'] = artist_separator.join([getattr(artist, 'name', '') for artist in track_obj.artists])
-    else:
-        tags['artist'] = ''
-    
-    # Explicit flag (mainly for Deezer)
+    tags = _base_track_tags(track_obj)
+    _attach_track_ids(tags, track_obj, source_type)
+    tags['artist'] = _join_artist_names(getattr(track_obj, 'artists', None), artist_separator)
+
     if hasattr(track_obj, 'explicit'):
         tags['explicit'] = track_obj.explicit
     
-    # Album details
     if hasattr(track_obj, 'album') and track_obj.album:
-        album = track_obj.album
-        tags['album'] = getattr(album, 'title', '')
-        
-        # Album artists
-        if hasattr(album, 'artists') and album.artists:
-            tags['ar_album'] = artist_separator.join([getattr(artist, 'name', '') for artist in album.artists])
-        else:
-            tags['ar_album'] = ''
-            
-        tags['nb_tracks'] = getattr(album, 'total_tracks', 0)
-        
-        # Use the album's total_discs field if available, otherwise calculate from tracks
-        if hasattr(album, 'total_discs') and album.total_discs:
-            tags['nb_discs'] = album.total_discs
-        elif hasattr(album, 'tracks') and album.tracks:
-            # Fallback: Calculate total discs from all tracks in album for proper metadata
-            disc_numbers = [getattr(track, 'disc_number', 1) for track in album.tracks if hasattr(track, 'disc_number')]
-            tags['nb_discs'] = max(disc_numbers, default=1)
-        else:
-            tags['nb_discs'] = 1
-            
-        # Release date handling
-        release_date = getattr(album, 'release_date', None)
-        tags['year'] = _format_release_date(release_date, source_type)
-        
-        # Platform-specific album IDs
-        if hasattr(album, 'ids') and album.ids:
-            tags['upc'] = getattr(album.ids, 'upc', None)
-            tags['album_id'] = _get_platform_id(album.ids, source_type)
-        
-        # Image handling
-        if hasattr(album, 'images'):
-            tags['image'] = _get_best_image_url(album.images, source_type)
-        else:
-            tags['image'] = None
-            
-        # Additional album metadata
-        tags['label'] = getattr(album, 'label', '')
-        tags['copyright'] = getattr(album, 'copyright', '')
-        
-        # Genre handling (more common in Deezer)
-        if hasattr(album, 'genres') and album.genres:
-            tags['genre'] = "; ".join(album.genres) if isinstance(album.genres, list) else str(album.genres)
-        else:
-            tags['genre'] = ""
-    
-    # Default/Placeholder values for compatibility
-    tags['bpm'] = tags.get('bpm', 'Unknown')
-    tags['gain'] = tags.get('gain', 'Unknown')
-    tags['lyric'] = tags.get('lyric', '')
-    tags['author'] = tags.get('author', '')
-    tags['composer'] = tags.get('composer', '')
-    tags['lyricist'] = tags.get('lyricist', '')
-    tags['version'] = tags.get('version', '')
+        _apply_album_tags(tags, track_obj.album, source_type, artist_separator)
+
+    _apply_compat_defaults(tags)
     
     return tags
 

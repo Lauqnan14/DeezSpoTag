@@ -56,13 +56,13 @@ from deezspot.libutils.cleanup_utils import (
 )
 from deezspot.libutils.skip_detection import check_track_exists
 from deezspot.models.callback import (
-    trackObject, albumTrackObject, playlistTrackObject, artistTrackObject,
+    TrackObject, AlbumTrackObject, PlaylistTrackObject, ArtistTrackObject,
     TrackCallbackObject, AlbumCallbackObject, PlaylistCallbackObject,
     InitializingObject, SkippedObject, RetryingObject, RealTimeObject, ErrorObject, DoneObject,
     FailedTrackObject, SummaryObject,
-    albumObject, artistAlbumObject,
-    playlistObject,
-    userObject,
+    AlbumObject, ArtistAlbumObject,
+    PlaylistObject,
+    UserObject,
     IDs
 )
 from deezspot.spotloader.__spo_api__ import tracking, json_to_track_playlist_object
@@ -78,13 +78,13 @@ GLOBAL_MAX_RETRIES = 100  # Adjust this value as needed
 # Moved to deezspot.libutils.cleanup_utils
 
 # Use unified metadata converter
-def _track_object_to_dict(track_obj: trackObject) -> dict:
-    """Converts a trackObject into a dictionary for legacy functions like taggers."""
+def _track_object_to_dict(track_obj: TrackObject) -> dict:
+    """Converts a TrackObject into a dictionary for legacy functions like taggers."""
     return track_object_to_dict(track_obj, source_type='spotify')
 
 # Use unified metadata converter
-def _album_object_to_dict(album_obj: albumObject) -> dict:
-    """Converts an albumObject into a dictionary for legacy functions."""
+def _album_object_to_dict(album_obj: AlbumObject) -> dict:
+    """Converts an AlbumObject into a dictionary for legacy functions."""
     return album_object_to_dict(album_obj, source_type='spotify')
 
 class DownloadJob:
@@ -217,803 +217,713 @@ class EasyDw:
             }
         return parent_info, total_tracks_val
 
+    @staticmethod
+    def _run_ffmpeg_remux(temp_filename: str, output_path: str) -> None:
+        ffmpeg_path = shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
+        try:
+            result = subprocess.run(
+                [
+                    ffmpeg_path,
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    temp_filename,
+                    "-c:a",
+                    "copy",
+                    output_path,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError as fnf:
+            raise RuntimeError(f"ffmpeg not found: attempted '{ffmpeg_path}'. Ensure it is present in PATH.") from fnf
+        if result.returncode != 0 or not os.path.exists(output_path):
+            raise RuntimeError(f"ffmpeg remux failed (rc={result.returncode}). stderr: {result.stderr.strip()}")
+
+    def _update_media_path_after_conversion(self, converted_path: str) -> None:
+        self.__song_path = converted_path
+        current_attr_name = 'song_path' if self.__type == "track" else 'episode_path'
+        current_media = self.__c_track if self.__type == "track" else self.__c_episode
+        if current_media:
+            setattr(current_media, current_attr_name, converted_path)
+            _, new_ext = os.path.splitext(converted_path)
+            if new_ext:
+                current_media.file_format = new_ext.lower()
+                self.__file_format = new_ext.lower()
+
+    def _run_requested_conversion(self) -> bool:
+        if not self.__convert_to:
+            return False
+        format_name = self.__convert_to
+        bitrate = self.__bitrate
+        if not format_name:
+            return False
+        path_before_final_conversion = self.__song_path
+        try:
+            converted_path = convert_audio(
+                path_before_final_conversion,
+                format_name,
+                bitrate,
+                register_active_download,
+                unregister_active_download,
+            )
+        except Exception as conv_error:
+            logger.error(f"Audio conversion to {format_name} error: {str(conv_error)}")
+            return False
+        if converted_path != path_before_final_conversion:
+            self._update_media_path_after_conversion(converted_path)
+        return True
+
     def __convert_audio(self) -> None:
-        # First, handle Spotify's OGG to standard format conversion (always needed)
-        # self.__song_path is initially the path for the .ogg file (e.g., song.ogg)
         og_song_path_for_ogg_output = self.__song_path
         temp_filename = og_song_path_for_ogg_output.replace(".ogg", ".tmp")
-
-        # Move original .ogg to .tmp
         os_replace(og_song_path_for_ogg_output, temp_filename)
         register_active_download(temp_filename)
         
         try:
-            # Step 1: First convert the OGG file to standard format (copy operation)
-            # Output is og_song_path_for_ogg_output
-            # Resolve ffmpeg path explicitly to avoid PATH issues in distroless
-            ffmpeg_path = shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
-            try:
-                result = subprocess.run(
-                    [
-                        ffmpeg_path, "-y", "-hide_banner", "-loglevel", "error",
-                        "-i", temp_filename, "-c:a", "copy", og_song_path_for_ogg_output
-                    ],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=False
-                )
-                if result.returncode != 0 or not os.path.exists(og_song_path_for_ogg_output):
-                    raise RuntimeError(f"ffmpeg remux failed (rc={result.returncode}). stderr: {result.stderr.strip()}")
-            except FileNotFoundError as fnf:
-                raise RuntimeError(f"ffmpeg not found: attempted '{ffmpeg_path}'. Ensure it is present in PATH.") from fnf
-            
-            # temp_filename has been processed. Unregister and remove it.
-            # CURRENT_DOWNLOAD was temp_filename.
-            unregister_active_download(temp_filename) # CURRENT_DOWNLOAD should become None.
+            self._run_ffmpeg_remux(temp_filename, og_song_path_for_ogg_output)
+            unregister_active_download(temp_filename)
             if os.path.exists(temp_filename):
                 remove(temp_filename)
             
-            # The primary file is now og_song_path_for_ogg_output. Register it.
-            # Ensure self.__song_path reflects this, as it might be used by other parts of the class or returned.
             self.__song_path = og_song_path_for_ogg_output
             register_active_download(self.__song_path)
             
-            # Step 2: Convert to requested format if specified (e.g., MP3, FLAC)
-            conversion_to_another_format_occurred_and_cleared_state = False
-            if self.__convert_to:
-                format_name = self.__convert_to
-                bitrate = self.__bitrate
-                if format_name:
-                    try:
-                        path_before_final_conversion = self.__song_path # Current path, e.g., .ogg
-                        converted_path = convert_audio(
-                            path_before_final_conversion, 
-                            format_name,
-                            bitrate,
-                            register_active_download,
-                            unregister_active_download
-                        )
-                        if converted_path != path_before_final_conversion:
-                            # Conversion to a new format happened and path changed
-                            self.__song_path = converted_path # Update EASY_DW's current song path
-
-                            current_object_path_attr_name = 'song_path' if self.__type == "track" else 'episode_path'
-                            current_media_object = self.__c_track if self.__type == "track" else self.__c_episode
-                            
-                            if current_media_object:
-                                setattr(current_media_object, current_object_path_attr_name, converted_path)
-                                _, new_ext = os.path.splitext(converted_path)
-                                if new_ext:
-                                    current_media_object.file_format = new_ext.lower()
-                                    # Also update EASY_DW's internal __file_format
-                                    self.__file_format = new_ext.lower()
-                        
-                        conversion_to_another_format_occurred_and_cleared_state = True
-                    except Exception as conv_error:
-                        # Conversion to a different format failed.
-                        # self.__song_path (the .ogg) is still the latest valid file and is registered.
-                        # We want to keep it, so CURRENT_DOWNLOAD should remain set to this .ogg path.
-                        logger.error(f"Audio conversion to {format_name} error: {str(conv_error)}")
-                        # conversion_to_another_format_occurred_and_cleared_state remains False.
-            
-            # If no conversion to another format was requested, or if it was requested but didn't effectively run
-            # (e.g. format_name was None), or if convert_audio failed to clear state (which would be its bug),
-            # then self.__song_path (the .ogg from Step 1) is the final successfully processed file for this method's scope.
-            # It is currently registered. Unregister it as its processing is complete.
-            if not conversion_to_another_format_occurred_and_cleared_state:
-                unregister_active_download(self.__song_path) # Clears CURRENT_DOWNLOAD if it was self.__song_path
+            conversion_finished = self._run_requested_conversion()
+            if not conversion_finished:
+                unregister_active_download(self.__song_path)
                 
         except Exception as e:
-            # This outer try/except handles errors primarily from Step 1 (OGG copy)
-            # or issues during the setup for Step 2 before convert_audio is deeply involved.
-            # In case of failure, try to restore the original file from temp if Step 1 didn't complete.
             if os.path.exists(temp_filename) and not os.path.exists(og_song_path_for_ogg_output):
                 os_replace(temp_filename, og_song_path_for_ogg_output)
             
-            # Clean up temp_filename. unregister_active_download is safe:
-            # it only clears CURRENT_DOWNLOAD if CURRENT_DOWNLOAD == temp_filename.
             if os.path.exists(temp_filename):
                 unregister_active_download(temp_filename)
                 remove(temp_filename)
-                
-            # Re-throw the exception. If a file (like og_song_path_for_ogg_output) was registered
-            # and an error occurred, it remains registered for atexit cleanup, which is intended.
             raise e
 
     def get_no_dw_track(self) -> Track:
         return self.__c_track
+
+    def _current_track(self) -> Track | None:
+        if hasattr(self, "_EasyDw__c_track") and self.__c_track:
+            return self.__c_track
+        return None
+
+    def _mark_active_media_as_pending(self) -> None:
+        track = self._current_track()
+        if track is not None:
+            track.success = False
+            return
+        if hasattr(self, "_EasyDw__c_episode") and self.__c_episode:
+            self.__c_episode.success = False
+
+    def _track_identity(self) -> tuple[str, str]:
+        song_title = self.__song_metadata.title
+        artist_name = getattr(self.__preferences, "artist_separator", "; ").join(
+            [a.name for a in self.__song_metadata.artists]
+        )
+        return song_title, artist_name
+
+    def _raise_download_failure(self, error: Exception) -> None:
+        song_title, artist_name = self._track_identity()
+        error_message = (
+            f"Download failed for '{song_title}' by '{artist_name}' "
+            f"(URL: {self.__link}). Original error: {str(error)}"
+        )
+        logger.error(error_message)
+        traceback.print_exc()
+        track = self._current_track()
+        if track is not None:
+            track.success = False
+            track.error_message = error_message
+        raise TrackNotFound(message=error_message, url=self.__link) from error
+
+    def _raise_post_attempt_failure(self, track: Track) -> None:
+        song_title, artist_name = self._track_identity()
+        original_error_msg = getattr(
+            track, "error_message", "Download failed for an unspecified reason after attempt."
+        )
+        final_error_msg = (
+            "Cannot download '{title}' by '{artist}'. Reason: {reason}".format(
+                title=song_title, artist=artist_name, reason=original_error_msg
+            )
+        )
+        current_link = track.link if hasattr(track, "link") and track.link else self.__link
+        logger.error(f"{final_error_msg} (URL: {current_link})")
+        track.error_message = final_error_msg
+        raise TrackNotFound(message=final_error_msg, url=current_link)
 
     def easy_dw(self) -> Track:
         # Process image data using unified utility
         self.__song_metadata_dict = enhance_metadata_with_image(self.__song_metadata_dict)
 
         try:
-            # Initialize success to False, it will be set to True if download_try is successful
-            if hasattr(self, '_EasyDw__c_track') and self.__c_track:
-                self.__c_track.success = False
-            elif hasattr(self, '_EasyDw__c_episode') and self.__c_episode: # For episodes
-                self.__c_episode.success = False
-            
+            # Initialize success to False; download_try sets success=True on completion.
+            self._mark_active_media_as_pending()
             self.download_try() # This should set self.__c_track.success = True if successful
 
         except Exception as e:
-            song_title = self.__song_metadata.title
-            artist_name = getattr(self.__preferences, 'artist_separator', '; ').join([a.name for a in self.__song_metadata.artists])
-            error_message = f"Download failed for '{song_title}' by '{artist_name}' (URL: {self.__link}). Original error: {str(e)}"
-            logger.error(error_message)
-            traceback.print_exc()
-            # Store the error message on the track object if it exists
-            if hasattr(self, '_EasyDw__c_track') and self.__c_track:
-                self.__c_track.success = False
-                self.__c_track.error_message = error_message # Store the more detailed error message
-            # Removed problematic elif for __c_episode here as easy_dw in spotloader is focused on tracks.
-            # Episode-specific error handling should be within download_eps or its callers.
-            raise TrackNotFound(message=error_message, url=self.__link) from e
-        
+            self._raise_download_failure(e)
+
+        track = self._current_track()
+        if track is None:
+            return self.__c_track
+
         # If the track was skipped (e.g. file already exists), return it immediately.
         # download_try sets success=False and was_skipped=True in this case.
-        if hasattr(self, '_EasyDw__c_track') and self.__c_track and getattr(self.__c_track, 'was_skipped', False):
-            return self.__c_track
+        if getattr(track, "was_skipped", False):
+            return track
 
         # Final check for non-skipped tracks that might have failed after download_try returned.
-        # This handles cases where download_try didn't raise an exception but self.__c_track.success is still False.
-        if hasattr(self, '_EasyDw__c_track') and self.__c_track and not self.__c_track.success:
-            song_title = self.__song_metadata.title
-            artist_name = getattr(self.__preferences, 'artist_separator', '; ').join([a.name for a in self.__song_metadata.artists])
-            original_error_msg = getattr(self.__c_track, 'error_message', "Download failed for an unspecified reason after attempt.")
-            error_msg_template = "Cannot download '{title}' by '{artist}'. Reason: {reason}"
-            final_error_msg = error_msg_template.format(title=song_title, artist=artist_name, reason=original_error_msg)
-            current_link = self.__c_track.link if hasattr(self.__c_track, 'link') and self.__c_track.link else self.__link
-            logger.error(f"{final_error_msg} (URL: {current_link})")
-            self.__c_track.error_message = final_error_msg # Ensure the most specific error is on the object
-            raise TrackNotFound(message=final_error_msg, url=current_link)
+        # This handles cases where download_try didn't raise an exception but success is still False.
+        if not track.success:
+            self._raise_post_attempt_failure(track)
             
         # If we reach here, the track should be successful and not skipped.
-        if hasattr(self, '_EasyDw__c_track') and self.__c_track and self.__c_track.success:
-            # Apply tags using unified utility
-            process_and_tag_track(
-                track=self.__c_track,
-                metadata_dict=self.__song_metadata_dict,
-                source_type='spotify',
-                save_cover=getattr(self.__preferences, 'save_cover', False)
-            )
+        process_and_tag_track(
+            track=track,
+            metadata_dict=self.__song_metadata_dict,
+            source_type='spotify',
+            save_cover=getattr(self.__preferences, 'save_cover', False)
+        )
         
         # Unregister the final successful file path after all operations are done.
-        # self.__c_track.song_path would have been updated by __convert_audio__ if conversion occurred.
-        unregister_active_download(self.__c_track.song_path)
+        # track.song_path would have been updated by __convert_audio__ if conversion occurred.
+        unregister_active_download(track.song_path)
         
-        return self.__c_track
+        return track
 
-    def download_try(self) -> Track:
-        current_title = self.__song_metadata.title
-        current_album = self.__song_metadata.album.title if self.__song_metadata.album else ''
-        current_artist = getattr(self.__preferences, 'artist_separator', '; ').join([a.name for a in self.__song_metadata.artists])
-
-        # Call the new check_track_exists function from skip_detection.py
-        # It needs: original_song_path, title, album, convert_to, logger
-        # self.__song_path is the original_song_path before any conversion attempts by this specific download operation.
-        # self.__preferences.convert_to is the convert_to parameter.
-        # logger is available as a global import in this module.
-        exists, existing_file_path = check_track_exists(
-            original_song_path=self.__song_path, 
-            title=current_title, 
-            album=current_album, 
-            convert_to=self.__preferences.convert_to, 
-            logger=logger # Pass the logger instance
-        )
-
-        if exists and existing_file_path:
-            logger.info(f"Track '{current_title}' by '{current_artist}' already exists at '{existing_file_path}'. Skipping download and conversion.")
-            # Update the track object to point to the existing file
-            self.__c_track.song_path = existing_file_path
-            _, new_ext = os.path.splitext(existing_file_path)
-            self.__c_track.file_format = new_ext.lower() # Ensure it's just the extension like '.mp3'
-            # self.__c_track.song_quality might need re-evaluation if we could determine quality of existing file
-            # For now, assume if it exists in target format, its quality is acceptable.
-            
-            self.__c_track.success = True # Mark as success because the desired file is available
-            self.__c_track.was_skipped = True
-
-            parent_info, total_tracks_val = self._get_parent_info()
-            
-            # Build track object
-            track_obj = self.__song_metadata
-
-            # Build parent object
-            parent_obj = None
-            if self.__parent == "album":
-                parent_obj = self.__song_metadata.album
-            elif self.__parent == "playlist" and parent_info:
-                parent_obj = playlistTrackObject(
-                    title=parent_info.get("name"),
-                    owner=userObject(name=parent_info.get("owner"))
-                                )
-
-            # Report track skipped status
-            report_track_skipped(
-                track_obj=track_obj,
-                reason=f"Track already exists at '{existing_file_path}'",
-                preferences=self.__preferences,
-                parent_obj=parent_obj,
-                total_tracks=total_tracks_val
-            )
-            return self.__c_track
-
-        # Report initializing status for the track download
+    def _track_context(self):
         parent_info, total_tracks_val = self._get_parent_info()
-        
-        # Build track object
-        track_obj = self.__song_metadata
-
-        # Build parent object
         parent_obj = None
         if self.__parent == "album":
             parent_obj = self.__song_metadata.album
         elif self.__parent == "playlist" and parent_info:
-            parent_obj = playlistTrackObject(
+            parent_obj = PlaylistTrackObject(
                 title=parent_info.get("name"),
-                owner=userObject(name=parent_info.get("owner"))
+                owner=UserObject(name=parent_info.get("owner")),
             )
+        return self.__song_metadata, parent_obj, total_tracks_val
 
-        # Report track initialization status
+    def _skip_existing_track_if_present(self, track_obj, parent_obj, total_tracks_val):
+        current_title = self.__song_metadata.title
+        current_album = self.__song_metadata.album.title if self.__song_metadata.album else ""
+        current_artist = getattr(self.__preferences, "artist_separator", "; ").join(
+            [a.name for a in self.__song_metadata.artists]
+        )
+        exists, existing_file_path = check_track_exists(
+            original_song_path=self.__song_path,
+            title=current_title,
+            album=current_album,
+            convert_to=self.__preferences.convert_to,
+            logger=logger,
+        )
+        if not (exists and existing_file_path):
+            return None
+
+        logger.info(
+            f"Track '{current_title}' by '{current_artist}' already exists at '{existing_file_path}'. "
+            "Skipping download and conversion."
+        )
+        self.__c_track.song_path = existing_file_path
+        _, new_ext = os.path.splitext(existing_file_path)
+        self.__c_track.file_format = new_ext.lower()
+        self.__c_track.success = True
+        self.__c_track.was_skipped = True
+        report_track_skipped(
+            track_obj=track_obj,
+            reason=f"Track already exists at '{existing_file_path}'",
+            preferences=self.__preferences,
+            parent_obj=parent_obj,
+            total_tracks=total_tracks_val,
+        )
+        return self.__c_track
+
+    @staticmethod
+    def _close_stream(stream_obj) -> None:
+        if stream_obj is None:
+            return
+        try:
+            stream_obj.close()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _safe_remove_file(path: str) -> None:
+        if not os.path.exists(path):
+            return
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
+    def _ensure_session_ready(self) -> None:
+        if Download_JOB.session is None:
+            raise RuntimeError("Spotify session is not initialized.")
+        if Download_JOB.session.is_valid():
+            return
+
+        logger.warning("Session is invalid, attempting to reconnect...")
+        try:
+            Download_JOB.session.reconnect()
+            logger.info("Session reconnected successfully")
+        except Exception as reconnect_err:
+            logger.error(f"Failed to reconnect session: {reconnect_err}")
+            raise RuntimeError(f"Session reconnection failed: {reconnect_err}") from reconnect_err
+
+    @staticmethod
+    def _bounded_realtime_multiplier(raw_multiplier) -> int:
+        try:
+            multiplier = int(raw_multiplier)
+        except Exception:
+            multiplier = 1
+        return max(0, min(10, multiplier))
+
+    def _should_use_realtime_download(self) -> bool:
+        duration = self.__song_metadata_dict.get("duration")
+        return bool(self.__real_time_dl and duration and duration > 0)
+
+    def _resolve_rate_limit(self, total_size: int):
+        duration = self.__song_metadata_dict.get("duration")
+        if not duration or duration <= 0:
+            return False, None
+        multiplier = self._bounded_realtime_multiplier(
+            getattr(self.__preferences, "real_time_multiplier", 1)
+        )
+        if multiplier <= 0:
+            return False, None
+        return True, (total_size / duration) * multiplier
+
+    @staticmethod
+    def _write_standard_stream(c_stream, output_file, total_size: int) -> None:
+        data = c_stream.read(total_size)
+        output_file.write(data)
+
+    def _write_track_stream_realtime(
+        self,
+        c_stream,
+        output_file,
+        total_size: int,
+        track_obj,
+        parent_obj,
+        total_tracks_val,
+    ) -> None:
+        pacing_enabled, rate_limit = self._resolve_rate_limit(total_size)
+        bytes_written = 0
+        start_time = time.time()
+        chunk_size = 4096
+        self._last_reported_percentage = -1
+
+        while True:
+            chunk = c_stream.read(chunk_size)
+            if not chunk:
+                break
+            output_file.write(chunk)
+            bytes_written += len(chunk)
+            current_percentage = int((bytes_written / total_size) * 100) if total_size > 0 else 100
+
+            if current_percentage > self._last_reported_percentage:
+                self._last_reported_percentage = current_percentage
+                report_track_realtime_progress(
+                    track_obj=track_obj,
+                    time_elapsed=int((time.time() - start_time) * 1000),
+                    progress=current_percentage,
+                    preferences=self.__preferences,
+                    parent_obj=parent_obj,
+                    total_tracks=total_tracks_val,
+                )
+
+            if pacing_enabled and rate_limit:
+                expected_time = bytes_written / rate_limit
+                elapsed = time.time() - start_time
+                if expected_time > elapsed:
+                    time.sleep(expected_time - elapsed)
+
+    def _download_track_once(self, track_obj, parent_obj, total_tracks_val) -> None:
+        self._ensure_session_ready()
+        track_id_obj = TrackId.from_base62(self.__ids)
+        stream = Download_JOB.session.content_feeder().load_track(
+            track_id_obj,
+            VorbisOnlyAudioQuality(self.__dw_quality),
+            False,
+            None,
+        )
+        c_stream = stream.input_stream.stream()
+        total_size = stream.input_stream.size
+        os.makedirs(dirname(self.__song_path), exist_ok=True)
+        register_active_download(self.__song_path)
+        try:
+            with open(self.__song_path, "wb") as output_file:
+                if self._should_use_realtime_download():
+                    self._write_track_stream_realtime(
+                        c_stream,
+                        output_file,
+                        total_size,
+                        track_obj,
+                        parent_obj,
+                        total_tracks_val,
+                    )
+                else:
+                    self._write_standard_stream(c_stream, output_file, total_size)
+        finally:
+            self._close_stream(c_stream)
+            unregister_active_download(self.__song_path)
+
+    def _report_track_retry(self, track_obj, retry_count: int, delay_seconds: int, error: Exception, parent_obj, total_tracks_val) -> None:
+        report_track_retrying(
+            track_obj=track_obj,
+            retry_count=retry_count,
+            seconds_left=delay_seconds,
+            error=str(error),
+            preferences=self.__preferences,
+            parent_obj=parent_obj,
+            total_tracks=total_tracks_val,
+        )
+
+    def _raise_track_retry_limit(self, max_retries: int, last_error: Exception) -> None:
+        track_name = self.__song_metadata.title
+        artist_name = getattr(self.__preferences, "artist_separator", "; ").join(
+            [a.name for a in self.__song_metadata.artists]
+        )
+        final_error_msg = (
+            f"Maximum retry limit reached for '{track_name}' by '{artist_name}' "
+            f"(local: {max_retries}, global: {GLOBAL_MAX_RETRIES}). Last error: {str(last_error)}"
+        )
+        if hasattr(self, "_EasyDw__c_track") and self.__c_track:
+            self.__c_track.success = False
+            self.__c_track.error_message = final_error_msg
+        raise TrackNotFound(message=final_error_msg, url=self.__link) from last_error
+
+    def _download_track_with_retries(self, track_obj, parent_obj, total_tracks_val, retry_delay: int, retry_delay_increase: int, max_retries: int) -> int:
+        retries = 0
+        current_retry_delay = retry_delay
+        max_retry_delay = getattr(self.__preferences, "max_retry_delay", 60)
+
+        while True:
+            try:
+                self._download_track_once(track_obj, parent_obj, total_tracks_val)
+                return current_retry_delay
+            except Exception as error:
+                global GLOBAL_RETRY_COUNT
+                GLOBAL_RETRY_COUNT += 1
+                retries += 1
+                self._safe_remove_file(self.__song_path)
+                unregister_active_download(self.__song_path)
+                self._report_track_retry(
+                    track_obj,
+                    retries,
+                    current_retry_delay,
+                    error,
+                    parent_obj,
+                    total_tracks_val,
+                )
+                if retries >= max_retries or GLOBAL_RETRY_COUNT >= GLOBAL_MAX_RETRIES:
+                    self._raise_track_retry_limit(max_retries, error)
+                time.sleep(current_retry_delay)
+                current_retry_delay = min(current_retry_delay + retry_delay_increase, max_retry_delay)
+
+    @staticmethod
+    def _format_conversion_error(error: Exception) -> str:
+        original_error = str(error)
+        lowered_error = original_error.lower()
+        if "codec" in lowered_error:
+            return "Audio conversion error - Missing codec or unsupported format"
+        if "ffmpeg" in lowered_error:
+            return "FFmpeg error - Audio conversion failed"
+        return f"Audio conversion failed: {original_error}"
+
+    def _convert_track_with_retry(self, track_obj, parent_obj, total_tracks_val, retry_delay: int) -> None:
+        try:
+            self.__convert_audio()
+            return
+        except Exception as conversion_error:
+            first_error_msg = self._format_conversion_error(conversion_error)
+            report_track_error(
+                track_obj=track_obj,
+                error=first_error_msg,
+                preferences=self.__preferences,
+                parent_obj=parent_obj,
+                total_tracks=total_tracks_val,
+            )
+            logger.error(f"Audio conversion error: {first_error_msg}")
+            self._safe_remove_file(self.__song_path)
+
+        time.sleep(retry_delay)
+        try:
+            self.__convert_audio()
+        except Exception as conversion_retry_error:
+            final_error_msg = (
+                f"Audio conversion failed after retry for '{self.__song_metadata.title}'. "
+                f"Original error: {str(conversion_retry_error)}"
+            )
+            report_track_error(
+                track_obj=track_obj,
+                error=final_error_msg,
+                preferences=self.__preferences,
+                parent_obj=parent_obj,
+                total_tracks=total_tracks_val,
+            )
+            logger.error(final_error_msg)
+            self._safe_remove_file(self.__song_path)
+            if hasattr(self, "_EasyDw__c_track") and self.__c_track:
+                self.__c_track.success = False
+                self.__c_track.error_message = final_error_msg
+            raise TrackNotFound(message=final_error_msg, url=self.__link) from conversion_retry_error
+
+    def _spotify_download_quality_label(self) -> str:
+        quality_map = {
+            "NORMAL": "OGG_96",
+            "HIGH": "OGG_160",
+            "VERY_HIGH": "OGG_320",
+        }
+        return quality_map.get(self.__quality_download, "OGG")
+
+    def _single_track_summary(self, track_obj):
+        if self.__parent is not None:
+            return None
+        successful_tracks = [track_obj] if self.__c_track.success and not getattr(self.__c_track, "was_skipped", False) else []
+        skipped_tracks = [track_obj] if getattr(self.__c_track, "was_skipped", False) else []
+        summary_obj = SummaryObject(
+            successful_tracks=successful_tracks,
+            skipped_tracks=skipped_tracks,
+            failed_tracks=[],
+            total_successful=len(successful_tracks),
+            total_skipped=len(skipped_tracks),
+            total_failed=0,
+            service=Service.SPOTIFY,
+        )
+        summary_obj.final_path = getattr(self.__c_track, "song_path", None)
+        summary_obj.download_quality = self._spotify_download_quality_label()
+        quality_val, bitrate_val = resolve_spotify_summary_media(
+            quality_download=self.__quality_download,
+            convert_to=self.__convert_to,
+            bitrate=self.__bitrate,
+        )
+        summary_obj.quality = quality_val
+        summary_obj.bitrate = bitrate_val
+        return summary_obj
+
+    def _report_track_done_status(self, track_obj, parent_obj, total_tracks_val) -> None:
+        report_track_done(
+            track_obj=track_obj,
+            preferences=self.__preferences,
+            summary=self._single_track_summary(track_obj),
+            parent_obj=parent_obj,
+            current_track=getattr(self.__preferences, "track_number", None),
+            total_tracks=total_tracks_val,
+            final_path=getattr(self.__c_track, "song_path", None),
+            download_quality=self._spotify_download_quality_label(),
+        )
+
+    def download_try(self) -> Track:
+        track_obj, parent_obj, total_tracks_val = self._track_context()
+        skipped_track = self._skip_existing_track_if_present(track_obj, parent_obj, total_tracks_val)
+        if skipped_track is not None:
+            return skipped_track
+
         report_track_initializing(
             track_obj=track_obj,
             preferences=self.__preferences,
             parent_obj=parent_obj,
-            total_tracks=total_tracks_val
+            total_tracks=total_tracks_val,
         )
-        
-        # If track does not exist in the desired final format, proceed with download/conversion
-        retries = 0
-        # Use the customizable retry parameters (reduced defaults for faster recovery from disconnections)
-        retry_delay = getattr(self.__preferences, 'initial_retry_delay', 10)  # Default to 10 seconds (reduced from 30)
-        retry_delay_increase = getattr(self.__preferences, 'retry_delay_increase', 15)  # Default to 15 seconds (reduced from 30)
-        max_retries = getattr(self.__preferences, 'max_retries', 5)  # Default to 5 retries
 
-        while True:
-            try:
-                # Validate session before attempting download, reconnect if needed
-                if Download_JOB.session is not None:
-                    if not Download_JOB.session.is_valid():
-                        logger.warning("Session is invalid, attempting to reconnect...")
-                        try:
-                            Download_JOB.session.reconnect()
-                            logger.info("Session reconnected successfully")
-                        except Exception as reconnect_err:
-                            logger.error(f"Failed to reconnect session: {reconnect_err}")
-                            raise RuntimeError(f"Session reconnection failed: {reconnect_err}")
+        retry_delay = getattr(self.__preferences, "initial_retry_delay", 10)
+        retry_delay_increase = getattr(self.__preferences, "retry_delay_increase", 15)
+        max_retries = getattr(self.__preferences, "max_retries", 5)
+        conversion_retry_delay = self._download_track_with_retries(
+            track_obj,
+            parent_obj,
+            total_tracks_val,
+            retry_delay,
+            retry_delay_increase,
+            max_retries,
+        )
 
-                track_id_obj = TrackId.from_base62(self.__ids)
-                stream = Download_JOB.session.content_feeder().load_track(
-                    track_id_obj,
-                    VorbisOnlyAudioQuality(self.__dw_quality),
-                    False,
-                    None
-                )
-                c_stream = stream.input_stream.stream()
-                total_size = stream.input_stream.size
-                
-                os.makedirs(dirname(self.__song_path), exist_ok=True)
-                
-                # Register this file as being actively downloaded
-                register_active_download(self.__song_path)
-                
-                try:
-                    with open(self.__song_path, "wb") as f:
-                        if self.__real_time_dl and self.__song_metadata_dict.get("duration") and self.__song_metadata_dict.get("duration") > 0:
-                            # Real-time download path
-                            duration = self.__song_metadata_dict["duration"]
-                            if duration > 0:
-                                # Base rate limit in bytes per second to match real-time
-                                base_rate_limit = total_size / duration
-                                # Multiplier handling (0 disables pacing, 1=real-time, up to 10x)
-                                m = getattr(self.__preferences, 'real_time_multiplier', 1)
-                                try:
-                                    m = int(m)
-                                except Exception:
-                                    m = 1
-                                if m < 0:
-                                    m = 0
-                                if m > 10:
-                                    m = 10
-                                pacing_enabled = m > 0
-                                rate_limit = base_rate_limit * m if pacing_enabled else None
-                                chunk_size = 4096
-                                bytes_written = 0
-                                start_time = time.time()
-                                
-                                # Initialize tracking variable for percentage reporting
-                                self._last_reported_percentage = -1
-                                
-                                while True:
-                                    chunk = c_stream.read(chunk_size)
-                                    if not chunk:
-                                        break
-                                    f.write(chunk)
-                                    bytes_written += len(chunk)
-                                    
-                                    # Calculate current percentage (as integer)
-                                    current_time = time.time()
-                                    current_percentage = int((bytes_written / total_size) * 100)
-                                    
-                                    # Only report when percentage increases by at least 1 point
-                                    if current_percentage > self._last_reported_percentage:
-                                        self._last_reported_percentage = current_percentage
-                                        
-                                        # Report real-time progress
-                                        report_track_realtime_progress(
-                                            track_obj=track_obj,
-                                            time_elapsed=int((current_time - start_time) * 1000),
-                                            progress=current_percentage,
-                                            preferences=self.__preferences,
-                                            parent_obj=parent_obj,
-                                            total_tracks=total_tracks_val
-                                        )
-                                        
-                                    # Rate limiting (if pacing is enabled)
-                                    if pacing_enabled and rate_limit:
-                                        expected_time = bytes_written / rate_limit
-                                        elapsed = time.time() - start_time
-                                        if expected_time > elapsed:
-                                            time.sleep(expected_time - elapsed)
-                        else:
-                            # Non real-time download path
-                            data = c_stream.read(total_size)
-                            f.write(data)
-                    
-                    # Close the stream after successful write
-                    c_stream.close()
-                    
-                    # After successful download, unregister the file
-                    unregister_active_download(self.__song_path)
-                    break
-                    
-                except Exception as e:
-                    # Handle any exceptions that might occur during download
-                    error_msg = f"Error during download process: {str(e)}"
-                    logger.error(error_msg)
-                    
-                    # Clean up resources
-                    if 'c_stream' in locals():
-                        try:
-                            c_stream.close()
-                        except Exception:
-                            pass
-                    
-                    # Remove partial download if it exists
-                    if os.path.exists(self.__song_path):
-                        try:
-                            os.remove(self.__song_path)
-                        except Exception:
-                            pass
-                    
-                    # Unregister the download
-                    unregister_active_download(self.__song_path)
-                    
-                # After successful download, unregister the file (moved here from below)
-                unregister_active_download(self.__song_path)
-                break
-                
-            except Exception as e:
-                # Handle retry logic
-                global GLOBAL_RETRY_COUNT
-                GLOBAL_RETRY_COUNT += 1
-                retries += 1
-                
-                # Clean up any incomplete file
-                if os.path.exists(self.__song_path):
-                    os.remove(self.__song_path)
-                unregister_active_download(self.__song_path)
-                
-                # Report retry status
-                report_track_retrying(
-                    track_obj=track_obj,
-                    retry_count=retries,
-                    seconds_left=retry_delay,
-                    error=str(e),
-                    preferences=self.__preferences,
-                    parent_obj=parent_obj,
-                    total_tracks=total_tracks_val
-                )
-                    
-                if retries >= max_retries or GLOBAL_RETRY_COUNT >= GLOBAL_MAX_RETRIES:
-                    # Final cleanup before giving up
-                    if os.path.exists(self.__song_path):
-                        os.remove(self.__song_path)
-                    # Add track info to exception    
-                    track_name = self.__song_metadata.title
-                    artist_name = getattr(self.__preferences, 'artist_separator', '; ').join([a.name for a in self.__song_metadata.artists])
-                    final_error_msg = f"Maximum retry limit reached for '{track_name}' by '{artist_name}' (local: {max_retries}, global: {GLOBAL_MAX_RETRIES}). Last error: {str(e)}"
-                    # Store error on track object
-                    if hasattr(self, '_EasyDw__c_track') and self.__c_track:
-                        self.__c_track.success = False
-                        self.__c_track.error_message = final_error_msg
-                    raise TrackNotFound(message=final_error_msg, url=self.__link) from e
-                time.sleep(retry_delay)
-                retry_delay += retry_delay_increase  # Use the custom retry delay increase
-                # Cap retry delay at 60 seconds to prevent session token expiration during long waits
-                max_retry_delay = getattr(self.__preferences, 'max_retry_delay', 60)
-                retry_delay = min(retry_delay, max_retry_delay)
-                
-        # Save cover image if requested, after successful download and before conversion
-        if self.__preferences.save_cover and hasattr(self, '_EasyDw__song_path') and self.__song_path:
-            save_cover_image_for_track(self.__song_metadata_dict, self.__song_path, self.__preferences.save_cover)
-
-        try:
-            self.__convert_audio()
-        except Exception as e:
-            # Improve error message formatting
-            original_error_str = str(e)
-            if "codec" in original_error_str.lower():
-                error_msg = "Audio conversion error - Missing codec or unsupported format"
-            elif "ffmpeg" in original_error_str.lower():
-                error_msg = "FFmpeg error - Audio conversion failed"
-            else:
-                error_msg = f"Audio conversion failed: {original_error_str}"
-            
-            # Report error status
-            report_track_error(
-                track_obj=track_obj,
-                error=error_msg,
-                preferences=self.__preferences,
-                parent_obj=parent_obj,
-                total_tracks=total_tracks_val
+        if self.__preferences.save_cover and self.__song_path:
+            save_cover_image_for_track(
+                self.__song_metadata_dict,
+                self.__song_path,
+                self.__preferences.save_cover,
             )
-            logger.error(f"Audio conversion error: {error_msg}")
-            
-            # If conversion fails, clean up the .ogg file
-            if os.path.exists(self.__song_path):
-                os.remove(self.__song_path)
-                
-            # Try one more time
-            time.sleep(retry_delay)
-            retry_delay += retry_delay_increase
-            try:
-                self.__convert_audio()
-            except Exception as conv_e:
-                # If conversion fails twice, create a final error report
-                error_msg_2 = f"Audio conversion failed after retry for '{self.__song_metadata.title}'. Original error: {str(conv_e)}"
-                
-                # Report error status
-                report_track_error(
-                    track_obj=track_obj,
-                    error=error_msg_2,
-                    preferences=self.__preferences,
-                    parent_obj=parent_obj,
-                    total_tracks=total_tracks_val
-                )
-                logger.error(error_msg)
-                
-                if os.path.exists(self.__song_path):
-                    os.remove(self.__song_path)
-                # Store error on track object
-                if hasattr(self, '_EasyDw__c_track') and self.__c_track:
-                    self.__c_track.success = False
-                    self.__c_track.error_message = error_msg_2
-                raise TrackNotFound(message=error_msg, url=self.__link) from conv_e
+        self._convert_track_with_retry(
+            track_obj,
+            parent_obj,
+            total_tracks_val,
+            conversion_retry_delay,
+        )
 
-        if hasattr(self, '_EasyDw__c_track') and self.__c_track: 
+        if hasattr(self, "_EasyDw__c_track") and self.__c_track:
             self.__c_track.success = True
-            # Apply tags using unified utility
             process_and_tag_track(
                 track=self.__c_track,
                 metadata_dict=self.__song_metadata_dict,
-                source_type='spotify'
+                source_type="spotify",
             )
-        
-        # Create done status report
-        parent_info, total_tracks_val = self._get_parent_info()
-        current_track_val = getattr(self.__preferences, 'track_number', None)
-        
-        summary_obj = None
-        if self.__parent is None:
-            # Create a summary object for single-track downloads
-            successful_track_list = [track_obj] if self.__c_track.success and not getattr(self.__c_track, 'was_skipped', False) else []
-            skipped_track_list = [track_obj] if getattr(self.__c_track, 'was_skipped', False) else []
-            
-            summary_obj = SummaryObject(
-                successful_tracks=successful_track_list,
-                skipped_tracks=skipped_track_list,
-                failed_tracks=[],
-                total_successful=len(successful_track_list),
-                total_skipped=len(skipped_track_list),
-                total_failed=0,
-                service=Service.SPOTIFY
-            )
-            # Enrich summary with final path and quality
-            try:
-                final_path_val = getattr(self.__c_track, 'song_path', None)
-            except Exception:
-                final_path_val = None
-            quality_key_single = self.__quality_download
-            sp_quality_map_single = {
-                'NORMAL': 'OGG_96',
-                'HIGH': 'OGG_160',
-                'VERY_HIGH': 'OGG_320'
-            }
-            summary_obj.final_path = final_path_val
-            summary_obj.download_quality = sp_quality_map_single.get(quality_key_single, 'OGG')
-            # Compute final quality/bitrate
-            quality_val = None
-            bitrate_val = None
-            if self.__convert_to:
-                # When converting, trust convert_to + bitrate
-                fmt = self.__convert_to
-                if fmt:
-                    quality_val = fmt.lower()
-                br_raw = self.__bitrate
-                if br_raw:
-                    digits = ''.join([c for c in str(br_raw) if c.isdigit()])
-                    bitrate_val = f"{digits}k" if digits else None
-            else:
-                quality_val = 'ogg'
-                if quality_key_single == 'NORMAL':
-                    bitrate_val = '96k'
-                elif quality_key_single == 'HIGH':
-                    bitrate_val = '160k'
-                elif quality_key_single == 'VERY_HIGH':
-                    bitrate_val = '320k'
-            summary_obj.quality = quality_val
-            summary_obj.bitrate = bitrate_val
 
-        # Report track done status
-        # Compute final path and quality label
-        final_path_val = getattr(self.__c_track, 'song_path', None)
-        # Map Spotify quality to OGG bitrate label
-        quality_key = self.__quality_download if hasattr(self, '_EasyDw__quality_download') else getattr(self, '_EasyDw__quality_download', None)
-        quality_key = self.__quality_download if quality_key is None else quality_key
-        sp_quality_map = {
-            'NORMAL': 'OGG_96',
-            'HIGH': 'OGG_160',
-            'VERY_HIGH': 'OGG_320'
-        }
-        download_quality_val = sp_quality_map.get(quality_key, 'OGG')
-        report_track_done(
-            track_obj=track_obj,
-            preferences=self.__preferences,
-            summary=summary_obj,
-            parent_obj=parent_obj,
-            current_track=current_track_val,
-            total_tracks=total_tracks_val,
-            final_path=final_path_val,
-            download_quality=download_quality_val
-        )
-
-        if hasattr(self, '_EasyDw__c_track') and self.__c_track and self.__c_track.success:
-            # Unregister the final successful file path after all operations are done.
+        self._report_track_done_status(track_obj, parent_obj, total_tracks_val)
+        if hasattr(self, "_EasyDw__c_track") and self.__c_track and self.__c_track.success:
             unregister_active_download(self.__c_track.song_path)
-
         return self.__c_track
 
-    def download_eps(self) -> Episode:
-        # Use the customizable retry parameters
-        retry_delay = getattr(self.__preferences, 'initial_retry_delay', 30)  # Default to 30 seconds
-        retry_delay_increase = getattr(self.__preferences, 'retry_delay_increase', 30)  # Default to 30 seconds
-        max_retries = getattr(self.__preferences, 'max_retries', 5)  # Default to 5 retries
-        
-        retries = 0
-        # Initialize success to False for the episode, to be set True on completion
-        if hasattr(self, '_EasyDw__c_episode') and self.__c_episode:
-            self.__c_episode.success = False
+    def _episode_retry_settings(self) -> tuple[int, int, int]:
+        return (
+            getattr(self.__preferences, "initial_retry_delay", 30),
+            getattr(self.__preferences, "retry_delay_increase", 30),
+            getattr(self.__preferences, "max_retries", 5),
+        )
 
-        if isfile(self.__song_path) and check_track(self.__c_episode):
-            ans = input(
-                f"Episode \"{self.__song_path}\" already exists, do you want to redownload it?(y or n):"
-            )
-            if ans not in answers:
-                 # If user chooses not to redownload, and file exists, consider it 'successful' for cleanup purposes if needed.
-                 # However, the main .success might be for actual download processing.
-                 # For now, just return. The file isn't in ACTIVE_DOWNLOADS from *this* run.
-                return self.__c_episode
+    def _set_episode_error(self, message: str) -> None:
+        if hasattr(self, "_EasyDw__c_episode") and self.__c_episode:
+            self.__c_episode.success = False
+            self.__c_episode.error_message = message
+
+    def _episode_track_artist(self) -> tuple[str, str]:
+        episode_title = self.__song_metadata.title
+        artist_name = getattr(self.__preferences, "artist_separator", "; ").join(
+            [a.name for a in self.__song_metadata.artists]
+        )
+        return episode_title, artist_name
+
+    def _episode_download_error(self, stage: str, error: Exception) -> TrackNotFound:
+        episode_title, artist_name = self._episode_track_artist()
+        error_message = (
+            f"Error during {stage} download for episode '{episode_title}' by '{artist_name}' "
+            f"(URL: {self.__link}). Error: {str(error)}"
+        )
+        logger.error(error_message)
+        self._set_episode_error(error_message)
+        return TrackNotFound(message=error_message, url=self.__link)
+
+    def _report_episode_retry(self, track_obj, retry_count: int, delay_seconds: int, error: Exception) -> None:
+        status_obj = RetryingObject(
+            ids=track_obj.ids,
+            retry_count=retry_count,
+            seconds_left=delay_seconds,
+            error=str(error),
+            convert_to=self.__convert_to,
+            bitrate=self.__bitrate,
+        )
+        callback_obj = TrackCallbackObject(track=track_obj, status_info=status_obj)
+        report_progress(reporter=Download_JOB.progress_reporter, callback_obj=callback_obj)
+
+    def _raise_episode_retry_limit(self, max_retries: int, last_error: Exception) -> None:
+        self._safe_remove_file(self.__song_path)
+        episode_title, artist_name = self._episode_track_artist()
+        final_error_msg = (
+            f"Maximum retry limit reached for '{episode_title}' by '{artist_name}' "
+            f"(local: {max_retries}, global: {GLOBAL_MAX_RETRIES}). Last error: {str(last_error)}"
+        )
+        self._set_episode_error(final_error_msg)
+        raise TrackNotFound(message=final_error_msg, url=self.__link) from last_error
+
+    def _load_episode_stream_with_retries(self):
+        retry_delay, retry_delay_increase, max_retries = self._episode_retry_settings()
+        retries = 0
+        track_obj = self.__song_metadata
         episode_id = EpisodeId.from_base62(self.__ids)
         while True:
             try:
+                self._ensure_session_ready()
                 stream = Download_JOB.session.content_feeder().load_episode(
                     episode_id,
                     AudioQuality(self.__dw_quality),
                     False,
-                    None
+                    None,
                 )
-                # If load_episode is successful, break from retry loop
-                break
-            except Exception as e:
+                return stream
+            except Exception as error:
                 global GLOBAL_RETRY_COUNT
                 GLOBAL_RETRY_COUNT += 1
-                
-                track_obj = self.__song_metadata
-                status_obj = RetryingObject(
-                    ids=track_obj.ids,
-                    retry_count=retries,
-                    seconds_left=retry_delay,
-                    error=str(e),
-                    convert_to=self.__convert_to,
-                    bitrate=self.__bitrate
-                )
-                callback_obj = TrackCallbackObject(track=track_obj, status_info=status_obj)
-                # Log retry attempt with structured data
-                report_progress(
-                    reporter=Download_JOB.progress_reporter,
-                    callback_obj=callback_obj
-                )
+                retries += 1
+                self._report_episode_retry(track_obj, retries, retry_delay, error)
                 if retries >= max_retries or GLOBAL_RETRY_COUNT >= GLOBAL_MAX_RETRIES:
-                    if os.path.exists(self.__song_path):
-                        os.remove(self.__song_path) # Clean up partial file
-                    track_name = self.__song_metadata.title
-                    artist_name = getattr(self.__preferences, 'artist_separator', '; ').join([a.name for a in self.__song_metadata.artists])
-                    final_error_msg = f"Maximum retry limit reached for '{track_name}' by '{artist_name}' (local: {max_retries}, global: {GLOBAL_MAX_RETRIES}). Last error: {str(e)}"
-                    if hasattr(self, '_EasyDw__c_episode') and self.__c_episode:
-                        self.__c_episode.success = False
-                        self.__c_episode.error_message = final_error_msg
-                    raise TrackNotFound(message=final_error_msg, url=self.__link) from e
+                    self._raise_episode_retry_limit(max_retries, error)
                 time.sleep(retry_delay)
                 retry_delay += retry_delay_increase
-        
-        total_size = stream.input_stream.size
-        os.makedirs(dirname(self.__song_path), exist_ok=True)
-        
-        register_active_download(self.__song_path) # Register before writing
-        
-        try:
-            with open(self.__song_path, "wb") as f:
-                c_stream = stream.input_stream.stream()
-                if self.__real_time_dl and self.__song_metadata_dict.get("duration") and self.__song_metadata_dict["duration"] > 0:
-                    # Restored Real-time download logic for episodes
-                    duration = self.__song_metadata_dict["duration"]
-                    # Base rate to match real-time
-                    base_rate_limit = total_size / duration if duration > 0 else None
-                    # Multiplier handling
-                    m = getattr(self.__preferences, 'real_time_multiplier', 1)
-                    try:
-                        m = int(m)
-                    except Exception:
-                        m = 1
-                    if m < 0:
-                        m = 0
-                    if m > 10:
-                        m = 10
-                    pacing_enabled = (base_rate_limit is not None) and m > 0
-                    rate_limit = (base_rate_limit * m) if pacing_enabled else None
-                    chunk_size = 4096
-                    bytes_written = 0
-                    start_time = time.time()
-                    try:
-                        while True:
-                            chunk = c_stream.read(chunk_size)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            bytes_written += len(chunk)
-                            # Optional: Real-time progress reporting for episodes (can be added here if desired)
-                            # Matching the style of download_try, no specific progress report inside this loop for episodes by default.
-                            if pacing_enabled and rate_limit:
-                                expected_time = bytes_written / rate_limit
-                                elapsed_time = time.time() - start_time
-                                if expected_time > elapsed_time:
-                                    time.sleep(expected_time - elapsed_time)
-                    except Exception as e_realtime:
-                        # If any error occurs during real-time download, clean up
-                        if not c_stream.closed:
-                            try: 
-                                c_stream.close()
-                            except Exception:
-                                pass
-                        # f.close() is handled by with statement, but an explicit one might be here if not using with.
-                        if os.path.exists(self.__song_path):
-                            try: 
-                                os.remove(self.__song_path) 
-                            except Exception:
-                                pass
-                        unregister_active_download(self.__song_path)
-                        episode_title = self.__song_metadata.title
-                        artist_name = getattr(self.__preferences, 'artist_separator', '; ').join([a.name for a in self.__song_metadata.artists])
-                        final_error_msg = f"Error during real-time download for episode '{episode_title}' by '{artist_name}' (URL: {self.__link}). Error: {str(e_realtime)}"
-                        logger.error(final_error_msg)
-                        if hasattr(self, '_EasyDw__c_episode') and self.__c_episode:
-                            self.__c_episode.success = False
-                            self.__c_episode.error_message = final_error_msg
-                        raise TrackNotFound(message=final_error_msg, url=self.__link) from e_realtime
-                else:
-                    # Restored Non real-time download logic for episodes
-                    try:
-                        data = c_stream.read(total_size)
-                        f.write(data)
-                    except Exception as e_standard:
-                         # If any error occurs during standard download, clean up
-                        if not c_stream.closed:
-                            try: 
-                                c_stream.close()
-                            except Exception:
-                                pass
-                        if os.path.exists(self.__song_path):
-                            try: 
-                                os.remove(self.__song_path) 
-                            except Exception:
-                                pass
-                        unregister_active_download(self.__song_path)
-                        episode_title = self.__song_metadata.title
-                        artist_name = getattr(self.__preferences, 'artist_separator', '; ').join([a.name for a in self.__song_metadata.artists])
-                        final_error_msg = f"Error during standard download for episode '{episode_title}' by '{artist_name}' (URL: {self.__link}). Error: {str(e_standard)}"
-                        logger.error(final_error_msg)
-                        if hasattr(self, '_EasyDw__c_episode') and self.__c_episode:
-                            self.__c_episode.success = False
-                            self.__c_episode.error_message = final_error_msg
-                        raise TrackNotFound(message=final_error_msg, url=self.__link) from e_standard
-                
-                # If all went well with writing to file and reading stream:
-                if not c_stream.closed: c_stream.close()
 
-            # If with open completes without internal exceptions leading to TrackNotFound:
-            unregister_active_download(self.__song_path) # Unregister after successful write of original file
-        
-        except TrackNotFound: # Re-raise if it was an internally handled download error
-            raise
-        except Exception as e_outer: # Catch other potential errors around file handling or unexpected issues
-            # Cleanup for download part if an unexpected error occurs outside the inner try-excepts
-            if 'c_stream' in locals() and hasattr(c_stream, 'closed') and not c_stream.closed:
-                try: c_stream.close() 
-                except Exception:
-                    pass
-            if os.path.exists(self.__song_path):
-                try: os.remove(self.__song_path) 
-                except Exception:
-                    pass
-            unregister_active_download(self.__song_path)
-            episode_title = self.__song_metadata.title
-            error_message = f"Failed to download episode '{episode_title}' (URL: {self.__link}) during file operations. Error: {str(e_outer)}"
-            logger.error(error_message)
-            if hasattr(self, '_EasyDw__c_episode') and self.__c_episode:
-                self.__c_episode.success = False
-                self.__c_episode.error_message = error_message
-            raise TrackNotFound(message=error_message, url=self.__link) from e_outer
-            
-        # If download was successful, proceed to conversion and tagging
+    def _write_episode_stream(self, c_stream, output_file, total_size: int) -> None:
+        if not self._should_use_realtime_download():
+            self._write_standard_stream(c_stream, output_file, total_size)
+            return
+        pacing_enabled, rate_limit = self._resolve_rate_limit(total_size)
+        bytes_written = 0
+        start_time = time.time()
+        chunk_size = 4096
+        while True:
+            chunk = c_stream.read(chunk_size)
+            if not chunk:
+                break
+            output_file.write(chunk)
+            bytes_written += len(chunk)
+            if pacing_enabled and rate_limit:
+                expected_time = bytes_written / rate_limit
+                elapsed_time = time.time() - start_time
+                if expected_time > elapsed_time:
+                    time.sleep(expected_time - elapsed_time)
+
+    def _download_episode_file(self, stream) -> None:
+        total_size = stream.input_stream.size
+        c_stream = stream.input_stream.stream()
+        os.makedirs(dirname(self.__song_path), exist_ok=True)
+        register_active_download(self.__song_path)
         try:
-            self.__convert_audio() # This will update self.__c_episode.file_format and path if conversion occurs
-                               # It also handles registration/unregistration of intermediate/final files during conversion.
-        except Exception as conv_e:
-            # Conversion failed. __convert_audio or underlying convert_audio should have cleaned up its own temps.
-            # The original downloaded file (if __convert_audio started from it) might still exist or be the self.__song_path.
-            # Or self.__song_path might be a partially converted file if convert_audio failed mid-way and didn't cleanup perfectly.
-            episode_title = self.__song_metadata.title
-            error_message = f"Audio conversion for episode '{episode_title}' failed. Original error: {str(conv_e)}"
-            
-            track_obj = self.__song_metadata
-            status_obj = ErrorObject(
-                ids=track_obj.ids,
-                error=error_message,
-                convert_to=self.__convert_to,
-                bitrate=self.__bitrate
+            with open(self.__song_path, "wb") as output_file:
+                self._write_episode_stream(c_stream, output_file, total_size)
+        except Exception as stream_error:
+            self._safe_remove_file(self.__song_path)
+            raise self._episode_download_error("stream", stream_error) from stream_error
+        finally:
+            self._close_stream(c_stream)
+            unregister_active_download(self.__song_path)
+
+    def _raise_episode_conversion_error(self, conversion_error: Exception) -> None:
+        episode_title = self.__song_metadata.title
+        error_message = f"Audio conversion for episode '{episode_title}' failed. Original error: {str(conversion_error)}"
+        status_obj = ErrorObject(
+            ids=self.__song_metadata.ids,
+            error=error_message,
+            convert_to=self.__convert_to,
+            bitrate=self.__bitrate,
+        )
+        callback_obj = TrackCallbackObject(track=self.__song_metadata, status_info=status_obj)
+        report_progress(reporter=Download_JOB.progress_reporter, callback_obj=callback_obj)
+        self._safe_remove_file(self.__song_path)
+        unregister_active_download(self.__song_path)
+        logger.error(error_message)
+        self._set_episode_error(error_message)
+        raise TrackNotFound(message=error_message, url=self.__link) from conversion_error
+
+    def download_eps(self) -> Episode:
+        if hasattr(self, "_EasyDw__c_episode") and self.__c_episode:
+            self.__c_episode.success = False
+        if isfile(self.__song_path) and check_track(self.__c_episode):
+            answer = input(
+                f"Episode \"{self.__song_path}\" already exists, do you want to redownload it?(y or n):"
             )
-            callback_obj = TrackCallbackObject(track=track_obj, status_info=status_obj)
-            report_progress(
-                reporter=Download_JOB.progress_reporter,
-                callback_obj=callback_obj
-            )
-            # Attempt to remove self.__song_path, which is the latest known path for this episode
-            if os.path.exists(self.__song_path):
-                os.remove(self.__song_path)
-                unregister_active_download(self.__song_path) # Unregister it as it failed/was removed
-            
-            logger.error(error_message)
-            if hasattr(self, '_EasyDw__c_episode') and self.__c_episode:
-                self.__c_episode.success = False
-                self.__c_episode.error_message = error_message
-            raise TrackNotFound(message=error_message, url=self.__link) from conv_e
-                
-        # If we reach here, download and any conversion were successful.
-        if hasattr(self, '_EasyDw__c_episode') and self.__c_episode:
-            self.__c_episode.success = True 
-            # Apply tags using unified utility
+            if answer not in answers:
+                return self.__c_episode
+
+        stream = self._load_episode_stream_with_retries()
+        self._download_episode_file(stream)
+        try:
+            self.__convert_audio()
+        except Exception as conversion_error:
+            self._raise_episode_conversion_error(conversion_error)
+
+        if hasattr(self, "_EasyDw__c_episode") and self.__c_episode:
+            self.__c_episode.success = True
             process_and_tag_episode(
                 episode=self.__c_episode,
                 metadata_dict=self.__song_metadata_dict,
-                source_type='spotify'
+                source_type="spotify",
             )
-            # Unregister the final successful file path for episodes, as it's now complete.
-            # self.__c_episode.episode_path would have been updated by __convert_audio__ if conversion occurred.
             unregister_active_download(self.__c_episode.episode_path)
-            
         return self.__c_episode
 
 def download_cli(preferences: Preferences) -> None:
@@ -1068,13 +978,70 @@ class DwAlbum:
         self.__output_dir = self.__preferences.output_dir
         self.__album_metadata = self.__preferences.song_metadata
 
+    @staticmethod
+    def _best_album_image_bytes(album_obj):
+        pic_url = (
+            max(album_obj.images, key=lambda i: i.get('height', 0) * i.get('width', 0)).get('url')
+            if album_obj.images
+            else None
+        )
+        return request(pic_url).content if pic_url else None
+
+    def _download_album_track(self, track_in_album, index: int, album_obj):
+        c_preferences = deepcopy(self.__preferences)
+        try:
+            full_track_obj = tracking(
+                track_in_album.ids.spotify,
+                album_data_for_track=self.__preferences.json_data,
+                market=self.__preferences.market,
+            )
+            if not full_track_obj:
+                raise TrackNotFound(f"Could not fetch metadata for track ID {track_in_album.ids.spotify}")
+
+            c_preferences.song_metadata = full_track_obj
+            c_preferences.ids = full_track_obj.ids.spotify
+            c_preferences.link = f"https://open.spotify.com/track/{c_preferences.ids}"
+            c_preferences.track_number = index + 1
+            c_preferences.pad_number_width = getattr(self.__preferences, 'pad_number_width', 'auto')
+            return EASY_DW(c_preferences, parent='album').easy_dw()
+        except Exception as e:
+            song_tags = _track_object_to_dict(track_in_album) if isinstance(track_in_album, TrackObject) else {'music': UNKNOWN_TRACK_TITLE}
+            failed_track = Track(tags=song_tags, song_path=None, file_format=None, quality=None, link=None, ids=track_in_album.ids)
+            failed_track.success = False
+            failed_track.error_message = str(e)
+            logger.warning(
+                f"Track '{song_tags.get('music')}' from album '{album_obj.title}' failed to download. Reason: {failed_track.error_message}"
+            )
+            return failed_track
+
+    @staticmethod
+    def _album_summary_groups(tracks: list):
+        successful_tracks = []
+        failed_tracks = []
+        skipped_tracks = []
+        for track in tracks:
+            track_obj_for_cb = TrackObject(
+                title=track.tags.get('music', UNKNOWN_TRACK_TITLE),
+                artists=[ArtistTrackObject(name=artist.strip()) for artist in track.tags.get('artist', '').split(';')],
+            )
+            if getattr(track, 'was_skipped', False):
+                skipped_tracks.append(track_obj_for_cb)
+            elif track.success:
+                successful_tracks.append(track_obj_for_cb)
+            else:
+                failed_tracks.append(
+                    FailedTrackObject(
+                        track=track_obj_for_cb,
+                        reason=getattr(track, 'error_message', 'Unknown reason'),
+                    )
+                )
+        return successful_tracks, skipped_tracks, failed_tracks
+
     def dw(self) -> Album:
-        # Report album initializing status
         album_obj = self.__album_metadata
         report_album_initializing(album_obj)
         
-        pic_url = max(album_obj.images, key=lambda i: i.get('height', 0) * i.get('width', 0)).get('url') if album_obj.images else None
-        image_bytes = request(pic_url).content if pic_url else None
+        image_bytes = self._best_album_image_bytes(album_obj)
         
         album = Album(self.__ids)
         album.image = image_bytes
@@ -1094,37 +1061,7 @@ class DwAlbum:
         )
         
         for a, track_in_album in enumerate(album_obj.tracks):
-            
-            c_preferences = deepcopy(self.__preferences)
-            
-            try:
-                # Fetch full track object as album endpoint only provides simplified track objects
-                full_track_obj = tracking(
-                    track_in_album.ids.spotify,
-                    album_data_for_track=self.__preferences.json_data, # pass raw album json
-                    market=self.__preferences.market
-                )
-
-                if not full_track_obj:
-                    raise TrackNotFound(f"Could not fetch metadata for track ID {track_in_album.ids.spotify}")
-
-                c_preferences.song_metadata = full_track_obj
-                c_preferences.ids = full_track_obj.ids.spotify
-                c_preferences.link = f"https://open.spotify.com/track/{c_preferences.ids}"
-                # Set album position for progress reporting (not for metadata - that comes from API)
-                c_preferences.track_number = a + 1
-                c_preferences.pad_number_width = getattr(self.__preferences, 'pad_number_width', 'auto')
-
-                track = EASY_DW(c_preferences, parent='album').easy_dw()
-
-            except Exception as e:
-                # Create a failed track object for the summary
-                song_tags = _track_object_to_dict(track_in_album) if isinstance(track_in_album, trackObject) else {'music': UNKNOWN_TRACK_TITLE}
-                track = Track(tags=song_tags, song_path=None, file_format=None, quality=None, link=None, ids=track_in_album.ids)
-                track.success = False
-                track.error_message = str(e)
-                logger.warning(f"Track '{song_tags.get('music')}' from album '{album.album_name}' failed to download. Reason: {track.error_message}")
-
+            track = self._download_album_track(track_in_album, a, album_obj)
             tracks.append(track)
         
         # Save album cover image
@@ -1142,25 +1079,7 @@ class DwAlbum:
             )
             album.zip_path = zip_name
             
-        successful_tracks = []
-        failed_tracks = []
-        skipped_tracks = []
-        for track in tracks:
-            # track.tags is a dict.
-            track_obj_for_cb = trackObject(
-                title=track.tags.get('music', UNKNOWN_TRACK_TITLE),
-                artists=[artistTrackObject(name=artist.strip()) for artist in track.tags.get('artist', '').split(';')]
-            )
-
-            if getattr(track, 'was_skipped', False):
-                skipped_tracks.append(track_obj_for_cb)
-            elif track.success:
-                successful_tracks.append(track_obj_for_cb)
-            else:
-                failed_tracks.append(FailedTrackObject(
-                    track=track_obj_for_cb,
-                    reason=getattr(track, 'error_message', 'Unknown reason')
-                ))
+        successful_tracks, skipped_tracks, failed_tracks = self._album_summary_groups(tracks)
 
         summary_obj = SummaryObject(
             successful_tracks=successful_tracks,
@@ -1197,84 +1116,110 @@ class DwPlaylist:
         self.__song_metadata_list = self.__preferences.song_metadata
         self.__playlist_tracks_json = getattr(self.__preferences, 'playlist_tracks_json', None)
 
+    def _build_playlist_callback_object(self, playlist_name: str, playlist_owner_name: str, playlist_id: str) -> PlaylistObject:
+        playlist_tracks_for_cb = []
+        if self.__playlist_tracks_json:
+            for item in self.__playlist_tracks_json:
+                track_data = item.get('track')
+                if not track_data:
+                    continue
+                track_playlist_obj = json_to_track_playlist_object(track_data)
+                if track_playlist_obj:
+                    playlist_tracks_for_cb.append(track_playlist_obj)
+        return PlaylistObject(
+            title=playlist_name,
+            owner=UserObject(name=playlist_owner_name, ids=IDs(spotify=self.__json_data.get('owner', {}).get('id'))),
+            ids=IDs(spotify=playlist_id),
+            images=self.__json_data.get('images', []),
+            tracks=playlist_tracks_for_cb,
+            description=self.__json_data.get('description'),
+        )
+
+    @staticmethod
+    def _metadata_error_track(track_metadata: dict, playlist_name: str):
+        track_title = track_metadata.get('name', UNKNOWN_TRACK_TITLE)
+        track_ids = track_metadata.get('ids')
+        error_message = track_metadata.get('error_message', 'Unknown error during metadata retrieval.')
+        logger.warning(
+            f"Skipping download for track '{track_title}' (ID: {track_ids}) from playlist '{playlist_name}' due to error: {error_message}"
+        )
+        track_tags = {'music': track_title, 'ids': track_ids}
+        track = Track(tags=track_tags, song_path=None, file_format=None, quality=None, link=None, ids=track_ids)
+        track.success = False
+        track.error_message = error_message
+        return track
+
+    def _build_playlist_track_preferences(self, song_metadata, idx: int):
+        c_preferences = deepcopy(self.__preferences)
+        c_preferences.ids = song_metadata.ids.spotify
+        c_preferences.song_metadata = song_metadata
+        c_preferences.json_data = self.__json_data
+        c_preferences.track_number = idx + 1
+        c_preferences.link = f"https://open.spotify.com/track/{c_preferences.ids}" if c_preferences.ids else None
+        c_preferences.pad_number_width = getattr(self.__preferences, 'pad_number_width', 'auto')
+        return c_preferences
+
+    def _download_playlist_track(self, song_metadata, idx: int, playlist_name: str):
+        c_preferences = self._build_playlist_track_preferences(song_metadata, idx)
+        easy_dw_instance = EASY_DW(c_preferences, parent='playlist')
+        try:
+            return easy_dw_instance.easy_dw()
+        except Exception as e:
+            track = easy_dw_instance.get_no_dw_track()
+            if not isinstance(track, Track):
+                track = Track(_track_object_to_dict(song_metadata), None, None, None, c_preferences.link, c_preferences.ids)
+            track.success = False
+            track.error_message = str(e)
+            logger.warning(f"Failed to download track '{song_metadata.title}' from playlist '{playlist_name}'. Reason: {track.error_message}")
+            return track
+
+    @staticmethod
+    def _playlist_summary_groups(tracks: list):
+        successful_tracks_cb = []
+        failed_tracks_cb = []
+        skipped_tracks_cb = []
+        for track in tracks:
+            track_tags = track.tags
+            track_obj_for_cb = TrackObject(
+                title=track_tags.get('music', UNKNOWN_TRACK_TITLE),
+                artists=[ArtistTrackObject(name=artist.strip()) for artist in track_tags.get('artist', '').split(';')],
+            )
+            if getattr(track, 'was_skipped', False):
+                skipped_tracks_cb.append(track_obj_for_cb)
+            elif track.success:
+                successful_tracks_cb.append(track_obj_for_cb)
+            else:
+                failed_tracks_cb.append(
+                    FailedTrackObject(
+                        track=track_obj_for_cb,
+                        reason=getattr(track, 'error_message', 'Unknown reason'),
+                    )
+                )
+        return successful_tracks_cb, skipped_tracks_cb, failed_tracks_cb
+
     def dw(self) -> Playlist:
         playlist_name = self.__json_data.get('name', 'unknown')
         playlist_owner_name = self.__json_data.get('owner', {}).get('display_name', 'Unknown Owner')
         playlist_id = self.__ids
 
-        # --- Build playlistObject for callbacks ---
-        playlist_tracks_for_cb = []
-        if self.__playlist_tracks_json:
-            for item in self.__playlist_tracks_json:
-                track_data = item.get('track')
-                if track_data:
-                    track_playlist_obj = json_to_track_playlist_object(track_data)
-                    if track_playlist_obj:
-                        playlist_tracks_for_cb.append(track_playlist_obj)
-
-        playlist_obj_for_cb = playlistObject(
-            title=playlist_name,
-            owner=userObject(name=playlist_owner_name, ids=IDs(spotify=self.__json_data.get('owner', {}).get('id'))),
-            ids=IDs(spotify=playlist_id),
-            images=self.__json_data.get('images', []),
-            tracks=playlist_tracks_for_cb,
-            description=self.__json_data.get('description')
-        )
-        # --- End build playlistObject ---
-
-        # Report playlist initializing status
+        playlist_obj_for_cb = self._build_playlist_callback_object(playlist_name, playlist_owner_name, playlist_id)
         report_playlist_initializing(playlist_obj_for_cb)
-        
-        # --- Prepare the m3u playlist file ---
         m3u_path = create_m3u_file(self.__output_dir, playlist_name)
-        # -------------------------------------
 
         playlist = Playlist()
         tracks = playlist.tracks
         for idx, c_song_metadata in enumerate(self.__song_metadata_list):
-            track = None
-
             if isinstance(c_song_metadata, dict) and 'error_type' in c_song_metadata:
-                track_title = c_song_metadata.get('name', UNKNOWN_TRACK_TITLE)
-                track_ids = c_song_metadata.get('ids')
-                error_message = c_song_metadata.get('error_message', 'Unknown error during metadata retrieval.')
-                logger.warning(f"Skipping download for track '{track_title}' (ID: {track_ids}) from playlist '{playlist_name}' due to error: {error_message}")
-                
-                track_tags = {'music': track_title, 'ids': track_ids}
-                track = Track(tags=track_tags, song_path=None, file_format=None, quality=None, link=None, ids=track_ids)
-                track.success = False
-                track.error_message = error_message
+                track = self._metadata_error_track(c_song_metadata, playlist_name)
                 tracks.append(track)
                 continue
 
-            # c_song_metadata is a trackObject
-            c_preferences = deepcopy(self.__preferences)
-            c_preferences.ids = c_song_metadata.ids.spotify
-            c_preferences.song_metadata = c_song_metadata
-            c_preferences.json_data = self.__json_data
-            c_preferences.track_number = idx + 1
-            c_preferences.link = f"https://open.spotify.com/track/{c_preferences.ids}" if c_preferences.ids else None
-            c_preferences.pad_number_width = getattr(self.__preferences, 'pad_number_width', 'auto')
-
-            easy_dw_instance = EASY_DW(c_preferences, parent='playlist')
-
-            try:
-                track = easy_dw_instance.easy_dw()
-            except Exception as e:
-                track = easy_dw_instance.get_no_dw_track()
-                if not isinstance(track, Track):
-                    track = Track(_track_object_to_dict(c_song_metadata), None, None, None, c_preferences.link, c_preferences.ids)
-                track.success = False
-                track.error_message = str(e)
-                logger.warning(f"Failed to download track '{c_song_metadata.title}' from playlist '{playlist_name}'. Reason: {track.error_message}")
+            track = self._download_playlist_track(c_song_metadata, idx, playlist_name)
 
             if track:
                 tracks.append(track)
-
-            # --- Append the final track to the m3u file with extended format ---
             if track and track.success and hasattr(track, 'song_path') and track.song_path:
                 append_track_to_m3u(m3u_path, track)
-            # ---------------------------------------------------------------------
         
         if self.__make_zip:
             playlist_title = self.__json_data['name']
@@ -1282,27 +1227,7 @@ class DwPlaylist:
             create_zip(tracks, zip_name=zip_name)
             playlist.zip_path = zip_name
             
-        # Report playlist done status
-        successful_tracks_cb = []
-        failed_tracks_cb = []
-        skipped_tracks_cb = []
-        for track in tracks:
-            # Create a trackObject for the callback from the internal Track object's tags
-            track_tags = track.tags
-            track_obj_for_cb = trackObject(
-                title=track_tags.get('music', UNKNOWN_TRACK_TITLE),
-                artists=[artistTrackObject(name=artist.strip()) for artist in track_tags.get('artist', '').split(';')]
-            )
-
-            if getattr(track, 'was_skipped', False):
-                skipped_tracks_cb.append(track_obj_for_cb)
-            elif track.success:
-                successful_tracks_cb.append(track_obj_for_cb)
-            else:
-                failed_tracks_cb.append(FailedTrackObject(
-                    track=track_obj_for_cb,
-                    reason=getattr(track, 'error_message', 'Unknown reason')
-                ))
+        successful_tracks_cb, skipped_tracks_cb, failed_tracks_cb = self._playlist_summary_groups(tracks)
 
         summary_obj = SummaryObject(
             successful_tracks=successful_tracks_cb,
@@ -1335,7 +1260,7 @@ class DwEpisode:
         self.__preferences = preferences
 
     def dw(self) -> Episode:
-        episode_obj = self.__preferences.song_metadata # This is a trackObject
+        episode_obj = self.__preferences.song_metadata # This is a TrackObject
         
         # Build status object
         status_obj_init = InitializingObject(ids=episode_obj.ids)

@@ -4,17 +4,17 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 
 from .common import IDs
-from .user import userObject
+from .user import UserObject
 
 @dataclass
-class artistAlbumTrackObject:
+class ArtistAlbumTrackObject:
     """Artist when nested inside a track in an album context."""
     type: str = "artistAlbumTrack"
     name: str = ""
     ids: IDs = field(default_factory=IDs) 
 
 @dataclass
-class artistTrackObject:
+class ArtistTrackObject:
     """
     An artist when nested inside a track context.
     No genres, no albums—just identifying info.
@@ -24,7 +24,7 @@ class artistTrackObject:
     ids: IDs = field(default_factory=IDs)
 
 @dataclass
-class albumTrackObject:
+class AlbumTrackObject:
     """Album when nested inside a track context."""
     type: str = "albumTrack"
     album_type: str = ""  # "album" | "single" | "compilation"
@@ -35,20 +35,20 @@ class albumTrackObject:
     genres: List[str] = field(default_factory=list)
     images: List[Dict[str, Any]] = field(default_factory=list)
     ids: IDs = field(default_factory=IDs)
-    artists: List[artistAlbumTrackObject] = field(default_factory=list)
+    artists: List[ArtistAlbumTrackObject] = field(default_factory=list)
 
 @dataclass
-class playlistTrackObject:
+class PlaylistTrackObject:
     """Playlist when nested inside a track context."""
     type: str = "playlistTrack"
     title: str = ""
     description: Optional[str] = None
-    owner: userObject = field(default_factory=userObject)
+    owner: UserObject = field(default_factory=UserObject)
     ids: IDs = field(default_factory=IDs)
 
 @dataclass
-class trackObject:
-    """A full track record, nesting albumTrackObject and artistTrackObject."""
+class TrackObject:
+    """A full track record, nesting AlbumTrackObject and ArtistTrackObject."""
     type: str = "track"
     title: str = ""
     disc_number: int = 1
@@ -56,6 +56,6 @@ class trackObject:
     duration_ms: int = 0  # mandatory
     explicit: bool = False
     genres: List[str] = field(default_factory=list)
-    album: albumTrackObject = field(default_factory=albumTrackObject)
-    artists: List[artistTrackObject] = field(default_factory=list)
+    album: AlbumTrackObject = field(default_factory=AlbumTrackObject)
+    artists: List[ArtistTrackObject] = field(default_factory=list)
     ids: IDs = field(default_factory=IDs)

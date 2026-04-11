@@ -106,6 +106,91 @@ def unregister_active_download(path):
     # This function is expected to be overridden by the module
     pass
 
+def _configure_active_download_hooks(register_func=None, unregister_func=None):
+    if register_func:
+        global register_active_download
+        register_active_download = register_func
+    if unregister_func:
+        global unregister_active_download
+        unregister_active_download = unregister_func
+
+
+def _resolve_format_details(format_name):
+    if not format_name:
+        return None, None
+    format_name_upper = format_name.upper()
+    if format_name_upper not in AUDIO_FORMATS:
+        logger.warning(f"Unknown format: {format_name}. Using original format.")
+        return None, None
+    return format_name_upper, AUDIO_FORMATS[format_name_upper]
+
+
+def _resolve_effective_bitrate(format_name_upper, format_details, bitrate):
+    effective_bitrate = bitrate
+    if format_details["default_bitrate"] is not None:
+        if not effective_bitrate:
+            return format_details["default_bitrate"]
+        valid_bitrates = [b.lower() for b in format_details["bitrates"]]
+        if effective_bitrate.lower() in valid_bitrates:
+            return effective_bitrate
+        logger.warning(
+            f"Invalid bitrate {effective_bitrate} for {format_name_upper}. "
+            f"Using default {format_details['default_bitrate']}."
+        )
+        return format_details["default_bitrate"]
+    if effective_bitrate:
+        logger.warning(f"Bitrate specified for lossless format {format_name_upper}. Ignoring bitrate.")
+    return None
+
+
+def _should_skip_conversion(input_path, format_name_upper, format_details, effective_bitrate):
+    if not input_path.lower().endswith(format_details["extension"].lower()):
+        return False
+    if format_details["default_bitrate"] is None:
+        logger.info(
+            f"File {input_path} is already in {format_name_upper} (lossless) format. Skipping conversion."
+        )
+        return True
+    if not effective_bitrate:
+        logger.info(
+            f"File {input_path} is already in {format_name_upper} format with a suitable bitrate. Skipping conversion."
+        )
+        return True
+    return False
+
+
+def _build_ffmpeg_command(ffmpeg_path, input_path, format_name_upper, format_details, effective_bitrate, temp_output):
+    cmd = [ffmpeg_path, "-y", "-hide_banner", "-loglevel", "error", "-i", input_path]
+    if effective_bitrate and format_details["bitrates"]:
+        cmd.extend(["-b:a", effective_bitrate])
+    cmd.extend(["-c:a", format_details["ffmpeg_codec"]])
+    if "ffmpeg_format_flag" in format_details:
+        cmd.extend(["-f", format_details["ffmpeg_format_flag"]])
+    if format_name_upper == "MP3":
+        if not effective_bitrate or int(effective_bitrate.replace('k', '')) >= 256:
+            cmd.extend(["-q:a", "0"])
+    cmd.append(temp_output)
+    return cmd
+
+
+def _cleanup_temp_file(temp_output):
+    if exists(temp_output):
+        try:
+            os.remove(temp_output)
+        except Exception:
+            pass
+        unregister_active_download(temp_output)
+
+
+def _finalize_conversion(input_path, output_path, temp_output):
+    register_active_download(output_path)
+    os.rename(temp_output, output_path)
+    unregister_active_download(temp_output)
+    if exists(output_path) and input_path != output_path and exists(input_path):
+        os.remove(input_path)
+        unregister_active_download(input_path)
+
+
 def convert_audio(input_path, format_name=None, bitrate=None, register_func=None, unregister_func=None):
     """
     Convert audio file to the specified format and bitrate.
@@ -120,128 +205,48 @@ def convert_audio(input_path, format_name=None, bitrate=None, register_func=None
     Returns:
         Path to the converted file, or the original path if no conversion was done
     """
-    # Initialize the register and unregister functions
-    if register_func:
-        global register_active_download
-        register_active_download = register_func
-    
-    if unregister_func:
-        global unregister_active_download
-        unregister_active_download = unregister_func
-    
-    # If no format specified, return the original path
-    if not format_name:
-        return input_path
+    _configure_active_download_hooks(register_func, unregister_func)
 
     # Resolve ffmpeg path explicitly (distroless-safe)
     ffmpeg_path = which("ffmpeg") or "/usr/local/bin/ffmpeg"
     if not os.path.exists(ffmpeg_path):
         logger.error(f"FFmpeg is not available (looked for '{ffmpeg_path}'). Audio conversion is unavailable.")
         return input_path
-        
-    # Validate format and get format details
-    format_name_upper = format_name.upper()
-    if format_name_upper not in AUDIO_FORMATS:
-        logger.warning(f"Unknown format: {format_name}. Using original format.")
-        return input_path
-        
-    format_details = AUDIO_FORMATS[format_name_upper]
-    
-    # Determine effective bitrate
-    effective_bitrate = bitrate
-    if format_details["default_bitrate"] is not None: # Lossy format
-        if effective_bitrate:
-            # Validate provided bitrate
-            if effective_bitrate.lower() not in [b.lower() for b in format_details["bitrates"]]:
-                logger.warning(f"Invalid bitrate {effective_bitrate} for {format_name_upper}. Using default {format_details['default_bitrate']}.")
-                effective_bitrate = format_details["default_bitrate"]
-        else: # No bitrate provided for lossy format, use default
-            effective_bitrate = format_details["default_bitrate"]
-    elif effective_bitrate: # Lossless format but bitrate was specified
-        logger.warning(f"Bitrate specified for lossless format {format_name_upper}. Ignoring bitrate.")
-        effective_bitrate = None
 
-    # Skip conversion if the file is already in the target format and bitrate matches (or not applicable)
-    if input_path.lower().endswith(format_details["extension"].lower()):
-        if format_details["default_bitrate"] is None: # Lossless
-             logger.info(f"File {input_path} is already in {format_name_upper} (lossless) format. Skipping conversion.")
-             return input_path
-        if not effective_bitrate and format_details["default_bitrate"] is not None:
-             logger.info(f"File {input_path} is already in {format_name_upper} format with a suitable bitrate. Skipping conversion.")
-             return input_path
-    
-    # Get the output path
+    format_name_upper, format_details = _resolve_format_details(format_name)
+    if not format_name_upper or not format_details:
+        return input_path
+
+    effective_bitrate = _resolve_effective_bitrate(format_name_upper, format_details, bitrate)
+    if _should_skip_conversion(input_path, format_name_upper, format_details, effective_bitrate):
+        return input_path
+
     output_path = get_output_path(input_path, format_name_upper)
-    
-    # Use a temporary file for the conversion to avoid conflicts
     temp_output = output_path + ".tmp"
-    
-    # Register the temporary file
     register_active_download(temp_output)
     
     try:
-        cmd = [ffmpeg_path, "-y", "-hide_banner", "-loglevel", "error", "-i", input_path]
-        
-        # Add bitrate parameter for lossy formats if an effective_bitrate is set
-        if effective_bitrate and format_details["bitrates"]: # lossy
-            cmd.extend(["-b:a", effective_bitrate])
-        
-        # Add codec parameter
-        cmd.extend(["-c:a", format_details["ffmpeg_codec"]])
-        
-        # Add format flag
-        if "ffmpeg_format_flag" in format_details:
-            cmd.extend(["-f", format_details["ffmpeg_format_flag"]])
-        
-        # For some formats, add additional parameters
-        if format_name_upper == "MP3":
-            # Use high quality settings for MP3
-            if not effective_bitrate or int(effective_bitrate.replace('k', '')) >= 256:
-                cmd.extend(["-q:a", "0"])
-        
-        # Add output file
-        cmd.append(temp_output)
-        
-        # Run the conversion
+        cmd = _build_ffmpeg_command(
+            ffmpeg_path, input_path, format_name_upper, format_details, effective_bitrate, temp_output
+        )
         logger.info(f"Converting {input_path} to {format_name_upper}" + (f" at {effective_bitrate}" if effective_bitrate else ""))
         process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         
         if process.returncode != 0:
             logger.error(f"Audio conversion failed: {process.stderr}")
-            if exists(temp_output):
-                os.remove(temp_output)
-                unregister_active_download(temp_output)
+            _cleanup_temp_file(temp_output)
             return input_path
-        
-        # Register the output file and unregister the temp file
-        register_active_download(output_path)
-        
-        # Rename the temporary file to the final file
-        os.rename(temp_output, output_path)
-        unregister_active_download(temp_output)
-        
-        # Remove the original file if the conversion was successful and the files are different
-        if exists(output_path) and input_path != output_path and exists(input_path):
-            os.remove(input_path)
-            unregister_active_download(input_path)
+
+        _finalize_conversion(input_path, output_path, temp_output)
         
         logger.info(f"Successfully converted to {format_name_upper}" + (f" at {effective_bitrate}" if effective_bitrate else ""))
         return output_path
         
     except FileNotFoundError:
         logger.error(f"FFmpeg executable not found at '{ffmpeg_path}'. Conversion aborted.")
-        if exists(temp_output):
-            try:
-                os.remove(temp_output)
-            except Exception:
-                pass
-            unregister_active_download(temp_output)
+        _cleanup_temp_file(temp_output)
         return input_path
     except Exception as e:
         logger.error(f"Error during audio conversion: {str(e)}")
-        # Clean up temp files
-        if exists(temp_output):
-            os.remove(temp_output)
-            unregister_active_download(temp_output)
-        # Return the original file path
+        _cleanup_temp_file(temp_output)
         return input_path

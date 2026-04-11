@@ -20,10 +20,10 @@ from deezspot.models.callback.callbacks import (
     AlbumCallbackObject, 
     PlaylistCallbackObject
 )
-from deezspot.models.callback.track import trackObject, albumTrackObject, playlistTrackObject, artistTrackObject
-from deezspot.models.callback.album import albumObject
-from deezspot.models.callback.playlist import playlistObject
-from deezspot.models.callback.user import userObject
+from deezspot.models.callback.track import TrackObject, AlbumTrackObject, PlaylistTrackObject, ArtistTrackObject
+from deezspot.models.callback.album import AlbumObject
+from deezspot.models.callback.playlist import PlaylistObject
+from deezspot.models.callback.user import UserObject
 
 # Create the main library logger
 logger = logging.getLogger('deezspot')

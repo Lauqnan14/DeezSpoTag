@@ -4,17 +4,17 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 
 from .common import IDs
-from .user import userObject
+from .user import UserObject
 
 @dataclass
-class artistAlbumTrackPlaylistObject:
+class ArtistAlbumTrackPlaylistObject:
     """Artist when nested inside a track in a playlist context."""
     type: str = "artistAlbumTrackPlaylist"
     name: str = ""
     ids: IDs = field(default_factory=IDs)
 
 @dataclass
-class albumTrackPlaylistObject:
+class AlbumTrackPlaylistObject:
     """Album when nested inside a track in a playlist context."""
     type: str = "albumTrackPlaylist"
     album_type: str = ""  # "album" | "single" | "compilation"
@@ -24,11 +24,11 @@ class albumTrackPlaylistObject:
     total_discs: int = 1  # New field for multi-disc album support
     images: List[Dict[str, Any]] = field(default_factory=list)
     ids: IDs = field(default_factory=IDs)
-    artists: List[artistAlbumTrackPlaylistObject] = field(default_factory=list)
+    artists: List[ArtistAlbumTrackPlaylistObject] = field(default_factory=list)
 
 
 @dataclass
-class artistTrackPlaylistObject:
+class ArtistTrackPlaylistObject:
     """Artist when nested inside a track in a playlist context."""
     type: str = "artistTrackPlaylist"
     name: str = ""
@@ -36,14 +36,14 @@ class artistTrackPlaylistObject:
 
 
 @dataclass
-class trackPlaylistObject:
+class TrackPlaylistObject:
     """Track when nested inside a playlist context."""
     type: str = "trackPlaylist"
     title: str = ""
     position: int = 0  # Position in the playlist
     duration_ms: int = 0  # mandatory
-    artists: List[artistTrackPlaylistObject] = field(default_factory=list)
-    album: albumTrackPlaylistObject = field(default_factory=albumTrackPlaylistObject)
+    artists: List[ArtistTrackPlaylistObject] = field(default_factory=list)
+    album: AlbumTrackPlaylistObject = field(default_factory=AlbumTrackPlaylistObject)
     ids: IDs = field(default_factory=IDs)
     disc_number: int = 1
     track_number: int = 1
@@ -51,12 +51,12 @@ class trackPlaylistObject:
 
 
 @dataclass
-class playlistObject:
-    """A user‑curated playlist, nesting trackPlaylistObject[]."""
+class PlaylistObject:
+    """A user‑curated playlist, nesting TrackPlaylistObject[]."""
     type: str = "playlist"
     title: str = ""
     description: Optional[str] = None
-    owner: userObject = field(default_factory=userObject)
-    tracks: List[trackPlaylistObject] = field(default_factory=list)
+    owner: UserObject = field(default_factory=UserObject)
+    tracks: List[TrackPlaylistObject] = field(default_factory=list)
     images: List[Dict[str, Any]] = field(default_factory=list)
     ids: IDs = field(default_factory=IDs) 

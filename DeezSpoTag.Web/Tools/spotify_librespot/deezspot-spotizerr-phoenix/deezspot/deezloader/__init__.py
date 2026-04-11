@@ -59,11 +59,11 @@ from deezspot.models.callback.callbacks import (
     InitializingObject,
     DoneObject,
 )
-from deezspot.models.callback.track import trackObject as trackCbObject, artistTrackObject
-from deezspot.models.callback.album import albumObject as albumCbObject
-from deezspot.models.callback.playlist import playlistObject as playlistCbObject
+from deezspot.models.callback.track import TrackObject as trackCbObject, ArtistTrackObject
+from deezspot.models.callback.album import AlbumObject as albumCbObject
+from deezspot.models.callback.playlist import PlaylistObject as playlistCbObject
 from deezspot.models.callback.common import IDs
-from deezspot.models.callback.user import userObject
+from deezspot.models.callback.user import UserObject
 from rapidfuzz import fuzz
 
 def _sim(a: str, b: str) -> float:
@@ -915,7 +915,7 @@ class DeeLogin:
             # Only initialize Spotify session when we actually need Spotify metadata
             self._ensure_spotify_session()
             try:
-                # Fetch full Spotify album with tracks once and convert to albumObject
+                # Fetch full Spotify album with tracks once and convert to AlbumObject
                 from deezspot.spotloader.__spo_api__ import tracking_album as spo_tracking_album
                 spo_ids = get_ids(link_album)
                 spotify_album_json = Spo.get_album(spo_ids)
@@ -947,14 +947,14 @@ class DeeLogin:
 
     def _build_playlist_track_callback(self, track_info: dict):
         from deezspot.models.callback.playlist import (
-            artistTrackPlaylistObject,
-            albumTrackPlaylistObject,
-            artistAlbumTrackPlaylistObject,
-            trackPlaylistObject
+            ArtistTrackPlaylistObject,
+            AlbumTrackPlaylistObject,
+            ArtistAlbumTrackPlaylistObject,
+            TrackPlaylistObject
         )
 
         track_artists = [
-            artistTrackPlaylistObject(name=artist['name'], ids=IDs(spotify=artist.get('id')))
+            ArtistTrackPlaylistObject(name=artist['name'], ids=IDs(spotify=artist.get('id')))
             for artist in track_info.get('artists', [])
         ]
 
@@ -964,7 +964,7 @@ class DeeLogin:
             for img in album_info.get('images', [])
         ]
         album_artists = [
-            artistAlbumTrackPlaylistObject(name=artist.get('name'), ids=IDs(spotify=artist.get('id')))
+            ArtistAlbumTrackPlaylistObject(name=artist.get('name'), ids=IDs(spotify=artist.get('id')))
             for artist in album_info.get('artists', [])
         ]
 
@@ -976,7 +976,7 @@ class DeeLogin:
             "day": int(release_parts[2]) if len(release_parts) > 2 else 0,
         }
 
-        album_obj = albumTrackPlaylistObject(
+        album_obj = AlbumTrackPlaylistObject(
             title=album_info.get('name', 'Unknown Album'),
             ids=IDs(spotify=album_info.get('id')),
             images=album_images,
@@ -986,7 +986,7 @@ class DeeLogin:
             total_tracks=album_info.get('total_tracks', 0)
         )
 
-        return trackPlaylistObject(
+        return TrackPlaylistObject(
             title=track_info.get('name', 'Unknown Track'),
             artists=track_artists,
             album=album_obj,
@@ -1013,7 +1013,7 @@ class DeeLogin:
     def _playlist_track_for_callback(playlist_obj: playlistCbObject, index: int, fallback_title: str, fallback_artist: str):
         if index - 1 < len(playlist_obj.tracks):
             return playlist_obj.tracks[index - 1]
-        return trackCbObject(title=fallback_title, artists=[artistTrackObject(name=fallback_artist)])
+        return trackCbObject(title=fallback_title, artists=[ArtistTrackObject(name=fallback_artist)])
 
     def _process_spotify_playlist_item(
         self,
@@ -1028,7 +1028,7 @@ class DeeLogin:
         is_track = item.get('track')
         if not is_track:
             reason = "Playlist item was not a valid track object or is not available in your region."
-            unknown_track = trackCbObject(title="Unknown Skipped Item", artists=[artistTrackObject(name="")])
+            unknown_track = trackCbObject(title="Unknown Skipped Item", artists=[ArtistTrackObject(name="")])
             failed_track = Track(
                 tags={'music': 'Unknown Skipped Item', 'artist': 'Unknown'},
                 song_path=None, file_format=None, quality=None, link=None, ids=None
@@ -1138,7 +1138,7 @@ class DeeLogin:
         
         playlist_obj = playlistCbObject(
             title=playlist_json['name'],
-            owner=userObject(name=playlist_json.get('owner', {}).get('display_name', 'Unknown Owner')),
+            owner=UserObject(name=playlist_json.get('owner', {}).get('display_name', 'Unknown Owner')),
             ids=IDs(spotify=playlist_json.get('id', ids)),
             tracks=playlist_tracks_for_callback  # Populate tracks array with track objects
         )

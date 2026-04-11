@@ -28,38 +28,49 @@ class API:
 			raise
 
 	@classmethod
+	def _get_album_id_from_track_payload(cls, infos: dict) -> int | None:
+		album_data = infos.get('album') or {}
+		return album_data.get('id')
+
+	@classmethod
+	def _fetch_full_album_json(cls, album_id: int) -> dict | None:
+		full_album_json = cls.__album_cache.get(album_id)
+		if full_album_json:
+			return full_album_json
+		try:
+			album_url = f"{cls.__api_link}album/{album_id}"
+			full_album_json = cls.__get_api(album_url)
+			if full_album_json:
+				cls.__album_cache[album_id] = full_album_json
+			return full_album_json
+		except Exception as e:
+			logger.warning(f"Could not fetch full album details for album {album_id}: {e}")
+			return None
+
+	@classmethod
+	def _merge_track_with_full_album(cls, infos: dict, full_album_json: dict) -> None:
+		album_data = infos.setdefault('album', {})
+		if 'genres' in full_album_json:
+			album_data['genres'] = full_album_json.get('genres')
+			infos['genres'] = full_album_json.get('genres')
+		if 'nb_tracks' in full_album_json:
+			album_data['nb_tracks'] = full_album_json.get('nb_tracks')
+		if 'record_type' in full_album_json:
+			album_data['record_type'] = full_album_json.get('record_type')
+		if 'contributors' in full_album_json:
+			album_data['contributors'] = full_album_json.get('contributors')
+			if 'contributors' not in infos:
+				infos['contributors'] = full_album_json.get('contributors')
+
+	@classmethod
 	def get_track(cls, track_id):
 		url = f"{cls.__api_link}track/{track_id}"
 		infos = cls.__get_api(url)
-		
-		if infos and infos.get('album') and infos.get('album', {}).get('id'):
-			album_id = infos['album']['id']
-			full_album_json = cls.__album_cache.get(album_id)
-
-			if not full_album_json:
-				try:
-					album_url = f"{cls.__api_link}album/{album_id}"
-					full_album_json = cls.__get_api(album_url)
-					if full_album_json:
-						cls.__album_cache[album_id] = full_album_json
-				except Exception as e:
-					logger.warning(f"Could not fetch full album details for album {album_id}: {e}")
-					full_album_json = None
-			
+		album_id = cls._get_album_id_from_track_payload(infos) if infos else None
+		if album_id:
+			full_album_json = cls._fetch_full_album_json(album_id)
 			if full_album_json:
-				album_data = infos.setdefault('album', {})
-				if 'genres' in full_album_json:
-					album_data['genres'] = full_album_json.get('genres')
-					infos['genres'] = full_album_json.get('genres')
-				if 'nb_tracks' in full_album_json:
-					album_data['nb_tracks'] = full_album_json.get('nb_tracks')
-				if 'record_type' in full_album_json:
-					album_data['record_type'] = full_album_json.get('record_type')
-				if 'contributors' in full_album_json:
-					album_data['contributors'] = full_album_json.get('contributors')
-					# If track doesn't have contributors but album does, use album contributors
-					if 'contributors' not in infos:
-						infos['contributors'] = full_album_json.get('contributors')
+				cls._merge_track_with_full_album(infos, full_album_json)
 
 		return tracking(infos)
 
@@ -96,6 +107,55 @@ class API:
 		return cls.__get_api(url)
 
 	@classmethod
+	def _fetch_paginated_data(cls, first_page: dict, next_key: str = 'next') -> list[dict]:
+		items = list(first_page.get('data', []))
+		next_url = first_page.get(next_key)
+		while next_url:
+			try:
+				next_data = cls.__get_api(next_url)
+			except Exception as e:
+				logger.error(f"Error fetching next page for album tracks: {str(e)}")
+				break
+			page_items = next_data.get('data')
+			if page_items is None:
+				break
+			items.extend(page_items)
+			next_url = next_data.get(next_key)
+		return items
+
+	@classmethod
+	def _load_detailed_album_tracks(cls, numeric_album_id: int) -> list[dict]:
+		tracks_url = f"{cls.__api_link}album/{numeric_album_id}/tracks?limit=100"
+		tracks_response = cls.__get_api(tracks_url)
+		if not tracks_response or 'data' not in tracks_response:
+			return []
+		return cls._fetch_paginated_data(tracks_response)
+
+	@classmethod
+	def _apply_fallback_album_tracks(cls, infos: dict) -> None:
+		if infos.get('nb_tracks', 0) <= 25:
+			return
+		tracks_data = infos.get('tracks') or {}
+		if 'next' not in tracks_data or 'data' not in tracks_data:
+			return
+		expanded_tracks = cls._fetch_paginated_data(tracks_data)
+		infos['tracks']['data'] = expanded_tracks
+
+	@classmethod
+	def _populate_album_tracks(cls, infos: dict, numeric_album_id: int) -> None:
+		try:
+			detailed_tracks = cls._load_detailed_album_tracks(numeric_album_id)
+			if detailed_tracks:
+				if 'tracks' in infos:
+					infos['tracks']['data'] = detailed_tracks
+				logger.info(
+					f"Fetched {len(detailed_tracks)} detailed tracks for album {numeric_album_id}"
+				)
+		except Exception as e:
+			logger.warning(f"Failed to fetch detailed tracks for album {numeric_album_id}: {e}")
+			cls._apply_fallback_album_tracks(infos)
+
+	@classmethod
 	def get_album(cls, album_id):
 		url = f"{cls.__api_link}album/{album_id}"
 		infos = cls.__get_api(url)
@@ -109,56 +169,8 @@ class API:
 		if not numeric_album_id:
 			logger.error(f"Could not get numeric album ID for {album_id}")
 			return tracking_album(infos)
-		
-		# Get detailed track information from the dedicated tracks endpoint
-		tracks_url = f"{cls.__api_link}album/{numeric_album_id}/tracks?limit=100"
-		detailed_tracks = []
-		
-		try:
-			tracks_response = cls.__get_api(tracks_url)
-			if tracks_response and 'data' in tracks_response:
-				detailed_tracks = tracks_response['data']
-				
-				# Handle pagination for albums with more than 100 tracks
-				next_url = tracks_response.get('next')
-				while next_url:
-					try:
-						next_data = cls.__get_api(next_url)
-						if 'data' in next_data:
-							detailed_tracks.extend(next_data['data'])
-							next_url = next_data.get('next')
-						else:
-							break
-					except Exception as e:
-						logger.error(f"Error fetching next page for album tracks: {str(e)}")
-						break
-				
-				# Replace the simplified track data in album response with detailed track data
-				if 'tracks' in infos:
-					infos['tracks']['data'] = detailed_tracks
-					
-				logger.info(f"Fetched {len(detailed_tracks)} detailed tracks for album {numeric_album_id}")
-		except Exception as e:
-			logger.warning(f"Failed to fetch detailed tracks for album {numeric_album_id}: {e}")
-			# Continue with regular album tracks if detailed fetch fails
-			
-			# Handle pagination for regular album endpoint if detailed fetch failed
-			if infos.get('nb_tracks', 0) > 25 and 'tracks' in infos and 'next' in infos['tracks']:
-				all_tracks = infos['tracks']['data']
-				next_url = infos['tracks']['next']
-				while next_url:
-					try:
-						next_data = cls.__get_api(next_url)
-						if 'data' in next_data:
-							all_tracks.extend(next_data['data'])
-							next_url = next_data.get('next')
-						else:
-							break
-					except Exception as e:
-						logger.error(f"Error fetching next page for album tracks: {str(e)}")
-						break
-				infos['tracks']['data'] = all_tracks
-		
+
+		cls._populate_album_tracks(infos, numeric_album_id)
 		return tracking_album(infos)
 
 	@classmethod
