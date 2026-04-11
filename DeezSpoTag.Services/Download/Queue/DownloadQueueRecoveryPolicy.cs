@@ -3,6 +3,7 @@ namespace DeezSpoTag.Services.Download.Queue;
 public static class DownloadQueueRecoveryPolicy
 {
     public static readonly TimeSpan RunningStallThreshold = TimeSpan.FromMinutes(15);
+    public static readonly TimeSpan OrphanedRunningThreshold = TimeSpan.FromMinutes(1);
 
     public static string BuildStallTimeoutMessage(string engine)
     {

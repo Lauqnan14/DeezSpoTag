@@ -36,24 +36,43 @@ public sealed class DownloadQueueRecoveryService
 
     public async Task RecoverStaleRunningTasksAsync(CancellationToken cancellationToken)
     {
-        var staleItems = await _queueRepository.GetRunningTasksOlderThanAsync(
+        await RecoverRunningItemsOlderThanAsync(
             DownloadQueueRecoveryPolicy.RunningStallThreshold,
+            recoverOrphanedOnly: false,
             cancellationToken);
 
-        foreach (var item in staleItems)
+        await RecoverRunningItemsOlderThanAsync(
+            DownloadQueueRecoveryPolicy.OrphanedRunningThreshold,
+            recoverOrphanedOnly: true,
+            cancellationToken);
+    }
+
+    private async Task RecoverRunningItemsOlderThanAsync(
+        TimeSpan age,
+        bool recoverOrphanedOnly,
+        CancellationToken cancellationToken)
+    {
+        var candidates = await _queueRepository.GetRunningTasksOlderThanAsync(age, cancellationToken);
+        foreach (var item in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            if (string.IsNullOrWhiteSpace(item.QueueUuid)
-                || !await _queueRepository.TryClaimStaleRunningAsync(
-                    item.QueueUuid,
-                    DownloadQueueRecoveryPolicy.RunningStallThreshold,
-                    cancellationToken))
+            if (string.IsNullOrWhiteSpace(item.QueueUuid))
             {
                 continue;
             }
 
-            if (_cancellationRegistry.IsActive(item.QueueUuid))
+            var isActive = _cancellationRegistry.IsActive(item.QueueUuid);
+            if (recoverOrphanedOnly && isActive)
+            {
+                continue;
+            }
+
+            if (!await _queueRepository.TryClaimStaleRunningAsync(item.QueueUuid, age, cancellationToken))
+            {
+                continue;
+            }
+
+            if (isActive)
             {
                 await CancelTimedOutActiveItemAsync(item);
                 continue;

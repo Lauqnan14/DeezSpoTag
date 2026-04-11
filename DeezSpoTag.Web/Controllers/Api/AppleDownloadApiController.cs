@@ -202,7 +202,7 @@ public sealed class AppleDownloadApiController : ControllerBase
         var hasAtmos = forceVideoContent
             ? track.Metadata?.HasAtmos == true || IsAtmosQuality(quality)
             : track.Metadata?.HasAtmos == true;
-        var intentQuality = ResolveIntentQuality(quality, hasAtmos, forceVideoContent);
+        var intentQuality = ResolveIntentQuality(quality, forceVideoContent);
         var intent = new DownloadIntent
         {
             SourceService = AppleSource,
@@ -219,13 +219,8 @@ public sealed class AppleDownloadApiController : ControllerBase
         return intent;
     }
 
-    private static string ResolveIntentQuality(string? quality, bool hasAtmos, bool forceVideoContent)
+    private static string ResolveIntentQuality(string? quality, bool forceVideoContent)
     {
-        if (hasAtmos)
-        {
-            return AtmosQuality;
-        }
-
         if (!string.IsNullOrWhiteSpace(quality))
         {
             return quality;
