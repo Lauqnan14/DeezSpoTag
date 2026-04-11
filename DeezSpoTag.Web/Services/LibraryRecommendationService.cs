@@ -506,9 +506,11 @@ public sealed class LibraryRecommendationService
             scope.StationId,
             cancellationToken);
 
+        var basePoolTrackCount = basePool.Tracks.Count;
         var eligible = basePool.Tracks
             .Where(track => !ignoredTrackIds.Contains(track.Id))
             .ToList();
+        var eligibleTrackCount = eligible.Count;
         IReadOnlyList<RecommendationTrackDto> enriched;
         try
         {
@@ -527,10 +529,32 @@ public sealed class LibraryRecommendationService
             scope.FolderId,
             enriched,
             cancellationToken);
+        var nonLibraryTrackCount = enriched.Count;
         var cappedTracks = BuildDiversifiedTrackSelection(
             enriched,
             cappedLimit,
             dayUtc);
+        if (cappedTracks.Count < cappedLimit && eligibleTrackCount > cappedTracks.Count)
+        {
+            cappedTracks = TopUpRecommendationSelection(
+                cappedTracks,
+                eligible,
+                cappedLimit,
+                dayUtc);
+        }
+
+        if (cappedTracks.Count < cappedLimit)
+        {
+            _logger.LogInformation(
+                "Recommendation result underfilled for station {StationId}: requested={Requested}, returned={Returned}, basePool={BasePool}, afterIgnore={AfterIgnore}, afterLibraryExclusion={AfterLibraryExclusion}.",
+                scope.StationId,
+                cappedLimit,
+                cappedTracks.Count,
+                basePoolTrackCount,
+                eligibleTrackCount,
+                nonLibraryTrackCount);
+        }
+
         var imageUrl = stationImageUrl
             ?? cappedTracks
                 .Select(track => track.Album?.CoverMedium)
@@ -2232,7 +2256,7 @@ public sealed class LibraryRecommendationService
         int limit,
         DateOnly dayUtc)
     {
-        var cappedLimit = Math.Clamp(limit, 1, MaxDailyRecommendations);
+        var cappedLimit = Math.Clamp(limit, 1, RecommendationPoolLimit);
         var merged = new List<RecommendationTrackDto>(cappedLimit);
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var deezerIndex = 0;
@@ -2280,6 +2304,74 @@ public sealed class LibraryRecommendationService
     }
 
     private sealed record RecommendationLane(string Key, Queue<RecommendationTrackDto> Tracks);
+
+    private static List<RecommendationTrackDto> TopUpRecommendationSelection(
+        IReadOnlyList<RecommendationTrackDto> primarySelection,
+        IReadOnlyList<RecommendationTrackDto> fallbackCandidates,
+        int limit,
+        DateOnly dayUtc)
+    {
+        var cappedLimit = Math.Clamp(limit, 1, MaxDailyRecommendations);
+        if (primarySelection.Count >= cappedLimit)
+        {
+            return primarySelection
+                .Take(cappedLimit)
+                .Select((track, index) => track with { TrackPosition = index + 1 })
+                .ToList();
+        }
+
+        var output = new List<RecommendationTrackDto>(cappedLimit);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var track in primarySelection)
+        {
+            var normalizedId = NormalizeId(track.Id);
+            if (string.IsNullOrWhiteSpace(normalizedId) || !seen.Add(normalizedId))
+            {
+                continue;
+            }
+
+            output.Add(track with { Id = normalizedId });
+            if (output.Count >= cappedLimit)
+            {
+                break;
+            }
+        }
+
+        if (output.Count < cappedLimit)
+        {
+            var remaining = fallbackCandidates
+                .Where(track =>
+                {
+                    var normalizedId = NormalizeId(track.Id);
+                    return !string.IsNullOrWhiteSpace(normalizedId) && !seen.Contains(normalizedId);
+                })
+                .ToList();
+
+            var topUpTracks = BuildDiversifiedTrackSelection(
+                remaining,
+                cappedLimit - output.Count,
+                dayUtc);
+
+            foreach (var topUpTrack in topUpTracks)
+            {
+                var normalizedId = NormalizeId(topUpTrack.Id);
+                if (string.IsNullOrWhiteSpace(normalizedId) || !seen.Add(normalizedId))
+                {
+                    continue;
+                }
+
+                output.Add(topUpTrack with { Id = normalizedId });
+                if (output.Count >= cappedLimit)
+                {
+                    break;
+                }
+            }
+        }
+
+        return output
+            .Select((track, index) => track with { TrackPosition = index + 1 })
+            .ToList();
+    }
 
     private static List<RecommendationTrackDto> BuildDiversifiedTrackSelection(
         IReadOnlyList<RecommendationTrackDto> tracks,
