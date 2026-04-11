@@ -238,21 +238,21 @@
 }
 
 <div class="container-fluid autotag-page material-icons-pending">
-    <div class="autotag-sticky-shell" id="autotagStickyShell">
-        <div class="d-flex justify-content-between align-items-center mb-4 autotag-hero">
-            <div>
-                <h1 class="welcome-title mb-2">AutoTag Flow</h1>
-                <p class="text-muted">Configure the three-stage enrichment pipeline for your music files.</p>
-            </div>
-            <div class="autotag-actions autotag-hero-actions">
-                <a class="action-btn action-btn-sm" href="/AutoTag/QuickTag">Tag Editor</a>
-                <a class="action-btn action-btn-sm" href="/Activities?tab=autotag-status-content">View Status</a>
-                <button type="button" class="action-btn action-btn-sm" id="autotag-reset">Reset</button>
-                <button type="button" class="action-btn action-btn-sm" id="autotag-save">Save Preferences</button>
-                <button type="button" class="action-btn action-btn-sm" id="autotag-stop">Stop AutoTag</button>
-            </div>
+    <div class="autotag-hero">
+        <div class="autotag-hero-copy">
+            <h1 class="welcome-title mb-2">AutoTag Flow</h1>
+            <p class="text-muted mb-0">Configure the three-stage enrichment pipeline for your music files.</p>
         </div>
+        <div class="autotag-actions autotag-hero-actions">
+            <a class="action-btn action-btn-sm" href="/AutoTag/QuickTag">Tag Editor</a>
+            <a class="action-btn action-btn-sm" href="/Activities?tab=autotag-status-content">View Status</a>
+            <button type="button" class="action-btn action-btn-sm" id="autotag-reset">Reset</button>
+            <button type="button" class="action-btn action-btn-sm" id="autotag-save">Save Preferences</button>
+            <button type="button" class="action-btn action-btn-sm" id="autotag-stop">Stop AutoTag</button>
+        </div>
+    </div>
 
+    <div class="autotag-sticky-shell" id="autotagStickyShell">
         <!-- Tabs Navigation -->
         <ul class="nav nav-tabs nav-fill mb-4 ds-mobile-tabs" id="autotagTabs">
             <li class="nav-item">
