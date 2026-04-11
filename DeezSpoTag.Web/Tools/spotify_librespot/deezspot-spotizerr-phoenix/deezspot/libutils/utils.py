@@ -135,75 +135,72 @@ def what_kind(link):
 def __get_tronc(string):
     return string[:len(string) - 1]
 
+def _resolve_artist_separator(metadata: dict) -> str:
+    separator = metadata.get('artist_separator', ';')
+    if not isinstance(separator, str) or separator == "":
+        return ';'
+    return separator
+
+def _normalize_metadata_items(raw_value, separator: str) -> list[str]:
+    if isinstance(raw_value, str):
+        return [item.strip() for item in raw_value.split(separator) if item.strip()]
+    if isinstance(raw_value, list):
+        return [str(item).strip() for item in raw_value if str(item).strip()]
+    return []
+
+def _resolve_indexed_placeholder(full_key: str, metadata: dict, separator: str) -> str | None:
+    indexed_artist_match = re.fullmatch(r'(artist|ar_album)_(\d+)', full_key)
+    if not indexed_artist_match:
+        return None
+
+    base_key = indexed_artist_match.group(1)
+    index = int(indexed_artist_match.group(2))
+    items = _normalize_metadata_items(metadata.get(base_key), separator)
+    if not items:
+        return ""
+    if 1 <= index <= len(items):
+        return items[index - 1]
+    return items[0]
+
+def _default_placeholder_value(full_key: str, metadata: dict):
+    value = metadata.get(full_key, '')
+    if value is not None:
+        return value
+    if full_key == 'discnum':
+        return '1'
+    if full_key in ['tracknum', 'playlistnum']:
+        return '0'
+    return ''
+
+def _format_year_value(value) -> str:
+    if isinstance(value, datetime):
+        return str(value.year)
+    return str(value).split('-')[0]
+
+def _format_number_value(value, pad_tracks: bool, pad_number_width: int | None) -> str:
+    str_value = str(value)
+    if not pad_tracks or not str_value.isdigit():
+        return str_value
+    if isinstance(pad_number_width, int) and pad_number_width >= 1:
+        return str_value.zfill(pad_number_width)
+    if len(str_value) == 1:
+        return str_value.zfill(2)
+    return str_value
+
 def apply_custom_format(format_str, metadata: dict, pad_tracks=True, pad_number_width: int | None = None) -> str:
     def replacer(match):
-        full_key = match.group(1)  # e.g., "artist", "ar_album_1"
+        full_key = match.group(1)
+        separator = _resolve_artist_separator(metadata)
+        indexed_value = _resolve_indexed_placeholder(full_key, metadata, separator)
+        if indexed_value is not None:
+            return indexed_value
 
-        # Allow custom artist/album-artist separator to be provided via metadata
-        separator = metadata.get('artist_separator', ';')
-        if not isinstance(separator, str) or separator == "":
-            separator = ';'
-
-        # Check for specific indexed placeholders: artist_INDEX or ar_album_INDEX
-        # Allows %artist_1%, %ar_album_1%, etc.
-        indexed_artist_match = re.fullmatch(r'(artist|ar_album)_(\d+)', full_key)
-
-        if indexed_artist_match:
-            base_key = indexed_artist_match.group(1)  # "artist" or "ar_album"
-            try:
-                index = int(indexed_artist_match.group(2))
-            except ValueError: # Should not happen with \d+ but good practice
-                return ""
-
-
-            raw_value = metadata.get(base_key)  # Get the value of "artist" or "ar_album"
-            items = []
-
-            if isinstance(raw_value, str):
-                # Split by provided separator and strip whitespace
-                items = [item.strip() for item in raw_value.split(separator) if item.strip()]
-            elif isinstance(raw_value, list):
-                # Convert all items to string, strip whitespace
-                items = [str(item).strip() for item in raw_value if str(item).strip()]
-            # If raw_value is not string or list, items remains []
-
-            if items:  # If we have a list of artists/ar_album
-                if 1 <= index <= len(items):
-                    return items[index - 1]
-                elif items:  # Index out of bounds, but list is not empty
-                    return items[0]  # Fallback to the first item
-                # If items is empty after processing, fall through
-            
-            # Fallback if no items or base_key was not found or not list/string
-            return ""
-
-        else:
-            # Original non-indexed placeholder logic (for %album%, %title%, %artist%, %ar_album%, etc.)
-            value = metadata.get(full_key, '')
-
-            # Handle None values safely
-            if value is None:
-                if full_key in ['tracknum', 'discnum', 'playlistnum']:
-                    value = '1' if full_key == 'discnum' else '0'
-                else:
-                    value = ''
-
-            if full_key == 'year' and value:
-                if isinstance(value, datetime):
-                    return str(value.year)
-                # Fallback for string-based dates like "YYYY-MM-DD" or just "YYYY"
-                return str(value).split('-')[0]
-
-            if pad_tracks and full_key in ['tracknum', 'discnum', 'playlistnum']:
-                str_value = str(value)
-                if str_value.isdigit():
-                    if isinstance(pad_number_width, int) and pad_number_width >= 1:
-                        return str_value.zfill(pad_number_width)
-                    # Default legacy behavior: pad single digits to width 2
-                    if len(str_value) == 1:
-                        return str_value.zfill(2)
-                return str_value
-            return str(value)
+        value = _default_placeholder_value(full_key, metadata)
+        if full_key == 'year' and value:
+            return _format_year_value(value)
+        if full_key in ['tracknum', 'discnum', 'playlistnum']:
+            return _format_number_value(value, pad_tracks, pad_number_width)
+        return str(value)
 
     return re.sub(r'%([^%]+)%', replacer, format_str)
 
@@ -288,28 +285,12 @@ def create_zip(
     zip_name=None, # Specific name for the zip file
     custom_dir_format=None # To determine zip name if not provided, and for paths inside zip
 ):
-    # Determine the zip file name and path
-    if zip_name:
-        # If zip_name is a full path, use it as is.
-        # Otherwise, prepend output_dir.
-        if basename(zip_name) != zip_name: # Checks if it's just a filename
-            actual_zip_path = zip_name
-        else:
-            # Ensure output_dir exists for placing the zip file
-            if not output_dir:
-                # Fallback to a default if output_dir is not provided with a relative zip_name
-                output_dir = "."
-                __check_dir(output_dir)
-            actual_zip_path = join(output_dir, zip_name)
-    elif song_metadata and output_dir: # Construct default name if song_metadata and output_dir exist
-        # Use album/playlist name and quality for default zip name
-        # Sanitize the album/playlist name part of the zip file
-        name_part = sanitize_name(song_metadata.get('album', song_metadata.get('name', 'archive')))
-        quality_part = f" [{song_quality}]" if song_quality else ""
-        actual_zip_path = join(output_dir, f"{name_part}{quality_part}.zip")
-    else:
-        # Fallback zip name if not enough info
-        actual_zip_path = join(output_dir if output_dir else ".", "archive.zip")
+    actual_zip_path = _resolve_zip_output_path(
+        output_dir=output_dir,
+        song_metadata=song_metadata,
+        song_quality=song_quality,
+        zip_name=zip_name,
+    )
 
     # Ensure the directory for the zip file exists
     zip_dir = dirname(actual_zip_path)
@@ -337,6 +318,24 @@ def create_zip(
                 
                 zf.write(track.song_path, arcname=path_in_zip)
     return actual_zip_path
+
+
+def _resolve_zip_output_path(output_dir, song_metadata, song_quality, zip_name):
+    if zip_name:
+        return _resolve_explicit_zip_path(output_dir, zip_name)
+    if song_metadata and output_dir:
+        name_part = sanitize_name(song_metadata.get('album', song_metadata.get('name', 'archive')))
+        quality_part = f" [{song_quality}]" if song_quality else ""
+        return join(output_dir, f"{name_part}{quality_part}.zip")
+    return join(output_dir if output_dir else ".", "archive.zip")
+
+
+def _resolve_explicit_zip_path(output_dir, zip_name):
+    if basename(zip_name) != zip_name:
+        return zip_name
+    target_output_dir = output_dir if output_dir else "."
+    __check_dir(target_output_dir)
+    return join(target_output_dir, zip_name)
 
 def trasform_sync_lyric(lyric):
     sync_array = []

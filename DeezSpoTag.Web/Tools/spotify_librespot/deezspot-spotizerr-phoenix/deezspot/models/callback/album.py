@@ -6,7 +6,7 @@ from typing import List, Optional, Dict, Any
 from .common import IDs, ReleaseDate
 
 @dataclass
-class artistTrackAlbumObject:
+class ArtistTrackAlbumObject:
     """Artist representation for a track in an album context."""
     type: str = "artistTrackAlbum"
     name: str = ""
@@ -14,7 +14,7 @@ class artistTrackAlbumObject:
 
 
 @dataclass
-class artistAlbumObject:
+class ArtistAlbumObject:
     """Artist representation for an album."""
     type: str = "artistAlbum"
     name: str = ""
@@ -22,7 +22,7 @@ class artistAlbumObject:
     ids: IDs = field(default_factory=IDs) 
     
 @dataclass
-class trackAlbumObject:
+class TrackAlbumObject:
     """Track when nested inside an album context."""
     type: str = "trackAlbum"
     title: str = ""
@@ -32,12 +32,12 @@ class trackAlbumObject:
     explicit: bool = False
     genres: List[str] = field(default_factory=list)
     ids: IDs = field(default_factory=IDs)
-    artists: List[artistTrackAlbumObject] = field(default_factory=list)
+    artists: List[ArtistTrackAlbumObject] = field(default_factory=list)
 
 
 @dataclass
-class albumObject:
-    """A standalone album/single/compilation, with nested trackAlbumObject[] for its tracks."""
+class AlbumObject:
+    """A standalone album/single/compilation, with nested TrackAlbumObject[] for its tracks."""
     type: str = "album"
     album_type: str = ""  # "album" | "single" | "compilation"
     title: str = ""
@@ -48,5 +48,5 @@ class albumObject:
     images: List[Dict[str, Any]] = field(default_factory=list)
     copyrights: List[Dict[str, str]] = field(default_factory=list)
     ids: IDs = field(default_factory=IDs)
-    tracks: List[trackAlbumObject] = field(default_factory=list)
-    artists: List[artistAlbumObject] = field(default_factory=list)
+    tracks: List[TrackAlbumObject] = field(default_factory=list)
+    artists: List[ArtistAlbumObject] = field(default_factory=list)

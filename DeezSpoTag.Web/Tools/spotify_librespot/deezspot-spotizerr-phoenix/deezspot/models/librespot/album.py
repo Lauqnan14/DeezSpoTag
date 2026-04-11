@@ -28,27 +28,44 @@ class Album:
 	copyrights: Optional[List[Dict[str, Any]]] = None
 
 	@staticmethod
-	def from_dict(obj: Any) -> "Album":
-		if not isinstance(obj, dict):
-			return Album()
+	def _parse_images(obj: Dict[str, Any]) -> Optional[List[Image]]:
 		imgs: List[Image] = []
 		for im in obj.get("images", []) or []:
 			im_obj = Image.from_dict(im)
 			if im_obj:
 				imgs.append(im_obj)
+		return imgs or None
+
+	@staticmethod
+	def _parse_artists(obj: Dict[str, Any]) -> List[ArtistRef]:
 		artists: List[ArtistRef] = []
-		for a in obj.get("artists", []) or []:
-			artists.append(ArtistRef.from_dict(a))
-		# Tracks can be base62 strings or full track dicts
+		for artist_item in obj.get("artists", []) or []:
+			artists.append(ArtistRef.from_dict(artist_item))
+		return artists
+
+	@staticmethod
+	def _parse_tracks(obj: Dict[str, Any]) -> Optional[List[Union[str, TrackModel]]]:
+		if not isinstance(obj.get("tracks"), list):
+			return None
 		tracks_in: List[Union[str, TrackModel]] = []
-		if isinstance(obj.get("tracks"), list):
-			for t in obj.get("tracks"):
-				if isinstance(t, dict):
-					tracks_in.append(TrackModel.from_dict(t))
-				else:
-					ts = _str(t)
-					if ts:
-						tracks_in.append(ts)
+		for track_item in obj.get("tracks"):
+			if isinstance(track_item, dict):
+				tracks_in.append(TrackModel.from_dict(track_item))
+				continue
+			track_string = _str(track_item)
+			if track_string:
+				tracks_in.append(track_string)
+		return tracks_in or None
+
+	@staticmethod
+	def from_dict(obj: Any) -> "Album":
+		if not isinstance(obj, dict):
+			return Album()
+
+		imgs = Album._parse_images(obj)
+		artists = Album._parse_artists(obj)
+		tracks_in = Album._parse_tracks(obj)
+
 		return Album(
 			id=_str(obj.get("id")),
 			name=_str(obj.get("name")),
@@ -63,9 +80,9 @@ class Album:
 			external_urls=ExternalUrls.from_dict(obj.get("external_urls", {})),
 			external_ids=dict(obj.get("external_ids", {}) or {}),
 			available_markets=list(obj.get("available_markets", []) or []),
-			images=imgs or None,
+			images=imgs,
 			artists=artists,
-			tracks=tracks_in or None,
+			tracks=tracks_in,
 			copyrights=list(obj.get("copyrights", []) or []),
 		)
 

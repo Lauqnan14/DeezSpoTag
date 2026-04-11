@@ -5,10 +5,10 @@ Callback data models for the music metadata schema.
 """
 
 from .common import IDs, ReleaseDate
-from .artist import artistObject, albumArtistObject
-from .album import albumObject, trackAlbumObject, artistAlbumObject
-from .track import trackObject, artistTrackObject, albumTrackObject, playlistTrackObject
-from .playlist import playlistObject, trackPlaylistObject, albumTrackPlaylistObject, artistTrackPlaylistObject 
+from .artist import ArtistObject, AlbumArtistObject
+from .album import AlbumObject, TrackAlbumObject, ArtistAlbumObject
+from .track import TrackObject, ArtistTrackObject, AlbumTrackObject, PlaylistTrackObject
+from .playlist import PlaylistObject, TrackPlaylistObject, AlbumTrackPlaylistObject, ArtistTrackPlaylistObject 
 from .callbacks import (
     BaseStatusObject, 
     InitializingObject, 
@@ -23,4 +23,4 @@ from .callbacks import (
     AlbumCallbackObject, 
     PlaylistCallbackObject
 ) 
-from .user import userObject
+from .user import UserObject

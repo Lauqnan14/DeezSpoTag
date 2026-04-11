@@ -200,65 +200,62 @@ class LibrespotClient:
         except Exception:
             return ""
 
+    def _special_message_json(self, msg: Message, msg_name: str) -> Optional[Any]:
+        if msg_name == "Image":
+            return self._prune_empty({
+                "url": self._image_url_from_file_id(getattr(msg, "file_id", b"")),
+                "width": getattr(msg, "width", 0) or 0,
+                "height": getattr(msg, "height", 0) or 0,
+            })
+        if msg_name == "TopTracks":
+            track_ids = [self._bytes_to_base62(getattr(track, "gid", b"")) for track in getattr(msg, "track", [])]
+            country = getattr(msg, "country", "") or ""
+            return self._prune_empty({"country": country or None, "track": track_ids})
+        if not hasattr(msg, "album"):
+            return None
+        albums = getattr(msg, "album", [])
+        album_ids = [self._bytes_to_base62(getattr(album, "gid", b"")) for album in albums]
+        return {"album": album_ids}
+
+    def _album_group_field_ids(self, value: Any) -> List[str]:
+        ids: List[str] = []
+        for album_group in value:
+            for album in getattr(album_group, "album", []):
+                ids.append(self._bytes_to_base62(getattr(album, "gid", b"")))
+        return ids
+
+    def _convert_message_field(self, field: Any, value: Any) -> Any:
+        if field.type == FieldDescriptor.TYPE_BYTES:
+            if field.label == FieldDescriptor.LABEL_REPEATED:
+                return [self._bytes_to_base62(v) for v in value]
+            return self._bytes_to_base62(value)
+        if field.type == FieldDescriptor.TYPE_MESSAGE:
+            if field.label == FieldDescriptor.LABEL_REPEATED:
+                return [self._proto_to_full_json(v) for v in value]
+            return self._proto_to_full_json(value)
+        if field.label == FieldDescriptor.LABEL_REPEATED:
+            return list(value)
+        return value
+
+    def _convert_message_fields(self, msg: Message) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        group_field_names = ("album_group", "single_group", "compilation_group", "appears_on_group")
+        for field, value in msg.ListFields():
+            name = field.name
+            if name in group_field_names:
+                out[name] = self._album_group_field_ids(value)
+                continue
+            field_name = "id" if name == "gid" else name
+            out[field_name] = self._convert_message_field(field, value)
+        return out
+
     def _proto_to_full_json(self, msg: Any) -> Any:
         if isinstance(msg, Message):
             msg_name = msg.DESCRIPTOR.name if hasattr(msg, "DESCRIPTOR") else ""
-            if msg_name == "Image":
-                url = self._image_url_from_file_id(getattr(msg, "file_id", b""))
-                width = getattr(msg, "width", 0) or 0
-                height = getattr(msg, "height", 0) or 0
-                return self._prune_empty({"url": url, "width": width, "height": height})
-
-            if msg_name == "TopTracks":
-                country = getattr(msg, "country", "") or ""
-                ids: List[str] = []
-                try:
-                    for t in getattr(msg, "track", []):
-                        ids.append(self._bytes_to_base62(getattr(t, "gid", b"")))
-                except Exception:
-                    pass
-                return self._prune_empty({"country": country or None, "track": ids})
-
-            if hasattr(msg, "album"):
-                try:
-                    albums = getattr(msg, "album", [])
-                    ids: List[str] = []
-                    for a in albums:
-                        ids.append(self._bytes_to_base62(getattr(a, "gid", b"")))
-                    return {"album": ids}
-                except Exception:
-                    pass
-
-            out: Dict[str, Any] = {}
-            for field, value in msg.ListFields():
-                name = field.name
-                if name in ("album_group", "single_group", "compilation_group", "appears_on_group"):
-                    try:
-                        ids = []
-                        for ag in value:  # repeated AlbumGroup
-                            for a in getattr(ag, "album", []):
-                                ids.append(self._bytes_to_base62(getattr(a, "gid", b"")))
-                        out[name] = ids
-                        continue
-                    except Exception:
-                        pass
-                name_out = "id" if name == "gid" else name
-                if field.type == FieldDescriptor.TYPE_BYTES:
-                    if field.label == FieldDescriptor.LABEL_REPEATED:
-                        out[name_out] = [self._bytes_to_base62(v) for v in value]
-                    else:
-                        out[name_out] = self._bytes_to_base62(value)
-                elif field.type == FieldDescriptor.TYPE_MESSAGE:
-                    if field.label == FieldDescriptor.LABEL_REPEATED:
-                        out[name_out] = [self._proto_to_full_json(v) for v in value]
-                    else:
-                        out[name_out] = self._proto_to_full_json(value)
-                else:
-                    if field.label == FieldDescriptor.LABEL_REPEATED:
-                        out[name_out] = list(value)
-                    else:
-                        out[name_out] = value
-            return out
+            special_json = self._special_message_json(msg, msg_name)
+            if special_json is not None:
+                return special_json
+            return self._convert_message_fields(msg)
         if isinstance(msg, (bytes, bytearray)):
             return self._bytes_to_base62(bytes(msg))
         if isinstance(msg, (list, tuple)):
@@ -404,72 +401,135 @@ class LibrespotClient:
             "uri": uri or "",
         }
 
+    @staticmethod
+    def _album_identity(a: Metadata.Album) -> tuple[str, str]:
+        gid = getattr(a, "gid", b"")
+        hex_id = util.bytes_to_hex(gid) if gid else ""
+        if not hex_id:
+            return "", ""
+        try:
+            album_id = AlbumId.from_hex(hex_id)
+            uri = album_id.to_spotify_uri()
+            return uri.split(":")[-1], uri
+        except Exception:
+            return "", ""
+
+    def _album_track_ids(self, a: Metadata.Album) -> List[str]:
+        track_ids: List[str] = []
+        for disc in getattr(a, "disc", []):
+            for track in getattr(disc, "track", []):
+                track_gid = getattr(track, "gid", b"")
+                if not track_gid:
+                    continue
+                try:
+                    track_id = TrackId.from_hex(util.bytes_to_hex(track_gid))
+                    track_uri = track_id.to_spotify_uri()
+                    base62 = track_uri.split(":")[-1]
+                    if base62:
+                        track_ids.append(base62)
+                except Exception:
+                    continue
+        return track_ids
+
+    @staticmethod
+    def _track_stub(base62_id: str) -> Dict[str, Any]:
+        return {
+            "id": base62_id,
+            "uri": f"{SPOTIFY_TRACK_URI_PREFIX}{base62_id}",
+            "type": "track",
+            "external_urls": {"spotify": f"https://open.spotify.com/track/{base62_id}"},
+        }
+
+    def _album_tracks_payload(self, track_ids: List[str], include_tracks: bool, for_embed: bool) -> Optional[List[Any]]:
+        if for_embed:
+            return None
+        if not include_tracks or self._session is None or not track_ids:
+            return track_ids
+
+        fetched = self._fetch_track_objects(track_ids)
+        payload: List[Any] = []
+        for base62_id in track_ids:
+            track_obj = fetched.get(base62_id)
+            payload.append(track_obj if track_obj is not None else self._track_stub(base62_id))
+        return payload
+
+    @staticmethod
+    def _album_copyrights(a: Metadata.Album) -> List[Dict[str, Any]]:
+        return [
+            {
+                "text": getattr(copyright_item, "text", ""),
+                "type": str(getattr(copyright_item, "type", "")),
+            }
+            for copyright_item in getattr(a, "copyright", [])
+        ]
+
+    @staticmethod
+    def _album_total_tracks(a: Metadata.Album) -> int:
+        return sum(len(getattr(disc, "track", [])) for disc in getattr(a, "disc", []))
+
+    @staticmethod
+    def _album_external_urls(base62: str) -> Dict[str, str]:
+        if not base62:
+            return {}
+        return {"spotify": f"https://open.spotify.com/album/{base62}"}
+
+    @staticmethod
+    def _track_identity(t: Metadata.Track) -> tuple[str, str]:
+        track_gid = getattr(t, "gid", b"")
+        if not track_gid:
+            return "", ""
+        try:
+            track_id = TrackId.from_hex(util.bytes_to_hex(track_gid))
+            uri = track_id.to_spotify_uri()
+            return uri.split(":")[-1], uri
+        except Exception:
+            return "", ""
+
+    @staticmethod
+    def _preview_url_from_track(t: Metadata.Track) -> Optional[str]:
+        previews = getattr(t, "preview", [])
+        if not previews:
+            return None
+        preview = previews[0]
+        file_id = getattr(preview, "file_id", b"")
+        if not file_id:
+            return None
+        try:
+            return f"https://p.scdn.co/mp3-preview/{util.bytes_to_hex(file_id)}"
+        except Exception:
+            return None
+
+    @staticmethod
+    def _licensor_uuid_from_track(t: Metadata.Track) -> Optional[str]:
+        licensor = getattr(t, "licensor", None)
+        if licensor is None:
+            return None
+        licensor_uuid = getattr(licensor, "uuid", b"")
+        if not licensor_uuid:
+            return None
+        return util.bytes_to_hex(licensor_uuid)
+
     def _album_proto_to_object(
         self,
         a: Metadata.Album,
         include_tracks: bool = False,
         for_embed: bool = False,
     ) -> Dict[str, Any]:
-        gid = getattr(a, "gid", b"")
-        hex_id = util.bytes_to_hex(gid) if gid else ""
-        uri = ""
-        base62 = ""
-        if hex_id:
-            try:
-                aid = AlbumId.from_hex(hex_id)
-                uri = aid.to_spotify_uri()
-                base62 = uri.split(":")[-1]
-            except Exception:
-                pass
-
+        base62, uri = self._album_identity(a)
         available = self._restrictions_to_available_markets(getattr(a, "restriction", []))
         release_date, release_precision = self._date_to_release_fields(getattr(a, "date", None))
-
         artists = [self._artist_ref_to_object(ar) for ar in getattr(a, "artist", [])]
-
         track_ids: List[str] = []
-        if not for_embed:
-            for d in getattr(a, "disc", []):
-                for t in getattr(d, "track", []):
-                    tid_hex = util.bytes_to_hex(getattr(t, "gid", b"")) if getattr(t, "gid", b"") else ""
-                    if not tid_hex:
-                        continue
-                    try:
-                        tid = TrackId.from_hex(tid_hex)
-                        t_uri = tid.to_spotify_uri()
-                        t_base62 = t_uri.split(":")[-1]
-                        if t_base62:
-                            track_ids.append(t_base62)
-                    except Exception:
-                        pass
-
         track_list_value: Optional[List[Any]] = None
         if not for_embed:
-            if include_tracks and self._session is not None and track_ids:
-                fetched = self._fetch_track_objects(track_ids)
-                expanded: List[Dict[str, Any]] = []
-                for b62 in track_ids:
-                    obj = fetched.get(b62)
-                    if obj is not None:
-                        expanded.append(obj)
-                    else:
-                        expanded.append({
-                            "id": b62,
-                            "uri": f"{SPOTIFY_TRACK_URI_PREFIX}{b62}",
-                            "type": "track",
-                            "external_urls": {"spotify": f"https://open.spotify.com/track/{b62}"},
-                        })
-                track_list_value = expanded
-            else:
-                track_list_value = track_ids
-
+            track_ids = self._album_track_ids(a)
+            track_list_value = self._album_tracks_payload(track_ids, include_tracks, for_embed)
         images = self._images_from_group(getattr(a, "cover_group", None), getattr(a, "cover", []))
 
         result: Dict[str, Any] = {
             "album_type": self._album_type_to_str(a) or None,
-            **({"total_tracks": sum(len(getattr(d, "track", [])) for d in getattr(a, "disc", []))} if not for_embed else {}),
             "available_markets": available,
-            "external_urls": {"spotify": f"https://open.spotify.com/album/{base62}"} if base62 else {},
+            "external_urls": self._album_external_urls(base62),
             "id": base62 or None,
             "images": images or None,
             "name": getattr(a, "name", "") or None,
@@ -478,46 +538,27 @@ class LibrespotClient:
             "type": "album",
             "uri": uri or None,
             "artists": artists or None,
-            **({"tracks": track_list_value} if (not for_embed and track_list_value is not None) else {}),
-            "copyrights": [{
-                "text": getattr(c, "text", ""),
-                "type": str(getattr(c, "type", "")),
-            } for c in getattr(a, "copyright", [])],
+            "copyrights": self._album_copyrights(a),
             "external_ids": self._external_ids_to_dict(getattr(a, "external_id", [])) or None,
             "label": getattr(a, "label", "") or None,
             "popularity": getattr(a, "popularity", 0) or 0,
         }
+        if not for_embed:
+            result["total_tracks"] = self._album_total_tracks(a)
+            if track_list_value is not None:
+                result["tracks"] = track_list_value
         return self._prune_empty(result)
 
     def _track_proto_to_object(self, t: Metadata.Track) -> Dict[str, Any]:
-        tid_hex = util.bytes_to_hex(getattr(t, "gid", b"")) if getattr(t, "gid", b"") else ""
-        uri = ""
-        base62 = ""
-        if tid_hex:
-            try:
-                tid = TrackId.from_hex(tid_hex)
-                uri = tid.to_spotify_uri()
-                base62 = uri.split(":")[-1]
-            except Exception:
-                pass
-
-        album_obj = self._album_proto_to_object(getattr(t, "album", None), include_tracks=False, for_embed=True) if getattr(t, "album", None) else None
-
-        preview_url = None
-        previews = getattr(t, "preview", [])
-        if previews:
-            pf = previews[0]
-            pf_id = getattr(pf, "file_id", b"")
-            if pf_id:
-                try:
-                    preview_url = f"https://p.scdn.co/mp3-preview/{util.bytes_to_hex(pf_id)}"
-                except Exception:
-                    preview_url = None
-
-        licensor_uuid = None
-        licensor = getattr(t, "licensor", None)
-        if licensor is not None:
-            licensor_uuid = util.bytes_to_hex(getattr(licensor, "uuid", b"")) if getattr(licensor, "uuid", b"") else None
+        base62, uri = self._track_identity(t)
+        album_proto = getattr(t, "album", None)
+        album_obj = (
+            self._album_proto_to_object(album_proto, include_tracks=False, for_embed=True)
+            if album_proto
+            else None
+        )
+        preview_url = self._preview_url_from_track(t)
+        licensor_uuid = self._licensor_uuid_from_track(t)
 
         result = {
             "album": album_obj,
@@ -541,6 +582,103 @@ class LibrespotClient:
         }
         return self._prune_empty(result)
 
+    @staticmethod
+    def _playlist_track_ids(contents: Any) -> List[str]:
+        if contents is None:
+            return []
+        track_ids: List[str] = []
+        for item in getattr(contents, "items", []):
+            uri = getattr(item, "uri", "") or ""
+            if uri.startswith(SPOTIFY_TRACK_URI_PREFIX):
+                track_ids.append(uri.split(":")[-1])
+        return track_ids
+
+    @staticmethod
+    def _playlist_added_at_iso(timestamp_ms: Any) -> Optional[str]:
+        if not isinstance(timestamp_ms, int) or timestamp_ms <= 0:
+            return None
+        try:
+            return datetime.datetime.fromtimestamp(
+                timestamp_ms / 1000.0,
+                tz=datetime.UTC,
+            ).isoformat().replace("+00:00", "Z")
+        except Exception:
+            return None
+
+    def _playlist_track_object(
+        self,
+        uri: str,
+        include_track_objects: bool,
+        fetched_tracks: Dict[str, Optional[Dict[str, Any]]],
+    ) -> Optional[Dict[str, Any]]:
+        if not uri.startswith(SPOTIFY_TRACK_URI_PREFIX):
+            return None
+        base62_id = uri.split(":")[-1]
+        if include_track_objects:
+            fetched_obj = fetched_tracks.get(base62_id)
+            if fetched_obj is not None:
+                return fetched_obj
+        return self._track_stub(base62_id)
+
+    def _playlist_item_object(
+        self,
+        item: Any,
+        include_track_objects: bool,
+        fetched_tracks: Dict[str, Optional[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        uri = getattr(item, "uri", "") or ""
+        attrs = getattr(item, "attributes", None)
+        added_by = getattr(attrs, "added_by", "") if attrs else ""
+        timestamp_ms = getattr(attrs, "timestamp", 0) if attrs else 0
+        item_id_bytes = getattr(attrs, "item_id", b"") if attrs else b""
+        payload: Dict[str, Any] = {
+            "added_at": self._playlist_added_at_iso(timestamp_ms),
+            "added_by": {
+                "id": added_by,
+                "type": "user",
+                "uri": f"spotify:user:{added_by}" if added_by else "",
+                "external_urls": {"spotify": f"https://open.spotify.com/user/{added_by}"} if added_by else {},
+                "display_name": added_by or None,
+            },
+            "is_local": False,
+            "track": self._playlist_track_object(uri, include_track_objects, fetched_tracks),
+        }
+        if isinstance(item_id_bytes, (bytes, bytearray)) and item_id_bytes:
+            payload["item_id"] = util.bytes_to_hex(item_id_bytes)
+        return self._prune_empty(payload)
+
+    def _playlist_items(
+        self,
+        contents: Any,
+        include_track_objects: bool,
+        fetched_tracks: Dict[str, Optional[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        if contents is None:
+            return []
+        return [
+            self._playlist_item_object(item, include_track_objects, fetched_tracks)
+            for item in getattr(contents, "items", [])
+        ]
+
+    @staticmethod
+    def _playlist_length_seconds(track_ids: List[str], fetched_tracks: Dict[str, Optional[Dict[str, Any]]]) -> Optional[int]:
+        if not track_ids or not fetched_tracks:
+            return None
+        total_ms = 0
+        for base62_id in track_ids:
+            track_obj = fetched_tracks.get(base62_id)
+            if track_obj is None:
+                continue
+            duration_ms = track_obj.get("duration_ms")
+            if isinstance(duration_ms, int) and duration_ms > 0:
+                total_ms += duration_ms
+        return (total_ms // 1000) if total_ms > 0 else 0
+
+    @staticmethod
+    def _playlist_snapshot_id(p: P4.SelectedListContent) -> Optional[str]:
+        revision_bytes = getattr(p, "revision", b"") if hasattr(p, "revision") else b""
+        return base64.b64encode(revision_bytes).decode("ascii") if revision_bytes else None
+
     def _playlist_proto_to_object(self, p: P4.SelectedListContent, include_track_objects: bool) -> Dict[str, Any]:
         attrs = getattr(p, "attributes", None)
         name = getattr(attrs, "name", "") if attrs else ""
@@ -548,107 +686,28 @@ class LibrespotClient:
         collaborative = bool(getattr(attrs, "collaborative", False)) if attrs else False
         images: List[Dict[str, Any]] = []
         picture_url: Optional[str] = None
-        # Derive picture URL from attributes.picture with header-aware parsing
         pic_url = self._get_playlist_picture_url(attrs)
         if pic_url:
             picture_url = pic_url
             images.append({"url": pic_url, "width": 0, "height": 0})
 
         owner_username = getattr(p, "owner_username", "") or ""
-
-        items: List[Dict[str, Any]] = []
         contents = getattr(p, "contents", None)
-
+        to_fetch = self._playlist_track_ids(contents)
         fetched_tracks: Dict[str, Optional[Dict[str, Any]]] = {}
-        # Collect all track ids to fetch durations for length computation and, if requested, for expansion
-        to_fetch: List[str] = []
-        if contents is not None:
-            for it in getattr(contents, "items", []):
-                uri = getattr(it, "uri", "") or ""
-                if uri.startswith(SPOTIFY_TRACK_URI_PREFIX):
-                    b62 = uri.split(":")[-1]
-                    to_fetch.append(b62)
         if to_fetch and self._session is not None:
             fetched_tracks = self._fetch_track_objects(to_fetch)
+        items = self._playlist_items(contents, include_track_objects, fetched_tracks)
 
-        if contents is not None:
-            for it in getattr(contents, "items", []):
-                uri = getattr(it, "uri", "") or ""
-                attrs_it = getattr(it, "attributes", None)
-                added_by = getattr(attrs_it, "added_by", "") if attrs_it else ""
-                ts_ms = getattr(attrs_it, "timestamp", 0) if attrs_it else 0
-                item_id_bytes = getattr(attrs_it, "item_id", b"") if attrs_it else b""
-                added_at_iso = None
-                if isinstance(ts_ms, int) and ts_ms > 0:
-                    try:
-                        added_at_iso = datetime.datetime.fromtimestamp(
-                            ts_ms / 1000.0,
-                            tz=datetime.UTC,
-                        ).isoformat().replace("+00:00", "Z")
-                    except Exception:
-                        added_at_iso = None
-                track_obj: Optional[Dict[str, Any]] = None
-                if include_track_objects and uri.startswith(SPOTIFY_TRACK_URI_PREFIX):
-                    b62 = uri.split(":")[-1]
-                    obj = fetched_tracks.get(b62)
-                    if obj is not None:
-                        track_obj = obj
-                    else:
-                        track_obj = {
-                            "id": b62,
-                            "uri": uri,
-                            "type": "track",
-                            "external_urls": {"spotify": f"https://open.spotify.com/track/{b62}"},
-                        }
-                else:
-                    if uri.startswith(SPOTIFY_TRACK_URI_PREFIX):
-                        b62 = uri.split(":")[-1]
-                        track_obj = {
-                            "id": b62,
-                            "uri": uri,
-                            "type": "track",
-                            "external_urls": {"spotify": f"https://open.spotify.com/track/{b62}"},
-                        }
-                item_obj: Dict[str, Any] = {
-                    "added_at": added_at_iso,
-                    "added_by": {
-                        "id": added_by,
-                        "type": "user",
-                        "uri": f"spotify:user:{added_by}" if added_by else "",
-                        "external_urls": {"spotify": f"https://open.spotify.com/user/{added_by}"} if added_by else {},
-                        "display_name": added_by or None,
-                    },
-                    "is_local": False,
-                    "track": track_obj,
-                }
-                if isinstance(item_id_bytes, (bytes, bytearray)) and item_id_bytes:
-                    item_obj["item_id"] = util.bytes_to_hex(item_id_bytes)
-                items.append(self._prune_empty(item_obj))
-
-        tracks_obj = self._prune_empty({
+        tracks_obj = self._prune_empty(
+            {
             "offset": 0,
             "total": len(items),
             "items": items,
-        })
-
-        # Compute playlist length (in seconds) by summing track durations
-        length_seconds: Optional[int] = None
-        try:
-            if to_fetch and fetched_tracks:
-                total_ms = 0
-                for b62 in to_fetch:
-                    obj = fetched_tracks.get(b62)
-                    if obj is None:
-                        continue
-                    dur = obj.get("duration_ms")
-                    if isinstance(dur, int) and dur > 0:
-                        total_ms += dur
-                length_seconds = (total_ms // 1000) if total_ms > 0 else 0
-        except Exception:
-            length_seconds = None
-
-        rev_bytes = getattr(p, "revision", b"") if hasattr(p, "revision") else b""
-        snapshot_b64 = base64.b64encode(rev_bytes).decode("ascii") if rev_bytes else None
+            }
+        )
+        length_seconds = self._playlist_length_seconds(to_fetch, fetched_tracks)
+        snapshot_b64 = self._playlist_snapshot_id(p)
 
         result = {
             "name": name or None,

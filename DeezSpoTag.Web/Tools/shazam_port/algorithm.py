@@ -237,6 +237,45 @@ class SignatureGenerator:
             return FrequencyBand.hz_3500_5500
         return None
 
+    @staticmethod
+    def _is_initial_peak_candidate(fft_minus_46: List[float], fft_minus_49: List[float], bin_position: int) -> bool:
+        return (
+            fft_minus_46[bin_position] >= 1 / 64
+            and fft_minus_46[bin_position] >= fft_minus_49[bin_position - 1]
+        )
+
+    def _is_local_peak(self, fft_minus_46: List[float], fft_minus_49: List[float], bin_position: int) -> bool:
+        max_neighbor_in_fft_minus_49 = self._max_neighbor_in_fft(fft_minus_49, bin_position)
+        if fft_minus_46[bin_position] <= max_neighbor_in_fft_minus_49:
+            return False
+        max_neighbor_in_other_adjacent_ffts = self._max_neighbor_in_adjacent_ffts(
+            bin_position,
+            max_neighbor_in_fft_minus_49,
+        )
+        return fft_minus_46[bin_position] > max_neighbor_in_other_adjacent_ffts
+
+    def _record_peak(self, fft_minus_46: List[float], bin_position: int) -> None:
+        fft_number = self.spread_fft_output.num_written - 46
+        peak_magnitude, peak_variation_1, corrected_peak_frequency_bin, _ = self._compute_peak_metrics(
+            fft_minus_46,
+            bin_position,
+        )
+        assert peak_variation_1 > 0
+        frequency_hz = corrected_peak_frequency_bin * (16000 / 2 / 1024 / 64)
+        band = self._frequency_to_band(frequency_hz)
+        if band is None:
+            return
+        if band not in self.next_signature.frequency_band_to_sound_peaks:
+            self.next_signature.frequency_band_to_sound_peaks[band] = []
+        self.next_signature.frequency_band_to_sound_peaks[band].append(
+            FrequencyPeak(
+                fft_number,
+                int(peak_magnitude),
+                int(corrected_peak_frequency_bin),
+                16000,
+            )
+        )
+
     def do_peak_recognition(self):
         fft_minus_46 = self.fft_outputs[
             (self.fft_outputs.position - 46) % self.fft_outputs.buffer_size
@@ -246,41 +285,8 @@ class SignatureGenerator:
         ]
 
         for bin_position in range(10, 1015):
-            # Ensure that the bin is large enough to be a peak
-            if fft_minus_46[bin_position] >= 1 / 64 and (
-                fft_minus_46[bin_position] >= fft_minus_49[bin_position - 1]
-            ):
-                # Ensure that it is frequency-domain local minimum
-                max_neighbor_in_fft_minus_49 = self._max_neighbor_in_fft(fft_minus_49, bin_position)
-                if fft_minus_46[bin_position] > max_neighbor_in_fft_minus_49:
-                    # Ensure that it is a time-domain local minimum
-                    max_neighbor_in_other_adjacent_ffts = self._max_neighbor_in_adjacent_ffts(
-                        bin_position,
-                        max_neighbor_in_fft_minus_49,
-                    )
-                    if fft_minus_46[bin_position] > max_neighbor_in_other_adjacent_ffts:
-                        # This is a peak, store the peak
-
-                        fft_number = self.spread_fft_output.num_written - 46
-
-                        peak_magnitude, peak_variation_1, corrected_peak_frequency_bin, _ = (
-                            self._compute_peak_metrics(fft_minus_46, bin_position)
-                        )
-                        assert peak_variation_1 > 0
-                        frequency_hz = corrected_peak_frequency_bin * (16000 / 2 / 1024 / 64)
-
-                        band = self._frequency_to_band(frequency_hz)
-                        if band is None:
-                            continue
-
-                        if band not in self.next_signature.frequency_band_to_sound_peaks:
-                            self.next_signature.frequency_band_to_sound_peaks[band] = []
-
-                        self.next_signature.frequency_band_to_sound_peaks[band].append(
-                            FrequencyPeak(
-                                fft_number,
-                                int(peak_magnitude),
-                                int(corrected_peak_frequency_bin),
-                                16000,
-                            )
-                        )
+            if not self._is_initial_peak_candidate(fft_minus_46, fft_minus_49, bin_position):
+                continue
+            if not self._is_local_peak(fft_minus_46, fft_minus_49, bin_position):
+                continue
+            self._record_peak(fft_minus_46, bin_position)

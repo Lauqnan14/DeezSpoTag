@@ -54,15 +54,7 @@ class MercuryClient(Closeable, PacketsReceiver):
 
     def dispatch(self, packet: Packet) -> None:
         payload = io.BytesIO(packet.payload)
-        seq_length = struct.unpack(">H", payload.read(2))[0]
-        if seq_length == 2:
-            seq = struct.unpack(">H", payload.read(2))[0]
-        elif seq_length == 4:
-            seq = struct.unpack(">i", payload.read(4))[0]
-        elif seq_length == 8:
-            seq = struct.unpack(">q", payload.read(8))[0]
-        else:
-            raise RuntimeError("Unknown seq length: {}".format(seq_length))
+        seq = self._read_sequence(payload)
         flags = payload.read(1)
         parts = struct.unpack(">H", payload.read(2))[0]
         partial = self.__partials.get(seq)
@@ -72,11 +64,7 @@ class MercuryClient(Closeable, PacketsReceiver):
         self.logger.debug(
             "Handling packet, cmd: 0x{}, seq: {}, flags: {}, parts: {}".format(
                 util.bytes_to_hex(packet.cmd), seq, flags, parts))
-        for _ in range(parts):
-            size = struct.unpack(">H", payload.read(2))[0]
-            buffer = payload.read(size)
-            partial.append(buffer)
-            self.__partials[seq] = partial
+        self._append_parts(payload, parts, partial)
         if flags != b"\x01":
             return
         self.__partials.pop(seq)
@@ -84,34 +72,65 @@ class MercuryClient(Closeable, PacketsReceiver):
         header.ParseFromString(partial[0])
         response = MercuryClient.Response(header, partial)
         if packet.is_cmd(Packet.Type.mercury_event):
-            dispatched = False
-            with self.__subscriptions_lock:
-                for sub in self.__subscriptions:
-                    if sub.matches(header.uri):
-                        sub.dispatch(response)
-                        dispatched = True
-            if not dispatched:
-                self.logger.debug(
-                    "Couldn't dispatch Mercury event seq: {}, uri: {}, code: {}, payload: {}"
-                    .format(seq, header.uri, header.status_code,
-                            response.payload))
-        elif (packet.is_cmd(Packet.Type.mercury_req)
-              or packet.is_cmd(Packet.Type.mercury_sub)
-              or packet.is_cmd(Packet.Type.mercury_sub)):
-            callback = self.__callbacks.get(seq)
-            self.__callbacks.pop(seq)
-            if callback is not None:
-                callback.response(response)
-            else:
-                self.logger.warning(
-                    "Skipped Mercury response, seq: {}, uri: {}, code: {}".
-                    format(seq, response.uri, response.status_code))
-            with self.__remove_callback_lock:
-                self.__remove_callback_lock.notify_all()
+            self._dispatch_event(seq, header, response)
+            return
+        if self._is_callback_packet(packet):
+            self._dispatch_callback(seq, response)
+            return
+        self.logger.warning(
+            "Couldn't handle packet, seq: {}, uri: {}, code: {}".format(
+                seq, header.uri, header.status_code))
+
+    @staticmethod
+    def _read_sequence(payload: io.BytesIO) -> int:
+        seq_length = struct.unpack(">H", payload.read(2))[0]
+        if seq_length == 2:
+            return struct.unpack(">H", payload.read(2))[0]
+        if seq_length == 4:
+            return struct.unpack(">i", payload.read(4))[0]
+        if seq_length == 8:
+            return struct.unpack(">q", payload.read(8))[0]
+        raise RuntimeError("Unknown seq length: {}".format(seq_length))
+
+    @staticmethod
+    def _append_parts(payload: io.BytesIO, parts: int,
+                      partial: typing.List[bytes]) -> None:
+        for _ in range(parts):
+            size = struct.unpack(">H", payload.read(2))[0]
+            partial.append(payload.read(size))
+
+    def _dispatch_event(self, seq: int, header: Mercury.Header,
+                        response: MercuryClient.Response) -> None:
+        dispatched = False
+        with self.__subscriptions_lock:
+            for sub in self.__subscriptions:
+                if sub.matches(header.uri):
+                    sub.dispatch(response)
+                    dispatched = True
+        if dispatched:
+            return
+        self.logger.debug(
+            "Couldn't dispatch Mercury event seq: {}, uri: {}, code: {}, payload: {}"
+            .format(seq, header.uri, header.status_code, response.payload))
+
+    @staticmethod
+    def _is_callback_packet(packet: Packet) -> bool:
+        return (packet.is_cmd(Packet.Type.mercury_req)
+                or packet.is_cmd(Packet.Type.mercury_sub)
+                or packet.is_cmd(Packet.Type.mercury_sub))
+
+    def _dispatch_callback(self, seq: int,
+                           response: MercuryClient.Response) -> None:
+        callback = self.__callbacks.get(seq)
+        self.__callbacks.pop(seq)
+        if callback is not None:
+            callback.response(response)
         else:
             self.logger.warning(
-                "Couldn't handle packet, seq: {}, uri: {}, code: {}".format(
-                    seq, header.uri, header.status_code))
+                "Skipped Mercury response, seq: {}, uri: {}, code: {}".
+                format(seq, response.uri, response.status_code))
+        with self.__remove_callback_lock:
+            self.__remove_callback_lock.notify_all()
 
     def interested_in(self, uri: str, listener: SubListener) -> None:
         self.__subscriptions.append(

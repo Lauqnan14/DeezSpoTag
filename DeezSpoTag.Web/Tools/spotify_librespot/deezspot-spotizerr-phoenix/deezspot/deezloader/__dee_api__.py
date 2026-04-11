@@ -4,25 +4,25 @@ from typing import Optional, List, Dict, Any
 
 from deezspot.models.callback.common import IDs
 from deezspot.models.callback.track import (
-    trackObject,
-    albumTrackObject,
-    artistTrackObject,
-    artistAlbumTrackObject,
+    TrackObject,
+    AlbumTrackObject,
+    ArtistTrackObject,
+    ArtistAlbumTrackObject,
 )
 from deezspot.models.callback.album import (
-    albumObject,
-    trackAlbumObject,
-    artistAlbumObject,
-    artistTrackAlbumObject,
+    AlbumObject,
+    TrackAlbumObject,
+    ArtistAlbumObject,
+    ArtistTrackAlbumObject,
 )
 from deezspot.models.callback.playlist import (
-    playlistObject,
-    trackPlaylistObject,
-    albumTrackPlaylistObject,
-    artistTrackPlaylistObject,
-    artistAlbumTrackPlaylistObject,
+    PlaylistObject,
+    TrackPlaylistObject,
+    AlbumTrackPlaylistObject,
+    ArtistTrackPlaylistObject,
+    ArtistAlbumTrackPlaylistObject,
 )
-from deezspot.models.callback.user import userObject
+from deezspot.models.callback.user import UserObject
 from deezspot.libutils.logging_utils import logger
 
 def _parse_release_date(date_str: Optional[str]) -> Dict[str, Any]:
@@ -57,13 +57,13 @@ def _get_images_from_cover(item_json: dict) -> List[Dict[str, Any]]:
     return images
 
 
-def _json_to_artist_track_object(artist_json: dict) -> artistTrackObject:
-    return artistTrackObject(
+def _json_to_artist_track_object(artist_json: dict) -> ArtistTrackObject:
+    return ArtistTrackObject(
         name=artist_json.get('name'),
         ids=IDs(deezer=artist_json.get('id'))
     )
 
-def _json_to_album_track_object(album_json: dict) -> albumTrackObject:
+def _json_to_album_track_object(album_json: dict) -> AlbumTrackObject:
     artists = []
     
     # Check for contributors first - they're more detailed
@@ -71,25 +71,25 @@ def _json_to_album_track_object(album_json: dict) -> albumTrackObject:
         # Look for main artists
         main_artists = [c for c in album_json['contributors'] if c.get('role') == 'Main']
         if main_artists:
-            artists = [artistAlbumTrackObject(
+            artists = [ArtistAlbumTrackObject(
                 name=c.get('name'),
                 ids=IDs(deezer=c.get('id'))
             ) for c in main_artists]
         else:
             # If no main artists specified, use all contributors
-            artists = [artistAlbumTrackObject(
+            artists = [ArtistAlbumTrackObject(
                 name=c.get('name'),
                 ids=IDs(deezer=c.get('id'))
             ) for c in album_json['contributors']]
     
     # If no contributors found, use the artist field
     if not artists and "artist" in album_json:
-        artists.append(artistAlbumTrackObject(
+        artists.append(ArtistAlbumTrackObject(
             name=album_json['artist'].get('name'),
             ids=IDs(deezer=album_json['artist'].get('id'))
         ))
 
-    return albumTrackObject(
+    return AlbumTrackObject(
         album_type=album_json.get('record_type', ''),
         title=album_json.get('title'),
         ids=IDs(deezer=album_json.get('id')),
@@ -100,25 +100,25 @@ def _json_to_album_track_object(album_json: dict) -> albumTrackObject:
         genres=[g['name'] for g in album_json.get('genres', {}).get('data', [])]
     )
 
-def tracking(track_json: dict) -> Optional[trackObject]:
+def tracking(track_json: dict) -> Optional[TrackObject]:
     """
-    Convert raw Deezer API track response to a standardized trackObject.
+    Convert raw Deezer API track response to a standardized TrackObject.
     
     Args:
         track_json: Raw track data from Deezer API
         
     Returns:
-        A standardized trackObject or None if input is invalid
+        A standardized TrackObject or None if input is invalid
     """
     if not track_json or 'id' not in track_json:
         return None
         
     return create_standardized_track(track_json)
 
-def _json_to_track_album_object(track_json: dict) -> trackAlbumObject:
+def _json_to_track_album_object(track_json: dict) -> TrackAlbumObject:
     artists = []
     if "artist" in track_json:
-        artists.append(artistTrackAlbumObject(
+        artists.append(ArtistTrackAlbumObject(
             name=track_json['artist'].get('name'),
             ids=IDs(deezer=track_json['artist'].get('id'))
         ))
@@ -128,7 +128,7 @@ def _json_to_track_album_object(track_json: dict) -> trackAlbumObject:
         for contributor in track_json['contributors']:
             # Skip duplicates - don't add if name already exists
             if not any(artist.name == contributor.get('name') for artist in artists):
-                artists.append(artistTrackAlbumObject(
+                artists.append(ArtistTrackAlbumObject(
                     name=contributor.get('name'),
                     ids=IDs(deezer=contributor.get('id'))
                 ))
@@ -150,7 +150,7 @@ def _json_to_track_album_object(track_json: dict) -> trackAlbumObject:
     if disc_number is None:
         disc_number = 1
     
-    return trackAlbumObject(
+    return TrackAlbumObject(
         title=track_json.get('title'),
         duration_ms=track_json.get('duration', 0) * 1000,
         explicit=track_json.get('explicit_lyrics', False),
@@ -161,13 +161,13 @@ def _json_to_track_album_object(track_json: dict) -> trackAlbumObject:
     )
 
 
-def _extract_album_artists(album_json: dict) -> list[artistAlbumObject]:
+def _extract_album_artists(album_json: dict) -> list[ArtistAlbumObject]:
     contributors = album_json.get('contributors')
     if contributors:
         main_artists = [c for c in contributors if c.get('role') == 'Main']
         source_artists = main_artists or contributors
         return [
-            artistAlbumObject(
+            ArtistAlbumObject(
                 name=c.get('name', ''),
                 ids=IDs(deezer=c.get('id'))
             )
@@ -179,18 +179,18 @@ def _extract_album_artists(album_json: dict) -> list[artistAlbumObject]:
         return []
 
     return [
-        artistAlbumObject(
+        ArtistAlbumObject(
             name=album_artist.get('name', ''),
             ids=IDs(deezer=album_artist.get('id'))
         )
     ]
 
 
-def _create_album_track(track_data: dict) -> trackAlbumObject:
+def _create_album_track(track_data: dict) -> TrackAlbumObject:
     track_artists = []
     track_artist = track_data.get('artist')
     if track_artist:
-        track_artists.append(artistTrackAlbumObject(
+        track_artists.append(ArtistTrackAlbumObject(
             name=track_artist.get('name'),
             ids=IDs(deezer=track_artist.get('id'))
         ))
@@ -203,7 +203,7 @@ def _create_album_track(track_data: dict) -> trackAlbumObject:
     if disc_number is None:
         disc_number = track_data.get('disc_number', 1)
 
-    return trackAlbumObject(
+    return TrackAlbumObject(
         title=track_data.get('title'),
         duration_ms=track_data.get('duration', 0) * 1000,
         explicit=track_data.get('explicit_lyrics', False),
@@ -214,14 +214,14 @@ def _create_album_track(track_data: dict) -> trackAlbumObject:
     )
 
 
-def tracking_album(album_json: dict) -> Optional[albumObject]:
+def tracking_album(album_json: dict) -> Optional[AlbumObject]:
     if not album_json or 'id' not in album_json:
         return None
 
     album_artists = _extract_album_artists(album_json)
 
     # Extract album metadata
-    album_obj = albumObject(
+    album_obj = AlbumObject(
         album_type=album_json.get('record_type', ''),
         title=album_json.get('title', ''),
         ids=IDs(deezer=album_json.get('id'), upc=album_json.get('upc')),
@@ -247,14 +247,14 @@ def tracking_album(album_json: dict) -> Optional[albumObject]:
     
     return album_obj
 
-def _json_to_track_playlist_object(track_json: dict) -> Optional[trackPlaylistObject]:
+def _json_to_track_playlist_object(track_json: dict) -> Optional[TrackPlaylistObject]:
     if not track_json or not track_json.get('id'):
         return None
 
     # Create artists with proper type
     artists = []
     if "artist" in track_json:
-        artists.append(artistTrackPlaylistObject(
+        artists.append(ArtistTrackPlaylistObject(
             name=track_json['artist'].get('name'),
             ids=IDs(deezer=track_json['artist'].get('id'))
         ))
@@ -264,7 +264,7 @@ def _json_to_track_playlist_object(track_json: dict) -> Optional[trackPlaylistOb
         for contributor in track_json['contributors']:
             # Skip duplicates - don't add if name already exists
             if not any(artist.name == contributor.get('name') for artist in artists):
-                artists.append(artistTrackPlaylistObject(
+                artists.append(ArtistTrackPlaylistObject(
                     name=contributor.get('name'),
                     ids=IDs(deezer=contributor.get('id'))
                 ))
@@ -275,12 +275,12 @@ def _json_to_track_playlist_object(track_json: dict) -> Optional[trackPlaylistOb
     # Process album artists
     album_artists = []
     if "artist" in album_data:
-        album_artists.append(artistAlbumTrackPlaylistObject(
+        album_artists.append(ArtistAlbumTrackPlaylistObject(
             name=album_data['artist'].get('name'),
             ids=IDs(deezer=album_data['artist'].get('id'))
         ))
     
-    album = albumTrackPlaylistObject(
+    album = AlbumTrackPlaylistObject(
         title=album_data.get('title'),
         ids=IDs(deezer=album_data.get('id')),
         images=_get_images_from_cover(album_data),
@@ -290,7 +290,7 @@ def _json_to_track_playlist_object(track_json: dict) -> Optional[trackPlaylistOb
         total_tracks=album_data.get('nb_tracks', 0)
     )
 
-    return trackPlaylistObject(
+    return TrackPlaylistObject(
         title=track_json.get('title'),
         duration_ms=track_json.get('duration', 0) * 1000,
         ids=IDs(deezer=track_json.get('id'), isrc=track_json.get('isrc')),
@@ -301,12 +301,12 @@ def _json_to_track_playlist_object(track_json: dict) -> Optional[trackPlaylistOb
         track_number=track_json.get('track_position') or track_json.get('track_number', 0)
     )
 
-def tracking_playlist(playlist_json: dict) -> Optional[playlistObject]:
+def tracking_playlist(playlist_json: dict) -> Optional[PlaylistObject]:
     if not playlist_json or 'id' not in playlist_json:
         return None
         
     creator = playlist_json.get('creator', {})
-    owner = userObject(
+    owner = UserObject(
         name=creator.get('name'),
         ids=IDs(deezer=creator.get('id'))
     )
@@ -327,7 +327,7 @@ def tracking_playlist(playlist_json: dict) -> Optional[playlistObject]:
 
     description = playlist_json.get('description') or ""
 
-    playlist_obj = playlistObject(
+    playlist_obj = PlaylistObject(
         title=playlist_json.get('title'),
         description=description,
         ids=IDs(deezer=playlist_json.get('id')),
@@ -338,85 +338,103 @@ def tracking_playlist(playlist_json: dict) -> Optional[playlistObject]:
     
     return playlist_obj
 
-def create_standardized_track(track_json: dict) -> trackObject:
+def _build_track_artists(track_json: dict) -> list[ArtistTrackObject]:
+    artists: list[ArtistTrackObject] = []
+    main_artist = track_json.get("artist")
+    if isinstance(main_artist, dict):
+        artists.append(
+            ArtistTrackObject(
+                name=main_artist.get('name', ''),
+                ids=IDs(deezer=main_artist.get('id')),
+            )
+        )
+
+    existing_names = {artist.name for artist in artists}
+    for contributor in track_json.get("contributors", []):
+        contributor_name = contributor.get('name')
+        if contributor_name in existing_names:
+            continue
+        artists.append(
+            ArtistTrackObject(
+                name=contributor_name or '',
+                ids=IDs(deezer=contributor.get('id')),
+            )
+        )
+        if contributor_name:
+            existing_names.add(contributor_name)
+    return artists
+
+def _build_album_artists(track_json: dict) -> list[ArtistAlbumTrackObject]:
+    album_artists: list[ArtistAlbumTrackObject] = []
+    contributors = track_json.get('contributors', [])
+    main_contributors = [c for c in contributors if c.get('role') == 'Main']
+    for contributor in main_contributors:
+        album_artists.append(
+            ArtistAlbumTrackObject(
+                name=contributor.get('name', ''),
+                ids=IDs(deezer=contributor.get('id')),
+            )
+        )
+    if album_artists:
+        return album_artists
+
+    album_artist = track_json.get("album", {}).get("artist", {})
+    if isinstance(album_artist, dict):
+        album_artists.append(
+            ArtistAlbumTrackObject(
+                name=album_artist.get('name', ''),
+                ids=IDs(deezer=album_artist.get('id')),
+            )
+        )
+    return album_artists
+
+def _fetch_total_discs(album_id) -> int:
+    if not album_id:
+        return 1
+    try:
+        from deezspot.deezloader.dee_api import API
+        full_album_obj = API.get_album(album_id)
+        if full_album_obj and hasattr(full_album_obj, 'total_discs'):
+            return full_album_obj.total_discs
+    except Exception as e:
+        logger.debug(f"Could not fetch full album data for total_discs calculation: {e}")
+    return 1
+
+def _build_track_album_object(track_json: dict) -> Optional[AlbumTrackObject]:
+    album_payload = track_json.get("album")
+    if not isinstance(album_payload, dict):
+        return None
+
+    album_artists = _build_album_artists(track_json)
+    total_discs = _fetch_total_discs(album_payload.get('id'))
+    return AlbumTrackObject(
+        album_type=album_payload.get('record_type', ''),
+        title=album_payload.get('title', ''),
+        ids=IDs(deezer=album_payload.get('id')),
+        images=_get_images_from_cover(album_payload),
+        release_date=_parse_release_date(album_payload.get('release_date')),
+        artists=album_artists,
+        total_tracks=album_payload.get('nb_tracks', 0),
+        total_discs=total_discs,
+        genres=[g['name'] for g in album_payload.get('genres', {}).get('data', [])],
+    )
+
+def create_standardized_track(track_json: dict) -> TrackObject:
     """
-    Create a standardized trackObject directly from Deezer API response.
+    Create a standardized TrackObject directly from Deezer API response.
     This makes metadata handling more consistent with spotloader's approach.
     
     Args:
         track_json: Raw track data from Deezer API
         
     Returns:
-        A standardized trackObject
+        A standardized TrackObject
     """
-    # Extract artist information
-    artists = []
-    if "artist" in track_json:
-        artists.append(artistTrackObject(
-            name=track_json['artist'].get('name', ''),
-            ids=IDs(deezer=track_json['artist'].get('id'))
-        ))
-        
-    # Add additional artists from contributors
-    if "contributors" in track_json:
-        for contributor in track_json['contributors']:
-            # Skip if already added
-            if not any(artist.name == contributor.get('name') for artist in artists):
-                artists.append(artistTrackObject(
-                    name=contributor.get('name', ''),
-                    ids=IDs(deezer=contributor.get('id'))
-                ))
-    
-    # Extract album information
-    album_data = None
-    if "album" in track_json:
-        album_artists = []
-        
-        # First check for main contributors if available
-        if "contributors" in track_json:
-            main_artists = [c for c in track_json['contributors'] if c.get('role') == 'Main']
-            if main_artists:
-                album_artists = [artistAlbumTrackObject(
-                    name=c.get('name', ''),
-                    ids=IDs(deezer=c.get('id'))
-                ) for c in main_artists]
-        
-        # If no main contributors found and album has its own artist field
-        if not album_artists and "artist" in track_json["album"]:
-            album_artists.append(artistAlbumTrackObject(
-                name=track_json["album"]["artist"].get('name', ''),
-                ids=IDs(deezer=track_json["album"]["artist"].get('id'))
-            ))
-        
-        # Try to get full album information for accurate total_discs
-        total_discs = 1
-        album_id = track_json["album"].get('id')
-        if album_id:
-            try:
-                # Import here to avoid circular imports
-                from deezspot.deezloader.dee_api import API
-                full_album_obj = API.get_album(album_id)
-                if full_album_obj and hasattr(full_album_obj, 'total_discs'):
-                    total_discs = full_album_obj.total_discs
-            except Exception as e:
-                # If album fetching fails, fall back to default
-                logger.debug(f"Could not fetch full album data for total_discs calculation: {e}")
-                total_discs = 1
-            
-        album_data = albumTrackObject(
-            album_type=track_json["album"].get('record_type', ''),
-            title=track_json["album"].get('title', ''),
-            ids=IDs(deezer=track_json["album"].get('id')),
-            images=_get_images_from_cover(track_json["album"]),
-            release_date=_parse_release_date(track_json["album"].get('release_date')),
-            artists=album_artists,
-            total_tracks=track_json["album"].get('nb_tracks', 0),
-            total_discs=total_discs,  # Set the calculated or fetched total discs
-            genres=[g['name'] for g in track_json["album"].get('genres', {}).get('data', [])]
-        )
+    artists = _build_track_artists(track_json)
+    album_data = _build_track_album_object(track_json)
     
     # Create track object
-    track_obj = trackObject(
+    track_obj = TrackObject(
         title=track_json.get('title', ''),
         duration_ms=track_json.get('duration', 0) * 1000,
         explicit=track_json.get('explicit_lyrics', False),

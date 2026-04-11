@@ -27,9 +27,9 @@ class Preferences:
         self.artist_separator: str = "; "
         # New: when True, use Spotify metadata for tagging in spo flows
         self.spotify_metadata: bool = False
-        # New: optional Spotify trackObject to use when spotify_metadata is True
+        # New: optional Spotify TrackObject to use when spotify_metadata is True
         self.spotify_track_obj = None
-        # New: optional Spotify albumObject (from spotloader tracking_album) for album-level spotify_metadata
+        # New: optional Spotify AlbumObject (from spotloader tracking_album) for album-level spotify_metadata
         self.spotify_album_obj = None
         # New: real-time throttling multiplier (0 disables pacing, 1=real-time, >1 speeds up up to 10x)
         self.real_time_multiplier: int = 1
