@@ -2776,6 +2776,20 @@
         return String(activeTab?.dataset?.bsTarget || "").trim() || null;
     }
 
+    function keepAutoTagTabVisible(tab) {
+        if (!(tab instanceof HTMLElement) || typeof tab.scrollIntoView !== "function") {
+            return;
+        }
+        if (typeof globalThis.matchMedia === "function" && !globalThis.matchMedia("(max-width: 992px)").matches) {
+            return;
+        }
+        tab.scrollIntoView({
+            behavior: "smooth",
+            block: "nearest",
+            inline: "center"
+        });
+    }
+
     function findAutoTagTabByTarget(targetSelector) {
         const normalized = String(targetSelector || "").trim();
         if (!normalized) {
@@ -2841,6 +2855,10 @@
 
         tabs.addEventListener("show.bs.tab", (event) => {
             guardProfileLockedTabNavigation(event.target, event);
+        });
+
+        tabs.addEventListener("shown.bs.tab", (event) => {
+            keepAutoTagTabVisible(event.target);
         });
     }
 

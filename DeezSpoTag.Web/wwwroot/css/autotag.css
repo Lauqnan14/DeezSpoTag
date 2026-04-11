@@ -23,11 +23,6 @@
     padding: 0;
 }
 
-.autotag-sticky-shell .autotag-hero {
-    margin-bottom: 14px !important;
-    background: var(--bg-primary);
-}
-
 .autotag-sticky-shell #autotagTabs {
     margin-bottom: 0 !important;
     background: var(--bg-primary);
@@ -35,6 +30,34 @@
 
 .autotag-hero {
     background: transparent;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 16px;
+    margin-bottom: 14px;
+}
+
+.autotag-hero-copy {
+    min-width: 0;
+    max-width: 760px;
+}
+
+.autotag-hero-copy .welcome-title {
+    line-height: 1.1;
+}
+
+.autotag-hero-copy .text-muted {
+    max-width: 64ch;
+}
+
+.autotag-hero-actions {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    row-gap: 8px;
+}
+
+.autotag-hero-actions .action-btn {
+    white-space: nowrap;
 }
 
 .autotag-page label,
@@ -134,6 +157,13 @@
 .autotag-page .card-body .text-muted,
 .autotag-page .helper {
     color: var(--text-muted);
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.autotag-page #downloadLocationHint {
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .download-section {
@@ -869,6 +899,22 @@ body.autotag-col-resizing * {
         --autotag-sticky-top: 60px;
     }
 
+    .autotag-hero {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+        margin-bottom: 12px;
+    }
+
+    .autotag-hero-copy {
+        max-width: none;
+    }
+
+    .autotag-hero-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
     .autotag-actions {
         flex-wrap: wrap;
         gap: 10px;
@@ -899,6 +945,106 @@ body.autotag-col-resizing * {
     }
 }
 
+@media (max-width: 768px) {
+    .autotag-page .stage-header {
+        align-items: flex-start;
+        gap: 10px;
+        margin-bottom: 14px;
+        padding-bottom: 12px;
+    }
+
+    .autotag-page .stage-number {
+        width: 30px;
+        height: 30px;
+        font-size: 13px;
+    }
+
+    .autotag-page .stage-title h5 {
+        font-size: 15px;
+        line-height: 1.3;
+    }
+
+    .autotag-page .stage-title p {
+        margin-top: 3px;
+        font-size: 12px;
+        line-height: 1.45;
+    }
+
+    .autotag-page .card {
+        margin-bottom: 12px !important;
+    }
+
+    .autotag-page .card-header {
+        padding: 12px 14px;
+    }
+
+    .autotag-page .card-header.d-flex {
+        flex-direction: column;
+        align-items: stretch !important;
+        gap: 10px;
+    }
+
+    .autotag-page .card-header h5 {
+        font-size: 15px;
+        line-height: 1.3;
+    }
+
+    .autotag-page .card-header .action-btn {
+        align-self: flex-start;
+    }
+
+    .autotag-page .card-body.autotag-card-body {
+        padding: 12px;
+    }
+
+    .download-section {
+        padding: 12px;
+        margin-bottom: 10px;
+    }
+
+    .download-section:last-child {
+        margin-bottom: 0;
+    }
+
+    .download-section-title {
+        margin-bottom: 8px;
+        letter-spacing: 0.06em;
+        font-size: 11px;
+    }
+
+    .autotag-page .download-grid .checkbox-group,
+    .autotag-page .download-section > .checkbox-group {
+        align-items: flex-start;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid color-mix(in srgb, var(--border-secondary) 75%, transparent);
+        background: color-mix(in srgb, var(--bg-secondary) 80%, transparent);
+    }
+
+    .autotag-page .download-grid .checkbox-group label,
+    .autotag-page .download-section > .checkbox-group label {
+        line-height: 1.35;
+    }
+
+    .autotag-page .download-grid .checkbox-group input[type="checkbox"],
+    .autotag-page .download-section > .checkbox-group input[type="checkbox"] {
+        margin-top: 2px;
+        flex: 0 0 auto;
+    }
+
+    .download-tags-card .tags-grid label,
+    .download-tags-grid label,
+    .enrichment-tags-grid label,
+    .gap-fill-tags-grid label {
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+        align-items: flex-start;
+        line-height: 1.3;
+    }
+}
+
 @media (max-width: 576px) {
     .autotag-page {
         padding: 12px 14px 18px;
@@ -913,8 +1059,27 @@ body.autotag-col-resizing * {
         padding-top: 6px;
     }
 
-    .autotag-sticky-shell .autotag-hero {
-        margin-bottom: 10px !important;
+    .autotag-hero-actions {
+        flex-direction: row;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        overflow-y: hidden;
+        gap: 8px;
+        margin-inline: -2px;
+        padding-bottom: 4px;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+        scroll-snap-type: x proximity;
+    }
+
+    .autotag-hero-actions::-webkit-scrollbar {
+        display: none;
+    }
+
+    .autotag-hero-actions .action-btn {
+        flex: 0 0 auto;
+        min-height: 40px;
+        scroll-snap-align: start;
     }
 
     .form-row {
@@ -1600,21 +1765,88 @@ body.autotag-col-resizing * {
         width: 100%;
     }
 
-    .folder-table-header,
-    .folder-row .table-row {
-        grid-template-columns: 1fr;
-    }
-
     .folder-table-header {
         display: none;
     }
 
+    .folder-table-scroll {
+        border: 0;
+        background: transparent;
+        overflow: visible;
+        margin-top: 8px;
+    }
+
+    .folder-row .table-row {
+        grid-template-columns: 1fr;
+        gap: 12px;
+        padding: 12px;
+        border: 1px solid color-mix(in srgb, var(--border-secondary) 72%, transparent);
+        border-radius: 12px;
+        background: var(--bg-tertiary);
+        margin-bottom: 10px;
+    }
+
+    .folder-row:last-child .table-row {
+        margin-bottom: 0;
+    }
+
+    .folder-row .table-row > span {
+        display: grid;
+        align-items: flex-start;
+        gap: 6px;
+        min-height: auto;
+    }
+
+    .folder-row .table-row > span::before {
+        content: "";
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        line-height: 1.1;
+    }
+
+    .folder-row .table-row > span:nth-child(1)::before { content: "Folder"; }
+    .folder-row .table-row > span:nth-child(2)::before { content: "Path"; }
+    .folder-row .table-row > span:nth-child(3)::before { content: "Quality"; }
+    .folder-row .table-row > span:nth-child(4)::before { content: "Profile"; }
+    .folder-row .table-row > span:nth-child(5)::before { content: "Enhancement"; }
+    .folder-row .table-row > span:nth-child(6)::before { content: "Status"; }
+    .folder-row .table-row > span:nth-child(7)::before { content: "Actions"; }
+
+    .folder-row .table-row > span:nth-child(2) {
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
     .folder-row .actions {
+        width: 100%;
         justify-content: flex-start;
     }
 
+    .folder-profile-select,
+    .folder-duration-select,
+    .folder-profile-static,
+    .folder-quality-summary {
+        min-height: 44px;
+    }
+
     .folder-quality-panel {
-        padding: 8px;
+        top: 86px;
+        width: min(640px, 94vw);
+        max-height: min(76vh, 620px);
+        padding: 10px;
+    }
+
+    .download-tags-card .tags-grid label,
+    .download-tags-grid label,
+    .enrichment-tags-grid label,
+    .gap-fill-tags-grid label {
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+        word-break: break-word;
     }
 
     .autotag-platform-options {
@@ -1640,6 +1872,8 @@ body.autotag-col-resizing * {
         padding-bottom: 6px;
         -webkit-overflow-scrolling: touch;
         scrollbar-width: none;
+        scroll-snap-type: x proximity;
+        border-bottom: 0;
     }
 
     .autotag-page #autotagTabs.ds-mobile-tabs::-webkit-scrollbar {
@@ -1648,28 +1882,99 @@ body.autotag-col-resizing * {
 
     .autotag-page #autotagTabs.ds-mobile-tabs .nav-item {
         flex: 0 0 auto !important;
+        scroll-snap-align: start;
     }
 
     .autotag-page #autotagTabs.ds-mobile-tabs .nav-link {
         width: auto !important;
         min-width: max-content !important;
-        min-height: 36px !important;
+        min-height: 40px !important;
         white-space: nowrap;
         padding: 8px 12px !important;
         font-size: 13px !important;
-        line-height: 1;
-        border-radius: 8px 8px 0 0 !important;
+        line-height: 1.1;
+        border-radius: 999px !important;
         margin-bottom: 0 !important;
         box-shadow: none !important;
+        border: 1px solid var(--border-secondary) !important;
+        background: var(--bg-secondary);
+        color: var(--text-muted) !important;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         gap: 6px;
     }
 
+    .autotag-page #autotagTabs.ds-mobile-tabs .nav-link:hover {
+        border-color: var(--primary-color) !important;
+        color: var(--primary-color) !important;
+        background: color-mix(in srgb, var(--primary-color) 12%, var(--bg-secondary));
+    }
+
+    .autotag-page #autotagTabs.ds-mobile-tabs .nav-link.active {
+        border-color: var(--primary-color) !important;
+        color: var(--primary-color) !important;
+        background: color-mix(in srgb, var(--primary-color) 14%, var(--bg-secondary));
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-color) 20%, transparent) !important;
+    }
+
     .autotag-page #autotagTabs.ds-mobile-tabs .nav-link i {
         font-size: 13px;
         margin-right: 0 !important;
+    }
+
+    .folder-row .actions {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+    }
+
+    .folder-row .folder-action {
+        width: 100%;
+        min-width: 0;
+        min-height: 44px;
+    }
+
+    .folder-row .folder-action i {
+        font-size: 16px;
+    }
+
+    .folder-modal {
+        padding: 12px;
+    }
+
+    .folder-modal-content {
+        width: min(100%, 96vw);
+        max-height: calc(100vh - 24px);
+        border-radius: 12px;
+    }
+
+    .folder-modal-header,
+    .folder-modal-footer {
+        padding: 12px;
+    }
+
+    .folder-modal-body {
+        padding: 12px;
+        gap: 12px;
+    }
+
+    .folder-modal-footer {
+        flex-direction: column-reverse;
+        align-items: stretch;
+    }
+
+    .folder-modal-footer .action-btn {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .autotag-hero-copy .welcome-title {
+        font-size: clamp(24px, 7vw, 30px);
+    }
+
+    .autotag-hero-copy .text-muted {
+        font-size: 13px;
     }
 
     .autotag-panel {
@@ -1770,6 +2075,10 @@ body.autotag-col-resizing * {
 @media (max-width: 400px) {
     .autotag-page {
         padding: 8px 10px 14px;
+    }
+
+    .autotag-page #autotagTabs.ds-mobile-tabs .nav-link i {
+        display: none;
     }
 
     .tags-grid {
