@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+show_usage() {
+  cat >&2 <<'USAGE'
+Usage: mp4decrypt --key <KID:KEY|KEY> <input.mp4> <output.mp4>
+
+Compatibility wrapper backed by ffmpeg. It supports the argument shape
+used by this project and is installed in Docker images as a portable fallback.
+USAGE
+}
+
+key_spec=""
+args=()
+while (($#)); do
+  case "$1" in
+    --key)
+      shift
+      if (($# == 0)); then
+        echo "mp4decrypt: missing value for --key" >&2
+        show_usage
+        exit 2
+      fi
+      key_spec="$1"
+      ;;
+    -h|--help)
+      show_usage
+      exit 0
+      ;;
+    --*)
+      echo "mp4decrypt: unsupported option $1" >&2
+      show_usage
+      exit 2
+      ;;
+    *)
+      args+=("$1")
+      ;;
+  esac
+  shift || true
+done
+
+if [[ -z "$key_spec" || ${#args[@]} -ne 2 ]]; then
+  show_usage
+  exit 2
+fi
+
+input="${args[0]}"
+output="${args[1]}"
+if [[ ! -f "$input" ]]; then
+  echo "mp4decrypt: input file not found: $input" >&2
+  exit 1
+fi
+
+# mp4decrypt accepts KID:KEY; ffmpeg expects only the key.
+key_hex="$key_spec"
+if [[ "$key_spec" == *:* ]]; then
+  key_hex="${key_spec##*:}"
+fi
+
+if [[ ! "$key_hex" =~ ^[0-9A-Fa-f]+$ ]]; then
+  echo "mp4decrypt: key format is invalid: $key_spec" >&2
+  exit 2
+fi
+
+ffmpeg -nostdin -v error -y \
+  -decryption_key "$key_hex" \
+  -i "$input" \
+  -map 0 \
+  -c copy \
+  "$output"
