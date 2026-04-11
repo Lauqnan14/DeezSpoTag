@@ -289,6 +289,10 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
         if (_autoTagService.HasRunningJobs())
         {
+            if (hasPendingPostDownloadEnrichment)
+            {
+                _ = await TryPauseEnhancementForPendingPipelineAsync(cancellationToken);
+            }
             return;
         }
 
@@ -880,6 +884,75 @@ public sealed class DownloadOrchestrationService : BackgroundService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to request enhancement pause for incoming download.");
+            return false;
+        }
+        finally
+        {
+            _enhancementPauseLock.Release();
+        }
+    }
+
+    private async Task<bool> TryPauseEnhancementForPendingPipelineAsync(CancellationToken cancellationToken)
+    {
+        string? runningEnhancementJobId = null;
+        if (!_enhancementStageRunning && !_autoTagService.TryGetRunningEnhancementJobId(out runningEnhancementJobId))
+        {
+            return false;
+        }
+
+        if (_enhancementPauseRequested)
+        {
+            return true;
+        }
+
+        await _enhancementPauseLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_enhancementPauseRequested)
+            {
+                return true;
+            }
+
+            var jobId = _activeEnhancementJobId;
+            if (string.IsNullOrWhiteSpace(jobId))
+            {
+                jobId = runningEnhancementJobId;
+            }
+
+            if (string.IsNullOrWhiteSpace(jobId))
+            {
+                return false;
+            }
+
+            _enhancementPauseRequested = true;
+            _enhancementResumeAwaitingPipelineCompletion = true;
+            _pipelineRequested = true;
+            _queueIdleSince = null;
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                "Automation: enhancement pause requested to prioritize pending post-download enrichment."));
+
+            var stopped = await _autoTagService.StopJobAsync(jobId);
+            if (stopped)
+            {
+                await QueueResumeFoldersForPausedEnhancementJobAsync(jobId, cancellationToken);
+                _logger.LogInformation(
+                    "Automation enhancement job {JobId} paused to prioritize pending post-download enrichment.",
+                    jobId);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Automation enhancement job {JobId} could not be paused while prioritizing pending post-download enrichment.",
+                    jobId);
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to pause enhancement for pending post-download enrichment.");
             return false;
         }
         finally
