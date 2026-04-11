@@ -947,9 +947,31 @@ body.autotag-col-resizing * {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
+    .source-priority-row {
+        grid-template-columns: 1fr;
+    }
+
+    .source-priority-row .source-priority-toggle,
+    .source-priority-row .source-priority-order,
     .source-priority-row .source-priority-default,
     .source-priority-row .source-priority-default.source-priority-default-compact {
         grid-column: auto;
+        grid-row: auto;
+        min-width: 0;
+    }
+
+    .source-priority-row .source-priority-toggle {
+        align-self: stretch;
+    }
+
+    .source-priority-row .source-priority-toggle label {
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    .source-priority-row .source-priority-order .dropdown-select,
+    .source-priority-row .source-priority-default select {
+        width: 100%;
     }
 
     .download-tags-card .tags-grid,
