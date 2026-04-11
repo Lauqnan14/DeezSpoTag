@@ -2,6 +2,9 @@
     padding: 20px 22px 32px;
     color: var(--text-primary);
     --autotag-sticky-top: 68px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
 }
 
 .main-content.autotag-sticky-enabled {
@@ -58,6 +61,17 @@
 
 .autotag-hero-actions .action-btn {
     white-space: nowrap;
+}
+
+.autotag-page .card,
+.autotag-page .card-header,
+.autotag-page .card-body,
+.autotag-page .download-section,
+.autotag-page .download-grid,
+.autotag-page .download-grid > *,
+.autotag-page .form-row,
+.autotag-page .form-row > * {
+    min-width: 0;
 }
 
 .autotag-page label,
@@ -227,6 +241,7 @@
 
 .autotag-actions {
     display: flex;
+    flex-wrap: wrap;
     gap: 12px;
 }
 
@@ -2376,4 +2391,116 @@ body.autotag-col-resizing * {
     .folder-preview-line.indent-3 {
         padding-left: 48px;
     }
+}
+
+/* Keep final mobile overrides at the end of this file so legacy blocks above cannot override them. */
+@media (max-width: 768px) {
+    .autotag-page .stage-header {
+        align-items: flex-start !important;
+        gap: 10px !important;
+        margin-bottom: 14px !important;
+        padding-bottom: 12px !important;
+    }
+
+    .autotag-page .card-header {
+        padding: 12px 14px !important;
+    }
+
+    .autotag-page .card-header.d-flex {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 10px !important;
+    }
+
+    .autotag-page .card-body.autotag-card-body {
+        padding: 12px !important;
+    }
+
+    .autotag-page .download-section {
+        padding: 12px !important;
+        margin-bottom: 10px !important;
+    }
+
+    .autotag-page .download-grid {
+        gap: 10px 12px !important;
+    }
+
+    .autotag-page .download-grid-2,
+    .autotag-page .download-grid-3,
+    .autotag-page .download-grid-4,
+    .autotag-page .form-row,
+    .autotag-page .form-row-3 {
+        grid-template-columns: 1fr !important;
+    }
+
+    .autotag-page .download-grid .checkbox-group,
+    .autotag-page .download-section > .checkbox-group {
+        align-items: flex-start !important;
+        gap: 10px !important;
+        padding: 10px 12px !important;
+        border-radius: 10px !important;
+        border: 1px solid color-mix(in srgb, var(--border-secondary) 75%, transparent) !important;
+        background: color-mix(in srgb, var(--bg-secondary) 80%, transparent) !important;
+    }
+
+    .autotag-page .download-grid .checkbox-group label,
+    .autotag-page .download-section > .checkbox-group label {
+        line-height: 1.35 !important;
+    }
+
+    .autotag-page .download-tags-grid,
+    .autotag-page .enrichment-tags-grid,
+    .autotag-page .gap-fill-tags-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 8px 10px !important;
+    }
+
+    .autotag-page .download-tags-grid label,
+    .autotag-page .enrichment-tags-grid label,
+    .autotag-page .gap-fill-tags-grid label {
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+        word-break: break-word !important;
+        line-height: 1.3 !important;
+        min-height: 36px !important;
+    }
+}
+
+@media (max-width: 900px) {
+    .autotag-page .folder-table-header {
+        display: none !important;
+    }
+
+    .autotag-page .folder-table-scroll {
+        border: 0 !important;
+        background: transparent !important;
+        overflow: visible !important;
+        margin-top: 8px !important;
+    }
+
+    .autotag-page .folder-row .table-row {
+        grid-template-columns: 1fr !important;
+        gap: 12px !important;
+        padding: 12px !important;
+        border: 1px solid color-mix(in srgb, var(--border-secondary) 72%, transparent) !important;
+        border-radius: 12px !important;
+        background: var(--bg-tertiary) !important;
+        margin-bottom: 10px !important;
+    }
+
+    .autotag-page .folder-row .table-row > span {
+        display: grid !important;
+        align-items: flex-start !important;
+        gap: 6px !important;
+        min-height: auto !important;
+    }
+
+    .autotag-page .folder-row .table-row > span:nth-child(1)::before { content: "Folder"; }
+    .autotag-page .folder-row .table-row > span:nth-child(2)::before { content: "Path"; }
+    .autotag-page .folder-row .table-row > span:nth-child(3)::before { content: "Quality"; }
+    .autotag-page .folder-row .table-row > span:nth-child(4)::before { content: "Profile"; }
+    .autotag-page .folder-row .table-row > span:nth-child(5)::before { content: "Enhancement"; }
+    .autotag-page .folder-row .table-row > span:nth-child(6)::before { content: "Status"; }
+    .autotag-page .folder-row .table-row > span:nth-child(7)::before { content: "Actions"; }
 }
