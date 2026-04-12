@@ -43,7 +43,8 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
 
     public sealed record UpdateDefaultsRequest(
         string? DefaultFileProfile,
-        Dictionary<string, string>? LibrarySchedules);
+        Dictionary<string, string>? LibrarySchedules,
+        int? RecentDownloadWindowHours);
 
     [HttpPost]
     public async Task<IActionResult> Update([FromBody] UpdateDefaultsRequest request, CancellationToken cancellationToken)
@@ -99,9 +100,17 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
         var resolvedDefaultProfileId = profiles
             .FirstOrDefault(profile => profile.IsDefault)
             ?.Id;
+        var recentDownloadWindowHours = request.RecentDownloadWindowHours
+            ?? state.Defaults.RecentDownloadWindowHours
+            ?? AutoTagDefaultsDto.DefaultRecentDownloadWindowHours;
+        if (recentDownloadWindowHours < 0)
+        {
+            recentDownloadWindowHours = AutoTagDefaultsDto.DefaultRecentDownloadWindowHours;
+        }
         var defaults = new AutoTagDefaultsDto(
             resolvedDefaultProfileId,
-            scheduleCleaned);
+            scheduleCleaned,
+            recentDownloadWindowHours);
         await _store.SaveAsync(defaults);
 
         var normalizedState = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);

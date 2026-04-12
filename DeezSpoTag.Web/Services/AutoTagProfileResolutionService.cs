@@ -143,14 +143,31 @@ public sealed class AutoTagProfileResolutionService
         }
 
         var librarySchedules = NormalizeLibrarySchedules(defaults.LibrarySchedules, ref changed);
+        var recentDownloadWindowHours = NormalizeRecentDownloadWindowHours(defaults.RecentDownloadWindowHours, ref changed);
 
-        var normalized = new AutoTagDefaultsDto(defaultFileProfile, librarySchedules);
+        var normalized = new AutoTagDefaultsDto(defaultFileProfile, librarySchedules, recentDownloadWindowHours);
         if (changed)
         {
             normalized = await _defaultsStore.SaveAsync(normalized);
         }
 
         return normalized;
+    }
+
+    private static int NormalizeRecentDownloadWindowHours(int? value, ref bool changed)
+    {
+        var resolved = value ?? AutoTagDefaultsDto.DefaultRecentDownloadWindowHours;
+        if (resolved < 0)
+        {
+            resolved = AutoTagDefaultsDto.DefaultRecentDownloadWindowHours;
+        }
+
+        if (value != resolved)
+        {
+            changed = true;
+        }
+
+        return resolved;
     }
 
     private async Task<TaggingProfile?> EnsureDefaultProfileAuthorityAsync(
@@ -220,7 +237,8 @@ public sealed class AutoTagProfileResolutionService
         {
             await _defaultsStore.SaveAsync(new AutoTagDefaultsDto(
                 defaults.DefaultFileProfile,
-                mergedSchedules));
+                mergedSchedules,
+                defaults.RecentDownloadWindowHours));
         }
 
         return normalizedFolders;

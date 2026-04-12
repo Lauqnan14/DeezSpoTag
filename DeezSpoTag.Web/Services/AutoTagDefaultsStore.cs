@@ -35,12 +35,18 @@ public sealed class AutoTagDefaultsStore
             await TryMigrateLegacyDefaultsAsync();
             if (!File.Exists(_defaultsPath))
             {
-                return new AutoTagDefaultsDto(null, new Dictionary<string, string>());
+                return new AutoTagDefaultsDto(
+                    null,
+                    new Dictionary<string, string>(),
+                    AutoTagDefaultsDto.DefaultRecentDownloadWindowHours);
             }
 
             var json = await File.ReadAllTextAsync(_defaultsPath);
             var defaults = JsonSerializer.Deserialize<AutoTagDefaultsDto>(json, _jsonOptions)
-                ?? new AutoTagDefaultsDto(null, new Dictionary<string, string>());
+                ?? new AutoTagDefaultsDto(
+                    null,
+                    new Dictionary<string, string>(),
+                    AutoTagDefaultsDto.DefaultRecentDownloadWindowHours);
             var normalized = NormalizeDefaults(defaults, out var normalizedChanged);
             var hadLegacyLibraryProfiles = ContainsLegacyLibraryProfiles(json);
             if (normalizedChanged || hadLegacyLibraryProfiles)
@@ -53,7 +59,10 @@ public sealed class AutoTagDefaultsStore
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to load AutoTag defaults.");
-            return new AutoTagDefaultsDto(null, new Dictionary<string, string>());
+            return new AutoTagDefaultsDto(
+                null,
+                new Dictionary<string, string>(),
+                AutoTagDefaultsDto.DefaultRecentDownloadWindowHours);
         }
     }
 
@@ -98,7 +107,10 @@ public sealed class AutoTagDefaultsStore
             return false;
         }
 
-        await SaveAsync(new AutoTagDefaultsDto(defaultFileProfile, librarySchedules));
+        await SaveAsync(new AutoTagDefaultsDto(
+            defaultFileProfile,
+            librarySchedules,
+            defaults.RecentDownloadWindowHours));
         return true;
     }
 
@@ -144,7 +156,14 @@ public sealed class AutoTagDefaultsStore
             changed = true;
         }
 
-        return new AutoTagDefaultsDto(defaultFileProfile, schedules);
+        var recentDownloadWindowHours = defaults.RecentDownloadWindowHours;
+        if (recentDownloadWindowHours is null || recentDownloadWindowHours < 0)
+        {
+            recentDownloadWindowHours = AutoTagDefaultsDto.DefaultRecentDownloadWindowHours;
+            changed = true;
+        }
+
+        return new AutoTagDefaultsDto(defaultFileProfile, schedules, recentDownloadWindowHours);
     }
 
     private static bool ContainsLegacyLibraryProfiles(string json)
@@ -200,4 +219,8 @@ public sealed class AutoTagDefaultsStore
 
 public sealed record AutoTagDefaultsDto(
     string? DefaultFileProfile,
-    Dictionary<string, string> LibrarySchedules);
+    Dictionary<string, string> LibrarySchedules,
+    int? RecentDownloadWindowHours)
+{
+    public const int DefaultRecentDownloadWindowHours = 24;
+}
