@@ -33,6 +33,8 @@ public sealed class LibraryRecommendationService
     private const string UnknownTitle = "Unknown";
     private const string UnknownArtist = "Unknown Artist";
     private const string UnknownAlbum = "Unknown Album";
+    private const string DailyPoolCacheSource = "recommendations-daily-pool";
+    private const string DailyPoolSnapshotVersion = "v1";
 
     private const int MaxDailyRecommendations = 50;
     private const int RecommendationPoolMultiplier = 3;
@@ -91,6 +93,9 @@ public sealed class LibraryRecommendationService
         string StationId,
         string ScopeKey);
     private sealed record RecommendationArtworkCandidate(string Url, string DayKey);
+    private sealed record PersistedDailyPoolDto(
+        DateTimeOffset GeneratedAtUtc,
+        IReadOnlyList<RecommendationTrackDto> Tracks);
 
     private async Task<IReadOnlyList<FolderDto>> GetRecommendationEligibleFoldersAsync(CancellationToken cancellationToken)
     {
@@ -492,7 +497,18 @@ public sealed class LibraryRecommendationService
         var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayUtc);
         if (!_dailyPoolCache.TryGetValue(cacheKey, out var basePool))
         {
-            basePool = await BuildDailyPoolAsync(scope, dayUtc, stationImageUrl, cancellationToken);
+            basePool = await TryLoadPersistedDailyPoolAsync(scope, dayUtc, stationImageUrl, cancellationToken);
+            if (basePool is null)
+            {
+                basePool = await BuildDailyPoolAsync(scope, dayUtc, stationImageUrl, cancellationToken);
+                if (basePool is null)
+                {
+                    return null;
+                }
+
+                await PersistDailyPoolAsync(scope, dayUtc, basePool, cancellationToken);
+            }
+
             if (basePool is null)
             {
                 return null;
@@ -658,6 +674,7 @@ public sealed class LibraryRecommendationService
                 var dailyPool = await BuildDailyPoolAsync(scope, dayUtc, stationImageUrl, cancellationToken);
                 if (dailyPool is not null)
                 {
+                    await PersistDailyPoolAsync(scope, dayUtc, dailyPool, cancellationToken);
                     _dailyPoolCache[cacheKey] = dailyPool;
                 }
             }
@@ -876,6 +893,114 @@ public sealed class LibraryRecommendationService
             merged,
             DateTimeOffset.UtcNow);
     }
+
+    private async Task<RecommendationDetailDto?> TryLoadPersistedDailyPoolAsync(
+        RecommendationScope scope,
+        DateOnly dayUtc,
+        string? stationImageUrl,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var persisted = await _repository.GetPlaylistTrackCandidateCacheAsync(
+                DailyPoolCacheSource,
+                scope.ScopeKey,
+                cancellationToken);
+            if (persisted is null
+                || !string.Equals(
+                    NormalizeDailyPoolSnapshotId(persisted.SnapshotId),
+                    BuildDailyPoolSnapshotId(dayUtc),
+                    StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            if (string.IsNullOrWhiteSpace(persisted.CandidatesJson))
+            {
+                return null;
+            }
+
+            var payload = JsonSerializer.Deserialize<PersistedDailyPoolDto>(persisted.CandidatesJson);
+            if (payload is null)
+            {
+                return null;
+            }
+
+            var normalizedTracks = (payload.Tracks ?? Array.Empty<RecommendationTrackDto>())
+                .Select(NormalizeRecommendationTrack)
+                .Where(track => !string.IsNullOrWhiteSpace(track.Id))
+                .Select((track, index) => track with { TrackPosition = index + 1 })
+                .ToList();
+
+            var station = new RecommendationStationDto(
+                scope.StationId,
+                $"Recommendations - {scope.FolderName}",
+                BuildDailyRecommendationDescription(scope.FolderName, DateTime.UtcNow.DayOfWeek),
+                RecommendationSourceId,
+                scope.FolderName,
+                Math.Min(MaxDailyRecommendations, normalizedTracks.Count),
+                stationImageUrl);
+
+            return new RecommendationDetailDto(
+                station,
+                normalizedTracks,
+                payload.GeneratedAtUtc);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(
+                ex,
+                "Failed to load persisted recommendation daily pool for scope {ScopeKey}.",
+                scope.ScopeKey);
+            return null;
+        }
+    }
+
+    private async Task PersistDailyPoolAsync(
+        RecommendationScope scope,
+        DateOnly dayUtc,
+        RecommendationDetailDto detail,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var payload = new PersistedDailyPoolDto(
+                detail.GeneratedAtUtc,
+                detail.Tracks
+                    .Select(NormalizeRecommendationTrack)
+                    .Where(track => !string.IsNullOrWhiteSpace(track.Id))
+                    .Select((track, index) => track with { TrackPosition = index + 1 })
+                    .ToList());
+
+            await _repository.UpsertPlaylistTrackCandidateCacheAsync(
+                DailyPoolCacheSource,
+                scope.ScopeKey,
+                BuildDailyPoolSnapshotId(dayUtc),
+                JsonSerializer.Serialize(payload),
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(
+                ex,
+                "Failed to persist recommendation daily pool for scope {ScopeKey}.",
+                scope.ScopeKey);
+        }
+    }
+
+    private static string BuildDailyPoolSnapshotId(DateOnly dayUtc)
+        => $"{DailyPoolSnapshotVersion}:{dayUtc:yyyyMMdd}";
+
+    private static string NormalizeDailyPoolSnapshotId(string? value)
+        => string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
 
     private async Task<List<RecommendationTrackDto>> BuildShazamRecommendationsAsync(
         RecommendationScope scope,
