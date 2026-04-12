@@ -29,6 +29,7 @@ public sealed class PlaylistWatchService
     private const string SpotifyTrendingSongsSectionUri = "spotify:section:0JQ5DB5E8N831KzFzsBBQ2";
     private const int SpotifyPlaylistWatchPageSize = 200;
     private static readonly string[] JsonStringObjectPropertyNames = ["standard", "short", "text"];
+    private static readonly TimeSpan PlaylistMediaSyncCooldown = TimeSpan.FromMinutes(2);
     private readonly LibraryRepository _libraryRepository;
     private readonly SpotifyMetadataService _spotifyMetadataService;
     private readonly SpotifyPathfinderMetadataClient _spotifyPathfinderMetadataClient;
@@ -43,6 +44,7 @@ public sealed class PlaylistWatchService
     private readonly PlaylistSyncService _playlistSyncService;
     private readonly PlaylistVisualService _playlistVisualService;
     private readonly ILogger<PlaylistWatchService> _logger;
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastPlaylistMediaSyncUtc = new(StringComparer.OrdinalIgnoreCase);
 
     public sealed class PlaylistWatchPlatformServices
     {
@@ -122,14 +124,17 @@ public sealed class PlaylistWatchService
         }
     }
 
-    public Task CheckPlaylistWatchItemAsync(PlaylistWatchlistDto playlist, CancellationToken cancellationToken)
+    public Task CheckPlaylistWatchItemAsync(
+        PlaylistWatchlistDto playlist,
+        CancellationToken cancellationToken,
+        bool forceMediaServerSync = false)
     {
         if (playlist == null)
         {
             return Task.CompletedTask;
         }
 
-        return CheckPlaylistAsync(playlist, cancellationToken);
+        return CheckPlaylistAsync(playlist, cancellationToken, forceMediaServerSync);
     }
 
     public sealed record PlaylistTrackCandidate(
@@ -648,7 +653,10 @@ public sealed class PlaylistWatchService
         return normalized;
     }
 
-    private async Task CheckPlaylistAsync(PlaylistWatchlistDto playlist, CancellationToken cancellationToken)
+    private async Task CheckPlaylistAsync(
+        PlaylistWatchlistDto playlist,
+        CancellationToken cancellationToken,
+        bool forceMediaServerSync = false)
     {
         var source = NormalizeWatchSource(playlist.Source);
         if (string.IsNullOrWhiteSpace(source))
@@ -684,6 +692,12 @@ public sealed class PlaylistWatchService
                 _logger.LogDebug("Playlist watch skipped for unsupported source: {Source}", source);
                 break;
         }
+
+        await TrySyncPlaylistToMediaServerAsync(
+            playlist,
+            preference,
+            forceMediaServerSync,
+            cancellationToken);
     }
 
     private async Task<HashSet<string>> GetIgnoredTrackIdsForSourceAsync(
@@ -739,8 +753,6 @@ public sealed class PlaylistWatchService
             return;
         }
 
-        var snapshotChanged = IsSpotifySnapshotChanged(page, state);
-        var metadataChanged = IsSpotifyPlaylistMetadataChanged(page, playlist);
         await UpdateSpotifyPlaylistMetadataIfPresentAsync(playlist, preference, page, cancellationToken);
 
         if (ShouldSkipSpotifySnapshotProcessing(settings.WatchUseSnapshotIdChecking, page, state, batchSnapshot: null))
@@ -852,18 +864,57 @@ public sealed class PlaylistWatchService
                 DateTimeOffset.UtcNow),
             cancellationToken);
 
-        if ((snapshotChanged || metadataChanged) && !string.IsNullOrWhiteSpace(preference?.Service))
+    }
+
+    private async Task TrySyncPlaylistToMediaServerAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        bool forceMediaServerSync,
+        CancellationToken cancellationToken)
+    {
+        var source = NormalizeWatchSource(playlist.Source);
+        var sourceId = (playlist.SourceId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(sourceId))
         {
-            var result = await _playlistSyncService.SyncSpotifyPlaylistAsync(
-                playlist,
-                preference,
-                force: false,
-                cancellationToken);
-            if (!result.Success)
-            {
-                _logger.LogDebug("Spotify playlist sync skipped: {Message}", result.Message);
-            }
+            return;
         }
+
+        var serviceToken = string.IsNullOrWhiteSpace(preference?.Service)
+            ? "auto"
+            : preference.Service.Trim().ToLowerInvariant();
+        var syncKey = $"{source}:{sourceId}:{serviceToken}";
+        if (!forceMediaServerSync
+            && _lastPlaylistMediaSyncUtc.TryGetValue(syncKey, out var lastSyncedUtc)
+            && (DateTimeOffset.UtcNow - lastSyncedUtc) < PlaylistMediaSyncCooldown)
+        {
+            return;
+        }
+
+        var candidates = await GetPlaylistTrackCandidatesAsync(source, sourceId, cancellationToken);
+        var result = await _playlistSyncService.SyncPlaylistAsync(
+            playlist,
+            preference,
+            candidates,
+            force: forceMediaServerSync,
+            cancellationToken);
+
+        _lastPlaylistMediaSyncUtc[syncKey] = DateTimeOffset.UtcNow;
+        if (!result.Success)
+        {
+            _logger.LogDebug(
+                "Playlist media-server sync skipped for {Source}:{SourceId}: {Message}",
+                source,
+                sourceId,
+                result.Message);
+            return;
+        }
+
+        _logger.LogInformation(
+            "Playlist media-server sync completed for {Source}:{SourceId}. TargetPlaylistId={PlaylistId}, SyncedTracks={SyncedTracks}",
+            source,
+            sourceId,
+            result.PlaylistId ?? string.Empty,
+            result.SyncedTracks);
     }
 
     private static (int BatchOffset, string? BatchSnapshot) ResolveSpotifyBatchCursor(PlaylistWatchStateDto? state)
@@ -875,24 +926,6 @@ public sealed class PlaylistWatchService
         }
 
         return (batchOffset, state?.BatchProcessingSnapshotId);
-    }
-
-    private static bool IsSpotifySnapshotChanged(SpotifyPlaylistPage page, PlaylistWatchStateDto? state)
-    {
-        return !string.IsNullOrWhiteSpace(page.SnapshotId)
-               && !string.Equals(page.SnapshotId, state?.SnapshotId, StringComparison.Ordinal);
-    }
-
-    private static bool IsSpotifyPlaylistMetadataChanged(SpotifyPlaylistPage page, PlaylistWatchlistDto playlist)
-    {
-        var nameChanged = !string.IsNullOrWhiteSpace(page.Name)
-                          && !string.Equals(page.Name, playlist.Name, StringComparison.Ordinal);
-        var descriptionChanged = !string.IsNullOrWhiteSpace(page.Description)
-                                 && !string.Equals(page.Description, playlist.Description, StringComparison.Ordinal);
-        var imageChanged = !string.IsNullOrWhiteSpace(page.ImageUrl)
-                           && !string.Equals(page.ImageUrl, playlist.ImageUrl, StringComparison.Ordinal);
-        var trackCountChanged = page.TotalTracks.HasValue && page.TotalTracks != playlist.TrackCount;
-        return nameChanged || descriptionChanged || imageChanged || trackCountChanged;
     }
 
     private async Task UpdateSpotifyPlaylistMetadataIfPresentAsync(
