@@ -24,6 +24,7 @@ namespace DeezSpoTag.Web.Controllers.Api
         private const string DeezerSource = "deezer";
         private const string TrackType = "track";
         private const string DeezerDomain = "deezer.com";
+        private const int ImmediateNoIsrcBatchIntentLimit = 200;
         private readonly ILogger<DeezerDownloadApiController> _logger;
         private readonly DownloadIntentService _intentService;
         private readonly DeezerClient _deezerClient;
@@ -184,11 +185,14 @@ namespace DeezSpoTag.Web.Controllers.Api
                 return;
             }
 
+            var forceImmediateNoIsrc = isBatch
+                && resolvedIntents.Intents.Count <= ImmediateNoIsrcBatchIntentLimit;
             foreach (var intent in resolvedIntents.Intents)
             {
                 await EnqueueResolvedIntentAsync(
                     intent,
                     isBatch,
+                    forceImmediateNoIsrc,
                     request.DestinationFolderId,
                     accumulator,
                     cancellationToken);
@@ -347,6 +351,7 @@ namespace DeezSpoTag.Web.Controllers.Api
         private async Task EnqueueResolvedIntentAsync(
             DownloadIntent intent,
             bool isBatch,
+            bool forceImmediateNoIsrc,
             long? destinationFolderId,
             AddWithSettingsAccumulator accumulator,
             CancellationToken cancellationToken)
@@ -354,7 +359,7 @@ namespace DeezSpoTag.Web.Controllers.Api
             intent.DestinationFolderId ??= destinationFolderId;
             var requiresAutoTagProfile = RequiresAutoTagDefaults(intent.ContentType, intent.SourceUrl);
 
-            if (string.IsNullOrWhiteSpace(intent.Isrc) && isBatch)
+            if (string.IsNullOrWhiteSpace(intent.Isrc) && isBatch && !forceImmediateNoIsrc)
             {
                 if (_backgroundQueue.Enqueue(intent))
                 {
@@ -367,7 +372,10 @@ namespace DeezSpoTag.Web.Controllers.Api
                 return;
             }
 
-            var result = await _intentService.EnqueueAsync(intent, cancellationToken, preferIsrcOnly: isBatch);
+            var result = await _intentService.EnqueueAsync(
+                intent,
+                cancellationToken,
+                preferIsrcOnly: isBatch && !forceImmediateNoIsrc);
             if (!string.IsNullOrWhiteSpace(result.Engine))
             {
                 accumulator.Engine = result.Engine;
