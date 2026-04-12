@@ -4592,7 +4592,7 @@ function startQueuePolling() {
 
 function mapQueueItem(item) {
     const resolvedEngine = resolveQueueDisplayEngine(item);
-    const rawQuality = item.quality || item.Quality || item.bitrate || item.Bitrate || '';
+    const rawQuality = resolveQueueRawQuality(item, resolvedEngine);
     const contentType = String(item.contentType || item.ContentType || '').toLowerCase();
     const isVideo = contentType === 'video' || String(rawQuality).toLowerCase().startsWith('video-');
     const displayQuality = isVideo
@@ -4602,6 +4602,7 @@ function mapQueueItem(item) {
         taskId: item.uuid,
         title: resolveQueueItemTitle(item) || 'Unknown',
         artist: resolveQueueItemArtist(item) || 'Unknown',
+        rawQuality: String(rawQuality || '').trim(),
         quality: displayQuality,
         videoBadges: isVideo ? resolveVideoBadges(item, rawQuality) : [],
         status: mapStatus(item.status),
@@ -4707,6 +4708,7 @@ function mergeQueueTask(existing, incoming) {
         ...incoming,
         title: resolveQueueTaskText(existing.title, incoming.title),
         artist: resolveQueueTaskText(existing.artist, incoming.artist),
+        rawQuality: String(incoming.rawQuality || '').trim() || existing.rawQuality,
         quality: String(incoming.quality || '').trim() || existing.quality,
         videoBadges: Array.isArray(incoming.videoBadges) && incoming.videoBadges.length > 0
             ? incoming.videoBadges
@@ -4739,6 +4741,23 @@ function readQueueItemText(item, candidates) {
     }
 
     return '';
+}
+
+function resolveQueueRawQuality(item, engineHint) {
+    const normalizedEngine = normalizeEngine(engineHint || resolveQueueDisplayEngine(item) || item?.engine || item?.Engine || '');
+    if (normalizedEngine === 'qobuz') {
+        const resolvedQobuzQuality = readQueueItemText(item, ['qobuzResolvedQuality', 'QobuzResolvedQuality']);
+        if (resolvedQobuzQuality) {
+            return resolvedQobuzQuality;
+        }
+
+        const requestedQobuzQuality = readQueueItemText(item, ['qobuzRequestedQuality', 'QobuzRequestedQuality']);
+        if (requestedQobuzQuality) {
+            return requestedQobuzQuality;
+        }
+    }
+
+    return readQueueItemText(item, ['quality', 'Quality', 'bitrate', 'Bitrate']);
 }
 
 function resolveQueueItemTitle(item) {
@@ -5332,12 +5351,16 @@ function applyQueueRealtimeUpdate(payload) {
         task.engine = nextEngine;
         taskChanged = true;
     }
-    const nextRawQuality = update?.quality || update?.Quality || update?.bitrate || update?.Bitrate || '';
+    const nextRawQuality = resolveQueueRawQuality(update, nextEngine || task.engine);
     if (nextRawQuality) {
         const nextContentType = String(update?.contentType || update?.ContentType || '').toLowerCase();
         const nextIsVideo = nextContentType === 'video' || String(nextRawQuality).toLowerCase().startsWith('video-');
         const nextDisplayQuality = nextIsVideo ? 'Video' : mapBitrate(nextRawQuality);
         const nextVideoBadges = nextIsVideo ? resolveVideoBadges(update, nextRawQuality) : [];
+        if (task.rawQuality !== nextRawQuality) {
+            task.rawQuality = nextRawQuality;
+            taskChanged = true;
+        }
         if (nextDisplayQuality && task.quality !== nextDisplayQuality) {
             task.quality = nextDisplayQuality;
             taskChanged = true;
