@@ -587,6 +587,22 @@ public sealed class DownloadOrchestrationService : BackgroundService
                 continue;
             }
 
+            var recentDownloadWindowHours = ResolveRecentDownloadWindowHours(profileContext.Defaults);
+            if (recentDownloadWindowHours > 0)
+            {
+                var recentFiles = FilterRecentFiles(scopedFiles, recentDownloadWindowHours);
+                if (recentFiles.Count == 0)
+                {
+                    _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                        DateTimeOffset.UtcNow,
+                        "info",
+                        $"Automation: recent-download enhancement skipped for {folder.RootPath} (no files within last {recentDownloadWindowHours} hour(s))."));
+                    continue;
+                }
+
+                scopedFiles = recentFiles;
+            }
+
             var folderId = destination.Key.ToString(CultureInfo.InvariantCulture);
             var enhancementProfile = ResolveAutomationProfileForFolder(
                 profileContext,
@@ -689,6 +705,40 @@ public sealed class DownloadOrchestrationService : BackgroundService
         }
 
         return false;
+    }
+
+    private static int ResolveRecentDownloadWindowHours(AutoTagDefaultsDto defaults)
+    {
+        var resolved = defaults.RecentDownloadWindowHours ?? AutoTagDefaultsDto.DefaultRecentDownloadWindowHours;
+        return resolved < 0 ? AutoTagDefaultsDto.DefaultRecentDownloadWindowHours : resolved;
+    }
+
+    private static List<string> FilterRecentFiles(List<string> files, int recentDownloadWindowHours)
+    {
+        if (recentDownloadWindowHours <= 0 || files.Count == 0)
+        {
+            return files;
+        }
+
+        var cutoffUtc = DateTimeOffset.UtcNow.AddHours(-recentDownloadWindowHours).UtcDateTime;
+        var recentFiles = new List<string>(files.Count);
+        foreach (var file in files)
+        {
+            try
+            {
+                var lastWriteUtc = File.GetLastWriteTimeUtc(file);
+                if (lastWriteUtc >= cutoffUtc)
+                {
+                    recentFiles.Add(file);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Skip unreadable files.
+            }
+        }
+
+        return recentFiles;
     }
 
     private async Task<Dictionary<long, List<string>>> GetRecentMovedAudioFilesByDestinationAsync(

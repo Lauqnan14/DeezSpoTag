@@ -1129,6 +1129,24 @@
                                 </div>
                             </div>
                         </div>
+                        <div class="download-grid download-grid-2 mt-3">
+                            <div class="form-group">
+                                <label for="enhancementRecentDownloadWindowDays">
+                                    Recent downloads window (days)
+                                    <span class="autotag-tooltip-icon ms-1"
+                                          title="Only files modified within this window in your library are enhanced. Set to 0 to disable time filtering."
+                                          aria-label="Only files modified within this window in your library are enhanced. Set to 0 to disable time filtering.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <input type="number" id="enhancementRecentDownloadWindowDays" min="0" step="1" />
+                                <span class="helper">Applies to the automation run that enhances recent downloads moved into library folders.</span>
+                            </div>
+                            <div class="form-group d-flex align-items-end">
+                                <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="saveRecentDownloadWindow">Save Recent Downloads Window</button>
+                            </div>
+                        </div>
+                        <span class="helper" id="enhancementRecentDownloadWindowStatus"></span>
                         <span class="helper" id="enhancementTechnicalProfilesStatus">Profiles are filtered by the selected library folder and scope.</span>
                         <span class="helper" id="enhancementQualityChecksStatus"></span>
                         <div class="enhancement-action-row">

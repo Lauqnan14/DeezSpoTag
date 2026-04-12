@@ -2595,13 +2595,18 @@ async function runAnalysis() {
 
 function normalizeAutoTagDefaults(defaults) {
     const source = defaults && typeof defaults === 'object' ? defaults : {};
+    const parsedRecentWindow = Number.parseInt(String(source.recentDownloadWindowHours ?? ''), 10);
+    const recentDownloadWindowHours = Number.isFinite(parsedRecentWindow) && parsedRecentWindow >= 0
+        ? parsedRecentWindow
+        : 24;
     return {
         defaultFileProfile: typeof source.defaultFileProfile === 'string' && source.defaultFileProfile.trim()
             ? source.defaultFileProfile.trim()
             : null,
         librarySchedules: source.librarySchedules && typeof source.librarySchedules === 'object'
             ? { ...source.librarySchedules }
-            : {}
+            : {},
+        recentDownloadWindowHours
     };
 }
 
@@ -2667,7 +2672,8 @@ async function saveAutoTagFolderDefault(folderId, profileId, schedule) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             defaultFileProfile: defaults.defaultFileProfile,
-            librarySchedules: defaults.librarySchedules
+            librarySchedules: defaults.librarySchedules,
+            recentDownloadWindowHours: defaults.recentDownloadWindowHours
         })
     });
     libraryState.autotagDefaults = normalizeAutoTagDefaults(saved);

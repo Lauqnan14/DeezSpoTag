@@ -261,6 +261,8 @@
     const AUTOTAG_LIBRARY_FOLDERS_API = "/api/library/folders";
     const PROFILE_AUTOSAVE_DEBOUNCE_MS = 900;
     const ENHANCEMENT_LAST_SCAN_BANNER_MS = 15000;
+    const DEFAULT_RECENT_DOWNLOAD_WINDOW_HOURS = 24;
+    const DEFAULT_RECENT_DOWNLOAD_WINDOW_DAYS = Math.max(0, Math.round(DEFAULT_RECENT_DOWNLOAD_WINDOW_HOURS / 24));
 
     const state = {
         config: structuredClone(DEFAULT_CONFIG),
@@ -276,6 +278,9 @@
         profileSaveInFlight: false,
         profileSaveQueued: false,
         profileSaveDirty: false,
+        autoTagDefaults: null,
+        autoTagDefaultsLoaded: false,
+        autoTagDefaultsDirty: false,
         spotifyStatus: { connected: false, expiresAt: null, redirectUri: null },
         platformAuth: {},
         lockedTabTarget: null,
@@ -5960,6 +5965,12 @@
             console.error("Failed to load AutoTag folder defaults.", error);
             showToast("Failed to load folder profile defaults.", "error");
         }
+        try {
+            await loadAutoTagDefaults();
+        } catch (error) {
+            console.error("Failed to load AutoTag defaults.", error);
+            showToast("Failed to load enhancement defaults.", "error");
+        }
     }
 
     function renderProfileSelect() {
@@ -5996,6 +6007,163 @@
         }
 
         return `HTTP ${response.status}`;
+    }
+
+    function normalizeAutoTagDefaults(defaults) {
+        const source = defaults && typeof defaults === "object" ? defaults : {};
+        const parsedRecentWindow = Number.parseInt(String(source.recentDownloadWindowHours ?? ""), 10);
+        const recentDownloadWindowHours = Number.isFinite(parsedRecentWindow) && parsedRecentWindow >= 0
+            ? parsedRecentWindow
+            : DEFAULT_RECENT_DOWNLOAD_WINDOW_HOURS;
+        return {
+            defaultFileProfile: typeof source.defaultFileProfile === "string" && source.defaultFileProfile.trim()
+                ? source.defaultFileProfile.trim()
+                : null,
+            librarySchedules: source.librarySchedules && typeof source.librarySchedules === "object"
+                ? { ...source.librarySchedules }
+                : {},
+            recentDownloadWindowHours
+        };
+    }
+
+    function ensureRecentDownloadWindowControls() {
+        if (el("enhancementRecentDownloadWindowDays")) {
+            return;
+        }
+
+        const qualityChecksButton = el("runEnhancementQualityChecks");
+        const section = qualityChecksButton?.closest(".download-section");
+        if (!section) {
+            return;
+        }
+
+        const insertionAnchor = el("enhancementTechnicalProfilesStatus")
+            || el("enhancementQualityChecksStatus")
+            || section.querySelector(".enhancement-action-row");
+        const row = document.createElement("div");
+        row.className = "download-grid download-grid-2 mt-3";
+        row.innerHTML = `
+            <div class="form-group">
+                <label for="enhancementRecentDownloadWindowDays">
+                    Recent downloads window (days)
+                    <span class="autotag-tooltip-icon ms-1"
+                          title="Only files modified within this window in your library are enhanced. Set to 0 to disable time filtering."
+                          aria-label="Only files modified within this window in your library are enhanced. Set to 0 to disable time filtering.">
+                        <i class="fas fa-question-circle"></i>
+                    </span>
+                </label>
+                <input type="number" id="enhancementRecentDownloadWindowDays" min="0" step="1" />
+                <span class="helper">Applies to the automation run that enhances recent downloads moved into library folders.</span>
+            </div>
+            <div class="form-group d-flex align-items-end">
+                <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="saveRecentDownloadWindow">Save Recent Downloads Window</button>
+            </div>
+        `;
+
+        section.insertBefore(row, insertionAnchor || null);
+        if (!el("enhancementRecentDownloadWindowStatus")) {
+            const status = document.createElement("span");
+            status.className = "helper";
+            status.id = "enhancementRecentDownloadWindowStatus";
+            section.insertBefore(status, insertionAnchor || null);
+        }
+    }
+
+    function convertRecentWindowHoursToDays(hours) {
+        const normalizedHours = Number.isFinite(hours) && hours >= 0
+            ? hours
+            : DEFAULT_RECENT_DOWNLOAD_WINDOW_HOURS;
+        if (normalizedHours === 0) {
+            return 0;
+        }
+        return Math.max(1, Math.round(normalizedHours / 24));
+    }
+
+    function convertRecentWindowDaysToHours(days) {
+        const normalizedDays = Number.isFinite(days) && days >= 0
+            ? days
+            : DEFAULT_RECENT_DOWNLOAD_WINDOW_DAYS;
+        return normalizedDays * 24;
+    }
+
+    function readRecentDownloadWindowDays() {
+        const field = el("enhancementRecentDownloadWindowDays");
+        if (!field) {
+            return DEFAULT_RECENT_DOWNLOAD_WINDOW_DAYS;
+        }
+        const parsed = Number.parseInt(String(field.value ?? "").trim(), 10);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+            return DEFAULT_RECENT_DOWNLOAD_WINDOW_DAYS;
+        }
+        return parsed;
+    }
+
+    function applyAutoTagDefaultsToUi() {
+        ensureRecentDownloadWindowControls();
+        const field = el("enhancementRecentDownloadWindowDays");
+        if (!field) {
+            return;
+        }
+        const value = convertRecentWindowHoursToDays(
+            state.autoTagDefaults?.recentDownloadWindowHours ?? DEFAULT_RECENT_DOWNLOAD_WINDOW_HOURS);
+        field.value = value;
+    }
+
+    async function loadAutoTagDefaults() {
+        state.autoTagDefaultsLoaded = false;
+        try {
+            const response = await fetch("/api/autotag/defaults");
+            if (!response.ok) {
+                throw new Error(await readApiErrorMessage(response));
+            }
+            const defaults = await response.json().catch(() => null);
+            state.autoTagDefaults = normalizeAutoTagDefaults(defaults);
+        } finally {
+            state.autoTagDefaultsLoaded = true;
+            applyAutoTagDefaultsToUi();
+        }
+    }
+
+    async function saveRecentDownloadWindow() {
+        const button = el("saveRecentDownloadWindow");
+        if (button) {
+            button.disabled = true;
+        }
+        try {
+            if (!state.autoTagDefaultsLoaded) {
+                await loadAutoTagDefaults();
+            }
+            const defaults = normalizeAutoTagDefaults(state.autoTagDefaults);
+            const recentDownloadWindowDays = readRecentDownloadWindowDays();
+            const recentDownloadWindowHours = convertRecentWindowDaysToHours(recentDownloadWindowDays);
+            const response = await fetch("/api/autotag/defaults", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    defaultFileProfile: defaults.defaultFileProfile,
+                    librarySchedules: defaults.librarySchedules,
+                    recentDownloadWindowHours
+                })
+            });
+            if (!response.ok) {
+                throw new Error(await readApiErrorMessage(response));
+            }
+            const saved = await response.json().catch(() => null);
+            state.autoTagDefaults = normalizeAutoTagDefaults(saved);
+            state.autoTagDefaultsDirty = false;
+            applyAutoTagDefaultsToUi();
+            setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Recent downloads window saved.");
+            showToast("Recent downloads window saved.", "success");
+        } catch (error) {
+            setEnhancementStatus(
+                "enhancementRecentDownloadWindowStatus",
+                `Failed to save recent downloads window: ${error?.message || error}`);
+            showToast(`Failed to save recent downloads window: ${error?.message || error}`, "error");
+        } finally {
+            if (button) {
+                button.disabled = false;
+            }
+        }
     }
 
     function getProfileAutoTagSnapshot(profile) {
@@ -6427,6 +6595,7 @@
         });
     }
 
+    ensureRecentDownloadWindowControls();
     el("autotag-start")?.addEventListener("click", startAutoTag);
     el("autotag-stop")?.addEventListener("click", stopAutoTag);
     el("autotag-reset")?.addEventListener("click", resetForm);
@@ -6453,6 +6622,11 @@
     el("runCoverMaintenance")?.addEventListener("click", runCoverMaintenance);
     el("runFolderUniformity")?.addEventListener("click", runFolderUniformity);
     el("runEnhancementQualityChecks")?.addEventListener("click", runEnhancementQualityChecks);
+    el("saveRecentDownloadWindow")?.addEventListener("click", saveRecentDownloadWindow);
+    el("enhancementRecentDownloadWindowDays")?.addEventListener("input", () => {
+        state.autoTagDefaultsDirty = true;
+        setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Recent downloads window has unsaved changes.");
+    });
     [
         "saveAnimatedArtwork"
     ].forEach((id) => {
