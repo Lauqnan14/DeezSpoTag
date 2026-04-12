@@ -87,6 +87,7 @@ public sealed class DownloadIntentService
     private sealed record PrimaryPayloadEnqueueContext(
         DownloadIntent Intent,
         DeezSpoTagSettings Settings,
+        long? PrimaryDestinationFolderId,
         long? SecondaryDestinationFolderId,
         bool AllowQualityUpgrade,
         int? RequestedQualityRank,
@@ -101,6 +102,7 @@ public sealed class DownloadIntentService
     private sealed record AppleSecondaryEnqueueRequest(
         DownloadIntent Intent,
         DeezSpoTagSettings Settings,
+        long? PrimaryDestinationFolderId,
         long? SecondaryDestinationFolderId,
         bool AllowQualityUpgrade,
         List<string> Queued,
@@ -304,11 +306,51 @@ public sealed class DownloadIntentService
         }
         var requestedQualityRank = ParseRequestedQualityRank(selectedQuality ?? intent.Quality);
         var primaryDestinationFolderId = useMultiQuality
-            ? (multiQuality!.PrimaryDestinationFolderId ?? intent.DestinationFolderId)
+            ? (intent.DestinationFolderId ?? multiQuality!.PrimaryDestinationFolderId)
             : intent.DestinationFolderId;
         var secondaryDestinationFolderId = useMultiQuality
             ? (intent.SecondaryDestinationFolderId ?? multiQuality!.SecondaryDestinationFolderId)
             : null;
+        if (useAtmosStereoDual)
+        {
+            if (!secondaryDestinationFolderId.HasValue)
+            {
+                return new DownloadIntentResult
+                {
+                    Success = false,
+                    Engine = engine,
+                    Message = "Dual-quality routing requires a dedicated Atmos destination folder."
+                };
+            }
+
+            if (primaryDestinationFolderId.HasValue
+                && primaryDestinationFolderId.Value == secondaryDestinationFolderId.Value)
+            {
+                return new DownloadIntentResult
+                {
+                    Success = false,
+                    Engine = engine,
+                    Message = "Stereo and Atmos destination folders must be different in dual-quality mode."
+                };
+            }
+
+            var distinctRootCheck = await DownloadDestinationGuard.ValidateDistinctRootsAsync(
+                primaryDestinationFolderId,
+                secondaryDestinationFolderId,
+                _libraryRepository,
+                cancellationToken);
+            if (!distinctRootCheck.Ok)
+            {
+                return new DownloadIntentResult
+                {
+                    Success = false,
+                    Engine = engine,
+                    Message = distinctRootCheck.Error ?? "Stereo and Atmos destinations must resolve to different folder roots."
+                };
+            }
+        }
+        intent.DestinationFolderId = primaryDestinationFolderId;
+        intent.SecondaryDestinationFolderId = secondaryDestinationFolderId;
 
         intent.AlbumArtist = ResolveEffectiveAlbumArtist(
             intent.AlbumArtist,
@@ -491,6 +533,7 @@ public sealed class DownloadIntentService
         => new(
             request.Intent,
             request.Settings,
+            request.PrimaryDestinationFolderId,
             request.SecondaryDestinationFolderId,
             request.Intent.AllowQualityUpgrade,
             request.RequestedQualityRank,
@@ -716,6 +759,7 @@ public sealed class DownloadIntentService
                     new AppleSecondaryEnqueueRequest(
                         request.Intent,
                         request.Settings,
+                        request.PrimaryDestinationFolderId,
                         request.SecondaryDestinationFolderId,
                         request.Intent.AllowQualityUpgrade,
                         request.Queued,
@@ -737,6 +781,7 @@ public sealed class DownloadIntentService
                 new AppleSecondaryEnqueueRequest(
                     request.Intent,
                     request.Settings,
+                    request.PrimaryDestinationFolderId,
                     request.SecondaryDestinationFolderId,
                     request.Intent.AllowQualityUpgrade,
                     request.Queued,
@@ -1076,7 +1121,7 @@ public sealed class DownloadIntentService
         var routingMultiQuality = settings.MultiQuality;
         var useMultiQualityForRouting = IsMultiQualityDualEnabled(routingMultiQuality);
         return useMultiQualityForRouting
-            ? (routingMultiQuality!.PrimaryDestinationFolderId ?? intent.DestinationFolderId)
+            ? (intent.DestinationFolderId ?? routingMultiQuality!.PrimaryDestinationFolderId)
             : intent.DestinationFolderId;
     }
 
@@ -4327,12 +4372,31 @@ public sealed class DownloadIntentService
         var secondaryDestinationFolderId =
             request.SecondaryDestinationFolderId
             ?? request.Settings.MultiQuality?.SecondaryDestinationFolderId
-            ?? request.Intent.SecondaryDestinationFolderId
-            ?? request.Intent.DestinationFolderId;
+            ?? request.Intent.SecondaryDestinationFolderId;
         if (secondaryDestinationFolderId is null)
         {
             _logger.LogWarning(
                 "Multi-quality secondary skipped: secondary destination folder is required for Apple Atmos.");
+            return false;
+        }
+        if (request.PrimaryDestinationFolderId.HasValue
+            && request.PrimaryDestinationFolderId.Value == secondaryDestinationFolderId.Value)
+        {
+            _logger.LogWarning(
+                "Multi-quality secondary skipped: Atmos destination {DestinationFolderId} matches primary destination.",
+                secondaryDestinationFolderId.Value);
+            return false;
+        }
+        var distinctRootCheck = await DownloadDestinationGuard.ValidateDistinctRootsAsync(
+            request.PrimaryDestinationFolderId,
+            secondaryDestinationFolderId,
+            _libraryRepository,
+            request.CancellationToken);
+        if (!distinctRootCheck.Ok)
+        {
+            _logger.LogWarning(
+                "Multi-quality secondary skipped: {Reason}",
+                distinctRootCheck.Error ?? "Stereo and Atmos destinations must resolve to different folder roots.");
             return false;
         }
 
@@ -5237,6 +5301,7 @@ public sealed class DownloadIntentService
                 new AppleSecondaryEnqueueRequest(
                     context.Intent,
                     context.Settings,
+                    context.PrimaryDestinationFolderId,
                     context.SecondaryDestinationFolderId,
                     context.AllowQualityUpgrade,
                     context.Queued,
