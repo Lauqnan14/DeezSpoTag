@@ -198,6 +198,11 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return new DownloadGateDecision(true, string.Empty, false);
         }
 
+        if (_autoTagService.TryGetRunningEnrichmentJobId(out _))
+        {
+            return new DownloadGateDecision(false, "Downloads paused while enrichment is running.", false);
+        }
+
         string? runningEnhancementJobId = null;
         var hasEnhancementStage = _enhancementStageRunning || _autoTagService.TryGetRunningEnhancementJobId(out runningEnhancementJobId);
         if (hasEnhancementStage)
@@ -220,6 +225,26 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
         if (_autoTagService.TryGetAnyRunningJobId(out var runningJobId))
         {
+            if (string.IsNullOrWhiteSpace(runningJobId))
+            {
+                return new DownloadGateDecision(false, "Downloads paused while AutoTag state is resolving.", false);
+            }
+
+            var runningJob = _autoTagService.GetJob(runningJobId);
+            if (runningJob != null)
+            {
+                if (string.Equals(runningJob.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
+                {
+                    return new DownloadGateDecision(false, "Downloads paused while enrichment is running.", false);
+                }
+
+                if (!string.Equals(runningJob.RunIntent, AutoTagLiterals.RunIntentEnhancementOnly, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(runningJob.RunIntent, AutoTagLiterals.RunIntentEnhancementRecentDownloads, StringComparison.OrdinalIgnoreCase))
+                {
+                    return new DownloadGateDecision(false, "Downloads paused while AutoTag stage is unknown (protecting enrichment).", false);
+                }
+            }
+
             var paused = await TryPauseAnyRunningAutoTagForIncomingDownloadAsync(runningJobId);
             if (paused || !TaggingInProgress)
             {
