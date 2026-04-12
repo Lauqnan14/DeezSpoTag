@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using System.Security.Cryptography;
 using System.Linq;
 using Microsoft.AspNetCore.Hosting;
 using DeezSpoTag.Integrations.Plex;
@@ -13,6 +14,7 @@ using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Utils;
 using DeezSpoTag.Web.Services.CoverPort;
+using DeezSpoTag.Web.Services.AutoTag;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -77,6 +79,8 @@ public class AutoTagJob : AutoTagRunState
     public List<string> Logs { get; } = new();
     public List<string> StartedPlatforms { get; } = new();
     public Dictionary<string, AutoTagTagDiff> TagDiffs { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public AutoTagResumeCheckpoint? ResumeCheckpoint { get; set; }
+    public string? ResumeFromJobId { get; set; }
 }
 
 public sealed class AutoTagRunSummary : AutoTagRunState
@@ -110,6 +114,12 @@ public class TaggingStatusWrap
     public TaggingStatus? Status { get; set; }
     public string Platform { get; set; } = "";
     public double Progress { get; set; }
+    public int? PlatformIndex { get; set; }
+    public int? PlatformCount { get; set; }
+    public int? FileIndex { get; set; }
+    public int? FileCount { get; set; }
+    public int? NextPlatformIndex { get; set; }
+    public int? NextFileIndex { get; set; }
 }
 
 public class TaggingStatus
@@ -119,6 +129,18 @@ public class TaggingStatus
     public string? Message { get; set; }
     public double? Accuracy { get; set; }
     public bool UsedShazam { get; set; }
+}
+
+public sealed class AutoTagResumeCheckpoint
+{
+    public string StageName { get; set; } = string.Empty;
+    public string StageConfigHash { get; set; } = string.Empty;
+    public int PlatformIndex { get; set; }
+    public int FileIndex { get; set; }
+    public int PlatformCount { get; set; }
+    public int FileCount { get; set; }
+    public string? LastPath { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 public sealed class AutoTagTagSnapshot
@@ -154,6 +176,7 @@ public class AutoTagService
 {
     private readonly record struct EnrichmentBuildContext(string RunIntent, string JobId);
     private readonly record struct AutoMoveExecutionResult(bool Completed, AutoTagMoveSummary Summary);
+    private sealed record ResumeCheckpointSeed(string SourceJobId, AutoTagResumeCheckpoint Checkpoint);
 
     private readonly ConcurrentDictionary<string, AutoTagJob> _jobs = new();
     private readonly ConcurrentDictionary<string, byte> _activeJobIds = new();
@@ -294,7 +317,7 @@ public class AutoTagService
         "artworkType"
     };
     private sealed record PlatformTagCapabilities(HashSet<string> SupportedTags, bool RequiresAuth);
-    private sealed record AutoTagStageConfig(string Name, string ConfigPath, int TagCount);
+    private sealed record AutoTagStageConfig(string Name, string ConfigPath, int TagCount, string ConfigHash);
     private sealed class FileTagOutcome
     {
         public bool Seen { get; set; }
@@ -438,6 +461,7 @@ public class AutoTagService
         var normalizedPath = NormalizePathForJob(path);
         var normalizedTrigger = NormalizeRunTrigger(trigger);
         var normalizedRunIntent = NormalizeRunIntent(runIntent);
+        var resumeSeed = TryResolveResumeCheckpointSeed(normalizedPath, normalizedRunIntent, profileId);
 
         if (await _queueRepository.HasActiveDownloadsAsync())
         {
@@ -482,7 +506,9 @@ public class AutoTagService
             Trigger = normalizedTrigger,
             RunIntent = normalizedRunIntent,
             ProfileId = string.IsNullOrWhiteSpace(profileId) ? null : profileId.Trim(),
-            ProfileName = string.IsNullOrWhiteSpace(profileName) ? null : profileName.Trim()
+            ProfileName = string.IsNullOrWhiteSpace(profileName) ? null : profileName.Trim(),
+            ResumeCheckpoint = resumeSeed?.Checkpoint,
+            ResumeFromJobId = resumeSeed?.SourceJobId
         };
 
         _jobs[job.Id] = job;
@@ -490,6 +516,12 @@ public class AutoTagService
         SaveJob(job);
         TrySaveLastJobId(job.Id);
         AppendActivityLog(job.Id, $"autotag started: {normalizedPath}");
+        if (resumeSeed != null)
+        {
+            AppendLog(
+                job,
+                $"resume checkpoint loaded from job {resumeSeed.SourceJobId}: stage={resumeSeed.Checkpoint.StageName}, platformIndex={resumeSeed.Checkpoint.PlatformIndex}, fileIndex={resumeSeed.Checkpoint.FileIndex}");
+        }
 
         InitializeRunArchive(job);
         var runtimeConfigJson = SanitizeConfigJson(configJson);
@@ -605,6 +637,140 @@ public class AutoTagService
         {
             return LibraryFolderRootResolver.ResolveAccessibleRoots(_activityLog.GetFolders());
         }
+    }
+
+    private ResumeCheckpointSeed? TryResolveResumeCheckpointSeed(
+        string normalizedPath,
+        string normalizedRunIntent,
+        string? profileId)
+    {
+        try
+        {
+            if (!Directory.Exists(_jobsDir))
+            {
+                return null;
+            }
+
+            AutoTagJob? latestMatchingJob = null;
+            var normalizedProfileId = string.IsNullOrWhiteSpace(profileId) ? null : profileId.Trim();
+
+            foreach (var path in Directory.EnumerateFiles(_jobsDir, "*.json"))
+            {
+                var jobId = Path.GetFileNameWithoutExtension(path);
+                if (string.IsNullOrWhiteSpace(jobId))
+                {
+                    continue;
+                }
+
+                var job = _jobs.TryGetValue(jobId, out var cachedJob) ? cachedJob : LoadJob(jobId);
+                if (job == null)
+                {
+                    continue;
+                }
+
+                if (!IsResumeScopeMatch(job, normalizedPath, normalizedRunIntent, normalizedProfileId))
+                {
+                    continue;
+                }
+
+                if (latestMatchingJob != null && job.StartedAt < latestMatchingJob.StartedAt)
+                {
+                    continue;
+                }
+
+                latestMatchingJob = job;
+            }
+
+            if (latestMatchingJob == null
+                || !IsResumeCandidate(latestMatchingJob, normalizedPath, normalizedRunIntent, normalizedProfileId))
+            {
+                return null;
+            }
+
+            var checkpoint = CloneResumeCheckpoint(latestMatchingJob.ResumeCheckpoint);
+            return checkpoint == null
+                ? null
+                : new ResumeCheckpointSeed(latestMatchingJob.Id, checkpoint);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed resolving AutoTag resume checkpoint seed.");
+            return null;
+        }
+    }
+
+    private static bool IsResumeScopeMatch(
+        AutoTagJob job,
+        string normalizedPath,
+        string normalizedRunIntent,
+        string? normalizedProfileId)
+    {
+        if (!string.Equals(NormalizeRunIntent(job.RunIntent), normalizedRunIntent, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.Equals(NormalizePathForJob(job.RootPath ?? string.Empty), normalizedPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(normalizedProfileId)
+            && !string.Equals(job.ProfileId?.Trim(), normalizedProfileId, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool IsResumeCandidate(
+        AutoTagJob job,
+        string normalizedPath,
+        string normalizedRunIntent,
+        string? normalizedProfileId)
+    {
+        if (!IsResumeScopeMatch(job, normalizedPath, normalizedRunIntent, normalizedProfileId))
+        {
+            return false;
+        }
+
+        if (job.ResumeCheckpoint == null)
+        {
+            return false;
+        }
+
+        var status = job.Status?.Trim();
+        var staleRunning = string.Equals(status, "running", StringComparison.OrdinalIgnoreCase)
+            && !_activeJobIds.ContainsKey(job.Id);
+        if (!string.Equals(status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase)
+            && !staleRunning)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static AutoTagResumeCheckpoint? CloneResumeCheckpoint(AutoTagResumeCheckpoint? checkpoint)
+    {
+        if (checkpoint == null)
+        {
+            return null;
+        }
+
+        return new AutoTagResumeCheckpoint
+        {
+            StageName = checkpoint.StageName,
+            StageConfigHash = checkpoint.StageConfigHash,
+            PlatformIndex = checkpoint.PlatformIndex,
+            FileIndex = checkpoint.FileIndex,
+            PlatformCount = checkpoint.PlatformCount,
+            FileCount = checkpoint.FileCount,
+            LastPath = checkpoint.LastPath,
+            UpdatedAt = checkpoint.UpdatedAt
+        };
     }
 
     private static string NormalizePathForJob(string path)
@@ -1153,6 +1319,11 @@ public class AutoTagService
             {
                 job.Status = success ? AutoTagLiterals.CompletedStatus : AutoTagLiterals.FailedStatus;
             }
+            if (string.Equals(job.Status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase))
+            {
+                job.ResumeCheckpoint = null;
+                job.ResumeFromJobId = null;
+            }
             job.ExitCode = success ? 0 : 1;
             job.FinishedAt = DateTimeOffset.UtcNow;
             AppendPlatformSummary(job);
@@ -1210,6 +1381,8 @@ public class AutoTagService
         job.Error = "No AutoTag stages configured.";
         job.ExitCode = 1;
         job.FinishedAt = DateTimeOffset.UtcNow;
+        job.ResumeCheckpoint = null;
+        job.ResumeFromJobId = null;
         SaveJob(job);
         AppendActivityLog(job.Id, "autotag failed: no stages configured");
         NotifyCompleted(job);
@@ -1228,6 +1401,18 @@ public class AutoTagService
             var stage = stages[index];
             AppendLog(job, BuildStageStartedLog(stage, index, stages.Count));
             _activeJobStages[job.Id] = stage.Name;
+            var resumeCursor = ResolveResumeCursor(job, stage);
+            if (resumeCursor != null)
+            {
+                AppendLog(
+                    job,
+                    $"resume checkpoint active for stage '{stage.Name}': platformIndex={resumeCursor.PlatformIndex}, fileIndex={resumeCursor.FileIndex}");
+            }
+            else if (job.ResumeCheckpoint != null && !CanApplyResumeCheckpoint(job.ResumeCheckpoint, stage))
+            {
+                job.ResumeCheckpoint = null;
+                SaveJob(job);
+            }
 
             try
             {
@@ -1235,8 +1420,9 @@ public class AutoTagService
                     job.Id,
                     path,
                     stage.ConfigPath,
-                    status => UpdateStatus(job, status, index, stages.Count, fileOutcomes),
+                    status => UpdateStatus(job, status, stage.Name, stage.ConfigHash, index, stages.Count, fileOutcomes),
                     line => AppendLog(job, line),
+                    resumeCursor,
                     CancellationToken.None);
 
                 if (string.Equals(result.Error, "stopped", StringComparison.OrdinalIgnoreCase))
@@ -1255,6 +1441,11 @@ public class AutoTagService
                 }
 
                 AppendLog(job, BuildStageFinishedLog(stage, index, stages.Count));
+                if (CanApplyResumeCheckpoint(job.ResumeCheckpoint, stage))
+                {
+                    job.ResumeCheckpoint = null;
+                    SaveJob(job);
+                }
             }
             finally
             {
@@ -2155,7 +2346,11 @@ public class AutoTagService
             WriteIndented = true
         });
         var configPath = WriteRuntimeConfigFile(context.JobId, AutoTagLiterals.EnrichmentStage, configJson);
-        stage = new AutoTagStageConfig(AutoTagLiterals.EnrichmentStage, configPath, filtered.Count);
+        stage = new AutoTagStageConfig(
+            AutoTagLiterals.EnrichmentStage,
+            configPath,
+            filtered.Count,
+            ComputeConfigHash(configJson));
         return true;
     }
 
@@ -2199,7 +2394,11 @@ public class AutoTagService
             WriteIndented = true
         });
         var configPath = WriteRuntimeConfigFile(jobId, AutoTagLiterals.EnhancementStage, configJson);
-        stage = new AutoTagStageConfig(AutoTagLiterals.EnhancementStage, configPath, filtered.Count);
+        stage = new AutoTagStageConfig(
+            AutoTagLiterals.EnhancementStage,
+            configPath,
+            filtered.Count,
+            ComputeConfigHash(configJson));
         return true;
     }
 
@@ -2210,6 +2409,18 @@ public class AutoTagService
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         });
         return (JsonNode.Parse(json) as JsonObject) ?? new JsonObject();
+    }
+
+    private static string ComputeConfigHash(string configJson)
+    {
+        if (string.IsNullOrWhiteSpace(configJson))
+        {
+            return string.Empty;
+        }
+
+        var bytes = Encoding.UTF8.GetBytes(configJson);
+        var hash = SHA256.HashData(bytes);
+        return Convert.ToHexString(hash);
     }
 
     private static List<string> ReadStringList(JsonObject root, string propertyName)
@@ -3863,6 +4074,8 @@ public class AutoTagService
     private void UpdateStatus(
         AutoTagJob job,
         TaggingStatusWrap status,
+        string stageName,
+        string stageConfigHash,
         int stageIndex,
         int stageCount,
         IDictionary<string, FileTagOutcome>? fileOutcomes)
@@ -3891,7 +4104,98 @@ public class AutoTagService
                 job.SkippedCount += 1;
                 break;
         }
+        TryUpdateResumeCheckpoint(job, stageName, stageConfigHash, status);
         SaveJob(job);
+    }
+
+    private static bool IsTerminalStatus(string? status)
+    {
+        return status?.Trim().ToLowerInvariant() switch
+        {
+            "ok" => true,
+            "tagged" => true,
+            "error" => true,
+            "skipped" => true,
+            _ => false
+        };
+    }
+
+    private static void TryUpdateResumeCheckpoint(
+        AutoTagJob job,
+        string stageName,
+        string stageConfigHash,
+        TaggingStatusWrap status)
+    {
+        if (!IsTerminalStatus(status.Status?.Status))
+        {
+            return;
+        }
+
+        if (status.NextPlatformIndex is not int nextPlatformIndex
+            || status.NextFileIndex is not int nextFileIndex
+            || status.PlatformCount is not int platformCount
+            || status.FileCount is not int fileCount
+            || platformCount <= 0
+            || fileCount <= 0)
+        {
+            return;
+        }
+
+        job.ResumeCheckpoint = new AutoTagResumeCheckpoint
+        {
+            StageName = stageName,
+            StageConfigHash = stageConfigHash,
+            PlatformIndex = Math.Max(0, nextPlatformIndex),
+            FileIndex = Math.Max(0, nextFileIndex),
+            PlatformCount = platformCount,
+            FileCount = fileCount,
+            LastPath = status.Status?.Path,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+    }
+
+    private static AutoTagResumeCursor? ResolveResumeCursor(AutoTagJob job, AutoTagStageConfig stage)
+    {
+        if (!CanApplyResumeCheckpoint(job.ResumeCheckpoint, stage))
+        {
+            return null;
+        }
+
+        var checkpoint = job.ResumeCheckpoint!;
+        return new AutoTagResumeCursor(
+            Math.Max(0, checkpoint.PlatformIndex),
+            Math.Max(0, checkpoint.FileIndex),
+            checkpoint.PlatformCount,
+            checkpoint.FileCount);
+    }
+
+    private static bool CanApplyResumeCheckpoint(AutoTagResumeCheckpoint? checkpoint, AutoTagStageConfig stage)
+    {
+        if (checkpoint == null)
+        {
+            return false;
+        }
+
+        if (checkpoint.PlatformCount <= 0 || checkpoint.FileCount <= 0)
+        {
+            return false;
+        }
+
+        if (checkpoint.PlatformIndex < 0
+            || checkpoint.FileIndex < 0
+            || checkpoint.PlatformIndex >= checkpoint.PlatformCount
+            || checkpoint.FileIndex > checkpoint.FileCount)
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(checkpoint.StageName) || string.IsNullOrWhiteSpace(checkpoint.StageConfigHash))
+        {
+            return false;
+        }
+
+        return string.Equals(checkpoint.StageName, stage.Name, StringComparison.OrdinalIgnoreCase)
+               && string.Equals(checkpoint.StageConfigHash, stage.ConfigHash, StringComparison.OrdinalIgnoreCase);
     }
 
     private void TryCaptureTagDiff(AutoTagJob job, TaggingStatusWrap status)

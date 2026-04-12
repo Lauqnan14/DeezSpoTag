@@ -256,6 +256,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string configPath,
         Action<TaggingStatusWrap> statusCallback,
         Action<string> logCallback,
+        AutoTagResumeCursor? resumeCursor,
         CancellationToken cancellationToken)
     {
         var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -274,7 +275,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
             var plan = runPlan!;
             LogShazamAvailability(plan, logCallback);
-            await ExecutePlatformPassesAsync(plan, jobMatchCache, statusCallback, logCallback, token);
+            await ExecutePlatformPassesAsync(plan, jobMatchCache, statusCallback, logCallback, resumeCursor, token);
             await ApplyPostLoopFallbackAsync(plan, token);
 
             return new AutoTagRunResult(true, null);
@@ -362,15 +363,18 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         JobMatchCacheState jobMatchCache,
         Action<TaggingStatusWrap> statusCallback,
         Action<string> logCallback,
+        AutoTagResumeCursor? resumeCursor,
         CancellationToken token)
     {
-        for (var platformIndex = 0; platformIndex < plan.PlatformCount; platformIndex++)
+        var (startPlatformIndex, startFileIndex) = ResolveResumeStartIndices(plan, resumeCursor);
+        for (var platformIndex = startPlatformIndex; platformIndex < plan.PlatformCount; platformIndex++)
         {
             token.ThrowIfCancellationRequested();
             var platform = plan.EffectivePlatforms[platformIndex];
             logCallback($"onetagger_autotag: starting {platform}");
 
-            for (var fileIndex = 0; fileIndex < plan.FileCount; fileIndex++)
+            var fileStart = platformIndex == startPlatformIndex ? startFileIndex : 0;
+            for (var fileIndex = fileStart; fileIndex < plan.FileCount; fileIndex++)
             {
                 token.ThrowIfCancellationRequested();
                 var context = new AutoTagFileRunContext
@@ -379,6 +383,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     JobMatchCache = jobMatchCache,
                     Platform = platform,
                     PlatformIndex = platformIndex,
+                    FileIndex = fileIndex,
                     File = plan.Files[fileIndex],
                     Progress = ComputeOverallProgress(platformIndex, fileIndex, plan.PlatformCount, plan.FileCount),
                     StatusCallback = statusCallback,
@@ -388,6 +393,31 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 await ProcessPlatformFileAsync(context);
             }
         }
+    }
+
+    private static (int PlatformIndex, int FileIndex) ResolveResumeStartIndices(
+        AutoTagRunPlan plan,
+        AutoTagResumeCursor? resumeCursor)
+    {
+        if (plan.PlatformCount == 0 || plan.FileCount == 0 || resumeCursor == null)
+        {
+            return (0, 0);
+        }
+
+        var platformIndex = Math.Clamp(resumeCursor.PlatformIndex, 0, plan.PlatformCount - 1);
+        var fileIndex = Math.Clamp(resumeCursor.FileIndex, 0, plan.FileCount);
+        if (fileIndex >= plan.FileCount)
+        {
+            fileIndex = 0;
+            platformIndex += 1;
+        }
+
+        if (platformIndex >= plan.PlatformCount)
+        {
+            return (plan.PlatformCount, 0);
+        }
+
+        return (platformIndex, fileIndex);
     }
 
     private async Task ProcessPlatformFileAsync(AutoTagFileRunContext context)
@@ -556,10 +586,24 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         double? accuracy,
         bool usedShazam)
     {
+        var nextPlatformIndex = context.PlatformIndex;
+        var nextFileIndex = context.FileIndex + 1;
+        if (nextFileIndex >= context.Plan.FileCount)
+        {
+            nextFileIndex = 0;
+            nextPlatformIndex += 1;
+        }
+
         context.StatusCallback(new TaggingStatusWrap
         {
             Platform = context.Platform,
             Progress = context.Progress,
+            PlatformIndex = context.PlatformIndex,
+            PlatformCount = context.Plan.PlatformCount,
+            FileIndex = context.FileIndex,
+            FileCount = context.Plan.FileCount,
+            NextPlatformIndex = nextPlatformIndex,
+            NextFileIndex = nextFileIndex,
             Status = new TaggingStatus
             {
                 Status = status,
@@ -5500,6 +5544,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required JobMatchCacheState JobMatchCache { get; init; }
         public required string Platform { get; init; }
         public required int PlatformIndex { get; init; }
+        public required int FileIndex { get; init; }
         public required string File { get; init; }
         public required double Progress { get; init; }
         public required Action<TaggingStatusWrap> StatusCallback { get; init; }
