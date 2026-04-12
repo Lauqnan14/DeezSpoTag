@@ -5074,15 +5074,30 @@ function normalizePrefetchLyricsType(value) {
     };
 
     tokens.forEach(token => {
-        if (token === 'time-synced' || token === 'timesynced' || token === 'time' || token === 'ttml') {
+        if (token === 'time-synced'
+            || token === 'time-synced-lyrics'
+            || token === 'timesynced'
+            || token === 'time'
+            || token === 'ttml'
+            || token === 'syllable-lyrics') {
             addKind('time-synced');
             return;
         }
-        if (token === 'unsynced' || token === 'plain' || token === 'text' || token === 'txt') {
+        if (token === 'unsynced'
+            || token === 'unsynced-lyrics'
+            || token === 'unsynchronized-lyrics'
+            || token === 'unsynchronised-lyrics'
+            || token === 'unsyncedlyrics'
+            || token === 'plain'
+            || token === 'text'
+            || token === 'txt') {
             addKind('unsynced');
             return;
         }
-        if (token === 'synced' || token === 'lrc') {
+        if (token === 'synced'
+            || token === 'synced-lyrics'
+            || token === 'lyrics'
+            || token === 'lrc') {
             addKind('synced');
         }
     });
@@ -5693,16 +5708,56 @@ function getLyricsBadgesFromStatus(rawStatus) {
     }
 
     const status = rawStatus.trim().toLowerCase();
+    if (!status || status === 'no-lyrics' || status === 'fetching' || status === 'failed' || status === 'skipped') {
+        return [];
+    }
+
+    const tokens = status
+        .split(/[^a-z0-9-]+/)
+        .filter(Boolean);
     const badges = [];
-    if (status.includes('ttml') || status.includes('time')) {
-        badges.push('time-synced');
-    }
-    if (status.includes('synced') && !badges.includes('synced')) {
-        badges.push('synced');
-    }
-    if ((status.includes('unsynced') || status.includes('plain') || status.includes('text')) && !badges.includes('unsynced')) {
-        badges.push('unsynced');
-    }
+    const addBadge = (badge) => {
+        if (!badges.includes(badge)) {
+            badges.push(badge);
+        }
+    };
+
+    tokens.forEach(token => {
+        if (token === 'both') {
+            addBadge('synced');
+            addBadge('unsynced');
+            return;
+        }
+
+        if (token === 'time-synced'
+            || token === 'time-synced-lyrics'
+            || token === 'timesynced'
+            || token === 'ttml'
+            || token === 'syllable-lyrics') {
+            addBadge('time-synced');
+            return;
+        }
+
+        if (token === 'unsynced'
+            || token === 'unsynced-lyrics'
+            || token === 'unsynchronized-lyrics'
+            || token === 'unsynchronised-lyrics'
+            || token === 'unsyncedlyrics'
+            || token === 'plain'
+            || token === 'text'
+            || token === 'txt') {
+            addBadge('unsynced');
+            return;
+        }
+
+        if (token === 'synced'
+            || token === 'synced-lyrics'
+            || token === 'lyrics'
+            || token === 'lrc') {
+            addBadge('synced');
+        }
+    });
+
     return badges;
 }
 
