@@ -149,6 +149,8 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         payload.QobuzResolvedQuality = request.Quality;
         payload.Quality = request.Quality;
         await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, next.QueueUuid, payload, cancellationToken: itemToken);
+        request.SelectedQualityCallback = selectedQuality =>
+            SyncResolvedQualityAsync(next.QueueUuid, payload, selectedQuality, itemToken);
 
         var sourceSelection = ResolveQobuzSource(payload);
         await QueuePrefetchAsync(next.QueueUuid, context, payload, settings);
@@ -175,15 +177,42 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
                 outputPath);
         }
 
-        await EngineQueueQualitySyncHelper.SyncQualityAsync(
-            _queueRepository,
-            _deezspotagListener,
-            next.QueueUuid,
-            payload,
-            actualQuality ?? request.Quality,
-            itemToken);
+        await SyncResolvedQualityAsync(next.QueueUuid, payload, request.Quality, itemToken);
 
         await CompleteDownloadAsync(next.QueueUuid, payload, outputPath, itemToken);
+    }
+
+    private async Task SyncResolvedQualityAsync(
+        string queueUuid,
+        QobuzQueueItem payload,
+        string? selectedQuality,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(selectedQuality))
+        {
+            return;
+        }
+
+        var resolvedQuality = selectedQuality.Trim();
+        var qualityChanged = !string.Equals(payload.Quality, resolvedQuality, StringComparison.OrdinalIgnoreCase);
+        var resolvedChanged = !string.Equals(payload.QobuzResolvedQuality, resolvedQuality, StringComparison.OrdinalIgnoreCase);
+        if (!qualityChanged && !resolvedChanged)
+        {
+            return;
+        }
+
+        payload.Quality = resolvedQuality;
+        payload.QobuzResolvedQuality = resolvedQuality;
+        await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
+        _deezspotagListener.Send(UpdateQueueEvent, new
+        {
+            uuid = queueUuid,
+            quality = payload.Quality,
+            engine = payload.Engine,
+            qobuzRequestedQuality = payload.QobuzRequestedQuality,
+            qobuzResolvedQuality = payload.QobuzResolvedQuality,
+            qobuzActualQuality = payload.QobuzActualQuality
+        });
     }
 
     private async Task<QobuzQueueItem?> DeserializeAndStartAsync(
@@ -421,6 +450,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             SpotifyDiscNumber = request.SpotifyDiscNumber,
             SpotifyTotalTracks = request.SpotifyTotalTracks,
             AllowQualityFallback = request.AllowQualityFallback,
+            SelectedQualityCallback = request.SelectedQualityCallback,
             TagSettings = settings.Tags,
             ProgressCallback = progressReporter
         };

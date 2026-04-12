@@ -154,6 +154,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             throw new InvalidOperationException("Qobuz download URL not available");
         }
         request.Quality = downloadResolution.SelectedQuality;
+        await NotifySelectedQualityAsync(request, downloadResolution.SelectedQuality);
 
         var outputPath = expectedPath;
         await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
@@ -211,6 +212,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             throw new InvalidOperationException("Qobuz download URL not available");
         }
         request.Quality = downloadResolution.SelectedQuality;
+        await NotifySelectedQualityAsync(request, downloadResolution.SelectedQuality);
 
         var outputPath = expectedPath;
         await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
@@ -220,6 +222,23 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             Request = request
         }, cancellationToken);
         return outputPath;
+    }
+
+    private async Task NotifySelectedQualityAsync(QobuzDownloadRequest request, string selectedQuality)
+    {
+        if (string.IsNullOrWhiteSpace(selectedQuality) || request.SelectedQualityCallback == null)
+        {
+            return;
+        }
+
+        try
+        {
+            await request.SelectedQualityCallback(selectedQuality);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Qobuz selected-quality callback failed for quality {Quality}", selectedQuality);
+        }
     }
 
     private static long? TryExtractTrackId(string trackUrl)
