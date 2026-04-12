@@ -71,6 +71,78 @@ public static class DownloadDestinationGuard
         return (true, null);
     }
 
+    public static async Task<(bool Ok, string? Error)> ValidateDistinctRootsAsync(
+        long? primaryDestinationFolderId,
+        long? secondaryDestinationFolderId,
+        LibraryRepository libraryRepository,
+        CancellationToken cancellationToken)
+    {
+        if (!libraryRepository.IsConfigured)
+        {
+            return (false, "Library folders are not configured.");
+        }
+
+        var folders = await libraryRepository.GetFoldersAsync(cancellationToken);
+        return ValidateDistinctRoots(primaryDestinationFolderId, secondaryDestinationFolderId, folders);
+    }
+
+    public static (bool Ok, string? Error) ValidateDistinctRoots(
+        long? primaryDestinationFolderId,
+        long? secondaryDestinationFolderId,
+        IEnumerable<FolderDto> folders)
+    {
+        if (!primaryDestinationFolderId.HasValue)
+        {
+            return (false, "Primary destination folder is required.");
+        }
+
+        if (!secondaryDestinationFolderId.HasValue)
+        {
+            return (false, "Secondary destination folder is required.");
+        }
+
+        if (primaryDestinationFolderId.Value == secondaryDestinationFolderId.Value)
+        {
+            return (false, "Stereo and Atmos destination folders must be different.");
+        }
+
+        var folderList = folders?.ToList() ?? [];
+        var primaryFolder = folderList.FirstOrDefault(folder =>
+            folder.Id == primaryDestinationFolderId.Value
+            && folder.Enabled);
+        if (primaryFolder == null)
+        {
+            return (false, "Primary destination folder not found or disabled.");
+        }
+
+        var secondaryFolder = folderList.FirstOrDefault(folder =>
+            folder.Id == secondaryDestinationFolderId.Value
+            && folder.Enabled);
+        if (secondaryFolder == null)
+        {
+            return (false, "Secondary destination folder not found or disabled.");
+        }
+
+        if (string.IsNullOrWhiteSpace(primaryFolder.RootPath))
+        {
+            return (false, "Primary destination folder path is missing.");
+        }
+
+        if (string.IsNullOrWhiteSpace(secondaryFolder.RootPath))
+        {
+            return (false, "Secondary destination folder path is missing.");
+        }
+
+        var primaryRoot = NormalizeRoot(primaryFolder.RootPath);
+        var secondaryRoot = NormalizeRoot(secondaryFolder.RootPath);
+        if (string.Equals(primaryRoot, secondaryRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            return (false, "Stereo and Atmos destinations resolve to the same root path.");
+        }
+
+        return (true, null);
+    }
+
     private static bool IsSameOrDescendantPath(string candidatePath, string rootPath)
     {
         var normalizedRoot = NormalizeRoot(rootPath);

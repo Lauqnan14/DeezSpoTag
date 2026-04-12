@@ -2670,10 +2670,9 @@ public sealed class PlaylistWatchService
             : "standard";
     }
 
-    private DownloadIntent CreateAtmosOnlyIntent(DownloadIntent sourceIntent, long? destinationFolderId)
+    private DownloadIntent CreateAtmosOnlyIntent(DownloadIntent sourceIntent)
     {
-        var atmosDestinationFolderId = _settingsService.LoadSettings().MultiQuality?.SecondaryDestinationFolderId
-            ?? destinationFolderId;
+        var atmosDestinationFolderId = _settingsService.LoadSettings().MultiQuality?.SecondaryDestinationFolderId;
 
         return new DownloadIntent
         {
@@ -2881,7 +2880,7 @@ public sealed class PlaylistWatchService
         intent.DestinationFolderId = ResolveRoutingFolderId(intent, options.RoutingRules, destinationFolderId);
         if (normalizedDownloadVariantMode == "atmos_only")
         {
-            intent = CreateAtmosOnlyIntent(intent, intent.DestinationFolderId);
+            intent = CreateAtmosOnlyIntent(intent);
         }
         else if (!string.IsNullOrWhiteSpace(normalizedPreferredEngine))
         {
@@ -2930,7 +2929,7 @@ public sealed class PlaylistWatchService
             return 0;
         }
 
-        var atmosIntent = CreateAtmosOnlyIntent(baseIntent, baseIntent.DestinationFolderId);
+        var atmosIntent = CreateAtmosOnlyIntent(baseIntent);
         try
         {
             var atmosResult = await intentService.EnqueueAsync(atmosIntent, cancellationToken);
