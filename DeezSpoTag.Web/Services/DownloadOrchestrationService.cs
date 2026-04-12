@@ -47,6 +47,32 @@ public sealed class DownloadOrchestrationService : BackgroundService
         @"^\s*(\d+)\s*([dhwm])\s*$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase,
         TimeSpan.FromMilliseconds(250));
+    private static readonly HashSet<string> StagingAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".flac",
+        ".wav",
+        ".aiff",
+        ".aif",
+        ".alac",
+        ".m4a",
+        ".m4b",
+        ".mp4",
+        ".aac",
+        ".mp3",
+        ".wma",
+        ".ogg",
+        ".opus",
+        ".oga",
+        ".ape",
+        ".wv",
+        ".mp2",
+        ".mp1",
+        ".tta",
+        ".dsf",
+        ".dff",
+        ".mka"
+    };
+    private static readonly TimeSpan StagingGateLogThrottle = TimeSpan.FromMinutes(1);
     private static readonly JsonSerializerOptions ScheduleJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -82,6 +108,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
     private volatile bool _enhancementPauseRequested;
     private volatile bool _enhancementResumeAwaitingPipelineCompletion;
     private string? _activeEnhancementJobId;
+    private DateTimeOffset? _lastStagingGateLogAt;
+    private string? _lastStagingGateLogReason;
 
     public DownloadOrchestrationService(
         IServiceProvider serviceProvider,
@@ -479,6 +507,78 @@ public sealed class DownloadOrchestrationService : BackgroundService
         return false;
     }
 
+    private bool ShouldDeferEnhancementForDownloadStagingAudio(CancellationToken cancellationToken)
+    {
+        if (!TryResolveDownloadEnrichmentRoot(out var downloadRootPath, out var error))
+        {
+            LogStagingEnhancementGate($"download staging root unavailable ({error})");
+            return true;
+        }
+
+        try
+        {
+            var options = new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = true,
+                ReturnSpecialDirectories = false,
+                AttributesToSkip = 0
+            };
+
+            foreach (var filePath in Directory.EnumerateFiles(downloadRootPath, "*", options))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var extension = Path.GetExtension(filePath);
+                if (string.IsNullOrWhiteSpace(extension) || !StagingAudioExtensions.Contains(extension))
+                {
+                    continue;
+                }
+
+                LogStagingEnhancementGate($"audio file still present in download staging ({filePath})");
+                return true;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            LogStagingEnhancementGate($"download staging scan failed ({ex.Message})");
+            return true;
+        }
+
+        _lastStagingGateLogAt = null;
+        _lastStagingGateLogReason = null;
+        return false;
+    }
+
+    private void LogStagingEnhancementGate(string reason)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (string.Equals(reason, _lastStagingGateLogReason, StringComparison.Ordinal)
+            && _lastStagingGateLogAt.HasValue
+            && now - _lastStagingGateLogAt.Value < StagingGateLogThrottle)
+        {
+            return;
+        }
+
+        _lastStagingGateLogAt = now;
+        _lastStagingGateLogReason = reason;
+
+        _logger.LogInformation("Automation: enhancement deferred by staging gate ({Reason}).", reason);
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            now,
+            "info",
+            $"Automation: enhancement deferred by staging gate ({reason})."));
+    }
+
     private bool TryResolveDownloadEnrichmentRoot(out string downloadRootPath, out string error)
     {
         return ConfiguredDownloadRootResolver.TryResolve(
@@ -540,6 +640,11 @@ public sealed class DownloadOrchestrationService : BackgroundService
         }
 
         if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+        {
+            return;
+        }
+
+        if (ShouldDeferEnhancementForDownloadStagingAudio(cancellationToken))
         {
             return;
         }
