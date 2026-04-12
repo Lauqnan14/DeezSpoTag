@@ -439,6 +439,52 @@ public class JellyfinApiClient
         return response.IsSuccessStatusCode;
     }
 
+    public async Task<bool> UpdateItemPrimaryImageFromUrlAsync(
+        string serverUrl,
+        string apiKey,
+        string itemId,
+        string imageUrl,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(itemId)
+            || string.IsNullOrWhiteSpace(imageUrl))
+        {
+            return false;
+        }
+
+        using var imageRequest = new HttpRequestMessage(HttpMethod.Get, imageUrl);
+        using var imageResponse = await _httpClient.SendAsync(
+            imageRequest,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+        if (!imageResponse.IsSuccessStatusCode)
+        {
+            return false;
+        }
+
+        await using var imageStream = await imageResponse.Content.ReadAsStreamAsync(cancellationToken);
+        using var uploadContent = new StreamContent(imageStream);
+        var mediaType = imageResponse.Content.Headers.ContentType?.MediaType;
+        if (string.IsNullOrWhiteSpace(mediaType))
+        {
+            mediaType = GetImageContentTypeFromUrl(imageUrl);
+        }
+
+        uploadContent.Headers.ContentType = new MediaTypeHeaderValue(mediaType);
+
+        using var uploadRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            BuildUrl(serverUrl, $"/Items/{Uri.EscapeDataString(itemId)}/Images/Primary"))
+        {
+            Content = uploadContent
+        };
+        uploadRequest.Headers.Add(EmbyTokenHeader, apiKey);
+        using var uploadResponse = await _httpClient.SendAsync(uploadRequest, cancellationToken);
+        return uploadResponse.IsSuccessStatusCode;
+    }
+
     public async Task<bool> UpdateArtistImageAsync(string serverUrl, string apiKey, string artistId, string imagePath, CancellationToken cancellationToken = default)
     {
         if (!CanUploadArtistAsset(serverUrl, apiKey, artistId, imagePath))
@@ -617,6 +663,16 @@ public class JellyfinApiClient
             ".webp" => "image/webp",
             _ => "image/jpeg"
         };
+    }
+
+    private static string GetImageContentTypeFromUrl(string imageUrl)
+    {
+        if (!Uri.TryCreate(imageUrl, UriKind.Absolute, out var uri))
+        {
+            return "image/jpeg";
+        }
+
+        return GetImageContentType(uri.LocalPath);
     }
 
     private static bool CanUploadArtistAsset(string serverUrl, string apiKey, string artistId, string imagePath)

@@ -324,7 +324,7 @@ public sealed class PlaylistSyncService
             return new PlaylistSyncResult(false, "Playlist not available.");
         }
 
-        var service = NormalizeService(preference?.Service);
+        var service = await ResolveTargetServiceAsync(preference, cancellationToken);
         if (string.IsNullOrWhiteSpace(service))
         {
             return new PlaylistSyncResult(false, "No target server selected.");
@@ -526,6 +526,16 @@ public sealed class PlaylistSyncService
                 jellyfin.ApiKey,
                 playlistId,
                 playlist.Description,
+                cancellationToken);
+        }
+
+        if (!string.IsNullOrWhiteSpace(playlist.ImageUrl) && preference?.UpdateArtwork != false)
+        {
+            await _jellyfinApiClient.UpdateItemPrimaryImageFromUrlAsync(
+                jellyfin.Url,
+                jellyfin.ApiKey,
+                playlistId,
+                playlist.ImageUrl,
                 cancellationToken);
         }
 
@@ -770,6 +780,37 @@ public sealed class PlaylistSyncService
     private static string NormalizeService(string? service)
     {
         return (service ?? string.Empty).Trim().ToLowerInvariant();
+    }
+
+    private async Task<string> ResolveTargetServiceAsync(
+        PlaylistWatchPreferenceDto? preference,
+        CancellationToken cancellationToken)
+    {
+        var configuredService = NormalizeService(preference?.Service);
+        if (!string.IsNullOrWhiteSpace(configuredService))
+        {
+            return configuredService;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var state = await _authService.LoadAsync();
+        if (state.Plex is not null
+            && !string.IsNullOrWhiteSpace(state.Plex.Url)
+            && !string.IsNullOrWhiteSpace(state.Plex.Token)
+            && !string.IsNullOrWhiteSpace(state.Plex.MachineIdentifier))
+        {
+            return PlexService;
+        }
+
+        if (state.Jellyfin is not null
+            && !string.IsNullOrWhiteSpace(state.Jellyfin.Url)
+            && !string.IsNullOrWhiteSpace(state.Jellyfin.ApiKey)
+            && !string.IsNullOrWhiteSpace(state.Jellyfin.UserId))
+        {
+            return JellyfinService;
+        }
+
+        return string.Empty;
     }
 
     private static string NormalizeSource(string? source)

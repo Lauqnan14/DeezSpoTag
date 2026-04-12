@@ -132,7 +132,10 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
         try
         {
-            await _playlistWatchService.CheckPlaylistWatchItemAsync(added, cancellationToken);
+            await _playlistWatchService.CheckPlaylistWatchItemAsync(
+                added,
+                cancellationToken,
+                forceMediaServerSync: true);
         }
         catch (Exception ex) when (ex is not OperationCanceledException) {
             // Keep add endpoint resilient; background monitor will retry.
@@ -261,7 +264,10 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         foreach (var item in items)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await _playlistWatchService.CheckPlaylistWatchItemAsync(item, cancellationToken);
+            await _playlistWatchService.CheckPlaylistWatchItemAsync(
+                item,
+                cancellationToken,
+                forceMediaServerSync: true);
         }
 
         return Ok(new { triggered = items.Count });
@@ -281,7 +287,10 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return NotFound("Playlist watchlist entry not found.");
         }
 
-        await _playlistWatchService.CheckPlaylistWatchItemAsync(item, cancellationToken);
+        await _playlistWatchService.CheckPlaylistWatchItemAsync(
+            item,
+            cancellationToken,
+            forceMediaServerSync: true);
         return Ok(new { triggered = 1 });
     }
 
@@ -429,7 +438,10 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return NotFound("Playlist watchlist entry not found.");
         }
 
-        await _playlistWatchService.CheckPlaylistWatchItemAsync(item, cancellationToken);
+        await _playlistWatchService.CheckPlaylistWatchItemAsync(
+            item,
+            cancellationToken,
+            forceMediaServerSync: true);
         return Ok(new { refreshed = true });
     }
 
