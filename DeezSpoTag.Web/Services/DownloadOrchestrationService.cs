@@ -32,7 +32,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
         string AutomationConfigJson,
         TaggingProfile? AutomationProfile,
         AutoTagStages Stages,
-        string DownloadRootPath);
+        string DownloadRootPath,
+        IReadOnlyList<string> PendingQueueUuids);
     private sealed record EnhancementTargetPlan(List<EnhancementTarget> Targets, List<EnhancementTarget> DueTargets);
     private sealed record EnhancementTargetRunResult(bool Attempted, bool PausedForDownload);
     private sealed record EnhancementExecutionResult(List<EnhancementTarget> AttemptedTargets, bool PausedForDownload, bool AbortedForDownload);
@@ -353,6 +354,16 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return;
         }
 
+        if (await RunRecentDownloadEnhancementAsync(context, cancellationToken))
+        {
+            return;
+        }
+
+        if (!await EnsurePipelineStillIdleAsync(cancellationToken))
+        {
+            return;
+        }
+
         await RunPostAutoTagStagesAsync(cancellationToken);
         _lastPipelineCompletedAt = context.PipelineStartedAt;
     }
@@ -437,7 +448,12 @@ public sealed class DownloadOrchestrationService : BackgroundService
             configJson,
             automationProfile,
             GetAutoTagStages(configJson),
-            downloadRootPath);
+            downloadRootPath,
+            pendingItems
+                .Select(item => item.QueueUuid)
+                .Where(queueUuid => !string.IsNullOrWhiteSpace(queueUuid))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList());
     }
 
     private async Task RunPipelineEnrichmentAsync(PipelineRunContext context, CancellationToken cancellationToken)
@@ -493,6 +509,261 @@ public sealed class DownloadOrchestrationService : BackgroundService
             DateTimeOffset.UtcNow,
             "info",
             $"Automation: enrichment finished (status={enrichmentJob?.Status ?? "skipped"})."));
+    }
+
+    private async Task<bool> RunRecentDownloadEnhancementAsync(
+        PipelineRunContext context,
+        CancellationToken cancellationToken)
+    {
+        if (context.PendingQueueUuids.Count == 0)
+        {
+            return false;
+        }
+
+        if (ShouldDeferEnhancementForDownloadStagingAudio(cancellationToken))
+        {
+            _pipelineRequested = true;
+            _queueIdleSince = null;
+            return true;
+        }
+
+        var movedFilesByDestination = await GetRecentMovedAudioFilesByDestinationAsync(
+            context.PendingQueueUuids,
+            cancellationToken);
+        if (movedFilesByDestination.Count == 0)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                "Automation: recent-download enhancement skipped (no moved audio files found in library destinations)."));
+            return false;
+        }
+
+        var profileContext = await BuildAutomationProfileContextAsync(cancellationToken);
+        foreach (var destination in movedFilesByDestination.OrderBy(entry => entry.Key))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+            {
+                _pipelineRequested = true;
+                _queueIdleSince = null;
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    "Automation: recent-download enhancement deferred because downloads became active."));
+                return true;
+            }
+
+            if (!profileContext.FoldersById.TryGetValue(destination.Key, out var folder)
+                || !IsEnhancementEligibleFolder(folder))
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "warning",
+                    $"Automation: recent-download enhancement skipped for destination folder {destination.Key} (folder missing, disabled, or not enhancement-eligible)."));
+                continue;
+            }
+
+            var normalizedFolderRoot = NormalizePathScope(folder.RootPath);
+            if (string.IsNullOrWhiteSpace(normalizedFolderRoot))
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "warning",
+                    $"Automation: recent-download enhancement skipped for destination folder {destination.Key} (invalid folder root path)."));
+                continue;
+            }
+
+            var scopedFiles = destination.Value
+                .Select(NormalizePathScope)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Where(path => IsPathWithinScope(path, normalizedFolderRoot))
+                .Where(File.Exists)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (scopedFiles.Count == 0)
+            {
+                continue;
+            }
+
+            var folderId = destination.Key.ToString(CultureInfo.InvariantCulture);
+            var enhancementProfile = ResolveAutomationProfileForFolder(
+                profileContext,
+                folderId,
+                folder.AutoTagProfileId);
+            if (enhancementProfile == null)
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "warning",
+                    $"Automation: recent-download enhancement skipped for {folder.RootPath} (folder has no valid current AutoTag profile)."));
+                continue;
+            }
+
+            var profileConfigJson = _configBuilder.BuildConfigJson(enhancementProfile);
+            if (string.IsNullOrWhiteSpace(profileConfigJson))
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "warning",
+                    $"Automation: recent-download enhancement skipped for {folder.RootPath} (folder profile config could not be built)."));
+                continue;
+            }
+
+            var enhancementConfig = ClearEnrichmentTags(profileConfigJson);
+            enhancementConfig = ApplyEnhancementTargetFiles(enhancementConfig, scopedFiles);
+            if (!GetAutoTagStages(enhancementConfig).HasEnhancement)
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    $"Automation: recent-download enhancement skipped for {folder.RootPath} (profile has no enhancement tags)."));
+                continue;
+            }
+
+            AutoTagJob? enhancementJob = null;
+            try
+            {
+                _taggingInProgress = true;
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    $"Automation: recent-download enhancement starting for {folder.RootPath} ({scopedFiles.Count} file(s))."));
+                enhancementJob = await _autoTagService.StartJob(
+                    folder.RootPath,
+                    enhancementConfig,
+                    AutoTagLiterals.AutomationTrigger,
+                    enhancementProfile?.Technical,
+                    enhancementProfile?.Id,
+                    enhancementProfile?.Name,
+                    AutoTagLiterals.RunIntentEnhancementRecentDownloads);
+                MarkEnhancementStageStarted(enhancementJob);
+                await WaitForJobCompletionAsync(enhancementJob, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Automation recent-download enhancement failed for folder {RootPath}.", folder.RootPath);
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "error",
+                    $"Automation: recent-download enhancement failed for {folder.RootPath} ({ex.Message})."));
+                continue;
+            }
+            finally
+            {
+                MarkEnhancementStageFinished();
+                _taggingInProgress = false;
+            }
+
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"Automation: recent-download enhancement finished for {folder.RootPath} (status={enhancementJob?.Status ?? "skipped"})."));
+
+            if (enhancementJob != null
+                && string.Equals(enhancementJob.Status, "canceled", StringComparison.OrdinalIgnoreCase)
+                && _enhancementPauseRequested)
+            {
+                _pipelineRequested = true;
+                _queueIdleSince = null;
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    $"Automation: recent-download enhancement paused for incoming downloads ({folder.RootPath})."));
+                return true;
+            }
+
+            if (enhancementJob != null
+                && string.Equals(enhancementJob.Status, "blocked", StringComparison.OrdinalIgnoreCase)
+                && enhancementJob.Error?.Contains("Downloads active", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                _pipelineRequested = true;
+                _queueIdleSince = null;
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    "Automation: recent-download enhancement deferred because downloads became active."));
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private async Task<Dictionary<long, List<string>>> GetRecentMovedAudioFilesByDestinationAsync(
+        IReadOnlyCollection<string> queueUuids,
+        CancellationToken cancellationToken)
+    {
+        if (queueUuids.Count == 0)
+        {
+            return new Dictionary<long, List<string>>();
+        }
+
+        var queueUuidSet = queueUuids
+            .Where(queueUuid => !string.IsNullOrWhiteSpace(queueUuid))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (queueUuidSet.Count == 0)
+        {
+            return new Dictionary<long, List<string>>();
+        }
+
+        var items = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
+        var grouped = new Dictionary<long, HashSet<string>>();
+
+        foreach (var item in items)
+        {
+            if (!item.DestinationFolderId.HasValue
+                || !string.Equals(item.Status, "completed", StringComparison.OrdinalIgnoreCase)
+                || !queueUuidSet.Contains(item.QueueUuid))
+            {
+                continue;
+            }
+
+            var candidatePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            CollectPayloadFinalDestinationPaths(item.PayloadJson, candidatePaths);
+            if (candidatePaths.Count == 0)
+            {
+                continue;
+            }
+
+            var destinationFolderId = item.DestinationFolderId.Value;
+            if (!grouped.TryGetValue(destinationFolderId, out var files))
+            {
+                files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                grouped[destinationFolderId] = files;
+            }
+
+            foreach (var candidatePath in candidatePaths)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var ioPath = DownloadPathResolver.ResolveIoPath(candidatePath);
+                if (string.IsNullOrWhiteSpace(ioPath))
+                {
+                    continue;
+                }
+
+                var normalizedPath = NormalizePathScope(ioPath);
+                if (string.IsNullOrWhiteSpace(normalizedPath)
+                    || !File.Exists(normalizedPath))
+                {
+                    continue;
+                }
+
+                var extension = Path.GetExtension(normalizedPath);
+                if (string.IsNullOrWhiteSpace(extension) || !StagingAudioExtensions.Contains(extension))
+                {
+                    continue;
+                }
+
+                files.Add(normalizedPath);
+            }
+        }
+
+        return grouped.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToList());
     }
 
     private async Task<bool> EnsurePipelineStillIdleAsync(CancellationToken cancellationToken)
@@ -1123,7 +1394,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return;
         }
 
-        if (string.Equals(job.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(job.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(job.RunIntent, AutoTagLiterals.RunIntentEnhancementRecentDownloads, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
@@ -1380,6 +1652,49 @@ public sealed class DownloadOrchestrationService : BackgroundService
         return ClearStageTags(configJson, clearEnrichment: true, clearEnhancement: false);
     }
 
+    private static string ApplyEnhancementTargetFiles(string configJson, IReadOnlyCollection<string> targetFiles)
+    {
+        if (string.IsNullOrWhiteSpace(configJson) || targetFiles.Count == 0)
+        {
+            return configJson;
+        }
+
+        try
+        {
+            if (JsonNode.Parse(configJson) is not JsonObject root)
+            {
+                return configJson;
+            }
+
+            var files = targetFiles
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (files.Count == 0)
+            {
+                return configJson;
+            }
+
+            var targetFilesNode = new JsonArray();
+            foreach (var path in files)
+            {
+                targetFilesNode.Add(path);
+            }
+
+            root[AutoTagLiterals.TargetFilesKey] = targetFilesNode;
+            return root.ToJsonString(new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                WriteIndented = true
+            });
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return configJson;
+        }
+    }
+
     private static string ClearStageTags(string configJson, bool clearEnrichment, bool clearEnhancement)
     {
         if (string.IsNullOrWhiteSpace(configJson))
@@ -1583,6 +1898,46 @@ public sealed class DownloadOrchestrationService : BackgroundService
             {
                 paths.Add(nestedArtistPath);
             }
+        }
+    }
+
+    private static void CollectPayloadFinalDestinationPaths(string? payloadJson, HashSet<string> paths)
+    {
+        if (paths == null || string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return;
+            }
+
+            if (TryGetPropertyIgnoreCase(root, "finalDestinations", out var finalDestinationsElement)
+                && finalDestinationsElement.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var pathEntry in finalDestinationsElement.EnumerateObject())
+                {
+                    if (pathEntry.Value.ValueKind == JsonValueKind.String)
+                    {
+                        var finalPath = pathEntry.Value.GetString();
+                        if (!string.IsNullOrWhiteSpace(finalPath))
+                        {
+                            paths.Add(finalPath);
+                        }
+                    }
+                }
+            }
+
+            // Keep legacy fallback paths for payloads that do not yet persist finalDestinations.
+            CollectPayloadSourcePaths(root, paths);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
         }
     }
 

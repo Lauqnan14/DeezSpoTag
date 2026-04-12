@@ -14,6 +14,7 @@ using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Utils;
+using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
 using TagLib;
@@ -331,7 +332,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             EffectivePlatforms = BuildEffectivePlatforms(config),
             Settings = settings,
             TagSettings = BuildTagSettings(config, settings),
-            Files = EnumerateAudioFiles(targetPath, config.IncludeSubfolders).ToList(),
+            Files = ResolveTargetFiles(targetPath, config).ToList(),
             ShazamCache = new Dictionary<string, ShazamRecognitionInfo?>(StringComparer.OrdinalIgnoreCase),
             EnableShazamFallback = shazamBehavior.EnableFallback,
             ForceShazamMatch = shazamBehavior.ForceMatch,
@@ -1307,6 +1308,81 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             .Where(path => SupportedExtensions.Contains(Path.GetExtension(path)) && !IsAnimatedArtworkFile(path));
     }
 
+    private static IEnumerable<string> ResolveTargetFiles(string rootPath, AutoTagRunnerConfig config)
+    {
+        if (config.TargetFiles == null)
+        {
+            return EnumerateAudioFiles(rootPath, config.IncludeSubfolders);
+        }
+
+        var normalizedRoot = NormalizeScopePath(DownloadPathResolver.ResolveIoPath(rootPath));
+        var selected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rawPath in config.TargetFiles)
+        {
+            if (string.IsNullOrWhiteSpace(rawPath))
+            {
+                continue;
+            }
+
+            var ioPath = DownloadPathResolver.ResolveIoPath(rawPath.Trim());
+            if (string.IsNullOrWhiteSpace(ioPath))
+            {
+                continue;
+            }
+
+            var normalizedPath = NormalizeScopePath(ioPath);
+            if (string.IsNullOrWhiteSpace(normalizedPath)
+                || !IsPathWithinScope(normalizedPath, normalizedRoot)
+                || !IOFile.Exists(normalizedPath)
+                || !SupportedExtensions.Contains(Path.GetExtension(normalizedPath))
+                || IsAnimatedArtworkFile(normalizedPath))
+            {
+                continue;
+            }
+
+            selected.Add(normalizedPath);
+        }
+
+        return selected;
+    }
+
+    private static string NormalizeScopePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            return Path.GetFullPath(path.Trim())
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return path.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+    }
+
+    private static bool IsPathWithinScope(string candidatePath, string scopePath)
+    {
+        if (string.IsNullOrWhiteSpace(candidatePath) || string.IsNullOrWhiteSpace(scopePath))
+        {
+            return false;
+        }
+
+        if (string.Equals(candidatePath, scopePath, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var scopeWithSeparator = scopePath.EndsWith(Path.DirectorySeparatorChar)
+            || scopePath.EndsWith(Path.AltDirectorySeparatorChar)
+            ? scopePath
+            : scopePath + Path.DirectorySeparatorChar;
+        return candidatePath.StartsWith(scopeWithSeparator, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool IsAnimatedArtworkFile(string path)
     {
         if (!Path.GetExtension(path).Equals(".mp4", StringComparison.OrdinalIgnoreCase))
@@ -1843,6 +1919,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             Platforms = raw.Platforms ?? new List<string>(),
             DownloadTagSource = raw.DownloadTagSource,
             Path = raw.Path,
+            TargetFiles = raw.TargetFiles?.Where(path => !string.IsNullOrWhiteSpace(path)).ToList(),
             Tags = raw.Tags ?? new List<string>(),
             OverwriteTags = raw.OverwriteTags ?? new List<string>(),
             Separators = raw.Separators == null
@@ -5590,6 +5667,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public List<string> Platforms { get; set; } = new();
         public string? DownloadTagSource { get; set; }
         public string? Path { get; set; }
+        public List<string>? TargetFiles { get; set; }
         public List<string> Tags { get; set; } = new();
         public List<string> OverwriteTags { get; set; } = new();
         public AutoTagSeparators? Separators { get; set; }

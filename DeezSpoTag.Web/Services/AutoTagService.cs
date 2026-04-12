@@ -26,6 +26,7 @@ internal static class AutoTagLiterals
     internal const string RunIntentDefault = "default";
     internal const string RunIntentDownloadEnrichment = "download_enrichment";
     internal const string RunIntentEnhancementOnly = "enhancement_only";
+    internal const string RunIntentEnhancementRecentDownloads = "enhancement_recent_downloads";
     internal const string CanceledStatus = "canceled";
     internal const string FailedStatus = "failed";
     internal const string CompletedStatus = "completed";
@@ -49,6 +50,7 @@ internal static class AutoTagLiterals
     internal const string LastFmPlatform = "lastfm";
     internal const string BpmSupremePlatform = "bpmsupreme";
     internal const string MultiArtistSeparatorKey = "multiArtistSeparator";
+    internal const string TargetFilesKey = "targetFiles";
 }
 
 public abstract class AutoTagRunState
@@ -291,8 +293,8 @@ public class AutoTagService
         ["ttmlLyrics"] = "ttmlLyrics",
         ["explicit"] = "explicit"
     };
-    private static readonly HashSet<string> EnrichmentStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: false, includeConflictResolution: true);
-    private static readonly HashSet<string> EnhancementStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: true, includeConflictResolution: false);
+    private static readonly HashSet<string> EnrichmentStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: false, includeConflictResolution: true, includeTargetFiles: false);
+    private static readonly HashSet<string> EnhancementStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: true, includeConflictResolution: false, includeTargetFiles: true);
     private const string AutoTagFolderName = "autotag";
     private const string HistoryFolderName = "history";
     private static readonly string[] DiffMetaKeys =
@@ -411,7 +413,7 @@ public class AutoTagService
         {
             if (_jobs.TryGetValue(activeJobId, out var activeJob)
                 && string.Equals(activeJob.Status, "running", StringComparison.OrdinalIgnoreCase)
-                && string.Equals(activeJob.RunIntent, AutoTagLiterals.RunIntentEnhancementOnly, StringComparison.OrdinalIgnoreCase))
+                && IsEnhancementRunIntent(activeJob.RunIntent))
             {
                 jobId = activeJobId;
                 return true;
@@ -594,7 +596,7 @@ public class AutoTagService
             return null;
         }
 
-        if (!string.Equals(runIntent, AutoTagLiterals.RunIntentEnhancementOnly, StringComparison.OrdinalIgnoreCase))
+        if (!IsEnhancementRunIntent(runIntent))
         {
             return null;
         }
@@ -1546,8 +1548,17 @@ public class AutoTagService
         }
 
         var shouldRunEnhancement = ShouldRunEnhancementForIntent(runIntent);
+        var enhancementSkipReason = "gap-fill tags not configured";
         if (shouldRunEnhancement
-            && TryBuildEnhancementStage(root, platformCaps, eligiblePlatforms, job.Id, out var enhancementStage, out var enhancementStrippedKeys))
+            && TryBuildEnhancementStage(
+                root,
+                platformCaps,
+                eligiblePlatforms,
+                job.Id,
+                runIntent,
+                out var enhancementStage,
+                out enhancementSkipReason,
+                out var enhancementStrippedKeys))
         {
             stages.Add(enhancementStage);
             AppendStageSchemaLog(job, AutoTagLiterals.EnhancementStage, enhancementStrippedKeys);
@@ -1555,7 +1566,7 @@ public class AutoTagService
         else
         {
             var reason = shouldRunEnhancement
-                ? "gap-fill tags not configured"
+                ? enhancementSkipReason
                 : $"disabled for run intent '{runIntent}'";
             AppendLog(job, $"enhancement skipped: {reason}");
         }
@@ -2359,22 +2370,27 @@ public class AutoTagService
         Dictionary<string, PlatformTagCapabilities> platformCaps,
         IReadOnlyList<string> eligiblePlatforms,
         string jobId,
+        string runIntent,
         out AutoTagStageConfig stage,
+        out string skipReason,
         out List<string> strippedKeys)
     {
         stage = null!;
+        skipReason = "gap-fill tags not configured";
         strippedKeys = new List<string>();
 
         var requested = ReadStringList(baseRoot, "gapFillTags");
         var platforms = eligiblePlatforms.ToList();
         if (platforms.Count == 0)
         {
+            skipReason = "no eligible enhancement platforms enabled";
             return false;
         }
 
         var filtered = FilterSupportedTags(requested, platforms, platformCaps);
         if (filtered.Count == 0)
         {
+            skipReason = "no supported enhancement tags for enabled platforms";
             return false;
         }
 
@@ -2382,6 +2398,18 @@ public class AutoTagService
         WriteStringList(stageRoot, AutoTagLiterals.PlatformsKey, platforms);
         stageRoot[AutoTagLiterals.MultiPlatformKey] = platforms.Count > 1;
         WriteStringList(stageRoot, "tags", filtered);
+        if (string.Equals(runIntent, AutoTagLiterals.RunIntentEnhancementRecentDownloads, StringComparison.OrdinalIgnoreCase))
+        {
+            var targetFiles = ReadStringList(baseRoot, AutoTagLiterals.TargetFilesKey);
+            if (targetFiles.Count == 0)
+            {
+                skipReason = "no recent downloaded files were available for enhancement";
+                return false;
+            }
+
+            WriteStringList(stageRoot, AutoTagLiterals.TargetFilesKey, targetFiles);
+        }
+
         // Enhancement should process on-disk files by default and only skip when
         // an explicit enhancement-level setting is provided.
         stageRoot["skipTagged"] = ReadBool(baseRoot, "enhancementSkipTagged")
@@ -2448,7 +2476,7 @@ public class AutoTagService
         root[propertyName] = array;
     }
 
-    private static HashSet<string> BuildStageAllowedKeys(bool includeSkipTagged, bool includeConflictResolution)
+    private static HashSet<string> BuildStageAllowedKeys(bool includeSkipTagged, bool includeConflictResolution, bool includeTargetFiles)
     {
         var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -2502,6 +2530,11 @@ public class AutoTagService
         if (includeConflictResolution)
         {
             keys.Add("conflictResolution");
+        }
+
+        if (includeTargetFiles)
+        {
+            keys.Add(AutoTagLiterals.TargetFilesKey);
         }
 
         return keys;
@@ -3762,16 +3795,24 @@ public class AutoTagService
         {
             AutoTagLiterals.RunIntentDownloadEnrichment => AutoTagLiterals.RunIntentDownloadEnrichment,
             AutoTagLiterals.RunIntentEnhancementOnly => AutoTagLiterals.RunIntentEnhancementOnly,
+            AutoTagLiterals.RunIntentEnhancementRecentDownloads => AutoTagLiterals.RunIntentEnhancementRecentDownloads,
             _ => AutoTagLiterals.RunIntentDefault
+        };
+    }
+
+    private static bool IsEnhancementRunIntent(string? runIntent)
+    {
+        return NormalizeRunIntent(runIntent) switch
+        {
+            AutoTagLiterals.RunIntentEnhancementOnly => true,
+            AutoTagLiterals.RunIntentEnhancementRecentDownloads => true,
+            _ => false
         };
     }
 
     private static bool ShouldRunEnrichmentForIntent(string? runIntent)
     {
-        return !string.Equals(
-            NormalizeRunIntent(runIntent),
-            AutoTagLiterals.RunIntentEnhancementOnly,
-            StringComparison.OrdinalIgnoreCase);
+        return !IsEnhancementRunIntent(runIntent);
     }
 
     private static bool ShouldRunEnhancementForIntent(string? runIntent)
