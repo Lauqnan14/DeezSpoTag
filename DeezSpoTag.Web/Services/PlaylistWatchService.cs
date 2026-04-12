@@ -2831,6 +2831,15 @@ public sealed class PlaylistWatchService
                 destinationFolderId,
                 normalizedDownloadVariantMode,
                 normalizedPreferredEngine);
+            intent = await TryPinWatchIntentToExactDeezerAsync(
+                intent,
+                options.SourceLabel,
+                track.TrackId,
+                cancellationToken);
+            if (intent is null)
+            {
+                continue;
+            }
 
             var result = await TryQueuePrimaryIntentAsync(
                 intentService,
@@ -2854,6 +2863,78 @@ public sealed class PlaylistWatchService
         }
 
         return queuedCount;
+    }
+
+    private async Task<DownloadIntent?> TryPinWatchIntentToExactDeezerAsync(
+        DownloadIntent intent,
+        string sourceLabel,
+        string trackId,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(intent.SourceService, AppleSource, StringComparison.OrdinalIgnoreCase)
+            || !string.IsNullOrWhiteSpace(intent.AppleId)
+            || (!string.IsNullOrWhiteSpace(intent.SourceUrl)
+                && intent.SourceUrl.Contains("music.apple.com", StringComparison.OrdinalIgnoreCase)))
+        {
+            return intent;
+        }
+
+        if (string.Equals(intent.ContentType, DownloadContentTypes.Video, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(intent.ContentType, DownloadContentTypes.Podcast, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(intent.ContentType, DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase))
+        {
+            return intent;
+        }
+
+        if (!string.IsNullOrWhiteSpace(intent.DeezerId))
+        {
+            var deezerId = intent.DeezerId.Trim();
+            intent.DeezerId = deezerId;
+            intent.SourceService = DeezerSource;
+            intent.SourceUrl = BuildDeezerTrackUrl(deezerId);
+            intent.PreferredEngine = DeezerSource;
+            return intent;
+        }
+
+        var normalizedIsrc = (intent.Isrc ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedIsrc))
+        {
+            _logger.LogDebug(
+                "{Source} watch strict mapping skipped track {TrackId}: missing ISRC.",
+                sourceLabel,
+                trackId);
+            return null;
+        }
+
+        try
+        {
+            var deezerTrack = await _deezerClient.GetTrackByIsrcAsync(normalizedIsrc);
+            var deezerId = deezerTrack?.Id?.ToString();
+            if (string.IsNullOrWhiteSpace(deezerId))
+            {
+                _logger.LogDebug(
+                    "{Source} watch strict mapping skipped track {TrackId}: Deezer ISRC lookup returned no match ({Isrc}).",
+                    sourceLabel,
+                    trackId,
+                    normalizedIsrc);
+                return null;
+            }
+
+            intent.DeezerId = deezerId;
+            intent.SourceService = DeezerSource;
+            intent.SourceUrl = BuildDeezerTrackUrl(deezerId);
+            intent.PreferredEngine = DeezerSource;
+            return intent;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(
+                ex,
+                "{Source} watch strict mapping deferred for track {TrackId}: Deezer ISRC lookup failed.",
+                sourceLabel,
+                trackId);
+            return null;
+        }
     }
 
     private async Task<int> HandleQueuedWatchIntentResultAsync(
