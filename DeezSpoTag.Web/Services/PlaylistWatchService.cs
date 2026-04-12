@@ -27,6 +27,7 @@ public sealed class PlaylistWatchService
     private const string AlbumField = "album";
     private const string SpotifyHomeTrendingSourceId = "home-trending-songs";
     private const string SpotifyTrendingSongsSectionUri = "spotify:section:0JQ5DB5E8N831KzFzsBBQ2";
+    private const int SpotifyPlaylistWatchPageSize = 200;
     private static readonly string[] JsonStringObjectPropertyNames = ["standard", "short", "text"];
     private readonly LibraryRepository _libraryRepository;
     private readonly SpotifyMetadataService _spotifyMetadataService;
@@ -717,7 +718,7 @@ public sealed class PlaylistWatchService
         }
 
         var settings = _settingsService.LoadSettings();
-        var maxItems = Math.Clamp(settings.WatchMaxItemsPerRun, 1, 50);
+        var maxItems = SpotifyPlaylistWatchPageSize;
         var state = await _libraryRepository.GetPlaylistWatchStateAsync(SpotifySource, playlist.SourceId, cancellationToken);
         var (batchOffset, batchSnapshot) = ResolveSpotifyBatchCursor(state);
 
