@@ -462,12 +462,6 @@ public class DeezSpoTagSettingsService : ISettingsService
             nameof(settings.Service));
 
         ApplyFixIf(
-            string.Equals(settings.Service, "auto", StringComparison.OrdinalIgnoreCase) && !settings.FallbackBitrate,
-            () => settings.FallbackBitrate = true,
-            fixes,
-            nameof(settings.FallbackBitrate));
-
-        ApplyFixIf(
             string.IsNullOrWhiteSpace(settings.MetadataSource) || !IsSupportedMetadataSource(settings.MetadataSource),
             () => settings.MetadataSource = defaultSettings.MetadataSource,
             fixes,

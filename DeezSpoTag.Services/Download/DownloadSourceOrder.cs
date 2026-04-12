@@ -81,15 +81,28 @@ public static class DownloadSourceOrder
     {
         var forcedService = settings.Service?.Trim().ToLowerInvariant();
         var includeAtmos = string.Equals(targetQuality, "atmos", StringComparison.OrdinalIgnoreCase);
-        var sources = BuildAutoSources(
-            includeDeezer,
-            profile => ShouldIncludeQualityProfile(profile, forcedService, includeAtmos));
+        List<string> sources;
+        if (string.Equals(forcedService, AutoService, StringComparison.OrdinalIgnoreCase))
+        {
+            sources = BuildAutoSourcesByConfiguredQuality(settings, includeDeezer, includeAtmos);
+        }
+        else
+        {
+            sources = BuildAutoSources(
+                includeDeezer,
+                profile => ShouldIncludeQualityProfile(profile, forcedService, includeAtmos));
+        }
 
-        if (string.IsNullOrWhiteSpace(targetQuality) || string.Equals(forcedService, AutoService, StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(targetQuality))
         {
             return sources;
         }
 
+        return ApplyTargetQualityStart(sources, targetQuality);
+    }
+
+    private static List<string> ApplyTargetQualityStart(List<string> sources, string targetQuality)
+    {
         var startIndex = sources.FindIndex(source =>
         {
             var step = DecodeAutoSource(source);
@@ -97,6 +110,69 @@ public static class DownloadSourceOrder
         });
 
         return startIndex >= 0 ? sources.Skip(startIndex).ToList() : sources;
+    }
+
+    private static List<string> BuildAutoSourcesByConfiguredQuality(
+        DeezSpoTagSettings settings,
+        bool includeDeezer,
+        bool includeAtmos)
+    {
+        var engineOrder = AutoPriority
+            .Select(profile => profile.Source)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var engineQualities = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var engine in engineOrder)
+        {
+            if (!includeDeezer && string.Equals(engine, DeezerSource, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!IsSourceAvailable(engine))
+            {
+                continue;
+            }
+
+            var preferredQuality = ResolvePreferredQuality(settings, engine);
+            var qualities = ResolveEngineQualitySources(engine, preferredQuality, strict: false)
+                .Select(DecodeAutoSource)
+                .Select(step => step.Quality)
+                .Where(quality =>
+                    !string.IsNullOrWhiteSpace(quality)
+                    && (includeAtmos || !string.Equals(quality, "atmos", StringComparison.OrdinalIgnoreCase)))
+                .Select(quality => quality!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (qualities.Count > 0)
+            {
+                engineQualities[engine] = qualities;
+            }
+        }
+
+        if (engineQualities.Count == 0)
+        {
+            return new List<string>();
+        }
+
+        var maxDepth = engineQualities.Values.Max(qualities => qualities.Count);
+        var sources = new List<string>();
+        for (var depth = 0; depth < maxDepth; depth++)
+        {
+            foreach (var engine in engineOrder)
+            {
+                if (!engineQualities.TryGetValue(engine, out var qualities) || depth >= qualities.Count)
+                {
+                    continue;
+                }
+
+                sources.Add(EncodeAutoSource(engine, qualities[depth]));
+            }
+        }
+
+        return CollapseAutoSourcesByService(sources);
     }
 
     public static List<string> ResolveEngineQualitySources(string engine, string? requestedQuality, bool strict)
@@ -238,6 +314,25 @@ public static class DownloadSourceOrder
         }
 
         return true;
+    }
+
+    private static string? ResolvePreferredQuality(DeezSpoTagSettings settings, string engine)
+    {
+        if (settings == null || string.IsNullOrWhiteSpace(engine))
+        {
+            return null;
+        }
+
+        var normalized = engine.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            AppleSource => settings.AppleMusic?.PreferredAudioProfile,
+            DeezerSource => settings.MaxBitrate > 0 ? settings.MaxBitrate.ToString() : null,
+            TidalSource => settings.TidalQuality,
+            QobuzSource => settings.QobuzQuality,
+            AmazonSource => "FLAC",
+            _ => null
+        };
     }
 
     public static string EncodeAutoSource(string source, string? quality)
