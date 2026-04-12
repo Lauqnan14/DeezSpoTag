@@ -718,11 +718,12 @@ public sealed class PlaylistWatchService
         }
 
         var settings = _settingsService.LoadSettings();
-        var maxItems = SpotifyPlaylistWatchPageSize;
         var state = await _libraryRepository.GetPlaylistWatchStateAsync(SpotifySource, playlist.SourceId, cancellationToken);
-        var (batchOffset, batchSnapshot) = ResolveSpotifyBatchCursor(state);
-
-        var page = await _spotifyMetadataService.FetchPlaylistPageAsync(playlist.SourceId, batchOffset, maxItems, cancellationToken);
+        var page = await _spotifyMetadataService.FetchPlaylistPageAsync(
+            playlist.SourceId,
+            0,
+            SpotifyPlaylistWatchPageSize,
+            cancellationToken);
         if (page == null)
         {
             await UpsertPlaylistWatchStateAsync(
@@ -731,8 +732,8 @@ public sealed class PlaylistWatchService
                     playlist.SourceId,
                     state?.SnapshotId,
                     state?.TrackCount,
-                    batchOffset,
-                    batchSnapshot,
+                    null,
+                    null,
                     DateTimeOffset.UtcNow),
                 cancellationToken);
             return;
@@ -742,7 +743,7 @@ public sealed class PlaylistWatchService
         var metadataChanged = IsSpotifyPlaylistMetadataChanged(page, playlist);
         await UpdateSpotifyPlaylistMetadataIfPresentAsync(playlist, preference, page, cancellationToken);
 
-        if (ShouldSkipSpotifySnapshotProcessing(settings.WatchUseSnapshotIdChecking, page, state, batchSnapshot))
+        if (ShouldSkipSpotifySnapshotProcessing(settings.WatchUseSnapshotIdChecking, page, state, batchSnapshot: null))
         {
             await UpsertPlaylistWatchStateAsync(
                 new LibraryRepository.PlaylistWatchStateUpsertInput(
@@ -757,14 +758,51 @@ public sealed class PlaylistWatchService
             return;
         }
 
-        (page, batchOffset, batchSnapshot) = await RefreshSpotifyBatchPageAsync(
-            playlist.SourceId,
-            page,
-            batchOffset,
-            batchSnapshot,
-            maxItems,
-            cancellationToken);
-        var newTracks = await GetNewSpotifyPlaylistTracksAsync(playlist.SourceId, page, cancellationToken);
+        var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(SpotifySource, playlist.SourceId, cancellationToken);
+        var ignored = await GetIgnoredTrackIdsForSourceAsync(SpotifySource, cancellationToken);
+        var newTracks = new List<SpotifyTrackSummary>();
+        var scanPage = page;
+        var offset = 0;
+        var totalTracks = page.TotalTracks;
+        while (scanPage != null)
+        {
+            foreach (var track in scanPage.Tracks)
+            {
+                if (string.IsNullOrWhiteSpace(track.Id))
+                {
+                    continue;
+                }
+
+                if (existing.Contains(track.Id) || ignored.Contains(track.Id))
+                {
+                    continue;
+                }
+
+                existing.Add(track.Id);
+                newTracks.Add(track);
+            }
+
+            if (!scanPage.HasMore)
+            {
+                break;
+            }
+
+            offset += scanPage.Tracks.Count;
+            if (scanPage.TotalTracks.HasValue && offset >= scanPage.TotalTracks.Value)
+            {
+                break;
+            }
+
+            scanPage = await _spotifyMetadataService.FetchPlaylistPageAsync(
+                playlist.SourceId,
+                offset,
+                SpotifyPlaylistWatchPageSize,
+                cancellationToken);
+            if (scanPage != null)
+            {
+                totalTracks = scanPage.TotalTracks ?? totalTracks;
+            }
+        }
 
         if (newTracks.Count > 0)
         {
@@ -803,17 +841,14 @@ public sealed class PlaylistWatchService
             }
         }
 
-        var (nextBatchOffset, nextBatchSnapshot) = ResolveNextSpotifyBatchCursor(page, batchOffset, batchSnapshot);
-        var totalTracks = page.TotalTracks;
-
         await UpsertPlaylistWatchStateAsync(
             new LibraryRepository.PlaylistWatchStateUpsertInput(
                 SpotifySource,
                 playlist.SourceId,
                 page.SnapshotId,
                 totalTracks,
-                nextBatchOffset,
-                nextBatchSnapshot,
+                null,
+                null,
                 DateTimeOffset.UtcNow),
             cancellationToken);
 
