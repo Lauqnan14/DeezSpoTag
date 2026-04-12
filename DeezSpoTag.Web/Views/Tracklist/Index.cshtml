@@ -1353,6 +1353,7 @@
 </div>
 
 @section Scripts {
+<script src="~/js/library.js" asp-append-version="true"></script>
 <script>
 const tracklistId = '@Html.Raw(id)';
 const tracklistAppleUrl = '@Html.Raw(ViewData["AppleUrl"] ?? "")';
@@ -4801,16 +4802,16 @@ async function openPlaylistManagementPage() {
         return;
     }
 
-    let folders = [];
+    if (typeof openPlaylistSettingsPanel !== 'function') {
+        DeezSpoTag.ui.alert('Playlist settings panel is unavailable on this page.', { title: 'Playlist Settings' });
+        return;
+    }
+
     let preference = null;
     try {
-        const [folderResponse, preferenceResponse] = await Promise.all([
-            fetchJson('/api/library/folders'),
-            fetchJson(`/api/library/playlists/preferences/${encodeURIComponent(currentTracklistMeta.source)}/${encodeURIComponent(currentTracklistMeta.sourceId)}`)
-        ]);
-        folders = Array.isArray(folderResponse)
-            ? folderResponse.filter(folder => folder && folder.enabled)
-            : [];
+        const preferenceResponse = await fetchJson(
+            `/api/library/playlists/preferences/${encodeURIComponent(currentTracklistMeta.source)}/${encodeURIComponent(currentTracklistMeta.sourceId)}`
+        );
         preference = preferenceResponse && typeof preferenceResponse === 'object'
             ? preferenceResponse
             : null;
@@ -4819,122 +4820,35 @@ async function openPlaylistManagementPage() {
         return;
     }
 
-    const panel = document.createElement('div');
-    panel.className = 'playlist-settings-panel';
-
-    const folderSection = document.createElement('div');
-    folderSection.className = 'playlist-settings-section';
-    folderSection.innerHTML = '<div class="playlist-settings-section-title">Destination folder</div>';
-    const folderSelect = document.createElement('select');
-    folderSelect.className = 'form-select';
-    folderSelect.innerHTML = '<option value="">No folder</option>';
-    folders.forEach(folder => {
-        const option = document.createElement('option');
-        option.value = String(folder.id || '');
-        option.textContent = String(folder.displayName || 'Folder');
-        folderSelect.appendChild(option);
-    });
-    if (preference?.destinationFolderId) {
-        folderSelect.value = String(preference.destinationFolderId);
-    }
-    folderSection.appendChild(folderSelect);
-    panel.appendChild(folderSection);
-
-    const serverSection = document.createElement('div');
-    serverSection.className = 'playlist-settings-section';
-    serverSection.innerHTML = '<div class="playlist-settings-section-title">Server</div>';
-    const serverSelect = document.createElement('select');
-    serverSelect.className = 'form-select';
-    serverSelect.innerHTML = `
-        <option value="plex">Plex</option>
-        <option value="jellyfin">Jellyfin</option>
-    `;
-    serverSelect.value = preference?.service || 'plex';
-    serverSection.appendChild(serverSelect);
-    panel.appendChild(serverSection);
-
-    const engineSection = document.createElement('div');
-    engineSection.className = 'playlist-settings-section';
-    engineSection.innerHTML = '<div class="playlist-settings-section-title">Download engine</div>';
-    const engineSelect = document.createElement('select');
-    engineSelect.className = 'form-select';
-    engineSelect.innerHTML = `
-        <option value="">Follow global download source</option>
-        <option value="auto">Auto (cross-engine fallback)</option>
-        <option value="amazon">Amazon Music</option>
-        <option value="apple">Apple Music</option>
-        <option value="deezer">Deezer</option>
-        <option value="qobuz">Qobuz</option>
-        <option value="tidal">Tidal</option>
-    `;
-    engineSelect.value = preference?.preferredEngine || '';
-    engineSection.appendChild(engineSelect);
-    panel.appendChild(engineSection);
-
-    const downloadModeSection = document.createElement('div');
-    downloadModeSection.className = 'playlist-settings-section';
-    downloadModeSection.innerHTML = '<div class="playlist-settings-section-title">Download mode</div>';
-    const downloadModeSelect = document.createElement('select');
-    downloadModeSelect.className = 'form-select';
-    downloadModeSelect.innerHTML = `
-        <option value="standard">Standard only</option>
-        <option value="dual_quality">Dual quality (standard + Atmos)</option>
-        <option value="atmos_only">Atmos only</option>
-    `;
-    downloadModeSelect.value = preference?.downloadVariantMode || 'standard';
-    downloadModeSection.appendChild(downloadModeSelect);
-    panel.appendChild(downloadModeSection);
-
-    const artworkSection = document.createElement('div');
-    artworkSection.className = 'playlist-settings-section';
-    artworkSection.innerHTML = '<div class="playlist-settings-section-title">Playlist artwork</div>';
-    const updateArtworkLabel = document.createElement('label');
-    updateArtworkLabel.className = 'checkbox-group';
-    updateArtworkLabel.innerHTML = `
-        <input type="checkbox" class="tracklist-update-artwork" ${preference?.updateArtwork === false ? '' : 'checked'} />
-        <span>Update playlist artwork during sync</span>
-    `;
-    const reuseArtworkLabel = document.createElement('label');
-    reuseArtworkLabel.className = 'checkbox-group';
-    reuseArtworkLabel.innerHTML = `
-        <input type="checkbox" class="tracklist-reuse-artwork" ${preference?.reuseSavedArtwork === true ? 'checked' : ''} />
-        <span>Keep and reuse saved artwork when source art changes</span>
-    `;
-    artworkSection.appendChild(updateArtworkLabel);
-    artworkSection.appendChild(reuseArtworkLabel);
-    panel.appendChild(artworkSection);
-
-    const result = await DeezSpoTag.ui.showModal({
-        title: `Settings — ${currentTracklistMeta.name || 'Playlist'}`,
-        contentElement: panel,
-        buttons: [
-            { label: 'Save', value: 'save', primary: true },
-            { label: 'Cancel', value: 'cancel' }
-        ]
-    });
-
-    if (!result || result.value !== 'save') {
+    const source = String(currentTracklistMeta.source || '').trim();
+    const sourceId = String(currentTracklistMeta.sourceId || '').trim();
+    if (!source || !sourceId) {
         return;
     }
 
+    const prefKey = `${source}:${sourceId}`;
+    const playlistPrefs = {};
+    if (preference) {
+        playlistPrefs[prefKey] = {
+            folderId: preference.destinationFolderId ? String(preference.destinationFolderId) : '',
+            service: preference.service || 'plex',
+            preferredEngine: preference.preferredEngine || '',
+            downloadVariantMode: preference.downloadVariantMode || 'standard',
+            syncMode: preference.syncMode || 'mirror',
+            updateArtwork: preference.updateArtwork !== false,
+            reuseSavedArtwork: preference.reuseSavedArtwork === true
+        };
+    }
+
     try {
-        await fetchJson('/api/library/playlists/preferences', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify([{
-                source: currentTracklistMeta.source,
-                sourceId: currentTracklistMeta.sourceId,
-                folderId: folderSelect.value ? Number(folderSelect.value) : null,
-                service: serverSelect.value || 'plex',
-                preferredEngine: engineSelect.value || '',
-                downloadVariantMode: downloadModeSelect.value || 'standard',
-                updateArtwork: panel.querySelector('.tracklist-update-artwork')?.checked !== false,
-                reuseSavedArtwork: panel.querySelector('.tracklist-reuse-artwork')?.checked === true
-            }])
-        });
-        DeezSpoTag.ui.showToast('Playlist settings saved.');
+        await openPlaylistSettingsPanel(
+            source,
+            sourceId,
+            currentTracklistMeta.name || 'Playlist',
+            playlistPrefs
+        );
     } catch (error) {
-        DeezSpoTag.ui.alert(`Save failed: ${error.message}`, { title: 'Playlist Settings' });
+        DeezSpoTag.ui.alert(`Failed to open playlist settings: ${error.message}`, { title: 'Playlist Settings' });
     }
 }
 

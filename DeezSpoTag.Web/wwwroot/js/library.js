@@ -11274,6 +11274,17 @@ async function openPlaylistMergePanel(items) {
 }
 
 async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlistPrefs) {
+    if (!Array.isArray(libraryState.folders) || libraryState.folders.length === 0) {
+        try {
+            const folders = await fetchJson('/api/library/folders');
+            libraryState.folders = Array.isArray(folders)
+                ? folders.map(normalizeFolderConversionState)
+                : [];
+        } catch {
+            libraryState.folders = Array.isArray(libraryState.folders) ? libraryState.folders : [];
+        }
+    }
+
     const enabledFolders = (libraryState.folders || []).filter(isMusicRecommendationEligibleFolder);
 
     const prefKey = `${source}:${sourceId}`;
@@ -13738,6 +13749,31 @@ function getLibraryLoadTargets() {
     };
 }
 
+function shouldInitializeLibraryForCurrentPage(targets) {
+    if (!targets || typeof targets !== 'object') {
+        return false;
+    }
+
+    return Boolean(
+        targets.shouldLoadSettings
+        || targets.shouldLoadFolders
+        || targets.shouldLoadViewFolders
+        || targets.shouldLoadArtists
+        || targets.shouldLoadScanStatus
+        || targets.shouldLoadDownload
+        || targets.shouldLoadArtistAlbums
+        || targets.shouldLoadAlbumTracks
+        || targets.shouldLoadTrackAnalysis
+        || targets.shouldLoadWatchlist
+        || targets.shouldLoadPlaylistWatchlist
+        || targets.shouldLoadPlaylistBlockedRules
+        || targets.shouldLoadSoundtracks
+        || targets.shouldLoadAnalysis
+        || targets.shouldLoadFavorites
+        || targets.downloadAlbumButton
+    );
+}
+
 function bindIndexActionsDropdown() {
     const indexToggle = document.getElementById('indexActionsToggle');
     const indexDropdown = document.getElementById('indexActionsDropdown');
@@ -14030,6 +14066,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         syncFolderConversionFieldsState();
 
         const targets = getLibraryLoadTargets();
+        if (!shouldInitializeLibraryForCurrentPage(targets)) {
+            return;
+        }
         if (targets.shouldLoadArtists) {
             primePendingLibraryReturnState();
         }
