@@ -176,7 +176,8 @@ public sealed class DownloadIntentService
         bool MusicIntent,
         bool AllowCrossEngineFallback,
         bool UseAtmosStereoDual,
-        List<string> AutoSources);
+        List<string> AutoSources,
+        SongLinkResult? Availability);
 
     private sealed record IntentResolutionBootstrap(
         string SourceUrl,
@@ -294,7 +295,8 @@ public sealed class DownloadIntentService
             isMusicIntent,
             allowCrossEngineFallback,
             useAtmosStereoDual,
-            autoSources));
+            autoSources,
+            availability));
         var fallbackPlan = primaryFallback.FallbackPlan;
         var selectedAutoIndex = primaryFallback.AutoIndex;
 
@@ -504,7 +506,7 @@ public sealed class DownloadIntentService
 
         var payloadSources = allowCrossEngineFallback
             ? DownloadSourceOrder.CollapseAutoSourcesByService(
-                BuildFallbackPlanSources(autoSources, settings, engine, quality))
+                BuildFallbackPlanSources(autoSources, settings, engine, quality, request.Availability))
             : DownloadSourceOrder.ResolveEngineQualitySources(
                 engine,
                 quality,
@@ -1086,11 +1088,6 @@ public sealed class DownloadIntentService
             settings.Service = AutoService;
         }
 
-        if (string.Equals(settings.Service, AutoService, StringComparison.OrdinalIgnoreCase))
-        {
-            settings.FallbackBitrate = true;
-        }
-
         settings.MetadataSource = NormalizeMetadataSource(settings.MetadataSource) ?? string.Empty;
     }
 
@@ -1208,6 +1205,7 @@ public sealed class DownloadIntentService
         var autoSources = preparation.IsPodcastIntent
             ? DownloadSourceOrder.ResolveEngineQualitySources(normalizedPreferredEngine, DownloadContentTypes.Podcast, strict: true)
             : DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: targetQuality);
+        autoSources = FilterAutoSourcesByAvailability(autoSources, availability, normalizedPreferredEngine);
         var preferredEngine = ResolvePreferredEngine(normalizedPreferredEngine, intentRequestsAuto, appleOnlyRequired, preparation.IsPodcastIntent, autoSources);
         targetQuality = NormalizeTargetQuality(intent, settings, preferredEngine, targetQuality, explicitStereoRequest, useAtmosStereoDual);
         if (useAtmosStereoDual)
@@ -3534,7 +3532,8 @@ public sealed class DownloadIntentService
         IReadOnlyList<string> autoSources,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         string engine,
-        string? requestedQuality)
+        string? requestedQuality,
+        SongLinkResult? availability)
     {
         var planSources = new List<string>();
         var strict = UseStrictQualityFallback(settings, engine, requestedQuality);
@@ -3542,22 +3541,73 @@ public sealed class DownloadIntentService
 
         if (isAuto)
         {
-            // Always use the full AutoPriority quality-descending fallback order.
-            // The autoIndex on the payload determines the starting position.
             planSources.AddRange(
-                DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null));
+                DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: requestedQuality));
         }
         else
         {
             AppendEngineFallbackSources(planSources, autoSources, settings, engine, requestedQuality, strict);
         }
 
+        planSources = FilterAutoSourcesByAvailability(planSources, availability, engine);
+
         if (planSources.Count == 0 && autoSources.Count > 0)
         {
-            planSources.AddRange(autoSources);
+            planSources.AddRange(FilterAutoSourcesByAvailability(autoSources, availability, engine));
         }
 
         return DownloadSourceOrder.CollapseAutoSourcesByService(planSources);
+    }
+
+    private static List<string> FilterAutoSourcesByAvailability(
+        IEnumerable<string> sources,
+        SongLinkResult? availability,
+        string? primaryEngine = null)
+    {
+        var sourceList = sources
+            .Where(source => !string.IsNullOrWhiteSpace(source))
+            .ToList();
+        if (sourceList.Count == 0 || !HasAnyResolvedAvailability(availability))
+        {
+            return sourceList;
+        }
+
+        var normalizedPrimary = string.IsNullOrWhiteSpace(primaryEngine)
+            ? string.Empty
+            : primaryEngine.Trim().ToLowerInvariant();
+        var filtered = new List<string>(sourceList.Count);
+        foreach (var encoded in sourceList)
+        {
+            var decoded = DownloadSourceOrder.DecodeAutoSource(encoded);
+            if (string.IsNullOrWhiteSpace(decoded.Source))
+            {
+                continue;
+            }
+
+            var hasAvailability = !string.IsNullOrWhiteSpace(GetAvailabilityUrl(availability!, decoded.Source));
+            var isPrimaryEngine = !string.IsNullOrWhiteSpace(normalizedPrimary)
+                && string.Equals(decoded.Source, normalizedPrimary, StringComparison.OrdinalIgnoreCase);
+            if (hasAvailability || isPrimaryEngine)
+            {
+                filtered.Add(encoded);
+            }
+        }
+
+        return filtered.Count == 0 ? sourceList : filtered;
+    }
+
+    private static bool HasAnyResolvedAvailability(SongLinkResult? availability)
+    {
+        if (availability == null)
+        {
+            return false;
+        }
+
+        return !string.IsNullOrWhiteSpace(availability.DeezerUrl)
+            || !string.IsNullOrWhiteSpace(availability.TidalUrl)
+            || !string.IsNullOrWhiteSpace(availability.QobuzUrl)
+            || !string.IsNullOrWhiteSpace(availability.AmazonUrl)
+            || !string.IsNullOrWhiteSpace(availability.AppleMusicUrl);
     }
 
     private static void ApplyDeezerCoreMetadata(DownloadIntent intent, DeezSpoTag.Core.Models.Deezer.ApiTrack track, string sourceUrl, bool overwriteExisting)
@@ -4463,7 +4513,8 @@ public sealed class DownloadIntentService
             AutoSources: DownloadSourceOrder.ResolveEngineQualitySources(
                 ApplePlatform,
                 secondaryQuality,
-                strict: UseStrictQualityFallback(request.Settings, ApplePlatform, secondaryQuality))));
+                strict: UseStrictQualityFallback(request.Settings, ApplePlatform, secondaryQuality)),
+            Availability: request.Availability));
         payload.FallbackPlan = fallbackInfo.FallbackPlan;
         payload.AutoSources = fallbackInfo.AutoSources;
         payload.AutoIndex = fallbackInfo.AutoIndex;

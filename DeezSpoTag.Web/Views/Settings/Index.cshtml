@@ -1941,19 +1941,9 @@ function updateQualityDropdownVisibility(source, autoOpen) {
         deezerGroup.style.display = source === 'deezer' ? 'block' : 'none';
     }
     if (fallbackQuality) {
-        const isAuto = source === 'auto';
-        fallbackQuality.disabled = isAuto;
-        if (isAuto) {
-            fallbackQuality.checked = true;
-            fallbackQuality.setAttribute('title', 'Fallback Quality is always enabled in Auto mode');
-            if (fallbackQualityLabel) {
-                fallbackQualityLabel.setAttribute('title', 'Fallback Quality is always enabled in Auto mode');
-            }
-        } else {
-            fallbackQuality.removeAttribute('title');
-            if (fallbackQualityLabel) {
-                fallbackQualityLabel.removeAttribute('title');
-            }
+        fallbackQuality.removeAttribute('title');
+        if (fallbackQualityLabel) {
+            fallbackQualityLabel.removeAttribute('title');
         }
     }
 

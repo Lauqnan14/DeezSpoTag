@@ -11,37 +11,53 @@ public sealed class DownloadSourceOrderFallbackParityTests
     private static readonly string[] ExpectedQobuzStrictQuality = { "qobuz|6" };
 
     [Fact]
-    public void ResolveQualityAutoSources_UsesCanonicalCrossEngineOrder_WhenServiceIsAuto()
+    public void ResolveQualityAutoSources_UsesConfiguredEngineQualities_WhenServiceIsAuto()
     {
         var settings = new DeezSpoTagSettings
         {
-            Service = "auto"
+            Service = "auto",
+            QobuzQuality = "6",
+            TidalQuality = "LOSSLESS",
+            MaxBitrate = 3,
+            AppleMusic = new AppleMusicSettings
+            {
+                PreferredAudioProfile = "ALAC"
+            }
         };
 
         var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
 
-        Assert.Equal("qobuz|27", sources[0]);
-        Assert.Equal("tidal|HI_RES_LOSSLESS", sources[1]);
+        Assert.Equal("qobuz|6", sources[0]);
+        Assert.Equal("tidal|LOSSLESS", sources[1]);
         Assert.Equal("apple|ALAC", sources[2]);
-        Assert.Contains("deezer|9", sources);
+        Assert.DoesNotContain("qobuz|27", sources);
+        Assert.DoesNotContain("tidal|HI_RES_LOSSLESS", sources);
+        Assert.DoesNotContain("deezer|9", sources);
         Assert.Contains("deezer|3", sources);
         Assert.Contains("deezer|1", sources);
     }
 
     [Fact]
-    public void ResolveQualityAutoSources_KeepsCrossEngineOrder_WhenAutoHasTargetQuality()
+    public void ResolveQualityAutoSources_HonorsRequestedTargetQuality_WhenServiceIsAuto()
     {
         var settings = new DeezSpoTagSettings
         {
-            Service = "auto"
+            Service = "auto",
+            QobuzQuality = "6",
+            TidalQuality = "LOSSLESS",
+            MaxBitrate = 3,
+            AppleMusic = new AppleMusicSettings
+            {
+                PreferredAudioProfile = "ALAC"
+            }
         };
 
-        var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: "6");
+        var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: "3");
 
-        Assert.Equal("qobuz|27", sources[0]);
-        Assert.Equal("tidal|HI_RES_LOSSLESS", sources[1]);
-        Assert.Equal("apple|ALAC", sources[2]);
-        Assert.Contains("qobuz|6", sources);
+        Assert.Equal("deezer|3", sources[0]);
+        Assert.DoesNotContain("qobuz|6", sources);
+        Assert.DoesNotContain("tidal|LOSSLESS", sources);
+        Assert.Contains("apple|AAC", sources);
         Assert.Contains("deezer|1", sources);
     }
 
