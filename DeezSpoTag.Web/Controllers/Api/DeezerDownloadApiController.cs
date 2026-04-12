@@ -24,7 +24,6 @@ namespace DeezSpoTag.Web.Controllers.Api
         private const string DeezerSource = "deezer";
         private const string TrackType = "track";
         private const string DeezerDomain = "deezer.com";
-        private const int ImmediateNoIsrcBatchIntentLimit = 200;
         private readonly ILogger<DeezerDownloadApiController> _logger;
         private readonly DownloadIntentService _intentService;
         private readonly DeezerClient _deezerClient;
@@ -185,8 +184,7 @@ namespace DeezSpoTag.Web.Controllers.Api
                 return;
             }
 
-            var forceImmediateNoIsrc = isBatch
-                && resolvedIntents.Intents.Count <= ImmediateNoIsrcBatchIntentLimit;
+            var forceImmediateNoIsrc = isBatch;
             foreach (var intent in resolvedIntents.Intents)
             {
                 await EnqueueResolvedIntentAsync(
