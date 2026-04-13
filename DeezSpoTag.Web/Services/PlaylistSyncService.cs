@@ -305,7 +305,6 @@ public sealed class PlaylistSyncService
             PreferredEngine: null,
             DownloadVariantMode: null,
             SyncMode: syncMode,
-            AutotagProfile: null,
             UpdateArtwork: true,
             ReuseSavedArtwork: false,
             CreatedAt: now,
