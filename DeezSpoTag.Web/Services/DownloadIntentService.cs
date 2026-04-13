@@ -4445,7 +4445,7 @@ public sealed class DownloadIntentService
         var storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront)
             ? "us"
             : settings.AppleMusic!.Storefront;
-        return $"https://music.apple.com/{storefront}/song/id{intent.AppleId}";
+        return $"https://music.apple.com/{storefront}/song/{intent.AppleId}";
     }
 
     private static bool ContainsAppleMusicUrl(string? url)
