@@ -11458,8 +11458,12 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         option.textContent = label;
         engineSelect.appendChild(option);
     });
+    const engineHint = document.createElement('div');
+    engineHint.className = 'playlist-settings-help';
+    engineHint.textContent = 'Exact-match watchlist mapping pins to Deezer when a Deezer ID/ISRC match is found.';
     engineSection.appendChild(engineTitle);
     engineSection.appendChild(engineSelect);
+    engineSection.appendChild(engineHint);
     panel.appendChild(engineSection);
 
     const downloadModeSection = document.createElement('div');

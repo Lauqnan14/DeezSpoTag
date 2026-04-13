@@ -2889,10 +2889,7 @@ public sealed class PlaylistWatchService
         if (!string.IsNullOrWhiteSpace(intent.DeezerId))
         {
             var deezerId = intent.DeezerId.Trim();
-            intent.DeezerId = deezerId;
-            intent.SourceService = DeezerSource;
-            intent.SourceUrl = BuildDeezerTrackUrl(deezerId);
-            intent.PreferredEngine = DeezerSource;
+            ApplyStrictDeezerPinning(intent, deezerId, sourceLabel, trackId, "deezer-id");
             return intent;
         }
 
@@ -2920,10 +2917,7 @@ public sealed class PlaylistWatchService
                 return null;
             }
 
-            intent.DeezerId = deezerId;
-            intent.SourceService = DeezerSource;
-            intent.SourceUrl = BuildDeezerTrackUrl(deezerId);
-            intent.PreferredEngine = DeezerSource;
+            ApplyStrictDeezerPinning(intent, deezerId, sourceLabel, trackId, "isrc");
             return intent;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -2934,6 +2928,31 @@ public sealed class PlaylistWatchService
                 sourceLabel,
                 trackId);
             return null;
+        }
+    }
+
+    private void ApplyStrictDeezerPinning(
+        DownloadIntent intent,
+        string deezerId,
+        string sourceLabel,
+        string trackId,
+        string matchSource)
+    {
+        var previousPreferredEngine = (intent.PreferredEngine ?? string.Empty).Trim();
+        intent.DeezerId = deezerId;
+        intent.SourceService = DeezerSource;
+        intent.SourceUrl = BuildDeezerTrackUrl(deezerId);
+        intent.PreferredEngine = DeezerSource;
+
+        if (!string.IsNullOrWhiteSpace(previousPreferredEngine)
+            && !string.Equals(previousPreferredEngine, DeezerSource, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogDebug(
+                "{Source} watch strict mapping pinned track {TrackId} to Deezer via {MatchSource}; replacing preferred engine '{PreviousEngine}'.",
+                sourceLabel,
+                trackId,
+                matchSource,
+                previousPreferredEngine);
         }
     }
 
