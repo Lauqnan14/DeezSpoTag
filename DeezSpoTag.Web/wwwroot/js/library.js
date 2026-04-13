@@ -11891,6 +11891,27 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         const syncModeSel = panel.querySelector('.ps-sync-mode-select');
         const artworkToggle = panel.querySelector('.ps-update-artwork');
         const artworkReuseToggle = panel.querySelector('.ps-reuse-saved-artwork');
+        const syncArtworkToggles = (changedBy = null) => {
+            if (!artworkToggle || !artworkReuseToggle) {
+                return;
+            }
+
+            if (changedBy === 'update' && artworkToggle.checked) {
+                artworkReuseToggle.checked = false;
+            } else if (changedBy === 'reuse' && artworkReuseToggle.checked) {
+                artworkToggle.checked = false;
+            } else if (artworkToggle.checked && artworkReuseToggle.checked) {
+                if (changedBy === 'reuse') {
+                    artworkToggle.checked = false;
+                } else {
+                    artworkReuseToggle.checked = false;
+                }
+            }
+
+            if (!artworkToggle.checked && !artworkReuseToggle.checked) {
+                artworkToggle.checked = true;
+            }
+        };
         if (folderSel && stored.folderId) folderSel.value = String(stored.folderId);
         if (serviceSel && stored.service) serviceSel.value = stored.service;
         if (engineSel) engineSel.value = stored.preferredEngine || '';
@@ -11898,6 +11919,11 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         if (syncModeSel) syncModeSel.value = stored.syncMode || 'mirror';
         if (artworkToggle) artworkToggle.checked = stored.updateArtwork !== false;
         if (artworkReuseToggle) artworkReuseToggle.checked = stored.reuseSavedArtwork === true;
+        if (artworkToggle && artworkReuseToggle) {
+            artworkToggle.addEventListener('change', () => syncArtworkToggles('update'));
+            artworkReuseToggle.addEventListener('change', () => syncArtworkToggles('reuse'));
+            syncArtworkToggles(stored.reuseSavedArtwork === true ? 'reuse' : null);
+        }
     }, 0);
 
     const confirmed = await globalThis.DeezSpoTag.ui.showModal({
@@ -11926,8 +11952,11 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     const preferredEngine = engineSel?.value || '';
     const downloadVariantMode = downloadModeSel?.value || 'standard';
     const syncMode = syncModeSel?.value || 'mirror';
-    const updateArtwork = artworkToggle?.checked !== false;
-    const reuseSavedArtwork = artworkReuseToggle?.checked === true;
+    const normalizedArtwork = normalizePlaylistArtworkPreference(
+        artworkToggle?.checked !== false,
+        artworkReuseToggle?.checked === true);
+    const updateArtwork = normalizedArtwork.updateArtwork;
+    const reuseSavedArtwork = normalizedArtwork.reuseSavedArtwork;
 
     // Collect routing rules
     const rules = [];
@@ -12019,6 +12048,20 @@ function getStoredPreferences(key) {
     }
 }
 
+function normalizePlaylistArtworkPreference(updateArtwork, reuseSavedArtwork) {
+    if (reuseSavedArtwork === true) {
+        return {
+            updateArtwork: false,
+            reuseSavedArtwork: true
+        };
+    }
+
+    return {
+        updateArtwork: true,
+        reuseSavedArtwork: false
+    };
+}
+
 function storePreferences(key, payload) {
     try {
         localStorage.setItem(key, JSON.stringify(payload));
@@ -12045,6 +12088,9 @@ async function hydratePlaylistPreferences() {
             return;
         }
         const key = `${item.source}:${item.sourceId}`;
+        const normalizedArtwork = normalizePlaylistArtworkPreference(
+            item.updateArtwork !== false,
+            item.reuseSavedArtwork === true);
         merged[key] = {
             ...merged[key],
             folderId: item.destinationFolderId || '',
@@ -12052,8 +12098,8 @@ async function hydratePlaylistPreferences() {
             preferredEngine: item.preferredEngine || merged[key]?.preferredEngine || '',
             downloadVariantMode: item.downloadVariantMode || merged[key]?.downloadVariantMode || 'standard',
             syncMode: item.syncMode || merged[key]?.syncMode || 'mirror',
-            updateArtwork: item.updateArtwork !== false,
-            reuseSavedArtwork: item.reuseSavedArtwork === true
+            updateArtwork: normalizedArtwork.updateArtwork,
+            reuseSavedArtwork: normalizedArtwork.reuseSavedArtwork
         };
     });
     return merged;
@@ -12076,8 +12122,11 @@ async function persistPlaylistPreference(container, source, sourceId) {
     const preferredEngine = engineSelect?.value || '';
     const downloadVariantMode = downloadModeSelect?.value || 'standard';
     const syncMode = container.querySelector(`[data-playlist-sync-mode="${source}"][data-playlist-id="${sourceId}"]`)?.value || 'mirror';
-    const updateArtwork = container.querySelector(`[data-playlist-update-artwork="${source}"][data-playlist-id="${sourceId}"]`)?.checked !== false;
-    const reuseSavedArtwork = container.querySelector(`[data-playlist-reuse-artwork="${source}"][data-playlist-id="${sourceId}"]`)?.checked === true;
+    const normalizedArtwork = normalizePlaylistArtworkPreference(
+        container.querySelector(`[data-playlist-update-artwork="${source}"][data-playlist-id="${sourceId}"]`)?.checked !== false,
+        container.querySelector(`[data-playlist-reuse-artwork="${source}"][data-playlist-id="${sourceId}"]`)?.checked === true);
+    const updateArtwork = normalizedArtwork.updateArtwork;
+    const reuseSavedArtwork = normalizedArtwork.reuseSavedArtwork;
     storePlaylistPreference(source, sourceId, {
         folderId: folderId || '',
         service,
@@ -12159,6 +12208,16 @@ function savePlaylistWatchlistPreferences() {
             prefs[key] = { ...prefs[key], reuseSavedArtwork: input.checked === true };
         }
     });
+    Object.keys(prefs).forEach((key) => {
+        const normalizedArtwork = normalizePlaylistArtworkPreference(
+            prefs[key]?.updateArtwork !== false,
+            prefs[key]?.reuseSavedArtwork === true);
+        prefs[key] = {
+            ...prefs[key],
+            updateArtwork: normalizedArtwork.updateArtwork,
+            reuseSavedArtwork: normalizedArtwork.reuseSavedArtwork
+        };
+    });
     storePreferences('playlistWatchlist', prefs);
     savePlaylistPreferencesToServer(prefs);
 }
@@ -12170,14 +12229,17 @@ async function savePlaylistPreferencesToServer(prefs) {
             if (parts.length < 2) {
                 return null;
             }
+            const normalizedArtwork = normalizePlaylistArtworkPreference(
+                value?.updateArtwork !== false,
+                value?.reuseSavedArtwork === true);
             return {
                 source: parts[0],
                 sourceId: parts.slice(1).join(':'),
                 folderId: value?.folderId ? Number(value.folderId) : null,
                 service: value?.service || null,
                 preferredEngine: value?.preferredEngine || null,
-                updateArtwork: value?.updateArtwork !== false,
-                reuseSavedArtwork: value?.reuseSavedArtwork === true
+                updateArtwork: normalizedArtwork.updateArtwork,
+                reuseSavedArtwork: normalizedArtwork.reuseSavedArtwork
             };
         })
         .filter(Boolean);

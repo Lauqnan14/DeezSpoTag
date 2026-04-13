@@ -221,6 +221,9 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
         var normalizedSource = NormalizePlaylistSource(request.Source);
         var existing = await _repository.GetPlaylistWatchPreferenceAsync(normalizedSource, request.SourceId, cancellationToken);
+        var normalizedArtwork = NormalizeArtworkPreference(
+            request.UpdateArtwork ?? existing?.UpdateArtwork ?? true,
+            request.ReuseSavedArtwork ?? existing?.ReuseSavedArtwork ?? false);
         return await _repository.UpsertPlaylistWatchPreferenceAsync(
             new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
                 normalizedSource,
@@ -230,8 +233,8 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 string.IsNullOrWhiteSpace(request.PreferredEngine) ? null : request.PreferredEngine.Trim().ToLowerInvariant(),
                 string.IsNullOrWhiteSpace(request.DownloadVariantMode) ? existing?.DownloadVariantMode : request.DownloadVariantMode.Trim().ToLowerInvariant(),
                 string.IsNullOrWhiteSpace(request.SyncMode) ? existing?.SyncMode : request.SyncMode.Trim().ToLowerInvariant(),
-                request.UpdateArtwork ?? existing?.UpdateArtwork ?? true,
-                request.ReuseSavedArtwork ?? existing?.ReuseSavedArtwork ?? false,
+                normalizedArtwork.UpdateArtwork,
+                normalizedArtwork.ReuseSavedArtwork,
                 request.RoutingRules ?? existing?.RoutingRules,
                 request.BlockRules ?? existing?.IgnoreRules),
             cancellationToken);
@@ -662,6 +665,9 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
     {
         var normalizedSource = NormalizePlaylistSource(source);
         var existing = await _repository.GetPlaylistWatchPreferenceAsync(normalizedSource, sourceId, cancellationToken);
+        var normalizedArtwork = NormalizeArtworkPreference(
+            existing?.UpdateArtwork ?? true,
+            existing?.ReuseSavedArtwork ?? false);
         await _repository.UpsertPlaylistWatchPreferenceAsync(
             new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
                 normalizedSource,
@@ -671,11 +677,24 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 existing?.PreferredEngine,
                 existing?.DownloadVariantMode,
                 existing?.SyncMode,
-                existing?.UpdateArtwork ?? true,
-                existing?.ReuseSavedArtwork ?? false,
+                normalizedArtwork.UpdateArtwork,
+                normalizedArtwork.ReuseSavedArtwork,
                 routingRules ?? existing?.RoutingRules,
                 ignoreRules ?? existing?.IgnoreRules),
             cancellationToken);
+    }
+
+    private static (bool UpdateArtwork, bool ReuseSavedArtwork) NormalizeArtworkPreference(
+        bool updateArtwork,
+        bool reuseSavedArtwork)
+    {
+        if (reuseSavedArtwork)
+        {
+            return (false, true);
+        }
+
+        // Keep exactly one option selected when reuse is not selected.
+        return (true, false);
     }
 
     private static string NormalizePlaylistSource(string? source)
