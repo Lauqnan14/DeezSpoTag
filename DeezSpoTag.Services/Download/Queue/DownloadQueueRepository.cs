@@ -1,8 +1,10 @@
 using System.Linq;
 using System.Globalization;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Download.Queue;
@@ -433,13 +435,16 @@ WHERE id = @id;";
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        var lyricsStatus = ResolveLyricsStatusFromOutputs(finalDestinationsJson: null, payloadJson);
         const string sql = @"
 UPDATE download_task
 SET payload = @payload,
+    lyrics_status = COALESCE(@lyricsStatus, lyrics_status),
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("payload", payloadJson);
+        command.Parameters.AddWithValue("lyricsStatus", (object?)lyricsStatus ?? DBNull.Value);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -452,16 +457,22 @@ WHERE queue_uuid = @queueUuid;";
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        var effectivePayloadJson = string.IsNullOrWhiteSpace(payloadJson)
+            ? await GetPayloadJsonAsync(connection, queueUuid, cancellationToken)
+            : payloadJson;
+        var lyricsStatus = ResolveLyricsStatusFromOutputs(finalDestinationsJson, effectivePayloadJson);
         const string sql = @"
 UPDATE download_task
 SET final_destinations_json = @finalDestinationsJson,
     payload = COALESCE(@payload, payload),
+    lyrics_status = COALESCE(@lyricsStatus, lyrics_status),
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         command.Parameters.AddWithValue("finalDestinationsJson", (object?)finalDestinationsJson ?? DBNull.Value);
         command.Parameters.AddWithValue("payload", (object?)payloadJson ?? DBNull.Value);
+        command.Parameters.AddWithValue("lyricsStatus", (object?)lyricsStatus ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -1032,6 +1043,213 @@ WHERE lower(trim(COALESCE(apple_artist_id, ''))) IN ('0', '-', 'unknown', 'n/a',
         string type,
         CancellationToken cancellationToken)
         => await SqliteSchemaUtils.EnsureColumnAsync(connection, table, column, type, cancellationToken);
+
+    private static async Task<string?> GetPayloadJsonAsync(
+        SqliteConnection connection,
+        string queueUuid,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT payload
+FROM download_task
+WHERE queue_uuid = @queueUuid
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull ? null : Convert.ToString(result, CultureInfo.InvariantCulture);
+    }
+
+    private static string? ResolveLyricsStatusFromOutputs(
+        string? finalDestinationsJson,
+        string? payloadJson)
+    {
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        AddFinalDestinationPaths(finalDestinationsJson, paths);
+        AddPayloadPaths(payloadJson, paths);
+        if (paths.Count == 0)
+        {
+            return null;
+        }
+
+        var hasTimeSynced = false;
+        var hasSynced = false;
+        var hasUnsynced = false;
+
+        foreach (var path in paths)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                continue;
+            }
+
+            try
+            {
+                var ioPath = DownloadPathResolver.ResolveIoPath(path);
+                if (!File.Exists(ioPath))
+                {
+                    continue;
+                }
+
+                var extension = Path.GetExtension(ioPath);
+                if (string.Equals(extension, ".ttml", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasTimeSynced = true;
+                    continue;
+                }
+
+                if (string.Equals(extension, ".lrc", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasSynced = true;
+                    continue;
+                }
+
+                if (string.Equals(extension, ".txt", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasUnsynced = true;
+                    continue;
+                }
+
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Best-effort lyrics status persistence; ignore unreadable paths.
+            }
+        }
+
+        var statuses = new List<string>(capacity: 3);
+        if (hasTimeSynced)
+        {
+            statuses.Add("time-synced");
+        }
+
+        if (hasSynced)
+        {
+            statuses.Add("synced");
+        }
+
+        if (hasUnsynced)
+        {
+            statuses.Add("unsynced");
+        }
+
+        if (statuses.Count > 0)
+        {
+            return string.Join(",", statuses);
+        }
+
+        return null;
+    }
+
+    private static void AddFinalDestinationPaths(string? finalDestinationsJson, ISet<string> target)
+    {
+        if (string.IsNullOrWhiteSpace(finalDestinationsJson))
+        {
+            return;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(finalDestinationsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return;
+            }
+
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                AddPath(property.Name, target);
+                if (property.Value.ValueKind == JsonValueKind.String)
+                {
+                    AddPath(property.Value.GetString(), target);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Ignore malformed JSON payloads and continue with best effort.
+        }
+    }
+
+    private static void AddPayloadPaths(string? payloadJson, ISet<string> target)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return;
+            }
+
+            AddPayloadPathProperty(document.RootElement, "FilePath", target);
+            AddPayloadPathProperty(document.RootElement, "filePath", target);
+
+            AddPayloadFilePathsProperty(document.RootElement, "Files", target);
+            AddPayloadFilePathsProperty(document.RootElement, "files", target);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Ignore malformed JSON payloads and continue with best effort.
+        }
+    }
+
+    private static void AddPayloadPathProperty(JsonElement root, string propertyName, ISet<string> target)
+    {
+        if (!root.TryGetProperty(propertyName, out var value) || value.ValueKind != JsonValueKind.String)
+        {
+            return;
+        }
+
+        AddPath(value.GetString(), target);
+    }
+
+    private static void AddPayloadFilePathsProperty(JsonElement root, string propertyName, ISet<string> target)
+    {
+        if (!root.TryGetProperty(propertyName, out var files) || files.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var file in files.EnumerateArray())
+        {
+            if (file.ValueKind == JsonValueKind.String)
+            {
+                AddPath(file.GetString(), target);
+                continue;
+            }
+
+            if (file.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            AddPayloadPathProperty(file, "path", target);
+            AddPayloadPathProperty(file, "Path", target);
+            AddPayloadPathProperty(file, "filename", target);
+            AddPayloadPathProperty(file, "Filename", target);
+        }
+    }
+
+    private static void AddPath(string? raw, ISet<string> target)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return;
+        }
+
+        var normalized = DownloadPathResolver.NormalizeDisplayPath(raw);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return;
+        }
+
+        target.Add(normalized);
+    }
 
     private static void BindCommonParameters(SqliteCommand command, DownloadQueueItem item)
     {
