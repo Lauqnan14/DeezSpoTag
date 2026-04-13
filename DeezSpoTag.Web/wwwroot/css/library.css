@@ -950,6 +950,12 @@
     font-weight: 600;
 }
 
+.playlist-settings-help {
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--text-muted);
+}
+
 /* Routing rules builder */
 .routing-rules-list {
     display: flex;
