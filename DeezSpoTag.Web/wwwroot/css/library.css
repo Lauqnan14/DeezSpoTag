@@ -1016,6 +1016,134 @@
     align-self: flex-start;
 }
 
+.watchlist-playlist-settings {
+    gap: 14px;
+}
+
+.watchlist-playlist-settings .playlist-settings-intro {
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--text-muted);
+    margin-top: -2px;
+}
+
+.watchlist-playlist-settings .playlist-settings-section {
+    gap: 10px;
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
+    background: color-mix(in srgb, var(--bg-secondary) 94%, black 6%);
+}
+
+.watchlist-playlist-settings .playlist-settings-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.watchlist-playlist-settings .playlist-settings-rule-count {
+    font-size: 11px;
+    color: var(--text-muted);
+    border: 1px solid color-mix(in srgb, var(--primary-color) 24%, transparent);
+    border-radius: 999px;
+    padding: 2px 9px;
+}
+
+.watchlist-playlist-settings .playlist-rule-section {
+    gap: 8px;
+}
+
+.watchlist-playlist-settings .routing-rule-columns {
+    display: grid;
+    grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) minmax(170px, 1.6fr) minmax(140px, 1fr) auto;
+    gap: 8px;
+    padding: 0 4px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-muted);
+}
+
+.watchlist-playlist-settings .blocked-rule-columns {
+    grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) minmax(170px, 1.6fr) auto;
+}
+
+.watchlist-playlist-settings .routing-rules-empty {
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px dashed color-mix(in srgb, var(--primary-color) 26%, transparent);
+    font-size: 12px;
+    color: var(--text-muted);
+    background: color-mix(in srgb, var(--bg-primary) 96%, transparent);
+}
+
+.watchlist-playlist-settings .routing-rules-list {
+    gap: 10px;
+}
+
+.watchlist-playlist-settings .routing-rule-row {
+    grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) minmax(170px, 1.6fr) minmax(140px, 1fr) auto;
+    gap: 8px;
+    padding: 9px;
+    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
+    background: color-mix(in srgb, var(--bg-primary) 92%, black 8%);
+}
+
+.watchlist-playlist-settings .block-rule-row {
+    grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) minmax(170px, 1.6fr) auto;
+}
+
+.watchlist-playlist-settings .routing-rule-row select,
+.watchlist-playlist-settings .routing-rule-row input {
+    min-height: 34px;
+}
+
+.watchlist-playlist-settings .routing-rule-remove {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+}
+
+@media (max-width: 940px) {
+    .watchlist-playlist-settings .routing-rule-columns {
+        display: none;
+    }
+
+    .watchlist-playlist-settings .routing-rule-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .watchlist-playlist-settings .routing-rule-row .rr-value-wrap {
+        grid-column: 1 / 3;
+    }
+
+    .watchlist-playlist-settings .routing-rule-row .routing-rule-remove {
+        justify-self: end;
+    }
+
+    .watchlist-playlist-settings .block-rule-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .watchlist-playlist-settings .block-rule-row .rr-value-wrap {
+        grid-column: 1 / 3;
+    }
+}
+
+@media (max-width: 640px) {
+    .watchlist-playlist-settings .routing-rule-row,
+    .watchlist-playlist-settings .block-rule-row {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .watchlist-playlist-settings .routing-rule-row .rr-value-wrap,
+    .watchlist-playlist-settings .block-rule-row .rr-value-wrap {
+        grid-column: auto;
+    }
+}
+
 /* Blocked tracks list */
 .blocked-tracks-list {
     display: flex;

@@ -11308,7 +11308,12 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     ]);
 
     const panel = document.createElement('div');
-    panel.className = 'playlist-settings-panel';
+    panel.className = 'playlist-settings-panel watchlist-playlist-settings';
+
+    const panelIntro = document.createElement('div');
+    panelIntro.className = 'playlist-settings-intro';
+    panelIntro.textContent = 'Tune sync behavior, route matching tracks to folders, and block tracks you do not want synced.';
+    panel.appendChild(panelIntro);
 
     const trackCandidates = Array.isArray(trackCandidatesResponse) ? trackCandidatesResponse : [];
     const trackCandidateMap = new Map();
@@ -11533,10 +11538,39 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
 
     // Section: Routing rules
     const rulesSection = document.createElement('div');
-    rulesSection.className = 'playlist-settings-section';
-    rulesSection.innerHTML = `<div class="playlist-settings-section-title">Track routing rules</div>`;
+    rulesSection.className = 'playlist-settings-section playlist-rule-section';
+    const rulesHeader = document.createElement('div');
+    rulesHeader.className = 'playlist-settings-title-row';
+    const rulesTitle = document.createElement('div');
+    rulesTitle.className = 'playlist-settings-section-title';
+    rulesTitle.textContent = 'Track routing rules';
+    const rulesCount = document.createElement('span');
+    rulesCount.className = 'playlist-settings-rule-count';
+    rulesHeader.appendChild(rulesTitle);
+    rulesHeader.appendChild(rulesCount);
+    const rulesHint = document.createElement('div');
+    rulesHint.className = 'playlist-settings-help';
+    rulesHint.textContent = 'Send matching tracks to a specific destination folder.';
+    const rulesColumns = document.createElement('div');
+    rulesColumns.className = 'routing-rule-columns';
+    rulesColumns.innerHTML = `
+        <span>Field</span>
+        <span>Match</span>
+        <span>Value</span>
+        <span>Destination</span>
+        <span></span>
+    `;
     const rulesList = document.createElement('div');
     rulesList.className = 'routing-rules-list';
+    const rulesEmpty = document.createElement('div');
+    rulesEmpty.className = 'routing-rules-empty';
+    rulesEmpty.textContent = 'No routing rules yet.';
+
+    const refreshRoutingRuleState = () => {
+        const count = rulesList.querySelectorAll('.routing-rule-row').length;
+        rulesCount.textContent = count === 1 ? '1 rule' : `${count} rules`;
+        rulesEmpty.hidden = count > 0;
+    };
     const syncExplicitOptionAvailability = (explicitSelect) => {
         const options = Array.from(explicitSelect.options);
         if (explicitModesAvailable.size <= 0) {
@@ -11678,20 +11712,20 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         const row = document.createElement('div');
         row.className = 'routing-rule-row';
         row.innerHTML = `
-            <select class="rr-field">
+            <select class="rr-field" aria-label="Rule field">
                 ${conditionFieldOpts}
             </select>
-            <select class="rr-operator">
+            <select class="rr-operator" aria-label="Rule operator">
                 ${operatorOpts}
             </select>
             <div class="rr-value-wrap">
-                <select class="rr-value rr-value-choice"></select>
-                <select class="rr-value rr-value-explicit">
+                <select class="rr-value rr-value-choice" aria-label="Rule value"></select>
+                <select class="rr-value rr-value-explicit" aria-label="Explicit value">
                     <option value="is_true" ${normalizedOperator === 'is_true' ? 'selected' : ''}>Explicit tracks only</option>
                     <option value="is_false" ${normalizedOperator === 'is_false' ? 'selected' : ''}>Clean/non-explicit tracks only</option>
                 </select>
             </div>
-            <select class="rr-folder">
+            <select class="rr-folder" aria-label="Destination folder">
                 <option value="">No folder</option>
                 ${folderRuleOpts}
             </select>
@@ -11735,7 +11769,10 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
             populateValueChoice
         });
 
-        row.querySelector('.routing-rule-remove').addEventListener('click', () => row.remove());
+        row.querySelector('.routing-rule-remove').addEventListener('click', () => {
+            row.remove();
+            refreshRoutingRuleState();
+        });
         return row;
     }
 
@@ -11744,17 +11781,44 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     const addRuleBtn = document.createElement('button');
     addRuleBtn.className = 'btn btn-secondary action-btn btn-sm routing-rules-add-btn';
     addRuleBtn.type = 'button';
-    addRuleBtn.textContent = '+ Add rule';
-    addRuleBtn.addEventListener('click', () => rulesList.appendChild(buildRuleRow(null)));
+    addRuleBtn.textContent = 'Add routing rule';
+    addRuleBtn.addEventListener('click', () => {
+        rulesList.appendChild(buildRuleRow(null));
+        refreshRoutingRuleState();
+    });
 
+    rulesSection.appendChild(rulesHeader);
+    rulesSection.appendChild(rulesHint);
+    rulesSection.appendChild(rulesColumns);
     rulesSection.appendChild(rulesList);
+    rulesSection.appendChild(rulesEmpty);
     rulesSection.appendChild(addRuleBtn);
+    refreshRoutingRuleState();
     panel.appendChild(rulesSection);
 
     // Section: Blocked track rules
     const blockedSection = document.createElement('div');
-    blockedSection.className = 'playlist-settings-section';
-    blockedSection.innerHTML = `<div class="playlist-settings-section-title">Blocked track rules</div>`;
+    blockedSection.className = 'playlist-settings-section playlist-rule-section';
+    const blockedHeader = document.createElement('div');
+    blockedHeader.className = 'playlist-settings-title-row';
+    const blockedTitle = document.createElement('div');
+    blockedTitle.className = 'playlist-settings-section-title';
+    blockedTitle.textContent = 'Blocked track rules';
+    const blockedCount = document.createElement('span');
+    blockedCount.className = 'playlist-settings-rule-count';
+    blockedHeader.appendChild(blockedTitle);
+    blockedHeader.appendChild(blockedCount);
+    const blockedHint = document.createElement('div');
+    blockedHint.className = 'playlist-settings-help';
+    blockedHint.textContent = 'Skip matching tracks before sync or download.';
+    const blockedColumns = document.createElement('div');
+    blockedColumns.className = 'routing-rule-columns blocked-rule-columns';
+    blockedColumns.innerHTML = `
+        <span>Field</span>
+        <span>Match</span>
+        <span>Value</span>
+        <span></span>
+    `;
 
     function buildBlockRuleRow(rule) {
         const supportedFields = ['artist', 'title', 'album', 'genre', 'year', 'explicit'];
@@ -11804,15 +11868,15 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         const row = document.createElement('div');
         row.className = 'routing-rule-row block-rule-row';
         row.innerHTML = `
-            <select class="br-field">
+            <select class="br-field" aria-label="Block rule field">
                 ${conditionFieldOpts}
             </select>
-            <select class="br-operator">
+            <select class="br-operator" aria-label="Block rule operator">
                 ${operatorOpts}
             </select>
             <div class="rr-value-wrap">
-                <select class="rr-value br-value-choice"></select>
-                <select class="rr-value br-value-explicit">
+                <select class="rr-value br-value-choice" aria-label="Block rule value"></select>
+                <select class="rr-value br-value-explicit" aria-label="Block explicit value">
                     <option value="is_true" ${normalizedOperator === 'is_true' ? 'selected' : ''}>Explicit tracks only</option>
                     <option value="is_false" ${normalizedOperator === 'is_false' ? 'selected' : ''}>Clean/non-explicit tracks only</option>
                 </select>
@@ -11858,22 +11922,43 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
             defaultChoiceValue: normalizedValue,
             populateValueChoice
         });
-        row.querySelector('.routing-rule-remove').addEventListener('click', () => row.remove());
+        row.querySelector('.routing-rule-remove').addEventListener('click', () => {
+            row.remove();
+            refreshBlockRuleState();
+        });
         return row;
     }
 
     const blockRulesList = document.createElement('div');
     blockRulesList.className = 'routing-rules-list';
+    const blockRulesEmpty = document.createElement('div');
+    blockRulesEmpty.className = 'routing-rules-empty';
+    blockRulesEmpty.textContent = 'No blocked-track rules yet.';
+
+    const refreshBlockRuleState = () => {
+        const count = blockRulesList.querySelectorAll('.block-rule-row').length;
+        blockedCount.textContent = count === 1 ? '1 rule' : `${count} rules`;
+        blockRulesEmpty.hidden = count > 0;
+    };
+
     (Array.isArray(existingBlockRules) ? existingBlockRules : []).forEach(rule => blockRulesList.appendChild(buildBlockRuleRow(rule)));
 
     const addBlockRuleBtn = document.createElement('button');
     addBlockRuleBtn.className = 'btn btn-secondary action-btn btn-sm routing-rules-add-btn';
     addBlockRuleBtn.type = 'button';
-    addBlockRuleBtn.textContent = '+ Add block rule';
-    addBlockRuleBtn.addEventListener('click', () => blockRulesList.appendChild(buildBlockRuleRow(null)));
+    addBlockRuleBtn.textContent = 'Add block rule';
+    addBlockRuleBtn.addEventListener('click', () => {
+        blockRulesList.appendChild(buildBlockRuleRow(null));
+        refreshBlockRuleState();
+    });
 
+    blockedSection.appendChild(blockedHeader);
+    blockedSection.appendChild(blockedHint);
+    blockedSection.appendChild(blockedColumns);
     blockedSection.appendChild(blockRulesList);
+    blockedSection.appendChild(blockRulesEmpty);
     blockedSection.appendChild(addBlockRuleBtn);
+    refreshBlockRuleState();
     panel.appendChild(blockedSection);
 
     // Show modal
