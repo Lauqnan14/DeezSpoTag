@@ -3479,6 +3479,44 @@ function showTracklistNotice(message) {
     notice.classList.remove('is-hidden');
 }
 
+function normalizeSpotifyMatchNoticeState(state) {
+    if (!state || typeof state !== 'object') {
+        return state;
+    }
+
+    const normalized = {
+        pending: typeof state.pending === 'number' ? Math.max(0, state.pending) : state.pending,
+        matched: typeof state.matched === 'number' ? Math.max(0, state.matched) : state.matched,
+        failed: typeof state.failed === 'number' ? Math.max(0, state.failed) : state.failed,
+        rechecking: typeof state.rechecking === 'number' ? Math.max(0, state.rechecking) : state.rechecking
+    };
+
+    const total = Number(spotifyLazyState?.total || currentTracklistMeta?.nb_tracks || 0);
+    if (!Number.isFinite(total) || total <= 0) {
+        return normalized;
+    }
+
+    if (typeof normalized.matched !== 'number' || typeof normalized.failed !== 'number') {
+        return normalized;
+    }
+
+    const cappedFailed = Math.min(normalized.failed, total);
+    const cappedMatched = Math.min(normalized.matched, Math.max(0, total - cappedFailed));
+    const remainingFromTotals = Math.max(0, total - cappedMatched - cappedFailed);
+    const currentPending = typeof normalized.pending === 'number' ? normalized.pending : null;
+
+    normalized.failed = cappedFailed;
+    normalized.matched = cappedMatched;
+    normalized.pending = currentPending === null
+        ? remainingFromTotals
+        : Math.min(currentPending, remainingFromTotals);
+    normalized.rechecking = typeof normalized.rechecking === 'number'
+        ? Math.min(normalized.rechecking, normalized.pending)
+        : normalized.rechecking;
+
+    return normalized;
+}
+
 function updateSpotifyNotice() {
     const parts = [];
     if (spotifyLazyState && (spotifyLazyState.isLoading || spotifyLazyState.hasMore)) {
@@ -3500,10 +3538,11 @@ function updateSpotifyNotice() {
     }
 
     if (spotifyMatchState) {
-        const remaining = typeof spotifyMatchState.pending === 'number' ? spotifyMatchState.pending : null;
-        const matched = typeof spotifyMatchState.matched === 'number' ? spotifyMatchState.matched : null;
-        const failed = typeof spotifyMatchState.failed === 'number' ? spotifyMatchState.failed : null;
-        const rechecking = typeof spotifyMatchState.rechecking === 'number' ? spotifyMatchState.rechecking : null;
+        const normalizedMatchState = normalizeSpotifyMatchNoticeState(spotifyMatchState);
+        const remaining = typeof normalizedMatchState?.pending === 'number' ? normalizedMatchState.pending : null;
+        const matched = typeof normalizedMatchState?.matched === 'number' ? normalizedMatchState.matched : null;
+        const failed = typeof normalizedMatchState?.failed === 'number' ? normalizedMatchState.failed : null;
+        const rechecking = typeof normalizedMatchState?.rechecking === 'number' ? normalizedMatchState.rechecking : null;
         if (remaining !== null) {
             if (matched !== null && failed !== null) {
                 const recheckPart = rechecking !== null && rechecking > 0
@@ -3804,30 +3843,36 @@ async function startSpotifyMatchPolling(token, pendingCount) {
             const matched = typeof payload.matched === 'number' ? payload.matched : null;
             const failed = typeof payload.failed === 'number' ? payload.failed : null;
             const rechecking = typeof payload.rechecking === 'number' ? payload.rechecking : null;
+            const normalizedMatchState = normalizeSpotifyMatchNoticeState({
+                pending: remaining,
+                matched,
+                failed,
+                rechecking
+            });
+            remaining = typeof normalizedMatchState?.pending === 'number' ? normalizedMatchState.pending : remaining;
+            const normalizedMatched = typeof normalizedMatchState?.matched === 'number' ? normalizedMatchState.matched : matched;
+            const normalizedFailed = typeof normalizedMatchState?.failed === 'number' ? normalizedMatchState.failed : failed;
+            const normalizedRechecking = typeof normalizedMatchState?.rechecking === 'number' ? normalizedMatchState.rechecking : rechecking;
 
             if (remaining <= 0) {
                 clearInterval(spotifyMatchTimer);
                 spotifyMatchTimer = null;
                 spotifyMatchState = null;
-                if (matched !== null && failed !== null) {
-                    spotifyMatchCompletion = `Matching complete: ${matched} matched, ${failed} failed.`;
-                    if (failed > 0
+                if (normalizedMatched !== null && normalizedFailed !== null) {
+                    spotifyMatchCompletion = `Matching complete: ${normalizedMatched} matched, ${normalizedFailed} failed.`;
+                    if (normalizedFailed > 0
                         && isSpotifyPlaylistDeezerMatchContext()
                         && !spotifyMatchFailureToastShown
                         && window.DeezSpoTag?.ui?.showToast) {
                         spotifyMatchFailureToastShown = true;
-                        DeezSpoTag.ui.showToast(`Deezer matching failed for ${failed} playlist track(s).`, { type: 'warning' });
+                        DeezSpoTag.ui.showToast(`Deezer matching failed for ${normalizedFailed} playlist track(s).`, { type: 'warning' });
                     }
                 } else {
                     spotifyMatchCompletion = 'All Deezer matches are ready.';
                 }
                 updateSpotifyNotice();
-                setTimeout(() => {
-                    spotifyMatchCompletion = null;
-                    updateSpotifyNotice();
-                }, 3000);
             } else {
-                spotifyMatchState = { pending: remaining, matched, failed, rechecking };
+                spotifyMatchState = { pending: remaining, matched: normalizedMatched, failed: normalizedFailed, rechecking: normalizedRechecking };
                 updateSpotifyNotice();
             }
         } catch (error) {
@@ -4515,22 +4560,16 @@ async function resolveExternalTracklistMatches(tracks, source, options = {}) {
         reconcileExternalMatchesFromCache();
     }
 
-    if (showProgress) {
-        if (externalMatchState) {
-            externalMatchState.pending = Math.max(0, externalMatchState.pending || 0);
-            const canFinalizeNow = finalize
-                || (source === 'boomplay' && boomplayLazyState && boomplayLazyState.hasMore === false);
-            externalMatchState.done = canFinalizeNow && externalMatchState.pending === 0;
-        }
-        updateSpotifyNotice();
-        if (finalize && externalMatchState?.done) {
-            setTimeout(() => {
-                externalMatchState = null;
-                updateSpotifyNotice();
-            }, 3000);
+        if (showProgress) {
+            if (externalMatchState) {
+                externalMatchState.pending = Math.max(0, externalMatchState.pending || 0);
+                const canFinalizeNow = finalize
+                    || (source === 'boomplay' && boomplayLazyState && boomplayLazyState.hasMore === false);
+                externalMatchState.done = canFinalizeNow && externalMatchState.pending === 0;
+            }
+            updateSpotifyNotice();
         }
     }
-}
 
 async function updateMonitorButtonState() {
     if (monitorMutationInFlight) {
