@@ -354,7 +354,6 @@ CREATE TABLE IF NOT EXISTS playlist_watch_preferences (
     preferred_engine TEXT,
     download_variant_mode TEXT,
     sync_mode TEXT,
-    autotag_profile TEXT,
     update_artwork INTEGER NOT NULL DEFAULT 1,
     reuse_saved_artwork INTEGER NOT NULL DEFAULT 0,
     routing_rules_json TEXT,
