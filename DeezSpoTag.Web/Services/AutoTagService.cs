@@ -20,6 +20,13 @@ namespace DeezSpoTag.Web.Services;
 
 internal static class AutoTagLiterals
 {
+    internal const string QueuedStatus = "queued";
+    internal const string RunningStatus = "running";
+    internal const string TaggingStatus = "tagging";
+    internal const string OkStatus = "ok";
+    internal const string TaggedStatus = "tagged";
+    internal const string SkippedStatus = "skipped";
+    internal const string ErrorStatus = "error";
     internal const string ManualTrigger = "manual";
     internal const string AutomationTrigger = "automation";
     internal const string ScheduleTrigger = "schedule";
@@ -56,7 +63,7 @@ internal static class AutoTagLiterals
 public abstract class AutoTagRunState
 {
     public string Id { get; init; } = "";
-    public string Status { get; set; } = "queued";
+    public string Status { get; set; } = AutoTagLiterals.QueuedStatus;
     public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? FinishedAt { get; set; }
     public int? ExitCode { get; set; }
@@ -177,6 +184,7 @@ public sealed class AutoTagPlatformDiffSnapshot
 public class AutoTagService
 {
     private readonly record struct EnrichmentBuildContext(string RunIntent, string JobId);
+    private readonly record struct EnhancementBuildContext(string RunIntent, string JobId);
     private readonly record struct AutoMoveExecutionResult(bool Completed, AutoTagMoveSummary Summary);
     private sealed record ResumeCheckpointSeed(string SourceJobId, AutoTagResumeCheckpoint Checkpoint);
 
@@ -415,7 +423,7 @@ public class AutoTagService
         foreach (var activeJobId in _activeJobIds.Keys)
         {
             if (_jobs.TryGetValue(activeJobId, out var activeJob)
-                && string.Equals(activeJob.Status, "running", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(activeJob.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase)
                 && IsEnhancementRunIntent(activeJob.RunIntent))
             {
                 jobId = activeJobId;
@@ -505,7 +513,7 @@ public class AutoTagService
         var job = new AutoTagJob
         {
             Id = Guid.NewGuid().ToString("N"),
-            Status = "running",
+            Status = AutoTagLiterals.RunningStatus,
             StartedAt = DateTimeOffset.UtcNow,
             RootPath = normalizedPath,
             Trigger = normalizedTrigger,
@@ -656,52 +664,76 @@ public class AutoTagService
                 return null;
             }
 
-            AutoTagJob? latestMatchingJob = null;
             var normalizedProfileId = string.IsNullOrWhiteSpace(profileId) ? null : profileId.Trim();
-
-            foreach (var path in Directory.EnumerateFiles(_jobsDir, "*.json"))
-            {
-                var jobId = Path.GetFileNameWithoutExtension(path);
-                if (string.IsNullOrWhiteSpace(jobId))
-                {
-                    continue;
-                }
-
-                var job = _jobs.TryGetValue(jobId, out var cachedJob) ? cachedJob : LoadJob(jobId);
-                if (job == null)
-                {
-                    continue;
-                }
-
-                if (!IsResumeScopeMatch(job, normalizedPath, normalizedRunIntent, normalizedProfileId))
-                {
-                    continue;
-                }
-
-                if (latestMatchingJob != null && job.StartedAt < latestMatchingJob.StartedAt)
-                {
-                    continue;
-                }
-
-                latestMatchingJob = job;
-            }
-
-            if (latestMatchingJob == null
-                || !IsResumeCandidate(latestMatchingJob, normalizedPath, normalizedRunIntent, normalizedProfileId))
+            var latestMatchingJob = FindLatestResumeScopeJob(
+                normalizedPath,
+                normalizedRunIntent,
+                normalizedProfileId);
+            if (!IsEligibleResumeCandidate(latestMatchingJob, normalizedPath, normalizedRunIntent, normalizedProfileId))
             {
                 return null;
             }
 
-            var checkpoint = CloneResumeCheckpoint(latestMatchingJob.ResumeCheckpoint);
-            return checkpoint == null
-                ? null
-                : new ResumeCheckpointSeed(latestMatchingJob.Id, checkpoint);
+            return BuildResumeCheckpointSeed(latestMatchingJob!);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Failed resolving AutoTag resume checkpoint seed.");
             return null;
         }
+    }
+
+    private AutoTagJob? FindLatestResumeScopeJob(
+        string normalizedPath,
+        string normalizedRunIntent,
+        string? normalizedProfileId)
+    {
+        AutoTagJob? latestMatchingJob = null;
+        foreach (var path in Directory.EnumerateFiles(_jobsDir, "*.json"))
+        {
+            var job = TryLoadResumeScopeJob(path);
+            if (job == null
+                || !IsResumeScopeMatch(job, normalizedPath, normalizedRunIntent, normalizedProfileId))
+            {
+                continue;
+            }
+
+            if (latestMatchingJob == null || job.StartedAt >= latestMatchingJob.StartedAt)
+            {
+                latestMatchingJob = job;
+            }
+        }
+
+        return latestMatchingJob;
+    }
+
+    private AutoTagJob? TryLoadResumeScopeJob(string path)
+    {
+        var jobId = Path.GetFileNameWithoutExtension(path);
+        if (string.IsNullOrWhiteSpace(jobId))
+        {
+            return null;
+        }
+
+        return _jobs.TryGetValue(jobId, out var cachedJob) ? cachedJob : LoadJob(jobId);
+    }
+
+    private bool IsEligibleResumeCandidate(
+        AutoTagJob? latestMatchingJob,
+        string normalizedPath,
+        string normalizedRunIntent,
+        string? normalizedProfileId)
+    {
+        return latestMatchingJob != null
+            && IsResumeCandidate(latestMatchingJob, normalizedPath, normalizedRunIntent, normalizedProfileId);
+    }
+
+    private static ResumeCheckpointSeed? BuildResumeCheckpointSeed(AutoTagJob job)
+    {
+        var checkpoint = CloneResumeCheckpoint(job.ResumeCheckpoint);
+        return checkpoint == null
+            ? null
+            : new ResumeCheckpointSeed(job.Id, checkpoint);
     }
 
     private static bool IsResumeScopeMatch(
@@ -746,7 +778,7 @@ public class AutoTagService
         }
 
         var status = job.Status?.Trim();
-        var staleRunning = string.Equals(status, "running", StringComparison.OrdinalIgnoreCase)
+        var staleRunning = string.Equals(status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase)
             && !_activeJobIds.ContainsKey(job.Id);
         if (!string.Equals(status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase)
@@ -1557,8 +1589,7 @@ public class AutoTagService
                 root,
                 platformCaps,
                 eligiblePlatforms,
-                job.Id,
-                runIntent,
+                new EnhancementBuildContext(runIntent, job.Id),
                 out var enhancementStage,
                 out enhancementSkipReason,
                 out var enhancementStrippedKeys))
@@ -2372,8 +2403,7 @@ public class AutoTagService
         JsonObject baseRoot,
         Dictionary<string, PlatformTagCapabilities> platformCaps,
         IReadOnlyList<string> eligiblePlatforms,
-        string jobId,
-        string runIntent,
+        EnhancementBuildContext context,
         out AutoTagStageConfig stage,
         out string skipReason,
         out List<string> strippedKeys)
@@ -2401,7 +2431,7 @@ public class AutoTagService
         WriteStringList(stageRoot, AutoTagLiterals.PlatformsKey, platforms);
         stageRoot[AutoTagLiterals.MultiPlatformKey] = platforms.Count > 1;
         WriteStringList(stageRoot, "tags", filtered);
-        if (string.Equals(runIntent, AutoTagLiterals.RunIntentEnhancementRecentDownloads, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(context.RunIntent, AutoTagLiterals.RunIntentEnhancementRecentDownloads, StringComparison.OrdinalIgnoreCase))
         {
             var targetFiles = ReadStringList(baseRoot, AutoTagLiterals.TargetFilesKey);
             if (targetFiles.Count == 0)
@@ -2424,7 +2454,7 @@ public class AutoTagService
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = true
         });
-        var configPath = WriteRuntimeConfigFile(jobId, AutoTagLiterals.EnhancementStage, configJson);
+        var configPath = WriteRuntimeConfigFile(context.JobId, AutoTagLiterals.EnhancementStage, configJson);
         stage = new AutoTagStageConfig(
             AutoTagLiterals.EnhancementStage,
             configPath,
@@ -4234,14 +4264,14 @@ public class AutoTagService
         TryCaptureTagDiff(job, status);
         switch (status.Status.Status)
         {
-            case "ok":
-            case "tagged":
+            case AutoTagLiterals.OkStatus:
+            case AutoTagLiterals.TaggedStatus:
                 job.OkCount += 1;
                 break;
-            case "error":
+            case AutoTagLiterals.ErrorStatus:
                 job.ErrorCount += 1;
                 break;
-            case "skipped":
+            case AutoTagLiterals.SkippedStatus:
                 job.SkippedCount += 1;
                 break;
         }
@@ -4253,10 +4283,10 @@ public class AutoTagService
     {
         return status?.Trim().ToLowerInvariant() switch
         {
-            "ok" => true,
-            "tagged" => true,
-            "error" => true,
-            "skipped" => true,
+            AutoTagLiterals.OkStatus => true,
+            AutoTagLiterals.TaggedStatus => true,
+            AutoTagLiterals.ErrorStatus => true,
+            AutoTagLiterals.SkippedStatus => true,
             _ => false
         };
     }
@@ -4377,10 +4407,10 @@ public class AutoTagService
         var statusValue = status.Status.Status?.Trim() ?? string.Empty;
         normalizedStatus = statusValue.ToLowerInvariant();
         var message = status.Status.Message ?? string.Empty;
-        var isAlreadyTagged = normalizedStatus == "skipped"
+        var isAlreadyTagged = normalizedStatus == AutoTagLiterals.SkippedStatus
             && message.Contains("already tagged", StringComparison.OrdinalIgnoreCase);
-        captureBefore = normalizedStatus == "tagging" || isAlreadyTagged;
-        captureAfter = normalizedStatus == "tagged" || normalizedStatus == "ok" || isAlreadyTagged;
+        captureBefore = normalizedStatus == AutoTagLiterals.TaggingStatus || isAlreadyTagged;
+        captureAfter = normalizedStatus is AutoTagLiterals.TaggedStatus or AutoTagLiterals.OkStatus || isAlreadyTagged;
         return captureBefore || captureAfter;
     }
 
@@ -4556,11 +4586,11 @@ public class AutoTagService
         outcome.Seen = true;
         switch (status.Status.Status)
         {
-            case "ok":
-            case "tagged":
+            case AutoTagLiterals.OkStatus:
+            case AutoTagLiterals.TaggedStatus:
                 outcome.Tagged = true;
                 break;
-            case "skipped":
+            case AutoTagLiterals.SkippedStatus:
                 if (!string.IsNullOrWhiteSpace(status.Status.Message)
                     && status.Status.Message.Contains("already tagged", StringComparison.OrdinalIgnoreCase))
                 {
@@ -5540,7 +5570,7 @@ public class AutoTagService
         job.Trigger = NormalizeRunTrigger(job.Trigger);
         job.RunIntent = NormalizeRunIntent(job.RunIntent);
 
-        if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(job.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }

@@ -1199,15 +1199,18 @@ public sealed class AppleDownloadService : IAppleDownloadService
             var line = await reader.ReadLineAsync(timeoutCts.Token);
             return string.IsNullOrWhiteSpace(line) ? null : line.Trim();
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogWarning(
+                ex,
                 "Apple device M3U8 probe timed out for {AppleId} via {Endpoint}.",
                 appleId,
                 hostAndPort);
             return null;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Apple device M3U8 probe failed for {AppleId} via {Endpoint}.", appleId, hostAndPort);
             return null;
         }
     }

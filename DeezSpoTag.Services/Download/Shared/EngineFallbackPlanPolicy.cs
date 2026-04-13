@@ -42,7 +42,16 @@ public static class EngineFallbackPlanPolicy
     {
         var steps = new List<DownloadSourceOrder.AutoSourceStep>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        AppendAutoSourceSteps(payload, steps, seen);
+        AppendFallbackPlanSteps(payload, steps, seen);
+        return steps;
+    }
 
+    private static void AppendAutoSourceSteps(
+        EngineQueueItemBase payload,
+        List<DownloadSourceOrder.AutoSourceStep> steps,
+        HashSet<string> seen)
+    {
         if (payload.AutoSources != null && payload.AutoSources.Count > 0)
         {
             foreach (var entry in payload.AutoSources)
@@ -60,10 +69,16 @@ public static class EngineFallbackPlanPolicy
                 }
             }
         }
+    }
 
+    private static void AppendFallbackPlanSteps(
+        EngineQueueItemBase payload,
+        List<DownloadSourceOrder.AutoSourceStep> steps,
+        HashSet<string> seen)
+    {
         if (payload.FallbackPlan == null || payload.FallbackPlan.Count == 0)
         {
-            return steps;
+            return;
         }
 
         foreach (var step in payload.FallbackPlan)
@@ -79,8 +94,6 @@ public static class EngineFallbackPlanPolicy
                 steps.Add(new DownloadSourceOrder.AutoSourceStep(step.Engine, step.Quality));
             }
         }
-
-        return steps;
     }
 
     private static int ResolveCurrentStepIndex(
