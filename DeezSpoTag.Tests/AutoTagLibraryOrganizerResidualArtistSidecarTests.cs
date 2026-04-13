@@ -79,6 +79,37 @@ public sealed class AutoTagLibraryOrganizerResidualArtistSidecarTests : IDisposa
         Assert.True(File.Exists(Path.Join(destinationArtistDir, "artist.jpg")));
     }
 
+    [Fact]
+    public async Task OrganizePathAsync_MergesNoAudioArtistVariantFolderIntoMatchingArtistFolder()
+    {
+        var libraryRoot = Path.Join(_tempRoot, "library-variant");
+        var canonicalArtistDir = Path.Join(libraryRoot, "Dantez 254", "Ala - Single");
+        var legacyArtistDir = Path.Join(libraryRoot, "Dantez254");
+        Directory.CreateDirectory(canonicalArtistDir);
+        Directory.CreateDirectory(legacyArtistDir);
+
+        var canonicalTrackPath = Path.Join(canonicalArtistDir, "01 - Ala.mp3");
+        var legacyArtworkPath = Path.Join(legacyArtistDir, "folder.jpg");
+        await File.WriteAllTextAsync(canonicalTrackPath, "not-real-audio");
+        await File.WriteAllTextAsync(legacyArtworkPath, "legacy-artwork");
+
+        var options = new AutoTagOrganizerOptions
+        {
+            IncludeSubfolders = false,
+            MoveMisplacedFiles = true,
+            RenameFilesToTemplate = true,
+            RemoveEmptyFolders = true,
+            UsePrimaryArtistFoldersOverride = true,
+            CreateArtistFolderOverride = true,
+            CreateAlbumFolderOverride = true
+        };
+
+        await _organizer.OrganizePathAsync(libraryRoot, options);
+
+        Assert.False(Directory.Exists(legacyArtistDir));
+        Assert.True(File.Exists(Path.Join(libraryRoot, "Dantez 254", "folder.jpg")));
+    }
+
     public void Dispose()
     {
         _configScope.Dispose();
