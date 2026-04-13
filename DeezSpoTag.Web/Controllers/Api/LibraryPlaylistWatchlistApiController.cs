@@ -222,7 +222,6 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var normalizedSource = NormalizePlaylistSource(request.Source);
         var existing = await _repository.GetPlaylistWatchPreferenceAsync(normalizedSource, request.SourceId, cancellationToken);
         var normalizedArtwork = NormalizeArtworkPreference(
-            request.UpdateArtwork ?? existing?.UpdateArtwork ?? true,
             request.ReuseSavedArtwork ?? existing?.ReuseSavedArtwork ?? false);
         return await _repository.UpsertPlaylistWatchPreferenceAsync(
             new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
@@ -666,7 +665,6 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var normalizedSource = NormalizePlaylistSource(source);
         var existing = await _repository.GetPlaylistWatchPreferenceAsync(normalizedSource, sourceId, cancellationToken);
         var normalizedArtwork = NormalizeArtworkPreference(
-            existing?.UpdateArtwork ?? true,
             existing?.ReuseSavedArtwork ?? false);
         await _repository.UpsertPlaylistWatchPreferenceAsync(
             new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
@@ -684,9 +682,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             cancellationToken);
     }
 
-    private static (bool UpdateArtwork, bool ReuseSavedArtwork) NormalizeArtworkPreference(
-        bool updateArtwork,
-        bool reuseSavedArtwork)
+    private static (bool UpdateArtwork, bool ReuseSavedArtwork) NormalizeArtworkPreference(bool reuseSavedArtwork)
     {
         if (reuseSavedArtwork)
         {

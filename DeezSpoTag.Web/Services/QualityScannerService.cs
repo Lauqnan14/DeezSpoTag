@@ -45,6 +45,7 @@ public sealed class QualityScannerService
         DownloadIntentService DownloadIntentService,
         CancellationToken CancellationToken);
     private sealed record UpgradeQueueRequest(string EffectiveIsrc, string RequestedQuality, string UpgradeContentType);
+    private sealed record AtmosQueuePrecheckResult(long AtmosphereDestination, AtmosQueueResult? Result);
 
     public QualityScannerService(
         IServiceProvider serviceProvider,
@@ -779,73 +780,17 @@ public sealed class QualityScannerService
         IReadOnlyList<FolderDto> folderSnapshot,
         CancellationToken cancellationToken)
     {
-        var atmosphereDestination = options.AtmosDestinationFolderId;
-        if (!atmosphereDestination.HasValue)
-        {
-            const string missingDestinationMessage = "Atmos destination folder is not configured for enhancement queueing.";
-            await TryRecordActionAsync(new QualityScannerActionLogDto(
-                RunId: GetState().RunId,
-                TrackId: track.TrackId,
-                ActionType: "atmos_destination_missing",
-                Source: AppleSource,
-                Quality: AtmosQuality,
-                ContentType: DownloadContentTypes.Atmos,
-                DestinationFolderId: null,
-                QueueUuid: null,
-                Message: missingDestinationMessage), cancellationToken);
-            return AtmosQueueResult.Error(missingDestinationMessage);
-        }
-
-        if (track.DestinationFolderId.HasValue)
-        {
-            var distinctRootCheck = DownloadDestinationGuard.ValidateDistinctRoots(
-                track.DestinationFolderId,
-                atmosphereDestination,
-                folderSnapshot);
-            if (!distinctRootCheck.Ok)
-            {
-                var conflictingDestinationMessage = distinctRootCheck.Error
-                    ?? "Atmos destination folder must differ from the source track destination folder.";
-                await TryRecordActionAsync(new QualityScannerActionLogDto(
-                    RunId: GetState().RunId,
-                    TrackId: track.TrackId,
-                    ActionType: "atmos_destination_conflict",
-                    Source: AppleSource,
-                    Quality: AtmosQuality,
-                    ContentType: DownloadContentTypes.Atmos,
-                    DestinationFolderId: atmosphereDestination,
-                    QueueUuid: null,
-                    Message: conflictingDestinationMessage), cancellationToken);
-                return AtmosQueueResult.Error(conflictingDestinationMessage);
-            }
-        }
-        var duplicateAtmos = await _queueRepository.ExistsDuplicateAsync(
-            new DuplicateLookupRequest
-            {
-                Isrc = track.Isrc,
-                ArtistName = track.ArtistName,
-                TrackTitle = track.Title,
-                DurationMs = track.DurationMs,
-                DestinationFolderId = atmosphereDestination,
-                ContentType = DownloadContentTypes.Atmos,
-                RedownloadCooldownMinutes = options.CooldownMinutes
-            },
+        var precheck = await ValidateAtmosQueuePreconditionsAsync(
+            track,
+            options,
+            folderSnapshot,
             cancellationToken);
-
-        if (duplicateAtmos)
+        if (precheck.Result != null)
         {
-            await TryRecordActionAsync(new QualityScannerActionLogDto(
-                RunId: GetState().RunId,
-                TrackId: track.TrackId,
-                ActionType: "atmos_duplicate",
-                Source: AppleSource,
-                Quality: AtmosQuality,
-                ContentType: DownloadContentTypes.Atmos,
-                DestinationFolderId: atmosphereDestination,
-                QueueUuid: null,
-                Message: "Skipped duplicate Atmos queue item."), cancellationToken);
-            return AtmosQueueResult.DuplicateItem();
+            return precheck.Result;
         }
+
+        var atmosphereDestination = precheck.AtmosphereDestination;
 
         var appleMatch = await FindAppleAtmosMatchAsync(track, cancellationToken);
         if (appleMatch == null)
@@ -910,6 +855,83 @@ public sealed class QualityScannerService
             QueueUuid: null,
             Message: errorMessage), cancellationToken);
         return AtmosQueueResult.Error(errorMessage);
+    }
+
+    private async Task<AtmosQueuePrecheckResult> ValidateAtmosQueuePreconditionsAsync(
+        QualityScanTrackDto track,
+        QualityScannerRunOptions options,
+        IReadOnlyList<FolderDto> folderSnapshot,
+        CancellationToken cancellationToken)
+    {
+        var atmosphereDestination = options.AtmosDestinationFolderId;
+        if (!atmosphereDestination.HasValue)
+        {
+            const string missingDestinationMessage = "Atmos destination folder is not configured for enhancement queueing.";
+            await TryRecordActionAsync(new QualityScannerActionLogDto(
+                RunId: GetState().RunId,
+                TrackId: track.TrackId,
+                ActionType: "atmos_destination_missing",
+                Source: AppleSource,
+                Quality: AtmosQuality,
+                ContentType: DownloadContentTypes.Atmos,
+                DestinationFolderId: null,
+                QueueUuid: null,
+                Message: missingDestinationMessage), cancellationToken);
+            return new AtmosQueuePrecheckResult(0, AtmosQueueResult.Error(missingDestinationMessage));
+        }
+
+        if (track.DestinationFolderId.HasValue)
+        {
+            var distinctRootCheck = DownloadDestinationGuard.ValidateDistinctRoots(
+                track.DestinationFolderId,
+                atmosphereDestination,
+                folderSnapshot);
+            if (!distinctRootCheck.Ok)
+            {
+                var conflictingDestinationMessage = distinctRootCheck.Error
+                    ?? "Atmos destination folder must differ from the source track destination folder.";
+                await TryRecordActionAsync(new QualityScannerActionLogDto(
+                    RunId: GetState().RunId,
+                    TrackId: track.TrackId,
+                    ActionType: "atmos_destination_conflict",
+                    Source: AppleSource,
+                    Quality: AtmosQuality,
+                    ContentType: DownloadContentTypes.Atmos,
+                    DestinationFolderId: atmosphereDestination,
+                    QueueUuid: null,
+                    Message: conflictingDestinationMessage), cancellationToken);
+                return new AtmosQueuePrecheckResult(0, AtmosQueueResult.Error(conflictingDestinationMessage));
+            }
+        }
+
+        var duplicateAtmos = await _queueRepository.ExistsDuplicateAsync(
+            new DuplicateLookupRequest
+            {
+                Isrc = track.Isrc,
+                ArtistName = track.ArtistName,
+                TrackTitle = track.Title,
+                DurationMs = track.DurationMs,
+                DestinationFolderId = atmosphereDestination,
+                ContentType = DownloadContentTypes.Atmos,
+                RedownloadCooldownMinutes = options.CooldownMinutes
+            },
+            cancellationToken);
+        if (duplicateAtmos)
+        {
+            await TryRecordActionAsync(new QualityScannerActionLogDto(
+                RunId: GetState().RunId,
+                TrackId: track.TrackId,
+                ActionType: "atmos_duplicate",
+                Source: AppleSource,
+                Quality: AtmosQuality,
+                ContentType: DownloadContentTypes.Atmos,
+                DestinationFolderId: atmosphereDestination,
+                QueueUuid: null,
+                Message: "Skipped duplicate Atmos queue item."), cancellationToken);
+            return new AtmosQueuePrecheckResult(0, AtmosQueueResult.DuplicateItem());
+        }
+
+        return new AtmosQueuePrecheckResult(atmosphereDestination.Value, null);
     }
 
     private async Task<IReadOnlyList<FolderDto>> LoadEnabledFolderSnapshotAsync(CancellationToken cancellationToken)

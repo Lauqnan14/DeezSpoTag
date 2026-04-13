@@ -125,31 +125,12 @@ public static class DownloadSourceOrder
         var engineQualities = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         foreach (var engine in engineOrder)
         {
-            if (!includeDeezer && string.Equals(engine, DeezerSource, StringComparison.OrdinalIgnoreCase))
+            if (!TryResolveEngineQualities(settings, includeDeezer, includeAtmos, engine, out var qualities))
             {
                 continue;
             }
 
-            if (!IsSourceAvailable(engine))
-            {
-                continue;
-            }
-
-            var preferredQuality = ResolvePreferredQuality(settings, engine);
-            var qualities = ResolveEngineQualitySources(engine, preferredQuality, strict: false)
-                .Select(DecodeAutoSource)
-                .Select(step => step.Quality)
-                .Where(quality =>
-                    !string.IsNullOrWhiteSpace(quality)
-                    && (includeAtmos || !string.Equals(quality, "atmos", StringComparison.OrdinalIgnoreCase)))
-                .Select(quality => quality!)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            if (qualities.Count > 0)
-            {
-                engineQualities[engine] = qualities;
-            }
+            engineQualities[engine] = qualities;
         }
 
         if (engineQualities.Count == 0)
@@ -157,6 +138,40 @@ public static class DownloadSourceOrder
             return new List<string>();
         }
 
+        return CollapseAutoSourcesByService(BuildInterleavedSources(engineOrder, engineQualities));
+    }
+
+    private static bool TryResolveEngineQualities(
+        DeezSpoTagSettings settings,
+        bool includeDeezer,
+        bool includeAtmos,
+        string engine,
+        out List<string> qualities)
+    {
+        qualities = new List<string>();
+        if ((!includeDeezer && string.Equals(engine, DeezerSource, StringComparison.OrdinalIgnoreCase))
+            || !IsSourceAvailable(engine))
+        {
+            return false;
+        }
+
+        var preferredQuality = ResolvePreferredQuality(settings, engine);
+        qualities = ResolveEngineQualitySources(engine, preferredQuality, strict: false)
+            .Select(DecodeAutoSource)
+            .Select(step => step.Quality)
+            .Where(quality =>
+                !string.IsNullOrWhiteSpace(quality)
+                && (includeAtmos || !string.Equals(quality, "atmos", StringComparison.OrdinalIgnoreCase)))
+            .Select(quality => quality!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return qualities.Count > 0;
+    }
+
+    private static List<string> BuildInterleavedSources(
+        IReadOnlyList<string> engineOrder,
+        Dictionary<string, List<string>> engineQualities)
+    {
         var maxDepth = engineQualities.Values.Max(qualities => qualities.Count);
         var sources = new List<string>();
         for (var depth = 0; depth < maxDepth; depth++)
@@ -172,7 +187,7 @@ public static class DownloadSourceOrder
             }
         }
 
-        return CollapseAutoSourcesByService(sources);
+        return sources;
     }
 
     public static List<string> ResolveEngineQualitySources(string engine, string? requestedQuality, bool strict)

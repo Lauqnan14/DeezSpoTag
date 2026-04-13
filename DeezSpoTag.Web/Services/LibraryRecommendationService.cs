@@ -495,26 +495,15 @@ public sealed class LibraryRecommendationService
         PruneOldCache(dayUtc);
 
         var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayUtc);
-        if (!_dailyPoolCache.TryGetValue(cacheKey, out var basePool))
+        var basePool = await GetOrBuildDailyPoolAsync(
+            cacheKey,
+            scope,
+            dayUtc,
+            stationImageUrl,
+            cancellationToken);
+        if (basePool == null)
         {
-            basePool = await TryLoadPersistedDailyPoolAsync(scope, dayUtc, stationImageUrl, cancellationToken);
-            if (basePool is null)
-            {
-                basePool = await BuildDailyPoolAsync(scope, dayUtc, stationImageUrl, cancellationToken);
-                if (basePool is null)
-                {
-                    return null;
-                }
-
-                await PersistDailyPoolAsync(scope, dayUtc, basePool, cancellationToken);
-            }
-
-            if (basePool is null)
-            {
-                return null;
-            }
-
-            _dailyPoolCache[cacheKey] = basePool;
+            return null;
         }
 
         var ignoredTrackIds = await _repository.GetPlaylistWatchIgnoredTrackIdsAsync(
@@ -585,6 +574,34 @@ public sealed class LibraryRecommendationService
             },
             cappedTracks,
             basePool.GeneratedAtUtc);
+    }
+
+    private async Task<RecommendationDetailDto?> GetOrBuildDailyPoolAsync(
+        string cacheKey,
+        RecommendationScope scope,
+        DateOnly dayUtc,
+        string? stationImageUrl,
+        CancellationToken cancellationToken)
+    {
+        if (_dailyPoolCache.TryGetValue(cacheKey, out var cachedPool))
+        {
+            return cachedPool;
+        }
+
+        var basePool = await TryLoadPersistedDailyPoolAsync(scope, dayUtc, stationImageUrl, cancellationToken);
+        if (basePool == null)
+        {
+            basePool = await BuildDailyPoolAsync(scope, dayUtc, stationImageUrl, cancellationToken);
+            if (basePool == null)
+            {
+                return null;
+            }
+
+            await PersistDailyPoolAsync(scope, dayUtc, basePool, cancellationToken);
+        }
+
+        _dailyPoolCache[cacheKey] = basePool;
+        return basePool;
     }
 
     private async Task<IReadOnlyList<RecommendationTrackDto>> ExcludeTracksAlreadyInLibraryAsync(
@@ -2447,55 +2464,60 @@ public sealed class LibraryRecommendationService
 
         var output = new List<RecommendationTrackDto>(cappedLimit);
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var track in primarySelection)
-        {
-            var normalizedId = NormalizeId(track.Id);
-            if (string.IsNullOrWhiteSpace(normalizedId) || !seen.Add(normalizedId))
-            {
-                continue;
-            }
-
-            output.Add(track with { Id = normalizedId });
-            if (output.Count >= cappedLimit)
-            {
-                break;
-            }
-        }
-
+        AddUniqueTracks(primarySelection, output, seen, cappedLimit);
         if (output.Count < cappedLimit)
         {
-            var remaining = fallbackCandidates
-                .Where(track =>
-                {
-                    var normalizedId = NormalizeId(track.Id);
-                    return !string.IsNullOrWhiteSpace(normalizedId) && !seen.Contains(normalizedId);
-                })
-                .ToList();
-
-            var topUpTracks = BuildDiversifiedTrackSelection(
-                remaining,
-                cappedLimit - output.Count,
-                dayUtc);
-
-            foreach (var topUpTrack in topUpTracks)
-            {
-                var normalizedId = NormalizeId(topUpTrack.Id);
-                if (string.IsNullOrWhiteSpace(normalizedId) || !seen.Add(normalizedId))
-                {
-                    continue;
-                }
-
-                output.Add(topUpTrack with { Id = normalizedId });
-                if (output.Count >= cappedLimit)
-                {
-                    break;
-                }
-            }
+            AddTopUpTracks(fallbackCandidates, output, seen, cappedLimit, dayUtc);
         }
 
         return output
             .Select((track, index) => track with { TrackPosition = index + 1 })
             .ToList();
+    }
+
+    private static void AddUniqueTracks(
+        IEnumerable<RecommendationTrackDto> tracks,
+        List<RecommendationTrackDto> output,
+        HashSet<string> seen,
+        int limit)
+    {
+        foreach (var track in tracks)
+        {
+            if (!TryNormalizeTrackId(track.Id, out var normalizedId)
+                || !seen.Add(normalizedId))
+            {
+                continue;
+            }
+
+            output.Add(track with { Id = normalizedId });
+            if (output.Count >= limit)
+            {
+                return;
+            }
+        }
+    }
+
+    private static void AddTopUpTracks(
+        IReadOnlyList<RecommendationTrackDto> fallbackCandidates,
+        List<RecommendationTrackDto> output,
+        HashSet<string> seen,
+        int limit,
+        DateOnly dayUtc)
+    {
+        var remaining = fallbackCandidates
+            .Where(track => TryNormalizeTrackId(track.Id, out var normalizedId) && !seen.Contains(normalizedId))
+            .ToList();
+        var topUpTracks = BuildDiversifiedTrackSelection(
+            remaining,
+            limit - output.Count,
+            dayUtc);
+        AddUniqueTracks(topUpTracks, output, seen, limit);
+    }
+
+    private static bool TryNormalizeTrackId(string? id, out string normalizedId)
+    {
+        normalizedId = NormalizeId(id);
+        return !string.IsNullOrWhiteSpace(normalizedId);
     }
 
     private static List<RecommendationTrackDto> BuildDiversifiedTrackSelection(

@@ -1436,7 +1436,6 @@ public sealed class AutoTagDownloadMoveService
             var existingResult = HandleExistingResidualDestination(
                 sourcePath,
                 destinationPath,
-                rootIo,
                 destinationDir ?? destinationRoot,
                 overwritePolicy,
                 preferredExtensions);
@@ -1491,7 +1490,6 @@ public sealed class AutoTagDownloadMoveService
     private static (bool IsHandled, string? PathResult, string DestinationPath) HandleExistingResidualDestination(
         string sourcePath,
         string destinationPath,
-        string rootIo,
         string destinationRoot,
         string overwritePolicy,
         IReadOnlyList<string> preferredExtensions)
@@ -2078,7 +2076,6 @@ public sealed class AutoTagDownloadMoveService
         var existingResolution = ResolveExistingDestinationPath(
             sourceIo,
             destinationPath,
-            stagingRoot,
             destinationDir ?? destinationIo,
             overwritePolicy);
         if (existingResolution.IsHandled)
@@ -2163,7 +2160,6 @@ public sealed class AutoTagDownloadMoveService
     private static (bool IsHandled, string? PathResult, string DestinationPath) ResolveExistingDestinationPath(
         string sourcePath,
         string destinationPath,
-        string stagingRoot,
         string destinationRoot,
         string overwritePolicy)
     {

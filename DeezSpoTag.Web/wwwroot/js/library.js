@@ -11938,78 +11938,45 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     });
 
     if (confirmed?.value !== 'save') return;
-
-    // Collect values and save
-    const folderSel = panel.querySelector('.ps-folder-select');
-    const serviceSel = panel.querySelector('.ps-service-select');
-    const engineSel = panel.querySelector('.ps-engine-select');
-    const downloadModeSel = panel.querySelector('.ps-download-mode-select');
-    const syncModeSel = panel.querySelector('.ps-sync-mode-select');
-    const artworkToggle = panel.querySelector('.ps-update-artwork');
-    const artworkReuseToggle = panel.querySelector('.ps-reuse-saved-artwork');
-    const folderId = folderSel?.value ? Number(folderSel.value) : null;
-    const service = serviceSel?.value || 'plex';
-    const preferredEngine = engineSel?.value || '';
-    const downloadVariantMode = downloadModeSel?.value || 'standard';
-    const syncMode = syncModeSel?.value || 'mirror';
-    const normalizedArtwork = normalizePlaylistArtworkPreference(
-        artworkToggle?.checked !== false,
-        artworkReuseToggle?.checked === true);
-    const updateArtwork = normalizedArtwork.updateArtwork;
-    const reuseSavedArtwork = normalizedArtwork.reuseSavedArtwork;
-
-    // Collect routing rules
-    const rules = [];
-    rulesList.querySelectorAll('.routing-rule-row').forEach((row, idx) => {
-        const field = row.querySelector('.rr-field')?.value || 'artist';
-        const explicitValue = row.querySelector('.rr-value-explicit')?.value || 'is_true';
-        let operator = row.querySelector('.rr-operator')?.value || 'contains';
-        if (field === 'explicit') {
-            operator = explicitValue === 'is_false' ? 'is_false' : 'is_true';
-        }
-        const value = field === 'explicit'
-            ? ''
-            : (row.querySelector('.rr-value-choice')?.value || '').trim();
-        const ruleFolder = row.querySelector('.rr-folder')?.value;
-        if (!ruleFolder) return;
-        if (field !== 'explicit' && !value) return;
-        rules.push({
-            conditionField: field,
-            conditionOperator: operator,
-            conditionValue: value,
-            destinationFolderId: Number(ruleFolder),
-            order: idx
-        });
+    await savePlaylistSettingsFromPanel({
+        panel,
+        source,
+        sourceId,
+        playlistPrefs,
+        prefKey,
+        rulesList,
+        blockRulesList
     });
+}
 
-    // Collect block rules
-    const blockRules = [];
-    blockRulesList.querySelectorAll('.block-rule-row').forEach((row, idx) => {
-        const field = row.querySelector('.br-field')?.value || 'artist';
-        const explicitValue = row.querySelector('.br-value-explicit')?.value || 'is_true';
-        let operator = row.querySelector('.br-operator')?.value || 'contains';
-        if (field === 'explicit') {
-            operator = explicitValue === 'is_false' ? 'is_false' : 'is_true';
-        }
-        const value = field === 'explicit'
-            ? ''
-            : (row.querySelector('.br-value-choice')?.value || '').trim();
-        if (field !== 'explicit' && !value) return;
-
-        blockRules.push({
-            conditionField: field,
-            conditionOperator: operator,
-            conditionValue: value,
-            order: idx
-        });
-    });
-
+async function savePlaylistSettingsFromPanel({
+    panel,
+    source,
+    sourceId,
+    playlistPrefs,
+    prefKey,
+    rulesList,
+    blockRulesList
+}) {
+    const values = collectPlaylistSettingsValues(panel);
+    const rules = collectPlaylistRoutingRules(rulesList);
+    const blockRules = collectPlaylistBlockRules(blockRulesList);
     try {
         // Save preferences
         await fetchJson('/api/library/playlists/preferences', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify([{ source, sourceId, folderId, service, preferredEngine, downloadVariantMode, syncMode, updateArtwork, reuseSavedArtwork }])
+            body: JSON.stringify([{
+                source,
+                sourceId,
+                folderId: values.folderId,
+                service: values.service,
+                preferredEngine: values.preferredEngine,
+                downloadVariantMode: values.downloadVariantMode,
+                syncMode: values.syncMode,
+                updateArtwork: values.updateArtwork,
+                reuseSavedArtwork: values.reuseSavedArtwork
+            }])
         });
         // Save routing rules
         await fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/routing-rules`, {
@@ -12024,7 +11991,15 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
             body: JSON.stringify(blockRules)
         });
         // Update local prefs
-        const updatedPref = { folderId: folderId ? String(folderId) : '', service, preferredEngine, downloadVariantMode, syncMode, updateArtwork, reuseSavedArtwork };
+        const updatedPref = {
+            folderId: values.folderId ? String(values.folderId) : '',
+            service: values.service,
+            preferredEngine: values.preferredEngine,
+            downloadVariantMode: values.downloadVariantMode,
+            syncMode: values.syncMode,
+            updateArtwork: values.updateArtwork,
+            reuseSavedArtwork: values.reuseSavedArtwork
+        };
         storePlaylistPreference(source, sourceId, updatedPref);
         if (playlistPrefs && typeof playlistPrefs === 'object') {
             playlistPrefs[prefKey] = {
@@ -12037,6 +12012,82 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     } catch (error) {
         showToast(`Save failed: ${error.message}`, true);
     }
+}
+
+function collectPlaylistSettingsValues(panel) {
+    const folderSel = panel.querySelector('.ps-folder-select');
+    const serviceSel = panel.querySelector('.ps-service-select');
+    const engineSel = panel.querySelector('.ps-engine-select');
+    const downloadModeSel = panel.querySelector('.ps-download-mode-select');
+    const syncModeSel = panel.querySelector('.ps-sync-mode-select');
+    const artworkToggle = panel.querySelector('.ps-update-artwork');
+    const artworkReuseToggle = panel.querySelector('.ps-reuse-saved-artwork');
+    const normalizedArtwork = normalizePlaylistArtworkPreference(
+        artworkToggle?.checked !== false,
+        artworkReuseToggle?.checked === true);
+    return {
+        folderId: folderSel?.value ? Number(folderSel.value) : null,
+        service: serviceSel?.value || 'plex',
+        preferredEngine: engineSel?.value || '',
+        downloadVariantMode: downloadModeSel?.value || 'standard',
+        syncMode: syncModeSel?.value || 'mirror',
+        updateArtwork: normalizedArtwork.updateArtwork,
+        reuseSavedArtwork: normalizedArtwork.reuseSavedArtwork
+    };
+}
+
+function collectPlaylistRoutingRules(rulesList) {
+    const rules = [];
+    rulesList.querySelectorAll('.routing-rule-row').forEach((row, idx) => {
+        const field = row.querySelector('.rr-field')?.value || 'artist';
+        const explicitValue = row.querySelector('.rr-value-explicit')?.value || 'is_true';
+        let operator = row.querySelector('.rr-operator')?.value || 'contains';
+        if (field === 'explicit') {
+            operator = explicitValue === 'is_false' ? 'is_false' : 'is_true';
+        }
+        const value = field === 'explicit'
+            ? ''
+            : (row.querySelector('.rr-value-choice')?.value || '').trim();
+        const ruleFolder = row.querySelector('.rr-folder')?.value;
+        if (!ruleFolder || (field !== 'explicit' && !value)) {
+            return;
+        }
+
+        rules.push({
+            conditionField: field,
+            conditionOperator: operator,
+            conditionValue: value,
+            destinationFolderId: Number(ruleFolder),
+            order: idx
+        });
+    });
+    return rules;
+}
+
+function collectPlaylistBlockRules(blockRulesList) {
+    const blockRules = [];
+    blockRulesList.querySelectorAll('.block-rule-row').forEach((row, idx) => {
+        const field = row.querySelector('.br-field')?.value || 'artist';
+        const explicitValue = row.querySelector('.br-value-explicit')?.value || 'is_true';
+        let operator = row.querySelector('.br-operator')?.value || 'contains';
+        if (field === 'explicit') {
+            operator = explicitValue === 'is_false' ? 'is_false' : 'is_true';
+        }
+        const value = field === 'explicit'
+            ? ''
+            : (row.querySelector('.br-value-choice')?.value || '').trim();
+        if (field !== 'explicit' && !value) {
+            return;
+        }
+
+        blockRules.push({
+            conditionField: field,
+            conditionOperator: operator,
+            conditionValue: value,
+            order: idx
+        });
+    });
+    return blockRules;
 }
 
 function getStoredPreferences(key) {

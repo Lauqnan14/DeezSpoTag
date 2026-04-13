@@ -178,6 +178,10 @@ public sealed class DownloadIntentService
         bool UseAtmosStereoDual,
         List<string> AutoSources,
         SongLinkResult? Availability);
+    private sealed record DestinationRoutingResult(
+        long? PrimaryDestinationFolderId,
+        long? SecondaryDestinationFolderId,
+        DownloadIntentResult? Failure);
 
     private sealed record IntentResolutionBootstrap(
         string SourceUrl,
@@ -307,50 +311,19 @@ public sealed class DownloadIntentService
             _activityLog.Info($"Fallback plan: start_index={selectedAutoIndex} steps=[{planSummary}]");
         }
         var requestedQualityRank = ParseRequestedQualityRank(selectedQuality ?? intent.Quality);
-        var primaryDestinationFolderId = useMultiQuality
-            ? (intent.DestinationFolderId ?? multiQuality!.PrimaryDestinationFolderId)
-            : intent.DestinationFolderId;
-        var secondaryDestinationFolderId = useMultiQuality
-            ? (intent.SecondaryDestinationFolderId ?? multiQuality!.SecondaryDestinationFolderId)
-            : null;
-        if (useAtmosStereoDual)
+        var destinationRouting = await ResolveDestinationRoutingAsync(
+            intent,
+            settings,
+            useMultiQuality,
+            useAtmosStereoDual,
+            engine,
+            cancellationToken);
+        if (destinationRouting.Failure != null)
         {
-            if (!secondaryDestinationFolderId.HasValue)
-            {
-                return new DownloadIntentResult
-                {
-                    Success = false,
-                    Engine = engine,
-                    Message = "Dual-quality routing requires a dedicated Atmos destination folder."
-                };
-            }
-
-            if (primaryDestinationFolderId.HasValue
-                && primaryDestinationFolderId.Value == secondaryDestinationFolderId.Value)
-            {
-                return new DownloadIntentResult
-                {
-                    Success = false,
-                    Engine = engine,
-                    Message = "Stereo and Atmos destination folders must be different in dual-quality mode."
-                };
-            }
-
-            var distinctRootCheck = await DownloadDestinationGuard.ValidateDistinctRootsAsync(
-                primaryDestinationFolderId,
-                secondaryDestinationFolderId,
-                _libraryRepository,
-                cancellationToken);
-            if (!distinctRootCheck.Ok)
-            {
-                return new DownloadIntentResult
-                {
-                    Success = false,
-                    Engine = engine,
-                    Message = distinctRootCheck.Error ?? "Stereo and Atmos destinations must resolve to different folder roots."
-                };
-            }
+            return destinationRouting.Failure;
         }
+        var primaryDestinationFolderId = destinationRouting.PrimaryDestinationFolderId;
+        var secondaryDestinationFolderId = destinationRouting.SecondaryDestinationFolderId;
         intent.DestinationFolderId = primaryDestinationFolderId;
         intent.SecondaryDestinationFolderId = secondaryDestinationFolderId;
 
@@ -409,6 +382,74 @@ public sealed class DownloadIntentService
             SkipReasonCodes = skipReasonCodes,
             SkipReasons = skipReasons
         };
+    }
+
+    private async Task<DestinationRoutingResult> ResolveDestinationRoutingAsync(
+        DownloadIntent intent,
+        DeezSpoTagSettings settings,
+        bool useMultiQuality,
+        bool useAtmosStereoDual,
+        string engine,
+        CancellationToken cancellationToken)
+    {
+        var multiQuality = settings.MultiQuality;
+        var primaryDestinationFolderId = useMultiQuality
+            ? (intent.DestinationFolderId ?? multiQuality!.PrimaryDestinationFolderId)
+            : intent.DestinationFolderId;
+        var secondaryDestinationFolderId = useMultiQuality
+            ? (intent.SecondaryDestinationFolderId ?? multiQuality!.SecondaryDestinationFolderId)
+            : null;
+        if (!useAtmosStereoDual)
+        {
+            return new DestinationRoutingResult(primaryDestinationFolderId, secondaryDestinationFolderId, null);
+        }
+
+        if (!secondaryDestinationFolderId.HasValue)
+        {
+            return new DestinationRoutingResult(
+                primaryDestinationFolderId,
+                secondaryDestinationFolderId,
+                new DownloadIntentResult
+                {
+                    Success = false,
+                    Engine = engine,
+                    Message = "Dual-quality routing requires a dedicated Atmos destination folder."
+                });
+        }
+
+        if (primaryDestinationFolderId.HasValue
+            && primaryDestinationFolderId.Value == secondaryDestinationFolderId.Value)
+        {
+            return new DestinationRoutingResult(
+                primaryDestinationFolderId,
+                secondaryDestinationFolderId,
+                new DownloadIntentResult
+                {
+                    Success = false,
+                    Engine = engine,
+                    Message = "Stereo and Atmos destination folders must be different in dual-quality mode."
+                });
+        }
+
+        var distinctRootCheck = await DownloadDestinationGuard.ValidateDistinctRootsAsync(
+            primaryDestinationFolderId,
+            secondaryDestinationFolderId,
+            _libraryRepository,
+            cancellationToken);
+        if (!distinctRootCheck.Ok)
+        {
+            return new DestinationRoutingResult(
+                primaryDestinationFolderId,
+                secondaryDestinationFolderId,
+                new DownloadIntentResult
+                {
+                    Success = false,
+                    Engine = engine,
+                    Message = distinctRootCheck.Error ?? "Stereo and Atmos destinations must resolve to different folder roots."
+                });
+        }
+
+        return new DestinationRoutingResult(primaryDestinationFolderId, secondaryDestinationFolderId, null);
     }
 
     private async Task<(DownloadIntentResult? Failure, EnqueueResolutionState? State)> TryPrepareEnqueueResolutionAsync(
@@ -739,9 +780,18 @@ public sealed class DownloadIntentService
         payload.DestinationFolderId = request.PrimaryDestinationFolderId;
         var primaryIsAtmos = string.Equals(payload.ContentType, DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase)
             || IsAtmosQuality(payload.Quality);
-        payload.QualityBucket = request.UseAtmosStereoDual
-            ? (primaryIsAtmos ? AtmosQuality : StereoType)
-            : string.Empty;
+        if (!request.UseAtmosStereoDual)
+        {
+            payload.QualityBucket = string.Empty;
+        }
+        else if (primaryIsAtmos)
+        {
+            payload.QualityBucket = AtmosQuality;
+        }
+        else
+        {
+            payload.QualityBucket = StereoType;
+        }
 
         var enqueueDecision = await EnqueueItemAsync(
             payload,

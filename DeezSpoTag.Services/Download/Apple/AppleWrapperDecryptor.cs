@@ -80,10 +80,14 @@ public sealed class AppleWrapperDecryptor
             _logger.LogInformation("Apple wrapper decrypt helper completed successfully using {ToolPath}.", toolPath);
             return File.Exists(outputPath);
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             TryTerminateProcess(process);
-            _logger.LogWarning("Apple wrapper decrypt timed out after {Timeout} for adam id {AdamId}.", DecryptTimeout, adamId);
+            _logger.LogWarning(
+                ex,
+                "Apple wrapper decrypt timed out after {Timeout} for adam id {AdamId}.",
+                DecryptTimeout,
+                adamId);
             return false;
         }
     }

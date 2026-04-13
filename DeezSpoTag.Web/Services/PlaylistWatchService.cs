@@ -738,14 +738,22 @@ public sealed class PlaylistWatchService
             0,
             SpotifyPlaylistWatchPageSize,
             cancellationToken);
-        if (page == null)
+        if (await TryHandleMissingSpotifyPlaylistPageAsync(playlist.SourceId, state, page, cancellationToken))
+        {
+            return;
+        }
+
+        var loadedPage = page!;
+        await UpdateSpotifyPlaylistMetadataIfPresentAsync(playlist, preference, loadedPage, cancellationToken);
+
+        if (ShouldSkipSpotifySnapshotProcessing(settings.WatchUseSnapshotIdChecking, loadedPage, state, batchSnapshot: null))
         {
             await UpsertPlaylistWatchStateAsync(
                 new LibraryRepository.PlaylistWatchStateUpsertInput(
                     SpotifySource,
                     playlist.SourceId,
-                    state?.SnapshotId,
-                    state?.TrackCount,
+                    loadedPage.SnapshotId,
+                    loadedPage.TotalTracks,
                     null,
                     null,
                     DateTimeOffset.UtcNow),
@@ -753,24 +761,63 @@ public sealed class PlaylistWatchService
             return;
         }
 
-        await UpdateSpotifyPlaylistMetadataIfPresentAsync(playlist, preference, page, cancellationToken);
-
-        if (ShouldSkipSpotifySnapshotProcessing(settings.WatchUseSnapshotIdChecking, page, state, batchSnapshot: null))
+        var scanResult = await CollectSpotifyPlaylistScanResultAsync(playlist.SourceId, loadedPage, cancellationToken);
+        if (scanResult.NewTracks.Count > 0)
         {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    SpotifySource,
-                    playlist.SourceId,
-                    page.SnapshotId,
-                    page.TotalTracks,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
+            await PersistAndQueueSpotifyTracksAsync(
+                playlist,
+                preference,
+                effectiveBlockRules,
+                loadedPage.Name,
+                scanResult.NewTracks,
                 cancellationToken);
-            return;
         }
 
-        var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(SpotifySource, playlist.SourceId, cancellationToken);
+        await UpsertPlaylistWatchStateAsync(
+            new LibraryRepository.PlaylistWatchStateUpsertInput(
+                SpotifySource,
+                playlist.SourceId,
+                loadedPage.SnapshotId,
+                scanResult.TotalTracks,
+                null,
+                null,
+                DateTimeOffset.UtcNow),
+            cancellationToken);
+
+    }
+
+    private async Task<bool> TryHandleMissingSpotifyPlaylistPageAsync(
+        string sourceId,
+        PlaylistWatchStateDto? state,
+        SpotifyPlaylistPage? page,
+        CancellationToken cancellationToken)
+    {
+        if (page != null)
+        {
+            return false;
+        }
+
+        await UpsertPlaylistWatchStateAsync(
+            new LibraryRepository.PlaylistWatchStateUpsertInput(
+                SpotifySource,
+                sourceId,
+                state?.SnapshotId,
+                state?.TrackCount,
+                null,
+                null,
+                DateTimeOffset.UtcNow),
+            cancellationToken);
+        return true;
+    }
+
+    private sealed record SpotifyPlaylistScanResult(List<SpotifyTrackSummary> NewTracks, int? TotalTracks);
+
+    private async Task<SpotifyPlaylistScanResult> CollectSpotifyPlaylistScanResultAsync(
+        string sourceId,
+        SpotifyPlaylistPage page,
+        CancellationToken cancellationToken)
+    {
+        var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(SpotifySource, sourceId, cancellationToken);
         var ignored = await GetIgnoredTrackIdsForSourceAsync(SpotifySource, cancellationToken);
         var newTracks = new List<SpotifyTrackSummary>();
         var scanPage = page;
@@ -778,22 +825,7 @@ public sealed class PlaylistWatchService
         var totalTracks = page.TotalTracks;
         while (scanPage != null)
         {
-            foreach (var track in scanPage.Tracks)
-            {
-                if (string.IsNullOrWhiteSpace(track.Id))
-                {
-                    continue;
-                }
-
-                if (existing.Contains(track.Id) || ignored.Contains(track.Id))
-                {
-                    continue;
-                }
-
-                existing.Add(track.Id);
-                newTracks.Add(track);
-            }
-
+            CollectSpotifyPageNewTracks(scanPage, existing, ignored, newTracks);
             if (!scanPage.HasMore)
             {
                 break;
@@ -806,7 +838,7 @@ public sealed class PlaylistWatchService
             }
 
             scanPage = await _spotifyMetadataService.FetchPlaylistPageAsync(
-                playlist.SourceId,
+                sourceId,
                 offset,
                 SpotifyPlaylistWatchPageSize,
                 cancellationToken);
@@ -816,54 +848,71 @@ public sealed class PlaylistWatchService
             }
         }
 
-        if (newTracks.Count > 0)
+        return new SpotifyPlaylistScanResult(newTracks, totalTracks);
+    }
+
+    private static void CollectSpotifyPageNewTracks(
+        SpotifyPlaylistPage page,
+        HashSet<string> existing,
+        HashSet<string> ignored,
+        List<SpotifyTrackSummary> output)
+    {
+        foreach (var track in page.Tracks)
         {
-            var trackInserts = newTracks
-                .Select(track => new PlaylistWatchTrackInsert(track.Id, track.Isrc))
-                .ToList();
-            await _libraryRepository.AddPlaylistWatchTracksAsync(
-                SpotifySource,
-                playlist.SourceId,
-                trackInserts,
-                cancellationToken);
-
-            var queuedCount = await QueueSpotifyTracksAsync(
-                newTracks,
-                preference?.DestinationFolderId,
-                BuildQueueWatchOptions(
-                    "Spotify",
-                    SpotifySource,
-                    playlist.SourceId,
-                    preference?.PreferredEngine,
-                    preference?.DownloadVariantMode,
-                    preference?.RoutingRules,
-                    effectiveBlockRules),
-                cancellationToken);
-
-            if (queuedCount > 0)
+            if (string.IsNullOrWhiteSpace(track.Id)
+                || existing.Contains(track.Id)
+                || ignored.Contains(track.Id))
             {
-                var historyName = page.Name ?? playlist.Name ?? "Playlist";
-                await AddPlaylistWatchHistoryAsync(
-                    SpotifySource,
-                    playlist.SourceId,
-                    historyName,
-                    newTracks.Count,
-                    QueuedStatus,
-                    cancellationToken);
+                continue;
             }
-        }
 
-        await UpsertPlaylistWatchStateAsync(
-            new LibraryRepository.PlaylistWatchStateUpsertInput(
-                SpotifySource,
-                playlist.SourceId,
-                page.SnapshotId,
-                totalTracks,
-                null,
-                null,
-                DateTimeOffset.UtcNow),
+            existing.Add(track.Id);
+            output.Add(track);
+        }
+    }
+
+    private async Task PersistAndQueueSpotifyTracksAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
+        string? pageName,
+        List<SpotifyTrackSummary> newTracks,
+        CancellationToken cancellationToken)
+    {
+        var trackInserts = newTracks
+            .Select(track => new PlaylistWatchTrackInsert(track.Id, track.Isrc))
+            .ToList();
+        await _libraryRepository.AddPlaylistWatchTracksAsync(
+            SpotifySource,
+            playlist.SourceId,
+            trackInserts,
             cancellationToken);
 
+        var queuedCount = await QueueSpotifyTracksAsync(
+            newTracks,
+            preference?.DestinationFolderId,
+            BuildQueueWatchOptions(
+                "Spotify",
+                SpotifySource,
+                playlist.SourceId,
+                preference?.PreferredEngine,
+                preference?.DownloadVariantMode,
+                preference?.RoutingRules,
+                effectiveBlockRules),
+            cancellationToken);
+        if (queuedCount <= 0)
+        {
+            return;
+        }
+
+        var historyName = pageName ?? playlist.Name ?? "Playlist";
+        await AddPlaylistWatchHistoryAsync(
+            SpotifySource,
+            playlist.SourceId,
+            historyName,
+            newTracks.Count,
+            QueuedStatus,
+            cancellationToken);
     }
 
     private async Task TrySyncPlaylistToMediaServerAsync(
@@ -917,17 +966,6 @@ public sealed class PlaylistWatchService
             result.SyncedTracks);
     }
 
-    private static (int BatchOffset, string? BatchSnapshot) ResolveSpotifyBatchCursor(PlaylistWatchStateDto? state)
-    {
-        var batchOffset = state?.BatchNextOffset ?? 0;
-        if (batchOffset < 0)
-        {
-            batchOffset = 0;
-        }
-
-        return (batchOffset, state?.BatchProcessingSnapshotId);
-    }
-
     private async Task UpdateSpotifyPlaylistMetadataIfPresentAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
@@ -974,52 +1012,6 @@ public sealed class PlaylistWatchService
                && !string.IsNullOrWhiteSpace(page.SnapshotId)
                && string.Equals(page.SnapshotId, state?.SnapshotId, StringComparison.Ordinal)
                && string.IsNullOrWhiteSpace(batchSnapshot);
-    }
-
-    private async Task<(SpotifyPlaylistPage Page, int BatchOffset, string? BatchSnapshot)> RefreshSpotifyBatchPageAsync(
-        string sourceId,
-        SpotifyPlaylistPage page,
-        int batchOffset,
-        string? batchSnapshot,
-        int maxItems,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(page.SnapshotId)
-            || string.Equals(page.SnapshotId, batchSnapshot, StringComparison.Ordinal))
-        {
-            return (page, batchOffset, batchSnapshot);
-        }
-
-        batchSnapshot = page.SnapshotId;
-        batchOffset = 0;
-        page = await _spotifyMetadataService.FetchPlaylistPageAsync(sourceId, batchOffset, maxItems, cancellationToken)
-            ?? page;
-        return (page, batchOffset, batchSnapshot);
-    }
-
-    private async Task<List<SpotifyTrackSummary>> GetNewSpotifyPlaylistTracksAsync(
-        string sourceId,
-        SpotifyPlaylistPage page,
-        CancellationToken cancellationToken)
-    {
-        var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(SpotifySource, sourceId, cancellationToken);
-        var ignored = await GetIgnoredTrackIdsForSourceAsync(SpotifySource, cancellationToken);
-        return page.Tracks
-            .Where(track => !string.IsNullOrWhiteSpace(track.Id)
-                            && !existing.Contains(track.Id)
-                            && !ignored.Contains(track.Id))
-            .ToList();
-    }
-
-    private static (int NextBatchOffset, string? NextBatchSnapshot) ResolveNextSpotifyBatchCursor(
-        SpotifyPlaylistPage page,
-        int batchOffset,
-        string? batchSnapshot)
-    {
-        var nextOffset = batchOffset + page.Tracks.Count;
-        var hasMore = page.HasMore
-                      && (!page.TotalTracks.HasValue || nextOffset < page.TotalTracks.Value);
-        return hasMore ? (nextOffset, batchSnapshot) : (0, null);
     }
 
     private async Task CheckSpotifyArtistTopTracksAsync(
