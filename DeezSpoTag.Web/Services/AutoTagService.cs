@@ -205,6 +205,7 @@ public class AutoTagService
     private readonly LyricsRefreshQueueService _lyricsRefreshQueueService;
     private readonly CoverLibraryMaintenanceService _coverMaintenanceService;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
+    private readonly UserPreferencesStore _userPreferencesStore;
     private readonly string _jobsDir;
     private readonly string _historyDir;
     private readonly string _workersHistoryDir;
@@ -348,6 +349,7 @@ public class AutoTagService
         public required LyricsRefreshQueueService LyricsRefreshQueueService { get; init; }
         public required CoverLibraryMaintenanceService CoverMaintenanceService { get; init; }
         public required AutoTagProfileResolutionService ProfileResolutionService { get; init; }
+        public required UserPreferencesStore UserPreferencesStore { get; init; }
     }
 
     public event Action<AutoTagJob>? JobCompleted;
@@ -377,6 +379,7 @@ public class AutoTagService
         _lyricsRefreshQueueService = collaborators.LyricsRefreshQueueService;
         _coverMaintenanceService = collaborators.CoverMaintenanceService;
         _profileResolutionService = collaborators.ProfileResolutionService;
+        _userPreferencesStore = collaborators.UserPreferencesStore;
         var appDataRoot = AppDataPaths.GetDataRoot(env);
         var autoTagRoot = Path.Join(appDataRoot, AutoTagFolderName);
         _jobsDir = Path.Join(autoTagRoot, "jobs");
@@ -2993,6 +2996,103 @@ public class AutoTagService
         }
     }
 
+    private async Task<AutoTagOrganizerOptions> LoadOrganizerOptionsAsync(AutoTagJob job, string configPath)
+    {
+        var options = LoadOrganizerOptions(configPath);
+        if (!string.IsNullOrWhiteSpace(options.MoveUntaggedPath))
+        {
+            return options;
+        }
+
+        if (string.Equals(job.Trigger, AutoTagLiterals.ManualTrigger, StringComparison.OrdinalIgnoreCase))
+        {
+            return options;
+        }
+
+        var manualFailedPath = await TryResolveManualFailedMovePathAsync();
+        if (!string.IsNullOrWhiteSpace(manualFailedPath))
+        {
+            options.MoveUntaggedPath = manualFailedPath;
+        }
+
+        return options;
+    }
+
+    private async Task<string?> TryResolveManualFailedMovePathAsync()
+    {
+        try
+        {
+            var prefs = await _userPreferencesStore.LoadAsync();
+            if (!prefs.AutoTagPreferences.HasValue)
+            {
+                return null;
+            }
+
+            var autoTagPrefs = prefs.AutoTagPreferences.Value;
+            if (autoTagPrefs.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            if (TryGetCaseInsensitiveProperty(autoTagPrefs, "organizer", out var organizerNode)
+                && organizerNode.ValueKind == JsonValueKind.Object
+                && TryGetCaseInsensitiveStringProperty(organizerNode, "moveUntaggedPath", out var organizerPath))
+            {
+                return organizerPath;
+            }
+
+            return TryGetCaseInsensitiveStringProperty(autoTagPrefs, "moveFailedPath", out var moveFailedPath)
+                ? moveFailedPath
+                : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed loading manual failed destination from user preferences.");
+            return null;
+        }
+    }
+
+    private static bool TryGetCaseInsensitiveProperty(JsonElement element, string propertyName, out JsonElement value)
+    {
+        value = default;
+        if (element.ValueKind != JsonValueKind.Object || string.IsNullOrWhiteSpace(propertyName))
+        {
+            return false;
+        }
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (!string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            value = property.Value;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryGetCaseInsensitiveStringProperty(JsonElement element, string propertyName, out string value)
+    {
+        value = string.Empty;
+        if (!TryGetCaseInsensitiveProperty(element, propertyName, out var raw)
+            || raw.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        var resolved = raw.GetString()?.Trim();
+        if (string.IsNullOrWhiteSpace(resolved))
+        {
+            return false;
+        }
+
+        value = resolved;
+        return true;
+    }
+
     private async Task<AutoMoveExecutionResult> MoveAfterAutoTagAsync(
         AutoTagJob job,
         string rootPath,
@@ -3016,7 +3116,7 @@ public class AutoTagService
         {
             _logger.LogInformation("AutoTag job JobId: auto-move started for RootPath");
             AppendLog(job, "auto-move started");
-            var organizerOptions = LoadOrganizerOptions(configPath);
+            var organizerOptions = await LoadOrganizerOptionsAsync(job, configPath);
             var summary = await _downloadMoveService.MoveForRootWithSummaryAsync(
                 rootPath,
                 organizerOptions,

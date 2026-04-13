@@ -33,7 +33,7 @@
         trackNumberLeadingZeroes: 0,
         enableShazam: true,
         forceShazam: false,
-        conflictResolution: "shazam",
+        conflictResolution: null,
         skipTagged: false,
         onlyYear: false,
         includeSubfolders: true,
@@ -2471,7 +2471,7 @@
                 conflictInput.type = "checkbox";
                 conflictInput.id = "conflictShazamGate";
                 conflictInput.value = "shazam";
-                conflictInput.checked = String(state.config.conflictResolution || "shazam").trim().toLowerCase() === "shazam";
+                conflictInput.checked = String(state.config.conflictResolution || "").trim().toLowerCase() === "shazam";
                 conflictInput.addEventListener("change", () => {
                     state.config.conflictResolution = conflictInput.checked ? "shazam" : null;
                 });

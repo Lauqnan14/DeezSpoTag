@@ -438,7 +438,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             context.File,
             info,
             context.Plan.EnableShazamFallback,
-            context.Plan.ForceShazamMatch || context.Plan.ShazamConflictResolution,
+            context.Plan.ForceShazamMatch,
             context.Plan.ShazamCache,
             context.LogCallback,
             context.Token);
@@ -5682,7 +5682,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public bool MatchById { get; set; }
         public bool EnableShazam { get; set; } = true;
         public bool ForceShazam { get; set; }
-        public string? ConflictResolution { get; set; } = ShazamPlatform;
+        public string? ConflictResolution { get; set; }
         public bool SkipTagged { get; set; }
         public bool IncludeSubfolders { get; set; } = true;
         public bool Multiplatform { get; set; }
