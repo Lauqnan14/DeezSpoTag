@@ -16,6 +16,9 @@ public sealed class AppleLyricsService
     private const string SyncedLyricsType = "lyrics";
     private const string SyllableLyricsType = "syllable-lyrics";
     private const string UnsyncedLyricsType = "unsynced-lyrics";
+    private const int MinMediaUserTokenLength = 50;
+    private const string DefaultWrapperHost = "127.0.0.1";
+    private const string WrapperHostEnvironmentVariable = "DEEZSPOTAG_APPLE_WRAPPER_HOST";
     private const string AppleMusicScheme = "https";
     private const string AppleMusicHost = "music.apple.com";
     private const string AppleMusicCatalogApiHost = "amp-api.music.apple.com";
@@ -73,6 +76,10 @@ public sealed class AppleLyricsService
     private readonly AppleMusicCatalogService _catalogService;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<AppleLyricsService> _logger;
+    private static readonly HttpClient WrapperAccountClient = new()
+    {
+        Timeout = TimeSpan.FromSeconds(8)
+    };
 
     public AppleLyricsService(
         AppleMusicCatalogService catalogService,
@@ -95,7 +102,12 @@ public sealed class AppleLyricsService
         }
 
         var mediaUserToken = settings.AppleMusic?.MediaUserToken ?? string.Empty;
-        if (mediaUserToken.Length < 50)
+        if (mediaUserToken.Length < MinMediaUserTokenLength)
+        {
+            mediaUserToken = await TryResolveWrapperMusicTokenAsync(cancellationToken) ?? string.Empty;
+        }
+
+        if (mediaUserToken.Length < MinMediaUserTokenLength)
         {
             return AppleLyrics.CreateError("Media user token is required for Apple Music lyrics.");
         }
@@ -213,6 +225,62 @@ public sealed class AppleLyricsService
         }
 
         return null;
+    }
+
+    private async Task<string?> TryResolveWrapperMusicTokenAsync(CancellationToken cancellationToken)
+    {
+        var wrapperHost = Environment.GetEnvironmentVariable(WrapperHostEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(wrapperHost))
+        {
+            wrapperHost = DefaultWrapperHost;
+        }
+
+        var accountUri = new UriBuilder(Uri.UriSchemeHttp, wrapperHost, 30020, "account")
+        {
+            Query = "include_tokens=1"
+        }.Uri;
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, accountUri);
+            using var response = await WrapperAccountClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+            if (TryReadWrapperMusicToken(doc.RootElement, out var musicToken))
+            {
+                _logger.LogDebug("Apple lyrics using media user token from wrapper account endpoint.");
+                return musicToken;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Apple lyrics wrapper token lookup failed.");
+        }
+
+        return null;
+    }
+
+    private static bool TryReadWrapperMusicToken(JsonElement root, out string? musicToken)
+    {
+        musicToken = null;
+        if (root.TryGetProperty("music_user_token", out var musicUserTokenElement)
+            && musicUserTokenElement.ValueKind == JsonValueKind.String)
+        {
+            musicToken = musicUserTokenElement.GetString()?.Trim();
+        }
+        else if (root.TryGetProperty("music_token", out var musicTokenElement)
+                 && musicTokenElement.ValueKind == JsonValueKind.String)
+        {
+            musicToken = musicTokenElement.GetString()?.Trim();
+        }
+
+        return !string.IsNullOrWhiteSpace(musicToken) && musicToken.Length >= MinMediaUserTokenLength;
     }
 
     private static bool TryNormalizeAppleId(string? value, out string? appleId)

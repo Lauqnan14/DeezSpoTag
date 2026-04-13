@@ -1045,12 +1045,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(settings.AppleMusic?.MediaUserToken) ||
-            settings.AppleMusic.MediaUserToken.Length < 50)
-        {
-            return;
-        }
-
         LyricsBase? lyrics;
         try
         {
