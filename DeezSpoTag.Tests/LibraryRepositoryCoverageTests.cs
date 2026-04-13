@@ -357,7 +357,6 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                 PreferredEngine: "native",
                 DownloadVariantMode: "default",
                 SyncMode: "mirror",
-                AutotagProfile: "profile-1",
                 UpdateArtwork: true,
                 ReuseSavedArtwork: false,
                 RoutingRules: new List<PlaylistTrackRoutingRule>
@@ -369,7 +368,6 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                     new("title", "contains", "Live", 1)
                 }));
         Assert.NotNull(pref);
-        Assert.Equal("profile-1", pref!.AutotagProfile);
         Assert.Equal("mirror", pref.SyncMode);
         Assert.Single(pref.RoutingRules!);
         Assert.Single(pref.IgnoreRules!);

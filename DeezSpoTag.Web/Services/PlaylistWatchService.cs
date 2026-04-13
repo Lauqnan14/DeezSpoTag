@@ -690,7 +690,7 @@ public sealed class PlaylistWatchService
                 break;
             default:
                 _logger.LogDebug("Playlist watch skipped for unsupported source: {Source}", source);
-                break;
+                return;
         }
 
         await TrySyncPlaylistToMediaServerAsync(
