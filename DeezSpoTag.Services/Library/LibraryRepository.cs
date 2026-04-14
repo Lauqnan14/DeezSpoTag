@@ -109,7 +109,8 @@ public sealed class LibraryRepository
         bool UpdateArtwork,
         bool ReuseSavedArtwork,
         IReadOnlyList<PlaylistTrackRoutingRule>? RoutingRules = null,
-        IReadOnlyList<PlaylistTrackBlockRule>? IgnoreRules = null);
+        IReadOnlyList<PlaylistTrackBlockRule>? IgnoreRules = null,
+        long? AtmosDestinationFolderId = null);
 
     public sealed record PlaylistWatchStateUpsertInput(
         string Source,
@@ -3444,28 +3445,30 @@ LIMIT @limit;";
 
     private static async Task<PlaylistWatchPreferenceDto> ReadPlaylistWatchPreferenceAsync(SqliteDataReader reader, CancellationToken cancellationToken)
     {
-        var updateArtwork = await reader.IsDBNullAsync(7, cancellationToken) || reader.GetInt32(7) != 0;
-        var reuseSavedArtwork = !await reader.IsDBNullAsync(8, cancellationToken) && reader.GetInt32(8) != 0;
-        var created = await reader.IsDBNullAsync(9, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(9));
-        var updated = await reader.IsDBNullAsync(10, cancellationToken) ? created : ParseDateTimeOffsetInvariant(reader.GetString(10));
-        var rulesJson = await reader.IsDBNullAsync(11, cancellationToken) ? null : reader.GetString(11);
+        var updateArtwork = await reader.IsDBNullAsync(8, cancellationToken) || reader.GetInt32(8) != 0;
+        var reuseSavedArtwork = !await reader.IsDBNullAsync(9, cancellationToken) && reader.GetInt32(9) != 0;
+        var created = await reader.IsDBNullAsync(10, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(10));
+        var updated = await reader.IsDBNullAsync(11, cancellationToken) ? created : ParseDateTimeOffsetInvariant(reader.GetString(11));
+        var rulesJson = await reader.IsDBNullAsync(12, cancellationToken) ? null : reader.GetString(12);
         var rules = rulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackRoutingRule>>(rulesJson);
-        var ignoreRulesJson = await reader.IsDBNullAsync(12, cancellationToken) ? null : reader.GetString(12);
+        var ignoreRulesJson = await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetString(13);
         var ignoreRules = ignoreRulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackBlockRule>>(ignoreRulesJson);
+        var atmosDestinationFolderId = await reader.IsDBNullAsync(3, cancellationToken) ? null : (long?)reader.GetInt64(3);
         return new PlaylistWatchPreferenceDto(
             reader.GetString(0),
             reader.GetString(1),
             await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetInt64(2),
-            await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3),
             await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
             await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
             await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetString(6),
+            await reader.IsDBNullAsync(7, cancellationToken) ? null : reader.GetString(7),
             updateArtwork,
             reuseSavedArtwork,
             created,
             updated,
             rules,
-            ignoreRules);
+            ignoreRules,
+            atmosDestinationFolderId);
     }
 
     private async Task<HashSet<string>> QueryPlaylistWatchTrackSourceIdsAsync(
@@ -4841,6 +4844,7 @@ DELETE FROM playlist_watchlist WHERE source = @source AND source_id = @sourceId;
 	SELECT source,
 	       source_id,
 	       destination_folder_id,
+           atmos_destination_folder_id,
 	       service,
 	       preferred_engine,
 	       download_variant_mode,
@@ -4873,6 +4877,7 @@ ORDER BY updated_at DESC;";
 	SELECT source,
 	       source_id,
 	       destination_folder_id,
+           atmos_destination_folder_id,
 	       service,
 	       preferred_engine,
 	       download_variant_mode,
@@ -4905,10 +4910,11 @@ LIMIT 1;";
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-	INSERT INTO playlist_watch_preferences (source, source_id, destination_folder_id, service, preferred_engine, download_variant_mode, sync_mode, update_artwork, reuse_saved_artwork, routing_rules_json, ignore_rules_json)
-	        VALUES (@source, @sourceId, @destinationFolderId, @service, @preferredEngine, @downloadVariantMode, @syncMode, @updateArtwork, @reuseSavedArtwork, @routingRulesJson, @ignoreRulesJson)
+	INSERT INTO playlist_watch_preferences (source, source_id, destination_folder_id, atmos_destination_folder_id, service, preferred_engine, download_variant_mode, sync_mode, update_artwork, reuse_saved_artwork, routing_rules_json, ignore_rules_json)
+	        VALUES (@source, @sourceId, @destinationFolderId, @atmosDestinationFolderId, @service, @preferredEngine, @downloadVariantMode, @syncMode, @updateArtwork, @reuseSavedArtwork, @routingRulesJson, @ignoreRulesJson)
 	ON CONFLICT(source, source_id) DO UPDATE SET
 	    destination_folder_id = excluded.destination_folder_id,
+        atmos_destination_folder_id = excluded.atmos_destination_folder_id,
 	    service = excluded.service,
 	    preferred_engine = excluded.preferred_engine,
 	    download_variant_mode = excluded.download_variant_mode,
@@ -4922,6 +4928,7 @@ LIMIT 1;";
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue("destinationFolderId", (object?)input.DestinationFolderId ?? DBNull.Value);
+        command.Parameters.AddWithValue("atmosDestinationFolderId", (object?)input.AtmosDestinationFolderId ?? DBNull.Value);
         command.Parameters.AddWithValue("service", (object?)input.Service ?? DBNull.Value);
         command.Parameters.AddWithValue("preferredEngine", (object?)input.PreferredEngine ?? DBNull.Value);
         command.Parameters.AddWithValue("downloadVariantMode", (object?)input.DownloadVariantMode ?? DBNull.Value);
@@ -7504,9 +7511,17 @@ WHERE folder_id = @folderId;";
 
         const string clearPlaylistWatchPreferencesSql = @"
 UPDATE playlist_watch_preferences
-SET destination_folder_id = NULL,
+SET destination_folder_id = CASE
+        WHEN destination_folder_id = @folderId THEN NULL
+        ELSE destination_folder_id
+    END,
+    atmos_destination_folder_id = CASE
+        WHEN atmos_destination_folder_id = @folderId THEN NULL
+        ELSE atmos_destination_folder_id
+    END,
     updated_at = CURRENT_TIMESTAMP
-WHERE destination_folder_id = @folderId;";
+WHERE destination_folder_id = @folderId
+   OR atmos_destination_folder_id = @folderId;";
         await using (var command = new SqliteCommand(clearPlaylistWatchPreferencesSql, connection, transaction))
         {
             command.Parameters.AddWithValue("folderId", folderId);

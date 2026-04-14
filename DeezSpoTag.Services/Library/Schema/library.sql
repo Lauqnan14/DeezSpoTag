@@ -350,6 +350,7 @@ CREATE TABLE IF NOT EXISTS playlist_watch_preferences (
     source TEXT NOT NULL,
     source_id TEXT NOT NULL,
     destination_folder_id BIGINT,
+    atmos_destination_folder_id BIGINT,
     service TEXT,
     preferred_engine TEXT,
     download_variant_mode TEXT,

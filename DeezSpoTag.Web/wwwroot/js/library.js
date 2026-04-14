@@ -5,6 +5,7 @@ const libraryState = {
     aliasesLoaded: false,
     downloadLocation: null,
     atmosDestinationFolderId: null,
+    globalMultiQualityEnabled: false,
     videoDownloadLocation: null,
     podcastDownloadLocation: null,
     unavailableAlbums: new Map(),
@@ -7303,8 +7304,10 @@ async function loadDownloadLocation() {
     try {
         const data = await fetchJson('/api/getSettings');
         const settings = data?.settings || {};
+        const multiQuality = settings?.multiQuality || {};
         libraryState.downloadLocation = settings.downloadLocation || null;
-        libraryState.atmosDestinationFolderId = settings?.multiQuality?.secondaryDestinationFolderId ?? null;
+        libraryState.atmosDestinationFolderId = multiQuality.secondaryDestinationFolderId ?? null;
+        libraryState.globalMultiQualityEnabled = multiQuality.enabled === true || multiQuality.secondaryEnabled === true;
         libraryState.videoDownloadLocation = settings?.video?.videoDownloadLocation || null;
         libraryState.podcastDownloadLocation = settings?.podcast?.downloadLocation || null;
         const hint = document.getElementById('downloadLocationHint');
@@ -7469,6 +7472,7 @@ async function updateDownloadDestinations(destinationUpdate) {
     });
 
     libraryState.atmosDestinationFolderId = settings.multiQuality?.secondaryDestinationFolderId ?? null;
+    libraryState.globalMultiQualityEnabled = settings.multiQuality?.enabled === true || settings.multiQuality?.secondaryEnabled === true;
     libraryState.videoDownloadLocation = settings.video?.videoDownloadLocation || null;
     libraryState.podcastDownloadLocation = settings.podcast?.downloadLocation || null;
 }
@@ -11300,12 +11304,18 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         ...localPlaylistPrefs[prefKey]
     };
 
-    // Load routing rules, blocked track rules, and available playlist tracks in parallel.
-    const [existingRules, existingBlockRules, trackCandidatesResponse] = await Promise.all([
+    // Load routing rules, blocked track rules, available playlist tracks, and latest global download settings in parallel.
+    const [existingRules, existingBlockRules, trackCandidatesResponse, globalSettingsResponse] = await Promise.all([
         fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/routing-rules`).catch(() => []),
         fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/ignore-rules`).catch(() => []),
-        fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/tracks`).catch(() => null)
+        fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/tracks`).catch(() => null),
+        fetchJson('/api/getSettings').catch(() => null)
     ]);
+    const panelMultiQuality = globalSettingsResponse?.settings?.multiQuality;
+    const panelGlobalMultiQualityEnabled = panelMultiQuality
+        ? (panelMultiQuality.enabled === true || panelMultiQuality.secondaryEnabled === true)
+        : (libraryState.globalMultiQualityEnabled === true);
+    libraryState.globalMultiQualityEnabled = panelGlobalMultiQualityEnabled;
 
     const panel = document.createElement('div');
     panel.className = 'playlist-settings-panel watchlist-playlist-settings';
@@ -11418,6 +11428,33 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     folderSection.appendChild(folderSelect);
     panel.appendChild(folderSection);
 
+    // Section: Atmos destination folder
+    const atmosFolderSection = document.createElement('div');
+    atmosFolderSection.className = 'playlist-settings-section';
+    const atmosFolderTitle = document.createElement('div');
+    atmosFolderTitle.className = 'playlist-settings-section-title';
+    atmosFolderTitle.textContent = 'Atmos destination folder';
+    const atmosFolderSelect = document.createElement('select');
+    atmosFolderSelect.className = 'form-select ps-atmos-folder-select';
+    atmosFolderSelect.id = `ps-atmos-folder-${source}-${sourceId}`;
+    const globalAtmosOption = document.createElement('option');
+    globalAtmosOption.value = '';
+    globalAtmosOption.textContent = 'Use global Atmos folder';
+    atmosFolderSelect.appendChild(globalAtmosOption);
+    enabledFolders.forEach((folder) => {
+        const option = document.createElement('option');
+        option.value = String(folder.id ?? '');
+        option.textContent = String(folder.displayName || 'Folder');
+        atmosFolderSelect.appendChild(option);
+    });
+    const atmosFolderHint = document.createElement('div');
+    atmosFolderHint.className = 'playlist-settings-help';
+    atmosFolderHint.textContent = 'Used when download mode includes Atmos (Dual quality or Atmos only).';
+    atmosFolderSection.appendChild(atmosFolderTitle);
+    atmosFolderSection.appendChild(atmosFolderSelect);
+    atmosFolderSection.appendChild(atmosFolderHint);
+    panel.appendChild(atmosFolderSection);
+
     // Section: Server
     const serverSection = document.createElement('div');
     serverSection.className = 'playlist-settings-section';
@@ -11429,15 +11466,20 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     serverSelect.id = `ps-service-${source}-${sourceId}`;
     [
         { value: 'plex', label: 'Plex' },
-        { value: 'jellyfin', label: 'Jellyfin' }
+        { value: 'jellyfin', label: 'Jellyfin' },
+        { value: 'none', label: 'No media server (download only)' }
     ].forEach(({ value, label }) => {
         const option = document.createElement('option');
         option.value = value;
         option.textContent = label;
         serverSelect.appendChild(option);
     });
+    const serverHint = document.createElement('div');
+    serverHint.className = 'playlist-settings-help';
+    serverHint.textContent = 'Choose "No media server" to keep downloads without recreating server playlists.';
     serverSection.appendChild(serverTitle);
     serverSection.appendChild(serverSelect);
+    serverSection.appendChild(serverHint);
     panel.appendChild(serverSection);
 
     // Section: Download engine
@@ -11492,6 +11534,28 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     downloadModeSection.appendChild(downloadModeTitle);
     downloadModeSection.appendChild(downloadModeSelect);
     panel.appendChild(downloadModeSection);
+
+    const syncAtmosFolderVisibility = () => {
+        const selectedMode = String(downloadModeSelect?.value || 'standard').trim().toLowerCase();
+        const hasPlaylistAtmosMode = selectedMode === 'dual_quality' || selectedMode === 'atmos_only';
+        const followsGlobalDownloadSource = !String(engineSelect?.value || '').trim();
+        const canUseGlobalAtmos = followsGlobalDownloadSource && panelGlobalMultiQualityEnabled === true;
+        const shouldShowAtmosFolder = hasPlaylistAtmosMode || canUseGlobalAtmos;
+
+        atmosFolderSection.hidden = !shouldShowAtmosFolder;
+        atmosFolderSelect.disabled = !shouldShowAtmosFolder;
+        if (hasPlaylistAtmosMode) {
+            atmosFolderHint.textContent = 'Used when monitored playlist download mode includes Atmos.';
+        } else if (canUseGlobalAtmos) {
+            atmosFolderHint.textContent = 'Global multi-quality is enabled, so Atmos may be downloaded when following global download source.';
+        } else {
+            atmosFolderHint.textContent = 'Used when download mode includes Atmos (Dual quality or Atmos only).';
+        }
+    };
+
+    downloadModeSelect.addEventListener('change', syncAtmosFolderVisibility);
+    engineSelect.addEventListener('change', syncAtmosFolderVisibility);
+    syncAtmosFolderVisibility();
 
     const syncModeSection = document.createElement('div');
     syncModeSection.className = 'playlist-settings-section';
@@ -11970,6 +12034,7 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     // Pre-fill saved values after DOM is in the modal
     setTimeout(() => {
         const folderSel = panel.querySelector('.ps-folder-select');
+        const atmosFolderSel = panel.querySelector('.ps-atmos-folder-select');
         const serviceSel = panel.querySelector('.ps-service-select');
         const engineSel = panel.querySelector('.ps-engine-select');
         const downloadModeSel = panel.querySelector('.ps-download-mode-select');
@@ -11998,9 +12063,14 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
             }
         };
         if (folderSel && stored.folderId) folderSel.value = String(stored.folderId);
-        if (serviceSel && stored.service) serviceSel.value = stored.service;
+        if (atmosFolderSel) atmosFolderSel.value = stored.atmosFolderId ? String(stored.atmosFolderId) : '';
+        if (serviceSel) {
+            const normalizedService = String(stored.service || '').trim().toLowerCase();
+            serviceSel.value = normalizedService || 'plex';
+        }
         if (engineSel) engineSel.value = stored.preferredEngine || '';
         if (downloadModeSel) downloadModeSel.value = stored.downloadVariantMode || 'standard';
+        syncAtmosFolderVisibility();
         if (syncModeSel) syncModeSel.value = stored.syncMode || 'mirror';
         if (artworkToggle) artworkToggle.checked = stored.updateArtwork !== false;
         if (artworkReuseToggle) artworkReuseToggle.checked = stored.reuseSavedArtwork === true;
@@ -12056,6 +12126,7 @@ async function savePlaylistSettingsFromPanel({
                 source,
                 sourceId,
                 folderId: values.folderId,
+                atmosFolderId: values.atmosFolderId,
                 service: values.service,
                 preferredEngine: values.preferredEngine,
                 downloadVariantMode: values.downloadVariantMode,
@@ -12079,6 +12150,7 @@ async function savePlaylistSettingsFromPanel({
         // Update local prefs
         const updatedPref = {
             folderId: values.folderId ? String(values.folderId) : '',
+            atmosFolderId: values.atmosFolderId ? String(values.atmosFolderId) : '',
             service: values.service,
             preferredEngine: values.preferredEngine,
             downloadVariantMode: values.downloadVariantMode,
@@ -12102,6 +12174,7 @@ async function savePlaylistSettingsFromPanel({
 
 function collectPlaylistSettingsValues(panel) {
     const folderSel = panel.querySelector('.ps-folder-select');
+    const atmosFolderSel = panel.querySelector('.ps-atmos-folder-select');
     const serviceSel = panel.querySelector('.ps-service-select');
     const engineSel = panel.querySelector('.ps-engine-select');
     const downloadModeSel = panel.querySelector('.ps-download-mode-select');
@@ -12113,6 +12186,7 @@ function collectPlaylistSettingsValues(panel) {
         artworkReuseToggle?.checked === true);
     return {
         folderId: folderSel?.value ? Number(folderSel.value) : null,
+        atmosFolderId: atmosFolderSel?.value ? Number(atmosFolderSel.value) : null,
         service: serviceSel?.value || 'plex',
         preferredEngine: engineSel?.value || '',
         downloadVariantMode: downloadModeSel?.value || 'standard',
@@ -12231,6 +12305,9 @@ async function hydratePlaylistPreferences() {
         merged[key] = {
             ...merged[key],
             folderId: item.destinationFolderId || '',
+            atmosFolderId: item.atmosDestinationFolderId != null
+                ? String(item.atmosDestinationFolderId)
+                : (merged[key]?.atmosFolderId || ''),
             service: item.service || merged[key]?.service || 'plex',
             preferredEngine: item.preferredEngine || merged[key]?.preferredEngine || '',
             downloadVariantMode: item.downloadVariantMode || merged[key]?.downloadVariantMode || 'standard',
@@ -12250,11 +12327,15 @@ function storePlaylistPreference(source, sourceId, updates) {
 }
 
 async function persistPlaylistPreference(container, source, sourceId) {
+    const key = `${source}:${sourceId}`;
+    const existingPrefs = getStoredPreferences('playlistWatchlist');
     const folderSelect = container.querySelector(`[data-playlist-folder="${source}"][data-playlist-id="${sourceId}"]`);
+    const atmosFolderSelect = container.querySelector(`[data-playlist-atmos-folder="${source}"][data-playlist-id="${sourceId}"]`);
     const serviceSelect = container.querySelector(`[data-playlist-service="${source}"][data-playlist-id="${sourceId}"]`);
     const engineSelect = container.querySelector(`[data-playlist-engine="${source}"][data-playlist-id="${sourceId}"]`);
     const downloadModeSelect = container.querySelector(`[data-playlist-download-mode="${source}"][data-playlist-id="${sourceId}"]`);
     const folderId = folderSelect?.value || null;
+    const atmosFolderId = atmosFolderSelect?.value ?? (existingPrefs[key]?.atmosFolderId || '');
     const service = serviceSelect?.value || 'plex';
     const preferredEngine = engineSelect?.value || '';
     const downloadVariantMode = downloadModeSelect?.value || 'standard';
@@ -12266,6 +12347,7 @@ async function persistPlaylistPreference(container, source, sourceId) {
     const reuseSavedArtwork = normalizedArtwork.reuseSavedArtwork;
     storePlaylistPreference(source, sourceId, {
         folderId: folderId || '',
+        atmosFolderId: atmosFolderId || '',
         service,
         preferredEngine,
         downloadVariantMode,
@@ -12277,6 +12359,7 @@ async function persistPlaylistPreference(container, source, sourceId) {
         source,
         sourceId,
         folderId: folderId ? Number(folderId) : null,
+        atmosFolderId: atmosFolderId ? Number(atmosFolderId) : null,
         service,
         preferredEngine,
         downloadVariantMode,
@@ -12373,6 +12456,7 @@ async function savePlaylistPreferencesToServer(prefs) {
                 source: parts[0],
                 sourceId: parts.slice(1).join(':'),
                 folderId: value?.folderId ? Number(value.folderId) : null,
+                atmosFolderId: value?.atmosFolderId ? Number(value.atmosFolderId) : null,
                 service: value?.service || null,
                 preferredEngine: value?.preferredEngine || null,
                 updateArtwork: normalizedArtwork.updateArtwork,
