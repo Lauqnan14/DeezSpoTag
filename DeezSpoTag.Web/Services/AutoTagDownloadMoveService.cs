@@ -90,6 +90,14 @@ public sealed class AutoTagDownloadMoveService
         string DestinationPath,
         string? DestinationDir);
 
+    private sealed record RoutingMatchMetadata(
+        string Artist,
+        string Title,
+        string Album,
+        IReadOnlyList<string> Genres,
+        bool? Explicit,
+        string? ReleaseDate);
+
     private sealed record ResidualPaths(
         string RootIo,
         string SuccessIo,
@@ -220,6 +228,7 @@ public sealed class AutoTagDownloadMoveService
         var normalizedRootPath = ResolveExistingDirectoryPath(rootPath);
         var settings = _settingsService.LoadSettings();
         var items = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
+        items = await ReconcileMonitoredRoutingDestinationsAsync(items, normalizedRootPath, cancellationToken);
         var foldersById = await LoadFoldersByIdAsync(cancellationToken);
         await MoveRemainingContentByDestinationAsync(items, normalizedRootPath, settings, foldersById, summary, cancellationToken);
         var residualDestinationFolderId = ResolveResidualDestinationFolderId(items, normalizedRootPath);
@@ -353,6 +362,526 @@ public sealed class AutoTagDownloadMoveService
         }
 
         await PersistFinalDestinationsAsync(items, transitionsByQueue, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<DownloadQueueItem>> ReconcileMonitoredRoutingDestinationsAsync(
+        IReadOnlyList<DownloadQueueItem> items,
+        string rootPath,
+        CancellationToken cancellationToken)
+    {
+        if (items.Count == 0
+            || string.IsNullOrWhiteSpace(rootPath)
+            || !_libraryRepository.IsConfigured)
+        {
+            return items;
+        }
+
+        var updatedItems = new List<DownloadQueueItem>(items.Count);
+        var preferencesByPlaylist = new Dictionary<string, PlaylistWatchPreferenceDto?>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in items)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!IsCompletedStatus(item.Status)
+                || string.IsNullOrWhiteSpace(item.PayloadJson)
+                || !PayloadMentionsRoot(item.PayloadJson, rootPath))
+            {
+                updatedItems.Add(item);
+                continue;
+            }
+
+            JsonDocument? document = null;
+            try
+            {
+                document = JsonDocument.Parse(item.PayloadJson);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                updatedItems.Add(item);
+                continue;
+            }
+
+            using (document)
+            {
+                var payloadRoot = document.RootElement;
+                if (payloadRoot.ValueKind != JsonValueKind.Object
+                    || !TryReadWatchlistContext(payloadRoot, out var watchlistSource, out var watchlistPlaylistId))
+                {
+                    updatedItems.Add(item);
+                    continue;
+                }
+
+                var preferenceKey = BuildWatchPreferenceCacheKey(watchlistSource, watchlistPlaylistId);
+                if (!preferencesByPlaylist.TryGetValue(preferenceKey, out var preference))
+                {
+                    preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(
+                        watchlistSource,
+                        watchlistPlaylistId,
+                        cancellationToken);
+                    preferencesByPlaylist[preferenceKey] = preference;
+                }
+
+                if (preference?.RoutingRules is null || preference.RoutingRules.Count == 0)
+                {
+                    updatedItems.Add(item);
+                    continue;
+                }
+
+                var metadata = BuildRoutingMatchMetadata(item, rootPath, payloadRoot);
+                var currentDestinationFolderId = NormalizeDestinationFolderId(
+                    item.DestinationFolderId ?? ReadInt64Property(payloadRoot, "destinationFolderId"));
+                var defaultDestinationFolderId = currentDestinationFolderId;
+                var routedDestinationFolderId = NormalizeDestinationFolderId(
+                    ResolveRoutingFolderId(metadata, preference.RoutingRules, defaultDestinationFolderId));
+
+                if (routedDestinationFolderId == currentDestinationFolderId)
+                {
+                    updatedItems.Add(item);
+                    continue;
+                }
+
+                var updatedPayloadJson = item.PayloadJson;
+                var payloadUpdated = TryRewritePayloadDestinationFolderId(
+                    item.PayloadJson,
+                    routedDestinationFolderId,
+                    out var rewrittenPayloadJson);
+                if (payloadUpdated)
+                {
+                    updatedPayloadJson = rewrittenPayloadJson;
+                }
+
+                if (!string.IsNullOrWhiteSpace(item.QueueUuid))
+                {
+                    await _queueRepository.UpdateQueueMetadataAsync(
+                        item.QueueUuid,
+                        item.QualityRank,
+                        item.ContentType,
+                        routedDestinationFolderId,
+                        cancellationToken);
+                    if (payloadUpdated)
+                    {
+                        await _queueRepository.UpdatePayloadAsync(item.QueueUuid, updatedPayloadJson, cancellationToken);
+                    }
+                }
+
+                _logger.LogInformation(
+                    "Post-enrichment routing updated queue item {QueueUuid}: {PreviousDestination} -> {NextDestination}",
+                    item.QueueUuid,
+                    currentDestinationFolderId,
+                    routedDestinationFolderId);
+
+                updatedItems.Add(item with
+                {
+                    DestinationFolderId = routedDestinationFolderId,
+                    PayloadJson = updatedPayloadJson
+                });
+            }
+        }
+
+        return updatedItems;
+    }
+
+    private RoutingMatchMetadata BuildRoutingMatchMetadata(
+        DownloadQueueItem item,
+        string rootPath,
+        JsonElement payloadRoot)
+    {
+        var genres = ReadStringArrayProperty(payloadRoot, "genres");
+        if (genres.Count == 0)
+        {
+            genres = ParseGenreValues(ReadStringProperty(payloadRoot, "genre"));
+        }
+
+        var releaseDate = ReadStringProperty(payloadRoot, "releaseDate");
+        var explicitValue = ReadBooleanProperty(payloadRoot, "explicit");
+        var audioFilePath = ResolveRoutingAudioFilePath(rootPath, payloadRoot);
+        if (!string.IsNullOrWhiteSpace(audioFilePath))
+        {
+            var tagMetadata = ReadRoutingTagMetadata(audioFilePath);
+            if (tagMetadata.Genres.Count > 0)
+            {
+                genres = tagMetadata.Genres;
+            }
+
+            if (tagMetadata.ReleaseYear.HasValue)
+            {
+                releaseDate = tagMetadata.ReleaseYear.Value.ToString("D4");
+            }
+        }
+
+        return new RoutingMatchMetadata(
+            Artist: ReadStringProperty(payloadRoot, "artist") ?? item.ArtistName ?? string.Empty,
+            Title: ReadStringProperty(payloadRoot, "title") ?? item.TrackTitle ?? string.Empty,
+            Album: ReadStringProperty(payloadRoot, "album") ?? string.Empty,
+            Genres: genres,
+            Explicit: explicitValue,
+            ReleaseDate: releaseDate);
+    }
+
+    private static string BuildWatchPreferenceCacheKey(string source, string playlistId)
+    {
+        return $"{source.Trim().ToLowerInvariant()}|{playlistId.Trim()}";
+    }
+
+    private static long? NormalizeDestinationFolderId(long? destinationFolderId)
+    {
+        return destinationFolderId.HasValue && destinationFolderId.Value > 0
+            ? destinationFolderId.Value
+            : null;
+    }
+
+    private static string? ResolveRoutingAudioFilePath(string rootPath, JsonElement payloadRoot)
+    {
+        var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        CollectPayloadPaths(rootPath, payloadRoot, files, roots);
+        if (files.Count == 0)
+        {
+            return null;
+        }
+
+        foreach (var candidate in files.OrderBy(static path => path, StringComparer.OrdinalIgnoreCase))
+        {
+            var ioPath = DownloadPathResolver.ResolveIoPath(candidate);
+            if (string.IsNullOrWhiteSpace(ioPath)
+                || !IsAudioExtension(ioPath)
+                || !IOFile.Exists(ioPath))
+            {
+                continue;
+            }
+
+            return ioPath;
+        }
+
+        return null;
+    }
+
+    private (IReadOnlyList<string> Genres, int? ReleaseYear) ReadRoutingTagMetadata(string audioFilePath)
+    {
+        try
+        {
+            using var audioFile = TagLib.File.Create(audioFilePath);
+            var tag = audioFile.Tag;
+            if (tag is null)
+            {
+                return (Array.Empty<string>(), null);
+            }
+
+            var genres = NormalizeStringValues(tag.Genres);
+            var releaseYear = tag.Year > 0 && tag.Year <= int.MaxValue
+                ? (int?)tag.Year
+                : null;
+            return (genres, releaseYear);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to read audio tags for post-enrichment routing from {Path}", audioFilePath);
+            return (Array.Empty<string>(), null);
+        }
+    }
+
+    private static bool TryReadWatchlistContext(JsonElement payloadRoot, out string source, out string playlistId)
+    {
+        source = string.Empty;
+        playlistId = string.Empty;
+
+        if (TryReadWatchlistContextFromSourceIds(payloadRoot, out source, out playlistId))
+        {
+            return true;
+        }
+
+        if (!TryReadStringProperty(payloadRoot, new[] { "watchlistSource", "watchlist_source", "WatchlistSource" }, out source)
+            || !TryReadStringProperty(payloadRoot, new[] { "watchlistPlaylistId", "watchlist_playlist", "WatchlistPlaylistId" }, out playlistId))
+        {
+            return false;
+        }
+
+        return !string.IsNullOrWhiteSpace(source) && !string.IsNullOrWhiteSpace(playlistId);
+    }
+
+    private static bool TryReadWatchlistContextFromSourceIds(JsonElement payloadRoot, out string source, out string playlistId)
+    {
+        source = string.Empty;
+        playlistId = string.Empty;
+        if (!TryReadSourceIdsElement(payloadRoot, out var sourceIds))
+        {
+            return false;
+        }
+
+        if (!TryReadStringProperty(sourceIds, new[] { "watchlist_source", "watchlistSource", "WatchlistSource" }, out source)
+            || !TryReadStringProperty(sourceIds, new[] { "watchlist_playlist", "watchlistPlaylistId", "WatchlistPlaylistId" }, out playlistId))
+        {
+            return false;
+        }
+
+        return !string.IsNullOrWhiteSpace(source) && !string.IsNullOrWhiteSpace(playlistId);
+    }
+
+    private static bool TryReadSourceIdsElement(JsonElement payloadRoot, out JsonElement sourceIds)
+    {
+        if (TryGetPropertyIgnoreCase(payloadRoot, "source_ids", out sourceIds)
+            || TryGetPropertyIgnoreCase(payloadRoot, "sourceIds", out sourceIds))
+        {
+            return sourceIds.ValueKind == JsonValueKind.Object;
+        }
+
+        sourceIds = default;
+        return false;
+    }
+
+    private static bool TryReadStringProperty(JsonElement source, IReadOnlyList<string> propertyNames, out string value)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            var resolved = ReadStringProperty(source, propertyName);
+            if (string.IsNullOrWhiteSpace(resolved))
+            {
+                continue;
+            }
+
+            value = resolved.Trim();
+            return true;
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    private static IReadOnlyList<string> ReadStringArrayProperty(JsonElement source, string propertyName)
+    {
+        if (!TryGetPropertyIgnoreCase(source, propertyName, out var value))
+        {
+            return Array.Empty<string>();
+        }
+
+        if (value.ValueKind == JsonValueKind.Array)
+        {
+            return NormalizeStringValues(
+                value.EnumerateArray()
+                    .Select(item => item.ValueKind switch
+                    {
+                        JsonValueKind.String => item.GetString(),
+                        JsonValueKind.Number => item.GetRawText(),
+                        _ => null
+                    }));
+        }
+
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            return ParseGenreValues(value.GetString());
+        }
+
+        return Array.Empty<string>();
+    }
+
+    private static bool? ReadBooleanProperty(JsonElement source, string propertyName)
+    {
+        if (!TryGetPropertyIgnoreCase(source, propertyName, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.String when bool.TryParse(value.GetString(), out var parsed) => parsed,
+            _ => null
+        };
+    }
+
+    private static IReadOnlyList<string> ParseGenreValues(string? rawValue)
+    {
+        if (string.IsNullOrWhiteSpace(rawValue))
+        {
+            return Array.Empty<string>();
+        }
+
+        var split = rawValue
+            .Split(new[] { ';', ',', '/' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(static value => value.Trim());
+        return NormalizeStringValues(split);
+    }
+
+    private static IReadOnlyList<string> NormalizeStringValues(IEnumerable<string?> values)
+    {
+        var normalized = values
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value!.Trim())
+            .Where(static value => value.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return normalized;
+    }
+
+    private static long? ResolveRoutingFolderId(
+        RoutingMatchMetadata metadata,
+        IReadOnlyList<PlaylistTrackRoutingRule>? rules,
+        long? defaultFolderId)
+    {
+        if (rules is null || rules.Count == 0)
+        {
+            return defaultFolderId;
+        }
+
+        var matchedRule = rules
+            .OrderBy(static rule => rule.Order)
+            .FirstOrDefault(rule =>
+                RuleMatches(metadata, rule.ConditionField, rule.ConditionOperator, rule.ConditionValue));
+        return matchedRule?.DestinationFolderId ?? defaultFolderId;
+    }
+
+    private static bool RuleMatches(
+        RoutingMatchMetadata metadata,
+        string conditionField,
+        string conditionOperator,
+        string conditionValue)
+    {
+        var normalizedField = (conditionField ?? string.Empty).Trim().ToLowerInvariant();
+        return normalizedField switch
+        {
+            "artist" => EvalStringCondition(metadata.Artist, conditionOperator, conditionValue),
+            "title" => EvalStringCondition(metadata.Title, conditionOperator, conditionValue),
+            "album" => EvalStringCondition(metadata.Album, conditionOperator, conditionValue),
+            "genre" => EvalGenreCondition(metadata.Genres, conditionOperator, conditionValue),
+            "explicit" => string.Equals(
+                (conditionOperator ?? string.Empty).Trim(),
+                "is_true",
+                StringComparison.OrdinalIgnoreCase)
+                ? metadata.Explicit == true
+                : metadata.Explicit != true,
+            "year" => EvalYearCondition(metadata.ReleaseDate, conditionOperator, conditionValue),
+            _ => false
+        };
+    }
+
+    private static bool EvalStringCondition(string value, string op, string conditionValue)
+    {
+        var source = (value ?? string.Empty).Trim();
+        var ruleValue = (conditionValue ?? string.Empty).Trim();
+        var normalizedOperator = (op ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(ruleValue))
+        {
+            return false;
+        }
+
+        return normalizedOperator switch
+        {
+            "contains" => source.Contains(ruleValue, StringComparison.OrdinalIgnoreCase),
+            "equals" => string.Equals(source, ruleValue, StringComparison.OrdinalIgnoreCase),
+            "starts_with" => source.StartsWith(ruleValue, StringComparison.OrdinalIgnoreCase),
+            _ => false
+        };
+    }
+
+    private static bool EvalGenreCondition(IReadOnlyList<string>? genres, string op, string conditionValue)
+    {
+        if (genres is null || genres.Count == 0)
+        {
+            return false;
+        }
+
+        return genres.Any(genre => EvalStringCondition(genre, op, conditionValue));
+    }
+
+    private static bool EvalYearCondition(string? releaseDate, string op, string conditionValue)
+    {
+        if (!TryParseReleaseYear(releaseDate, out var trackYear)
+            || !int.TryParse((conditionValue ?? string.Empty).Trim(), out var ruleYear))
+        {
+            return false;
+        }
+
+        var normalizedOperator = (op ?? string.Empty).Trim().ToLowerInvariant();
+        return normalizedOperator switch
+        {
+            "gte" => trackYear >= ruleYear,
+            "lte" => trackYear <= ruleYear,
+            _ => trackYear == ruleYear
+        };
+    }
+
+    private static bool TryParseReleaseYear(string? releaseDate, out int year)
+    {
+        year = 0;
+        var value = (releaseDate ?? string.Empty).Trim();
+        if (value.Length < 4)
+        {
+            return false;
+        }
+
+        return int.TryParse(value[..4], out year);
+    }
+
+    private static bool TryRewritePayloadDestinationFolderId(
+        string payloadJson,
+        long? destinationFolderId,
+        out string updatedPayloadJson)
+    {
+        updatedPayloadJson = payloadJson;
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return false;
+        }
+
+        JsonObject? root;
+        try
+        {
+            root = JsonNode.Parse(payloadJson) as JsonObject;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
+
+        if (root is null || !TrySetNullableInt64Property(root, "destinationFolderId", destinationFolderId))
+        {
+            return false;
+        }
+
+        updatedPayloadJson = root.ToJsonString();
+        return true;
+    }
+
+    private static bool TrySetNullableInt64Property(JsonObject root, string propertyName, long? value)
+    {
+        var key = root.Select(property => property.Key)
+                      .FirstOrDefault(existing => string.Equals(existing, propertyName, StringComparison.OrdinalIgnoreCase))
+                  ?? propertyName;
+        root.TryGetPropertyValue(key, out var existingNode);
+        var existingValue = TryReadNullableInt64(existingNode);
+        if (existingValue == value)
+        {
+            return false;
+        }
+
+        root[key] = value.HasValue ? JsonValue.Create(value.Value) : null;
+        return true;
+    }
+
+    private static long? TryReadNullableInt64(JsonNode? node)
+    {
+        if (node is null)
+        {
+            return null;
+        }
+
+        if (node is JsonValue valueNode)
+        {
+            if (valueNode.TryGetValue<long>(out var number))
+            {
+                return number;
+            }
+
+            if (valueNode.TryGetValue<string>(out var text)
+                && long.TryParse(text, out var parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return null;
     }
 
     private static void PopulatePayloadSourceMaps(
