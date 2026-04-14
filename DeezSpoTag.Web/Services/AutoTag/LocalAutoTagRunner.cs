@@ -3353,7 +3353,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static void WriteDiscNumberTag(TagLib.File file, TagWriteExecutionContext context)
     {
-        if (!context.EnabledTags.Contains(DiscNumberTag) || !context.SourceTrack.DiscNumber.HasValue)
+        if (!context.EnabledTags.Contains(DiscNumberTag)
+            || !context.EffectiveTagSettings.DiscNumber
+            || !context.SourceTrack.DiscNumber.HasValue)
         {
             return;
         }
@@ -3363,12 +3365,18 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static void WriteTrackNumberTag(TagLib.File file, TagWriteExecutionContext context)
     {
-        if (!context.EnabledTags.Contains(TrackNumberTag) || !context.SourceTrack.TrackNumber.HasValue)
+        if (!context.EnabledTags.Contains(TrackNumberTag)
+            || !context.EffectiveTagSettings.TrackNumber
+            || !context.SourceTrack.TrackNumber.HasValue)
         {
             return;
         }
 
-        var total = context.EnabledTags.Contains(TrackTotalTag) ? context.SourceTrack.TrackTotal : null;
+        var total = context.EnabledTags.Contains(TrackTotalTag)
+            && context.EffectiveTagSettings.TrackTotal
+            && context.SourceTrack.TrackTotal is > 0
+            ? context.SourceTrack.TrackTotal
+            : null;
         SetTrackNumber(file, context.Extension, context.SourceTrack.TrackNumber.Value, total, SupportedTag.TrackNumber, context.Config, isDisc: false);
     }
 
@@ -3403,8 +3411,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             tagWriteContext,
             "ITUNESADVISORY",
             SupportedTag.Explicit,
-            new List<string> { context.SourceTrack.Explicit.Value ? "1" : "2" },
-            force: true);
+            new List<string> { context.SourceTrack.Explicit.Value ? "1" : "2" });
     }
 
     private static void WriteOtherTags(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -3438,7 +3445,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        SetRaw(tagWriteContext, TaggedDateTag, SupportedTag.MetaTags, new List<string> { $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}_AT" }, force: true);
+        SetRaw(tagWriteContext, TaggedDateTag, SupportedTag.MetaTags, new List<string> { $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}_AT" });
     }
 
     private static bool ShouldWriteSyncedLyrics(TagWriteExecutionContext context)
@@ -3780,11 +3787,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static bool ShouldOverwriteTag(AutoTagRunnerConfig config, SupportedTag tag)
     {
-        if (tag == SupportedTag.MetaTags || tag == SupportedTag.Explicit)
-        {
-            return true;
-        }
-
         if (config.Overwrite)
         {
             return true;
@@ -4035,7 +4037,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.UnsyncedLyrics => tag.GetField("LYRICS").Length > 0,
             SupportedTag.SyncedLyrics => false,
             SupportedTag.AlbumArt => tag.Pictures?.Length > 0,
-            SupportedTag.Explicit => tag.GetField("COMMENT").Any(v => string.Equals(v, "Explicit", StringComparison.OrdinalIgnoreCase)),
+            SupportedTag.Explicit => tag.GetField("ITUNESADVISORY").Length > 0
+                || tag.GetField("COMMENT").Any(v => string.Equals(v, "Explicit", StringComparison.OrdinalIgnoreCase)),
             _ => false
         };
     }
@@ -4571,11 +4574,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
         {
-            WriteVorbisTrackNumber(file, numberText, total, isDisc);
+            WriteVorbisTrackNumber(file, numberText, total, tag, config, isDisc);
             return;
         }
 
-        WriteMp4TrackNumber(file, number, total, isDisc, extension);
+        WriteMp4TrackNumber(file, number, total, tag, config, isDisc, extension);
     }
 
     private static void WriteId3TrackNumber(
@@ -4597,32 +4600,58 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         frame.Text = new[] { value };
     }
 
-    private static void WriteVorbisTrackNumber(TagLib.File file, string numberText, int? total, bool isDisc)
+    private static void WriteVorbisTrackNumber(
+        TagLib.File file,
+        string numberText,
+        int? total,
+        SupportedTag tag,
+        AutoTagRunnerConfig config,
+        bool isDisc)
     {
         var vorbis = (TagLib.Ogg.XiphComment)file.GetTag(TagTypes.Xiph, true);
         var field = isDisc ? "DISCNUMBER" : "TRACKNUMBER";
+        if (!ShouldOverwriteTag(config, tag) && TagRawProbe.HasVorbisRaw(vorbis, field))
+        {
+            return;
+        }
+
         SetVorbisRaw(vorbis, field, new List<string> { numberText }, "");
         if (!isDisc && total.HasValue)
         {
-            SetVorbisRaw(vorbis, "TRACKTOTAL", new List<string> { total.Value.ToString(CultureInfo.InvariantCulture) }, "");
+            if (ShouldOverwriteTag(config, SupportedTag.TrackTotal) || !TagRawProbe.HasVorbisRaw(vorbis, "TRACKTOTAL"))
+            {
+                SetVorbisRaw(vorbis, "TRACKTOTAL", new List<string> { total.Value.ToString(CultureInfo.InvariantCulture) }, "");
+            }
         }
     }
 
-    private static void WriteMp4TrackNumber(TagLib.File file, int number, int? total, bool isDisc, string extension)
+    private static void WriteMp4TrackNumber(
+        TagLib.File file,
+        int number,
+        int? total,
+        SupportedTag tag,
+        AutoTagRunnerConfig config,
+        bool isDisc,
+        string extension)
     {
         if (!IsMp4Family(extension))
         {
             return;
         }
 
-        file.Tag.Track = (uint)number;
-        if (!isDisc && total.HasValue)
+        if (!ShouldOverwriteTag(config, tag) && (isDisc ? file.Tag.Disc > 0 : file.Tag.Track > 0))
         {
-            file.Tag.TrackCount = (uint)total.Value;
+            return;
         }
 
         if (!isDisc)
         {
+            file.Tag.Track = (uint)number;
+            if (total.HasValue
+                && (ShouldOverwriteTag(config, SupportedTag.TrackTotal) || file.Tag.TrackCount == 0))
+            {
+                file.Tag.TrackCount = (uint)total.Value;
+            }
             return;
         }
 
