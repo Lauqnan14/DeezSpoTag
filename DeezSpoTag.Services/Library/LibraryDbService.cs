@@ -165,6 +165,7 @@ public sealed class LibraryDbService
         await EnsureIndexAsync(connection, "idx_audio_file_folder_relative", AudioFileTable, "folder_id, relative_path", unique: true, cancellationToken);
         await BackfillAudioFileRelativePathsAsync(connection, cancellationToken);
         await BackfillAudioFileVariantsAsync(connection, cancellationToken);
+        await BackfillAudioFileAtmosQualityRanksAsync(connection, cancellationToken);
 
         await EnsureColumnAsync(connection, DownloadTaskTable, "lyrics_status", TextType, cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "file_extension", TextType, cancellationToken);
@@ -792,6 +793,18 @@ SET audio_variant = CASE
     ELSE 'stereo'
 END
 WHERE audio_variant IS NULL OR TRIM(audio_variant) = '';";
+
+        await using var command = new SqliteCommand(sql, connection);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task BackfillAudioFileAtmosQualityRanksAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        const string sql = @"
+UPDATE audio_file
+SET quality_rank = 5
+WHERE LOWER(TRIM(COALESCE(audio_variant, ''))) = 'atmos'
+  AND COALESCE(quality_rank, 0) < 5;";
 
         await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);

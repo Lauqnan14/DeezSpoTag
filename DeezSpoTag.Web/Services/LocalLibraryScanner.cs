@@ -772,6 +772,12 @@ public sealed class LocalLibraryScanner
         }
 
         trackData.AudioVariant = ResolveAudioVariant(trackData.FilePath, trackData.Codec, trackData.Channels);
+        if (string.Equals(trackData.AudioVariant, AudioVariantResolver.AtmosVariant, StringComparison.OrdinalIgnoreCase)
+            && (!trackData.QualityRank.HasValue || trackData.QualityRank.Value < 5))
+        {
+            trackData.QualityRank = 5;
+        }
+
         trackData.TagTitle ??= trackData.TrackTitle;
         trackData.TagArtist ??= artistName;
         trackData.TagAlbum ??= albumTitle;
