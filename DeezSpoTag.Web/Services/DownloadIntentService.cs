@@ -5370,6 +5370,7 @@ public sealed class DownloadIntentService
         }
 
         SetPayloadId(payload, existing.QueueUuid);
+        ApplySourceSettingsSnapshot(payload, context.Settings);
         var replacementJson = JsonSerializer.Serialize(payload);
         await _queueRepository.UpdateEngineAsync(existing.QueueUuid, context.Identity.Engine, cancellationToken);
         await _queueRepository.UpdateQueueMetadataAsync(
@@ -5399,6 +5400,7 @@ public sealed class DownloadIntentService
         where TPayload : class
     {
         SetPayloadId(payload, existing.QueueUuid);
+        ApplySourceSettingsSnapshot(payload, context.Settings);
         var replacementJson = JsonSerializer.Serialize(payload);
         await _queueRepository.UpdateEngineAsync(existing.QueueUuid, context.Identity.Engine, cancellationToken);
         await _queueRepository.UpdateQueueMetadataAsync(
@@ -5428,6 +5430,7 @@ public sealed class DownloadIntentService
         CancellationToken cancellationToken)
         where TPayload : class
     {
+        ApplySourceSettingsSnapshot(payload, context.Settings);
         var json = JsonSerializer.Serialize(payload);
         var item = new DownloadQueueItem(
             Id: 0,
@@ -5676,6 +5679,16 @@ public sealed class DownloadIntentService
         }
 
         idProperty.SetValue(payloadObject, queueUuid);
+    }
+
+    private static void ApplySourceSettingsSnapshot<TPayload>(TPayload payload, DeezSpoTagSettings settings)
+    {
+        if (payload is not EngineQueueItemBase queuePayload)
+        {
+            return;
+        }
+
+        queuePayload.SourceSettingsSnapshot = QueueSourceSettingsSnapshot.Capture(settings);
     }
 
     private sealed record EnqueueItemDecision(

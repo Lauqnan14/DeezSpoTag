@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
 using Xunit;
 
@@ -127,6 +129,45 @@ public sealed class FallbackPayloadNormalizerTests
         Assert.Equal("isrc", state.FallbackPlan[0].ResolutionStrategy);
         Assert.Equal("custom-1", state.FallbackPlan[1].StepId);
         Assert.Equal("songlink_url", state.FallbackPlan[1].ResolutionStrategy);
+    }
+
+    [Fact]
+    public void ResolveCanonicalState_UsesQueuedSourceSettingsSnapshot_WhenRebuildingSources()
+    {
+        var item = CreateQueueItem(engine: "deezer");
+        var globalSettings = new DeezSpoTagSettings
+        {
+            Service = "auto",
+            MaxBitrate = 1,
+            TidalQuality = "LOSSLESS",
+            QobuzQuality = "6",
+            AppleMusic = new AppleMusicSettings
+            {
+                PreferredAudioProfile = "aac"
+            }
+        };
+        var snapshot = new QueueSourceSettingsSnapshot
+        {
+            Service = "auto",
+            MaxBitrate = 9,
+            TidalQuality = "HI_RES_LOSSLESS",
+            QobuzQuality = "27",
+            ApplePreferredAudioProfile = "alac",
+            FallbackBitrate = true,
+            StrictEngineQuality = false
+        };
+        var payload = new JsonObject
+        {
+            ["SourceSettingsSnapshot"] = JsonSerializer.SerializeToNode(snapshot)
+        };
+
+        var state = FallbackPayloadNormalizer.ResolveCanonicalState(item, globalSettings, payload);
+
+        Assert.NotEmpty(state.AutoSources);
+        Assert.Equal("qobuz|27", state.AutoSources[0]);
+        Assert.Contains("tidal|HI_RES_LOSSLESS", state.AutoSources);
+        Assert.Contains("apple|ALAC", state.AutoSources);
+        Assert.Contains("deezer|9", state.AutoSources);
     }
 
     [Fact]
