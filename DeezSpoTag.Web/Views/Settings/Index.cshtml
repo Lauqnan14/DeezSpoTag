@@ -428,8 +428,8 @@
 }
 
 .server-library-pin-controls {
-    display: grid;
-    grid-template-columns: auto minmax(180px, 280px) minmax(180px, 280px) auto auto;
+    display: flex;
+    flex-wrap: wrap;
     gap: 10px;
     align-items: center;
     margin-bottom: 8px;
@@ -444,7 +444,9 @@
 
 .server-library-pin-controls input {
     width: 100%;
-    min-width: 0;
+    min-width: 180px;
+    max-width: 280px;
+    flex: 1 1 220px;
     padding: 8px 10px;
 }
 
@@ -643,7 +645,14 @@
     }
 
     .server-library-pin-controls {
-        grid-template-columns: 1fr;
+        align-items: stretch;
+    }
+
+    .server-library-pin-controls input,
+    .server-library-pin-controls .action-btn {
+        min-width: 0;
+        max-width: none;
+        width: 100%;
     }
 }
 </style>
@@ -1296,6 +1305,14 @@
                         <span class="material-icons">lock</span>
                         <span>Lock</span>
                     </button>
+                    <button type="button" class="action-btn action-btn-sm" id="changeServerLibrariesPinBtn" hidden>
+                        <span class="material-icons">edit</span>
+                        <span>Change PIN</span>
+                    </button>
+                    <button type="button" class="action-btn action-btn-sm" id="resetServerLibrariesPinBtn" hidden>
+                        <span class="material-icons">lock_reset</span>
+                        <span>Reset PIN</span>
+                    </button>
                 </div>
                 <div id="serverLibraryPinStatus" class="server-library-pin-status">Hidden libraries are locked.</div>
                 <div id="serverLibraryStatus" class="server-library-status">Loading server libraries...</div>
@@ -1351,9 +1368,10 @@ let settingsSaveQueued = false;
 let settingsSaveQueuedToast = false;
 let mediaServerLibraryConfig = null;
 let mediaServerLibraryAdvancedUnlocked = false;
+let mediaServerLibraryPinConfigured = false;
 let mediaServerLibraryAutoSaveTimer = 0;
 let mediaServerLibraryAutoSaveInFlight = false;
-const SERVER_LIBRARY_PIN_STORAGE_KEY = 'deezspotag-server-library-pin';
+const SERVER_LIBRARY_LEGACY_PIN_STORAGE_KEY = 'deezspotag-server-library-pin';
 const APPLE_NOTIFICATION_MODE_KEY = 'apple-download-notification-mode';
 const engineQualityOptions = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
     DeezSpoTag.Services.Download.QualityCatalog.GetEngineQualityOptions()
@@ -2235,9 +2253,149 @@ function setMediaServerLibraryPinStatus(message, isError = false) {
     status.style.color = isError ? 'var(--danger-color)' : 'var(--text-muted)';
 }
 
-function hasMediaServerLibraryPinConfigured() {
-    const pin = localStorage.getItem(SERVER_LIBRARY_PIN_STORAGE_KEY);
-    return typeof pin === 'string' && pin.trim().length > 0;
+function normalizeMediaServerLibraryPin(value) {
+    return String(value || '').trim();
+}
+
+function getLegacyMediaServerLibraryPin() {
+    try {
+        return normalizeMediaServerLibraryPin(localStorage.getItem(SERVER_LIBRARY_LEGACY_PIN_STORAGE_KEY));
+    } catch {
+        return '';
+    }
+}
+
+function clearLegacyMediaServerLibraryPin() {
+    try {
+        localStorage.removeItem(SERVER_LIBRARY_LEGACY_PIN_STORAGE_KEY);
+    } catch {
+    }
+}
+
+async function readMediaServerLibraryPinApiError(response, fallback) {
+    if (!response) {
+        return fallback;
+    }
+
+    try {
+        const payload = await response.json();
+        const error = typeof payload?.error === 'string' ? payload.error.trim() : '';
+        if (error) {
+            return error;
+        }
+    } catch {
+    }
+
+    return fallback;
+}
+
+async function requestMediaServerLibraryPinUnlock(pin, confirmationPin = '') {
+    const response = await fetch('/api/media-server/soundtracks/pin/unlock', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+            pin,
+            confirmationPin
+        })
+    });
+
+    if (!response.ok) {
+        throw new Error(await readMediaServerLibraryPinApiError(response, `HTTP ${response.status}: ${response.statusText}`));
+    }
+
+    const payload = await response.json();
+    return {
+        unlocked: payload?.unlocked === true,
+        created: payload?.created === true
+    };
+}
+
+async function requestMediaServerLibraryPinChange(currentPin, newPin, confirmationPin) {
+    const response = await fetch('/api/media-server/soundtracks/pin/change', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+            currentPin,
+            newPin,
+            confirmationPin
+        })
+    });
+
+    if (!response.ok) {
+        throw new Error(await readMediaServerLibraryPinApiError(response, `HTTP ${response.status}: ${response.statusText}`));
+    }
+}
+
+async function requestMediaServerLibraryPinReset(currentPin) {
+    const response = await fetch('/api/media-server/soundtracks/pin/reset', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+            currentPin
+        })
+    });
+
+    if (!response.ok) {
+        throw new Error(await readMediaServerLibraryPinApiError(response, `HTTP ${response.status}: ${response.statusText}`));
+    }
+
+    const payload = await response.json();
+    return payload?.configured === true;
+}
+
+async function loadMediaServerLibraryPinState() {
+    try {
+        const response = await fetch('/api/media-server/soundtracks/pin/status', {
+            credentials: 'same-origin'
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const payload = await response.json();
+        mediaServerLibraryPinConfigured = payload?.configured === true;
+
+        if (!mediaServerLibraryPinConfigured) {
+            const legacyPin = getLegacyMediaServerLibraryPin();
+            if (legacyPin) {
+                const migrated = await requestMediaServerLibraryPinUnlock(legacyPin, legacyPin);
+                if (migrated.unlocked) {
+                    mediaServerLibraryPinConfigured = true;
+                    clearLegacyMediaServerLibraryPin();
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Failed to load media server PIN state.', error);
+        mediaServerLibraryPinConfigured = normalizeMediaServerLibraryPin(getLegacyMediaServerLibraryPin()).length > 0;
+        setMediaServerLibraryPinStatus('PIN state sync failed. Falling back to local browser PIN state.', true);
+    } finally {
+        updateMediaServerLibraryPinControls();
+    }
+}
+
+function promptForMediaServerLibraryPin(promptMessage) {
+    const raw = window.prompt(promptMessage);
+    if (raw === null) {
+        return null;
+    }
+
+    const value = normalizeMediaServerLibraryPin(raw);
+    if (!value) {
+        return null;
+    }
+
+    return value;
 }
 
 function setMediaServerLibraryUnlockButtonLabel(text) {
@@ -2257,26 +2415,36 @@ function updateMediaServerLibraryPinControls() {
     const pinConfirmInput = document.getElementById('serverLibraryPinConfirmInput');
     const unlockButton = document.getElementById('unlockServerLibrariesBtn');
     const lockButton = document.getElementById('lockServerLibrariesBtn');
-    if (!pinInput || !pinConfirmInput || !unlockButton || !lockButton) {
+    const changeButton = document.getElementById('changeServerLibrariesPinBtn');
+    const resetButton = document.getElementById('resetServerLibrariesPinBtn');
+    if (!pinInput || !pinConfirmInput || !unlockButton || !lockButton || !changeButton || !resetButton) {
         return;
     }
 
     if (mediaServerLibraryAdvancedUnlocked) {
         pinInput.disabled = true;
+        pinInput.hidden = true;
+        pinInput.value = '';
+        pinInput.placeholder = mediaServerLibraryPinConfigured ? 'PIN is set' : 'Create PIN';
         pinConfirmInput.disabled = true;
         pinConfirmInput.value = '';
         pinConfirmInput.placeholder = 'Confirm PIN';
         pinConfirmInput.hidden = true;
         unlockButton.hidden = true;
         lockButton.hidden = false;
+        changeButton.hidden = !mediaServerLibraryPinConfigured;
+        resetButton.hidden = !mediaServerLibraryPinConfigured;
         setMediaServerLibraryPinStatus('Hidden libraries are unlocked for editing.');
         return;
     }
 
     pinInput.disabled = false;
+    pinInput.hidden = false;
     unlockButton.hidden = false;
     lockButton.hidden = true;
-    if (hasMediaServerLibraryPinConfigured()) {
+    changeButton.hidden = !mediaServerLibraryPinConfigured;
+    resetButton.hidden = !mediaServerLibraryPinConfigured;
+    if (mediaServerLibraryPinConfigured) {
         setMediaServerLibraryUnlockButtonLabel('Unlock');
         pinInput.placeholder = 'Enter PIN';
         pinConfirmInput.disabled = true;
@@ -2290,6 +2458,8 @@ function updateMediaServerLibraryPinControls() {
         pinConfirmInput.disabled = false;
         pinConfirmInput.placeholder = 'Confirm new PIN';
         pinConfirmInput.hidden = false;
+        changeButton.hidden = true;
+        resetButton.hidden = true;
         setMediaServerLibraryPinStatus('No PIN configured yet. Enter and confirm a new PIN to unlock.');
     }
 }
@@ -2307,25 +2477,26 @@ function bindMediaServerLibraryPinActions() {
     const pinConfirmInput = document.getElementById('serverLibraryPinConfirmInput');
     const unlockButton = document.getElementById('unlockServerLibrariesBtn');
     const lockButton = document.getElementById('lockServerLibrariesBtn');
-    if (!pinInput || !pinConfirmInput || !unlockButton || !lockButton || unlockButton.dataset.bound === 'true') {
+    const changeButton = document.getElementById('changeServerLibrariesPinBtn');
+    const resetButton = document.getElementById('resetServerLibrariesPinBtn');
+    if (!pinInput || !pinConfirmInput || !unlockButton || !lockButton || !changeButton || !resetButton || unlockButton.dataset.bound === 'true') {
         return;
     }
 
-    unlockButton.addEventListener('click', () => {
-        const entered = String(pinInput.value || '').trim();
+    unlockButton.addEventListener('click', async () => {
+        const entered = normalizeMediaServerLibraryPin(pinInput.value);
         if (!entered) {
             setMediaServerLibraryPinStatus('Enter a PIN first.', true);
             return;
         }
 
-        const stored = String(localStorage.getItem(SERVER_LIBRARY_PIN_STORAGE_KEY) || '').trim();
-        if (!stored) {
+        const confirmation = normalizeMediaServerLibraryPin(pinConfirmInput.value);
+        if (!mediaServerLibraryPinConfigured) {
             if (entered.length < 4) {
                 setMediaServerLibraryPinStatus('PIN must be at least 4 characters.', true);
                 return;
             }
 
-            const confirmation = String(pinConfirmInput.value || '').trim();
             if (!confirmation) {
                 setMediaServerLibraryPinStatus('Confirm your new PIN.', true);
                 return;
@@ -2335,31 +2506,114 @@ function bindMediaServerLibraryPinActions() {
                 setMediaServerLibraryPinStatus('PIN confirmation does not match.', true);
                 return;
             }
+        }
 
-            localStorage.setItem(SERVER_LIBRARY_PIN_STORAGE_KEY, entered);
+        unlockButton.disabled = true;
+        try {
+            const result = await requestMediaServerLibraryPinUnlock(
+                entered,
+                mediaServerLibraryPinConfigured ? '' : confirmation);
+            if (!result.unlocked) {
+                setMediaServerLibraryPinStatus('PIN unlock failed.', true);
+                return;
+            }
+
+            mediaServerLibraryPinConfigured = true;
+            clearLegacyMediaServerLibraryPin();
             pinInput.value = '';
             pinConfirmInput.value = '';
             setMediaServerLibraryAdvancedUnlocked(true);
-            setMediaServerLibraryPinStatus('PIN created. Hidden libraries are now unlocked.');
-            return;
+            if (result.created) {
+                setMediaServerLibraryPinStatus('PIN created. Hidden libraries are now unlocked.');
+            } else {
+                setMediaServerLibraryPinStatus('Hidden libraries are unlocked for editing.');
+            }
+        } catch (error) {
+            setMediaServerLibraryPinStatus(error?.message || 'Failed to unlock hidden libraries.', true);
+        } finally {
+            unlockButton.disabled = false;
         }
-
-        if (entered !== stored) {
-            setMediaServerLibraryPinStatus('Invalid PIN.', true);
-            return;
-        }
-
-        pinInput.value = '';
-        pinConfirmInput.value = '';
-        setMediaServerLibraryAdvancedUnlocked(true);
     });
 
     lockButton.addEventListener('click', () => {
         setMediaServerLibraryAdvancedUnlocked(false);
     });
 
+    changeButton.addEventListener('click', async () => {
+        if (!mediaServerLibraryPinConfigured) {
+            setMediaServerLibraryPinStatus('No PIN is configured yet.', true);
+            return;
+        }
+
+        const currentPin = promptForMediaServerLibraryPin('Enter your current PIN to change it:');
+        if (!currentPin) {
+            setMediaServerLibraryPinStatus('PIN change canceled.', true);
+            return;
+        }
+
+        const newPin = promptForMediaServerLibraryPin('Enter your new PIN:');
+        if (!newPin) {
+            setMediaServerLibraryPinStatus('PIN change canceled.', true);
+            return;
+        }
+
+        const confirmationPin = promptForMediaServerLibraryPin('Confirm your new PIN:');
+        if (!confirmationPin) {
+            setMediaServerLibraryPinStatus('PIN change canceled.', true);
+            return;
+        }
+
+        changeButton.disabled = true;
+        try {
+            await requestMediaServerLibraryPinChange(currentPin, newPin, confirmationPin);
+            mediaServerLibraryPinConfigured = true;
+            clearLegacyMediaServerLibraryPin();
+            pinInput.value = '';
+            pinConfirmInput.value = '';
+            updateMediaServerLibraryPinControls();
+            setMediaServerLibraryPinStatus('PIN changed successfully.');
+        } catch (error) {
+            setMediaServerLibraryPinStatus(error?.message || 'Failed to change PIN.', true);
+        } finally {
+            changeButton.disabled = false;
+        }
+    });
+
+    resetButton.addEventListener('click', async () => {
+        if (!mediaServerLibraryPinConfigured) {
+            setMediaServerLibraryPinStatus('No PIN is configured yet.', true);
+            return;
+        }
+
+        const currentPin = promptForMediaServerLibraryPin('Enter your current PIN to reset it:');
+        if (!currentPin) {
+            setMediaServerLibraryPinStatus('PIN reset canceled.', true);
+            return;
+        }
+
+        if (!window.confirm('Reset the PIN? Hidden libraries will lock until a new PIN is set.')) {
+            return;
+        }
+
+        resetButton.disabled = true;
+        try {
+            const configured = await requestMediaServerLibraryPinReset(currentPin);
+            mediaServerLibraryPinConfigured = configured === true;
+            clearLegacyMediaServerLibraryPin();
+            pinInput.value = '';
+            pinConfirmInput.value = '';
+            setMediaServerLibraryAdvancedUnlocked(false);
+            setMediaServerLibraryPinStatus('PIN reset. Hidden libraries are now locked.', false);
+        } catch (error) {
+            setMediaServerLibraryPinStatus(error?.message || 'Failed to reset PIN.', true);
+        } finally {
+            resetButton.disabled = false;
+        }
+    });
+
     unlockButton.dataset.bound = 'true';
     updateMediaServerLibraryPinControls();
+    void loadMediaServerLibraryPinState();
 }
 
 function applyLibraryHideToggleForRow(row) {

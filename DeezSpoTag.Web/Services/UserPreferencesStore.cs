@@ -113,4 +113,8 @@ public sealed class UserPreferencesDto
 
     // Home / Search
     public JsonElement? SpotiflacRecentSearches { get; set; }
+
+    // Settings / Media server library PIN
+    public string? MediaServerLibraryPinHash { get; set; }
+    public string? MediaServerLibraryPinSalt { get; set; }
 }

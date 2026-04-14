@@ -103,6 +103,39 @@ public sealed class MediaServerSoundtrackConfigurationUpdateRequest
     public List<MediaServerSoundtrackServerPreferenceUpdateDto> Servers { get; set; } = new();
 }
 
+public sealed class MediaServerLibraryPinStatusDto
+{
+    public bool Configured { get; set; }
+}
+
+public sealed class MediaServerLibraryPinUnlockRequest
+{
+    public string? Pin { get; set; }
+
+    public string? ConfirmationPin { get; set; }
+}
+
+public sealed class MediaServerLibraryPinUnlockResultDto
+{
+    public bool Unlocked { get; set; }
+
+    public bool Created { get; set; }
+}
+
+public sealed class MediaServerLibraryPinChangeRequest
+{
+    public string? CurrentPin { get; set; }
+
+    public string? NewPin { get; set; }
+
+    public string? ConfirmationPin { get; set; }
+}
+
+public sealed class MediaServerLibraryPinResetRequest
+{
+    public string? CurrentPin { get; set; }
+}
+
 public abstract class MediaServerLibraryContentBase
 {
     public string ServerType { get; set; } = string.Empty;
