@@ -31,6 +31,7 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public string WatchlistPlaylistId { get; set; } = "";
     public string WatchlistTrackId { get; set; } = "";
     public string Cover { get; set; } = "";
+    public QueueSourceSettingsSnapshot SourceSettingsSnapshot { get; set; } = new();
     public List<string> AutoSources { get; set; } = new();
     public int AutoIndex { get; set; }
     public string Quality { get; set; } = "";

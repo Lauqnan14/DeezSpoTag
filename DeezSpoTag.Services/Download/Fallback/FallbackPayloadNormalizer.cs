@@ -3,6 +3,7 @@ using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
 
 namespace DeezSpoTag.Services.Download.Fallback;
@@ -64,7 +65,8 @@ public static class FallbackPayloadNormalizer
             }
         }
 
-        var resolvedAutoSources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
+        var effectiveSettings = ResolveFallbackSettings(settings, payloadObj);
+        var resolvedAutoSources = DownloadSourceOrder.ResolveQualityAutoSources(effectiveSettings, includeDeezer: true, targetQuality: null);
         var resolvedFirstStep = resolvedAutoSources.Count > 0
             ? DownloadSourceOrder.DecodeAutoSource(resolvedAutoSources[0])
             : new DownloadSourceOrder.AutoSourceStep(item.Engine ?? DefaultEngine, null);
@@ -82,6 +84,12 @@ public static class FallbackPayloadNormalizer
             })
             .ToList();
         return new CanonicalFallbackState(resolvedAutoSources, resolvedFallbackPlan, resolvedFirstStep);
+    }
+
+    private static DeezSpoTagSettings ResolveFallbackSettings(DeezSpoTagSettings settings, JsonObject payloadObj)
+    {
+        var snapshot = QueueSourceSettingsSnapshot.ReadFromPayload(payloadObj);
+        return snapshot?.ApplyTo(settings) ?? settings;
     }
 
     public static bool ApplyCanonicalState(JsonObject payloadObj, CanonicalFallbackState state, bool resetIndexAndHistory)
