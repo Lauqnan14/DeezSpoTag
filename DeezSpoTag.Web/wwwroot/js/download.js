@@ -341,18 +341,6 @@ DeezSpoTag.Download = {
     getAppleNotificationMode() {
         return this.normalizeAppleNotificationMode(this.appleNotifications.mode);
     },
-    isAppleDownload(downloadId) {
-        if (!downloadId) {
-            return false;
-        }
-        const fromMap = this.normalizeEngine(this.engineById[downloadId] || '');
-        if (fromMap === 'apple') {
-            return true;
-        }
-        const item = this.queue.items.find((entry) => entry.id === downloadId);
-        const fromItem = this.normalizeEngine(item?.engine || '');
-        return fromItem === 'apple';
-    },
     queueAppleNotification(kind) {
         if (kind === 'started') {
             this.appleNotifications.started += 1;
@@ -395,7 +383,7 @@ DeezSpoTag.Download = {
             } else if (pending.completed > 0) {
                 type = 'success';
             }
-            this.showNotification(`Apple downloads: ${parts.join(', ')}`, type);
+            this.showNotification(`Downloads: ${parts.join(', ')}`, type);
         }
 
         pending.started = 0;
@@ -715,17 +703,14 @@ DeezSpoTag.Download = {
                 this.connection.on("startDownload", (data) => {
                     const downloadId = data?.uuid || data;
                     if (!downloadId) return;
-                    const engine = this.engineById[downloadId];
-                    if (engine === 'apple') {
-                        const mode = this.normalizeAppleNotificationMode(this.appleNotifications.mode);
-                        if (mode === 'merged') {
-                            this.queueAppleNotification('started');
-                        } else if (mode === 'detailed') {
-                            const meta = this.downloadMetaById[downloadId] || {};
-                            const titlePart = meta.title ? `: ${meta.title}` : '';
-                            const qualityPart = meta.quality ? ` (${meta.quality})` : '';
-                            this.showNotification(`Apple download started${titlePart}${qualityPart}`, 'info');
-                        }
+                    const mode = this.getAppleNotificationMode();
+                    if (mode === 'merged') {
+                        this.queueAppleNotification('started');
+                    } else if (mode === 'detailed') {
+                        const meta = this.downloadMetaById[downloadId] || {};
+                        const titlePart = meta.title ? `: ${meta.title}` : '';
+                        const qualityPart = meta.quality ? ` (${meta.quality})` : '';
+                        this.showNotification(`Download started${titlePart}${qualityPart}`, 'info');
                     }
                     this.logDownloadEvent('info', 'download started', downloadId);
                 });
@@ -747,9 +732,8 @@ DeezSpoTag.Download = {
 
                 this.connection.on("downloadWarn", (warning) => {
                     const message = warning?.data?.message || warning?.message || 'Download warning';
-                    const isApple = this.isAppleDownload(warning?.uuid || warning?.id);
                     const mode = this.getAppleNotificationMode();
-                    if (!(isApple && mode !== 'detailed')) {
+                    if (mode === 'detailed') {
                         this.showNotification(message, 'warning');
                     }
                     this.logDownloadEvent('warning', `download warning: ${message}`, warning?.uuid);
@@ -760,9 +744,8 @@ DeezSpoTag.Download = {
                     const message = (typeof details === 'string' ? details : details?.message)
                         || warning?.message
                         || 'Download warning';
-                    const isApple = this.isAppleDownload(warning?.uuid || warning?.id);
                     const mode = this.getAppleNotificationMode();
-                    if (!(isApple && mode !== 'detailed')) {
+                    if (mode === 'detailed') {
                         this.showNotification(message, 'warning');
                     }
                     this.logDownloadEvent('warning', `download warning: ${message}`, warning?.uuid);
@@ -2204,14 +2187,10 @@ DeezSpoTag.Download = {
             result: result
         });
         this.updateQueueDisplay();
-        if (this.isAppleDownload(downloadId)) {
-            const mode = this.normalizeAppleNotificationMode(this.appleNotifications.mode);
-            if (mode === 'merged') {
-                this.queueAppleNotification('completed');
-            } else if (mode === 'detailed') {
-                this.showNotification('Download completed successfully!', 'success');
-            }
-        } else {
+        const mode = this.getAppleNotificationMode();
+        if (mode === 'merged') {
+            this.queueAppleNotification('completed');
+        } else if (mode === 'detailed') {
             this.showNotification('Download completed successfully!', 'success');
         }
         this.logDownloadEvent('success', 'download completed', downloadId);
@@ -2223,14 +2202,10 @@ DeezSpoTag.Download = {
             error: error
         });
         this.updateQueueDisplay();
-        if (this.isAppleDownload(downloadId)) {
-            const mode = this.normalizeAppleNotificationMode(this.appleNotifications.mode);
-            if (mode === 'merged') {
-                this.queueAppleNotification('failed');
-            } else if (mode === 'detailed') {
-                this.showNotification(`Download failed: ${error.message}`, 'error');
-            }
-        } else {
+        const mode = this.getAppleNotificationMode();
+        if (mode === 'merged') {
+            this.queueAppleNotification('failed');
+        } else if (mode === 'detailed') {
             this.showNotification(`Download failed: ${error.message}`, 'error');
         }
         this.logDownloadEvent('error', `download failed: ${error.message || 'unknown error'}`, downloadId);
