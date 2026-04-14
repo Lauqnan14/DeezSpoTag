@@ -11,7 +11,7 @@ public sealed class DownloadSourceOrderFallbackParityTests
     private static readonly string[] ExpectedQobuzStrictQuality = { "qobuz|6" };
 
     [Fact]
-    public void ResolveQualityAutoSources_UsesConfiguredEngineQualities_WhenServiceIsAuto()
+    public void ResolveQualityAutoSources_UsesCanonicalQualityOrder_WhenServiceIsAuto()
     {
         var settings = new DeezSpoTagSettings
         {
@@ -27,12 +27,12 @@ public sealed class DownloadSourceOrderFallbackParityTests
 
         var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
 
-        Assert.Equal("qobuz|6", sources[0]);
-        Assert.Equal("tidal|LOSSLESS", sources[1]);
+        Assert.Equal("qobuz|27", sources[0]);
+        Assert.Equal("tidal|HI_RES_LOSSLESS", sources[1]);
         Assert.Equal("apple|ALAC", sources[2]);
-        Assert.DoesNotContain("qobuz|27", sources);
-        Assert.DoesNotContain("tidal|HI_RES_LOSSLESS", sources);
-        Assert.DoesNotContain("deezer|9", sources);
+        Assert.Contains("qobuz|6", sources);
+        Assert.Contains("tidal|LOSSLESS", sources);
+        Assert.Contains("deezer|9", sources);
         Assert.Contains("deezer|3", sources);
         Assert.Contains("deezer|1", sources);
     }
@@ -57,8 +57,7 @@ public sealed class DownloadSourceOrderFallbackParityTests
         Assert.Equal("deezer|3", sources[0]);
         Assert.DoesNotContain("qobuz|6", sources);
         Assert.DoesNotContain("tidal|LOSSLESS", sources);
-        Assert.Contains("apple|AAC", sources);
-        Assert.Contains("deezer|1", sources);
+        Assert.Equal(new[] { "deezer|3", "deezer|1" }, sources);
     }
 
     [Fact]

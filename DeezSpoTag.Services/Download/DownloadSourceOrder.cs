@@ -81,17 +81,9 @@ public static class DownloadSourceOrder
     {
         var forcedService = settings.Service?.Trim().ToLowerInvariant();
         var includeAtmos = string.Equals(targetQuality, "atmos", StringComparison.OrdinalIgnoreCase);
-        List<string> sources;
-        if (string.Equals(forcedService, AutoService, StringComparison.OrdinalIgnoreCase))
-        {
-            sources = BuildAutoSourcesByConfiguredQuality(settings, includeDeezer, includeAtmos);
-        }
-        else
-        {
-            sources = BuildAutoSources(
-                includeDeezer,
-                profile => ShouldIncludeQualityProfile(profile, forcedService, includeAtmos));
-        }
+        var sources = BuildAutoSources(
+            includeDeezer,
+            profile => ShouldIncludeQualityProfile(profile, forcedService, includeAtmos));
 
         if (string.IsNullOrWhiteSpace(targetQuality))
         {
@@ -110,84 +102,6 @@ public static class DownloadSourceOrder
         });
 
         return startIndex >= 0 ? sources.Skip(startIndex).ToList() : sources;
-    }
-
-    private static List<string> BuildAutoSourcesByConfiguredQuality(
-        DeezSpoTagSettings settings,
-        bool includeDeezer,
-        bool includeAtmos)
-    {
-        var engineOrder = AutoPriority
-            .Select(profile => profile.Source)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var engineQualities = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var engine in engineOrder)
-        {
-            if (!TryResolveEngineQualities(settings, includeDeezer, includeAtmos, engine, out var qualities))
-            {
-                continue;
-            }
-
-            engineQualities[engine] = qualities;
-        }
-
-        if (engineQualities.Count == 0)
-        {
-            return new List<string>();
-        }
-
-        return CollapseAutoSourcesByService(BuildInterleavedSources(engineOrder, engineQualities));
-    }
-
-    private static bool TryResolveEngineQualities(
-        DeezSpoTagSettings settings,
-        bool includeDeezer,
-        bool includeAtmos,
-        string engine,
-        out List<string> qualities)
-    {
-        qualities = new List<string>();
-        if ((!includeDeezer && string.Equals(engine, DeezerSource, StringComparison.OrdinalIgnoreCase))
-            || !IsSourceAvailable(engine))
-        {
-            return false;
-        }
-
-        var preferredQuality = ResolvePreferredQuality(settings, engine);
-        qualities = ResolveEngineQualitySources(engine, preferredQuality, strict: false)
-            .Select(DecodeAutoSource)
-            .Select(step => step.Quality)
-            .Where(quality =>
-                !string.IsNullOrWhiteSpace(quality)
-                && (includeAtmos || !string.Equals(quality, "atmos", StringComparison.OrdinalIgnoreCase)))
-            .Select(quality => quality!)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        return qualities.Count > 0;
-    }
-
-    private static List<string> BuildInterleavedSources(
-        IReadOnlyList<string> engineOrder,
-        Dictionary<string, List<string>> engineQualities)
-    {
-        var maxDepth = engineQualities.Values.Max(qualities => qualities.Count);
-        var sources = new List<string>();
-        for (var depth = 0; depth < maxDepth; depth++)
-        {
-            foreach (var engine in engineOrder)
-            {
-                if (!engineQualities.TryGetValue(engine, out var qualities) || depth >= qualities.Count)
-                {
-                    continue;
-                }
-
-                sources.Add(EncodeAutoSource(engine, qualities[depth]));
-            }
-        }
-
-        return sources;
     }
 
     public static List<string> ResolveEngineQualitySources(string engine, string? requestedQuality, bool strict)
