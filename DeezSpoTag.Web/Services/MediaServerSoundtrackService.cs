@@ -52,6 +52,7 @@ public sealed partial class MediaServerSoundtrackService
     private const string SpotifyUriPattern = @"^spotify:(?<type>album|playlist|track):(?<id>[A-Za-z0-9]{22})$";
     private const string DeezerWebLinkPattern = @"deezer\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?(?<type>album|playlist|track)\/(?<id>\d+)";
     private static readonly TimeSpan SoundtrackCacheTtl = TimeSpan.FromHours(12);
+    private static readonly TimeSpan LibraryConnectedFreshWindow = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan RegexDynamicTimeout = TimeSpan.FromMilliseconds(RegexTimeoutMilliseconds);
     private static readonly string[] SoundtrackNoiseTokens =
     {
@@ -1668,6 +1669,7 @@ public sealed partial class MediaServerSoundtrackService
 
         var category = NormalizeCategory(saved?.Category ?? live?.Category);
         var name = ResolveLibraryDisplayName(saved, live, id);
+        var connected = IsLibraryConnected(saved, live);
         return new MediaServerSoundtrackLibraryDto
         {
             LibraryId = id,
@@ -1676,10 +1678,28 @@ public sealed partial class MediaServerSoundtrackService
             CategoryLabel = GetCategoryLabel(category),
             Enabled = saved?.Enabled ?? serverSettings.AutoIncludeNewLibraries,
             Ignored = saved?.Ignored ?? false,
-            Connected = live != null,
+            Connected = connected,
             FirstDiscoveredUtc = saved?.FirstDiscoveredUtc,
             LastSeenUtc = saved?.LastSeenUtc
         };
+    }
+
+    private static bool IsLibraryConnected(
+        MediaServerSoundtrackLibrarySettings? saved,
+        MediaServerLibraryDescriptor? live)
+    {
+        if (live != null)
+        {
+            return true;
+        }
+
+        if (saved?.LastSeenUtc is not DateTimeOffset lastSeenUtc)
+        {
+            return false;
+        }
+
+        var age = DateTimeOffset.UtcNow - lastSeenUtc;
+        return age <= LibraryConnectedFreshWindow;
     }
 
     private static string ResolveLibraryDisplayName(
