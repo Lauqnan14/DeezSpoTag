@@ -5,6 +5,7 @@ namespace DeezSpoTag.Core.Models;
 
 public class Album
 {
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     public string Id { get; set; }
     public string Title { get; set; }
     public string? QobuzId { get; set; }
@@ -59,7 +60,24 @@ public class Album
 
     public string GetCleanTitle()
     {
-        return Title; // Placeholder
+        var title = Title ?? string.Empty;
+        var patterns = new[]
+        {
+            @"\s*\((feat|ft|featuring)\.?\s+.*?\)",
+            @"\s*\[(feat|ft|featuring)\.?\s+.*?\]",
+            @"\s*(feat|ft|featuring)\.?\s+.*$"
+        };
+        foreach (var pattern in patterns)
+        {
+            title = System.Text.RegularExpressions.Regex.Replace(
+                title,
+                pattern,
+                "",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase,
+                RegexTimeout);
+        }
+
+        return title.Trim();
     }
 
     public void ParseAlbum(ApiAlbum albumAPI)
