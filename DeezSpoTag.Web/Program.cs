@@ -181,12 +181,6 @@ static void ConfigureTlsRuntime(IConfiguration configuration)
         Console.WriteLine("TLS security override requested, but only TLS 1.2+ with certificate validation is allowed.");
     }
 
-    ServicePointManager.ServerCertificateValidationCallback = null;
-    ServicePointManager.CheckCertificateRevocationList = true;
-    ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
-    ServicePointManager.Expect100Continue = false;
-    ServicePointManager.UseNagleAlgorithm = false;
-    ServicePointManager.DefaultConnectionLimit = 10;
 }
 
 static string ConfigureDatabaseConnections(WebApplicationBuilder builder, string libraryDataDir)

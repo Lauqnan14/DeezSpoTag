@@ -84,7 +84,7 @@ internal static class Program
         var beatportConfig = new BeatportMatchConfig();
         var beatsourceConfig = new BeatsourceMatchConfig();
         var bpmConfig = new BpmSupremeConfig();
-        var itunesConfig = new ITunesMatchConfig();
+        var itunesConfig = new ItunesMatchConfig();
         var deezerConfig = new DeezerConfig();
         var discogsConfig = new DiscogsConfig();
 
@@ -125,7 +125,7 @@ internal static class Program
                         "bandcamp" => await provider.GetRequiredService<BandcampMatcher>().MatchAsync(info, matchingConfig, CancellationToken.None),
                         "beatsource" => await provider.GetRequiredService<BeatsourceMatcher>().MatchAsync(info, matchingConfig, beatsourceConfig, CancellationToken.None),
                         "bpmsupreme" => await provider.GetRequiredService<BpmSupremeMatcher>().MatchAsync(info, matchingConfig, bpmConfig, CancellationToken.None),
-                        "itunes" => await provider.GetRequiredService<ITunesMatcher>().MatchAsync(info, matchingConfig, itunesConfig, CancellationToken.None),
+                        "itunes" => await provider.GetRequiredService<ItunesMatcher>().MatchAsync(info, matchingConfig, itunesConfig, CancellationToken.None),
                         "deezer" => await provider.GetRequiredService<DeezerMatcher>().MatchAsync(info, matchingConfig, deezerConfig, CancellationToken.None),
                         "musixmatch" => await provider.GetRequiredService<MusixmatchMatcher>().MatchAsync(info, CancellationToken.None),
                         _ => null
@@ -213,6 +213,7 @@ internal static class Program
                     logs.Add(log);
                 }
             },
+            null,
             CancellationToken.None);
 
         var afterTags = DumpTags(targetFile);
@@ -395,7 +396,7 @@ internal static class Program
         services.AddTransient<BeatsourceTokenManager>();
         services.AddTransient<BeatsourceClient>();
         services.AddTransient<BpmSupremeClient>();
-        services.AddTransient<ITunesClient>();
+        services.AddTransient<ItunesClient>();
         services.AddTransient<DeezerClient>();
         services.AddTransient<MusixmatchClient>();
 
@@ -407,7 +408,7 @@ internal static class Program
         services.AddTransient<BandcampMatcher>();
         services.AddTransient<BeatsourceMatcher>();
         services.AddTransient<BpmSupremeMatcher>();
-        services.AddTransient<ITunesMatcher>();
+        services.AddTransient<ItunesMatcher>();
         services.AddTransient<DeezerMatcher>();
         services.AddTransient<MusixmatchMatcher>();
     }
