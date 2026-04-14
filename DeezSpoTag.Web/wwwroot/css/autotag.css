@@ -1595,6 +1595,9 @@ body.autotag-col-resizing * {
 .folder-modal-content {
     width: min(980px, 96vw);
     max-height: 92dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
 }
 
 .folder-modal-header,
