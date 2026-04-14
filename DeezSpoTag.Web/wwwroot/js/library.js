@@ -7025,11 +7025,11 @@ function resolveFolderDestinationFlags(folder) {
     const normalizedPath = normalizePath(folder.rootPath || '');
     const currentVideoPath = normalizePath(libraryState.videoDownloadLocation || '');
     const currentPodcastPath = normalizePath(libraryState.podcastDownloadLocation || '');
-    const isAtmosDestination = folder.id === libraryState.atmosDestinationFolderId || desiredQuality.toUpperCase() === 'ATMOS';
+    const isAtmosDestination = folder.id === libraryState.atmosDestinationFolderId;
     const isVideoDestination = normalizedPath.length > 0
-        && (normalizedPath === currentVideoPath || desiredQuality.toUpperCase() === 'VIDEO');
+        && normalizedPath === currentVideoPath;
     const isPodcastDestination = normalizedPath.length > 0
-        && (normalizedPath === currentPodcastPath || desiredQuality.toUpperCase() === 'PODCAST');
+        && normalizedPath === currentPodcastPath;
 
     return { desiredQuality, isAtmosDestination, isVideoDestination, isPodcastDestination };
 }
@@ -7073,9 +7073,13 @@ function populateFolderModalDestinationFields(folder, flags) {
 
     const qualityField = document.getElementById('folderQuality');
     if (qualityField) {
-        qualityField.value = (flags.isAtmosDestination || flags.isVideoDestination || flags.isPodcastDestination)
-            ? '27'
-            : flags.desiredQuality;
+        const desiredQuality = String(flags.desiredQuality || '').trim();
+        const qualityOptions = Array.from(qualityField.options || []);
+        const exactMatch = qualityOptions.find((option) => option.value === desiredQuality);
+        const caseInsensitiveMatch = !exactMatch
+            ? qualityOptions.find((option) => option.value.localeCompare(desiredQuality, undefined, { sensitivity: 'accent' }) === 0)
+            : null;
+        qualityField.value = (exactMatch || caseInsensitiveMatch)?.value || '27';
     }
 }
 
@@ -8230,12 +8234,12 @@ function renderFolders() {
         { value: '180d', label: '6 months' }
     ];
     const getFolderDestinationFlags = (folder) => {
-        const currentQuality = String(folder?.desiredQuality ?? '27').toUpperCase();
-        const isAtmosDestination = folder?.id === libraryState.atmosDestinationFolderId || currentQuality === 'ATMOS';
-        const isVideoDestination = normalizePath(folder?.rootPath) === normalizePath(libraryState.videoDownloadLocation || '')
-            || currentQuality === 'VIDEO';
-        const isPodcastDestination = normalizePath(folder?.rootPath) === normalizePath(libraryState.podcastDownloadLocation || '')
-            || currentQuality === 'PODCAST';
+        const normalizedPath = normalizePath(folder?.rootPath);
+        const isAtmosDestination = folder?.id === libraryState.atmosDestinationFolderId;
+        const isVideoDestination = normalizedPath.length > 0
+            && normalizedPath === normalizePath(libraryState.videoDownloadLocation || '');
+        const isPodcastDestination = normalizedPath.length > 0
+            && normalizedPath === normalizePath(libraryState.podcastDownloadLocation || '');
         return { isAtmosDestination, isVideoDestination, isPodcastDestination };
     };
     const foldersForDisplay = (libraryState.folders || [])
