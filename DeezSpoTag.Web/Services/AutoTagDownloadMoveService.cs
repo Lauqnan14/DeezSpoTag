@@ -2221,12 +2221,15 @@ public sealed class AutoTagDownloadMoveService
 
     private static bool TryGetPropertyIgnoreCase(JsonElement source, string propertyName, out JsonElement value)
     {
-        if (source.ValueKind == JsonValueKind.Object)
+        if (source.ValueKind == JsonValueKind.Object && !string.IsNullOrWhiteSpace(propertyName))
         {
-            var property = source.EnumerateObject().FirstOrDefault(property =>
-                string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase));
-            if (property.Name != null)
+            foreach (var property in source.EnumerateObject())
             {
+                if (!string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
                 value = property.Value;
                 return true;
             }
