@@ -936,6 +936,21 @@
     gap: 20px;
 }
 
+.app-modal-dialog.playlist-settings-modal {
+    width: min(980px, 96vw);
+    max-height: 92dvh;
+}
+
+.app-modal-dialog.playlist-settings-modal .app-modal-body {
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.app-modal-dialog.playlist-settings-modal .app-modal-content {
+    min-height: 0;
+}
+
 .playlist-settings-section {
     display: flex;
     flex-direction: column;

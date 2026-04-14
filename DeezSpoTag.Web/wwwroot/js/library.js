@@ -12015,6 +12015,7 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         title: `Settings — ${playlistName}`,
         message: '',
         allowHtml: false,
+        dialogClass: 'is-resizable playlist-settings-modal',
         contentElement: panel,
         buttons: [
             { label: 'Save', value: 'save', primary: true },
