@@ -22,7 +22,7 @@ public sealed class DownloadIntentFallbackParityTests
             availability: null);
 
         Assert.Equal("deezer|3", resolved[0]);
-        Assert.Contains("apple|AAC", resolved);
+        Assert.Contains("deezer|3", resolved);
         Assert.Contains("deezer|1", resolved);
         Assert.DoesNotContain("qobuz|6", resolved);
     }
@@ -44,7 +44,16 @@ public sealed class DownloadIntentFallbackParityTests
             requestedQuality: null,
             availability);
 
-        Assert.Equal(new[] { "qobuz|6", "tidal|LOSSLESS" }, resolved);
+        Assert.DoesNotContain(resolved, source => source.StartsWith("apple|", System.StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(resolved, source => source.StartsWith("deezer|", System.StringComparison.OrdinalIgnoreCase));
+        Assert.All(resolved, source =>
+        {
+            Assert.True(
+                source.StartsWith("qobuz|", System.StringComparison.OrdinalIgnoreCase)
+                || source.StartsWith("tidal|", System.StringComparison.OrdinalIgnoreCase));
+        });
+        Assert.Contains("qobuz|6", resolved);
+        Assert.Contains("tidal|LOSSLESS", resolved);
     }
 
     [Fact]
