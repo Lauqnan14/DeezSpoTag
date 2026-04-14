@@ -2655,7 +2655,6 @@ function applyLibraryHideToggleForRow(row) {
     if (hidden) {
         includeInput.checked = false;
     }
-    includeInput.disabled = hidden;
 }
 
 function applyLibraryHideTogglesWithinCard(card) {
@@ -2721,7 +2720,7 @@ function renderMediaServerLibraryConfiguration(configuration) {
                     <td class="server-library-include-cell" data-library-category="${escapeHtml(categoryKey)}">
                         <label for="${escapeHtml(includeToggleId)}" class="visually-hidden">Include ${escapeHtml(libraryName)}</label>
                         <span class="switch">
-                            <input id="${escapeHtml(includeToggleId)}" type="checkbox" data-library-include="${escapeHtml(libraryId)}" ${include ? 'checked' : ''} ${hidden ? 'disabled' : ''}>
+                            <input id="${escapeHtml(includeToggleId)}" type="checkbox" data-library-include="${escapeHtml(libraryId)}" ${include ? 'checked' : ''}>
                             <span class="slider"></span>
                         </span>
                     </td>${
@@ -2940,10 +2939,25 @@ function bindMediaServerLibraryActions() {
             return;
         }
 
-        if (!input.matches('[data-library-hide]')) {
-            if (input.matches('[data-library-include], [data-server-autoinclude]')) {
-                queueMediaServerLibraryAutoSave();
+        if (input.matches('[data-library-include]')) {
+            if (input.checked) {
+                const row = input.closest('[data-library-row]');
+                const hideInput = row?.querySelector('[data-library-hide]');
+                if (hideInput instanceof HTMLInputElement && hideInput.checked) {
+                    hideInput.checked = false;
+                }
             }
+
+            queueMediaServerLibraryAutoSave();
+            return;
+        }
+
+        if (input.matches('[data-server-autoinclude]')) {
+            queueMediaServerLibraryAutoSave();
+            return;
+        }
+
+        if (!input.matches('[data-library-hide]')) {
             return;
         }
 
