@@ -36,6 +36,24 @@ public static class EngineAudioPostDownloadHelper
     private const string PausedStatus = "paused";
     private const string CanceledStatus = "canceled";
     private const string UpdateQueueEvent = "updateQueue";
+    private static readonly HashSet<string> KnownAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".flac",
+        ".mp3",
+        ".m4a",
+        ".mp4",
+        ".aac",
+        ".alac",
+        ".wav",
+        ".aif",
+        ".aiff",
+        ".ogg",
+        ".oga",
+        ".opus",
+        ".wma",
+        ".mka",
+        ".webm"
+    };
 
     public sealed record EngineTrackContext(
         Track Track,
@@ -159,7 +177,7 @@ public static class EngineAudioPostDownloadHelper
 
         var downloadType = ResolveDownloadType(payload, downloadTypeResolver);
         var pathResult = pathProcessor.GeneratePaths(track, downloadType, settings);
-        var filenameStem = Path.GetFileNameWithoutExtension(pathResult.Filename);
+        var filenameStem = ResolveFilenameStem(pathResult.Filename);
         if (string.IsNullOrWhiteSpace(filenameStem))
         {
             filenameStem = pathResult.Filename;
@@ -167,6 +185,24 @@ public static class EngineAudioPostDownloadHelper
 
         var outputDir = DownloadPathResolver.ResolveIoPath(pathResult.FilePath);
         return new EngineTrackContext(track, pathResult, outputDir, $"literal:{filenameStem}");
+    }
+
+    private static string ResolveFilenameStem(string filename)
+    {
+        if (string.IsNullOrWhiteSpace(filename))
+        {
+            return string.Empty;
+        }
+
+        var normalized = filename.Trim();
+        var extension = Path.GetExtension(normalized);
+        if (string.IsNullOrWhiteSpace(extension) || !KnownAudioExtensions.Contains(extension))
+        {
+            return normalized;
+        }
+
+        var stem = Path.GetFileNameWithoutExtension(normalized);
+        return string.IsNullOrWhiteSpace(stem) ? normalized : stem;
     }
 
     private static Track CreateTrackFromPayload(

@@ -351,6 +351,13 @@ public class Track : AudioFeaturesBase
     {
         switch (settings.FeaturedToTitle)
         {
+            case "0":
+                Title = GetCleanTitle();
+                if (Album != null)
+                {
+                    Album.Title = Album.GetCleanTitle();
+                }
+                break;
             case "1":
                 Title = GetCleanTitle();
                 break;
@@ -548,8 +555,13 @@ public class Track : AudioFeaturesBase
 
     private static string RemoveFeatures(string title)
     {
-        // Simplified feature removal
-        var patterns = new[] { @"\s*\(feat\..*?\)", @"\s*\[feat\..*?\]", @"\s*feat\..*" };
+        // Remove trailing collaboration suffixes from title variants.
+        var patterns = new[]
+        {
+            @"\s*\((feat|ft|featuring)\.?\s+.*?\)",
+            @"\s*\[(feat|ft|featuring)\.?\s+.*?\]",
+            @"\s*(feat|ft|featuring)\.?\s+.*$"
+        };
         foreach (var pattern in patterns)
         {
             title = System.Text.RegularExpressions.Regex.Replace(
