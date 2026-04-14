@@ -334,7 +334,8 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             return false;
         }
 
-        var resolvedBitrate = DownloadSourceOrder.ResolveDeezerBitrate(settings, payload.Bitrate);
+        var requestedBitrate = ResolveRequestedBitrate(payload);
+        var resolvedBitrate = DownloadSourceOrder.ResolveDeezerBitrate(settings, requestedBitrate);
         track.Bitrate = resolvedBitrate;
         track.Source = payload.SourceService;
         track.SourceId = payload.DeezerId;
@@ -1297,6 +1298,18 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         {
             await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken);
         }
+    }
+
+    private static int ResolveRequestedBitrate(DeezerQueueItem payload)
+    {
+        if (payload.Bitrate > 0)
+        {
+            return payload.Bitrate;
+        }
+
+        return int.TryParse(payload.Quality, out var parsedQuality) && parsedQuality > 0
+            ? parsedQuality
+            : 0;
     }
 
     private static void UpdatePayloadFiles(DeezerQueueItem payload, string outputPath)
