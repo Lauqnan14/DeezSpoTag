@@ -2924,19 +2924,18 @@ function getSelectedLibraryViewFolder() {
 
 async function runLocalScan(refreshImages = false, reset = false) {
     try {
-        const selectedFolderId = getSelectedLibraryViewFolderId();
-        const url = buildLibraryScanUrl(selectedFolderId, refreshImages, reset);
+        const url = buildLibraryScanUrl(refreshImages, reset);
         const scanStartedAt = Date.now();
-        showToast(selectedFolderId === null ? 'Library scan started.' : 'Folder scan started.');
+        showToast('Library scan started.');
         await fetchJson(url, { method: 'POST', keepalive: true });
         waitForScanCompletion(scanStartedAt);
-        showToast(resolveLibraryScanSuccessMessage(selectedFolderId, refreshImages, reset));
+        showToast(resolveLibraryScanSuccessMessage(refreshImages, reset));
     } catch (error) {
         showToast(`Refresh failed: ${error.message}`, true);
     }
 }
 
-function buildLibraryScanUrl(selectedFolderId, refreshImages, reset) {
+function buildLibraryScanUrl(refreshImages, reset) {
     const params = new URLSearchParams();
     if (refreshImages) {
         params.set('refreshImages', 'true');
@@ -2944,27 +2943,17 @@ function buildLibraryScanUrl(selectedFolderId, refreshImages, reset) {
     if (reset) {
         params.set('reset', 'true');
     }
-    if (selectedFolderId !== null) {
-        params.set('folderId', String(selectedFolderId));
-    }
 
     const suffix = params.toString();
     return suffix ? `/api/library/scan?${suffix}` : '/api/library/scan';
 }
 
-function resolveLibraryScanSuccessMessage(selectedFolderId, refreshImages, reset) {
+function resolveLibraryScanSuccessMessage(refreshImages, reset) {
     if (reset && refreshImages) {
-        return selectedFolderId === null
-            ? 'Library data reset and images refreshed.'
-            : 'Folder data reset and images refreshed.';
+        return 'Library data reset and images refreshed.';
     }
     if (reset) {
-        return selectedFolderId === null
-            ? 'Library data reset and refreshed.'
-            : 'Folder data reset and refreshed.';
-    }
-    if (selectedFolderId !== null) {
-        return refreshImages ? 'Folder images refreshed.' : 'Folder refreshed.';
+        return 'Library data reset and refreshed.';
     }
 
     return refreshImages ? 'Images refreshed.' : 'Library refreshed.';

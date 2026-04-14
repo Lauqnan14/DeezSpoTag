@@ -414,16 +414,6 @@
                     <p class="stat-subtitle">Across music folders</p>
                 </div>
                 <div class="stat-card">
-                    <h4>Total Videos</h4>
-                    <div class="stat-value" id="stat-library-videos">0</div>
-                    <p class="stat-subtitle">Video destination content</p>
-                </div>
-                <div class="stat-card">
-                    <h4>Total Podcast Episodes</h4>
-                    <div class="stat-value" id="stat-library-podcasts">0</div>
-                    <p class="stat-subtitle">Podcast destination content</p>
-                </div>
-                <div class="stat-card">
                     <h4>Last Library Scan</h4>
                     <div class="stat-value" id="stat-library-last-scan">Never</div>
                     <p class="stat-subtitle">Most recent database update</p>
@@ -616,61 +606,22 @@ function escapeHtml(value) {
 
 function normalizeLibraryContentType(value) {
     const normalized = String(value || '').trim().toLowerCase();
-    if (normalized === 'video' || normalized === 'podcast' || normalized === 'mixed' || normalized === 'empty') {
-        return normalized;
+    if (normalized === 'music') {
+        return 'music';
     }
-    return 'music';
+    return normalized || 'empty';
 }
 
-function getLibraryTypeLabel(contentType) {
-    switch (contentType) {
-        case 'video':
-            return 'Video';
-        case 'podcast':
-            return 'Podcast';
-        case 'mixed':
-            return 'Mixed';
-        case 'empty':
-            return 'Empty';
-        default:
-            return 'Music';
-    }
-}
-
-function getLibraryMetricSet(library, contentType) {
-    const folderMix = library?.folderMix || {};
+function getLibraryMetricSet(library) {
     const unmetQuality = Number(library?.unmetQuality ?? 0);
     const noLyrics = Number(library?.noLyrics ?? 0);
-    switch (contentType) {
-        case 'video':
-            return [
-                { label: 'Videos', value: Number(library?.videoItems ?? 0) },
-                { label: 'Video Folders', value: Number(folderMix?.video ?? 0) },
-                { label: 'Music Tracks', value: Number(library?.tracks ?? 0) }
-            ];
-        case 'podcast':
-            return [
-                { label: 'Episodes', value: Number(library?.podcastItems ?? 0) },
-                { label: 'Podcast Folders', value: Number(folderMix?.podcast ?? 0) },
-                { label: 'Music Tracks', value: Number(library?.tracks ?? 0) }
-            ];
-        case 'mixed':
-            return [
-                { label: 'Music Tracks', value: Number(library?.tracks ?? 0) },
-                { label: 'Videos', value: Number(library?.videoItems ?? 0) },
-                { label: 'Episodes', value: Number(library?.podcastItems ?? 0) },
-                { label: 'Unmet Quality', value: unmetQuality },
-                { label: 'No Lyrics', value: noLyrics }
-            ];
-        default:
-            return [
-                { label: 'Artists', value: Number(library?.artists ?? 0) },
-                { label: 'Albums', value: Number(library?.albums ?? 0) },
-                { label: 'Tracks', value: Number(library?.tracks ?? 0) },
-                { label: 'Unmet Quality', value: unmetQuality },
-                { label: 'No Lyrics', value: noLyrics }
-            ];
-    }
+    return [
+        { label: 'Artists', value: Number(library?.artists ?? 0) },
+        { label: 'Albums', value: Number(library?.albums ?? 0) },
+        { label: 'Tracks', value: Number(library?.tracks ?? 0) },
+        { label: 'Unmet Quality', value: unmetQuality },
+        { label: 'No Lyrics', value: noLyrics }
+    ];
 }
 
 function applyEnhancementStats(payload) {
@@ -803,15 +754,13 @@ async function loadLibraryStats() {
     const totalArtists = document.getElementById('stat-library-artists');
     const totalAlbums = document.getElementById('stat-library-albums');
     const totalTracks = document.getElementById('stat-library-tracks');
-    const totalVideos = document.getElementById('stat-library-videos');
-    const totalPodcasts = document.getElementById('stat-library-podcasts');
     const lastScan = document.getElementById('stat-library-last-scan');
     const breakdownGrid = document.getElementById('library-breakdown-grid');
     const lyrics = document.getElementById('stat-library-lyrics');
     const lyricsSynced = document.getElementById('stat-library-lyrics-synced');
     const animatedArtwork = document.getElementById('stat-library-animated-artwork');
 
-    if (!totalArtists || !totalAlbums || !totalTracks || !totalVideos || !totalPodcasts || !lastScan || !breakdownGrid
+    if (!totalArtists || !totalAlbums || !totalTracks || !lastScan || !breakdownGrid
         || !lyrics || !lyricsSynced || !animatedArtwork) {
         return;
     }
@@ -825,8 +774,6 @@ async function loadLibraryStats() {
         totalArtists.textContent = data?.totals?.artists ?? 0;
         totalAlbums.textContent = data?.totals?.albums ?? 0;
         totalTracks.textContent = data?.totals?.tracks ?? 0;
-        totalVideos.textContent = data?.totals?.videoItems ?? 0;
-        totalPodcasts.textContent = data?.totals?.podcastItems ?? 0;
         lastScan.textContent = data?.lastRunUtc ? new Date(data.lastRunUtc).toLocaleString() : 'Never';
         lyrics.textContent = data?.detail?.tracksWithLyrics ?? 0;
         lyricsSynced.textContent = (Number(data?.detail?.tracksWithSyncedLyrics ?? 0) + Number(data?.detail?.tracksWithBothLyrics ?? 0)).toLocaleString();
@@ -835,16 +782,15 @@ async function loadLibraryStats() {
         renderBreakdownList('library-detail-technical-profiles', data?.detail?.breakdowns?.technicalProfiles);
 
         breakdownGrid.innerHTML = '';
-        const libraries = Array.isArray(data?.libraries) ? data.libraries : [];
+        const libraries = (Array.isArray(data?.libraries) ? data.libraries : [])
+            .filter(library => normalizeLibraryContentType(library?.contentType) === 'music');
         if (libraries.length === 0) {
-            breakdownGrid.innerHTML = '<div class="text-muted">No library data available yet.</div>';
+            breakdownGrid.innerHTML = '<div class="text-muted">No music library data available yet.</div>';
             return;
         }
 
         libraries.forEach(library => {
-            const contentType = normalizeLibraryContentType(library?.contentType);
-            const typeLabel = getLibraryTypeLabel(contentType);
-            const metrics = getLibraryMetricSet(library, contentType);
+            const metrics = getLibraryMetricSet(library);
             const metricsMarkup = metrics.map(metric => `
                     <div class="library-stat">
                         <span class="label">${escapeHtml(metric.label)}</span>
@@ -857,7 +803,6 @@ async function loadLibraryStats() {
                 <div class="library-card-header">
                     <span class="library-name">${escapeHtml(library.name ?? 'Library')}</span>
                     <div class="library-card-meta">
-                        <span class="library-type-badge ${contentType}">${typeLabel}</span>
                         <span class="library-id">ID ${library.id ?? '--'}</span>
                     </div>
                 </div>
@@ -871,8 +816,6 @@ async function loadLibraryStats() {
         totalArtists.textContent = 0;
         totalAlbums.textContent = 0;
         totalTracks.textContent = 0;
-        totalVideos.textContent = 0;
-        totalPodcasts.textContent = 0;
         lastScan.textContent = 'Never';
         lyrics.textContent = 0;
         lyricsSynced.textContent = 0;
