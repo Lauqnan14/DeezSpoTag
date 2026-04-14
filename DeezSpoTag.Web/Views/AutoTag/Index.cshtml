@@ -403,113 +403,130 @@
             </div>
 
             <!-- Add/Edit Folder Modal -->
-            <div class="folder-modal" id="folderModal" style="display: none;">
-                <div class="folder-modal-backdrop"></div>
-                <div class="folder-modal-content">
-                    <div class="folder-modal-header">
-                        <h5 id="folderModalTitle">Add Library Folder</h5>
-                        <button type="button" class="folder-modal-close" id="folderModalClose">
-                            <i class="fas fa-times"></i>
+            <div class="folder-modal app-modal hidden" id="folderModal" aria-hidden="true">
+                <div class="folder-modal-backdrop app-modal-backdrop"></div>
+                <div class="folder-modal-content app-modal-dialog playlist-settings-modal" role="dialog" aria-modal="true" aria-labelledby="folderModalTitle">
+                    <div class="folder-modal-header app-modal-header">
+                        <h5 class="app-modal-title" id="folderModalTitle">Add Library Folder</h5>
+                        <button type="button" class="folder-modal-close app-modal-close" id="folderModalClose" aria-label="Close folder modal">
+                            <i class="fas fa-times" aria-hidden="true"></i>
                         </button>
                     </div>
-                    <div class="folder-modal-body">
-                        <input type="hidden" id="folderEditId" value="" />
-                        <div class="form-group">
-                            <label for="folderPath">Folder Path</label>
-                            <div class="path-picker-input">
-                                <input id="folderPath" type="text" placeholder="/music/collection" />
-                                <button type="button" id="browseLibraryFolderPath" class="path-picker-btn" title="Browse server folders">
-                                    <i class="fas fa-folder-open"></i>
-                                    <span class="visually-hidden">Browse server folders</span>
-                                </button>
-                            </div>
-                            <span class="helper">Full path to the library folder</span>
-                        </div>
-                        <div class="form-group">
-                            <label for="folderName">Display Name</label>
-                            <input id="folderName" type="text" placeholder="Main Library" />
-                            <span class="helper">A friendly name for this folder</span>
-                        </div>
-                        <div class="form-group">
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="folderEnabled" checked />
-                                <label for="folderEnabled">Show this folder in Library and scans</label>
-                            </div>
-                            <span class="helper">Disable only if you want to keep the folder configured but excluded from library indexing and library views.</span>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label for="folderQuality">Preferred Quality</label>
-                                <select id="folderQuality">
+                    <div class="folder-modal-body app-modal-body">
+                        <div class="app-modal-content playlist-settings-panel watchlist-playlist-settings folder-settings-panel">
+                            <input type="hidden" id="folderEditId" value="" />
+
+                            <div class="playlist-settings-intro">Set folder path, quality behavior, and optional role overrides for AutoTag and Library.</div>
+
+                            <section class="playlist-settings-section">
+                                <div class="playlist-settings-section-title">Folder Details</div>
+                                <div class="form-group">
+                                    <label for="folderPath">Folder Path</label>
+                                    <div class="path-picker-input">
+                                        <input id="folderPath" type="text" placeholder="/music/collection" />
+                                        <button type="button" id="browseLibraryFolderPath" class="path-picker-btn" title="Browse server folders">
+                                            <i class="fas fa-folder-open"></i>
+                                            <span class="visually-hidden">Browse server folders</span>
+                                        </button>
+                                    </div>
+                                    <span class="helper">Full path to the library folder.</span>
+                                </div>
+                                <div class="form-group">
+                                    <label for="folderName">Display Name</label>
+                                    <input id="folderName" type="text" placeholder="Main Library" />
+                                    <span class="helper">A friendly name used across Library and AutoTag.</span>
+                                </div>
+                            </section>
+
+                            <section class="playlist-settings-section">
+                                <div class="playlist-settings-section-title">Library Behavior</div>
+                                <div class="form-group">
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" id="folderEnabled" checked />
+                                        <label for="folderEnabled">Show this folder in Library and scans</label>
+                                    </div>
+                                    <span class="helper">Disable only if you want to keep the folder configured but excluded from indexing and Library views.</span>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="folderQuality">Preferred Quality</label>
+                                        <select id="folderQuality">
 @foreach (var option in DeezSpoTag.Services.Download.QualityCatalog.GetLibraryFolderQualityOptions())
 {
-                                    <option value="@option.Value" selected="@(option.Value == "27")">@option.Label</option>
+                                            <option value="@option.Value" selected="@(option.Value == "27")">@option.Label</option>
 }
-                                </select>
-                            </div>
-                        </div>
-                        <div class="form-group">
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="folderConvertEnabled" />
-                                <label for="folderConvertEnabled">Enable conversion override</label>
-                            </div>
-                            <span class="helper">Optional folder-level conversion rule. If format is blank, the global conversion format is used.</span>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label for="folderConvertFormat">Convert format (optional)</label>
-                                <select id="folderConvertFormat">
-                                    <option value="">Use global/default</option>
-                                    <option value="mp3">MP3</option>
-                                    <option value="aac">AAC (M4A)</option>
-                                    <option value="alac">ALAC (M4A)</option>
-                                    <option value="ogg">OGG</option>
-                                    <option value="opus">OPUS</option>
-                                    <option value="flac">FLAC</option>
-                                    <option value="wav">WAV</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label for="folderConvertBitrate">Convert bitrate (optional)</label>
-                                <select id="folderConvertBitrate">
-                                    <option value="">Use global/default</option>
-                                    <option value="AUTO">Auto</option>
-                                    <option value="64">64 kbps</option>
-                                    <option value="96">96 kbps</option>
-                                    <option value="128">128 kbps</option>
-                                    <option value="160">160 kbps</option>
-                                    <option value="192">192 kbps</option>
-                                    <option value="256">256 kbps</option>
-                                    <option value="320">320 kbps</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="form-group">
-                            <div class="form-label">Folder Roles</div>
-                            <div class="checkbox-group folder-role-options">
-                                <label>
-                                    <input type="checkbox" id="folderAtmosDestination" />
-                                    Set as default Atmos destination
-                                </label>
-                                <label>
-                                    <input type="checkbox" id="folderVideoDestination" />
-                                    Set as Video downloads folder
-                                </label>
-                                <label>
-                                    <input type="checkbox" id="folderPodcastDestination" />
-                                    Set as Podcast downloads folder
-                                </label>
-                            </div>
-                            <span class="helper">These update Atmos secondary destination plus global Video/Podcast download locations.</span>
-                        </div>
-                        <div class="folder-modal-note" role="note" aria-live="polite">
-                            <i class="fas fa-circle-info" aria-hidden="true"></i>
-                            <span>AutoTag activation is managed from the folder list and requires an assigned profile.</span>
+                                        </select>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <section class="playlist-settings-section">
+                                <div class="playlist-settings-section-title">Conversion Override</div>
+                                <div class="form-group">
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" id="folderConvertEnabled" />
+                                        <label for="folderConvertEnabled">Enable conversion override</label>
+                                    </div>
+                                    <span class="helper">Optional folder-level conversion rule. If format is blank, global conversion format is used.</span>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label for="folderConvertFormat">Convert format (optional)</label>
+                                        <select id="folderConvertFormat">
+                                            <option value="">Use global/default</option>
+                                            <option value="mp3">MP3</option>
+                                            <option value="aac">AAC (M4A)</option>
+                                            <option value="alac">ALAC (M4A)</option>
+                                            <option value="ogg">OGG</option>
+                                            <option value="opus">OPUS</option>
+                                            <option value="flac">FLAC</option>
+                                            <option value="wav">WAV</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="folderConvertBitrate">Convert bitrate (optional)</label>
+                                        <select id="folderConvertBitrate">
+                                            <option value="">Use global/default</option>
+                                            <option value="AUTO">Auto</option>
+                                            <option value="64">64 kbps</option>
+                                            <option value="96">96 kbps</option>
+                                            <option value="128">128 kbps</option>
+                                            <option value="160">160 kbps</option>
+                                            <option value="192">192 kbps</option>
+                                            <option value="256">256 kbps</option>
+                                            <option value="320">320 kbps</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <section class="playlist-settings-section">
+                                <div class="playlist-settings-section-title">Folder Roles</div>
+                                <div class="checkbox-group folder-role-options">
+                                    <label>
+                                        <input type="checkbox" id="folderAtmosDestination" />
+                                        Set as default Atmos destination
+                                    </label>
+                                    <label>
+                                        <input type="checkbox" id="folderVideoDestination" />
+                                        Set as Video downloads folder
+                                    </label>
+                                    <label>
+                                        <input type="checkbox" id="folderPodcastDestination" />
+                                        Set as Podcast downloads folder
+                                    </label>
+                                </div>
+                                <span class="playlist-settings-help">These update Atmos secondary destination plus global Video/Podcast download locations.</span>
+                                <div class="folder-modal-note playlist-settings-help" role="note" aria-live="polite">
+                                    <i class="fas fa-circle-info" aria-hidden="true"></i>
+                                    <span>AutoTag activation is managed from the folder list and requires an assigned profile.</span>
+                                </div>
+                            </section>
                         </div>
                     </div>
-                    <div class="folder-modal-footer">
-                        <button type="button" class="action-btn action-btn-sm action-btn-secondary" id="folderModalCancel">Cancel</button>
-                        <button type="button" class="action-btn action-btn-sm" id="saveFolder">
+                    <div class="folder-modal-footer app-modal-footer">
+                        <button type="button" class="app-modal-action" id="folderModalCancel">Cancel</button>
+                        <button type="button" class="app-modal-action primary" id="saveFolder">
                             <i class="fas fa-floppy-disk" aria-hidden="true"></i>
                             Save Folder
                         </button>

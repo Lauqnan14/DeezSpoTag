@@ -1584,87 +1584,146 @@ body.autotag-col-resizing * {
 }
 
 .folder-modal {
-    position: fixed;
-    inset: 0;
-    display: none;
-    align-items: center;
-    justify-content: center;
     padding: 24px;
-    z-index: 1050;
+    z-index: 1200;
 }
 
 .folder-modal[style*="display: block"] {
-    display: flex !important;
-}
-
-.folder-modal-backdrop {
-    position: absolute;
-    inset: 0;
-    background: rgba(8, 10, 15, 0.68);
-    backdrop-filter: blur(8px);
+    display: grid !important;
 }
 
 .folder-modal-content {
-    position: relative;
-    width: min(760px, 92vw);
-    max-height: min(80vh, 720px);
-    overflow: auto;
-    border-radius: 16px;
-    border: 1px solid var(--border-secondary);
-    background: var(--bg-secondary);
-    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
-    padding: 0;
+    width: min(980px, 96vw);
+    max-height: 92dvh;
 }
 
 .folder-modal-header,
 .folder-modal-footer {
-    padding: 16px 18px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    border-bottom: 1px solid color-mix(in srgb, var(--border-secondary) 70%, transparent);
+    padding: 0;
 }
 
 .folder-modal-footer {
-    border-bottom: none;
-    border-top: 1px solid color-mix(in srgb, var(--border-secondary) 70%, transparent);
     justify-content: flex-end;
 }
 
 .folder-modal-body {
-    padding: 18px;
-    display: grid;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.folder-settings-panel {
+    display: flex;
+    flex-direction: column;
     gap: 14px;
 }
 
-.folder-modal-close {
-    background: transparent;
-    border: none;
+.folder-settings-panel .playlist-settings-intro {
+    font-size: 12px;
+    line-height: 1.4;
     color: var(--text-muted);
-    font-size: 18px;
-    cursor: pointer;
+    margin-top: -2px;
 }
 
-.folder-modal-note {
+.folder-settings-panel .playlist-settings-section {
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
+    background: color-mix(in srgb, var(--bg-secondary) 94%, black 6%);
+}
+
+.folder-settings-panel .playlist-settings-section-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+.folder-settings-panel .playlist-settings-help {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--text-muted);
+}
+
+.folder-settings-panel .form-group {
+    margin: 0;
+}
+
+.folder-settings-panel .form-group label {
+    margin: 0;
+    font-size: 13px;
+}
+
+.folder-settings-panel .form-group input,
+.folder-settings-panel .form-group select {
+    min-height: 38px;
+    background: var(--bg-primary);
+    border-color: color-mix(in srgb, var(--primary-color) 22%, var(--border-secondary));
+}
+
+.folder-settings-panel .form-group input:focus,
+.folder-settings-panel .form-group select:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-color) 24%, transparent);
+}
+
+.folder-settings-panel .checkbox-group {
+    align-items: flex-start;
+}
+
+.folder-settings-panel .checkbox-group label {
+    margin: 0;
+    line-height: 1.35;
+}
+
+.folder-settings-panel .folder-role-options {
+    display: grid;
+    gap: 10px;
+}
+
+.folder-settings-panel .folder-role-options label {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 0;
+}
+
+.folder-settings-panel .folder-role-options input[type="checkbox"] {
+    margin-top: 2px;
+}
+
+.folder-modal-note.playlist-settings-help {
+    display: flex;
+    align-items: flex-start;
     gap: 10px;
     padding: 10px 12px;
     border-radius: 10px;
-    border: 1px solid color-mix(in srgb, var(--border-secondary) 72%, transparent);
-    background: color-mix(in srgb, var(--bg-tertiary) 84%, transparent);
+    border: 1px dashed color-mix(in srgb, var(--primary-color) 26%, transparent);
+    background: color-mix(in srgb, var(--bg-primary) 96%, transparent);
+    margin-top: 2px;
+}
+
+.folder-modal-note {
     color: var(--text-muted);
-    font-size: 0.9rem;
 }
 
 .folder-modal-note i {
     color: var(--primary-color);
+    margin-top: 1px;
 }
 
-.folder-modal-footer .action-btn {
-    min-width: 126px;
+.folder-modal-footer .app-modal-action {
+    display: inline-flex;
+    align-items: center;
     justify-content: center;
+    gap: 8px;
+    min-width: 126px;
 }
 
 .folder-path-input {
@@ -1996,24 +2055,13 @@ body.autotag-col-resizing * {
         font-size: 16px;
     }
 
-    .folder-modal {
+    .folder-modal.app-modal {
         padding: 12px;
     }
 
-    .folder-modal-content {
+    .folder-modal-content.app-modal-dialog {
         width: min(100%, 96vw);
         max-height: calc(100vh - 24px);
-        border-radius: 12px;
-    }
-
-    .folder-modal-header,
-    .folder-modal-footer {
-        padding: 12px;
-    }
-
-    .folder-modal-body {
-        padding: 12px;
-        gap: 12px;
     }
 
     .folder-modal-footer {
@@ -2021,7 +2069,7 @@ body.autotag-col-resizing * {
         align-items: stretch;
     }
 
-    .folder-modal-footer .action-btn {
+    .folder-modal-footer .app-modal-action {
         width: 100%;
         min-width: 0;
     }
