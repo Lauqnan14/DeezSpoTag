@@ -6994,6 +6994,13 @@ function syncFolderConversionFieldsState() {
     }
 }
 
+function syncAppModalOpenState() {
+    const hasOpenModal = Array.from(document.querySelectorAll('.app-modal'))
+        .some((modal) => !modal.classList.contains('hidden'));
+    document.body.classList.toggle('app-modal-open', hasOpenModal);
+    document.documentElement.classList.toggle('app-modal-open', hasOpenModal);
+}
+
 function openFolderModal(folder = null) {
     const modal = document.getElementById('folderModal');
     if (!modal) {
@@ -7008,7 +7015,9 @@ function openFolderModal(folder = null) {
         updateSaveFolderState();
     }
 
-    modal.style.display = 'block';
+    modal.classList.remove('hidden');
+    modal.setAttribute('aria-hidden', 'false');
+    syncAppModalOpenState();
 }
 
 function resolveFolderDestinationFlags(folder) {
@@ -7100,7 +7109,9 @@ function closeFolderModal() {
     if (!modal) {
         return;
     }
-    modal.style.display = 'none';
+    modal.classList.add('hidden');
+    modal.setAttribute('aria-hidden', 'true');
+    syncAppModalOpenState();
 }
 
 function wireExclusiveFolderDestinationRoles() {
