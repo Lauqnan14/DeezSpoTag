@@ -10,12 +10,12 @@ namespace DeezSpoTag.Tests;
 
 public sealed class EngineFallbackCoordinatorParityTests
 {
-    private static readonly string[] ExpectedExplicitFallbackSteps = { "qobuz|27", "tidal|HI_RES_LOSSLESS" };
-    private static readonly string[] ExpectedForcedDeezerSteps = { "deezer|9", "deezer|3" };
+    private static readonly string[] ExpectedAutoThenFallbackSteps = { "deezer|9", "qobuz|27", "tidal|HI_RES_LOSSLESS" };
+    private static readonly string[] ExpectedMixedSteps = { "qobuz|27", "deezer|9", "deezer|3", "tidal|LOSSLESS" };
     private static readonly string[] ExpectedAutoSteps = { "qobuz|27", "tidal|HI_RES_LOSSLESS", "deezer|9" };
 
     [Fact]
-    public void BuildPlanSteps_PrefersExplicitFallbackPlan_WhenPresent()
+    public void BuildPlanSteps_PrefersAutoSources_ThenAppendsFallbackPlan()
     {
         var fallbackPlan = new List<FallbackPlanStep>
         {
@@ -26,11 +26,32 @@ public sealed class EngineFallbackCoordinatorParityTests
 
         var steps = BuildPlanSteps(fallbackPlan, new List<string> { "deezer|9" }, settings);
 
-        Assert.Equal(ExpectedExplicitFallbackSteps, steps);
+        Assert.Equal(ExpectedAutoThenFallbackSteps, steps);
     }
 
     [Fact]
-    public void BuildPlanSteps_FiltersToForcedEngine_WhenServiceIsNotAuto()
+    public void BuildPlanSteps_UsesAutoSourcesOrder_WhenFallbackPlanIsStale()
+    {
+        var fallbackPlan = new List<FallbackPlanStep>
+        {
+            new("step-0", "qobuz", "27", Array.Empty<string>(), "direct_url"),
+            new("step-1", "qobuz", "7", Array.Empty<string>(), "direct_url")
+        };
+        var autoSources = new List<string>
+        {
+            "qobuz|27",
+            "tidal|HI_RES_LOSSLESS",
+            "apple|ALAC"
+        };
+        var settings = new DeezSpoTagSettings { Service = "auto" };
+
+        var steps = BuildPlanSteps(fallbackPlan, autoSources, settings);
+
+        Assert.Equal(new[] { "qobuz|27", "tidal|HI_RES_LOSSLESS", "apple|ALAC", "qobuz|7" }, steps);
+    }
+
+    [Fact]
+    public void BuildPlanSteps_UsesPayloadSourcesEvenWhenCurrentServiceIsForced()
     {
         var autoSources = new List<string>
         {
@@ -43,7 +64,17 @@ public sealed class EngineFallbackCoordinatorParityTests
 
         var steps = BuildPlanSteps(new List<FallbackPlanStep>(), autoSources, settings);
 
-        Assert.Equal(ExpectedForcedDeezerSteps, steps);
+        Assert.Equal(ExpectedMixedSteps, steps);
+    }
+
+    [Fact]
+    public void BuildPlanSteps_FallsBackToForcedService_WhenPayloadHasNoPlan()
+    {
+        var settings = new DeezSpoTagSettings { Service = "deezer" };
+
+        var steps = BuildPlanSteps(new List<FallbackPlanStep>(), new List<string>(), settings);
+
+        Assert.Equal(new[] { "deezer|9", "deezer|3", "deezer|1" }, steps);
     }
 
     [Fact]

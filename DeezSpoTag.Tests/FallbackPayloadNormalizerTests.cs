@@ -15,7 +15,7 @@ public sealed class FallbackPayloadNormalizerTests
 {
     private static readonly string[] ExpectedAppleVideoSource = { "apple|video" };
     private static readonly string[] ExpectedAppleAtmosSource = { "apple|ATMOS" };
-    private static readonly string[] ExpectedPlanSources = { "qobuz|27", "tidal|LOSSLESS" };
+    private static readonly string[] ExpectedAutoSourcePreferred = { "deezer|9", "tidal|LOSSLESS" };
     private static readonly string[] ExpectedCanonicalSources = { "qobuz|27", "tidal|LOSSLESS" };
 
     [Fact]
@@ -59,7 +59,7 @@ public sealed class FallbackPayloadNormalizerTests
     }
 
     [Fact]
-    public void ResolveCanonicalState_PrefersFallbackPlan_OverPayloadAutoSources()
+    public void ResolveCanonicalState_PrefersAutoSources_OverMismatchedFallbackPlan()
     {
         var item = CreateQueueItem(engine: "deezer");
         var payload = new JsonObject
@@ -86,10 +86,47 @@ public sealed class FallbackPayloadNormalizerTests
 
         var state = FallbackPayloadNormalizer.ResolveCanonicalState(item, new DeezSpoTagSettings(), payload);
 
-        Assert.Equal(ExpectedPlanSources, state.AutoSources);
+        Assert.Equal(ExpectedAutoSourcePreferred, state.AutoSources);
         Assert.Equal(2, state.FallbackPlan.Count);
-        Assert.Equal("qobuz", state.FirstStep.Source);
-        Assert.Equal("27", state.FirstStep.Quality);
+        Assert.Equal("deezer", state.FirstStep.Source);
+        Assert.Equal("9", state.FirstStep.Quality);
+        Assert.Equal("deezer", state.FallbackPlan[0].Engine);
+        Assert.Equal("9", state.FallbackPlan[0].Quality);
+    }
+
+    [Fact]
+    public void ResolveCanonicalState_ReusesMatchingFallbackPlan_WhenItMatchesAutoSources()
+    {
+        var item = CreateQueueItem(engine: "qobuz");
+        var payload = new JsonObject
+        {
+            ["AutoSources"] = new JsonArray("qobuz|27", "tidal|LOSSLESS"),
+            ["FallbackPlan"] = new JsonArray(
+                new JsonObject
+                {
+                    ["StepId"] = "custom-0",
+                    ["Engine"] = "qobuz",
+                    ["Quality"] = "27",
+                    ["RequiredInputs"] = new JsonArray("ISRC"),
+                    ["ResolutionStrategy"] = "isrc"
+                },
+                new JsonObject
+                {
+                    ["StepId"] = "custom-1",
+                    ["Engine"] = "tidal",
+                    ["Quality"] = "LOSSLESS",
+                    ["RequiredInputs"] = new JsonArray("SpotifyId"),
+                    ["ResolutionStrategy"] = "songlink_url"
+                })
+        };
+
+        var state = FallbackPayloadNormalizer.ResolveCanonicalState(item, new DeezSpoTagSettings(), payload);
+
+        Assert.Equal(new[] { "qobuz|27", "tidal|LOSSLESS" }, state.AutoSources);
+        Assert.Equal("custom-0", state.FallbackPlan[0].StepId);
+        Assert.Equal("isrc", state.FallbackPlan[0].ResolutionStrategy);
+        Assert.Equal("custom-1", state.FallbackPlan[1].StepId);
+        Assert.Equal("songlink_url", state.FallbackPlan[1].ResolutionStrategy);
     }
 
     [Fact]

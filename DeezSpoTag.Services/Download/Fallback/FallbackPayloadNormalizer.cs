@@ -41,37 +41,27 @@ public static class FallbackPayloadNormalizer
             return BuildSingleStepFallback(firstStep, DirectUrlResolution);
         }
 
+        if (payloadAutoSources.Count > 0)
+        {
+            var normalizedAutoSources = NormalizeEncodedSources(payloadAutoSources);
+            if (normalizedAutoSources.Count > 0)
+            {
+                var firstStep = DecodeOrDefault(normalizedAutoSources[0], item.Engine, payloadQuality);
+                var normalizedFallbackPlan = ShouldReuseFallbackPlan(payloadFallbackPlan, normalizedAutoSources)
+                    ? payloadFallbackPlan
+                    : BuildDirectUrlPlanFromAutoSources(normalizedAutoSources);
+                return new CanonicalFallbackState(normalizedAutoSources, normalizedFallbackPlan, firstStep);
+            }
+        }
+
         if (payloadFallbackPlan.Count > 0)
         {
-            var normalizedAutoSources = payloadFallbackPlan
-                .Where(step => !string.IsNullOrWhiteSpace(step.Engine))
-                .Select(step => DownloadSourceOrder.EncodeAutoSource(step.Engine, step.Quality))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            var normalizedAutoSources = NormalizePlanSources(payloadFallbackPlan);
             if (normalizedAutoSources.Count > 0)
             {
                 var firstStep = DecodeOrDefault(normalizedAutoSources[0], item.Engine, payloadQuality);
                 return new CanonicalFallbackState(normalizedAutoSources, payloadFallbackPlan, firstStep);
             }
-        }
-
-        if (payloadAutoSources.Count > 0)
-        {
-            var firstStep = DecodeOrDefault(payloadAutoSources[0], item.Engine, payloadQuality);
-            var fallbackPlan = payloadAutoSources
-                .Select((source, index) =>
-                {
-                    var step = DownloadSourceOrder.DecodeAutoSource(source);
-                    var engine = string.IsNullOrWhiteSpace(step.Source) ? item.Engine ?? DefaultEngine : step.Source;
-                    return new FallbackPlanStep(
-                        StepId: $"step-{index}",
-                        Engine: engine,
-                        Quality: step.Quality,
-                        RequiredInputs: Array.Empty<string>(),
-                        ResolutionStrategy: DirectUrlResolution);
-                })
-                .ToList();
-            return new CanonicalFallbackState(payloadAutoSources, fallbackPlan, firstStep);
         }
 
         var resolvedAutoSources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
@@ -223,6 +213,47 @@ public static class FallbackPayloadNormalizer
         }
 
         return new DownloadSourceOrder.AutoSourceStep(engine ?? DefaultEngine, quality);
+    }
+
+    private static bool ShouldReuseFallbackPlan(IReadOnlyList<FallbackPlanStep> fallbackPlan, IReadOnlyList<string> autoSources)
+    {
+        if (fallbackPlan == null || fallbackPlan.Count == 0)
+        {
+            return false;
+        }
+
+        var normalizedPlanSources = NormalizePlanSources(fallbackPlan);
+        if (normalizedPlanSources.Count == 0)
+        {
+            return false;
+        }
+
+        var normalizedAutoSources = NormalizeEncodedSources(autoSources);
+        return normalizedPlanSources.SequenceEqual(normalizedAutoSources, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static List<string> NormalizePlanSources(IReadOnlyList<FallbackPlanStep> fallbackPlan)
+    {
+        return NormalizeEncodedSources(
+            fallbackPlan
+                .Where(step => !string.IsNullOrWhiteSpace(step.Engine))
+                .Select(step => DownloadSourceOrder.EncodeAutoSource(step.Engine, step.Quality))
+                .ToList());
+    }
+
+    private static List<string> NormalizeEncodedSources(IReadOnlyList<string> sources)
+    {
+        if (sources == null || sources.Count == 0)
+        {
+            return new List<string>();
+        }
+
+        return DownloadSourceOrder.CollapseAutoSourcesByService(
+            sources
+                .Select(DownloadSourceOrder.DecodeAutoSource)
+                .Where(step => !string.IsNullOrWhiteSpace(step.Source))
+                .Select(step => DownloadSourceOrder.EncodeAutoSource(step.Source, step.Quality))
+                .ToList());
     }
 
     private static bool IsVideoPayload(string? contentType, string? quality, JsonObject payloadObj)

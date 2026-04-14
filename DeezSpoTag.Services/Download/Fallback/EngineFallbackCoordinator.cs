@@ -7,6 +7,7 @@ namespace DeezSpoTag.Services.Download.Fallback;
 
 public sealed class EngineFallbackCoordinator
 {
+    private const string DeezerEngine = "deezer";
     private const string QobuzEngine = "qobuz";
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DeezSpoTagSettingsService _settingsService;
@@ -85,6 +86,7 @@ public sealed class EngineFallbackCoordinator
                 payload.SourceService = step.Source;
                 payload.Quality = step.Quality ?? payload.Quality;
                 payload.AutoIndex = step.Index;
+                TrySetDeezerBitrate(payload, step.Source, step.Quality);
             },
             ApplyAutoSources: sources => payload.AutoSources = sources,
             SetSourceUrl: url => payload.SourceUrl = url);
@@ -191,44 +193,55 @@ public sealed class EngineFallbackCoordinator
         List<string> autoSources,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
     {
-        if (fallbackPlan != null && fallbackPlan.Count > 0)
-        {
-            return fallbackPlan
-                .Where(step => !string.IsNullOrWhiteSpace(step.Engine))
-                .Select(step => (step.Engine, step.Quality))
-                .ToList();
-        }
-
-        var forcedService = settings.Service?.Trim().ToLowerInvariant();
-        var isAuto = string.Equals(forcedService, "auto", StringComparison.OrdinalIgnoreCase);
+        var steps = new List<(string Source, string? Quality)>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         if (autoSources != null && autoSources.Count > 0)
         {
-            var decoded = autoSources
-                .Select(DownloadSourceOrder.DecodeAutoSource)
-                .Select(step => (step.Source, step.Quality))
-                .ToList();
-
-            if (!isAuto && !string.IsNullOrWhiteSpace(forcedService))
+            foreach (var decoded in autoSources.Select(DownloadSourceOrder.DecodeAutoSource))
             {
-                var filtered = decoded
-                    .Where(step => string.Equals(step.Source, forcedService, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-                if (filtered.Count > 0)
-                {
-                    return filtered;
-                }
+                AppendPlanStep(steps, seen, decoded.Source, decoded.Quality);
             }
-
-            return decoded;
         }
 
-        autoSources = DownloadSourceOrder.ResolveAutoSources(settings, includeDeezer: true);
+        if (fallbackPlan != null && fallbackPlan.Count > 0)
+        {
+            foreach (var step in fallbackPlan)
+            {
+                AppendPlanStep(steps, seen, step.Engine, step.Quality);
+            }
+        }
 
-        return autoSources
-            .Select(DownloadSourceOrder.DecodeAutoSource)
-            .Select(step => (step.Source, step.Quality))
-            .ToList();
+        if (steps.Count == 0)
+        {
+            foreach (var decoded in DownloadSourceOrder.ResolveAutoSources(settings, includeDeezer: true)
+                .Select(DownloadSourceOrder.DecodeAutoSource))
+            {
+                AppendPlanStep(steps, seen, decoded.Source, decoded.Quality);
+            }
+        }
+
+        return steps;
+    }
+
+    private static void AppendPlanStep(
+        List<(string Source, string? Quality)> steps,
+        HashSet<string> seen,
+        string? source,
+        string? quality)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return;
+        }
+
+        var normalizedSource = source.Trim();
+        var normalizedQuality = string.IsNullOrWhiteSpace(quality) ? null : quality.Trim();
+        var key = DownloadSourceOrder.EncodeAutoSource(normalizedSource, normalizedQuality);
+        if (seen.Add(key))
+        {
+            steps.Add((normalizedSource, normalizedQuality));
+        }
     }
 
     private static int FindStepIndex(List<(string Source, string? Quality)> autoSources, string engine, string quality)
@@ -478,5 +491,33 @@ public sealed class EngineFallbackCoordinator
         }
 
         property.SetValue(payload, isrc);
+    }
+
+    private static void TrySetDeezerBitrate(object payload, string source, string? quality)
+    {
+        if (!string.Equals(source, DeezerEngine, StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(quality)
+            || !int.TryParse(quality, out var bitrate)
+            || bitrate <= 0)
+        {
+            return;
+        }
+
+        var property = payload.GetType().GetProperty("Bitrate");
+        if (property == null || !property.CanWrite)
+        {
+            return;
+        }
+
+        if (property.PropertyType == typeof(int))
+        {
+            property.SetValue(payload, bitrate);
+            return;
+        }
+
+        if (property.PropertyType == typeof(int?))
+        {
+            property.SetValue(payload, (int?)bitrate);
+        }
     }
 }
