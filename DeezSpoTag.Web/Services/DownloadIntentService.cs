@@ -259,6 +259,74 @@ public sealed class DownloadIntentService
         _logger = logger;
     }
 
+    public sealed record AvailabilityLookupResult(
+        string? SpotifyId,
+        string? SpotifyUrl,
+        string? Isrc,
+        string? DeezerUrl,
+        string? TidalUrl,
+        string? AmazonUrl,
+        string? QobuzUrl,
+        string? AppleMusicUrl);
+
+    public async Task<AvailabilityLookupResult> LookupAvailabilityAsync(
+        DownloadIntent intent,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(intent);
+
+        var workingIntent = CloneIntentForAvailabilityLookup(intent);
+        NormalizeAvailabilityLookupIntent(workingIntent);
+        var availability = await ResolveAvailabilityAsync(workingIntent, cancellationToken);
+
+        var deezerUrl = string.IsNullOrWhiteSpace(availability?.DeezerUrl)
+            ? await ResolveAvailabilityUrlForEngineAsync(workingIntent, DeezerPlatform, availability, cancellationToken)
+            : availability!.DeezerUrl;
+        if (string.IsNullOrWhiteSpace(deezerUrl) && !string.IsNullOrWhiteSpace(workingIntent.Isrc))
+        {
+            deezerUrl = await ResolveIsrcUrlAsync(DeezerPlatform, workingIntent, cancellationToken);
+        }
+        if (string.IsNullOrWhiteSpace(deezerUrl))
+        {
+            var normalizedDeezerId = NormalizeDeezerTrackId(workingIntent.DeezerId);
+            deezerUrl = string.IsNullOrWhiteSpace(normalizedDeezerId)
+                ? null
+                : $"https://www.deezer.com/track/{normalizedDeezerId}";
+        }
+
+        var tidalUrl = string.IsNullOrWhiteSpace(availability?.TidalUrl)
+            ? await ResolveAvailabilityUrlForEngineAsync(workingIntent, TidalPlatform, availability, cancellationToken)
+            : availability!.TidalUrl;
+        var amazonUrl = string.IsNullOrWhiteSpace(availability?.AmazonUrl)
+            ? await ResolveAvailabilityUrlForEngineAsync(workingIntent, AmazonPlatform, availability, cancellationToken)
+            : availability!.AmazonUrl;
+        var qobuzUrl = string.IsNullOrWhiteSpace(availability?.QobuzUrl)
+            ? await ResolveAvailabilityUrlForEngineAsync(workingIntent, QobuzPlatform, availability, cancellationToken)
+            : availability!.QobuzUrl;
+        var appleUrl = string.IsNullOrWhiteSpace(availability?.AppleMusicUrl)
+            ? await ResolveAvailabilityUrlForEngineAsync(workingIntent, ApplePlatform, availability, cancellationToken)
+            : availability!.AppleMusicUrl;
+
+        var spotifyId = FirstNonEmpty(
+            availability?.SpotifyId,
+            workingIntent.SpotifyId,
+            TryExtractSpotifyId(workingIntent.SourceUrl));
+        var spotifyUrl = FirstNonEmpty(
+            availability?.SpotifyUrl,
+            ResolveSpotifySourceUrl(workingIntent.SourceUrl, spotifyId));
+        var isrc = FirstNonEmpty(availability?.Isrc, workingIntent.Isrc);
+
+        return new AvailabilityLookupResult(
+            spotifyId,
+            spotifyUrl,
+            isrc,
+            deezerUrl,
+            tidalUrl,
+            amazonUrl,
+            qobuzUrl,
+            appleUrl);
+    }
+
     public async Task<DownloadIntentResult> EnqueueAsync(
         DownloadIntent intent,
         CancellationToken cancellationToken,
@@ -382,6 +450,108 @@ public sealed class DownloadIntentService
             SkipReasonCodes = skipReasonCodes,
             SkipReasons = skipReasons
         };
+    }
+
+    private static DownloadIntent CloneIntentForAvailabilityLookup(DownloadIntent source)
+    {
+        return new DownloadIntent
+        {
+            SourceService = source.SourceService,
+            SourceUrl = source.SourceUrl,
+            SpotifyId = source.SpotifyId,
+            DeezerId = source.DeezerId,
+            Isrc = source.Isrc,
+            Title = source.Title,
+            Artist = source.Artist,
+            Album = source.Album,
+            DurationMs = source.DurationMs,
+            ContentType = source.ContentType,
+            Url = source.Url,
+            AppleId = source.AppleId
+        };
+    }
+
+    private static void NormalizeAvailabilityLookupIntent(DownloadIntent intent)
+    {
+        if (string.IsNullOrWhiteSpace(intent.SourceUrl))
+        {
+            intent.SourceUrl = intent.Url ?? string.Empty;
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.SpotifyId))
+        {
+            intent.SpotifyId = TryExtractSpotifyId(intent.SourceUrl) ?? string.Empty;
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.DeezerId))
+        {
+            intent.DeezerId = TryExtractDeezerTrackId(intent.SourceUrl) ?? string.Empty;
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.SourceUrl))
+        {
+            if (!string.IsNullOrWhiteSpace(intent.SpotifyId))
+            {
+                intent.SourceUrl = $"https://open.spotify.com/track/{intent.SpotifyId}";
+            }
+            else
+            {
+                var normalizedDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
+                if (!string.IsNullOrWhiteSpace(normalizedDeezerId))
+                {
+                    intent.SourceUrl = $"https://www.deezer.com/track/{normalizedDeezerId}";
+                }
+            }
+        }
+    }
+
+    private async Task<string?> ResolveAvailabilityUrlForEngineAsync(
+        DownloadIntent baseIntent,
+        string engine,
+        SongLinkResult? preResolved,
+        CancellationToken cancellationToken)
+    {
+        var probeIntent = CloneIntentForAvailabilityLookup(baseIntent);
+        var resolved = await ResolveIntentAsync(
+            probeIntent,
+            engine,
+            preferIsrcOnly: false,
+            preResolved,
+            cancellationToken);
+        if (!string.IsNullOrWhiteSpace(resolved.Message)
+            || string.IsNullOrWhiteSpace(resolved.SourceUrl)
+            || !IsServiceUrlMatch(resolved.SourceUrl, engine))
+        {
+            return null;
+        }
+
+        return resolved.SourceUrl;
+    }
+
+    private static string? ResolveSpotifySourceUrl(string? sourceUrl, string? spotifyId)
+    {
+        if (!string.IsNullOrWhiteSpace(sourceUrl)
+            && sourceUrl.Contains("open.spotify.com/track/", StringComparison.OrdinalIgnoreCase))
+        {
+            return sourceUrl;
+        }
+
+        return string.IsNullOrWhiteSpace(spotifyId)
+            ? null
+            : $"https://open.spotify.com/track/{spotifyId}";
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return null;
     }
 
     private async Task<DestinationRoutingResult> ResolveDestinationRoutingAsync(
