@@ -2384,18 +2384,42 @@ async function loadMediaServerLibraryPinState() {
     }
 }
 
-function promptForMediaServerLibraryPin(promptMessage) {
-    const raw = window.prompt(promptMessage);
-    if (raw === null) {
+async function promptForMediaServerLibraryPin(promptMessage, title = 'PIN') {
+    if (window.DeezSpoTag?.ui?.prompt) {
+        const raw = await window.DeezSpoTag.ui.prompt(promptMessage, {
+            title,
+            type: 'password',
+            placeholder: 'Enter PIN',
+            autocomplete: 'off',
+            okText: 'Continue'
+        });
+        if (raw === null) {
+            return null;
+        }
+
+        const value = normalizeMediaServerLibraryPin(raw);
+        return value || null;
+    }
+
+    const fallbackRaw = window.prompt(promptMessage);
+    if (fallbackRaw === null) {
         return null;
     }
 
-    const value = normalizeMediaServerLibraryPin(raw);
-    if (!value) {
-        return null;
+    const fallbackValue = normalizeMediaServerLibraryPin(fallbackRaw);
+    return fallbackValue || null;
+}
+
+async function confirmMediaServerLibraryPinReset(message, title = 'Reset PIN') {
+    if (window.DeezSpoTag?.ui?.confirm) {
+        return await window.DeezSpoTag.ui.confirm(message, {
+            title,
+            okText: 'Reset PIN',
+            cancelText: 'Cancel'
+        });
     }
 
-    return value;
+    return window.confirm(message);
 }
 
 function setMediaServerLibraryUnlockButtonLabel(text) {
@@ -2545,19 +2569,19 @@ function bindMediaServerLibraryPinActions() {
             return;
         }
 
-        const currentPin = promptForMediaServerLibraryPin('Enter your current PIN to change it:');
+        const currentPin = await promptForMediaServerLibraryPin('Enter your current PIN to change it:', 'Change PIN');
         if (!currentPin) {
             setMediaServerLibraryPinStatus('PIN change canceled.', true);
             return;
         }
 
-        const newPin = promptForMediaServerLibraryPin('Enter your new PIN:');
+        const newPin = await promptForMediaServerLibraryPin('Enter your new PIN:', 'Change PIN');
         if (!newPin) {
             setMediaServerLibraryPinStatus('PIN change canceled.', true);
             return;
         }
 
-        const confirmationPin = promptForMediaServerLibraryPin('Confirm your new PIN:');
+        const confirmationPin = await promptForMediaServerLibraryPin('Confirm your new PIN:', 'Change PIN');
         if (!confirmationPin) {
             setMediaServerLibraryPinStatus('PIN change canceled.', true);
             return;
@@ -2585,13 +2609,13 @@ function bindMediaServerLibraryPinActions() {
             return;
         }
 
-        const currentPin = promptForMediaServerLibraryPin('Enter your current PIN to reset it:');
+        const currentPin = await promptForMediaServerLibraryPin('Enter your current PIN to reset it:', 'Reset PIN');
         if (!currentPin) {
             setMediaServerLibraryPinStatus('PIN reset canceled.', true);
             return;
         }
 
-        if (!window.confirm('Reset the PIN? Hidden libraries will lock until a new PIN is set.')) {
+        if (!await confirmMediaServerLibraryPinReset('Reset the PIN? Hidden libraries will lock until a new PIN is set.')) {
             return;
         }
 
