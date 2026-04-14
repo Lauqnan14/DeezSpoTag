@@ -8,78 +8,144 @@
 .statistics-container {
     display: flex;
     flex-direction: column;
+    gap: 14px;
+    color: var(--text-primary);
+    padding: 6px 0 26px;
+}
+
+.statistics-container.watchlist-playlist-settings {
+    gap: 14px;
+}
+
+.statistics-hero {
+    border-radius: 14px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 20%, transparent);
+    background:
+        radial-gradient(circle at top right, color-mix(in srgb, var(--primary-color) 14%, transparent), transparent 58%),
+        color-mix(in srgb, var(--bg-secondary) 93%, black 7%);
+    padding: 18px 20px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 14px;
+}
+
+.statistics-hero-title {
+    margin: 0;
+    font-size: clamp(1.45rem, 1.2rem + 1vw, 2rem);
+    font-weight: 700;
     color: var(--text-primary);
 }
 
-.statistics-container .card,
-.statistics-container .card-body,
-.statistics-container .card-body p,
-.statistics-container .card-body span,
-.statistics-container .card-body label {
-    color: var(--text-primary);
-}
-
-.statistics-container .card-body .text-muted {
+.statistics-hero-copy {
+    margin: 8px 0 0;
+    max-width: 720px;
     color: var(--text-muted);
+    font-size: 0.92rem;
+    line-height: 1.45;
+}
+
+.statistics-hero-pulse {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-muted);
+    border: 1px solid color-mix(in srgb, var(--primary-color) 28%, transparent);
+    border-radius: 999px;
+    padding: 5px 10px;
+    white-space: nowrap;
+}
+
+.statistics-module {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.statistics-module .playlist-settings-title-row {
+    margin-bottom: 2px;
+}
+
+.statistics-module-title {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.statistics-subsection {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.statistics-subsection .playlist-settings-help {
+    margin-top: -2px;
 }
 
 .stats-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 20px;
+    grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
+    gap: 10px;
 }
 
 .stat-card {
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-secondary);
+    background: color-mix(in srgb, var(--bg-primary) 92%, black 8%);
+    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
     border-radius: 12px;
-    padding: 18px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 112px;
 }
 
 .stat-card h4 {
-    margin: 0 0 8px;
-    font-size: 14px;
+    margin: 0;
+    font-size: 11px;
     color: var(--text-muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     font-weight: 600;
 }
 
 .stat-card .stat-value {
-    font-size: 24px;
+    font-size: clamp(1.35rem, 1.2rem + 0.65vw, 1.9rem);
     color: var(--text-primary);
     font-weight: 700;
-    margin-bottom: 6px;
+    line-height: 1.15;
+    margin-bottom: 0;
 }
 
 .stat-card .stat-subtitle {
     font-size: 12px;
     color: var(--text-muted);
     margin: 0;
-}
-
-.library-breakdown {
-    margin-top: 24px;
-}
-
-.library-breakdown-title {
-    font-size: 16px;
-    font-weight: 600;
-    margin-bottom: 12px;
+    line-height: 1.35;
 }
 
 .library-breakdown-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 10px;
 }
 
 .library-card {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-secondary);
+    background: color-mix(in srgb, var(--bg-primary) 92%, black 8%);
+    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
     border-radius: 14px;
-    padding: 16px;
+    padding: 12px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
+}
+
+.library-breakdown-grid > .text-muted {
+    padding: 14px;
+    border-radius: 10px;
+    border: 1px dashed color-mix(in srgb, var(--primary-color) 24%, transparent);
+    background: color-mix(in srgb, var(--bg-primary) 95%, transparent);
 }
 
 .library-card-header {
@@ -90,7 +156,7 @@
 }
 
 .library-card-header .library-name {
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 600;
 }
 
@@ -146,8 +212,8 @@
 
 .library-card-stats {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+    gap: 10px;
 }
 
 .library-card-stats .library-stat {
@@ -164,27 +230,30 @@
 }
 
 .library-card-stats .library-stat .value {
-    font-size: 18px;
+    font-size: 17px;
     font-weight: 700;
 }
 
 .detail-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 16px;
+    gap: 10px;
 }
 
 .detail-panel {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-secondary);
+    background: color-mix(in srgb, var(--bg-primary) 92%, black 8%);
+    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
     border-radius: 14px;
-    padding: 16px;
+    padding: 12px;
 }
 
 .detail-panel h4 {
-    margin: 0 0 12px;
-    font-size: 14px;
-    font-weight: 700;
+    margin: 0 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
 }
 
 .breakdown-list {
@@ -209,9 +278,22 @@
     color: var(--text-primary);
 }
 
+.breakdown-list .text-muted {
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px dashed color-mix(in srgb, var(--primary-color) 24%, transparent);
+    background: color-mix(in srgb, var(--bg-primary) 95%, transparent);
+    font-size: 12px;
+}
+
 @@media (max-width: 900px) {
+    .statistics-hero {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
     .stats-grid {
-        gap: 16px;
+        gap: 10px;
     }
 
     .library-breakdown-grid {
@@ -226,7 +308,7 @@
 
 @@media (max-width: 640px) {
     .statistics-container {
-        padding: 0 8px;
+        padding: 4px 0 20px;
     }
 
     .stats-grid,
@@ -242,217 +324,243 @@
     .library-card-stats {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
+
+    .statistics-hero-pulse {
+        padding: 4px 9px;
+    }
 }
 </style>
 }
 
-<div class="container-fluid statistics-container">
-    <div class="d-flex justify-content-between align-items-center mb-4">
+<div class="container-fluid statistics-container watchlist-playlist-settings">
+    <header class="statistics-hero">
         <div>
-            <h1 class="welcome-title mb-2">Statistics</h1>
-            <p class="text-muted">System health and live operational stats.</p>
+            <h1 class="statistics-hero-title">Statistics</h1>
+            <p class="statistics-hero-copy">System health, library inventory, and enhancement maintenance live metrics.</p>
         </div>
-    </div>
+        <span class="statistics-hero-pulse">Live Dashboard</span>
+    </header>
 
-    <div class="card bg-darker border-secondary">
-        <div class="card-body">
-            <h3 class="mb-4">System Statistics</h3>
+    <section class="playlist-settings-section statistics-module">
+        <div class="playlist-settings-title-row">
+            <h3 class="statistics-module-title">System Statistics</h3>
+            <span class="playlist-settings-rule-count">Refresh 10s</span>
+        </div>
+        <div class="playlist-settings-help">Current download and runtime health for the running worker stack.</div>
+        <div>
             <div class="stats-grid">
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Active Downloads</h4>
                     <div class="stat-value" id="stat-active-downloads">0</div>
                     <p class="stat-subtitle">Currently downloading</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Finished Downloads</h4>
                     <div class="stat-value" id="stat-finished-downloads">0</div>
                     <p class="stat-subtitle">Completed today</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Download Speed</h4>
                     <div class="stat-value" id="stat-download-speed">0 KB/s</div>
                     <p class="stat-subtitle">Combined speed</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Active Syncs</h4>
                     <div class="stat-value" id="stat-active-syncs">0</div>
                     <p class="stat-subtitle">Playlists syncing</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>System Uptime</h4>
                     <div class="stat-value" id="stat-uptime">0m</div>
                     <p class="stat-subtitle">Application runtime</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Memory Usage</h4>
                     <div class="stat-value" id="stat-memory">--</div>
                     <p class="stat-subtitle">Current usage</p>
                 </div>
             </div>
         </div>
-    </div>
+    </section>
 
-    <div class="card bg-darker border-secondary mt-4">
-        <div class="card-body">
-            <h3 class="mb-4">Library Statistics</h3>
+    <section class="playlist-settings-section statistics-module">
+        <div class="playlist-settings-title-row">
+            <h3 class="statistics-module-title">Library Statistics</h3>
+            <span class="playlist-settings-rule-count">Refresh 15s</span>
+        </div>
+        <div class="playlist-settings-help">Inventory totals and scan quality details across configured libraries.</div>
+        <div class="statistics-subsection">
             <div class="stats-grid">
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Total Music Artists</h4>
                     <div class="stat-value" id="stat-library-artists">0</div>
                     <p class="stat-subtitle">Across music folders</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Total Music Albums</h4>
                     <div class="stat-value" id="stat-library-albums">0</div>
                     <p class="stat-subtitle">Across music folders</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Total Music Tracks</h4>
                     <div class="stat-value" id="stat-library-tracks">0</div>
                     <p class="stat-subtitle">Across music folders</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Total Videos</h4>
                     <div class="stat-value" id="stat-library-videos">0</div>
                     <p class="stat-subtitle">Video destination content</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Total Podcast Episodes</h4>
                     <div class="stat-value" id="stat-library-podcasts">0</div>
                     <p class="stat-subtitle">Podcast destination content</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Last Library Scan</h4>
                     <div class="stat-value" id="stat-library-last-scan">Never</div>
                     <p class="stat-subtitle">Most recent database update</p>
                 </div>
             </div>
+        </div>
 
-            <div class="library-breakdown">
-                <h4 class="library-breakdown-title">Per-Library Breakdown</h4>
-                <div id="library-breakdown-grid" class="library-breakdown-grid"></div>
+        <div class="statistics-subsection">
+            <div class="playlist-settings-title-row">
+                <div class="playlist-settings-section-title">Per-Library Breakdown</div>
+            </div>
+            <div id="library-breakdown-grid" class="library-breakdown-grid"></div>
+        </div>
+
+        <div class="statistics-subsection">
+            <div class="playlist-settings-title-row">
+                <div class="playlist-settings-section-title">Scan Detail</div>
+            </div>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <h4>Tracks With Lyrics</h4>
+                    <div class="stat-value" id="stat-library-lyrics">0</div>
+                    <p class="stat-subtitle">Embedded or sidecar lyrics detected</p>
+                </div>
+                <div class="stat-card">
+                    <h4>Synced Lyrics</h4>
+                    <div class="stat-value" id="stat-library-lyrics-synced">0</div>
+                    <p class="stat-subtitle">Tracks with synced lyrics available</p>
+                </div>
+                <div class="stat-card">
+                    <h4>Albums With Animated Artwork</h4>
+                    <div class="stat-value" id="stat-library-animated-artwork">0</div>
+                    <p class="stat-subtitle">Album folders with Apple animated artwork files</p>
+                </div>
             </div>
 
-            <div class="library-breakdown">
-                <h4 class="library-breakdown-title">Scan Detail</h4>
-                <div class="stats-grid">
-                    <div class="stat-card card">
-                        <h4>Tracks With Lyrics</h4>
-                        <div class="stat-value" id="stat-library-lyrics">0</div>
-                        <p class="stat-subtitle">Embedded or sidecar lyrics detected</p>
-                    </div>
-                    <div class="stat-card card">
-                        <h4>Synced Lyrics</h4>
-                        <div class="stat-value" id="stat-library-lyrics-synced">0</div>
-                        <p class="stat-subtitle">Tracks with synced lyrics available</p>
-                    </div>
-                    <div class="stat-card card">
-                        <h4>Albums With Animated Artwork</h4>
-                        <div class="stat-value" id="stat-library-animated-artwork">0</div>
-                        <p class="stat-subtitle">Album folders with Apple animated artwork files</p>
+            <div class="detail-grid">
+                <div class="detail-panel">
+                    <h4>Lyrics Types</h4>
+                    <div id="library-detail-lyrics-types" class="breakdown-list">
+                        <div class="text-muted">No data yet.</div>
                     </div>
                 </div>
-
-                <div class="detail-grid mt-4">
-                    <div class="detail-panel">
-                        <h4>Lyrics Types</h4>
-                        <div id="library-detail-lyrics-types" class="breakdown-list">
-                            <div class="text-muted">No data yet.</div>
-                        </div>
-                    </div>
-                    <div class="detail-panel">
-                        <h4>Top Technical Profiles</h4>
-                        <div id="library-detail-technical-profiles" class="breakdown-list">
-                            <div class="text-muted">No data yet.</div>
-                        </div>
+                <div class="detail-panel">
+                    <h4>Top Technical Profiles</h4>
+                    <div id="library-detail-technical-profiles" class="breakdown-list">
+                        <div class="text-muted">No data yet.</div>
                     </div>
                 </div>
             </div>
         </div>
-    </div>
+    </section>
 
-    <div class="card bg-darker border-secondary mt-4">
-        <div class="card-body">
-            <h3 class="mb-4">Enhancement Maintenance Statistics</h3>
-            <h4 class="library-breakdown-title">Quality Scanner</h4>
+    <section class="playlist-settings-section statistics-module">
+        <div class="playlist-settings-title-row">
+            <h3 class="statistics-module-title">Enhancement Maintenance Statistics</h3>
+            <span class="playlist-settings-rule-count">Live</span>
+        </div>
+        <div class="statistics-subsection">
+            <div class="playlist-settings-title-row">
+                <div class="playlist-settings-section-title">Quality Scanner</div>
+            </div>
             <div class="stats-grid">
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Status</h4>
                     <div class="stat-value" id="stat-enh-quality-status">Idle</div>
                     <p class="stat-subtitle" id="stat-enh-quality-phase">Ready to scan</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Processed</h4>
                     <div class="stat-value" id="stat-enh-quality-processed">0</div>
                     <p class="stat-subtitle">Tracks processed</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Quality Met</h4>
                     <div class="stat-value" id="stat-enh-quality-met">0</div>
                     <p class="stat-subtitle">Tracks meeting threshold</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Low Quality</h4>
                     <div class="stat-value" id="stat-enh-quality-low">0</div>
                     <p class="stat-subtitle">Tracks below threshold</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Matched</h4>
                     <div class="stat-value" id="stat-enh-quality-matched">0</div>
                     <p class="stat-subtitle">Matched for upgrade checks</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Upgrades Queued</h4>
                     <div class="stat-value" id="stat-enh-quality-upgrades">0</div>
                     <p class="stat-subtitle">Quality upgrades queued</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Atmos Queued</h4>
                     <div class="stat-value" id="stat-enh-quality-atmos">0</div>
                     <p class="stat-subtitle">Atmos alternatives queued</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Duplicates Skipped</h4>
                     <div class="stat-value" id="stat-enh-quality-dup-skipped">0</div>
                     <p class="stat-subtitle">Queue duplicates prevented</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>No Match</h4>
                     <div class="stat-value" id="stat-enh-quality-missed">0</div>
                     <p class="stat-subtitle">No source match found</p>
                 </div>
             </div>
+        </div>
 
-            <h4 class="library-breakdown-title mt-4">Duplicate Cleaner (Last Run)</h4>
+        <div class="statistics-subsection">
+            <div class="playlist-settings-title-row">
+                <div class="playlist-settings-section-title">Duplicate Cleaner (Last Run)</div>
+            </div>
             <div class="stats-grid">
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Status</h4>
                     <div class="stat-value" id="stat-enh-dup-status">Idle</div>
                     <p class="stat-subtitle" id="stat-enh-dup-last-run">No run yet</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Files Scanned</h4>
                     <div class="stat-value" id="stat-enh-dup-scanned">0</div>
                     <p class="stat-subtitle">Audio files checked</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Duplicates Found</h4>
                     <div class="stat-value" id="stat-enh-dup-found">0</div>
                     <p class="stat-subtitle">Duplicate files detected</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Deleted/Moved</h4>
                     <div class="stat-value" id="stat-enh-dup-deleted">0</div>
                     <p class="stat-subtitle">Files removed from original location</p>
                 </div>
-                <div class="stat-card card">
+                <div class="stat-card">
                     <h4>Space Freed</h4>
                     <div class="stat-value" id="stat-enh-dup-space">0 B</div>
                     <p class="stat-subtitle">Recovered disk space</p>
                 </div>
             </div>
         </div>
-    </div>
+    </section>
 </div>
 
 @section Scripts {
@@ -762,9 +870,6 @@ async function loadLibraryStats() {
         lyrics.textContent = 0;
         lyricsSynced.textContent = 0;
         animatedArtwork.textContent = 0;
-        deezerLinks.textContent = 0;
-        spotifyLinks.textContent = 0;
-        appleLinks.textContent = 0;
         breakdownGrid.innerHTML = '<div class="text-muted">Unable to load library stats.</div>';
         renderBreakdownList('library-detail-lyrics-types', []);
         renderBreakdownList('library-detail-technical-profiles', []);
