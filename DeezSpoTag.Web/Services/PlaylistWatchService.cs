@@ -897,6 +897,7 @@ public sealed class PlaylistWatchService
                 playlist.SourceId,
                 preference?.PreferredEngine,
                 preference?.DownloadVariantMode,
+                preference?.AtmosDestinationFolderId,
                 preference?.RoutingRules,
                 effectiveBlockRules),
             cancellationToken);
@@ -931,6 +932,14 @@ public sealed class PlaylistWatchService
         var serviceToken = string.IsNullOrWhiteSpace(preference?.Service)
             ? "auto"
             : preference.Service.Trim().ToLowerInvariant();
+        if (string.Equals(serviceToken, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogDebug(
+                "Playlist media-server sync disabled for {Source}:{SourceId} by preference.",
+                source,
+                sourceId);
+            return;
+        }
         var syncKey = $"{source}:{sourceId}:{serviceToken}";
         if (!forceMediaServerSync
             && _lastPlaylistMediaSyncUtc.TryGetValue(syncKey, out var lastSyncedUtc)
@@ -1255,6 +1264,7 @@ public sealed class PlaylistWatchService
                     playlist.SourceId,
                     preference?.PreferredEngine,
                     preference?.DownloadVariantMode,
+                    preference?.AtmosDestinationFolderId,
                     preference?.RoutingRules,
                     effectiveBlockRules),
                 cancellationToken);
@@ -1402,6 +1412,7 @@ public sealed class PlaylistWatchService
                 playlist.SourceId,
                 preference?.PreferredEngine,
                 preference?.DownloadVariantMode,
+                preference?.AtmosDestinationFolderId,
                 preference?.RoutingRules,
                 effectiveBlockRules),
             cancellationToken);
@@ -1534,6 +1545,7 @@ public sealed class PlaylistWatchService
                     playlist.SourceId,
                     preference?.PreferredEngine,
                     preference?.DownloadVariantMode,
+                    preference?.AtmosDestinationFolderId,
                     preference?.RoutingRules,
                     effectiveBlockRules),
                 cancellationToken);
@@ -1667,6 +1679,7 @@ public sealed class PlaylistWatchService
                     playlist.SourceId,
                     preference?.PreferredEngine,
                     preference?.DownloadVariantMode,
+                    preference?.AtmosDestinationFolderId,
                     preference?.RoutingRules,
                     effectiveBlockRules),
                 cancellationToken);
@@ -1813,6 +1826,7 @@ public sealed class PlaylistWatchService
                     playlist.SourceId,
                     preference?.PreferredEngine,
                     preference?.DownloadVariantMode,
+                    preference?.AtmosDestinationFolderId,
                     preference?.RoutingRules,
                     effectiveBlockRules),
                 cancellationToken);
@@ -2065,6 +2079,7 @@ public sealed class PlaylistWatchService
                     playlist.SourceId,
                     preference?.PreferredEngine,
                     preference?.DownloadVariantMode,
+                    preference?.AtmosDestinationFolderId,
                     preference?.RoutingRules,
                     effectiveBlockRules),
                 cancellationToken);
@@ -2595,6 +2610,7 @@ public sealed class PlaylistWatchService
         string? watchlistPlaylistId,
         string? preferredEngine = null,
         string? downloadVariantMode = null,
+        long? atmosDestinationFolderId = null,
         IReadOnlyList<PlaylistTrackRoutingRule>? routingRules = null,
         IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null)
     {
@@ -2604,6 +2620,7 @@ public sealed class PlaylistWatchService
             watchlistPlaylistId,
             preferredEngine,
             downloadVariantMode,
+            atmosDestinationFolderId,
             routingRules,
             blockRules);
     }
@@ -2731,9 +2748,9 @@ public sealed class PlaylistWatchService
             : "standard";
     }
 
-    private DownloadIntent CreateAtmosOnlyIntent(DownloadIntent sourceIntent)
+    private DownloadIntent CreateAtmosOnlyIntent(DownloadIntent sourceIntent, long? atmosDestinationFolderId = null)
     {
-        var atmosDestinationFolderId = _settingsService.LoadSettings().MultiQuality?.SecondaryDestinationFolderId;
+        atmosDestinationFolderId ??= _settingsService.LoadSettings().MultiQuality?.SecondaryDestinationFolderId;
 
         return new DownloadIntent
         {
@@ -2868,6 +2885,7 @@ public sealed class PlaylistWatchService
                 options.SourceLabel,
                 track.TrackId,
                 afterPrimarySkip: false,
+                options,
                 cancellationToken);
             return queuedCount;
         }
@@ -2889,6 +2907,7 @@ public sealed class PlaylistWatchService
                 options.SourceLabel,
                 track.TrackId,
                 afterPrimarySkip: true,
+                options,
                 cancellationToken);
             await TryMarkWatchTrackCompletedAsync(
                 options.WatchlistSource,
@@ -2941,7 +2960,7 @@ public sealed class PlaylistWatchService
         intent.DestinationFolderId = ResolveRoutingFolderId(intent, options.RoutingRules, destinationFolderId);
         if (normalizedDownloadVariantMode == "atmos_only")
         {
-            intent = CreateAtmosOnlyIntent(intent);
+            intent = CreateAtmosOnlyIntent(intent, options.AtmosDestinationFolderId);
         }
         else if (!string.IsNullOrWhiteSpace(normalizedPreferredEngine))
         {
@@ -2983,6 +3002,7 @@ public sealed class PlaylistWatchService
         string sourceLabel,
         string trackId,
         bool afterPrimarySkip,
+        QueueWatchOptions options,
         CancellationToken cancellationToken)
     {
         if (normalizedDownloadVariantMode != "dual_quality")
@@ -2990,7 +3010,7 @@ public sealed class PlaylistWatchService
             return 0;
         }
 
-        var atmosIntent = CreateAtmosOnlyIntent(baseIntent);
+        var atmosIntent = CreateAtmosOnlyIntent(baseIntent, options.AtmosDestinationFolderId);
         try
         {
             var atmosResult = await intentService.EnqueueAsync(atmosIntent, cancellationToken);
@@ -3366,6 +3386,7 @@ public sealed class PlaylistWatchService
         string? WatchlistPlaylistId,
         string? PreferredEngine,
         string? DownloadVariantMode,
+        long? AtmosDestinationFolderId,
         IReadOnlyList<PlaylistTrackRoutingRule>? RoutingRules,
         IReadOnlyList<PlaylistTrackBlockRule>? BlockRules);
 

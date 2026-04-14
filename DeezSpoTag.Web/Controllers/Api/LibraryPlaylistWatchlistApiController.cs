@@ -148,6 +148,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         string Source,
         string SourceId,
         long? FolderId,
+        long? AtmosFolderId,
         string? Service,
         string? PreferredEngine,
         string? DownloadVariantMode,
@@ -235,7 +236,8 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 normalizedArtwork.UpdateArtwork,
                 normalizedArtwork.ReuseSavedArtwork,
                 request.RoutingRules ?? existing?.RoutingRules,
-                request.BlockRules ?? existing?.IgnoreRules),
+                request.BlockRules ?? existing?.IgnoreRules,
+                request.AtmosFolderId),
             cancellationToken);
     }
 
@@ -678,7 +680,8 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 normalizedArtwork.UpdateArtwork,
                 normalizedArtwork.ReuseSavedArtwork,
                 routingRules ?? existing?.RoutingRules,
-                ignoreRules ?? existing?.IgnoreRules),
+                ignoreRules ?? existing?.IgnoreRules,
+                existing?.AtmosDestinationFolderId),
             cancellationToken);
     }
 

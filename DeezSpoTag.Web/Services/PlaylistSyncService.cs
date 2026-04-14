@@ -786,6 +786,10 @@ public sealed class PlaylistSyncService
         CancellationToken cancellationToken)
     {
         var configuredService = NormalizeService(preference?.Service);
+        if (string.Equals(configuredService, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
         if (!string.IsNullOrWhiteSpace(configuredService))
         {
             return configuredService;

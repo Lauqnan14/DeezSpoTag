@@ -488,7 +488,8 @@ public sealed record PlaylistWatchPreferenceDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     IReadOnlyList<PlaylistTrackRoutingRule>? RoutingRules = null,
-    IReadOnlyList<PlaylistTrackBlockRule>? IgnoreRules = null);
+    IReadOnlyList<PlaylistTrackBlockRule>? IgnoreRules = null,
+    long? AtmosDestinationFolderId = null);
 
 public sealed record PlaylistWatchStateDto(
     string Source,
