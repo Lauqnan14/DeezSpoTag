@@ -11,13 +11,53 @@ public static class TechnicalLyricsSettingsApplier
             return;
         }
 
+        settings.Tags ??= new TagSettings();
+
+        settings.Tags.SavePlaylistAsCompilation = technical.SavePlaylistAsCompilation;
+        settings.Tags.UseNullSeparator = technical.UseNullSeparator;
+        settings.Tags.SaveID3v1 = technical.SaveID3v1;
+        settings.Tags.SingleAlbumArtist = technical.SingleAlbumArtist;
+        settings.Tags.CoverDescriptionUTF8 = technical.CoverDescriptionUTF8;
+        settings.AlbumVariousArtists = technical.AlbumVariousArtists;
+        settings.RemoveDuplicateArtists = technical.RemoveDuplicateArtists;
+        settings.RemoveAlbumVersion = technical.RemoveAlbumVersion;
+
+        if (!string.IsNullOrWhiteSpace(technical.MultiArtistSeparator))
+        {
+            settings.Tags.MultiArtistSeparator = technical.MultiArtistSeparator;
+        }
+
+        if (!string.IsNullOrWhiteSpace(technical.DateFormat))
+        {
+            settings.DateFormat = technical.DateFormat;
+        }
+
+        if (!string.IsNullOrWhiteSpace(technical.FeaturedToTitle))
+        {
+            settings.FeaturedToTitle = technical.FeaturedToTitle;
+        }
+
+        if (!string.IsNullOrWhiteSpace(technical.TitleCasing))
+        {
+            settings.TitleCasing = technical.TitleCasing;
+        }
+
+        if (!string.IsNullOrWhiteSpace(technical.ArtistCasing))
+        {
+            settings.ArtistCasing = technical.ArtistCasing;
+        }
+
         settings.SyncedLyrics = technical.SyncedLyrics;
         settings.SaveLyrics = technical.SaveLyrics;
         settings.LyricsFallbackEnabled = technical.LyricsFallbackEnabled;
         settings.ArtworkFallbackEnabled = technical.ArtworkFallbackEnabled;
         settings.ArtistArtworkFallbackEnabled = technical.ArtistArtworkFallbackEnabled;
-        settings.Tags ??= new TagSettings();
-        settings.Tags.SingleAlbumArtist = technical.SingleAlbumArtist;
+
+        if (!technical.EmbedLyrics)
+        {
+            settings.Tags.Lyrics = false;
+            settings.Tags.SyncedLyrics = false;
+        }
 
         if (!string.IsNullOrWhiteSpace(technical.LrcType))
         {

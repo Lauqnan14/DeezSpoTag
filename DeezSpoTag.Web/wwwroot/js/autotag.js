@@ -5330,6 +5330,7 @@
         applyFieldCheckedWhenBoolean("saveID3v1", technical.saveID3v1);
         applyFieldValueIfPresent("multiArtistSeparator", technical.multiArtistSeparator);
         applyFieldCheckedWhenBoolean("singleAlbumArtist", technical.singleAlbumArtist);
+        applyFieldCheckedWhenBoolean("coverDescriptionUTF8", technical.coverDescriptionUTF8);
         applyFieldCheckedWhenBoolean("albumVariousArtists", technical.albumVariousArtists);
         applyFieldCheckedWhenBoolean("removeDuplicateArtists", technical.removeDuplicateArtists);
         applyFieldCheckedWhenBoolean("removeAlbumVersion", technical.removeAlbumVersion);
@@ -5539,6 +5540,7 @@
         technical.saveID3v1 = getChecked("saveID3v1", technical.saveID3v1 ?? false);
         technical.multiArtistSeparator = getValue("multiArtistSeparator", technical.multiArtistSeparator ?? "default");
         technical.singleAlbumArtist = getChecked("singleAlbumArtist", technical.singleAlbumArtist ?? true);
+        technical.coverDescriptionUTF8 = getChecked("coverDescriptionUTF8", technical.coverDescriptionUTF8 ?? true);
         technical.albumVariousArtists = getChecked("albumVariousArtists", technical.albumVariousArtists ?? false);
         technical.removeDuplicateArtists = getChecked("removeDuplicateArtists", technical.removeDuplicateArtists ?? false);
         technical.removeAlbumVersion = getChecked("removeAlbumVersion", technical.removeAlbumVersion ?? false);
@@ -5571,7 +5573,7 @@
         );
         technical.artistArtworkFallbackOrder = resolveSavedFallbackOrder({
             fallbackEnabled: technical.artistArtworkFallbackEnabled,
-            defaultSourceId: null,
+            defaultSourceId: "artistArtworkDefaultSource",
             fallbackOrderValue: getValue(
                 "artistArtworkFallbackOrder",
                 technical.artistArtworkFallbackOrder ?? technical.artworkFallbackOrder ?? ARTWORK_SOURCE_ORDER.join(",")
