@@ -1822,7 +1822,26 @@
 </div>
 
 <script>
-window.DeezSpoTagRevealMaterialIconsWhenReady('.autotag-page.material-icons-pending');
+(function ensureAutoTagMaterialIconsReveal() {
+    const selector = '.autotag-page.material-icons-pending';
+    const invokeReveal = () => {
+        if (typeof window.DeezSpoTagRevealMaterialIconsWhenReady === 'function') {
+            window.DeezSpoTagRevealMaterialIconsWhenReady(selector);
+            return true;
+        }
+        return false;
+    };
+
+    if (invokeReveal()) {
+        return;
+    }
+
+    window.addEventListener('load', () => {
+        if (!invokeReveal()) {
+            document.querySelector(selector)?.classList.remove('material-icons-pending');
+        }
+    }, { once: true });
+})();
 
 // Pipeline tab activation helper
 function activatePipelineTab(tabId) {
