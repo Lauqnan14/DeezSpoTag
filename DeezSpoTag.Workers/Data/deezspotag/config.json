@@ -81,7 +81,7 @@
   "syncedLyrics": true,
   "queueOrder": "fifo",
   "lyricsFallbackEnabled": true,
-  "lyricsFallbackOrder": "apple,deezer",
+  "lyricsFallbackOrder": "apple,deezer,spotify",
   "normalizeGenreTags": false,
   "genreTagAliasRules": [
     {
@@ -94,9 +94,9 @@
     }
   ],
   "artworkFallbackEnabled": true,
-  "artworkFallbackOrder": "apple,deezer",
+  "artworkFallbackOrder": "apple,spotify,deezer",
   "artistArtworkFallbackEnabled": true,
-  "artistArtworkFallbackOrder": "apple,deezer",
+  "artistArtworkFallbackOrder": "apple,spotify,deezer",
   "shazamEnabled": true,
   "shazamUseCenteredOverlay": true,
   "shazamCaptureDurationSeconds": 11,
