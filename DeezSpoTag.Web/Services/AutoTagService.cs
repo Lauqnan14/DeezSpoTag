@@ -1512,7 +1512,11 @@ public class AutoTagService
             includesEnhancementStage,
             CancellationToken.None);
         await TriggerLibraryScanAfterEnhancementAsync(job, includesEnhancementStage, CancellationToken.None);
-        if (autoMove.Completed)
+        var plexTriggeredByEnhancement = await TriggerPlexMetadataRefreshAfterEnhancementAsync(
+            job,
+            includesEnhancementStage,
+            CancellationToken.None);
+        if (autoMove.Completed && !plexTriggeredByEnhancement)
         {
             await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
         }
@@ -3212,18 +3216,75 @@ public class AutoTagService
 
     private async Task TriggerPlexScanAfterMoveAsync(AutoTagJob job, CancellationToken cancellationToken)
     {
+        var plex = await LoadConfiguredPlexForScanAsync(job);
+        if (plex == null)
+        {
+            return;
+        }
+
+        await TriggerPlexScanAsync(job, plex, "after auto-move", cancellationToken);
+    }
+
+    private async Task<bool> TriggerPlexMetadataRefreshAfterEnhancementAsync(
+        AutoTagJob job,
+        bool includesEnhancementStage,
+        CancellationToken cancellationToken)
+    {
+        if (!includesEnhancementStage
+            || !ShouldRunEnhancementForIntent(job.RunIntent)
+            || !string.Equals(job.Status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var plex = await LoadConfiguredPlexForScanAsync(job);
+        if (plex == null)
+        {
+            return false;
+        }
+
+        await TriggerPlexScanAsync(job, plex, "after enhancement run", cancellationToken);
+        return true;
+    }
+
+    private async Task<PlexAuth?> LoadConfiguredPlexForScanAsync(AutoTagJob job)
+    {
         try
         {
-            AppendLog(job, "plex scan starting after auto-move");
             var authState = await _platformAuthService.LoadAsync();
             var plex = authState.Plex;
-            if (string.IsNullOrWhiteSpace(plex?.Url) || string.IsNullOrWhiteSpace(plex.Token))
+            if (!IsPlexAuthenticated(plex))
             {
-                AppendLog(job, "plex scan skipped: plex not configured");
+                return null;
+            }
+
+            return plex;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "AutoTag job {JobId}: failed loading Plex auth state for scan.", job.Id);
+            return null;
+        }
+    }
+
+    private async Task TriggerPlexScanAsync(
+        AutoTagJob job,
+        PlexAuth plex,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var plexUrl = plex.Url;
+            var plexToken = plex.Token;
+            if (string.IsNullOrWhiteSpace(plexUrl) || string.IsNullOrWhiteSpace(plexToken))
+            {
                 return;
             }
 
-            var sections = await _plexApiClient.GetLibrarySectionsAsync(plex.Url, plex.Token, cancellationToken);
+            AppendLog(job, $"plex scan starting {reason}");
+
+            var sections = await _plexApiClient.GetLibrarySectionsAsync(plexUrl, plexToken, cancellationToken);
             var musicSections = sections
                 .Where(section => string.Equals(section.Type, "artist", StringComparison.OrdinalIgnoreCase))
                 .Where(section => !section.Title.Contains("audiobook", StringComparison.OrdinalIgnoreCase))
@@ -3237,7 +3298,7 @@ public class AutoTagService
             var refreshed = 0;
             foreach (var section in musicSections)
             {
-                if (await _plexApiClient.RefreshLibraryAsync(plex.Url, plex.Token, section.Key, cancellationToken))
+                if (await _plexApiClient.RefreshLibraryAsync(plexUrl, plexToken, section.Key, cancellationToken))
                 {
                     refreshed++;
                 }
@@ -3247,7 +3308,7 @@ public class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "AutoTag job {JobId}: Plex scan after auto-move failed.", job.Id);
+            _logger.LogWarning(ex, "AutoTag job {JobId}: Plex scan {Reason} failed.", job.Id, reason);
             AppendLog(job, $"plex scan failed: {ex.Message}");
         }
     }
