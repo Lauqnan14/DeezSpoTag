@@ -7,7 +7,33 @@ cd "$ROOT_DIR"
 MODE="${GUARDRAILS_MODE:-changed}" # changed|full
 BASE_REF="${GUARDRAILS_BASE_REF:-origin/main}"
 BUILD_CONFIG="${GUARDRAILS_BUILD_CONFIG:-Debug}"
-TEST_FRAMEWORK="${GUARDRAILS_TEST_TFM:-net8.0}"
+
+resolve_test_framework() {
+  if [[ -n "${GUARDRAILS_TEST_TFM:-}" ]]; then
+    printf '%s' "$GUARDRAILS_TEST_TFM"
+    return
+  fi
+
+  local tests_csproj="DeezSpoTag.Tests/DeezSpoTag.Tests.csproj"
+  if [[ -f "$tests_csproj" ]]; then
+    local target_framework
+    target_framework="$(sed -n 's:.*<TargetFramework>\(.*\)</TargetFramework>.*:\1:p' "$tests_csproj" | head -n1)"
+    if [[ -z "$target_framework" ]]; then
+      local target_frameworks
+      target_frameworks="$(sed -n 's:.*<TargetFrameworks>\(.*\)</TargetFrameworks>.*:\1:p' "$tests_csproj" | head -n1)"
+      target_framework="${target_frameworks%%;*}"
+    fi
+
+    if [[ -n "$target_framework" ]]; then
+      printf '%s' "$target_framework"
+      return
+    fi
+  fi
+
+  printf 'net10.0'
+}
+
+TEST_FRAMEWORK="$(resolve_test_framework)"
 
 log() {
   printf '[guardrails] %s\n' "$*"
