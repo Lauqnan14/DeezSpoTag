@@ -2845,7 +2845,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         UpdateAutoTagCapabilities(platformId, track);
         var separator = ResolveSeparatorForFormat(config, Path.GetExtension(filePath));
         var effectiveTagSettings = ApplyOverwriteRules(filePath, tagSettings, config, platformId);
-        var coreTrack = BuildCoreTrack(track, separator, effectiveTagSettings.SingleAlbumArtist);
+        var coreTrack = BuildCoreTrack(track, separator, effectiveTagSettings.SingleAlbumArtist, settings);
         string? tempCoverPath = null;
 
         if (effectiveTagSettings.Cover && !string.IsNullOrWhiteSpace(track.Art))
@@ -2889,7 +2889,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private static Track BuildCoreTrack(AutoTagTrack track, string? separator, bool singleAlbumArtist)
+    private static Track BuildCoreTrack(
+        AutoTagTrack track,
+        string? separator,
+        bool singleAlbumArtist,
+        DeezSpoTagSettings settings)
     {
         var artists = track.Artists.Count == 0 ? new List<string> { "Unknown Artist" } : track.Artists;
         var albumArtists = track.AlbumArtists.Count == 0 ? artists : track.AlbumArtists;
@@ -2906,6 +2910,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             singleAlbumArtist
                 ? artists[0]
                 : albumArtists[0]);
+        album.Artists = albumArtists.ToList();
+        album.Artist["Main"] = albumArtists.ToList();
 
         var coreTrack = new Track
         {
@@ -2921,8 +2927,19 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             Duration = (int?)track.Duration?.TotalSeconds ?? 0
         };
 
-        coreTrack.Artist["Main"] = artists.ToList();
-        coreTrack.ArtistString = artists[0];
+        if (singleAlbumArtist && artists.Count > 1)
+        {
+            coreTrack.Artist["Main"] = new List<string> { artists[0] };
+            coreTrack.Artist["Featured"] = artists.Skip(1).ToList();
+            coreTrack.MainArtist = new DeezSpoTag.Core.Models.Artist(artists[0]);
+        }
+        else
+        {
+            coreTrack.Artist["Main"] = artists.ToList();
+        }
+
+        coreTrack.GenerateMainFeatStrings();
+        coreTrack.ArtistString = coreTrack.MainArtist?.Name ?? artists[0];
         coreTrack.ArtistsString = string.IsNullOrWhiteSpace(separator) ? string.Join(", ", artists) : string.Join(separator, artists);
 
         if (track.ReleaseDate.HasValue)
@@ -2930,6 +2947,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             coreTrack.Date = CustomDate.FromDateTime(track.ReleaseDate.Value);
             coreTrack.DateString = coreTrack.Date.Format("ymd");
         }
+
+        settings.Tags ??= new TagSettings();
+        coreTrack.ApplySettings(settings);
 
         return coreTrack;
     }
@@ -3025,27 +3045,66 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         WriteLabelTag(tagWriteContext, context);
     }
 
-    private static List<string> ResolveAlbumArtistValues(AutoTagTrack sourceTrack, Track coreTrack, bool singleAlbumArtist)
+    private static List<string> ResolveArtistValues(Track coreTrack, TagSettings tagSettings)
     {
-        var albumArtistValues = (sourceTrack.AlbumArtists.Count > 0
-                ? sourceTrack.AlbumArtists
-                : coreTrack.Artists)
+        var artists = coreTrack.Artists
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Select(value => value.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-
-        if (albumArtistValues.Count == 0)
+        if (artists.Count == 0)
         {
-            albumArtistValues = new List<string> { coreTrack.Artists[0] };
+            return new List<string>();
         }
 
-        if (singleAlbumArtist)
+        if (string.Equals(tagSettings.MultiArtistSeparator, "default", StringComparison.OrdinalIgnoreCase))
         {
-            albumArtistValues = new List<string> { albumArtistValues[0] };
+            return artists;
         }
 
-        return albumArtistValues;
+        if (string.Equals(tagSettings.MultiArtistSeparator, "nothing", StringComparison.OrdinalIgnoreCase))
+        {
+            var primary = coreTrack.MainArtist?.Name;
+            return string.IsNullOrWhiteSpace(primary)
+                ? new List<string> { artists[0] }
+                : new List<string> { primary.Trim() };
+        }
+
+        var joined = string.IsNullOrWhiteSpace(coreTrack.ArtistsString)
+            ? string.Join(", ", artists)
+            : coreTrack.ArtistsString;
+        return new List<string> { joined };
+    }
+
+    private static List<string> ResolveAlbumArtistValues(Track coreTrack)
+    {
+        var primary = coreTrack.Album?.MainArtist?.Name?.Trim();
+        if (!string.IsNullOrWhiteSpace(primary))
+        {
+            return new List<string> { primary };
+        }
+
+        var mainArtists = coreTrack.Artist.GetValueOrDefault("Main", new List<string>())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (mainArtists.Count > 0)
+        {
+            return new List<string> { mainArtists[0] };
+        }
+
+        var artists = coreTrack.Artists
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (artists.Count > 0)
+        {
+            return new List<string> { artists[0] };
+        }
+
+        return new List<string> { "Unknown Artist" };
     }
 
     private static void WriteTitleTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -3055,7 +3114,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        var titleValue = context.Config.ShortTitle ? context.SourceTrack.Title : BuildFullTitle(context.SourceTrack);
+        var titleValue = context.CoreTrack.Title;
+        if (!context.Config.ShortTitle
+            && !string.IsNullOrWhiteSpace(context.SourceTrack.Version)
+            && !titleValue.Contains(context.SourceTrack.Version, StringComparison.OrdinalIgnoreCase))
+        {
+            titleValue = $"{titleValue} ({context.SourceTrack.Version})";
+        }
+
         SetField(tagWriteContext, new TagFieldBinding("TIT2", "TITLE", "©nam", SupportedTag.Title), new List<string> { titleValue });
     }
 
@@ -3076,7 +3142,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        SetField(tagWriteContext, new TagFieldBinding("TPE1", "ARTIST", "©ART", SupportedTag.Artist), context.CoreTrack.Artists);
+        var artistValues = ResolveArtistValues(context.CoreTrack, context.EffectiveTagSettings);
+        if (artistValues.Count == 0)
+        {
+            return;
+        }
+
+        SetField(tagWriteContext, new TagFieldBinding("TPE1", "ARTIST", "©ART", SupportedTag.Artist), artistValues);
     }
 
     private static void WriteAlbumArtistTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -3086,7 +3158,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        var albumArtistValues = ResolveAlbumArtistValues(context.SourceTrack, context.CoreTrack, context.EffectiveTagSettings.SingleAlbumArtist);
+        var albumArtistValues = ResolveAlbumArtistValues(context.CoreTrack);
         SetField(
             tagWriteContext,
             new TagFieldBinding("TPE2", "ALBUMARTIST", "aART", SupportedTag.AlbumArtist),
