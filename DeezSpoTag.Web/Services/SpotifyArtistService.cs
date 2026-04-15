@@ -2504,7 +2504,7 @@ public sealed class SpotifyArtistService
             return;
         }
 
-        if (!await ShouldRewriteArtistFoldersToCanonicalNameAsync(cancellationToken))
+        if (!await ShouldRewriteArtistFoldersToCanonicalNameAsync())
         {
             return;
         }
@@ -2549,7 +2549,7 @@ public sealed class SpotifyArtistService
         }
     }
 
-    private async Task<bool> ShouldRewriteArtistFoldersToCanonicalNameAsync(CancellationToken cancellationToken)
+    private async Task<bool> ShouldRewriteArtistFoldersToCanonicalNameAsync()
     {
         try
         {
