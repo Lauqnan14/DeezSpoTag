@@ -851,7 +851,7 @@ public sealed class SpotifyArtistService
     }
 
     private static List<SpotifyAlbum> MergePrimaryAlbumsWithFallback(
-        IReadOnlyList<SpotifyAlbum> primary,
+        List<SpotifyAlbum> primary,
         Dictionary<string, SpotifyAlbum> fallbackByKey,
         HashSet<string> seen,
         int fallbackCount)

@@ -626,7 +626,7 @@ public class DuplicateCleanerService
     }
 
     private static Dictionary<int, List<int>> BuildComponentAdjacency(
-        IReadOnlyList<int> component,
+        List<int> component,
         IReadOnlyList<DuplicateCandidate> candidates)
     {
         var adjacency = component.ToDictionary(index => index, _ => new List<int>());
