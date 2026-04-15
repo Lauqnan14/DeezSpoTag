@@ -2661,7 +2661,9 @@ async function loadAutoTagFolderDefaults() {
 async function saveAutoTagFolderDefault(folderId, profileId, schedule) {
     const defaults = normalizeAutoTagDefaults(libraryState.autotagDefaults);
     const idKey = String(folderId);
-    const nextSchedule = (schedule || '7d').trim();
+    const nextSchedule = typeof schedule === 'string'
+        ? schedule.trim()
+        : '';
     if (nextSchedule) {
         defaults.librarySchedules[idKey] = nextSchedule;
     } else {
@@ -7875,7 +7877,7 @@ function bindFolderDurationSelection(wrapper, folder, folderIdKey, getCurrentPro
     if (!durationSelect) {
         return;
     }
-    const currentSchedule = libraryState.autotagDefaults?.librarySchedules?.[folderIdKey] || '7d';
+    const currentSchedule = libraryState.autotagDefaults?.librarySchedules?.[folderIdKey] || '';
     durationSelect.value = currentSchedule;
     durationSelect.addEventListener('change', async () => {
         const previous = currentSchedule;
@@ -7948,7 +7950,7 @@ function computeFolderRowViewModel(folder, context) {
     const currentQuality = String(folder.desiredQuality ?? '27');
     const folderIdKey = String(folder.id);
     const currentProfile = resolveFolderProfileReference(folder);
-    const currentSchedule = context.folderSchedules[folderIdKey] || '7d';
+    const currentSchedule = context.folderSchedules[folderIdKey] || '';
     const profileOptions = context.profileOptionsSource.length
         ? ['<option value="">No profile</option>', ...context.profileOptionsSource.map((profile) => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name)}</option>`)].join('')
         : '<option value="">No profiles</option>';
@@ -8216,6 +8218,7 @@ function renderFolders() {
     const profileOptionsSource = Array.isArray(libraryState.autotagProfiles) ? libraryState.autotagProfiles : [];
     const folderSchedules = libraryState.autotagDefaults?.librarySchedules || {};
     const scheduleChoices = [
+        { value: '', label: 'No automatic run' },
         { value: '7d', label: '1 week' },
         { value: '14d', label: '2 weeks' },
         { value: '30d', label: '1 month' },
