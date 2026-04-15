@@ -674,6 +674,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return false;
         }
 
+        await TryPauseGlobalEnhancementForRecentDownloadsAsync(cancellationToken);
+
         var enhancementJob = await RunRecentEnhancementJobAsync(
             folder.RootPath,
             scopedFiles.Count,
@@ -696,6 +698,86 @@ public sealed class DownloadOrchestrationService : BackgroundService
             DateTimeOffset.UtcNow,
             "info",
             "Automation: recent-download enhancement deferred because downloads became active."));
+        return true;
+    }
+
+    private async Task<bool> TryPauseGlobalEnhancementForRecentDownloadsAsync(CancellationToken cancellationToken)
+    {
+        if (!_autoTagService.TryGetRunningEnhancementJobId(out var runningEnhancementJobId)
+            || string.IsNullOrWhiteSpace(runningEnhancementJobId))
+        {
+            return false;
+        }
+
+        var runningJob = _autoTagService.GetJob(runningEnhancementJobId);
+        if (!ShouldPauseForRecentDownloadEnhancement(runningJob))
+        {
+            return false;
+        }
+
+        await _enhancementPauseLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (!_autoTagService.TryGetRunningEnhancementJobId(out runningEnhancementJobId)
+                || string.IsNullOrWhiteSpace(runningEnhancementJobId))
+            {
+                return false;
+            }
+
+            runningJob = _autoTagService.GetJob(runningEnhancementJobId);
+            if (!ShouldPauseForRecentDownloadEnhancement(runningJob))
+            {
+                return false;
+            }
+
+            _enhancementPauseRequested = true;
+            _enhancementResumeAwaitingPipelineCompletion = true;
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                "Automation: pausing global enhancement to prioritize recent-download enhancement."));
+
+            var stopped = await _autoTagService.StopJobAsync(runningEnhancementJobId);
+            if (!stopped)
+            {
+                return false;
+            }
+
+            await QueueResumeFoldersForPausedEnhancementJobAsync(runningEnhancementJobId, cancellationToken);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Automation paused enhancement job {JobId} to prioritize recent-download enhancement.",
+                    runningEnhancementJobId);
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to pause global enhancement for recent-download enhancement.");
+            return false;
+        }
+        finally
+        {
+            _enhancementPauseLock.Release();
+        }
+    }
+
+    private static bool ShouldPauseForRecentDownloadEnhancement(AutoTagJob? job)
+    {
+        if (job == null
+            || !string.Equals(job.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (string.Equals(job.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(job.RunIntent, AutoTagLiterals.RunIntentEnhancementRecentDownloads, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
         return true;
     }
 
