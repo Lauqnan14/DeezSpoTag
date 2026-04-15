@@ -131,7 +131,7 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
         }
 
         var stopped = await _autoTagService.StopJobAsync(runningEnhancementJobId);
-        if (stopped)
+        if (stopped && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
                 "Stopped running enhancement job {JobId} after schedule update.",

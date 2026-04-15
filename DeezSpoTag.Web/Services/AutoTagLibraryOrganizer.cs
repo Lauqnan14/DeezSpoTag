@@ -872,7 +872,7 @@ public class AutoTagLibraryOrganizer
 
     private static bool ShouldSkipExistingDestinationMerge(
         string sourceDir,
-        IReadOnlyList<string> destinationDirs,
+        List<string> destinationDirs,
         AutoTagOrganizerOptions options,
         AutoTagOrganizerReport? report,
         Action<string>? log)
@@ -1063,7 +1063,7 @@ public class AutoTagLibraryOrganizer
 
     private void MoveResidualArtistSidecarsForTransitions(
         string rootPath,
-        IReadOnlyDictionary<string, Dictionary<string, int>> artistDirectoryTransitions,
+        Dictionary<string, Dictionary<string, int>> artistDirectoryTransitions,
         AutoTagOrganizerOptions options,
         AutoTagOrganizerReport? report,
         Action<string>? log)
@@ -1729,7 +1729,10 @@ public class AutoTagLibraryOrganizer
                 report.MovedLeftovers += movedFiles;
             }
 
-            _logger.LogInformation("AutoTag organizer moved duplicate leftovers folder {SourceDir} -> {DestinationDir}", sourceDir, targetDirectory);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("AutoTag organizer moved duplicate leftovers folder {SourceDir} -> {DestinationDir}", sourceDir, targetDirectory);
+            }
             log?.Invoke($"organizer moved duplicate leftovers folder: {sourceDir} -> {targetDirectory}");
             report?.Entries.Add($"move-duplicate-leftovers-folder: {sourceDir} -> {targetDirectory}");
         }
@@ -1827,7 +1830,10 @@ public class AutoTagLibraryOrganizer
                 report.MovedLeftovers += movedFiles;
             }
 
-            _logger.LogInformation("AutoTag organizer moved {Reason} folder {SourceDir} -> {DestinationDir}", reason, sourceDir, targetDirectory);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("AutoTag organizer moved {Reason} folder {SourceDir} -> {DestinationDir}", reason, sourceDir, targetDirectory);
+            }
             log?.Invoke($"organizer moved {reason} folder: {sourceDir} -> {targetDirectory}");
             report?.Entries.Add($"move-{reason.Replace(' ', '-')}-folder: {sourceDir} -> {targetDirectory}");
             if (options.RemoveEmptyFolders)
@@ -2566,7 +2572,10 @@ public class AutoTagLibraryOrganizer
                 context.Report.MovedSidecars++;
             }
 
-            _logger.LogInformation("AutoTag organizer moved sidecar {SourcePath} -> {DestinationPath}", sourcePath, target);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("AutoTag organizer moved sidecar {SourcePath} -> {DestinationPath}", sourcePath, target);
+            }
             context.Log?.Invoke($"organizer moved sidecar: {sourcePath} -> {target}");
             context.Report?.Entries.Add($"move-sidecar: {sourcePath} -> {target}");
             return true;

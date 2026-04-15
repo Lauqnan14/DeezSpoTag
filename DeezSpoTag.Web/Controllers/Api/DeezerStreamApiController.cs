@@ -345,7 +345,10 @@ public class DeezerStreamApiController : ControllerBase
         }
         catch (DeezerGatewayException ex) when (IsMissingSongData(ex))
         {
-            _logger.LogDebug(ex, "Deezer playback context not found for track {TrackId}", deezerId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer playback context not found for track {TrackId}", deezerId);
+            }
             return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -552,24 +555,24 @@ public class DeezerStreamApiController : ControllerBase
                 fallbackId = parsed;
                 return true;
             case JObject obj:
-            {
-                var sngId = obj.Value<string>("SNG_ID") ?? obj.Value<string>("id");
-                if (int.TryParse(sngId, out var parsedObj) && parsedObj > 0)
                 {
-                    fallbackId = parsedObj;
-                    return true;
+                    var sngId = obj.Value<string>("SNG_ID") ?? obj.Value<string>("id");
+                    if (int.TryParse(sngId, out var parsedObj) && parsedObj > 0)
+                    {
+                        fallbackId = parsedObj;
+                        return true;
+                    }
+                    break;
                 }
-                break;
-            }
             case JValue value:
-            {
-                if (int.TryParse(value.ToString(), out var parsedValue) && parsedValue > 0)
                 {
-                    fallbackId = parsedValue;
-                    return true;
+                    if (int.TryParse(value.ToString(), out var parsedValue) && parsedValue > 0)
+                    {
+                        fallbackId = parsedValue;
+                        return true;
+                    }
+                    break;
                 }
-                break;
-            }
         }
 
         return false;

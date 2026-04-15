@@ -22,6 +22,9 @@ namespace DeezSpoTag.Tests;
 [Collection("Settings Config Isolation")]
 public sealed class DownloadQueueRecoveryServiceTests : IDisposable
 {
+    private static readonly string[] QobuzSourceUrlInput = ["source_url"];
+    private static readonly string[] DeezerIdInput = ["deezer_id"];
+
     private readonly string _tempRoot;
     private readonly TestConfigRootScope _configScope;
     private readonly string _queueDbPath;
@@ -106,8 +109,8 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
             AutoIndex = 0,
             FallbackPlan = new List<FallbackPlanStep>
             {
-                new("qobuz-27", "qobuz", "27", new[] { "source_url" }, "direct_url"),
-                new("deezer-9", "deezer", "9", new[] { "deezer_id" }, "deezer_track_id")
+                new("qobuz-27", "qobuz", "27", QobuzSourceUrlInput, "direct_url"),
+                new("deezer-9", "deezer", "9", DeezerIdInput, "deezer_track_id")
             }
         };
 

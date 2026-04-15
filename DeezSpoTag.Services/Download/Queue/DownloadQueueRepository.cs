@@ -1078,43 +1078,7 @@ LIMIT 1;";
 
         foreach (var path in paths)
         {
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                continue;
-            }
-
-            try
-            {
-                var ioPath = DownloadPathResolver.ResolveIoPath(path);
-                if (!File.Exists(ioPath))
-                {
-                    continue;
-                }
-
-                var extension = Path.GetExtension(ioPath);
-                if (string.Equals(extension, ".ttml", StringComparison.OrdinalIgnoreCase))
-                {
-                    hasTimeSynced = true;
-                    continue;
-                }
-
-                if (string.Equals(extension, ".lrc", StringComparison.OrdinalIgnoreCase))
-                {
-                    hasSynced = true;
-                    continue;
-                }
-
-                if (string.Equals(extension, ".txt", StringComparison.OrdinalIgnoreCase))
-                {
-                    hasUnsynced = true;
-                    continue;
-                }
-
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                // Best-effort lyrics status persistence; ignore unreadable paths.
-            }
+            TryMarkLyricsStatus(path, ref hasTimeSynced, ref hasSynced, ref hasUnsynced);
         }
 
         var statuses = new List<string>(capacity: 3);
@@ -1139,6 +1103,47 @@ LIMIT 1;";
         }
 
         return null;
+    }
+
+    private static void TryMarkLyricsStatus(
+        string? path,
+        ref bool hasTimeSynced,
+        ref bool hasSynced,
+        ref bool hasUnsynced)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            var ioPath = DownloadPathResolver.ResolveIoPath(path);
+            if (!File.Exists(ioPath))
+            {
+                return;
+            }
+
+            switch (Path.GetExtension(ioPath))
+            {
+                case ".ttml":
+                case ".TTML":
+                    hasTimeSynced = true;
+                    break;
+                case ".lrc":
+                case ".LRC":
+                    hasSynced = true;
+                    break;
+                case ".txt":
+                case ".TXT":
+                    hasUnsynced = true;
+                    break;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Best-effort lyrics status persistence; ignore unreadable paths.
+        }
     }
 
     private static void AddFinalDestinationPaths(string? finalDestinationsJson, ISet<string> target)

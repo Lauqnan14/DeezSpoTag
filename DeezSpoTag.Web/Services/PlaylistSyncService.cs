@@ -369,7 +369,10 @@ public sealed class PlaylistSyncService
 
             if (trackCandidates is { Count: > 0 })
             {
-                _logger.LogDebug("Spotify snapshot unavailable for {SourceId}; using cached track candidates.", playlist.SourceId);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Spotify snapshot unavailable for {SourceId}; using cached track candidates.", playlist.SourceId);
+                }
                 return (trackCandidates.Select(ToSyncTrackSummary).ToList(), null);
             }
 
@@ -607,7 +610,7 @@ public sealed class PlaylistSyncService
         string userId,
         string playlistId,
         IReadOnlyList<string> itemIds,
-        IReadOnlyList<JellyfinPlaylistEntry> entries,
+        List<JellyfinPlaylistEntry> entries,
         CancellationToken cancellationToken)
     {
         if (entries.Count > 0)
@@ -676,7 +679,7 @@ public sealed class PlaylistSyncService
         return PlaylistTrackBlockRuleHelper.BuildGlobalRules(preferences);
     }
 
-    private static bool ShouldBlockTrack(SyncTrackSummary track, IReadOnlyList<PlaylistTrackBlockRule>? rules)
+    private static bool ShouldBlockTrack(SyncTrackSummary track, List<PlaylistTrackBlockRule>? rules)
     {
         if (rules is null || rules.Count == 0)
         {
@@ -910,7 +913,7 @@ public sealed class PlaylistSyncService
     private async Task<List<string>> ResolvePlexRatingKeysAsync(
         PlexConnection plex,
         IReadOnlyList<SyncTrackSummary> tracks,
-        IReadOnlyList<long> orderedTrackIds,
+        List<long> orderedTrackIds,
         CancellationToken cancellationToken)
     {
         var ratingKeyByTrackId = await _libraryRepository.GetPlexRatingKeysByTrackIdsAsync(

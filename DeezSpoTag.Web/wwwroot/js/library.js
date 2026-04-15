@@ -7067,9 +7067,9 @@ function populateFolderModalDestinationFields(folder, flags) {
         const desiredQuality = String(flags.desiredQuality || '').trim();
         const qualityOptions = Array.from(qualityField.options || []);
         const exactMatch = qualityOptions.find((option) => option.value === desiredQuality);
-        const caseInsensitiveMatch = !exactMatch
-            ? qualityOptions.find((option) => option.value.localeCompare(desiredQuality, undefined, { sensitivity: 'accent' }) === 0)
-            : null;
+        const caseInsensitiveMatch = exactMatch
+            ? null
+            : qualityOptions.find((option) => option.value.localeCompare(desiredQuality, undefined, { sensitivity: 'accent' }) === 0);
         qualityField.value = (exactMatch || caseInsensitiveMatch)?.value || '27';
     }
 }
@@ -12312,9 +12312,9 @@ async function hydratePlaylistPreferences() {
         merged[key] = {
             ...merged[key],
             folderId: item.destinationFolderId || '',
-            atmosFolderId: item.atmosDestinationFolderId != null
-                ? String(item.atmosDestinationFolderId)
-                : (merged[key]?.atmosFolderId || ''),
+            atmosFolderId: item.atmosDestinationFolderId == null
+                ? (merged[key]?.atmosFolderId || '')
+                : String(item.atmosDestinationFolderId),
             service: item.service || merged[key]?.service || 'plex',
             preferredEngine: item.preferredEngine || merged[key]?.preferredEngine || '',
             downloadVariantMode: item.downloadVariantMode || merged[key]?.downloadVariantMode || 'standard',

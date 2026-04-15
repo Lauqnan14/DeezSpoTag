@@ -784,7 +784,10 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to infer Qobuz output quality from file {FilePath}", filePath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to infer Qobuz output quality from file {FilePath}", filePath);
+            }
             return null;
         }
     }

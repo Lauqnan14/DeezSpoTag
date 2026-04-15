@@ -142,11 +142,14 @@ internal static class DownloadQueueEnqueueHelper
 
         if (IsCompletedStatus(duplicateStatus))
         {
-            logger.LogInformation(
-                "Skip enqueue (engine={Engine} reason=recently_downloaded): {Artist} - {Title}",
-                payload.Engine,
-                payload.Artist,
-                payload.Title);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation(
+                    "Skip enqueue (engine={Engine} reason=recently_downloaded): {Artist} - {Title}",
+                    payload.Engine,
+                    payload.Artist,
+                    payload.Title);
+            }
             return EnqueueOutcome.Skipped("queue_recently_downloaded", "Skipped: track was downloaded recently.");
         }
 

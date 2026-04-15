@@ -548,7 +548,7 @@ public sealed class LibraryRecommendationService
                 dayUtc);
         }
 
-        if (cappedTracks.Count < cappedLimit)
+        if (cappedTracks.Count < cappedLimit && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
                 "Recommendation result underfilled for station {StationId}: requested={Requested}, returned={Returned}, basePool={BasePool}, afterIgnore={AfterIgnore}, afterLibraryExclusion={AfterLibraryExclusion}.",
@@ -969,10 +969,13 @@ public sealed class LibraryRecommendationService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(
-                ex,
-                "Failed to load persisted recommendation daily pool for scope {ScopeKey}.",
-                scope.ScopeKey);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Failed to load persisted recommendation daily pool for scope {ScopeKey}.",
+                    scope.ScopeKey);
+            }
             return null;
         }
     }
@@ -1006,10 +1009,13 @@ public sealed class LibraryRecommendationService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(
-                ex,
-                "Failed to persist recommendation daily pool for scope {ScopeKey}.",
-                scope.ScopeKey);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Failed to persist recommendation daily pool for scope {ScopeKey}.",
+                    scope.ScopeKey);
+            }
         }
     }
 
@@ -2448,7 +2454,7 @@ public sealed class LibraryRecommendationService
     private sealed record RecommendationLane(string Key, Queue<RecommendationTrackDto> Tracks);
 
     private static List<RecommendationTrackDto> TopUpRecommendationSelection(
-        IReadOnlyList<RecommendationTrackDto> primarySelection,
+        List<RecommendationTrackDto> primarySelection,
         IReadOnlyList<RecommendationTrackDto> fallbackCandidates,
         int limit,
         DateOnly dayUtc)
@@ -2676,7 +2682,7 @@ public sealed class LibraryRecommendationService
     }
 
     private async Task<IReadOnlyList<RecommendationTrackDto>> EnrichRecommendationMetadataAsync(
-        IReadOnlyList<RecommendationTrackDto> tracks,
+        List<RecommendationTrackDto> tracks,
         CancellationToken cancellationToken)
     {
         if (tracks.Count == 0)

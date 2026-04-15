@@ -756,7 +756,7 @@ public sealed class SpotifyArtistService
     }
 
     private async Task<List<SpotifyTrack>> EnrichTopTracksWithIsrcsAsync(
-        IReadOnlyList<SpotifyTrack> tracks,
+        List<SpotifyTrack> tracks,
         CancellationToken cancellationToken)
     {
         if (tracks.Count == 0)
@@ -813,8 +813,8 @@ public sealed class SpotifyArtistService
     }
 
     private static List<SpotifyAlbum> MergeAlbums(
-        IReadOnlyList<SpotifyAlbum> primary,
-        IReadOnlyList<SpotifyAlbum> fallback)
+        List<SpotifyAlbum> primary,
+        List<SpotifyAlbum> fallback)
     {
         if (primary.Count == 0)
         {
@@ -914,8 +914,8 @@ public sealed class SpotifyArtistService
     }
 
     private static List<SpotifyTrack> MergeTopTracks(
-        IReadOnlyList<SpotifyTrack> primary,
-        IReadOnlyList<SpotifyTrack> fallback)
+        List<SpotifyTrack> primary,
+        List<SpotifyTrack> fallback)
     {
         if (primary.Count == 0)
         {
@@ -975,7 +975,7 @@ public sealed class SpotifyArtistService
     }
 
     private static List<SpotifyTrack> EnrichTopTracksWithAlbumReleaseDates(
-        IReadOnlyList<SpotifyTrack> tracks,
+        List<SpotifyTrack> tracks,
         IReadOnlyList<SpotifyAlbum> albums)
     {
         if (tracks.Count == 0 || albums.Count == 0)
@@ -1333,8 +1333,8 @@ public sealed class SpotifyArtistService
     }
 
     private static bool HaveTopTrackIsrcsChanged(
-        IReadOnlyList<SpotifyTrack> current,
-        IReadOnlyList<SpotifyTrack> enriched)
+        List<SpotifyTrack> current,
+        List<SpotifyTrack> enriched)
     {
         if (current.Count != enriched.Count)
         {
@@ -1438,20 +1438,14 @@ public sealed class SpotifyArtistService
             var results = await SearchArtistCandidatesWithFallbackQueryAsync(artistName, cancellationToken);
             if (results.Count == 0)
             {
-                var shazamResolved = await TryResolveArtistIdViaShazamEvidenceAsync(
+                return await ResolveArtistIdWithShazamFallbackAsync(
                     artistName,
                     localArtistId,
                     localAlbumTitleSet,
                     aliasTargets,
+                    "[spotify] artist id resolved via shazam evidence (pathfinder unavailable)",
+                    $"[spotify] artist ID resolve failed: pathfinder search unavailable for {artistName}.",
                     cancellationToken);
-                if (!string.IsNullOrWhiteSpace(shazamResolved))
-                {
-                    AddActivity("info", $"[spotify] artist id resolved via shazam evidence (pathfinder unavailable): {artistName} -> {shazamResolved}.");
-                    return shazamResolved;
-                }
-
-                AddActivity("warn", $"[spotify] artist ID resolve failed: pathfinder search unavailable for {artistName}.");
-                return null;
             }
 
             var candidates = BuildArtistSearchCandidates(results, artistName);
@@ -1461,85 +1455,127 @@ public sealed class SpotifyArtistService
 
             if (exactCandidates.Count == 0)
             {
-                var shazamResolved = await TryResolveArtistIdViaShazamEvidenceAsync(
+                return await ResolveArtistIdWithShazamFallbackAsync(
                     artistName,
                     localArtistId,
                     localAlbumTitleSet,
                     aliasTargets,
+                    "[spotify] artist id resolved via shazam evidence",
+                    $"[spotify] artist ID resolve failed: no exact artist-name match for {artistName}.",
                     cancellationToken);
-                if (!string.IsNullOrWhiteSpace(shazamResolved))
-                {
-                    AddActivity("info", $"[spotify] artist id resolved via shazam evidence: {artistName} -> {shazamResolved}.");
-                    return shazamResolved;
-                }
-
-                AddActivity("warn", $"[spotify] artist ID resolve failed: no exact artist-name match for {artistName}.");
-                return null;
             }
-
-            var best = await SelectBestExactArtistCandidateAsync(exactCandidates, localAlbumTitleSet, cancellationToken);
-            if (best is not null)
-            {
-                AddActivity("info",
-                    $"[spotify] candidate {best.Candidate.Id} selected for {artistName} " +
-                    $"(exact_name=true, local_album_overlap={best.LocalAlbumOverlap}).");
-                return best.Candidate.Id;
-            }
-
-            var canonicalFallback = await TrySelectCanonicalFallbackExactCandidateAsync(
+            var selectedExactCandidateId = await TrySelectExactCandidateArtistIdAsync(
                 exactCandidates,
+                localAlbumTitleSet,
                 aliasTargets,
+                artistName,
                 cancellationToken);
-            if (canonicalFallback is not null)
+            if (!string.IsNullOrWhiteSpace(selectedExactCandidateId))
             {
-                AddActivity("info",
-                    $"[spotify] candidate {canonicalFallback.Candidate.Id} selected for {artistName} " +
-                    $"(exact_name=true, local_album_overlap=0, canonical_fallback=true).");
-                return canonicalFallback.Candidate.Id;
+                return selectedExactCandidateId;
             }
 
-            var shazamFallback = await TryResolveArtistIdViaShazamEvidenceAsync(
+            return await ResolveArtistIdWithShazamFallbackAsync(
                 artistName,
                 localArtistId,
                 localAlbumTitleSet,
                 aliasTargets,
+                "[spotify] artist id resolved via shazam fallback",
+                $"[spotify] artist ID resolve failed: no suitable exact-name candidate for {artistName}.",
                 cancellationToken);
-            if (!string.IsNullOrWhiteSpace(shazamFallback))
-            {
-                AddActivity("info", $"[spotify] artist id resolved via shazam fallback: {artistName} -> {shazamFallback}.");
-                return shazamFallback;
-            }
-
-            AddActivity("warn", $"[spotify] artist ID resolve failed: no suitable exact-name candidate for {artistName}.");
-            return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Spotify Pathfinder artist search failed.");
-            try
-            {
-                var localAlbumTitleSet = await TryGetLocalAlbumTitleSetAsync(localArtistId, cancellationToken);
-                var aliasTargets = BuildArtistAliasTargets(artistName);
-                var shazamResolved = await TryResolveArtistIdViaShazamEvidenceAsync(
-                    artistName,
-                    localArtistId,
-                    localAlbumTitleSet,
-                    aliasTargets,
-                    cancellationToken);
-                if (!string.IsNullOrWhiteSpace(shazamResolved))
-                {
-                    AddActivity("info", $"[spotify] artist id resolved via shazam evidence (pathfinder error): {artistName} -> {shazamResolved}.");
-                    return shazamResolved;
-                }
-            }
-            catch (Exception fallbackEx) when (fallbackEx is not OperationCanceledException)
+            return await ResolveArtistIdAfterPathfinderErrorAsync(artistName, localArtistId, cancellationToken);
+        }
+    }
+
+    private async Task<string?> TrySelectExactCandidateArtistIdAsync(
+        List<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> exactCandidates,
+        HashSet<string> localAlbumTitleSet,
+        HashSet<string> aliasTargets,
+        string artistName,
+        CancellationToken cancellationToken)
+    {
+        var best = await SelectBestExactArtistCandidateAsync(exactCandidates, localAlbumTitleSet, cancellationToken);
+        if (best is not null)
+        {
+            AddActivity("info",
+                $"[spotify] candidate {best.Candidate.Id} selected for {artistName} " +
+                $"(exact_name=true, local_album_overlap={best.LocalAlbumOverlap}).");
+            return best.Candidate.Id;
+        }
+
+        var canonicalFallback = await TrySelectCanonicalFallbackExactCandidateAsync(
+            exactCandidates,
+            aliasTargets,
+            cancellationToken);
+        if (canonicalFallback is not null)
+        {
+            AddActivity("info",
+                $"[spotify] candidate {canonicalFallback.Candidate.Id} selected for {artistName} " +
+                "(exact_name=true, local_album_overlap=0, canonical_fallback=true).");
+            return canonicalFallback.Candidate.Id;
+        }
+
+        return null;
+    }
+
+    private async Task<string?> ResolveArtistIdWithShazamFallbackAsync(
+        string artistName,
+        long? localArtistId,
+        HashSet<string> localAlbumTitleSet,
+        HashSet<string> aliasTargets,
+        string successPrefix,
+        string failureMessage,
+        CancellationToken cancellationToken)
+    {
+        var shazamResolved = await TryResolveArtistIdViaShazamEvidenceAsync(
+            artistName,
+            localArtistId,
+            localAlbumTitleSet,
+            aliasTargets,
+            cancellationToken);
+        if (!string.IsNullOrWhiteSpace(shazamResolved))
+        {
+            AddActivity("info", $"{successPrefix}: {artistName} -> {shazamResolved}.");
+            return shazamResolved;
+        }
+
+        AddActivity("warn", failureMessage);
+        return null;
+    }
+
+    private async Task<string?> ResolveArtistIdAfterPathfinderErrorAsync(
+        string artistName,
+        long? localArtistId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var localAlbumTitleSet = FilterResolvableAlbumTitles(
+                await TryGetLocalAlbumTitleSetAsync(localArtistId, cancellationToken));
+            var aliasTargets = BuildArtistAliasTargets(artistName);
+            return await ResolveArtistIdWithShazamFallbackAsync(
+                artistName,
+                localArtistId,
+                localAlbumTitleSet,
+                aliasTargets,
+                "[spotify] artist id resolved via shazam evidence (pathfinder error)",
+                $"[spotify] artist ID resolve failed: pathfinder search error for {artistName}.",
+                cancellationToken);
+        }
+        catch (Exception fallbackEx) when (fallbackEx is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug(fallbackEx, "Shazam fallback after Pathfinder failure also failed for {ArtistName}.", artistName);
             }
-
-            AddActivity("warn", $"[spotify] artist ID resolve failed: pathfinder search error for {artistName}.");
-            return null;
         }
+
+        AddActivity("warn", $"[spotify] artist ID resolve failed: pathfinder search error for {artistName}.");
+        return null;
     }
 
     private sealed record ExactArtistCandidateSelection(
@@ -1641,7 +1677,7 @@ public sealed class SpotifyArtistService
     }
 
     private async Task<CanonicalFallbackCandidateScore?> TrySelectCanonicalFallbackExactCandidateAsync(
-        IReadOnlyList<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> exactCandidates,
+        List<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> exactCandidates,
         IReadOnlyCollection<string> aliasTargets,
         CancellationToken cancellationToken)
     {
@@ -1744,7 +1780,7 @@ public sealed class SpotifyArtistService
             .ToList() ?? new List<string>();
     }
 
-    private static int ComputeLocalAlbumOverlap(HashSet<string> localAlbumTitleSet, IReadOnlyList<string> spotifyAlbumTitles)
+    private static int ComputeLocalAlbumOverlap(HashSet<string> localAlbumTitleSet, List<string> spotifyAlbumTitles)
     {
         if (localAlbumTitleSet.Count == 0 || spotifyAlbumTitles.Count == 0)
         {
@@ -1911,7 +1947,10 @@ public sealed class SpotifyArtistService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Shazam recognition failed while resolving Spotify artist id for {ArtistName}.", artistName);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Shazam recognition failed while resolving Spotify artist id for {ArtistName}.", artistName);
+            }
             return null;
         }
     }
@@ -2017,7 +2056,10 @@ public sealed class SpotifyArtistService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Failed fetching Spotify artist profile for id {SpotifyArtistId}.", spotifyArtistId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed fetching Spotify artist profile for id {SpotifyArtistId}.", spotifyArtistId);
+            }
             return null;
         }
     }
@@ -2308,7 +2350,10 @@ public sealed class SpotifyArtistService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Failed resolving Spotify artist ids from Shazam URL {SpotifyUrl}.", spotifyUrl);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed resolving Spotify artist ids from Shazam URL {SpotifyUrl}.", spotifyUrl);
+            }
         }
     }
 
@@ -2498,7 +2543,10 @@ public sealed class SpotifyArtistService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to fetch canonical Spotify artist name for {SpotifyArtistId}.", spotifyArtistId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to fetch canonical Spotify artist name for {SpotifyArtistId}.", spotifyArtistId);
+            }
             return null;
         }
     }
@@ -2646,7 +2694,10 @@ public sealed class SpotifyArtistService
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                _logger.LogDebug(ex, "Failed deleting empty source artist directory {SourceArtistDir}.", sourceArtistDir);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Failed deleting empty source artist directory {SourceArtistDir}.", sourceArtistDir);
+                }
             }
         }
     }

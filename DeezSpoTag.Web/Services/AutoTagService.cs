@@ -1733,7 +1733,7 @@ public class AutoTagService
         string rootPath,
         JsonObject folderUniformity,
         IReadOnlyList<FolderDto> enabledFolders,
-        IReadOnlyList<FolderDto> scopedFolders)
+        List<FolderDto> scopedFolders)
     {
         return scopedFolders.Count > 0
             ? scopedFolders
@@ -1801,7 +1801,7 @@ public class AutoTagService
     private async Task RunFolderUniformityDedupeAsync(
         AutoTagJob job,
         JsonObject folderUniformity,
-        IReadOnlyList<FolderDto> scopedFolders,
+        List<FolderDto> scopedFolders,
         IReadOnlyList<string> rootPaths,
         IReadOnlyList<FolderDto> enabledFolders,
         CancellationToken cancellationToken)
@@ -1952,7 +1952,7 @@ public class AutoTagService
         AutoTagJob job,
         JsonObject qualityChecks,
         QualityCheckOptions options,
-        IReadOnlyList<long> scopedFolderIds,
+        List<long> scopedFolderIds,
         CancellationToken cancellationToken)
     {
         if (!options.RunQualityScanner)
@@ -2004,7 +2004,7 @@ public class AutoTagService
     private async Task RunLyricsRefreshIfRequestedAsync(
         AutoTagJob job,
         QualityCheckOptions options,
-        IReadOnlyList<long> scopedFolderIds,
+        List<long> scopedFolderIds,
         CancellationToken cancellationToken)
     {
         if (!options.QueueLyricsRefresh)
@@ -2067,7 +2067,7 @@ public class AutoTagService
         return tracks
                 .Where(track => allowedProfiles.Contains(QualityScanTrackFormatter.FormatTechnicalProfile(track)))
                 .ToList();
-        }
+    }
 
     private sealed record QualityCheckOptions(
         bool FlagDuplicates,
@@ -2591,7 +2591,7 @@ public class AutoTagService
         return stripped;
     }
 
-    private void AppendStageSchemaLog(AutoTagJob job, string stageName, IReadOnlyList<string> strippedKeys)
+    private void AppendStageSchemaLog(AutoTagJob job, string stageName, List<string> strippedKeys)
     {
         if (strippedKeys.Count == 0)
         {
@@ -2961,7 +2961,8 @@ public class AutoTagService
             var atmos = Path.Join(normalized, "Atmos");
             return Directory.Exists(stereo) || Directory.Exists(atmos);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return false;
         }
     }
@@ -3021,7 +3022,8 @@ public class AutoTagService
 
             return options;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return new AutoTagOrganizerOptions();
         }
     }
@@ -3300,7 +3302,8 @@ public class AutoTagService
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase
             });
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return configJson;
         }
     }
@@ -3564,7 +3567,8 @@ public class AutoTagService
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase
             });
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return configJson;
         }
     }
@@ -3574,30 +3578,30 @@ public class AutoTagService
         switch (node)
         {
             case JsonObject obj:
-            {
-                foreach (var key in obj.Select(pair => pair.Key).ToList())
                 {
-                    if (ShouldRedactConfigKey(key))
+                    foreach (var key in obj.Select(pair => pair.Key).ToList())
                     {
-                        obj.Remove(key);
-                        continue;
-                    }
+                        if (ShouldRedactConfigKey(key))
+                        {
+                            obj.Remove(key);
+                            continue;
+                        }
 
-                    if (obj[key] is { } child)
-                    {
-                        RedactSensitiveNode(child);
+                        if (obj[key] is { } child)
+                        {
+                            RedactSensitiveNode(child);
+                        }
                     }
+                    break;
                 }
-                break;
-            }
             case JsonArray array:
-            {
-                foreach (var item in array.Where(static item => item != null))
                 {
-                    RedactSensitiveNode(item!);
+                    foreach (var item in array.Where(static item => item != null))
+                    {
+                        RedactSensitiveNode(item!);
+                    }
+                    break;
                 }
-                break;
-            }
         }
     }
 
@@ -3742,7 +3746,8 @@ public class AutoTagService
                 WriteIndented = true
             });
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return configJson;
         }
     }
@@ -3790,7 +3795,8 @@ public class AutoTagService
                 WriteIndented = true
             });
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return configJson;
         }
     }
@@ -3839,7 +3845,8 @@ public class AutoTagService
                 WriteIndented = true
             });
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return configJson;
         }
     }
@@ -3969,7 +3976,8 @@ public class AutoTagService
                 WriteIndented = true
             });
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return configJson;
         }
     }
@@ -4051,7 +4059,8 @@ public class AutoTagService
                 WriteIndented = true
             });
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return configJson;
         }
     }
@@ -4556,7 +4565,8 @@ public class AutoTagService
         {
             return Path.GetFullPath(path);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return path;
         }
     }
@@ -4573,7 +4583,8 @@ public class AutoTagService
         {
             filePath = Path.GetFullPath(filePath);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Keep raw path if canonicalization fails.
         }
 
@@ -5216,7 +5227,7 @@ public class AutoTagService
 
     private string GetRunTagDiffsPath(string jobId) => Path.Join(GetRunHistoryDirectory(jobId), "tag-diffs.json");
 
-    private void SaveArchivedTagDiffs(string jobId, IDictionary<string, AutoTagTagDiff>? tagDiffs)
+    private void SaveArchivedTagDiffs(string jobId, Dictionary<string, AutoTagTagDiff>? tagDiffs)
     {
         if (string.IsNullOrWhiteSpace(jobId))
         {
@@ -5716,7 +5727,10 @@ public class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to locate runtime config for stale recovery job {JobId}.", jobId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to locate runtime config for stale recovery job {JobId}.", jobId);
+            }
             return null;
         }
     }

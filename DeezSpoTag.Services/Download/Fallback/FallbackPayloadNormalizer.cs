@@ -223,7 +223,7 @@ public static class FallbackPayloadNormalizer
         return new DownloadSourceOrder.AutoSourceStep(engine ?? DefaultEngine, quality);
     }
 
-    private static bool ShouldReuseFallbackPlan(IReadOnlyList<FallbackPlanStep> fallbackPlan, IReadOnlyList<string> autoSources)
+    private static bool ShouldReuseFallbackPlan(List<FallbackPlanStep> fallbackPlan, IReadOnlyList<string> autoSources)
     {
         if (fallbackPlan == null || fallbackPlan.Count == 0)
         {

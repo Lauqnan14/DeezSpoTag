@@ -496,10 +496,13 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             if (allowAudioFallback && CanFallbackToAacStereo(request) && ShouldUseInEngineAppleAacFallback(queueContext.Payload))
             {
                 ApplyAacStereoFallback(request);
-                _logger.LogInformation(
-                    "Apple wrapper stream ports unavailable; falling back to AAC stereo for {QueueUuid}. Reason: {Reason}",
-                    next.QueueUuid,
-                    wrapperPortReason);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "Apple wrapper stream ports unavailable; falling back to AAC stereo for {QueueUuid}. Reason: {Reason}",
+                        next.QueueUuid,
+                        wrapperPortReason);
+                }
                 _deezspotagListener.SendDownloadWarn(
                     next.QueueUuid,
                     new { message = "Wrapper stream ports unavailable, falling back to AAC stereo." },

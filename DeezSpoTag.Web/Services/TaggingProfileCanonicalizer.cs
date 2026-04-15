@@ -324,8 +324,8 @@ public static class TaggingProfileCanonicalizer
     }
 
     private static List<string> BuildEnhancementTagParityList(
-        IReadOnlyCollection<string> downloadTags,
-        IReadOnlyCollection<string> enrichmentTags)
+        List<string> downloadTags,
+        List<string> enrichmentTags)
     {
         var merged = new List<string>(downloadTags.Count + enrichmentTags.Count);
         merged.AddRange(downloadTags);

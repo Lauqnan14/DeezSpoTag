@@ -600,7 +600,7 @@ public class DuplicateCleanerService
     }
 
     private static IEnumerable<List<int>> BuildValidatedClusters(
-        IReadOnlyList<int> component,
+        List<int> component,
         IReadOnlyList<DuplicateCandidate> candidates)
     {
         if (component.Count <= 1)
@@ -651,7 +651,7 @@ public class DuplicateCleanerService
 
     private static List<int> CollectCluster(
         int startIndex,
-        IReadOnlyDictionary<int, List<int>> adjacency,
+        Dictionary<int, List<int>> adjacency,
         HashSet<int> visited)
     {
         var cluster = new List<int>();
@@ -743,7 +743,7 @@ public class DuplicateCleanerService
     }
 
     private static async Task ProcessDuplicateClusterAsync(
-        IReadOnlyList<int> cluster,
+        List<int> cluster,
         IReadOnlyList<DuplicateCandidate> candidates,
         string root,
         DuplicateCleanerOptions options,

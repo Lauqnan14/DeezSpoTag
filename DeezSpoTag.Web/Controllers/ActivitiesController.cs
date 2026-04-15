@@ -112,7 +112,10 @@ public class ActivitiesController : Controller
                 await _queueRepository.UpdateStatusAsync(request.Uuid, PausedStatus, cancellationToken: HttpContext.RequestAborted);
             }
 
-            _logger.LogInformation("Paused download {Uuid}", LogSanitizer.OneLine(request.Uuid));
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Paused download {Uuid}", LogSanitizer.OneLine(request.Uuid));
+            }
             return Json(new { success = true, message = "Download paused" });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -145,7 +148,10 @@ public class ActivitiesController : Controller
             }
 
             await _deezSpoTagApp.EnsureQueueProcessorRunningAsync();
-            _logger.LogInformation("Resumed download {Uuid}", LogSanitizer.OneLine(request.Uuid));
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Resumed download {Uuid}", LogSanitizer.OneLine(request.Uuid));
+            }
             return Json(new { success = true, message = "Download resumed" });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -166,7 +172,10 @@ public class ActivitiesController : Controller
         try
         {
             await _deezSpoTagApp.CancelDownloadAsync(request.Uuid);
-            _logger.LogInformation("Cancelled download {Uuid}", LogSanitizer.OneLine(request.Uuid));
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Cancelled download {Uuid}", LogSanitizer.OneLine(request.Uuid));
+            }
             return Json(new { success = true, message = "Download cancelled" });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

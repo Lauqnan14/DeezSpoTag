@@ -9,6 +9,10 @@ namespace DeezSpoTag.Tests;
 
 public sealed class QobuzQualityFallbackTests
 {
+    private static readonly string[] ExpectedHiResFallbackOrder = ["27", "7", "6"];
+    private static readonly string[] ExpectedSingleQualityOrder = ["27"];
+    private static readonly string[] ExpectedMidTierFallbackOrder = ["7", "6"];
+
     [Fact]
     public void BuildRequest_EnablesQualityFallback_WhenServiceIsQobuz()
     {
@@ -58,7 +62,7 @@ public sealed class QobuzQualityFallbackTests
     {
         var order = InvokeGetQualityFallbackOrder("27", allowQualityFallback: true);
 
-        Assert.Equal(new[] { "27", "7", "6" }, order);
+        Assert.Equal(ExpectedHiResFallbackOrder, order);
     }
 
     [Fact]
@@ -66,7 +70,7 @@ public sealed class QobuzQualityFallbackTests
     {
         var order = InvokeGetQualityFallbackOrder("27", allowQualityFallback: false);
 
-        Assert.Equal(new[] { "27" }, order);
+        Assert.Equal(ExpectedSingleQualityOrder, order);
     }
 
     [Fact]
@@ -74,7 +78,7 @@ public sealed class QobuzQualityFallbackTests
     {
         var order = InvokeGetQualityFallbackOrder("7", allowQualityFallback: true);
 
-        Assert.Equal(new[] { "7", "6" }, order);
+        Assert.Equal(ExpectedMidTierFallbackOrder, order);
     }
 
     private static List<string> InvokeGetQualityFallbackOrder(string quality, bool allowQualityFallback)

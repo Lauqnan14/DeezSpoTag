@@ -171,17 +171,20 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             : (startIndex + 1) % items.Count;
 
         var elapsedMs = (DateTimeOffset.UtcNow - runStartedUtc).TotalMilliseconds;
-        _logger.LogInformation(
-            "Watchlist run summary: total={TotalItems}, cap={RunCap}, processed={Processed}, ok={Succeeded}, failed={Failed}, skipBackoff={SkippedBackoff}, skipCooldown={SkippedCooldown}, skipLock={SkippedLock}, elapsedMs={ElapsedMs:0}",
-            metrics.TotalItems,
-            metrics.MaxItemsPerRun,
-            metrics.Processed,
-            metrics.Succeeded,
-            metrics.Failed,
-            metrics.SkippedByBackoff,
-            metrics.SkippedByDelayWindow,
-            metrics.SkippedByLockBusy,
-            elapsedMs);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Watchlist run summary: total={TotalItems}, cap={RunCap}, processed={Processed}, ok={Succeeded}, failed={Failed}, skipBackoff={SkippedBackoff}, skipCooldown={SkippedCooldown}, skipLock={SkippedLock}, elapsedMs={ElapsedMs:0}",
+                metrics.TotalItems,
+                metrics.MaxItemsPerRun,
+                metrics.Processed,
+                metrics.Succeeded,
+                metrics.Failed,
+                metrics.SkippedByBackoff,
+                metrics.SkippedByDelayWindow,
+                metrics.SkippedByLockBusy,
+                elapsedMs);
+        }
     }
 
     private async Task<WatchItemRunOutcome> TryProcessItemAsync(
@@ -204,12 +207,15 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             _lastRun[item.Key] = DateTimeOffset.UtcNow;
             _consecutiveFailures.TryRemove(item.Key, out _);
             _nextAllowedRun.TryRemove(item.Key, out _);
-            _logger.LogDebug(
-                "Watchlist item succeeded: key={WatchItemKey}, kind={Kind}, source={Source}, elapsedMs={ElapsedMs:0}",
-                item.Key,
-                item.Kind,
-                item.Source,
-                stopwatch.Elapsed.TotalMilliseconds);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Watchlist item succeeded: key={WatchItemKey}, kind={Kind}, source={Source}, elapsedMs={ElapsedMs:0}",
+                    item.Key,
+                    item.Kind,
+                    item.Source,
+                    stopwatch.Elapsed.TotalMilliseconds);
+            }
             return WatchItemRunOutcome.Success;
         }
         catch (OperationCanceledException)
@@ -242,15 +248,18 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             }
             else
             {
-                _logger.LogDebug(
-                    "Watchlist item still failing under backoff threshold: key={WatchItemKey}, kind={Kind}, source={Source}, failures={Failures}, backoffSeconds={BackoffSeconds}, nextRunUtc={NextRunUtc}, elapsedMs={ElapsedMs:0}",
-                    item.Key,
-                    item.Kind,
-                    item.Source,
-                    failures,
-                    backoffSeconds,
-                    nextRunUtc,
-                    stopwatch.Elapsed.TotalMilliseconds);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        "Watchlist item still failing under backoff threshold: key={WatchItemKey}, kind={Kind}, source={Source}, failures={Failures}, backoffSeconds={BackoffSeconds}, nextRunUtc={NextRunUtc}, elapsedMs={ElapsedMs:0}",
+                        item.Key,
+                        item.Kind,
+                        item.Source,
+                        failures,
+                        backoffSeconds,
+                        nextRunUtc,
+                        stopwatch.Elapsed.TotalMilliseconds);
+                }
             }
             return WatchItemRunOutcome.Failure;
         }

@@ -1,7 +1,6 @@
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using System.Security.Cryptography;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -12,25 +11,18 @@ public sealed class MediaServerSoundtracksApiController : ControllerBase
 {
     private const char UrlPathSeparator = '/';
     private const char QuerySeparator = '?';
-    private const int LibraryPinMinLength = 4;
-    private const int LibraryPinSaltBytes = 16;
-    private const int LibraryPinHashBytes = 32;
-    private const int LibraryPinPbkdf2Iterations = 120_000;
     private readonly MediaServerSoundtrackService _service;
     private readonly PlatformAuthService _platformAuthService;
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly UserPreferencesStore _userPreferencesStore;
 
     public MediaServerSoundtracksApiController(
         MediaServerSoundtrackService service,
         PlatformAuthService platformAuthService,
-        IHttpClientFactory httpClientFactory,
-        UserPreferencesStore userPreferencesStore)
+        IHttpClientFactory httpClientFactory)
     {
         _service = service;
         _platformAuthService = platformAuthService;
         _httpClientFactory = httpClientFactory;
-        _userPreferencesStore = userPreferencesStore;
     }
 
     [HttpGet("configuration")]
@@ -47,154 +39,6 @@ public sealed class MediaServerSoundtracksApiController : ControllerBase
     {
         var configuration = await _service.SaveConfigurationAsync(request, cancellationToken);
         return Ok(configuration);
-    }
-
-    [HttpGet("pin/status")]
-    public async Task<IActionResult> GetLibraryPinStatus(CancellationToken cancellationToken)
-    {
-        var prefs = await _userPreferencesStore.LoadAsync();
-        return Ok(new MediaServerLibraryPinStatusDto
-        {
-            Configured = IsLibraryPinConfigured(prefs)
-        });
-    }
-
-    [HttpPost("pin/unlock")]
-    public async Task<IActionResult> UnlockLibrariesWithPin(
-        [FromBody] MediaServerLibraryPinUnlockRequest request,
-        CancellationToken cancellationToken)
-    {
-        var pin = NormalizePin(request?.Pin);
-        if (string.IsNullOrWhiteSpace(pin))
-        {
-            return BadRequest(new { error = "Enter a PIN first." });
-        }
-
-        var prefs = await _userPreferencesStore.LoadAsync();
-        if (!IsLibraryPinConfigured(prefs))
-        {
-            var confirmation = NormalizePin(request?.ConfirmationPin);
-            if (pin.Length < LibraryPinMinLength)
-            {
-                return BadRequest(new { error = $"PIN must be at least {LibraryPinMinLength} characters." });
-            }
-
-            if (string.IsNullOrWhiteSpace(confirmation))
-            {
-                return BadRequest(new { error = "Confirm your new PIN." });
-            }
-
-            if (!string.Equals(pin, confirmation, StringComparison.Ordinal))
-            {
-                return BadRequest(new { error = "PIN confirmation does not match." });
-            }
-
-            var salt = RandomNumberGenerator.GetBytes(LibraryPinSaltBytes);
-            var hash = DeriveLibraryPinHash(pin, salt);
-            prefs.MediaServerLibraryPinSalt = Convert.ToBase64String(salt);
-            prefs.MediaServerLibraryPinHash = Convert.ToBase64String(hash);
-            await _userPreferencesStore.SaveAsync(prefs);
-            return Ok(new MediaServerLibraryPinUnlockResultDto
-            {
-                Unlocked = true,
-                Created = true
-            });
-        }
-
-        if (!ValidateLibraryPin(pin, prefs.MediaServerLibraryPinSalt, prefs.MediaServerLibraryPinHash))
-        {
-            return Unauthorized(new { error = "Invalid PIN." });
-        }
-
-        return Ok(new MediaServerLibraryPinUnlockResultDto
-        {
-            Unlocked = true,
-            Created = false
-        });
-    }
-
-    [HttpPost("pin/change")]
-    public async Task<IActionResult> ChangeLibraryPin(
-        [FromBody] MediaServerLibraryPinChangeRequest request,
-        CancellationToken cancellationToken)
-    {
-        var currentPin = NormalizePin(request?.CurrentPin);
-        if (string.IsNullOrWhiteSpace(currentPin))
-        {
-            return BadRequest(new { error = "Enter current PIN first." });
-        }
-
-        var newPin = NormalizePin(request?.NewPin);
-        if (newPin.Length < LibraryPinMinLength)
-        {
-            return BadRequest(new { error = $"PIN must be at least {LibraryPinMinLength} characters." });
-        }
-
-        var confirmation = NormalizePin(request?.ConfirmationPin);
-        if (string.IsNullOrWhiteSpace(confirmation))
-        {
-            return BadRequest(new { error = "Confirm your new PIN." });
-        }
-
-        if (!string.Equals(newPin, confirmation, StringComparison.Ordinal))
-        {
-            return BadRequest(new { error = "PIN confirmation does not match." });
-        }
-
-        var prefs = await _userPreferencesStore.LoadAsync();
-        if (!IsLibraryPinConfigured(prefs))
-        {
-            return BadRequest(new { error = "No PIN is configured yet." });
-        }
-
-        if (!ValidateLibraryPin(currentPin, prefs.MediaServerLibraryPinSalt, prefs.MediaServerLibraryPinHash))
-        {
-            return Unauthorized(new { error = "Invalid current PIN." });
-        }
-
-        var salt = RandomNumberGenerator.GetBytes(LibraryPinSaltBytes);
-        var hash = DeriveLibraryPinHash(newPin, salt);
-        prefs.MediaServerLibraryPinSalt = Convert.ToBase64String(salt);
-        prefs.MediaServerLibraryPinHash = Convert.ToBase64String(hash);
-        await _userPreferencesStore.SaveAsync(prefs);
-        return Ok(new MediaServerLibraryPinStatusDto
-        {
-            Configured = true
-        });
-    }
-
-    [HttpPost("pin/reset")]
-    public async Task<IActionResult> ResetLibraryPin(
-        [FromBody] MediaServerLibraryPinResetRequest request,
-        CancellationToken cancellationToken)
-    {
-        var currentPin = NormalizePin(request?.CurrentPin);
-        if (string.IsNullOrWhiteSpace(currentPin))
-        {
-            return BadRequest(new { error = "Enter current PIN first." });
-        }
-
-        var prefs = await _userPreferencesStore.LoadAsync();
-        if (!IsLibraryPinConfigured(prefs))
-        {
-            return Ok(new MediaServerLibraryPinStatusDto
-            {
-                Configured = false
-            });
-        }
-
-        if (!ValidateLibraryPin(currentPin, prefs.MediaServerLibraryPinSalt, prefs.MediaServerLibraryPinHash))
-        {
-            return Unauthorized(new { error = "Invalid current PIN." });
-        }
-
-        prefs.MediaServerLibraryPinSalt = null;
-        prefs.MediaServerLibraryPinHash = null;
-        await _userPreferencesStore.SaveAsync(prefs);
-        return Ok(new MediaServerLibraryPinStatusDto
-        {
-            Configured = false
-        });
     }
 
     [HttpPost("sync")]
@@ -326,52 +170,6 @@ public sealed class MediaServerSoundtracksApiController : ControllerBase
             serverType = normalizedServerType,
             path = normalizedPath
         }) ?? $"/api/media-server/soundtracks/image?serverType={Uri.EscapeDataString(normalizedServerType)}&path={Uri.EscapeDataString(normalizedPath)}";
-    }
-
-    private static bool IsLibraryPinConfigured(UserPreferencesDto prefs)
-    {
-        return !string.IsNullOrWhiteSpace(prefs.MediaServerLibraryPinHash)
-            && !string.IsNullOrWhiteSpace(prefs.MediaServerLibraryPinSalt);
-    }
-
-    private static string NormalizePin(string? value)
-    {
-        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
-    }
-
-    private static bool ValidateLibraryPin(string pin, string? encodedSalt, string? encodedHash)
-    {
-        if (string.IsNullOrWhiteSpace(pin)
-            || string.IsNullOrWhiteSpace(encodedSalt)
-            || string.IsNullOrWhiteSpace(encodedHash))
-        {
-            return false;
-        }
-
-        byte[] salt;
-        byte[] expectedHash;
-        try
-        {
-            salt = Convert.FromBase64String(encodedSalt);
-            expectedHash = Convert.FromBase64String(encodedHash);
-        }
-        catch (FormatException)
-        {
-            return false;
-        }
-
-        var actualHash = DeriveLibraryPinHash(pin, salt);
-        return CryptographicOperations.FixedTimeEquals(expectedHash, actualHash);
-    }
-
-    private static byte[] DeriveLibraryPinHash(string pin, byte[] salt)
-    {
-        return Rfc2898DeriveBytes.Pbkdf2(
-            pin,
-            salt,
-            LibraryPinPbkdf2Iterations,
-            HashAlgorithmName.SHA256,
-            LibraryPinHashBytes);
     }
 
     private static string? ExtractImagePath(string serverType, string? sourceUrl)

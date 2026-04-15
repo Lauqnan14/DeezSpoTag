@@ -17,6 +17,12 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class PlaylistWatchService
 {
+    private sealed record QueueWatchRuleSet(
+        IReadOnlyList<PlaylistTrackRoutingRule>? RoutingRules,
+        IReadOnlyList<PlaylistTrackBlockRule>? BlockRules);
+
+    private readonly record struct AtmosQueueRequest(string SourceLabel, string TrackId, bool AfterPrimarySkip);
+
     private const string SpotifySource = "spotify";
     private const string DeezerSource = "deezer";
     private const string SmartTracklistSource = "smarttracklist";
@@ -898,8 +904,7 @@ public sealed class PlaylistWatchService
                 preference?.PreferredEngine,
                 preference?.DownloadVariantMode,
                 preference?.AtmosDestinationFolderId,
-                preference?.RoutingRules,
-                effectiveBlockRules),
+                new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
             cancellationToken);
         if (queuedCount <= 0)
         {
@@ -934,10 +939,13 @@ public sealed class PlaylistWatchService
             : preference.Service.Trim().ToLowerInvariant();
         if (string.Equals(serviceToken, "none", StringComparison.OrdinalIgnoreCase))
         {
-            _logger.LogDebug(
-                "Playlist media-server sync disabled for {Source}:{SourceId} by preference.",
-                source,
-                sourceId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Playlist media-server sync disabled for {Source}:{SourceId} by preference.",
+                    source,
+                    sourceId);
+            }
             return;
         }
         var syncKey = $"{source}:{sourceId}:{serviceToken}";
@@ -959,20 +967,26 @@ public sealed class PlaylistWatchService
         _lastPlaylistMediaSyncUtc[syncKey] = DateTimeOffset.UtcNow;
         if (!result.Success)
         {
-            _logger.LogDebug(
-                "Playlist media-server sync skipped for {Source}:{SourceId}: {Message}",
-                source,
-                sourceId,
-                result.Message);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Playlist media-server sync skipped for {Source}:{SourceId}: {Message}",
+                    source,
+                    sourceId,
+                    result.Message);
+            }
             return;
         }
 
-        _logger.LogInformation(
-            "Playlist media-server sync completed for {Source}:{SourceId}. TargetPlaylistId={PlaylistId}, SyncedTracks={SyncedTracks}",
-            source,
-            sourceId,
-            result.PlaylistId ?? string.Empty,
-            result.SyncedTracks);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Playlist media-server sync completed for {Source}:{SourceId}. TargetPlaylistId={PlaylistId}, SyncedTracks={SyncedTracks}",
+                source,
+                sourceId,
+                result.PlaylistId ?? string.Empty,
+                result.SyncedTracks);
+        }
     }
 
     private async Task UpdateSpotifyPlaylistMetadataIfPresentAsync(
@@ -1265,8 +1279,7 @@ public sealed class PlaylistWatchService
                     preference?.PreferredEngine,
                     preference?.DownloadVariantMode,
                     preference?.AtmosDestinationFolderId,
-                    preference?.RoutingRules,
-                    effectiveBlockRules),
+                    new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
                 cancellationToken);
 
             await AddPlaylistWatchHistoryAsync(
@@ -1413,8 +1426,7 @@ public sealed class PlaylistWatchService
                 preference?.PreferredEngine,
                 preference?.DownloadVariantMode,
                 preference?.AtmosDestinationFolderId,
-                preference?.RoutingRules,
-                effectiveBlockRules),
+                new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
             cancellationToken);
 
         if (queuedCount > 0)
@@ -1546,8 +1558,7 @@ public sealed class PlaylistWatchService
                     preference?.PreferredEngine,
                     preference?.DownloadVariantMode,
                     preference?.AtmosDestinationFolderId,
-                    preference?.RoutingRules,
-                    effectiveBlockRules),
+                    new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
                 cancellationToken);
 
             if (queuedCount > 0)
@@ -1680,8 +1691,7 @@ public sealed class PlaylistWatchService
                     preference?.PreferredEngine,
                     preference?.DownloadVariantMode,
                     preference?.AtmosDestinationFolderId,
-                    preference?.RoutingRules,
-                    effectiveBlockRules),
+                    new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
                 cancellationToken);
 
             await AddPlaylistWatchHistoryAsync(
@@ -1827,8 +1837,7 @@ public sealed class PlaylistWatchService
                     preference?.PreferredEngine,
                     preference?.DownloadVariantMode,
                     preference?.AtmosDestinationFolderId,
-                    preference?.RoutingRules,
-                    effectiveBlockRules),
+                    new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
                 cancellationToken);
 
             await AddPlaylistWatchHistoryAsync(
@@ -2080,8 +2089,7 @@ public sealed class PlaylistWatchService
                     preference?.PreferredEngine,
                     preference?.DownloadVariantMode,
                     preference?.AtmosDestinationFolderId,
-                    preference?.RoutingRules,
-                    effectiveBlockRules),
+                    new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
                 cancellationToken);
 
             await AddPlaylistWatchHistoryAsync(
@@ -2266,7 +2274,7 @@ public sealed class PlaylistWatchService
     }
 
     private static List<WatchIntentTrack> BuildBoomplayWatchTracksFromPlaylistItems(
-        IReadOnlyCollection<BoomplayTrackMetadata> tracks)
+        List<BoomplayTrackMetadata> tracks)
     {
         var watchTracks = new List<WatchIntentTrack>(tracks.Count);
         foreach (var track in tracks)
@@ -2311,7 +2319,7 @@ public sealed class PlaylistWatchService
     }
 
     private static List<WatchIntentTrack> BuildBoomplayWatchTracksFromHints(
-        IReadOnlyCollection<string> trackIds,
+        List<string> trackIds,
         Dictionary<string, BoomplayTrackHint> trackHints)
     {
         var watchTracks = new List<WatchIntentTrack>(trackIds.Count);
@@ -2548,7 +2556,7 @@ public sealed class PlaylistWatchService
     }
 
     private Task<int> QueueRecommendationTracksAsync(
-        IReadOnlyCollection<RecommendationTrackDto> tracks,
+        List<RecommendationTrackDto> tracks,
         long? destinationFolderId,
         QueueWatchOptions options,
         CancellationToken cancellationToken)
@@ -2611,8 +2619,7 @@ public sealed class PlaylistWatchService
         string? preferredEngine = null,
         string? downloadVariantMode = null,
         long? atmosDestinationFolderId = null,
-        IReadOnlyList<PlaylistTrackRoutingRule>? routingRules = null,
-        IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null)
+        QueueWatchRuleSet? ruleSet = null)
     {
         return new QueueWatchOptions(
             sourceLabel,
@@ -2621,8 +2628,8 @@ public sealed class PlaylistWatchService
             preferredEngine,
             downloadVariantMode,
             atmosDestinationFolderId,
-            routingRules,
-            blockRules);
+            ruleSet?.RoutingRules,
+            ruleSet?.BlockRules);
     }
 
     private static long? ResolveRoutingFolderId(DownloadIntent intent, IReadOnlyList<PlaylistTrackRoutingRule>? rules, long? defaultFolderId)
@@ -2677,7 +2684,7 @@ public sealed class PlaylistWatchService
         _ => false
     };
 
-    private static bool EvalGenreCondition(IReadOnlyCollection<string>? genres, string op, string conditionValue)
+    private static bool EvalGenreCondition(List<string>? genres, string op, string conditionValue)
     {
         if (genres is null || genres.Count == 0)
         {
@@ -2882,9 +2889,7 @@ public sealed class PlaylistWatchService
                 intentService,
                 normalizedDownloadVariantMode,
                 intent,
-                options.SourceLabel,
-                track.TrackId,
-                afterPrimarySkip: false,
+                new AtmosQueueRequest(options.SourceLabel, track.TrackId, AfterPrimarySkip: false),
                 options,
                 cancellationToken);
             return queuedCount;
@@ -2904,9 +2909,7 @@ public sealed class PlaylistWatchService
                 intentService,
                 normalizedDownloadVariantMode,
                 intent,
-                options.SourceLabel,
-                track.TrackId,
-                afterPrimarySkip: true,
+                new AtmosQueueRequest(options.SourceLabel, track.TrackId, AfterPrimarySkip: true),
                 options,
                 cancellationToken);
             await TryMarkWatchTrackCompletedAsync(
@@ -2930,12 +2933,15 @@ public sealed class PlaylistWatchService
             return false;
         }
 
-        _logger.LogDebug(
-            "{Source} watch skipped blocked track {TrackId} ({Title} - {Artist}).",
-            options.SourceLabel,
-            track.TrackId,
-            intent.Title,
-            intent.Artist);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "{Source} watch skipped blocked track {TrackId} ({Title} - {Artist}).",
+                options.SourceLabel,
+                track.TrackId,
+                intent.Title,
+                intent.Artist);
+        }
         await TryPersistWatchTrackIgnoreAsync(
             options.WatchlistSource,
             options.WatchlistPlaylistId,
@@ -2999,9 +3005,7 @@ public sealed class PlaylistWatchService
         DownloadIntentService intentService,
         string normalizedDownloadVariantMode,
         DownloadIntent baseIntent,
-        string sourceLabel,
-        string trackId,
-        bool afterPrimarySkip,
+        AtmosQueueRequest request,
         QueueWatchOptions options,
         CancellationToken cancellationToken)
     {
@@ -3018,13 +3022,13 @@ public sealed class PlaylistWatchService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            var messageSuffix = afterPrimarySkip ? " after primary skip" : string.Empty;
+            var messageSuffix = request.AfterPrimarySkip ? " after primary skip" : string.Empty;
             _logger.LogWarning(
                 ex,
                 "{Source} watch Atmos queue failed{Suffix} for track {TrackId}",
-                sourceLabel,
+                request.SourceLabel,
                 messageSuffix,
-                trackId);
+                request.TrackId);
             return 0;
         }
     }
@@ -3084,12 +3088,15 @@ public sealed class PlaylistWatchService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(
-                ex,
-                "Failed to persist watch ignore entry: {Source}:{PlaylistId}:{TrackId}",
-                watchlistSource,
-                watchlistPlaylistId,
-                track.TrackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Failed to persist watch ignore entry: {Source}:{PlaylistId}:{TrackId}",
+                    watchlistSource,
+                    watchlistPlaylistId,
+                    track.TrackId);
+            }
         }
     }
 
