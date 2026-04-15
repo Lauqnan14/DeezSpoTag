@@ -49,22 +49,30 @@ RUN apt-get update -o Acquire::Retries=5 \
        aria2 \
        ffmpeg \
        unzip \
-    && install -m 0755 -d /etc/apt/keyrings \
-    && curl --fail --show-error --silent --location \
-       --retry 8 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 120 \
-       https://dist.gpac.io/gpac/linux/gpg.asc \
-       -o /etc/apt/keyrings/gpac.asc \
-    && chmod a+r /etc/apt/keyrings/gpac.asc \
-    && codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")" \
-    && printf '%s\n' \
-      "Types: deb" \
-      "URIs: https://dist.gpac.io/gpac/linux/debian" \
-      "Suites: ${codename}" \
-      "Components: main" \
-      "Signed-By: /etc/apt/keyrings/gpac.asc" \
-      > /etc/apt/sources.list.d/gpac.sources \
-    && apt-get update -o Acquire::Retries=5 \
-    && apt-get install -y --no-install-recommends gpac \
+    && if ! apt-get install -y --no-install-recommends gpac; then \
+         os_id="$(. /etc/os-release && echo "${ID}")"; \
+         codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")"; \
+         if [ "$os_id" = "debian" ]; then \
+           install -m 0755 -d /etc/apt/keyrings; \
+           curl --fail --show-error --silent --location \
+             --retry 8 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 120 \
+             https://dist.gpac.io/gpac/linux/gpg.asc \
+             -o /etc/apt/keyrings/gpac.asc; \
+           chmod a+r /etc/apt/keyrings/gpac.asc; \
+           printf '%s\n' \
+             "Types: deb" \
+             "URIs: https://dist.gpac.io/gpac/linux/debian" \
+             "Suites: ${codename}" \
+             "Components: main" \
+             "Signed-By: /etc/apt/keyrings/gpac.asc" \
+             > /etc/apt/sources.list.d/gpac.sources; \
+           apt-get update -o Acquire::Retries=5; \
+           apt-get install -y --no-install-recommends gpac; \
+         else \
+           echo "gpac package unavailable for ${os_id}/${codename}" >&2; \
+           exit 1; \
+         fi; \
+       fi \
     && mp4box_path="$(command -v MP4Box || true)" \
     && if [ -z "$mp4box_path" ]; then mp4box_path="$(command -v mp4box || true)"; fi \
     && if [ -z "$mp4box_path" ]; then echo "MP4Box not found after GPAC install." >&2; exit 1; fi \
