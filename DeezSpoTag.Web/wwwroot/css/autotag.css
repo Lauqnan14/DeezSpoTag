@@ -556,7 +556,7 @@ body.autotag-col-resizing * {
 
 .autotag-slider-row {
     display: grid;
-    grid-template-columns: 1fr 84px auto;
+    grid-template-columns: 1fr 84px;
     align-items: center;
     gap: 10px;
 }
@@ -567,14 +567,6 @@ body.autotag-col-resizing * {
 
 .autotag-slider-number {
     width: 84px;
-}
-
-.autotag-slider-value {
-    min-width: 28px;
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--text-primary);
-    text-align: right;
 }
 
 .autotag-inline-code {
