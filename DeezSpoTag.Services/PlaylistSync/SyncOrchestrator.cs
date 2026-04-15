@@ -44,13 +44,17 @@ public class SyncOrchestrator
     /// </summary>
     public async Task SyncPlaylistAsync(string playlistId, string sourcePlatform, string targetPlatform, CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("Syncing playlist {PlaylistId} from {Source} to {Target}", playlistId, sourcePlatform, targetPlatform);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Syncing playlist {PlaylistId} from {Source} to {Target}", playlistId, sourcePlatform, targetPlatform);        }
 
         // Implementation would depend on source and target platforms
         // For now, just log the operation
         await Task.Delay(100, cancellationToken);
 
-        _logger.LogInformation("Successfully synced playlist {PlaylistId}", playlistId);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Successfully synced playlist {PlaylistId}", playlistId);        }
     }
 
     /// <summary>

@@ -11,7 +11,7 @@ namespace DeezSpoTag.Integrations.Deezer
         public string CreationDate { get; set; } = string.Empty;
         public bool Public { get; set; }
         public DeezerUser Creator { get; set; } = new DeezerUser();
-        
+
         // Extended properties for deezspotag compatibility
         public Picture Pic { get; set; } = new();
         public int TrackTotal { get; set; }
@@ -37,4 +37,4 @@ namespace DeezSpoTag.Integrations.Deezer
         }
     }
 
-    }
+}

@@ -98,7 +98,10 @@ public sealed class TagSettingsMigrationService
             await _repository.UpdateFolderAutoTagEnabledAsync(folderId, true);
         }
 
-        _logger.LogInformation("Associated {Count} folders with default profile.", folders.Count);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Associated {Count} folders with default profile.", folders.Count);
+        }
     }
 
     private static UnifiedTagConfig ConvertTagSettings(TagSettings? old)

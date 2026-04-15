@@ -51,7 +51,10 @@ public class SpotifyCacheApiController : ControllerBase
     [HttpPost("refresh")]
     public IActionResult Refresh([FromQuery] long? artistId)
     {
-        _logger.LogInformation("Spotify cache refresh requested: artistId={ArtistId}", artistId);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Spotify cache refresh requested: artistId={ArtistId}", artistId);
+        }
         LogRefreshQueued(artistId);
         _ = Task.Run(() => RunRefreshAsync(artistId));
 
@@ -776,7 +779,8 @@ public class SpotifyCacheApiController : ControllerBase
 
             return System.IO.File.Exists(fullPath) ? fullPath : null;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }

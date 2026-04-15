@@ -31,18 +31,18 @@ public static class ServiceCollectionExtensions
         // Settings services
         // DeezSpoTagSettingsService is registered as Singleton in DownloadServiceExtensions
         // ISettingsService interface will resolve to the singleton instance
-        
+
         // Crypto services
         services.AddScoped<CryptoService>();
-        
+
         services.AddScoped<DecryptionStreamProcessor>();
-        
+
         // Deezer download engine removed.
-        
+
         // Download utilities
-                // BitrateSelector is registered in DownloadServiceExtensions
+        // BitrateSelector is registered in DownloadServiceExtensions
         // AudioTagger is registered in DownloadServiceExtensions
-        
+
         // Image download services - configured with proper HttpClient (merged service)
         services.AddScoped<ImageDownloader>(provider =>
         {
@@ -60,28 +60,28 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ArtistPageCacheRepository>();
         services.AddSingleton<SpotifyMetadataCacheRepository>();
         services.AddScoped<TrackMatchService>();
-        
+
         // Track services (TrackServices.TrackEnrichmentService removed - was duplicate)
         // TrackEnrichmentService is registered in DownloadServiceExtensions
-        
+
         // EXACT deezspotag implementation: got.stream with https: { rejectUnauthorized: false }
         AddInsecureTlsClient(services, "DeezerDownload", TimeSpan.FromMinutes(10), LinuxChrome79UserAgent);
-        
+
         // EXACT deezspotag implementation: got.stream with https: { rejectUnauthorized: false }
         AddInsecureTlsClient(services, "TrackDownload", TimeSpan.FromMinutes(15), LinuxChrome79UserAgent);
-        
+
         services.AddHttpClient("BitrateSelector", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(30);
             client.DefaultRequestHeaders.Add(UserAgentHeader, WindowsChrome91UserAgent);
         }).ConfigurePrimaryHttpMessageHandler(CreateRedirectingHandler);
-        
+
         // EXACT deezspotag implementation: got.stream with https: { rejectUnauthorized: false }
         // Don't set User-Agent for ImageDownload here - ImageDownloader sets it per request.
         AddInsecureTlsClient(services, "ImageDownload", TimeSpan.FromSeconds(30));
         AddInsecureTlsClient(services, "JwtTokenService", TimeSpan.FromSeconds(30), LinuxChrome96UserAgent);
         AddInsecureTlsClient(services, "LyricsService", TimeSpan.FromSeconds(30), LinuxChrome96UserAgent);
-        
+
         // EXACT deezspotag implementation: DeezerClient with SSL bypass for media URLs
         services.AddHttpClient("DeezerClient", client =>
         {
@@ -98,7 +98,7 @@ public static class ServiceCollectionExtensions
             client.Timeout = TimeSpan.FromSeconds(30);
             client.DefaultRequestHeaders.Add(UserAgentHeader, LinuxChrome79UserAgent);
         });
-        
+
         return services;
     }
 

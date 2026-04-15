@@ -39,14 +39,18 @@ public class SearchFallbackService
 
             // EXACT PORT: Use the API service's search method
             var trackId = await deezerClient.Api.GetTrackIdFromMetadataAsync(artist, title, album);
-            
+
             if (trackId != "0")
             {
-                _logger.LogInformation("Found track via search fallback: {Artist} - {Title} -> {TrackId}", artist, title, trackId);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Found track via search fallback: {Artist} - {Title} -> {TrackId}", artist, title, trackId);                }
                 return trackId;
             }
-            
-            _logger.LogDebug("No track found via search fallback: {Artist} - {Title} ({Album})", artist, title, album);
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("No track found via search fallback: {Artist} - {Title} ({Album})", artist, title, album);            }
             return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -87,10 +91,12 @@ public class SearchFallbackService
             }
 
             var track = MapGwTrackToCoreTrack(gwTrack, markAsSearched: true);
-            _logger.LogInformation(
-                "Successfully found alternative track via search: {OriginalId} -> {NewId}",
-                originalTrack.Id,
-                track.Id);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Successfully found alternative track via search: {OriginalId} -> {NewId}",
+                    originalTrack.Id,
+                    track.Id);            }
 
             return track;
         }
@@ -124,12 +130,16 @@ public class SearchFallbackService
             if (matchingTrack != null)
             {
                 var track = MapGwTrackToCoreTrack(matchingTrack);
-                _logger.LogInformation("Found track by ISRC {ISRC} in album {AlbumId}: {TrackId}",
-                    isrc, albumId, track.Id);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Found track by ISRC {ISRC} in album {AlbumId}: {TrackId}",
+                        isrc, albumId, track.Id);                }
                 return track;
             }
 
-            _logger.LogDebug("No track found with ISRC {ISRC} in album {AlbumId}", isrc, albumId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("No track found with ISRC {ISRC} in album {AlbumId}", isrc, albumId);            }
             return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -158,9 +168,11 @@ public class SearchFallbackService
             {
                 var track = MapGwTrackToCoreTrack(gwTrack);
 
-                _logger.LogInformation("Successfully retrieved fallback track: {FallbackId} -> {TrackId}", 
-                    fallbackId, track.Id);
-                
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Successfully retrieved fallback track: {FallbackId} -> {TrackId}",
+                        fallbackId, track.Id);                }
+
                 return track;
             }
 
@@ -223,7 +235,7 @@ public class SearchFallbackService
         return fileSizes;
     }
 
-    private static void AddFileSizeIfPositive(IDictionary<string, int> fileSizes, string key, int? value)
+    private static void AddFileSizeIfPositive(Dictionary<string, int> fileSizes, string key, int? value)
     {
         if (value.HasValue && value.Value > 0)
         {

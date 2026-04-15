@@ -190,12 +190,14 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 cancellationToken);
             if (resolution?.Track.Id > 0 && resolution.Track.Id != trackId.Value)
             {
-                _logger.LogInformation(
-                    "Qobuz download URL corrected by resolver: requested={RequestedTrackId} resolved={ResolvedTrackId} source={Source} score={Score}",
-                    trackId.Value,
-                    resolution.Track.Id,
-                    resolution.Source,
-                    resolution.Score);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "Qobuz download URL corrected by resolver: requested={RequestedTrackId} resolved={ResolvedTrackId} source={Source} score={Score}",
+                        trackId.Value,
+                        resolution.Track.Id,
+                        resolution.Source,
+                        resolution.Score);                }
                 trackId = resolution.Track.Id;
             }
         }
@@ -1023,7 +1025,8 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             DownloadFileUtilities.TryDeleteFile(expectedPath);
             return false;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return false;
         }
     }

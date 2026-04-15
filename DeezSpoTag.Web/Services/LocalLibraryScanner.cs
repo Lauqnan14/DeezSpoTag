@@ -287,7 +287,10 @@ public sealed class LocalLibraryScanner
     {
         if (!Directory.Exists(folder.RootPath))
         {
-            _logger.LogDebug("Library folder missing: {DisplayName} -> {RootPath}", folder.DisplayName, folder.RootPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Library folder missing: {DisplayName} -> {RootPath}", folder.DisplayName, folder.RootPath);
+            }
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "warn",
@@ -304,7 +307,10 @@ public sealed class LocalLibraryScanner
             DateTimeOffset.UtcNow,
             "info",
             $"Scanning library folder: {folder.DisplayName} -> {folder.RootPath}"));
-        _logger.LogDebug("Scanning library folder {DisplayName} -> {RootPath}", folder.DisplayName, folder.RootPath);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Scanning library folder {DisplayName} -> {RootPath}", folder.DisplayName, folder.RootPath);
+        }
 
         foreach (var artistDir in Directory.GetDirectories(folder.RootPath))
         {
@@ -488,7 +494,10 @@ public sealed class LocalLibraryScanner
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             context.ErrorCount++;
-            _logger.LogDebug(ex, "Tag parsing failed for {FilePath}", file);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Tag parsing failed for {FilePath}", file);
+            }
         }
     }
 
@@ -940,12 +949,15 @@ public sealed class LocalLibraryScanner
             DateTimeOffset.UtcNow,
             "info",
             $"Finished folder scan: {folderDisplayName} (artists={artistsAdded}, albums={albumsAdded}, tracks={tracksAdded})."));
-        _logger.LogDebug(
-            "Finished folder scan {DisplayName} artists={Artists} albums={Albums} tracks={Tracks}",
-            folderDisplayName,
-            artistsAdded,
-            albumsAdded,
-            tracksAdded);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Finished folder scan {DisplayName} artists={Artists} albums={Albums} tracks={Tracks}",
+                folderDisplayName,
+                artistsAdded,
+                albumsAdded,
+                tracksAdded);
+        }
     }
 
     private static bool IsExcludedFromLibraryScan(FolderDto folder)
@@ -1155,7 +1167,8 @@ public sealed class LocalLibraryScanner
                 };
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
 
@@ -1398,7 +1411,8 @@ public sealed class LocalLibraryScanner
                 }
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Ignore file access errors
         }
 
@@ -1645,7 +1659,10 @@ public sealed class LocalLibraryScanner
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "ffprobe execution failed for {FilePath}", filePath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "ffprobe execution failed for {FilePath}", filePath);
+            }
             return false;
         }
     }
@@ -1658,17 +1675,23 @@ public sealed class LocalLibraryScanner
         }
         catch (InvalidOperationException ex)
         {
-            _logger.LogDebug(ex, "ffprobe process already exited before forced termination");
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "ffprobe process already exited before forced termination");
+            }
         }
         catch (System.ComponentModel.Win32Exception ex)
         {
-            _logger.LogDebug(ex, "Failed to terminate ffprobe process for {FilePath}", filePath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to terminate ffprobe process for {FilePath}", filePath);
+            }
         }
     }
 
     private void LogFfprobeError(string filePath, string stderr)
     {
-        if (!string.IsNullOrWhiteSpace(stderr))
+        if (!string.IsNullOrWhiteSpace(stderr) && _logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug("ffprobe failed for {FilePath}: {Error}", filePath, stderr.Trim());
         }
@@ -1697,7 +1720,10 @@ public sealed class LocalLibraryScanner
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "ffprobe parse failed for {FilePath}", filePath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "ffprobe parse failed for {FilePath}", filePath);
+            }
             return null;
         }
     }

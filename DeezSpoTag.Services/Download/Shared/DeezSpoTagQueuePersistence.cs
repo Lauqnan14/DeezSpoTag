@@ -185,7 +185,7 @@ public class DeezSpoTagQueuePersistence
         {
             throw new ArgumentException("Queue item must have a valid UUID");
         }
-        
+
         item["status"] = status;
         var json = JsonSerializer.Serialize(item);
         File.WriteAllText(Path.Join(_queueFolder, $"{uuid}.json"), json);
@@ -226,7 +226,8 @@ public class DeezSpoTagQueuePersistence
                 {
                     File.Delete(file);
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException) {
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
                     // Ignore errors when deleting files
                 }
             }

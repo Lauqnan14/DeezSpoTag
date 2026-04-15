@@ -104,7 +104,10 @@ public sealed class ItunesClient
         var waitMs = reqMs - diffMs;
         if (waitMs > 0)
         {
-            _logger.LogInformation("iTunes rate limit delay: {Delay}ms", waitMs);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("iTunes rate limit delay: {Delay}ms", waitMs);
+            }
             await Task.Delay(TimeSpan.FromMilliseconds(waitMs), cancellationToken);
         }
     }

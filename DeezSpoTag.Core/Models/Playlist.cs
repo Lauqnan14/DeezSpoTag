@@ -18,7 +18,7 @@ public class Playlist
     public bool IsCollaborative { get; set; } = false;
     public string Checksum { get; set; } = "";
     public int Bitrate { get; set; }
-    
+
     // Additional properties for compatibility
     public List<Track> Tracks { get; set; } = new();
     public Artist? Creator => Owner;
@@ -207,7 +207,8 @@ public class Playlist
                 }
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // If extraction fails, return null
         }
 

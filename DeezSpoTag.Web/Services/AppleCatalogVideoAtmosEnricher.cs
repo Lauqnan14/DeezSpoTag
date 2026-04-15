@@ -193,7 +193,10 @@ public sealed class AppleCatalogVideoAtmosEnricher
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "{FailureLogMessage}. AppleId={AppleId}", failureLogMessage, id);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "{FailureLogMessage}. AppleId={AppleId}", failureLogMessage, id);
+                }
             }
             finally
             {

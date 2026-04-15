@@ -236,7 +236,7 @@ public class AutoPlaylistsApiController : ControllerBase
     }
 
     private async Task<DeezSpoTag.Services.Library.LibraryDto?> ResolveLibraryInfoAsync(
-        IReadOnlyList<PlexPlaylistTrack> tracks,
+        List<PlexPlaylistTrack> tracks,
         CancellationToken cancellationToken)
     {
         if (!_libraryRepository.IsConfigured || tracks.Count == 0)

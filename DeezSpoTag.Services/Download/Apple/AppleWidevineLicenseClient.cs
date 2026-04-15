@@ -77,23 +77,9 @@ public sealed class AppleWidevineLicenseClient
                 maxAttempts,
                 errorBody.Length > 500 ? errorBody[..500] + "..." : errorBody);
 
-            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            LogLicenseAuthorizationFailure(response.StatusCode);
+            if (await DelayForRetryIfNeededAsync(response, attempt, maxAttempts, cancellationToken))
             {
-                _logger.LogError("Apple license 401 Unauthorized: authorizationToken may be expired.");
-            }
-            else if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
-            {
-                _logger.LogError("Apple license 403 Forbidden: mediaUserToken may be expired or invalid.");
-            }
-
-            if (ShouldRetry(response.StatusCode, attempt, maxAttempts))
-            {
-                var delay = ComputeRetryDelay(response, attempt);
-                _logger.LogInformation(
-                    "Apple license retry: status={StatusCode}, waiting {Delay}ms.",
-                    response.StatusCode,
-                    delay.TotalMilliseconds);
-                await Task.Delay(delay, cancellationToken);
                 continue;
             }
 
@@ -101,6 +87,43 @@ public sealed class AppleWidevineLicenseClient
         }
 
         return Array.Empty<byte>();
+    }
+
+    private void LogLicenseAuthorizationFailure(System.Net.HttpStatusCode statusCode)
+    {
+        if (statusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            _logger.LogError("Apple license 401 Unauthorized: authorizationToken may be expired.");
+            return;
+        }
+
+        if (statusCode == System.Net.HttpStatusCode.Forbidden)
+        {
+            _logger.LogError("Apple license 403 Forbidden: mediaUserToken may be expired or invalid.");
+        }
+    }
+
+    private async Task<bool> DelayForRetryIfNeededAsync(
+        HttpResponseMessage response,
+        int attempt,
+        int maxAttempts,
+        CancellationToken cancellationToken)
+    {
+        if (!ShouldRetry(response.StatusCode, attempt, maxAttempts))
+        {
+            return false;
+        }
+
+        var delay = ComputeRetryDelay(response, attempt);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Apple license retry: status={StatusCode}, waiting {Delay}ms.",
+                response.StatusCode,
+                delay.TotalMilliseconds);
+        }
+        await Task.Delay(delay, cancellationToken);
+        return true;
     }
 
     private bool HasValidTokens(string authorizationToken, string mediaUserToken)
@@ -131,13 +154,17 @@ public sealed class AppleWidevineLicenseClient
         var isRadioStation = adamId.StartsWith("ra.", StringComparison.OrdinalIgnoreCase);
         if (!string.IsNullOrWhiteSpace(licenseEndpointOverride))
         {
-            _logger.LogDebug("Apple license: Using station key server endpoint for adamId={AdamId}", adamId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Apple license: Using station key server endpoint for adamId={AdamId}", adamId);            }
             return licenseEndpointOverride;
         }
 
         if (isRadioStation)
         {
-            _logger.LogDebug("Apple license: Using radio station endpoint for adamId={AdamId}", adamId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Apple license: Using radio station endpoint for adamId={AdamId}", adamId);            }
             return RadioLicenseEndpoint;
         }
 
@@ -207,7 +234,9 @@ public sealed class AppleWidevineLicenseClient
             return Array.Empty<byte>();
         }
 
-        _logger.LogDebug("Apple license acquired successfully for adamId={AdamId}", adamId);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Apple license acquired successfully for adamId={AdamId}", adamId);        }
         return AppleWidevineCdm.ExtractContentKey(licenseBytes, licenseRequestMsg);
     }
 

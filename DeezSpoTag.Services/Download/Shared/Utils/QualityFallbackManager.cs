@@ -107,8 +107,10 @@ public class QualityFallbackManager
     {
         try
         {
-            _logger.LogDebug("Getting available formats for preferred bitrate: {PreferredBitrate}, fallback enabled: {FallbackEnabled}", 
-                preferredBitrate, settings.FallbackBitrate);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Getting available formats for preferred bitrate: {PreferredBitrate}, fallback enabled: {FallbackEnabled}",
+                    preferredBitrate, settings.FallbackBitrate);            }
 
             var is360Format = Formats360.ContainsKey(preferredBitrate);
             Dictionary<int, string> formats;
@@ -140,8 +142,10 @@ public class QualityFallbackManager
                 .Select(kvp => (kvp.Key, kvp.Value))
                 .ToList();
 
-            _logger.LogDebug("Found {FormatCount} available formats: {Formats}", 
-                availableFormats.Count, string.Join(", ", availableFormats.Select(f => f.Value)));
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Found {FormatCount} available formats: {Formats}",
+                    availableFormats.Count, string.Join(", ", availableFormats.Select(f => f.Value)));            }
 
             return availableFormats;
         }
@@ -160,17 +164,12 @@ public class QualityFallbackManager
     {
         try
         {
-            _logger.LogDebug("Applying quality fallback for track {TrackId}, preferred bitrate: {PreferredBitrate}", 
-                track.Id, preferredBitrate);
-
-            var result = new QualityFallbackResult
+            if (_logger.IsEnabled(LogLevel.Debug))
             {
-                OriginalBitrate = preferredBitrate,
-                FallbackApplied = false,
-                SelectedBitrate = preferredBitrate,
-                SelectedFormat = GetFormatName(preferredBitrate),
-                AvailableFormats = GetAvailableFormats(preferredBitrate, settings)
-            };
+                    _logger.LogDebug("Applying quality fallback for track {TrackId}, preferred bitrate: {PreferredBitrate}",
+                        track.Id, preferredBitrate);            }
+
+            var result = CreateInitialFallbackResult(preferredBitrate, settings);
 
             // Check if track has file sizes information
             if (track.FileSizes == null || track.FileSizes.Count == 0)
@@ -183,42 +182,16 @@ public class QualityFallbackManager
             // Check each format in order of preference
             foreach (var (formatNumber, formatName) in result.AvailableFormats)
             {
-                var formatKey = formatName.ToLower();
-                
-                if (track.FileSizes.TryGetValue(formatKey, out var fileSize) && fileSize > 0)
+                if (TryApplyTrackFormatCandidate(track, preferredBitrate, formatNumber, formatName, result))
                 {
-                    // Check license requirements
-                    if (IsLicenseValid(formatName))
-                    {
-                        result.SelectedBitrate = formatNumber;
-                        result.SelectedFormat = formatName;
-                        result.FileSize = fileSize;
-                        result.FallbackApplied = formatNumber != preferredBitrate;
-                        
-                        if (result.FallbackApplied)
-                        {
-                            _logger.LogInformation("Applied quality fallback for track {TrackId}: {OriginalFormat} -> {FallbackFormat}", 
-                                track.Id, GetFormatName(preferredBitrate), formatName);
-                        }
-                        
-                        return result;
-                    }
-                    else
-                    {
-                        _logger.LogDebug("License check failed for format {FormatName}", formatName);
-                    }
-                }
-                else
-                {
-                    _logger.LogDebug("Format {FormatName} not available for track {TrackId} (file size: {FileSize})", 
-                        formatName, track.Id, fileSize);
+                    return result;
                 }
             }
 
             // No suitable format found
             result.ErrorMessage = "No suitable format available";
             _logger.LogWarning("No suitable format found for track {TrackId}", track.Id);
-            
+
             return result;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -230,6 +203,67 @@ public class QualityFallbackManager
                 ErrorMessage = ex.Message
             };
         }
+    }
+
+    private QualityFallbackResult CreateInitialFallbackResult(int preferredBitrate, DeezSpoTagSettings settings)
+    {
+        return new QualityFallbackResult
+        {
+            OriginalBitrate = preferredBitrate,
+            FallbackApplied = false,
+            SelectedBitrate = preferredBitrate,
+            SelectedFormat = GetFormatName(preferredBitrate),
+            AvailableFormats = GetAvailableFormats(preferredBitrate, settings)
+        };
+    }
+
+    private bool TryApplyTrackFormatCandidate(
+        DeezerTrack track,
+        int preferredBitrate,
+        int formatNumber,
+        string formatName,
+        QualityFallbackResult result)
+    {
+        var formatKey = formatName.ToLowerInvariant();
+        if (!track.FileSizes!.TryGetValue(formatKey, out var fileSize) || fileSize <= 0)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Format {FormatName} not available for track {TrackId} (file size: {FileSize})",
+                    formatName,
+                    track.Id,
+                    fileSize);
+            }
+
+            return false;
+        }
+
+        if (!IsLicenseValid(formatName))
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("License check failed for format {FormatName}", formatName);
+            }
+
+            return false;
+        }
+
+        result.SelectedBitrate = formatNumber;
+        result.SelectedFormat = formatName;
+        result.FileSize = fileSize;
+        result.FallbackApplied = formatNumber != preferredBitrate;
+
+        if (result.FallbackApplied && _logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Applied quality fallback for track {TrackId}: {OriginalFormat} -> {FallbackFormat}",
+                track.Id,
+                GetFormatName(preferredBitrate),
+                formatName);
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -258,20 +292,24 @@ public class QualityFallbackManager
                     // Lossless formats require premium subscription (exact deezspotag logic)
                     if (!(currentUser.CanStreamLossless ?? false))
                     {
-                        _logger.LogDebug("User cannot stream lossless format {FormatName}", formatName);
+                        if (_logger.IsEnabled(LogLevel.Debug))
+                        {
+                            _logger.LogDebug("User cannot stream lossless format {FormatName}", formatName);                        }
                         return false;
                     }
                     break;
-                
+
                 case "MP3_320":
                     // HQ MP3 requires premium subscription (exact deezspotag logic)
                     if (!(currentUser.CanStreamHq ?? false))
                     {
-                        _logger.LogDebug("User cannot stream HQ format {FormatName}", formatName);
+                        if (_logger.IsEnabled(LogLevel.Debug))
+                        {
+                            _logger.LogDebug("User cannot stream HQ format {FormatName}", formatName);                        }
                         return false;
                     }
                     break;
-                
+
                 case "MP3_128":
                 case "MP3_MISC":
                 default:
@@ -279,7 +317,9 @@ public class QualityFallbackManager
                     break;
             }
 
-            _logger.LogDebug("License check passed for format {FormatName}", formatName);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("License check passed for format {FormatName}", formatName);            }
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -298,12 +338,12 @@ public class QualityFallbackManager
         {
             return format;
         }
-        
+
         if (Formats360.TryGetValue(formatNumber, out var format360))
         {
             return format360;
         }
-        
+
         return "MP3_128"; // Default fallback
     }
 
@@ -317,13 +357,13 @@ public class QualityFallbackManager
         {
             return format.Key;
         }
-        
+
         var format360 = Formats360.FirstOrDefault(kvp => kvp.Value == formatName);
         if (format360.Key != 0)
         {
             return format360.Key;
         }
-        
+
         return 1; // Default to MP3_128
     }
 
@@ -373,7 +413,7 @@ public class QualityFallbackResult
     public long FileSize { get; set; }
     public string? ErrorMessage { get; set; }
     public List<(int formatNumber, string formatName)> AvailableFormats { get; set; } = new();
-    
+
     public bool IsSuccess => string.IsNullOrEmpty(ErrorMessage);
     public string QualityDescription => QualityDescriptionMap.GetQualityDescription(SelectedBitrate);
 }

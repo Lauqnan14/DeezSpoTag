@@ -29,7 +29,9 @@ public sealed class DeezerIsrcResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to resolve Deezer ISRC for track ID {DeezerTrackId}", deezerTrackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to resolve Deezer ISRC for track ID {DeezerTrackId}", deezerTrackId);            }
             return null;
         }
     }
@@ -65,7 +67,9 @@ public sealed class DeezerIsrcResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to resolve Deezer ISRC for metadata {Artist} - {Title}", artist, title);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to resolve Deezer ISRC for metadata {Artist} - {Title}", artist, title);            }
             return null;
         }
     }

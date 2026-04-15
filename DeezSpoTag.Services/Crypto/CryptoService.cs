@@ -12,7 +12,7 @@ namespace DeezSpoTag.Services.Crypto;
 public class CryptoService
 {
     private readonly ILogger<CryptoService> _logger;
-    
+
     // Constants from deezspotag
     private const string BinaryEncodingName = "binary";
     private const string Latin1EncodingName = "ISO-8859-1";
@@ -89,7 +89,7 @@ public class CryptoService
     {
         // CRITICAL: Use _md5 function exactly like deezspotag (with ASCII encoding)
         var idMd5 = GenerateMd5(trackId, "ascii");
-        
+
         var bfKey = new StringBuilder();
 
         for (int i = 0; i < 16; i++)
@@ -97,7 +97,7 @@ public class CryptoService
             var char1 = (byte)idMd5[i];
             var char2 = (byte)idMd5[i + 16];
             var secretChar = (byte)SeedMaterial[i];
-            
+
             bfKey.Append((char)(char1 ^ char2 ^ secretChar));
         }
 

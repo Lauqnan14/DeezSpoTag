@@ -156,7 +156,7 @@ public sealed class DeezerClient
         return default;
     }
 
-    private static string BuildRequestUrl(string path, IReadOnlyDictionary<string, string> query)
+    private static string BuildRequestUrl(string path, Dictionary<string, string> query)
     {
         var url = BuildUrl(DeezerApiHost, path);
         if (query.Count == 0)
@@ -343,7 +343,8 @@ public sealed class DeezerClient
                 await gzip.CopyToAsync(output, cancellationToken);
                 return Encoding.UTF8.GetString(output.ToArray());
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 return Encoding.UTF8.GetString(bytes);
             }
         }
@@ -358,7 +359,8 @@ public sealed class DeezerClient
                 await deflate.CopyToAsync(output, cancellationToken);
                 return Encoding.UTF8.GetString(output.ToArray());
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 return Encoding.UTF8.GetString(bytes);
             }
         }
@@ -521,7 +523,8 @@ public sealed class DeezerClient
                     return ParseSyncedLyrics(doc.RootElement);
                 }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 // fall through to plain-text parsing
             }
         }

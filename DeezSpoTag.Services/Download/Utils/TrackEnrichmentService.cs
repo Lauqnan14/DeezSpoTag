@@ -40,7 +40,9 @@ public class TrackEnrichmentService
     {
         try
         {
-            _logger.LogDebug("Enriching track {TrackId} with Gateway API data", track.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Enriching track {TrackId} with Gateway API data", track.Id);            }
 
             // Get track data with fallback (exactly like deezspotag)
             var gwTrack = await _gatewayService.GetTrackWithFallbackAsync(track.Id ?? "");
@@ -64,7 +66,9 @@ public class TrackEnrichmentService
                 };
             }
 
-            _logger.LogDebug("Successfully enriched track {TrackId}", track.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Successfully enriched track {TrackId}", track.Id);            }
             return track;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -99,7 +103,9 @@ public class TrackEnrichmentService
         {
             // Extract fallback ID from the fallback object
             track.FallbackID = TrackEnrichmentMappingHelper.ExtractFallbackId(gwTrack.Fallback);
-            _logger.LogDebug("Track {TrackId} has fallback ID: {FallbackId}", track.Id, track.FallbackID);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Track {TrackId} has fallback ID: {FallbackId}", track.Id, track.FallbackID);            }
         }
 
         // Handle album fallback data (for ISRC fallback)
@@ -107,7 +113,9 @@ public class TrackEnrichmentService
         {
             // Extract album IDs for ISRC matching
             track.AlbumsFallback = TrackEnrichmentMappingHelper.ExtractAlbumsFallback(gwTrack.AlbumFallback);
-            _logger.LogDebug("Track {TrackId} has album fallback data: {AlbumCount} albums", track.Id, track.AlbumsFallback.Count);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Track {TrackId} has album fallback data: {AlbumCount} albums", track.Id, track.AlbumsFallback.Count);            }
         }
 
         LogMappedTrackEssentials(track.Id, track.MD5, track.MediaVersion, track.TrackToken, track.FileSizes, gwTrack);
@@ -124,7 +132,9 @@ public class TrackEnrichmentService
 
         try
         {
-            _logger.LogDebug("Searching for track by ISRC: {ISRC}", isrc);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Searching for track by ISRC: {ISRC}", isrc);            }
 
             // Use the Gateway API to search for tracks by ISRC
             var searchResults = await _gatewayService.SearchAsync($"isrc:{isrc}");
@@ -136,8 +146,10 @@ public class TrackEnrichmentService
                 if (firstResult is Dictionary<string, object> trackDict && trackDict.TryGetValue("SNG_ID", out var trackIdObj))
                 {
                     var trackId = trackIdObj.ToString();
-                    _logger.LogDebug("Found track by ISRC {ISRC}: {TrackId}", isrc, trackId);
-                    
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug("Found track by ISRC {ISRC}: {TrackId}", isrc, trackId);                    }
+
                     // Get full track data
                     var gwTrack = await _gatewayService.GetTrackWithFallbackAsync(trackId ?? "");
                     if (gwTrack != null)
@@ -149,7 +161,9 @@ public class TrackEnrichmentService
                 }
             }
 
-            _logger.LogDebug("No track found for ISRC: {ISRC}", isrc);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("No track found for ISRC: {ISRC}", isrc);            }
             return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -167,64 +181,114 @@ public class TrackEnrichmentService
     {
         try
         {
-            _logger.LogDebug("Searching for alternative to track {TrackId}: {Artist} - {Title}", 
-                originalTrack.Id, originalTrack.MainArtist?.Name, originalTrack.Title);
-
-            // Build search query from track metadata (like deezspotag does)
-            var searchQuery = $"{originalTrack.MainArtist?.Name} {originalTrack.Title}";
-            if (!string.IsNullOrEmpty(originalTrack.Album?.Title))
+            if (_logger.IsEnabled(LogLevel.Debug))
             {
-                searchQuery += $" {originalTrack.Album.Title}";
+                _logger.LogDebug("Searching for alternative to track {TrackId}: {Artist} - {Title}",
+                    originalTrack.Id, originalTrack.MainArtist?.Name, originalTrack.Title);            }
+
+            var searchQuery = BuildAlternativeSearchQuery(originalTrack);
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Search query for alternative: {Query}", searchQuery);            }
+
+            var searchResults = await _gatewayService.SearchAsync(searchQuery);
+            var trackData = searchResults?.Track?.Data;
+            if (trackData == null || trackData.Length == 0)
+            {
+                LogNoAlternativeFound(originalTrack.Id);
+                return null;
             }
 
-            _logger.LogDebug("Search query for alternative: {Query}", searchQuery);
-
-            // Search using Gateway API
-            var searchResults = await _gatewayService.SearchAsync(searchQuery);
-
-            var trackData = searchResults?.Track?.Data;
-            if (trackData is { Length: > 0 })
+            foreach (var trackId in EnumerateAlternativeTrackIds(trackData, originalTrack.Id))
             {
-                // Find the best match (first result that's not the original track)
-                foreach (var trackId in trackData
-                             .Select(static result =>
-                             {
-                                 if (result is Dictionary<string, object> trackDict
-                                     && trackDict.TryGetValue("SNG_ID", out var trackIdObj))
-                                 {
-                                     return trackIdObj?.ToString();
-                                 }
-
-                                 return null;
-                             })
-                             .Where(trackId => !string.IsNullOrWhiteSpace(trackId)
-                                               && !string.Equals(trackId, originalTrack.Id, StringComparison.Ordinal)))
+                var mapped = await TryMapAlternativeTrackAsync(trackId);
+                if (mapped != null)
                 {
-                    _logger.LogDebug("Found alternative track: {TrackId}", trackId);
-
-                    // Get full track data
-                    var gwTrack = await _gatewayService.GetTrackWithFallbackAsync(trackId ?? "");
-                    if (gwTrack != null)
-                    {
-                        var track = new DeezerTrack();
-                        MapEssentialData(track, gwTrack);
-                        track.Searched = true; // Mark as found via search
-
-                        _logger.LogDebug("Successfully mapped alternative track: {TrackId} - {Artist} - {Title}",
-                            track.Id, track.MainArtist?.Name, track.Title);
-
-                        return track;
-                    }
+                    return mapped;
                 }
             }
 
-            _logger.LogDebug("No alternative found for track {TrackId}", originalTrack.Id);
+            LogNoAlternativeFound(originalTrack.Id);
             return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Failed to find alternative for track {TrackId}", originalTrack.Id);
             return null;
+        }
+    }
+
+    private static string BuildAlternativeSearchQuery(DeezerTrack originalTrack)
+    {
+        var parts = new List<string?>(3)
+        {
+            originalTrack.MainArtist?.Name,
+            originalTrack.Title,
+            originalTrack.Album?.Title
+        };
+
+        return string.Join(
+            " ",
+            parts.Where(part => !string.IsNullOrWhiteSpace(part))
+                .Select(part => part!.Trim()));
+    }
+
+    private static IEnumerable<string> EnumerateAlternativeTrackIds(object[] trackData, string? originalTrackId)
+    {
+        foreach (var result in trackData)
+        {
+            if (result is not Dictionary<string, object> trackDict
+                || !trackDict.TryGetValue("SNG_ID", out var trackIdObj))
+            {
+                continue;
+            }
+
+            var trackId = trackIdObj?.ToString();
+            if (string.IsNullOrWhiteSpace(trackId)
+                || string.Equals(trackId, originalTrackId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            yield return trackId;
+        }
+    }
+
+    private async Task<DeezerTrack?> TryMapAlternativeTrackAsync(string trackId)
+    {
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Found alternative track: {TrackId}", trackId);
+        }
+
+        var gwTrack = await _gatewayService.GetTrackWithFallbackAsync(trackId);
+        if (gwTrack == null)
+        {
+            return null;
+        }
+
+        var track = new DeezerTrack();
+        MapEssentialData(track, gwTrack);
+        track.Searched = true;
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Successfully mapped alternative track: {TrackId} - {Artist} - {Title}",
+                track.Id,
+                track.MainArtist?.Name,
+                track.Title);
+        }
+
+        return track;
+    }
+
+    private void LogNoAlternativeFound(string? trackId)
+    {
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("No alternative found for track {TrackId}", trackId);
         }
     }
 
@@ -239,13 +303,17 @@ public class TrackEnrichmentService
 
         try
         {
-            _logger.LogDebug("Searching for track with ISRC {ISRC} in album {AlbumId}", isrc, albumId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Searching for track with ISRC {ISRC} in album {AlbumId}", isrc, albumId);            }
 
             // Get album page to access all tracks
             var albumPage = await _gatewayService.GetAlbumPageAsync(albumId);
             if (albumPage?.Songs?.Data == null)
             {
-                _logger.LogDebug("No tracks found in album {AlbumId}", albumId);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("No tracks found in album {AlbumId}", albumId);                }
                 return null;
             }
 
@@ -253,12 +321,16 @@ public class TrackEnrichmentService
             var matchingTrack = albumPage.Songs.Data.FirstOrDefault(t => t.Isrc == isrc);
             if (matchingTrack == null)
             {
-                _logger.LogDebug("No track with ISRC {ISRC} found in album {AlbumId}", isrc, albumId);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("No track with ISRC {ISRC} found in album {AlbumId}", isrc, albumId);                }
                 return null;
             }
 
-            _logger.LogDebug("Found track with ISRC {ISRC} in album {AlbumId}: track {TrackId}", 
-                isrc, albumId, matchingTrack.SngId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Found track with ISRC {ISRC} in album {AlbumId}: track {TrackId}",
+                    isrc, albumId, matchingTrack.SngId);            }
 
             // Get full track data
             var gwTrack = await _gatewayService.GetTrackWithFallbackAsync(matchingTrack.SngId.ToString());
@@ -285,7 +357,9 @@ public class TrackEnrichmentService
     {
         try
         {
-            _logger.LogDebug("Enriching Core track {TrackId} with Gateway API data", track.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Enriching Core track {TrackId} with Gateway API data", track.Id);            }
 
             // Get track data with fallback (exactly like deezspotag)
             var gwTrack = await _gatewayService.GetTrackWithFallbackAsync(track.Id ?? "");
@@ -309,7 +383,9 @@ public class TrackEnrichmentService
                 };
             }
 
-            _logger.LogDebug("Successfully enriched Core track {TrackId}", track.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Successfully enriched Core track {TrackId}", track.Id);            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -332,23 +408,27 @@ public class TrackEnrichmentService
         string? md5,
         string? mediaVersion,
         string? trackToken,
-        IReadOnlyDictionary<string, int> fileSizes,
+        Dictionary<string, int> fileSizes,
         DeezSpoTag.Core.Models.Deezer.GwTrack gwTrack)
     {
-        _logger.LogDebug(
-            "Mapped essential data for track {TrackId}: MD5={MD5}, MediaVersion={MediaVersion}, TrackToken={HasToken}, FileSizes={FileSizeCount}",
-            trackId,
-            md5,
-            mediaVersion,
-            !string.IsNullOrEmpty(trackToken),
-            fileSizes.Count);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Mapped essential data for track {TrackId}: MD5={MD5}, MediaVersion={MediaVersion}, TrackToken={HasToken}, FileSizes={FileSizeCount}",
+                trackId,
+                md5,
+                mediaVersion,
+                !string.IsNullOrEmpty(trackToken),
+                fileSizes.Count);        }
 
         if (fileSizes.Count > 0)
         {
-            _logger.LogDebug(
-                "Track {TrackId} file sizes: {FileSizes}",
-                trackId,
-                string.Join(", ", fileSizes.Select(kvp => $"{kvp.Key}={kvp.Value}")));
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Track {TrackId} file sizes: {FileSizes}",
+                    trackId,
+                    string.Join(", ", fileSizes.Select(kvp => $"{kvp.Key}={kvp.Value}")));            }
             return;
         }
 
@@ -544,7 +624,7 @@ internal static class TrackEnrichmentMappingHelper
         return new List<string>();
     }
 
-    private static void AddFileSize(IDictionary<string, int> fileSizes, string key, int value)
+    private static void AddFileSize(Dictionary<string, int> fileSizes, string key, int value)
     {
         if (value > 0)
         {
@@ -552,7 +632,7 @@ internal static class TrackEnrichmentMappingHelper
         }
     }
 
-    private static void AddFileSize(IDictionary<string, int> fileSizes, string key, int? value)
+    private static void AddFileSize(Dictionary<string, int> fileSizes, string key, int? value)
     {
         if (value is > 0)
         {

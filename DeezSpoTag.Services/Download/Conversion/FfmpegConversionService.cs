@@ -41,14 +41,9 @@ public sealed class FfmpegConversionService
             return ConversionResult.NoConversion(inputPath);
         }
 
-        if (conversionOptions.SkipLossyToLossless && IsLossyFormat(inputFormat) && IsLosslessTarget(format))
+        if (TryApplyLossyToLosslessPolicy(conversionOptions, inputFormat, format, inputPath, out var policyResult))
         {
-            return ConversionResult.Skipped("Skipping lossy to lossless conversion.");
-        }
-
-        if (conversionOptions.WarnLossyToLossless && IsLossyFormat(inputFormat) && IsLosslessTarget(format))
-        {
-            _logger.LogWarning("Lossy to lossless conversion requested for {Input}", inputPath);
+            return policyResult;
         }
 
         var outputPath = BuildOutputPath(inputPath, format);
@@ -66,17 +61,12 @@ public sealed class FfmpegConversionService
         var effectiveBitrate = ResolveBitrate(format, bitrate);
         var args = BuildArguments(inputPath, outputPath, format, effectiveBitrate, conversionOptions.ExtraArgs);
 
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = ffmpegPath,
-            Arguments = args,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
+        var startInfo = BuildProcessStartInfo(ffmpegPath, args);
 
-        _logger.LogInformation("FFmpeg conversion started: {Input} -> {Output} ({Format})", inputPath, outputPath, format);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("FFmpeg conversion started: {Input} -> {Output} ({Format})", inputPath, outputPath, format);
+        }
 
         using var process = Process.Start(startInfo);
         if (process == null)
@@ -93,8 +83,52 @@ public sealed class FfmpegConversionService
             return ConversionResult.Failed(stderr);
         }
 
-        _logger.LogInformation("FFmpeg conversion completed: {Output}", outputPath);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("FFmpeg conversion completed: {Output}", outputPath);
+        }
         return ConversionResult.ConvertedTo(outputPath);
+    }
+
+    private bool TryApplyLossyToLosslessPolicy(
+        ConversionOptions options,
+        string inputFormat,
+        string targetFormat,
+        string inputPath,
+        out ConversionResult result)
+    {
+        result = ConversionResult.NoConversion(inputPath);
+        var lossyToLossless = IsLossyFormat(inputFormat) && IsLosslessTarget(targetFormat);
+        if (!lossyToLossless)
+        {
+            return false;
+        }
+
+        if (options.SkipLossyToLossless)
+        {
+            result = ConversionResult.Skipped("Skipping lossy to lossless conversion.");
+            return true;
+        }
+
+        if (options.WarnLossyToLossless)
+        {
+            _logger.LogWarning("Lossy to lossless conversion requested for {Input}", inputPath);
+        }
+
+        return false;
+    }
+
+    private static ProcessStartInfo BuildProcessStartInfo(string ffmpegPath, string arguments)
+    {
+        return new ProcessStartInfo
+        {
+            FileName = ffmpegPath,
+            Arguments = arguments,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
     }
 
     private static string NormalizeFormat(string? convertTo)

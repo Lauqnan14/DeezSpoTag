@@ -145,12 +145,14 @@ public sealed class QobuzTrackResolver
         var minimumScore = hasStrictTitle ? 11 : 8;
         if (bestScore < minimumScore || !hasStrictArtist)
         {
-            _logger.LogDebug(
-                "Rejected Qobuz candidate id={TrackId} score={Score} titleMatch={TitleMatch} artistMatch={ArtistMatch}",
-                bestTrack.Id,
-                bestScore,
-                hasStrictTitle,
-                hasStrictArtist);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Rejected Qobuz candidate id={TrackId} score={Score} titleMatch={TitleMatch} artistMatch={ArtistMatch}",
+                    bestTrack.Id,
+                    bestScore,
+                    hasStrictTitle,
+                    hasStrictArtist);            }
             return null;
         }
 

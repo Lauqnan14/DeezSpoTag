@@ -61,7 +61,10 @@ internal static class AtlTagHelper
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger?.LogDebug(ex, "ATL failed to capture chapters for {Path}", path);
+            if (logger?.IsEnabled(LogLevel.Debug) == true)
+            {
+                logger?.LogDebug(ex, "ATL failed to capture chapters for {Path}", path);
+            }
             return null;
         }
     }
@@ -98,7 +101,10 @@ internal static class AtlTagHelper
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger?.LogDebug(ex, "ATL failed to restore chapters for {Path}", path);
+            if (logger?.IsEnabled(LogLevel.Debug) == true)
+            {
+                logger?.LogDebug(ex, "ATL failed to restore chapters for {Path}", path);
+            }
         }
     }
 

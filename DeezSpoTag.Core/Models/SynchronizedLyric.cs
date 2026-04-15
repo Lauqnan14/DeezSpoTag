@@ -57,7 +57,7 @@ public class SynchronizedLyric
     {
         var timeSpan = TimeSpan.FromMilliseconds(milliseconds);
         var lrcTimestamp = $"[{timeSpan.Minutes:D2}:{timeSpan.Seconds:D2}.{timeSpan.Milliseconds / 10:D2}]";
-        
+
         return new SynchronizedLyric(text, lrcTimestamp, milliseconds);
     }
 

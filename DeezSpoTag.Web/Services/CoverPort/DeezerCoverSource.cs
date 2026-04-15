@@ -62,7 +62,10 @@ public sealed class DeezerCoverSource : ICoverSource
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer cover search errored for {Artist} - {Album}", query.Artist, query.Album);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer cover search errored for {Artist} - {Album}", query.Artist, query.Album);
+            }
             return Array.Empty<CoverCandidate>();
         }
     }

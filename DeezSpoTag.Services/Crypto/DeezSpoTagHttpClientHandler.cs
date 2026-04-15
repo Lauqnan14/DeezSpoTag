@@ -22,7 +22,7 @@ public static class DeezSpoTagHttpClientHandler
         handler.SslProtocols = SecureProtocols;
         return handler;
     }
-    
+
     /// <summary>
     /// Creates fallback HttpClientHandler with specific SSL protocol for problematic endpoints
     /// DEEZSPOTAG REINFORCEMENT: Multiple SSL protocol fallbacks
@@ -36,7 +36,7 @@ public static class DeezSpoTagHttpClientHandler
         handler.SslProtocols = NormalizeProtocol(protocol);
         return handler;
     }
-    
+
     /// <summary>
     /// Creates an HttpClientHandler (legacy fallback) for maximum compatibility
     /// DEEZSPOTAG REINFORCEMENT: Legacy SSL support

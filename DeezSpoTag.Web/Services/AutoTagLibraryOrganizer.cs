@@ -497,7 +497,10 @@ public class AutoTagLibraryOrganizer
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "AutoTag organizer metadata read failed for {Path}; falling back to inferred identity.", fullPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "AutoTag organizer metadata read failed for {Path}; falling back to inferred identity.", fullPath);
+            }
             context.Log?.Invoke($"organizer metadata read failed; using fallback inference: {fullPath} ({ex.Message})");
             return BuildUnreadableMetadataMovePlanItem(context);
         }
@@ -950,7 +953,10 @@ public class AutoTagLibraryOrganizer
             }
 
             RegisterArtistDirectoryTransition(artistDirectoryTransitions, rootPath, sourceDir, destinationDir);
-            _logger.LogInformation("AutoTag organizer moved folder {SourceDir} -> {DestinationDir}", sourceDir, destinationDir);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("AutoTag organizer moved folder {SourceDir} -> {DestinationDir}", sourceDir, destinationDir);
+            }
             log?.Invoke($"organizer moved folder: {sourceDir} -> {destinationDir}");
             report?.Entries.Add($"move-folder: {sourceDir} -> {destinationDir}");
             return true;
@@ -1035,7 +1041,10 @@ public class AutoTagLibraryOrganizer
             }
 
             RegisterArtistDirectoryTransition(artistDirectoryTransitions, rootPath, action.SourceDir, action.DestinationDir);
-            _logger.LogInformation("AutoTag organizer moved file {SourcePath} -> {DestinationPath}", action.SourcePath, action.DestinationPath);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("AutoTag organizer moved file {SourcePath} -> {DestinationPath}", action.SourcePath, action.DestinationPath);
+            }
             log?.Invoke($"organizer moved file: {action.SourcePath} -> {action.DestinationPath}");
             report?.Entries.Add($"move-file: {action.SourcePath} -> {action.DestinationPath}");
             MoveSidecarFiles(new SidecarMoveContext(
@@ -1577,7 +1586,10 @@ public class AutoTagLibraryOrganizer
                 report.ReplacedDuplicates++;
             }
 
-            _logger.LogInformation("AutoTag organizer replaced duplicate destination {DestinationPath} using {SourcePath}", action.DestinationPath, action.SourcePath);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("AutoTag organizer replaced duplicate destination {DestinationPath} using {SourcePath}", action.DestinationPath, action.SourcePath);
+            }
             log?.Invoke($"organizer replaced duplicate destination: {action.DestinationPath} using {action.SourcePath}");
             report?.Entries.Add($"replace-duplicate: {action.DestinationPath} <= {action.SourcePath}");
             FinalizeDuplicateCleanup(
@@ -1597,7 +1609,10 @@ public class AutoTagLibraryOrganizer
             report.QuarantinedDuplicates++;
         }
 
-        _logger.LogInformation("AutoTag organizer quarantined duplicate source {SourcePath} (existing {DestinationPath})", action.SourcePath, action.DestinationPath);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("AutoTag organizer quarantined duplicate source {SourcePath} (existing {DestinationPath})", action.SourcePath, action.DestinationPath);
+        }
         log?.Invoke($"organizer quarantined duplicate source: {action.SourcePath} -> {sourceQuarantinedPath}");
         report?.Entries.Add($"quarantine-duplicate: {action.SourcePath} -> {sourceQuarantinedPath}");
         FinalizeDuplicateCleanup(
@@ -2070,13 +2085,7 @@ public class AutoTagLibraryOrganizer
             };
 
             track.Artists = expandedArtists.ToList();
-            track.Artist[MainArtistRole] = usePrimaryArtistFolders
-                ? new List<string> { primaryArtistName }
-                : track.Artists.ToList();
-            if (usePrimaryArtistFolders && expandedArtists.Count > 1)
-            {
-                track.Artist[FeaturedArtistRole] = expandedArtists.Skip(1).ToList();
-            }
+            ApplyArtistRoles(track.Artist, track.Artists, usePrimaryArtistFolders, primaryArtistName);
 
             var album = new Album(albumTitle)
             {
@@ -2084,13 +2093,7 @@ public class AutoTagLibraryOrganizer
                 Label = recognition.Label ?? string.Empty
             };
             album.Artists = track.Artists.ToList();
-            album.Artist[MainArtistRole] = usePrimaryArtistFolders
-                ? new List<string> { primaryArtistName }
-                : album.Artists.ToList();
-            if (usePrimaryArtistFolders && expandedArtists.Count > 1)
-            {
-                album.Artist[FeaturedArtistRole] = expandedArtists.Skip(1).ToList();
-            }
+            ApplyArtistRoles(album.Artist, album.Artists, usePrimaryArtistFolders, primaryArtistName);
 
             ApplyRecognitionReleaseDate(recognition.ReleaseDate, track, album);
 
@@ -2100,10 +2103,30 @@ public class AutoTagLibraryOrganizer
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "AutoTag organizer Shazam fallback failed for {Path}", fullPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "AutoTag organizer Shazam fallback failed for {Path}", fullPath);
+            }
             log?.Invoke($"organizer Shazam fallback failed for {fullPath}: {ex.Message}");
             return null;
         }
+    }
+
+    private static void ApplyArtistRoles(
+        Dictionary<string, List<string>> roleMap,
+        List<string> artists,
+        bool usePrimaryArtistFolders,
+        string primaryArtistName)
+    {
+        roleMap[MainArtistRole] = usePrimaryArtistFolders
+            ? new List<string> { primaryArtistName }
+            : artists.ToList();
+        if (!usePrimaryArtistFolders || artists.Count <= 1)
+        {
+            return;
+        }
+
+        roleMap[FeaturedArtistRole] = artists.Skip(1).ToList();
     }
 
     private static List<string> ResolveExpandedRecognitionArtists(ShazamRecognitionInfo recognition)
@@ -2626,7 +2649,10 @@ public class AutoTagLibraryOrganizer
                         report.MovedLeftovers++;
                     }
 
-                    _logger.LogInformation("AutoTag organizer moved leftover {SourcePath} -> {DestinationPath}", file, target);
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation("AutoTag organizer moved leftover {SourcePath} -> {DestinationPath}", file, target);
+                    }
                     log?.Invoke($"organizer moved leftover: {file} -> {target}");
                     report?.Entries.Add($"move-leftover: {file} -> {target}");
                 }
@@ -2670,7 +2696,10 @@ public class AutoTagLibraryOrganizer
             }
 
             IOFile.Delete(file);
-            _logger.LogInformation("AutoTag organizer deleted various artists art {SourcePath}", file);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("AutoTag organizer deleted various artists art {SourcePath}", file);
+            }
             log?.Invoke($"organizer deleted various artists art: {file}");
             report?.Entries.Add($"delete-various-artists-art: {file}");
         }
@@ -3047,7 +3076,10 @@ public class AutoTagLibraryOrganizer
             try
             {
                 Directory.Delete(current);
-                _logger.LogInformation("AutoTag organizer deleted empty folder {SourceDir}", current);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("AutoTag organizer deleted empty folder {SourceDir}", current);
+                }
                 log?.Invoke($"organizer deleted empty folder: {current}");
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -3147,7 +3179,10 @@ public class AutoTagLibraryOrganizer
         }
 
         Directory.Delete(artistDir);
-        _logger.LogInformation("AutoTag organizer deleted empty artist folder {SourceDir}", artistDir);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("AutoTag organizer deleted empty artist folder {SourceDir}", artistDir);
+        }
         log?.Invoke($"organizer deleted empty artist folder: {artistDir}");
     }
 

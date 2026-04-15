@@ -680,7 +680,8 @@ WHERE id = @id;";
             cloned = JsonSerializer.Deserialize<Core.Models.Settings.DeezSpoTagSettings>(json)
                 ?? new Core.Models.Settings.DeezSpoTagSettings();
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             cloned = new Core.Models.Settings.DeezSpoTagSettings();
         }
 

@@ -226,7 +226,10 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple artist lookup failed for {ArtistName}", artistName);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple artist lookup failed for {ArtistName}", artistName);
+            }
             return null;
         }
     }

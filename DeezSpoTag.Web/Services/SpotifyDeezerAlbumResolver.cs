@@ -355,7 +355,10 @@ public sealed class SpotifyDeezerAlbumResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Album search failed for query {Query}", query);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Album search failed for query {Query}", query);
+            }
             return null;
         }
     }
@@ -392,7 +395,10 @@ public sealed class SpotifyDeezerAlbumResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to fetch Deezer tracks for album {AlbumId}", albumId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to fetch Deezer tracks for album {AlbumId}", albumId);
+            }
             return null;
         }
     }

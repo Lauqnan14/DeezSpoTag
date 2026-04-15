@@ -36,7 +36,7 @@ public class IsrcNotOnDeezerException : GenerationException
 {
     public static string ErrorId => "ISRCnotOnDeezer";
 
-    public IsrcNotOnDeezerException(string link) 
+    public IsrcNotOnDeezerException(string link)
         : base(link, "Track ISRC is not available on deezer")
     {
     }
@@ -49,7 +49,7 @@ public class NotYourPrivatePlaylistException : GenerationException
 {
     public static string ErrorId => "notYourPrivatePlaylist";
 
-    public NotYourPrivatePlaylistException(string link) 
+    public NotYourPrivatePlaylistException(string link)
         : base(link, "You can't download others private playlists.")
     {
     }
@@ -62,7 +62,7 @@ public class TrackNotOnDeezerException : GenerationException
 {
     public static string ErrorId => "trackNotOnDeezer";
 
-    public TrackNotOnDeezerException(string link) 
+    public TrackNotOnDeezerException(string link)
         : base(link, "Track not found on deezer!")
     {
     }
@@ -75,7 +75,7 @@ public class AlbumNotOnDeezerException : GenerationException
 {
     public static string ErrorId => "albumNotOnDeezer";
 
-    public AlbumNotOnDeezerException(string link) 
+    public AlbumNotOnDeezerException(string link)
         : base(link, "Album not found on deezer!")
     {
     }
@@ -88,7 +88,7 @@ public class PlaylistNotOnDeezerException : GenerationException
 {
     public static string ErrorId => "playlistNotOnDeezer";
 
-    public PlaylistNotOnDeezerException(string link) 
+    public PlaylistNotOnDeezerException(string link)
         : base(link, "Playlist not found on deezer!")
     {
     }
@@ -101,7 +101,7 @@ public class InvalidIDException : GenerationException
 {
     public static string ErrorId => "invalidID";
 
-    public InvalidIDException(string link) 
+    public InvalidIDException(string link)
         : base(link, "Link ID is invalid!")
     {
     }
@@ -114,7 +114,7 @@ public class LinkNotSupportedException : GenerationException
 {
     public static string ErrorId => "unsupportedURL";
 
-    public LinkNotSupportedException(string link) 
+    public LinkNotSupportedException(string link)
         : base(link, "Link is not supported.")
     {
     }
@@ -127,7 +127,7 @@ public class LinkNotRecognizedException : GenerationException
 {
     public static string ErrorId => "invalidURL";
 
-    public LinkNotRecognizedException(string link) 
+    public LinkNotRecognizedException(string link)
         : base(link, "Link is not recognized.")
     {
     }
@@ -141,14 +141,14 @@ public class DownloadException : DeezSpoTagException
     public string? ErrorId { get; }
     public Track? Track { get; }
 
-    public DownloadException(string? message = null, string? errorId = null, Track? track = null) 
+    public DownloadException(string? message = null, string? errorId = null, Track? track = null)
         : base(message)
     {
         ErrorId = errorId;
         Track = track;
     }
 
-    public DownloadException(string? message, Exception? innerException, string? errorId = null, Track? track = null) 
+    public DownloadException(string? message, Exception? innerException, string? errorId = null, Track? track = null)
         : base(message, innerException)
     {
         ErrorId = errorId;
@@ -161,7 +161,7 @@ public class DownloadException : DeezSpoTagException
 /// </summary>
 public class PluginNotEnabledException : DeezSpoTagException
 {
-    public PluginNotEnabledException(string pluginName) 
+    public PluginNotEnabledException(string pluginName)
         : base($"{pluginName} plugin not enabled")
     {
     }
@@ -172,7 +172,7 @@ public class PluginNotEnabledException : DeezSpoTagException
 /// </summary>
 public class DownloadFailedException : DownloadException
 {
-    public DownloadFailedException(string errorId, Track? track = null) 
+    public DownloadFailedException(string errorId, Track? track = null)
         : base(ErrorMessages.GetMessage(errorId), errorId, track)
     {
     }

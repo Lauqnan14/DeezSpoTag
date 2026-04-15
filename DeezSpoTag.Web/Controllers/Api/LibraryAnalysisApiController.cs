@@ -727,7 +727,10 @@ public class LibraryAnalysisApiController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "fMP4 mdat extraction failed for {FilePath}", filePath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "fMP4 mdat extraction failed for {FilePath}", filePath);
+            }
         }
         finally
         {
@@ -752,7 +755,7 @@ public class LibraryAnalysisApiController : ControllerBase
         {
             var stderr = await process.StandardError.ReadToEndAsync(cancellationToken);
             await process.WaitForExitAsync(cancellationToken);
-            if (process.ExitCode != 0 && !string.IsNullOrWhiteSpace(stderr))
+            if (process.ExitCode != 0 && !string.IsNullOrWhiteSpace(stderr) && _logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug(
                     "ffmpeg transcode exited with code {ExitCode} for {FilePath}: {Error}",
@@ -997,7 +1000,10 @@ public class LibraryAnalysisApiController : ControllerBase
         catch (Exception ex)
         {
             TryKill(process);
-            _logger.LogDebug(ex, "Failed to compute PCM stats for {FilePath}", filePath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to compute PCM stats for {FilePath}", filePath);
+            }
             return new PcmStatsResult(null, null, null, 0, ex.Message);
         }
     }
@@ -1158,7 +1164,10 @@ public class LibraryAnalysisApiController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Failed to read TagLib audio properties for track {TrackId}", trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to read TagLib audio properties for track {TrackId}", trackId);
+            }
         }
     }
 
@@ -1239,7 +1248,10 @@ public class LibraryAnalysisApiController : ControllerBase
         catch (Exception ex)
         {
             TryKill(process);
-            _logger.LogDebug(ex, "ffprobe parse failed for {FilePath}", filePath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "ffprobe parse failed for {FilePath}", filePath);
+            }
             return null;
         }
     }
@@ -1256,7 +1268,7 @@ public class LibraryAnalysisApiController : ControllerBase
         var stderr = await stderrTask;
         if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(stdout))
         {
-            if (!string.IsNullOrWhiteSpace(stderr))
+            if (!string.IsNullOrWhiteSpace(stderr) && _logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug("ffprobe failed for {FilePath}: {Error}", filePath, stderr.Trim());
             }

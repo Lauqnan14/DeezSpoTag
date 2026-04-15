@@ -10,7 +10,7 @@ namespace DeezSpoTag.Integrations.Deezer
         public string ReleaseDate { get; set; } = string.Empty;
         public string RecordType { get; set; } = "album";
         public Artist? Artist { get; set; }
-        
+
         // Extended properties for deezspotag compatibility
         public Picture Pic { get; set; } = new();
         public Artist? MainArtist { get; set; }

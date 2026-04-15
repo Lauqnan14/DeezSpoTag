@@ -490,9 +490,12 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             return false;
         }
 
-        _logger.LogInformation(
-            "Accepting Apple wrapper 2FA submission while probe reports not waiting. Status={Status}, LoginActive=true",
-            currentStatus.Status);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Accepting Apple wrapper 2FA submission while probe reports not waiting. Status={Status}, LoginActive=true",
+                currentStatus.Status);
+        }
         return true;
     }
 
@@ -1025,11 +1028,14 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                 _logger.LogDebug(ex, "Unable to inspect queued Apple wrapper login file size.");
             }
 
-            _logger.LogInformation(
-                "Queued Apple wrapper login payload to {LoginFilePath}. Exists={Exists} SizeBytes={SizeBytes}",
-                sharedLoginPath,
-                File.Exists(sharedLoginPath),
-                sharedLoginFileBytes);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Queued Apple wrapper login payload to {LoginFilePath}. Exists={Exists} SizeBytes={SizeBytes}",
+                    sharedLoginPath,
+                    File.Exists(sharedLoginPath),
+                    sharedLoginFileBytes);
+            }
 
             return (true, null);
         }
@@ -1216,7 +1222,10 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     {
         if (IsWrapperContainerMissingError(resetError))
         {
-            _logger.LogInformation("Pre-login wrapper session reset skipped: {Error}", resetError);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Pre-login wrapper session reset skipped: {Error}", resetError);
+            }
             return;
         }
 
@@ -1692,7 +1701,10 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             _ = _healthTask.ContinueWith(_ => { }, TaskScheduler.Default);
         }
 
-        _logger.LogInformation("Apple Music wrapper stopped ({Reason}).", reason);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Apple Music wrapper stopped ({Reason}).", reason);
+        }
     }
 
     private void ClearRecentOutputLocked()
@@ -2484,7 +2496,8 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             {
                 global::System.Threading.Thread.Sleep(150);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 return false;
             }
         }
@@ -2587,7 +2600,8 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
             return client.Connected;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return false;
         }
     }

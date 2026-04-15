@@ -161,10 +161,12 @@ public static class ArtworkFallbackHelper
                 return null;
             }
 
-            logger.LogInformation(
-                "Album-art resolver switched away from compilation-like album for track {TrackId}; using Deezer track {ResolvedTrackId}",
-                track.Id,
-                resolvedTrackId);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation(
+                    "Album-art resolver switched away from compilation-like album for track {TrackId}; using Deezer track {ResolvedTrackId}",
+                    track.Id,
+                    resolvedTrackId);            }
             return resolvedTrackId;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -347,11 +349,13 @@ public static class ArtworkFallbackHelper
                     && !IsCompilationLikeAlbumTitle(requestedAlbumTitle)
                     && IsCompilationLikeApiAlbum(apiTrack.Album)))
             {
-                logger.LogDebug(
-                    "Rejected Deezer artwork for track {TrackId}: resolved album '{ResolvedAlbum}' did not match requested album '{RequestedAlbum}'.",
-                    normalizedTrackId,
-                    apiTrack.Album?.Title,
-                    requestedAlbumTitle);
+                if (logger.IsEnabled(LogLevel.Debug))
+                {
+                    logger.LogDebug(
+                        "Rejected Deezer artwork for track {TrackId}: resolved album '{ResolvedAlbum}' did not match requested album '{RequestedAlbum}'.",
+                        normalizedTrackId,
+                        apiTrack.Album?.Title,
+                        requestedAlbumTitle);                }
                 return null;
             }
 
@@ -367,7 +371,9 @@ public static class ArtworkFallbackHelper
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogDebug(ex, "Deezer cover lookup failed for track {TrackId}", normalizedTrackId);
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug(ex, "Deezer cover lookup failed for track {TrackId}", normalizedTrackId);            }
             return null;
         }
     }
@@ -470,7 +476,9 @@ public static class ArtworkFallbackHelper
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                logger.LogDebug(ex, "Deezer artist image lookup failed for track {TrackId}", normalizedTrackId);
+                if (logger.IsEnabled(LogLevel.Debug))
+                {
+                    logger.LogDebug(ex, "Deezer artist image lookup failed for track {TrackId}", normalizedTrackId);                }
             }
         }
 
@@ -506,7 +514,9 @@ public static class ArtworkFallbackHelper
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogDebug(ex, "Deezer artist image lookup failed for artist {ArtistName}", artistName);
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug(ex, "Deezer artist image lookup failed for artist {ArtistName}", artistName);            }
             return null;
         }
     }

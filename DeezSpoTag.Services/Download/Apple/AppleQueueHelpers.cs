@@ -154,7 +154,9 @@ public static class AppleQueueHelpers
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                logger.LogDebug(ex, "Apple catalog cover lookup failed for {AppleId}", appleId);
+                if (logger.IsEnabled(LogLevel.Debug))
+                {
+                    logger.LogDebug(ex, "Apple catalog cover lookup failed for {AppleId}", appleId);                }
             }
         }
 
@@ -748,7 +750,9 @@ public static class AppleQueueHelpers
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogDebug(ex, "Apple artist image lookup via song failed for {AppleSongId}", appleSongId);
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug(ex, "Apple artist image lookup via song failed for {AppleSongId}", appleSongId);            }
             return null;
         }
     }
@@ -970,7 +974,9 @@ public static class AppleQueueHelpers
         var fallbackUrl = BuildAppleArtworkFallbackUrl(sourceUrl, effectiveSizeText, size, size, format);
         if (!string.IsNullOrWhiteSpace(fallbackUrl))
         {
-            logger.LogDebug("Apple artwork fallback URL: {Url}", fallbackUrl);
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug("Apple artwork fallback URL: {Url}", fallbackUrl);            }
             return await downloader.DownloadImageAsync(
                 fallbackUrl,
                 outputPath,
@@ -2137,7 +2143,8 @@ public static class AppleQueueHelpers
             var best = SelectVariantByResolution(master, maxResolution);
             return best?.Uri;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }

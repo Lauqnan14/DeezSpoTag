@@ -121,101 +121,101 @@ public sealed class RadioService
         switch (station.Type)
         {
             case DiscoveryType:
-            {
-                var unplayed = await _repository.GetUnplayedTrackIdsAsync(plexUserId, libraryId, limit, cancellationToken);
-                if (unplayed.Count >= limit)
                 {
-                    return unplayed;
+                    var unplayed = await _repository.GetUnplayedTrackIdsAsync(plexUserId, libraryId, limit, cancellationToken);
+                    if (unplayed.Count >= limit)
+                    {
+                        return unplayed;
+                    }
+                    var leastPlayed = await _repository.GetLeastPlayedTrackIdsAsync(plexUserId, libraryId, limit, cancellationToken);
+                    return MergeAndTrim(unplayed, leastPlayed, limit);
                 }
-                var leastPlayed = await _repository.GetLeastPlayedTrackIdsAsync(plexUserId, libraryId, limit, cancellationToken);
-                return MergeAndTrim(unplayed, leastPlayed, limit);
-            }
             case FavoritesType:
-            {
-                var favorites = await _repository.GetMostPlayedTrackIdsAsync(plexUserId, libraryId, limit, cancellationToken);
-                if (favorites.Count > 0)
                 {
-                    return favorites;
+                    var favorites = await _repository.GetMostPlayedTrackIdsAsync(plexUserId, libraryId, limit, cancellationToken);
+                    if (favorites.Count > 0)
+                    {
+                        return favorites;
+                    }
+                    return await _repository.GetRandomTrackIdsAsync(libraryId, limit, cancellationToken);
                 }
-                return await _repository.GetRandomTrackIdsAsync(libraryId, limit, cancellationToken);
-            }
             case ShuffleType:
                 return await _repository.GetRandomTrackIdsAsync(libraryId, limit, cancellationToken);
             case WorkoutType:
-            {
-                var energetic = await _repository.GetTracksByAnalysisAsync(
-                    new LibraryRepository.TrackAnalysisFilter(
-                        libraryId,
-                        MinEnergy: 0.65,
-                        MaxEnergy: null,
-                        MinBpm: 115,
-                        MaxBpm: null,
-                        MinSpectralCentroid: null,
-                        MaxSpectralCentroid: null,
-                        Limit: limit),
-                    cancellationToken);
-                if (energetic.Count >= Math.Max(5, limit / 2))
                 {
-                    return energetic;
+                    var energetic = await _repository.GetTracksByAnalysisAsync(
+                        new LibraryRepository.TrackAnalysisFilter(
+                            libraryId,
+                            MinEnergy: 0.65,
+                            MaxEnergy: null,
+                            MinBpm: 115,
+                            MaxBpm: null,
+                            MinSpectralCentroid: null,
+                            MaxSpectralCentroid: null,
+                            Limit: limit),
+                        cancellationToken);
+                    if (energetic.Count >= Math.Max(5, limit / 2))
+                    {
+                        return energetic;
+                    }
+                    var fallback = await _repository.GetRandomTrackIdsAsync(libraryId, limit, cancellationToken);
+                    return MergeAndTrim(energetic, fallback, limit);
                 }
-                var fallback = await _repository.GetRandomTrackIdsAsync(libraryId, limit, cancellationToken);
-                return MergeAndTrim(energetic, fallback, limit);
-            }
             case MoodType:
-            {
-                var moodValue = (station.Value ?? string.Empty).ToLowerInvariant();
-                IReadOnlyList<long> moodTracks = moodValue switch
                 {
-                    HighEnergyMood => await _repository.GetTracksByAnalysisAsync(
-                        new LibraryRepository.TrackAnalysisFilter(
-                            libraryId, 0.6, null, 120, null, null, null, limit),
-                        cancellationToken),
-                    RelaxedMood => await _repository.GetTracksByAnalysisAsync(
-                        new LibraryRepository.TrackAnalysisFilter(
-                            libraryId, null, 0.4, null, 90, null, null, limit),
-                        cancellationToken),
-                    FocusMood => await _repository.GetTracksByAnalysisAsync(
-                        new LibraryRepository.TrackAnalysisFilter(
-                            libraryId, null, 0.5, 70, 110, null, null, limit),
-                        cancellationToken),
-                    MellowMood => await _repository.GetTracksByAnalysisAsync(
-                        new LibraryRepository.TrackAnalysisFilter(
-                            libraryId, null, 0.35, null, 85, null, 2200, limit),
-                        cancellationToken),
-                    BrightMood => await _repository.GetTracksByAnalysisAsync(
-                        new LibraryRepository.TrackAnalysisFilter(
-                            libraryId, 0.4, null, null, null, 3200, null, limit),
-                        cancellationToken),
-                    DarkMood => await _repository.GetTracksByAnalysisAsync(
-                        new LibraryRepository.TrackAnalysisFilter(
-                            libraryId, null, 0.45, null, 100, null, 2000, limit),
-                        cancellationToken),
-                    BalancedMood => await _repository.GetTracksByAnalysisAsync(
-                        new LibraryRepository.TrackAnalysisFilter(
-                            libraryId, 0.4, 0.7, 85, 125, 2200, 3200, limit),
-                        cancellationToken),
-                    _ => Array.Empty<long>()
-                };
-                if (moodTracks.Count >= Math.Max(5, limit / 2))
-                {
-                    return moodTracks;
+                    var moodValue = (station.Value ?? string.Empty).ToLowerInvariant();
+                    IReadOnlyList<long> moodTracks = moodValue switch
+                    {
+                        HighEnergyMood => await _repository.GetTracksByAnalysisAsync(
+                            new LibraryRepository.TrackAnalysisFilter(
+                                libraryId, 0.6, null, 120, null, null, null, limit),
+                            cancellationToken),
+                        RelaxedMood => await _repository.GetTracksByAnalysisAsync(
+                            new LibraryRepository.TrackAnalysisFilter(
+                                libraryId, null, 0.4, null, 90, null, null, limit),
+                            cancellationToken),
+                        FocusMood => await _repository.GetTracksByAnalysisAsync(
+                            new LibraryRepository.TrackAnalysisFilter(
+                                libraryId, null, 0.5, 70, 110, null, null, limit),
+                            cancellationToken),
+                        MellowMood => await _repository.GetTracksByAnalysisAsync(
+                            new LibraryRepository.TrackAnalysisFilter(
+                                libraryId, null, 0.35, null, 85, null, 2200, limit),
+                            cancellationToken),
+                        BrightMood => await _repository.GetTracksByAnalysisAsync(
+                            new LibraryRepository.TrackAnalysisFilter(
+                                libraryId, 0.4, null, null, null, 3200, null, limit),
+                            cancellationToken),
+                        DarkMood => await _repository.GetTracksByAnalysisAsync(
+                            new LibraryRepository.TrackAnalysisFilter(
+                                libraryId, null, 0.45, null, 100, null, 2000, limit),
+                            cancellationToken),
+                        BalancedMood => await _repository.GetTracksByAnalysisAsync(
+                            new LibraryRepository.TrackAnalysisFilter(
+                                libraryId, 0.4, 0.7, 85, 125, 2200, 3200, limit),
+                            cancellationToken),
+                        _ => Array.Empty<long>()
+                    };
+                    if (moodTracks.Count >= Math.Max(5, limit / 2))
+                    {
+                        return moodTracks;
+                    }
+                    var fallback = await _repository.GetRandomTrackIdsAsync(libraryId, limit, cancellationToken);
+                    return MergeAndTrim(moodTracks, fallback, limit);
                 }
-                var fallback = await _repository.GetRandomTrackIdsAsync(libraryId, limit, cancellationToken);
-                return MergeAndTrim(moodTracks, fallback, limit);
-            }
             case DecadeType:
-            {
-                if (!int.TryParse(station.Value, out var decade))
                 {
-                    return Array.Empty<long>();
+                    if (!int.TryParse(station.Value, out var decade))
+                    {
+                        return Array.Empty<long>();
+                    }
+                    var decadeTracks = await _repository.GetTracksByDecadeAsync(libraryId, decade, limit, cancellationToken);
+                    if (decadeTracks.Count > 0)
+                    {
+                        return decadeTracks;
+                    }
+                    return await _repository.GetRandomTrackIdsAsync(libraryId, limit, cancellationToken);
                 }
-                var decadeTracks = await _repository.GetTracksByDecadeAsync(libraryId, decade, limit, cancellationToken);
-                if (decadeTracks.Count > 0)
-                {
-                    return decadeTracks;
-                }
-                return await _repository.GetRandomTrackIdsAsync(libraryId, limit, cancellationToken);
-            }
             default:
                 return Array.Empty<long>();
         }

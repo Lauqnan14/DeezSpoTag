@@ -57,7 +57,7 @@ public class DeezerDownloadService
         _audioTagger = audioTagger;
         _pathProcessor = pathProcessor;
         _authenticatedDeezerService = authenticatedDeezerService;
-        
+
         // Set user agent for Deezer requests
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36"
@@ -134,7 +134,9 @@ public class DeezerDownloadService
                 try
                 {
                     await _audioTagger.TagTrackAsync(extension, writePath, track, settings.Tags);
-                    _logger.LogDebug("Successfully tagged track: {TrackId}", track.Id);
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug("Successfully tagged track: {TrackId}", track.Id);                    }
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -145,9 +147,11 @@ public class DeezerDownloadService
 
             result.Success = true;
             result.FilePath = writePath;
-            
-            _logger.LogInformation("Successfully downloaded track: {Title} by {Artist}", track.Title, track.MainArtist?.Name);
-            
+
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Successfully downloaded track: {Title} by {Artist}", track.Title, track.MainArtist?.Name);            }
+
             return result;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -193,7 +197,9 @@ public class DeezerDownloadService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to enrich track metadata for {TrackId}", track.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to enrich track metadata for {TrackId}", track.Id);            }
         }
     }
 
@@ -234,7 +240,9 @@ public class DeezerDownloadService
         }
 
         await FlushRemainingBufferAsync(fileStream, streamContext, state, cancellationToken);
-        _logger.LogDebug("Downloaded {TotalBytes} bytes for track {TrackId}", state.TotalBytesRead, track.Id);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Downloaded {TotalBytes} bytes for track {TrackId}", state.TotalBytesRead, track.Id);        }
     }
 
     private static StreamContext CreateStreamContext(string downloadUrl, DeezSpoTag.Core.Models.Track track)

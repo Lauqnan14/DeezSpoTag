@@ -49,7 +49,7 @@ public sealed class SpotifyArtworkResolver : ISpotifyArtworkResolver
 
         var artist = await _pathfinderMetadataClient.FetchArtistOverviewAsync(candidates[0].Id, cancellationToken);
         var imageUrl = artist?.ImageUrl;
-        if (!string.IsNullOrWhiteSpace(imageUrl))
+        if (!string.IsNullOrWhiteSpace(imageUrl) && _logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug("Spotify artist image resolved by name: {Artist}", artistName);
         }
@@ -81,7 +81,10 @@ public sealed class SpotifyArtworkResolver : ISpotifyArtworkResolver
         }
 
         Cache[cacheKey] = new CacheEntry(DateTimeOffset.UtcNow, artwork);
-        _logger.LogDebug("Spotify artwork resolved for track {SpotifyTrackId}", spotifyTrackId);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Spotify artwork resolved for track {SpotifyTrackId}", spotifyTrackId);
+        }
         return artwork;
     }
 

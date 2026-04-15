@@ -1569,7 +1569,10 @@ public sealed class AutoTagDownloadMoveService
             TryDeleteOriginalAfterConversion(sourceIo, convertedIo, conversionPlan.KeepOriginal);
 
             var convertedDisplay = DownloadPathResolver.NormalizeDisplayPath(convertedIo);
-            _logger.LogInformation("Destination conversion completed: {Input} -> {Output}", movedPath, convertedDisplay);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Destination conversion completed: {Input} -> {Output}", movedPath, convertedDisplay);
+            }
             return convertedDisplay;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1587,7 +1590,7 @@ public sealed class AutoTagDownloadMoveService
             return true;
         }
 
-        if (!string.IsNullOrWhiteSpace(conversion.Error))
+        if (!string.IsNullOrWhiteSpace(conversion.Error) && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
                 "Destination conversion skipped for {Path}: {Reason}",

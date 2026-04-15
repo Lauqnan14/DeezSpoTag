@@ -63,7 +63,10 @@ public sealed class DeezerLinkMappingService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Song.link mapping failed for url {Url}", normalizedUrl);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Song.link mapping failed for url {Url}", normalizedUrl);
+            }
         }
 
         if (DeezerLinkParser.TryParse(mapped?.DeezerUrl, out var mappedDeezer))
@@ -100,11 +103,14 @@ public sealed class DeezerLinkMappingService
 
         if (DeezerLinkParser.TryParse(candidate.Url, out var descriptor))
         {
-            _logger.LogInformation(
-                "Deezer metadata mapping matched {Source} to {DeezerUrl} using query \"{Query}\".",
-                source.ToClientValue(),
-                descriptor.Url,
-                query);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Deezer metadata mapping matched {Source} to {DeezerUrl} using query \"{Query}\".",
+                    source.ToClientValue(),
+                    descriptor.Url,
+                    query);
+            }
             return descriptor;
         }
 
@@ -215,28 +221,11 @@ public sealed class DeezerLinkMappingService
 
             foreach (var candidateElement in dataElement.EnumerateArray())
             {
-                var urlCandidate = GetJsonString(candidateElement, "link");
-                if (string.IsNullOrWhiteSpace(urlCandidate))
+                var candidate = TryBuildDeezerSearchCandidate(candidateElement, normalizedQuery);
+                if (candidate != null && candidate.Score > bestScore)
                 {
-                    continue;
-                }
-
-                var title = GetJsonString(candidateElement, "title");
-                if (string.IsNullOrWhiteSpace(title))
-                {
-                    title = GetJsonString(candidateElement, "name");
-                }
-
-                var artist = candidateElement.TryGetProperty("artist", out var artistElement)
-                    ? GetJsonString(artistElement, "name")
-                    : string.Empty;
-
-                var candidateText = NormalizeForSimilarity($"{title} {artist}");
-                var score = TextMatchUtils.ComputeNormalizedSimilarity(normalizedQuery, candidateText);
-                if (score > bestScore)
-                {
-                    bestScore = score;
-                    best = new DeezerSearchCandidate(urlCandidate, score);
+                    bestScore = candidate.Score;
+                    best = candidate;
                 }
             }
 
@@ -249,9 +238,37 @@ public sealed class DeezerLinkMappingService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer metadata search mapping failed for query {Query}.", query);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer metadata search mapping failed for query {Query}.", query);
+            }
             return null;
         }
+    }
+
+    private static DeezerSearchCandidate? TryBuildDeezerSearchCandidate(JsonElement candidateElement, string normalizedQuery)
+    {
+        var urlCandidate = GetJsonString(candidateElement, "link");
+        if (string.IsNullOrWhiteSpace(urlCandidate))
+        {
+            return null;
+        }
+
+        var title = ResolveCandidateTitle(candidateElement);
+        var artist = candidateElement.TryGetProperty("artist", out var artistElement)
+            ? GetJsonString(artistElement, "name")
+            : string.Empty;
+        var candidateText = NormalizeForSimilarity($"{title} {artist}");
+        var score = TextMatchUtils.ComputeNormalizedSimilarity(normalizedQuery, candidateText);
+        return new DeezerSearchCandidate(urlCandidate, score);
+    }
+
+    private static string ResolveCandidateTitle(JsonElement candidateElement)
+    {
+        var title = GetJsonString(candidateElement, "title");
+        return string.IsNullOrWhiteSpace(title)
+            ? GetJsonString(candidateElement, "name")
+            : title;
     }
 
     private static string NormalizeWhitespace(string? value)

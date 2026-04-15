@@ -484,11 +484,14 @@ internal static class EngineDownloadControllerCommon
             context.OnQueued,
             cancellationToken);
 
-        context.Logger.LogInformation(
-            "{Engine} download enqueue complete: queued {Queued} skipped {Skipped}",
-            context.EngineLabel,
-            result.Queued.Count,
-            result.Skipped);
+        if (context.Logger.IsEnabled(LogLevel.Information))
+        {
+            context.Logger.LogInformation(
+                "{Engine} download enqueue complete: queued {Queued} skipped {Skipped}",
+                context.EngineLabel,
+                result.Queued.Count,
+                result.Skipped);
+        }
 
         return new OkObjectResult(BuildBatchResponse(context.EngineLabel, result));
     }

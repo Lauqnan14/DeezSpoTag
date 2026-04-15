@@ -932,7 +932,7 @@ public sealed class SpotifyTracklistService
         return new List<string>(artistIds);
     }
 
-    private static string GetPrimaryArtistId(IReadOnlyList<string>? artistIds)
+    private static string GetPrimaryArtistId(List<string>? artistIds)
     {
         if (artistIds is null || artistIds.Count == 0)
         {

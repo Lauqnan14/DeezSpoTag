@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Library;
+
 public sealed class LibraryDbService
 {
     private const string ArtistTable = "artist";
@@ -62,13 +63,20 @@ public sealed class LibraryDbService
             ["idx_track_album_id"] = (TrackTable, AlbumIdColumn, false),
             ["idx_track_local_audio_file_id"] = (TrackLocalTable, "audio_file_id", false),
             ["idx_artist_name_nocase"] = (ArtistTable, "name COLLATE NOCASE", false)
-            ,["idx_artist_watchlist_spotify_id"] = (ArtistWatchlistTable, "spotify_id", false)
-            ,["idx_artist_watchlist_deezer_id"] = (ArtistWatchlistTable, DeezerIdColumn, false)
-            ,["idx_playlist_watchlist_created"] = (PlaylistWatchlistTable, "created_at", false)
-            ,["idx_playlist_watch_preferences_updated"] = (PlaylistWatchPreferencesTable, UpdatedAtColumn, false)
-            ,["idx_playlist_watch_state_updated"] = (PlaylistWatchStateTable, UpdatedAtColumn, false)
-            ,["idx_playlist_watch_track_source_status"] = (PlaylistWatchTrackTable, "source, source_id, status", false)
-            ,["idx_watchlist_history_source_created"] = (WatchlistHistoryTable, "source, created_at", false)
+            ,
+            ["idx_artist_watchlist_spotify_id"] = (ArtistWatchlistTable, "spotify_id", false)
+            ,
+            ["idx_artist_watchlist_deezer_id"] = (ArtistWatchlistTable, DeezerIdColumn, false)
+            ,
+            ["idx_playlist_watchlist_created"] = (PlaylistWatchlistTable, "created_at", false)
+            ,
+            ["idx_playlist_watch_preferences_updated"] = (PlaylistWatchPreferencesTable, UpdatedAtColumn, false)
+            ,
+            ["idx_playlist_watch_state_updated"] = (PlaylistWatchStateTable, UpdatedAtColumn, false)
+            ,
+            ["idx_playlist_watch_track_source_status"] = (PlaylistWatchTrackTable, "source, source_id, status", false)
+            ,
+            ["idx_watchlist_history_source_created"] = (WatchlistHistoryTable, "source, created_at", false)
         };
     private readonly IConfiguration _configuration;
     private readonly ILogger<LibraryDbService> _logger;
@@ -830,7 +838,8 @@ WHERE LOWER(TRIM(COALESCE(audio_variant, ''))) = 'atmos'
 
             return relative.Replace('\\', '/');
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }

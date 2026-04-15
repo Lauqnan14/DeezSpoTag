@@ -133,9 +133,11 @@ public sealed class AppleDownloadService : IAppleDownloadService
         var isAacLc = IsAacLcRequest(request);
         if (isAacLc)
         {
-            _logger.LogInformation(
-                "Apple AAC-LC requested for {AppleId} - using WebPlayback API directly (matching GUI runv3 behavior).",
-                appleId);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Apple AAC-LC requested for {AppleId} - using WebPlayback API directly (matching GUI runv3 behavior).",
+                    appleId);            }
             return await DownloadAacLcFromWebPlaybackAsync(request, appleId, cancellationToken);
         }
 
@@ -147,26 +149,16 @@ public sealed class AppleDownloadService : IAppleDownloadService
             cancellationToken);
         appleId = manifestResolution.AppleId;
         var manifestUrl = manifestResolution.ManifestUrl;
-
-        if (string.IsNullOrWhiteSpace(manifestUrl))
+        var missingManifestResult = await TryHandleMissingManifestAsync(request, appleId, manifestUrl, cancellationToken);
+        if (missingManifestResult != null)
         {
-            if (AllowsAacFallback(request)
-                && !string.IsNullOrWhiteSpace(request.MediaUserToken)
-                && !string.IsNullOrWhiteSpace(request.AuthorizationToken))
-            {
-                _logger.LogWarning(
-                    "Apple enhanced HLS unavailable for {AppleId} (requested {Profile}). Device wrapper not available - falling back to AAC-LC via WebPlayback.",
-                    appleId,
-                    request.PreferredProfile ?? "default");
-                return await DownloadAacLcFromWebPlaybackAsync(request, appleId, cancellationToken);
-            }
-
-            return AppleDownloadResult.Fail("Apple manifest URL missing. Enhanced HLS not available and no tokens configured for AAC-LC fallback.");
+            return missingManifestResult;
         }
 
-        _logger.LogInformation("Apple manifest resolved for {AppleId}", appleId);
+        LogManifestResolved(appleId);
+        var resolvedManifestUrl = manifestUrl!;
 
-        var variantSelection = await SelectManifestVariantAsync(manifestUrl, request, cancellationToken);
+        var variantSelection = await SelectManifestVariantAsync(resolvedManifestUrl, request, cancellationToken);
         if (variantSelection == null)
         {
             return AppleDownloadResult.Fail("No matching Apple HLS variant found.");
@@ -174,11 +166,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
 
         var variant = variantSelection.Value.Variant;
         var streamGroup = variantSelection.Value.StreamGroup;
-        _logger.LogInformation("Apple variant selected: {Uri} (AudioGroup: {AudioGroup})", variant.Uri, streamGroup);
-        if (request.ProgressCallback != null)
-        {
-            await request.ProgressCallback(2, 0);
-        }
+        await ReportSelectedVariantAsync(request, variant.Uri, streamGroup);
 
         var wrapperResult = await TryRunWrapperDecryptAsync(request, appleId, variant, cancellationToken);
         if (wrapperResult != null)
@@ -214,6 +202,52 @@ public sealed class AppleDownloadService : IAppleDownloadService
             cancellationToken);
     }
 
+    private async Task<AppleDownloadResult?> TryHandleMissingManifestAsync(
+        AppleDownloadRequest request,
+        string appleId,
+        string? manifestUrl,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(manifestUrl))
+        {
+            return null;
+        }
+
+        if (AllowsAacFallback(request)
+            && !string.IsNullOrWhiteSpace(request.MediaUserToken)
+            && !string.IsNullOrWhiteSpace(request.AuthorizationToken))
+        {
+            _logger.LogWarning(
+                "Apple enhanced HLS unavailable for {AppleId} (requested {Profile}). Device wrapper not available - falling back to AAC-LC via WebPlayback.",
+                appleId,
+                request.PreferredProfile ?? "default");
+            return await DownloadAacLcFromWebPlaybackAsync(request, appleId, cancellationToken);
+        }
+
+        return AppleDownloadResult.Fail("Apple manifest URL missing. Enhanced HLS not available and no tokens configured for AAC-LC fallback.");
+    }
+
+    private void LogManifestResolved(string appleId)
+    {
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Apple manifest resolved for {AppleId}", appleId);
+        }
+    }
+
+    private async Task ReportSelectedVariantAsync(AppleDownloadRequest request, string variantUri, string streamGroup)
+    {
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Apple variant selected: {Uri} (AudioGroup: {AudioGroup})", variantUri, streamGroup);
+        }
+
+        if (request.ProgressCallback != null)
+        {
+            await request.ProgressCallback(2, 0);
+        }
+    }
+
     private async Task<string> ResolveStorefrontForRequestAsync(AppleDownloadRequest request, CancellationToken cancellationToken)
     {
         var storefront = string.IsNullOrWhiteSpace(request.Storefront) ? "us" : request.Storefront;
@@ -231,17 +265,21 @@ public sealed class AppleDownloadService : IAppleDownloadService
 
         if (IsAtmosProfile(request.PreferredProfile))
         {
-            _logger.LogInformation(
-                "Apple storefront override skipped for Atmos request: keeping {Configured} instead of account storefront {Account}.",
-                storefront,
-                accountStorefront);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Apple storefront override skipped for Atmos request: keeping {Configured} instead of account storefront {Account}.",
+                    storefront,
+                    accountStorefront);            }
             return storefront;
         }
 
-        _logger.LogInformation(
-            "Apple storefront overridden by account token: {Original} -> {Account}",
-            storefront,
-            accountStorefront);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Apple storefront overridden by account token: {Original} -> {Account}",
+                storefront,
+                accountStorefront);        }
         return accountStorefront;
     }
 
@@ -254,10 +292,12 @@ public sealed class AppleDownloadService : IAppleDownloadService
         if (!string.IsNullOrWhiteSpace(queryAppleId)
             && !string.Equals(queryAppleId, appleId, StringComparison.OrdinalIgnoreCase))
         {
-            _logger.LogInformation(
-                "Apple ID overridden from source URL query parameter: {OriginalId} -> {ResolvedId}",
-                appleId,
-                queryAppleId);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Apple ID overridden from source URL query parameter: {OriginalId} -> {ResolvedId}",
+                    appleId,
+                    queryAppleId);            }
             return queryAppleId;
         }
 
@@ -310,18 +350,22 @@ public sealed class AppleDownloadService : IAppleDownloadService
 
         if (string.IsNullOrWhiteSpace(storefront))
         {
-            _logger.LogInformation(
-                "Apple ID resolved: {OriginalId} -> {ResolvedId}",
-                currentAppleId,
-                resolvedAppleId);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Apple ID resolved: {OriginalId} -> {ResolvedId}",
+                    currentAppleId,
+                    resolvedAppleId);            }
         }
         else
         {
-            _logger.LogInformation(
-                "Apple ID resolved via fallback storefront {Storefront}: {OriginalId} -> {ResolvedId}",
-                storefront,
-                currentAppleId,
-                resolvedAppleId);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Apple ID resolved via fallback storefront {Storefront}: {OriginalId} -> {ResolvedId}",
+                    storefront,
+                    currentAppleId,
+                    resolvedAppleId);            }
         }
 
         return resolvedAppleId;
@@ -360,7 +404,9 @@ public sealed class AppleDownloadService : IAppleDownloadService
             return null;
         }
 
-        _logger.LogInformation("Attempting Apple wrapper decrypt for {AppleId} using playlist {PlaylistUrl}.", appleId, variant.Uri);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Attempting Apple wrapper decrypt for {AppleId} using playlist {PlaylistUrl}.", appleId, variant.Uri);        }
         var outputPath = BuildOutputPath(request, appleId);
         var success = await _wrapperDecryptor.TryDecryptAsync(
             variant.Uri,
@@ -370,7 +416,9 @@ public sealed class AppleDownloadService : IAppleDownloadService
             cancellationToken);
         if (success)
         {
-            _logger.LogInformation("Apple wrapper decrypt succeeded for {AppleId}.", appleId);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Apple wrapper decrypt succeeded for {AppleId}.", appleId);            }
             return AppleDownloadResult.Ok(outputPath, variant.AudioGroup);
         }
 
@@ -719,12 +767,14 @@ public sealed class AppleDownloadService : IAppleDownloadService
         var storefront = await ResolveStorefrontForAacAsync(request.MediaUserToken, request.Storefront, cancellationToken);
         var resolvedAppleId = await ResolveAacAppleIdAsync(request, appleId, storefront, cancellationToken);
 
-        _logger.LogInformation(
-            "Apple AAC-LC download starting: appleId={AppleId}, storefront={Storefront}, authToken={AuthLen}chars, mediaUserToken={MutLen}chars",
-            resolvedAppleId,
-            storefront,
-            request.AuthorizationToken.Length,
-            request.MediaUserToken.Length);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Apple AAC-LC download starting: appleId={AppleId}, storefront={Storefront}, authToken={AuthLen}chars, mediaUserToken={MutLen}chars",
+                resolvedAppleId,
+                storefront,
+                request.AuthorizationToken.Length,
+                request.MediaUserToken.Length);        }
 
         var playback = await _webPlaybackClient.GetWebPlaybackAsync(
             resolvedAppleId,
@@ -776,7 +826,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
                     () => _logger.LogError("Apple AAC-LC download failed: Widevine key acquisition returned empty key."),
                     outputPath => _logger.LogError("Apple AAC-LC download failed: mp4decrypt failed for {OutputPath}.", outputPath))),
             cancellationToken);
-        if (result.Success)
+        if (result.Success && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation("Apple AAC-LC download complete: {OutputPath}", result.OutputPath);
         }
@@ -1082,11 +1132,13 @@ public sealed class AppleDownloadService : IAppleDownloadService
             return currentResolvedAppleId;
         }
 
-        _logger.LogInformation(
-            "Apple catalog ID resolved via ISRC for storefront {Storefront}: {OriginalId} -> {ResolvedId}",
-            storefront,
-            currentResolvedAppleId,
-            resolvedId);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Apple catalog ID resolved via ISRC for storefront {Storefront}: {OriginalId} -> {ResolvedId}",
+                storefront,
+                currentResolvedAppleId,
+                resolvedId);        }
         return resolvedId;
     }
 
@@ -1115,11 +1167,13 @@ public sealed class AppleDownloadService : IAppleDownloadService
             return (null, updatedResolvedId);
         }
 
-        _logger.LogInformation(
-            "Apple catalog ID resolved via ISRC (second pass) for storefront {Storefront}: {OriginalId} -> {ResolvedId}",
-            storefront,
-            resolvedAppleId,
-            updatedResolvedId);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Apple catalog ID resolved via ISRC (second pass) for storefront {Storefront}: {OriginalId} -> {ResolvedId}",
+                storefront,
+                resolvedAppleId,
+                updatedResolvedId);        }
         return (isrcEnhanced, updatedResolvedId);
     }
 
@@ -1388,18 +1442,20 @@ public sealed class AppleDownloadService : IAppleDownloadService
         string? requestedAudioType,
         IReadOnlyCollection<AppleHlsMediaEntry> audioCandidates)
     {
-        _logger.LogInformation(
-            "Apple MV selection for {AppleId}: video={Resolution} audioGroup={AudioGroup} requestedAudio={RequestedAudio} candidates=[{Candidates}]",
-            appleId,
-            string.IsNullOrWhiteSpace(videoVariant.Resolution) ? UnknownValue : videoVariant.Resolution,
-            string.IsNullOrWhiteSpace(videoVariant.AudioGroup) ? UnknownValue : videoVariant.AudioGroup,
-            string.IsNullOrWhiteSpace(requestedAudioType) ? "auto" : requestedAudioType,
-            string.Join(", ",
-                audioCandidates
-                    .Select(candidate => candidate.GroupId)
-                    .Where(group => !string.IsNullOrWhiteSpace(group))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .Take(8)));
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Apple MV selection for {AppleId}: video={Resolution} audioGroup={AudioGroup} requestedAudio={RequestedAudio} candidates=[{Candidates}]",
+                appleId,
+                string.IsNullOrWhiteSpace(videoVariant.Resolution) ? UnknownValue : videoVariant.Resolution,
+                string.IsNullOrWhiteSpace(videoVariant.AudioGroup) ? UnknownValue : videoVariant.AudioGroup,
+                string.IsNullOrWhiteSpace(requestedAudioType) ? "auto" : requestedAudioType,
+                string.Join(", ",
+                    audioCandidates
+                        .Select(candidate => candidate.GroupId)
+                        .Where(group => !string.IsNullOrWhiteSpace(group))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Take(8)));        }
     }
 
     private static VideoTempPaths CreateVideoTempPaths()
@@ -1486,7 +1542,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
             }
 
             resolvedAudio = candidate;
-            if (i > 0)
+            if (i > 0 && _logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation(
                     "Apple MV audio fallback succeeded for {AppleId}: selected_group={GroupId} attempt={Attempt}",
@@ -1593,13 +1649,15 @@ public sealed class AppleDownloadService : IAppleDownloadService
         int attempt,
         int total)
     {
-        _logger.LogInformation(
-            "Apple MV audio candidate attempt {Attempt}/{Total} for {AppleId}: group={GroupId} name={Name}",
-            attempt,
-            total,
-            appleId,
-            string.IsNullOrWhiteSpace(candidate.GroupId) ? UnknownValue : candidate.GroupId,
-            string.IsNullOrWhiteSpace(candidate.Name) ? UnknownValue : candidate.Name);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Apple MV audio candidate attempt {Attempt}/{Total} for {AppleId}: group={GroupId} name={Name}",
+                attempt,
+                total,
+                appleId,
+                string.IsNullOrWhiteSpace(candidate.GroupId) ? UnknownValue : candidate.GroupId,
+                string.IsNullOrWhiteSpace(candidate.Name) ? UnknownValue : candidate.Name);        }
     }
 
     private static void ResetVideoAudioAttemptArtifacts(VideoTempPaths tempPaths, string outputPath)
@@ -1898,7 +1956,9 @@ public sealed class AppleDownloadService : IAppleDownloadService
                 && !string.Equals(normalized, request.AuthorizationToken, StringComparison.Ordinal))
             {
                 request.AuthorizationToken = normalized;
-                _logger.LogInformation("Retrying Apple Widevine key acquisition with refreshed dev token for {AdamId}.", adamId);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Retrying Apple Widevine key acquisition with refreshed dev token for {AdamId}.", adamId);                }
                 var refreshedLicenseRequest = new AppleWidevineLicenseClient.AppleWidevineLicenseRequest(
                     adamId,
                     request.AuthorizationToken,
@@ -2431,7 +2491,9 @@ public sealed class AppleDownloadService : IAppleDownloadService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple station metadata lookup failed for {StationId}", stationId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple station metadata lookup failed for {StationId}", stationId);            }
         }
     }
 
@@ -2471,7 +2533,9 @@ public sealed class AppleDownloadService : IAppleDownloadService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple station manifest treated as media playlist for {StationId}", stationId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple station manifest treated as media playlist for {StationId}", stationId);            }
         }
 
         return (true, mediaPlaylistUrl, streamGroup, null);
@@ -2522,17 +2586,21 @@ public sealed class AppleDownloadService : IAppleDownloadService
             var catalogId = TryExtractAppleIdFromCatalog(doc);
             if (!string.IsNullOrWhiteSpace(catalogId) && catalogId != originalAppleId)
             {
-                _logger.LogInformation(
-                    "Apple AAC-LC: ID resolved via catalog for storefront {Storefront}: {OriginalId} -> {ResolvedId}",
-                    storefront,
-                    originalAppleId,
-                    catalogId);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "Apple AAC-LC: ID resolved via catalog for storefront {Storefront}: {OriginalId} -> {ResolvedId}",
+                        storefront,
+                        originalAppleId,
+                        catalogId);                }
                 resolvedAppleId = catalogId;
             }
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogDebug(ex, "Apple AAC-LC: Direct catalog lookup failed for {AppleId}, trying ISRC fallback.", originalAppleId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple AAC-LC: Direct catalog lookup failed for {AppleId}, trying ISRC fallback.", originalAppleId);            }
         }
 
         if (resolvedAppleId == originalAppleId && !string.IsNullOrWhiteSpace(request.Isrc))
@@ -2541,12 +2609,14 @@ public sealed class AppleDownloadService : IAppleDownloadService
             var isrcResolvedId = TryExtractAppleIdFromCatalog(isrcDoc);
             if (!string.IsNullOrWhiteSpace(isrcResolvedId))
             {
-                _logger.LogInformation(
-                    "Apple AAC-LC: ID resolved via ISRC {Isrc} for storefront {Storefront}: {OriginalId} -> {ResolvedId}",
-                    request.Isrc,
-                    storefront,
-                    originalAppleId,
-                    isrcResolvedId);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "Apple AAC-LC: ID resolved via ISRC {Isrc} for storefront {Storefront}: {OriginalId} -> {ResolvedId}",
+                        request.Isrc,
+                        storefront,
+                        originalAppleId,
+                        isrcResolvedId);                }
                 resolvedAppleId = isrcResolvedId;
             }
         }
@@ -2632,9 +2702,11 @@ public sealed class AppleDownloadService : IAppleDownloadService
     {
         if (isAtmosRequest && request.GetM3u8FromDevice && IsDeviceFirstMode(request.GetM3u8Mode))
         {
-            _logger.LogInformation(
-                "Apple Atmos request for {AppleId}: skipping device-first manifest probe to prefer catalog enhancedHls.",
-                appleId);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Apple Atmos request for {AppleId}: skipping device-first manifest probe to prefer catalog enhancedHls.",
+                    appleId);            }
             return null;
         }
 
@@ -2693,7 +2765,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
             return null;
         }
 
-        if (!string.Equals(preferredAtmosId, resolvedAppleId, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(preferredAtmosId, resolvedAppleId, StringComparison.OrdinalIgnoreCase)
+            && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
                 "Apple Atmos candidate selected via ISRC for storefront {Storefront}: {OriginalId} -> {ResolvedId}",
@@ -3113,7 +3186,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
             await stream.CopyToAsync(output, cancellationToken);
             return temp;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return string.Empty;
         }
     }

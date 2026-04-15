@@ -1291,7 +1291,10 @@ public sealed class SpotifyArtistService
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Spotify artist librespot fallback enrichment failed for {ArtistId}", spotifyId);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Spotify artist librespot fallback enrichment failed for {ArtistId}", spotifyId);
+                }
             }
         });
     }
@@ -1327,7 +1330,10 @@ public sealed class SpotifyArtistService
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Spotify artist top-track ISRC enrichment failed for {ArtistId}", spotifyId);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Spotify artist top-track ISRC enrichment failed for {ArtistId}", spotifyId);
+                }
             }
         });
     }
@@ -1823,7 +1829,10 @@ public sealed class SpotifyArtistService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to read local album titles for artist {ArtistId}", localArtistId.Value);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to read local album titles for artist {ArtistId}", localArtistId.Value);
+            }
         }
 
         return titles;

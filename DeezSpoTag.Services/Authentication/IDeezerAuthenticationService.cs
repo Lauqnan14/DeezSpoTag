@@ -37,7 +37,7 @@ public interface IDeezerAuthenticationService
     Task<bool> IsLoggedInAsync();
 
     // API-compatible methods (merged from API project)
-    
+
     /// <summary>
     /// API-compatible login method (returns object for API compatibility)
     /// </summary>

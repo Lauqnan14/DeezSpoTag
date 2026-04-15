@@ -336,7 +336,10 @@ public sealed partial class ShazamDiscoveryService
             using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogDebug("Shazam request failed: {Status} {Url}", (int)response.StatusCode, url);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Shazam request failed: {Status} {Url}", (int)response.StatusCode, url);
+                }
                 return null;
             }
 
@@ -349,7 +352,10 @@ public sealed partial class ShazamDiscoveryService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Shazam request failed for {Url}", url);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Shazam request failed for {Url}", url);
+            }
             return null;
         }
     }

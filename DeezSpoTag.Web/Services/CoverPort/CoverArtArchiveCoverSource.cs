@@ -35,9 +35,9 @@ public sealed class CoverArtArchiveCoverSource : ICoverSource
             }
 
             var candidates = new List<CoverCandidate>();
-        var releaseRank = 0;
-        foreach (var release in releasesElement.EnumerateArray())
-        {
+            var releaseRank = 0;
+            foreach (var release in releasesElement.EnumerateArray())
+            {
                 var releaseId = release.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
                 if (string.IsNullOrWhiteSpace(releaseId))
                 {
@@ -46,27 +46,27 @@ public sealed class CoverArtArchiveCoverSource : ICoverSource
 
                 var releaseAlbum = release.TryGetProperty("title", out var titleEl) ? titleEl.GetString() : null;
                 var releaseArtist = ExtractReleaseArtist(release);
-            var confidence = CoverTextNormalizer.ComputeMatchConfidence(query, releaseArtist, releaseAlbum);
-            var fuzzy = !string.Equals(
-                            CoverTextNormalizer.Normalize(query.Artist),
-                            CoverTextNormalizer.Normalize(releaseArtist),
-                            StringComparison.Ordinal) ||
-                        !string.Equals(
-                            CoverTextNormalizer.Normalize(query.Album),
-                            CoverTextNormalizer.Normalize(releaseAlbum),
-                            StringComparison.Ordinal);
+                var confidence = CoverTextNormalizer.ComputeMatchConfidence(query, releaseArtist, releaseAlbum);
+                var fuzzy = !string.Equals(
+                                CoverTextNormalizer.Normalize(query.Artist),
+                                CoverTextNormalizer.Normalize(releaseArtist),
+                                StringComparison.Ordinal) ||
+                            !string.Equals(
+                                CoverTextNormalizer.Normalize(query.Album),
+                                CoverTextNormalizer.Normalize(releaseAlbum),
+                                StringComparison.Ordinal);
 
-            var releaseCoverCandidates = await FetchReleaseCoversAsync(
-                releaseId!,
-                confidence,
-                releaseArtist,
-                releaseAlbum,
-                rank: releaseRank,
-                fuzzy,
-                cancellationToken);
-            candidates.AddRange(releaseCoverCandidates);
-            releaseRank++;
-        }
+                var releaseCoverCandidates = await FetchReleaseCoversAsync(
+                    releaseId!,
+                    confidence,
+                    releaseArtist,
+                    releaseAlbum,
+                    rank: releaseRank,
+                    fuzzy,
+                    cancellationToken);
+                candidates.AddRange(releaseCoverCandidates);
+                releaseRank++;
+            }
 
             return candidates;
         }
@@ -76,7 +76,10 @@ public sealed class CoverArtArchiveCoverSource : ICoverSource
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "CoverArtArchive search failed for {Artist} - {Album}", query.Artist, query.Album);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "CoverArtArchive search failed for {Artist} - {Album}", query.Artist, query.Album);
+            }
             return Array.Empty<CoverCandidate>();
         }
     }

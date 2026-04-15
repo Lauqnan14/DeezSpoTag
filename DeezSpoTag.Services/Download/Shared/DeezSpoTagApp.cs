@@ -57,7 +57,9 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         try
         {
             var settings = _settingsService.LoadSettings();
-            _logger.LogInformation("Loaded deezspotag settings with DownloadLocation: {DownloadLocation}", settings.DownloadLocation);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Loaded deezspotag settings with DownloadLocation: {DownloadLocation}", settings.DownloadLocation);            }
             return settings;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

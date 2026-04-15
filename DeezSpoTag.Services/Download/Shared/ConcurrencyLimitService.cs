@@ -13,12 +13,12 @@ public class ConcurrencyLimitService
 {
     private readonly ILogger<ConcurrencyLimitService> _logger;
     private readonly IServiceProvider _serviceProvider;
-    
+
     // Concurrency limits to prevent account bans
     private const int SINGLE_USER_MAX_CONCURRENT = 1;
     private const int FAMILY_ACCOUNT_MAX_CONCURRENT = 6;
     private const int DEFAULT_MAX_CONCURRENT = 1; // Safe default
-    
+
     private bool? _isFamilyAccount;
     private DateTime _lastAccountCheck = DateTime.MinValue;
     private readonly TimeSpan _accountCheckCacheTime = TimeSpan.FromMinutes(30);
@@ -40,10 +40,12 @@ public class ConcurrencyLimitService
         {
             var isFamilyAccount = await IsFamilyAccountAsync();
             var maxConcurrent = isFamilyAccount ? FAMILY_ACCOUNT_MAX_CONCURRENT : SINGLE_USER_MAX_CONCURRENT;
-            
-            _logger.LogInformation("Account type: {AccountType}, Max concurrent downloads: {MaxConcurrent}", 
-                isFamilyAccount ? "Family" : "Single User", maxConcurrent);
-            
+
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Account type: {AccountType}, Max concurrent downloads: {MaxConcurrent}",
+                    isFamilyAccount ? "Family" : "Single User", maxConcurrent);            }
+
             return maxConcurrent;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -62,33 +64,37 @@ public class ConcurrencyLimitService
         // Use cached result if available and not expired
         if (_isFamilyAccount.HasValue && DateTime.UtcNow - _lastAccountCheck < _accountCheckCacheTime)
         {
-            _logger.LogDebug("Using cached family account status: {IsFamilyAccount}", _isFamilyAccount.Value);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Using cached family account status: {IsFamilyAccount}", _isFamilyAccount.Value);            }
             return _isFamilyAccount.Value;
         }
 
         try
         {
             _logger.LogDebug("Checking account type via Deezer API");
-            
+
             // Use service provider to get the scoped DeezerGatewayService
             using var scope = _serviceProvider.CreateScope();
             var deezerGatewayService = scope.ServiceProvider.GetRequiredService<DeezerGatewayService>();
-            
+
             var userData = await deezerGatewayService.GetUserDataAsync();
-            
+
             // Family account detection logic ported from deezspotag
             var multiAccount = userData.User?.MultiAccount;
             var isFamilyAccount = multiAccount?.Enabled == true &&
                                  !multiAccount.IsSubAccount;
-            
+
             _isFamilyAccount = isFamilyAccount;
             _lastAccountCheck = DateTime.UtcNow;
-            
-            _logger.LogInformation("Account type determined: {AccountType} (MultiAccount.Enabled: {Enabled}, IsSubAccount: {IsSubAccount})", 
-                isFamilyAccount ? "Family Account" : "Single User Account",
-                userData.User?.MultiAccount?.Enabled,
-                userData.User?.MultiAccount?.IsSubAccount);
-            
+
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Account type determined: {AccountType} (MultiAccount.Enabled: {Enabled}, IsSubAccount: {IsSubAccount})",
+                    isFamilyAccount ? "Family Account" : "Single User Account",
+                    userData.User?.MultiAccount?.Enabled,
+                    userData.User?.MultiAccount?.IsSubAccount);            }
+
             return isFamilyAccount;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -109,14 +115,16 @@ public class ConcurrencyLimitService
         try
         {
             var isFamilyAccount = await IsFamilyAccountAsync();
-            
+
             // For track-level concurrency within collections, use more conservative limits
             // to avoid overwhelming the API even for family accounts
             var trackConcurrency = isFamilyAccount ? 3 : 1;
-            
-            _logger.LogDebug("Track-level concurrency: {TrackConcurrency} for {AccountType}", 
-                trackConcurrency, isFamilyAccount ? "Family Account" : "Single User Account");
-            
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Track-level concurrency: {TrackConcurrency} for {AccountType}",
+                    trackConcurrency, isFamilyAccount ? "Family Account" : "Single User Account");            }
+
             return trackConcurrency;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -133,21 +141,21 @@ public class ConcurrencyLimitService
     public async Task<int> ValidateConcurrencySettingAsync(int userConfiguredConcurrency)
     {
         var maxAllowed = await GetMaxConcurrentDownloadsAsync();
-        
+
         if (userConfiguredConcurrency > maxAllowed)
         {
             _logger.LogWarning("User configured concurrency ({UserConcurrency}) exceeds safe limit ({ConfiguredMaxAllowed}) for account type. Limiting to {AppliedMaxAllowed}",
                 userConfiguredConcurrency, maxAllowed, maxAllowed);
             return maxAllowed;
         }
-        
+
         if (userConfiguredConcurrency <= 0)
         {
             _logger.LogWarning("Invalid user configured concurrency ({UserConcurrency}), using default of {DefaultConcurrent}",
                 userConfiguredConcurrency, DEFAULT_MAX_CONCURRENT);
             return DEFAULT_MAX_CONCURRENT;
         }
-        
+
         return userConfiguredConcurrency;
     }
 
@@ -171,7 +179,7 @@ public class ConcurrencyLimitService
             var isFamilyAccount = await IsFamilyAccountAsync();
             var maxConcurrent = await GetMaxConcurrentDownloadsAsync();
             var trackConcurrency = await GetTrackConcurrencyAsync();
-            
+
             return new AccountTypeInfo
             {
                 IsFamilyAccount = isFamilyAccount,

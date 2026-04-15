@@ -6,55 +6,55 @@ public abstract class DeezSpoTagDownloadObject
 {
     [JsonPropertyName("uuid")]
     public string UUID { get; set; } = string.Empty;
-    
+
     [JsonPropertyName("type")]
     public string Type { get; set; } = string.Empty;
-    
+
     [JsonPropertyName("id")]
     public string Id { get; set; } = string.Empty;
-    
+
     [JsonPropertyName("bitrate")]
     public int Bitrate { get; set; }
-    
+
     [JsonPropertyName("title")]
     public string Title { get; set; } = string.Empty;
-    
+
     [JsonPropertyName("artist")]
     public string Artist { get; set; } = string.Empty;
-    
+
     [JsonPropertyName("cover")]
     public string Cover { get; set; } = string.Empty;
-    
+
     [JsonPropertyName("explicit")]
     public bool Explicit { get; set; }
-    
+
     [JsonPropertyName("size")]
     public int Size { get; set; }
-    
+
     [JsonPropertyName("isCanceled")]
     public bool IsCanceled { get; set; }
-    
+
     [JsonPropertyName("downloaded")]
     public int Downloaded { get; set; }
-    
+
     [JsonPropertyName("failed")]
     public int Failed { get; set; }
-    
+
     [JsonPropertyName("extrasPath")]
     public string ExtrasPath { get; set; } = string.Empty;
 
     [JsonPropertyName("destinationFolderId")]
     public long? DestinationFolderId { get; set; }
-    
+
     [JsonPropertyName("progress")]
     public double Progress { get; set; }
-    
+
     [JsonPropertyName("progressNext")]
     public double ProgressNext { get; set; }
-    
+
     [JsonPropertyName("errors")]
     public List<object> Errors { get; set; } = new();
-    
+
     [JsonPropertyName("files")]
     public List<Dictionary<string, object>> Files { get; set; } = new();
 
@@ -153,7 +153,7 @@ public class DeezSpoTagSingle : DeezSpoTagDownloadObject
 
     [JsonPropertyName("__type__")]
     public string __Type__ { get; set; } = "Single";
-    
+
     [JsonPropertyName("single")]
     public SingleData Single { get; set; } = new();
 
@@ -184,7 +184,7 @@ public class DeezSpoTagCollection : DeezSpoTagDownloadObject
 
     [JsonPropertyName("__type__")]
     public string __Type__ { get; set; } = "Collection";
-    
+
     [JsonPropertyName("collection")]
     public CollectionData Collection { get; set; } = new();
 
@@ -217,7 +217,7 @@ public class SingleData
 {
     [JsonPropertyName("trackAPI")]
     public Dictionary<string, object> TrackAPI { get; set; } = new();
-    
+
     [JsonPropertyName("albumAPI")]
     public Dictionary<string, object>? AlbumAPI { get; set; }
 }
@@ -226,10 +226,10 @@ public class CollectionData
 {
     [JsonPropertyName("tracks")]
     public List<Dictionary<string, object>> Tracks { get; set; } = new();
-    
+
     [JsonPropertyName("albumAPI")]
     public Dictionary<string, object>? AlbumAPI { get; set; }
-    
+
     [JsonPropertyName("playlistAPI")]
     public Dictionary<string, object>? PlaylistAPI { get; set; }
 }

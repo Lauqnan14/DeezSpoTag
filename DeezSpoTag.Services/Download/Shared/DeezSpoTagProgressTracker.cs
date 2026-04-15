@@ -13,7 +13,7 @@ public class DeezSpoTagProgressTracker : IDisposable
     private readonly DeezSpoTagDownloadObject _downloadObject;
     private readonly IDeezSpoTagListener? _listener;
     private readonly CancellationToken _cancellationToken;
-    
+
     // Progress tracking state - EXACT port from deezspotag
     private long _chunkLength = 0;
     private long _complete = 0;
@@ -22,8 +22,8 @@ public class DeezSpoTagProgressTracker : IDisposable
     private bool _disposed;
 
     public DeezSpoTagProgressTracker(
-        DeezSpoTagDownloadObject downloadObject, 
-        IDeezSpoTagListener? listener, 
+        DeezSpoTagDownloadObject downloadObject,
+        IDeezSpoTagListener? listener,
         ILogger? logger = null,
         CancellationToken cancellationToken = default)
     {
@@ -43,7 +43,7 @@ public class DeezSpoTagProgressTracker : IDisposable
         {
             _complete = totalContentLength;
             _chunkLength = 0;
-            
+
             if (_complete == 0)
             {
                 _logger?.LogWarning("Download content length is 0 for {UUID}", _downloadObject.UUID);
@@ -82,7 +82,7 @@ public class DeezSpoTagProgressTracker : IDisposable
                 // EXACT formula from deezspotag: (chunk.length / complete / downloadObject.size) * 100
                 var progressIncrement = (double)chunkSize / _complete / _downloadObject.Size * 100;
                 _downloadObject.ProgressNext += progressIncrement;
-                
+
                 // EXACT port: Call updateProgress which only updates UI every 2%
                 _downloadObject.UpdateProgress(_listener);
             }
@@ -102,7 +102,7 @@ public class DeezSpoTagProgressTracker : IDisposable
                 // EXACT formula from deezspotag: (chunkLength / complete / downloadObject.size) * 100
                 var progressDecrement = (double)_chunkLength / _complete / _downloadObject.Size * 100;
                 _downloadObject.ProgressNext -= progressDecrement;
-                
+
                 // EXACT port: Call updateProgress to update UI
                 _downloadObject.UpdateProgress(_listener);
             }
@@ -188,8 +188,8 @@ public class DeezSpoTagProgressDownloadListener : DeezSpoTag.Core.Models.Downloa
     private readonly DeezSpoTagDownloadObject _deezspotagDownloadObject;
 
     public DeezSpoTagProgressDownloadListener(
-        IDeezSpoTagListener? deezspotagListener, 
-        string uuid, 
+        IDeezSpoTagListener? deezspotagListener,
+        string uuid,
         DeezSpoTagDownloadObject deezspotagDownloadObject,
         DeezSpoTagProgressTracker? progressTracker = null)
     {
@@ -203,11 +203,11 @@ public class DeezSpoTagProgressDownloadListener : DeezSpoTag.Core.Models.Downloa
     {
         // Update the deezspotag download object's progress using the exact deezspotag logic
         // The progress tracking is handled by DeezSpoTagProgressTracker during streaming
-        
+
         // Sync the final progress values
         _deezspotagDownloadObject.Progress = downloadObject.Progress;
         _deezspotagDownloadObject.ProgressNext = downloadObject.Progress;
-        
+
         // Send update using deezspotag format
         _deezspotagListener?.Send("updateQueue", new
         {
@@ -230,7 +230,7 @@ public class DeezSpoTagProgressDownloadListener : DeezSpoTag.Core.Models.Downloa
     {
         // Complete track progress using exact deezspotag logic
         _deezspotagDownloadObject.CompleteTrackProgress(_deezspotagListener);
-        
+
         _deezspotagListener?.Send("downloadComplete", new
         {
             uuid = _uuid,
@@ -241,7 +241,7 @@ public class DeezSpoTagProgressDownloadListener : DeezSpoTag.Core.Models.Downloa
     {
         // Remove track progress on error using exact deezspotag logic
         _deezspotagDownloadObject.RemoveTrackProgress(_deezspotagListener);
-        
+
         _deezspotagListener?.Send("downloadError", new
         {
             uuid = _uuid,

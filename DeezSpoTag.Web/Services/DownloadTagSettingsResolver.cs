@@ -58,7 +58,10 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
                 folder.AutoTagProfileId);
             if (profile == null)
             {
-                _logger.LogDebug("No resolvable AutoTag profile assigned for folder {FolderId}; skipping tag settings resolution.", folder.Id);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("No resolvable AutoTag profile assigned for folder {FolderId}; skipping tag settings resolution.", folder.Id);
+                }
                 return null;
             }
 
@@ -78,7 +81,10 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to resolve download tag settings for folder {FolderId}", destinationFolderId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to resolve download tag settings for folder {FolderId}", destinationFolderId);
+            }
             return null;
         }
     }

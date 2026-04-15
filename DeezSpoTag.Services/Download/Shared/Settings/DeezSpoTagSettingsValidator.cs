@@ -26,146 +26,146 @@ public class DeezSpoTagSettingsValidator
         try
         {
             _logger.LogDebug("Validating deezspotag settings");
-            
+
             var changes = 0;
             var defaultSettings = GetDefaultSettings();
 
             // Check main settings properties
-            changes += ValidateProperty(settings, defaultSettings, nameof(settings.DownloadLocation), 
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.DownloadLocation),
                 () => settings.DownloadLocation, (v) => settings.DownloadLocation = v);
-            changes += ValidateProperty(settings, defaultSettings, nameof(settings.TracknameTemplate), 
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.TracknameTemplate),
                 () => settings.TracknameTemplate, (v) => settings.TracknameTemplate = v);
-            changes += ValidateProperty(settings, defaultSettings, nameof(settings.AlbumTracknameTemplate), 
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.AlbumTracknameTemplate),
                 () => settings.AlbumTracknameTemplate, (v) => settings.AlbumTracknameTemplate = v);
-            changes += ValidateProperty(settings, defaultSettings, nameof(settings.PlaylistTracknameTemplate), 
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.PlaylistTracknameTemplate),
                 () => settings.PlaylistTracknameTemplate, (v) => settings.PlaylistTracknameTemplate = v);
-            changes += ValidateProperty(settings, defaultSettings, nameof(settings.PlaylistNameTemplate), 
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.PlaylistNameTemplate),
                 () => settings.PlaylistNameTemplate, (v) => settings.PlaylistNameTemplate = v);
-            changes += ValidateProperty(settings, defaultSettings, nameof(settings.ArtistNameTemplate), 
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.ArtistNameTemplate),
                 () => settings.ArtistNameTemplate, (v) => settings.ArtistNameTemplate = v);
-            changes += ValidateProperty(settings, defaultSettings, nameof(settings.AlbumNameTemplate), 
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.AlbumNameTemplate),
                 () => settings.AlbumNameTemplate, (v) => settings.AlbumNameTemplate = v);
-            changes += ValidateProperty(settings, defaultSettings, nameof(settings.PlaylistFilenameTemplate), 
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.PlaylistFilenameTemplate),
                 () => settings.PlaylistFilenameTemplate, (v) => settings.PlaylistFilenameTemplate = v);
-            changes += ValidateProperty(settings, defaultSettings, nameof(settings.CoverImageTemplate), 
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.CoverImageTemplate),
                 () => settings.CoverImageTemplate, (v) => settings.CoverImageTemplate = v);
-            changes += ValidateProperty(settings, defaultSettings, nameof(settings.ArtistImageTemplate), 
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.ArtistImageTemplate),
                 () => settings.ArtistImageTemplate, (v) => settings.ArtistImageTemplate = v);
-            changes += ValidateProperty(settings, defaultSettings, nameof(settings.AuthorizationToken), 
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.AuthorizationToken),
                 () => settings.AuthorizationToken, (v) => settings.AuthorizationToken = v);
-            changes += ValidateProperty(settings, defaultSettings, nameof(settings.LrcType), 
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.LrcType),
                 () => settings.LrcType, (v) => settings.LrcType = v);
-            changes += ValidateProperty(settings, defaultSettings, nameof(settings.LrcFormat), 
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.LrcFormat),
                 () => settings.LrcFormat, (v) => settings.LrcFormat = v);
-            changes += ValidateProperty(settings, defaultSettings, nameof(settings.ConvertFormat), 
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.ConvertFormat),
                 () => settings.ConvertFormat, (v) => settings.ConvertFormat = v);
-            changes += ValidateProperty(settings, defaultSettings, nameof(settings.ConvertExtraArgs), 
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.ConvertExtraArgs),
                 () => settings.ConvertExtraArgs, (v) => settings.ConvertExtraArgs = v);
-            changes += ValidateProperty(settings, defaultSettings, nameof(settings.MvFileFormat), 
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.MvFileFormat),
                 () => settings.MvFileFormat, (v) => settings.MvFileFormat = v);
 
             // Check boolean properties
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.CreatePlaylistFolder), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.CreatePlaylistFolder),
                 () => settings.CreatePlaylistFolder, (v) => settings.CreatePlaylistFolder = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.CreateArtistFolder), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.CreateArtistFolder),
                 () => settings.CreateArtistFolder, (v) => settings.CreateArtistFolder = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.CreateAlbumFolder), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.CreateAlbumFolder),
                 () => settings.CreateAlbumFolder, (v) => settings.CreateAlbumFolder = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.CreateCDFolder), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.CreateCDFolder),
                 () => settings.CreateCDFolder, (v) => settings.CreateCDFolder = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.CreateStructurePlaylist), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.CreateStructurePlaylist),
                 () => settings.CreateStructurePlaylist, (v) => settings.CreateStructurePlaylist = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.CreateSingleFolder), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.CreateSingleFolder),
                 () => settings.CreateSingleFolder, (v) => settings.CreateSingleFolder = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.PadTracks), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.PadTracks),
                 () => settings.PadTracks, (v) => settings.PadTracks = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.PadSingleDigit), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.PadSingleDigit),
                 () => settings.PadSingleDigit, (v) => settings.PadSingleDigit = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.FeelingLucky), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.FeelingLucky),
                 () => settings.FeelingLucky, (v) => settings.FeelingLucky = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.FallbackBitrate), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.FallbackBitrate),
                 () => settings.FallbackBitrate, (v) => settings.FallbackBitrate = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.FallbackSearch), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.FallbackSearch),
                 () => settings.FallbackSearch, (v) => settings.FallbackSearch = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.FallbackISRC), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.FallbackISRC),
                 () => settings.FallbackISRC, (v) => settings.FallbackISRC = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.LogErrors), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.LogErrors),
                 () => settings.LogErrors, (v) => settings.LogErrors = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.LogSearched), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.LogSearched),
                 () => settings.LogSearched, (v) => settings.LogSearched = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.CreateM3U8File), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.CreateM3U8File),
                 () => settings.CreateM3U8File, (v) => settings.CreateM3U8File = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SyncedLyrics), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SyncedLyrics),
                 () => settings.SyncedLyrics, (v) => settings.SyncedLyrics = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.LyricsFallbackEnabled), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.LyricsFallbackEnabled),
                 () => settings.LyricsFallbackEnabled, (v) => settings.LyricsFallbackEnabled = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.ArtworkFallbackEnabled),
                 () => settings.ArtworkFallbackEnabled, (v) => settings.ArtworkFallbackEnabled = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.ArtistArtworkFallbackEnabled),
                 () => settings.ArtistArtworkFallbackEnabled, (v) => settings.ArtistArtworkFallbackEnabled = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SaveArtwork), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SaveArtwork),
                 () => settings.SaveArtwork, (v) => settings.SaveArtwork = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SaveArtworkArtist), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SaveArtworkArtist),
                 () => settings.SaveArtworkArtist, (v) => settings.SaveArtworkArtist = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SaveAnimatedArtwork), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SaveAnimatedArtwork),
                 () => settings.SaveAnimatedArtwork, (v) => settings.SaveAnimatedArtwork = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.AlbumVariousArtists), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.AlbumVariousArtists),
                 () => settings.AlbumVariousArtists, (v) => settings.AlbumVariousArtists = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.RemoveAlbumVersion), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.RemoveAlbumVersion),
                 () => settings.RemoveAlbumVersion, (v) => settings.RemoveAlbumVersion = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.RemoveDuplicateArtists), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.RemoveDuplicateArtists),
                 () => settings.RemoveDuplicateArtists, (v) => settings.RemoveDuplicateArtists = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.DlAlbumcoverForPlaylist), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.DlAlbumcoverForPlaylist),
                 () => settings.DlAlbumcoverForPlaylist, (v) => settings.DlAlbumcoverForPlaylist = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.GetM3u8FromDevice), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.GetM3u8FromDevice),
                 () => settings.GetM3u8FromDevice, (v) => settings.GetM3u8FromDevice = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.ConvertAfterDownload), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.ConvertAfterDownload),
                 () => settings.ConvertAfterDownload, (v) => settings.ConvertAfterDownload = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.ConvertKeepOriginal), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.ConvertKeepOriginal),
                 () => settings.ConvertKeepOriginal, (v) => settings.ConvertKeepOriginal = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.ConvertSkipIfSourceMatches), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.ConvertSkipIfSourceMatches),
                 () => settings.ConvertSkipIfSourceMatches, (v) => settings.ConvertSkipIfSourceMatches = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.ConvertWarnLossyToLossless), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.ConvertWarnLossyToLossless),
                 () => settings.ConvertWarnLossyToLossless, (v) => settings.ConvertWarnLossyToLossless = v);
-            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.ConvertSkipLossyToLossless), 
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.ConvertSkipLossyToLossless),
                 () => settings.ConvertSkipLossyToLossless, (v) => settings.ConvertSkipLossyToLossless = v);
 
             // Check integer properties
-            changes += ValidateIntegerProperty(settings, defaultSettings, nameof(settings.PaddingSize), 
+            changes += ValidateIntegerProperty(settings, defaultSettings, nameof(settings.PaddingSize),
                 () => settings.PaddingSize, (v) => settings.PaddingSize = v);
-            changes += ValidateIntegerProperty(settings, defaultSettings, nameof(settings.MaxBitrate), 
+            changes += ValidateIntegerProperty(settings, defaultSettings, nameof(settings.MaxBitrate),
                 () => settings.MaxBitrate, (v) => settings.MaxBitrate = v);
-            changes += ValidateIntegerProperty(settings, defaultSettings, nameof(settings.EmbeddedArtworkSize), 
+            changes += ValidateIntegerProperty(settings, defaultSettings, nameof(settings.EmbeddedArtworkSize),
                 () => settings.EmbeddedArtworkSize, (v) => settings.EmbeddedArtworkSize = v);
-            changes += ValidateIntegerProperty(settings, defaultSettings, nameof(settings.LocalArtworkSize), 
+            changes += ValidateIntegerProperty(settings, defaultSettings, nameof(settings.LocalArtworkSize),
                 () => settings.LocalArtworkSize, (v) => settings.LocalArtworkSize = v);
             changes += ValidateIntegerProperty(settings, defaultSettings, nameof(settings.AppleArtworkSize),
                 () => settings.AppleArtworkSize, (v) => settings.AppleArtworkSize = v);
-            changes += ValidateIntegerProperty(settings, defaultSettings, nameof(settings.JpegImageQuality), 
+            changes += ValidateIntegerProperty(settings, defaultSettings, nameof(settings.JpegImageQuality),
                 () => settings.JpegImageQuality, (v) => settings.JpegImageQuality = v);
-            changes += ValidateIntegerProperty(settings, defaultSettings, nameof(settings.LimitMax), 
+            changes += ValidateIntegerProperty(settings, defaultSettings, nameof(settings.LimitMax),
                 () => settings.LimitMax, (v) => settings.LimitMax = v);
 
             // Check string properties with specific validation
-            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.IllegalCharacterReplacer), 
+            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.IllegalCharacterReplacer),
                 () => settings.IllegalCharacterReplacer, (v) => settings.IllegalCharacterReplacer = v);
-            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.FeaturedToTitle), 
+            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.FeaturedToTitle),
                 () => settings.FeaturedToTitle, (v) => settings.FeaturedToTitle = v);
-            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.OverwriteFile), 
+            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.OverwriteFile),
                 () => settings.OverwriteFile, (v) => settings.OverwriteFile = v);
-            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.LocalArtworkFormat), 
+            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.LocalArtworkFormat),
                 () => settings.LocalArtworkFormat, (v) => settings.LocalArtworkFormat = v);
             changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.AppleArtworkSizeText),
                 () => settings.AppleArtworkSizeText, (v) => settings.AppleArtworkSizeText = v);
-            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.DateFormat), 
+            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.DateFormat),
                 () => settings.DateFormat, (v) => settings.DateFormat = v);
-            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.TitleCasing), 
+            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.TitleCasing),
                 () => settings.TitleCasing, (v) => settings.TitleCasing = v);
-            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.ArtistCasing), 
+            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.ArtistCasing),
                 () => settings.ArtistCasing, (v) => settings.ArtistCasing = v);
-            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.ExecuteCommand), 
+            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.ExecuteCommand),
                 () => settings.ExecuteCommand, (v) => settings.ExecuteCommand = v);
-            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.LyricsFallbackOrder), 
+            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.LyricsFallbackOrder),
                 () => settings.LyricsFallbackOrder, (v) => settings.LyricsFallbackOrder = v);
             changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.ArtworkFallbackOrder),
                 () => settings.ArtworkFallbackOrder, (v) => settings.ArtworkFallbackOrder = v);
@@ -215,7 +215,7 @@ public class DeezSpoTagSettingsValidator
                 }
             }
 
-            if (changes > 0)
+            if (changes > 0 && _logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Fixed {ChangeCount} invalid settings", changes);
             }
@@ -301,7 +301,7 @@ public class DeezSpoTagSettingsValidator
     /// <summary>
     /// Validate a boolean property
     /// </summary>
-    private static int ValidateBooleanProperty(DeezSpoTagSettings settings, DeezSpoTagSettings defaultSettings, string propertyName, 
+    private static int ValidateBooleanProperty(DeezSpoTagSettings settings, DeezSpoTagSettings defaultSettings, string propertyName,
         Func<bool> getter, Action<bool> setter)
     {
         _ = settings;
@@ -316,12 +316,12 @@ public class DeezSpoTagSettingsValidator
     /// <summary>
     /// Validate an integer property
     /// </summary>
-    private static int ValidateIntegerProperty(DeezSpoTagSettings settings, DeezSpoTagSettings defaultSettings, string propertyName, 
+    private static int ValidateIntegerProperty(DeezSpoTagSettings settings, DeezSpoTagSettings defaultSettings, string propertyName,
         Func<int> getter, Action<int> setter)
     {
         _ = settings;
         var currentValue = getter();
-        
+
         // Validate specific integer constraints
         switch (propertyName)
         {
@@ -343,19 +343,19 @@ public class DeezSpoTagSettingsValidator
                 }
                 break;
         }
-        
+
         return 0;
     }
 
     /// <summary>
     /// Validate a string property
     /// </summary>
-    private static int ValidateStringProperty(DeezSpoTagSettings settings, DeezSpoTagSettings defaultSettings, string propertyName, 
+    private static int ValidateStringProperty(DeezSpoTagSettings settings, DeezSpoTagSettings defaultSettings, string propertyName,
         Func<string> getter, Action<string> setter)
     {
         _ = settings;
         var currentValue = getter();
-        
+
         // Validate specific string constraints
         switch (propertyName)
         {
@@ -385,7 +385,7 @@ public class DeezSpoTagSettingsValidator
                 }
                 break;
         }
-        
+
         return 0;
     }
 
@@ -460,7 +460,7 @@ public class DeezSpoTagSettingsValidator
             var documentsFolder = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
             musicFolder = Path.Join(documentsFolder, "Music");
         }
-        
+
         return musicFolder;
     }
 

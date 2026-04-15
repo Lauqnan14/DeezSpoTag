@@ -28,8 +28,10 @@ public class AsyncQueueProcessor<T> : IDisposable
         _concurrency = Math.Max(1, concurrency);
         _logger = logger;
         _semaphore = new SemaphoreSlim(_concurrency, _concurrency);
-        
-        _logger?.LogDebug("Created AsyncQueueProcessor with concurrency: {Concurrency}", _concurrency);
+
+        if (_logger?.IsEnabled(LogLevel.Debug) == true)
+        {
+            _logger?.LogDebug("Created AsyncQueueProcessor with concurrency: {Concurrency}", _concurrency);        }
     }
 
     /// <summary>
@@ -46,9 +48,11 @@ public class AsyncQueueProcessor<T> : IDisposable
 
         var item = new QueueItem<T>(data, callback);
         _queue.Enqueue(item);
-        
-        _logger?.LogDebug("Pushed item to queue, current length: {QueueLength}", _queue.Count);
-        
+
+        if (_logger?.IsEnabled(LogLevel.Debug) == true)
+        {
+            _logger?.LogDebug("Pushed item to queue, current length: {QueueLength}", _queue.Count);        }
+
         // Start processing if not already at capacity
         _ = Task.Run(ProcessQueueAsync);
     }
@@ -59,10 +63,12 @@ public class AsyncQueueProcessor<T> : IDisposable
     /// </summary>
     public async Task DrainAsync()
     {
-        _logger?.LogDebug("Starting queue drain, current queue length: {QueueLength}", _queue.Count);
-        
+        if (_logger?.IsEnabled(LogLevel.Debug) == true)
+        {
+            _logger?.LogDebug("Starting queue drain, current queue length: {QueueLength}", _queue.Count);        }
+
         _isDraining = true;
-        
+
         // If queue is empty and no active tasks, return immediately
         if (_queue.IsEmpty && _activeTasks.Count == 0)
         {
@@ -78,7 +84,7 @@ public class AsyncQueueProcessor<T> : IDisposable
 
         // Wait for drain to complete
         await _drainCompletionSource.Task;
-        
+
         _logger?.LogDebug("Queue drain completed");
     }
 

@@ -63,7 +63,7 @@ public static class AppleHlsManifestParser
     }
 
     private static bool TryParseVariantEntry(
-        IReadOnlyList<string> lines,
+        List<string> lines,
         int currentIndex,
         Uri baseUri,
         out AppleHlsVariantEntry variant)

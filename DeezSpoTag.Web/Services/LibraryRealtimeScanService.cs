@@ -246,7 +246,10 @@ public sealed class LibraryRealtimeScanService : BackgroundService
             watcher.Renamed += (_, args) => OnFileEvent(folderId, args.FullPath);
             watcher.Error += (_, args) => OnWatcherError(folderId, args.GetException());
 
-            _logger.LogInformation("Watching library folder for realtime scans: {Path}", normalizedRootPath);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Watching library folder for realtime scans: {Path}", normalizedRootPath);
+            }
             var watchedFolder = new WatchedFolder(
                 normalizedRootPath,
                 watcher,
@@ -297,7 +300,10 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to enqueue realtime retag job for {Path}", fullPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to enqueue realtime retag job for {Path}", fullPath);
+            }
         }
     }
 
@@ -364,7 +370,8 @@ public sealed class LibraryRealtimeScanService : BackgroundService
             return Path.GetFullPath(path)
                 .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }

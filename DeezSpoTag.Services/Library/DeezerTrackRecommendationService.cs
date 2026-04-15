@@ -122,7 +122,7 @@ public sealed class DeezerTrackRecommendationService
     }
 
     private async Task<List<RecommendationTrackDto>> BuildDailyRecommendationTracksAsync(
-        IReadOnlyList<string> orderedSeeds,
+        List<string> orderedSeeds,
         HashSet<string> normalizedLibraryIds,
         int cappedLimit,
         CancellationToken cancellationToken)

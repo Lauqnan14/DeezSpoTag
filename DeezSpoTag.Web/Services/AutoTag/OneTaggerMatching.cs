@@ -56,7 +56,8 @@ internal static class OneTaggerMatching
         {
             return new Regex(escaped, RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }

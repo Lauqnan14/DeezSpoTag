@@ -75,7 +75,8 @@ public class LibraryImagesApiController : ControllerBase
                 var dbFolders = await _repository.GetFoldersAsync(cancellationToken);
                 allowedRoots.AddRange(dbFolders.Select(folder => Path.GetFullPath(folder.RootPath)));
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 // If the DB is unavailable, fall back to config-backed roots.
             }
         }

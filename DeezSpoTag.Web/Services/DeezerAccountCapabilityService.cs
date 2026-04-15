@@ -25,7 +25,10 @@ public static class DeezerAccountCapabilityService
 
         settings.MaxBitrate = bestBitrate;
         settingsService.SaveSettings(settings);
-        logger.LogInformation("Updated max bitrate to {Bitrate} based on account capabilities", bestBitrate);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation("Updated max bitrate to {Bitrate} based on account capabilities", bestBitrate);
+        }
     }
 
     private static int ResolveBestBitrate(DeezSpoTag.Core.Models.Deezer.DeezerUser currentUser)

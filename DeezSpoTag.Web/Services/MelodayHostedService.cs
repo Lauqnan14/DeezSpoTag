@@ -48,7 +48,10 @@ public sealed class MelodayHostedService : BackgroundService
                 if (!string.Equals(period, _lastPeriod, StringComparison.OrdinalIgnoreCase))
                 {
                     var result = await _melodayService.RunAsync(stoppingToken);
-                    _logger.LogInformation("Meloday update: {Message}", result.Message);
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation("Meloday update: {Message}", result.Message);
+                    }
                     _lastPeriod = period;
                 }
             }

@@ -9,6 +9,15 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class AppleVideoAtmosCapabilityService
 {
+    private readonly record struct AtmosProbeContext(
+        SemaphoreSlim Semaphore,
+        Dictionary<string, bool?> Results,
+        string AuthorizationToken,
+        string MediaUserToken,
+        string GetM3u8Port,
+        CancellationToken ProbeToken,
+        CancellationToken RequestToken);
+
     private const int MaxConcurrentProbes = 6;
     private static readonly TimeSpan KnownCapabilityCacheLifetime = TimeSpan.FromHours(6);
     private static readonly TimeSpan UnknownCapabilityCacheLifetime = TimeSpan.FromSeconds(45);
@@ -62,53 +71,15 @@ public sealed class AppleVideoAtmosCapabilityService
         batchBudgetCts.CancelAfter(batchBudget);
         var probeToken = batchBudgetCts.Token;
         var results = new Dictionary<string, bool?>(StringComparer.OrdinalIgnoreCase);
-        var tasks = ids.Select(async id =>
-        {
-            var acquired = false;
-            try
-            {
-                await semaphore.WaitAsync(probeToken);
-                acquired = true;
-                bool? capability;
-                try
-                {
-                    capability = await ProbeWithCacheAsync(id, authorizationToken, mediaUserToken, getM3u8Port, probeToken);
-                }
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                {
-                    // Probe-level timeout/cancel should not fail the whole batch.
-                    capability = null;
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    _logger.LogDebug(ex, "Apple video Atmos probe worker failed for {AppleId}", id);
-                    capability = null;
-                }
-
-                lock (results)
-                {
-                    results[id] = capability;
-                }
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                // Batch budget elapsed: preserve responsiveness and return unknown for remaining IDs.
-                lock (results)
-                {
-                    if (!results.ContainsKey(id))
-                    {
-                        results[id] = null;
-                    }
-                }
-            }
-            finally
-            {
-                if (acquired)
-                {
-                    semaphore.Release();
-                }
-            }
-        });
+        var context = new AtmosProbeContext(
+            semaphore,
+            results,
+            authorizationToken,
+            mediaUserToken,
+            getM3u8Port,
+            probeToken,
+            cancellationToken);
+        var tasks = ids.Select(id => ProbeCapabilityForIdAsync(id, context));
 
         try
         {
@@ -119,6 +90,65 @@ public sealed class AppleVideoAtmosCapabilityService
             // Budget timeout: return partial probe results.
         }
         return results;
+    }
+
+    private async Task ProbeCapabilityForIdAsync(string appleId, AtmosProbeContext context)
+    {
+        var acquired = false;
+        try
+        {
+            await context.Semaphore.WaitAsync(context.ProbeToken);
+            acquired = true;
+            var capability = await TryProbeCapabilityAsync(appleId, context);
+            lock (context.Results)
+            {
+                context.Results[appleId] = capability;
+            }
+        }
+        catch (OperationCanceledException) when (!context.RequestToken.IsCancellationRequested)
+        {
+            // Batch budget elapsed: preserve responsiveness and return unknown for remaining IDs.
+            lock (context.Results)
+            {
+                if (!context.Results.ContainsKey(appleId))
+                {
+                    context.Results[appleId] = null;
+                }
+            }
+        }
+        finally
+        {
+            if (acquired)
+            {
+                context.Semaphore.Release();
+            }
+        }
+    }
+
+    private async Task<bool?> TryProbeCapabilityAsync(string appleId, AtmosProbeContext context)
+    {
+        try
+        {
+            return await ProbeWithCacheAsync(
+                appleId,
+                context.AuthorizationToken,
+                context.MediaUserToken,
+                context.GetM3u8Port,
+                context.ProbeToken);
+        }
+        catch (OperationCanceledException) when (!context.RequestToken.IsCancellationRequested)
+        {
+            // Probe-level timeout/cancel should not fail the whole batch.
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple video Atmos probe worker failed for {AppleId}", appleId);
+            }
+            return null;
+        }
     }
 
     public static string ResolveAppleId(string? appleId, string? appleUrl)
@@ -202,7 +232,10 @@ public sealed class AppleVideoAtmosCapabilityService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple video Atmos capability probe failed for {AppleId}", appleId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple video Atmos capability probe failed for {AppleId}", appleId);
+            }
             return null;
         }
     }
@@ -256,7 +289,10 @@ public sealed class AppleVideoAtmosCapabilityService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple master manifest fetch failed for {PlaylistUrl}", playlistUrl);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple master manifest fetch failed for {PlaylistUrl}", playlistUrl);
+            }
             return null;
         }
     }
@@ -292,11 +328,14 @@ public sealed class AppleVideoAtmosCapabilityService
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, linkedCts.Token);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogDebug(
-                    "Apple master manifest fetch returned {StatusCode} for {PlaylistUrl} (authHeaders={AuthHeaders}).",
-                    response.StatusCode,
-                    playlistUrl,
-                    includeAuthHeaders);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        "Apple master manifest fetch returned {StatusCode} for {PlaylistUrl} (authHeaders={AuthHeaders}).",
+                        response.StatusCode,
+                        playlistUrl,
+                        includeAuthHeaders);
+                }
                 return null;
             }
 
@@ -429,7 +468,8 @@ public sealed class AppleVideoAtmosCapabilityService
                 mediaUserToken = ReadWrapperToken(root, "music_user_token");
             }
 
-            if (!string.IsNullOrWhiteSpace(authorizationToken) || !string.IsNullOrWhiteSpace(mediaUserToken))
+            if ((!string.IsNullOrWhiteSpace(authorizationToken) || !string.IsNullOrWhiteSpace(mediaUserToken))
+                && _logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug(
                     "Apple Atmos probe using wrapper tokens from {Host}:30020 (auth={HasAuth}, music={HasMusic}).",
@@ -446,7 +486,10 @@ public sealed class AppleVideoAtmosCapabilityService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple Atmos probe wrapper token read failed for host {Host}.", host);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple Atmos probe wrapper token read failed for host {Host}.", host);
+            }
             return (string.Empty, string.Empty);
         }
     }

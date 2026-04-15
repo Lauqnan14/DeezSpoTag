@@ -308,9 +308,9 @@ public sealed class QualityScannerService
 
         if (options.TechnicalProfiles.Count > 0)
         {
-                tracks = tracks
-                .Where(track => options.TechnicalProfiles.Contains(QualityScanTrackFormatter.FormatTechnicalProfile(track)))
-                .ToList();
+            tracks = tracks
+            .Where(track => options.TechnicalProfiles.Contains(QualityScanTrackFormatter.FormatTechnicalProfile(track)))
+            .ToList();
         }
 
         return tracks;
@@ -318,7 +318,7 @@ public sealed class QualityScannerService
 
     private async Task InitializeRunStateAsync(
         QualityScannerRunOptions options,
-        IReadOnlyCollection<QualityScanTrackDto> tracks,
+        List<QualityScanTrackDto> tracks,
         long runId,
         CancellationToken cancellationToken)
     {
@@ -335,7 +335,7 @@ public sealed class QualityScannerService
 
     private async Task<bool> HandleEmptyTrackSetAsync(
         QualityScannerRunOptions options,
-        IReadOnlyCollection<QualityScanTrackDto> tracks,
+        List<QualityScanTrackDto> tracks,
         long runId,
         CancellationToken cancellationToken)
     {
@@ -375,7 +375,7 @@ public sealed class QualityScannerService
 
     private async Task ProcessQualityUpgradeStageAsync(
         long runId,
-        IReadOnlyList<QualityScanTrackDto> tracks,
+        List<QualityScanTrackDto> tracks,
         QualityScannerRunOptions options,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         DownloadIntentService downloadIntentService,
@@ -669,7 +669,7 @@ public sealed class QualityScannerService
 
     private async Task ProcessAtmosEnhancementStageAsync(
         long runId,
-        IReadOnlyList<QualityScanTrackDto> tracks,
+        List<QualityScanTrackDto> tracks,
         QualityScannerRunOptions options,
         DownloadIntentService downloadIntentService,
         CancellationToken cancellationToken)

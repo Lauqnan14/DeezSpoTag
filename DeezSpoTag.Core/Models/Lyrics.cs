@@ -66,7 +66,7 @@ public class Lyrics
     private static List<SyncLyric> ParseSyncLyrics(string? syncJson)
     {
         var syncLyrics = new List<SyncLyric>();
-        
+
         if (string.IsNullOrEmpty(syncJson)) return syncLyrics;
 
         try
@@ -88,7 +88,8 @@ public class Lyrics
                 });
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // If parsing fails, return empty list
         }
 
@@ -136,7 +137,8 @@ public class Lyrics
 
             return string.Join("\n", textLines);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return "";
         }
     }

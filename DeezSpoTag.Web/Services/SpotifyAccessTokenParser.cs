@@ -42,7 +42,8 @@ public static class SpotifyAccessTokenParser
 
             return new SpotifyAccessTokenClaims(subject, country, product, displayName);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }

@@ -360,7 +360,8 @@ namespace DeezSpoTag.Web.Controllers
                     }
                 }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 // ignore parse errors; caller falls back to other sources
             }
 
@@ -530,7 +531,8 @@ namespace DeezSpoTag.Web.Controllers
                 var firstSegment = segments[0];
                 return NormalizeStorefront(firstSegment);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 return null;
             }
         }

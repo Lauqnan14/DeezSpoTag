@@ -69,7 +69,9 @@ public sealed class DeezerPipeService
             using var response = await httpClient.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogDebug("Deezer pipe metadata request failed: {StatusCode}", response.StatusCode);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Deezer pipe metadata request failed: {StatusCode}", response.StatusCode);                }
                 return null;
             }
 
@@ -83,7 +85,9 @@ public sealed class DeezerPipeService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer pipe metadata lookup failed for track {TrackId}", trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer pipe metadata lookup failed for track {TrackId}", trackId);            }
             return null;
         }
     }

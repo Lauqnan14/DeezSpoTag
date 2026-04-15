@@ -97,7 +97,7 @@ public class DeezSpoTagSettings
     public int ShazamCaptureDurationSeconds { get; set; } = 11;
     public bool ShazamAllowHttpFileFallback { get; set; } = true;
     public bool ShazamRemoteMemoryOnly { get; set; } = true;
-    
+
     // Spotizerr-phoenix download behavior and retries
     public int MaxConcurrentDownloads { get; set; } = 3;
     public bool RealTime { get; set; } = false;

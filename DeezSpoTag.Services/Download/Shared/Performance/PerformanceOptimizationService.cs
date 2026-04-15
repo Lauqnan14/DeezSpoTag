@@ -34,7 +34,7 @@ public class PerformanceOptimizationService : IDisposable
     /// </summary>
     internal void RecordOperation(string operationName, TimeSpan duration, bool success)
     {
-        _metrics.AddOrUpdate(operationName, 
+        _metrics.AddOrUpdate(operationName,
             new PerformanceMetrics { OperationName = operationName },
             (key, existing) => existing)
             .RecordOperation(duration, success);
@@ -62,7 +62,7 @@ public class PerformanceOptimizationService : IDisposable
         {
             return Math.Min(20, currentConcurrency + 1); // Max 20 concurrent like deezspotag
         }
-        
+
         return currentConcurrency;
     }
 
@@ -75,10 +75,10 @@ public class PerformanceOptimizationService : IDisposable
         {
             var process = Process.GetCurrentProcess();
             var memoryUsage = process.WorkingSet64;
-            
+
             // Simple heuristics for system stress
             var memoryThreshold = 1024 * 1024 * 1024; // 1GB
-            
+
             return memoryUsage > memoryThreshold;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -92,6 +92,11 @@ public class PerformanceOptimizationService : IDisposable
     {
         try
         {
+            if (!_logger.IsEnabled(LogLevel.Information))
+            {
+                return;
+            }
+
             foreach (var metric in _metrics.Values.Where(static metric => metric.TotalOperations > 0))
             {
                 _logger.LogInformation("Performance metrics for {Operation}: {TotalOps} ops, {AvgTime}ms avg, {SuccessRate}% success",
@@ -203,7 +208,7 @@ public class PerformanceMetrics
         {
             _totalOperations++;
             _totalTime = _totalTime.Add(duration);
-            
+
             if (success)
             {
                 _successfulOperations++;

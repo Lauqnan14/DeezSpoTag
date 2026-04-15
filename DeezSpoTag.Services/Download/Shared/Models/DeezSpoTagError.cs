@@ -40,7 +40,7 @@ public class DeezSpoTagDownloadException : Exception
     public string ErrorId { get; }
     public Dictionary<string, object>? TrackData { get; }
 
-    public DeezSpoTagDownloadException(string errorId, Dictionary<string, object>? trackData = null) 
+    public DeezSpoTagDownloadException(string errorId, Dictionary<string, object>? trackData = null)
         : base(DeezSpoTagErrorMessages.GetMessage(errorId))
     {
         ErrorId = errorId;
@@ -58,7 +58,7 @@ public class DeezSpoTagGenerationException : Exception
     public string Link { get; }
     public string ErrorId { get; }
 
-    public DeezSpoTagGenerationException(string link, string errorId) 
+    public DeezSpoTagGenerationException(string link, string errorId)
         : base(DeezSpoTagErrorMessages.GetMessage(errorId))
     {
         Link = link;

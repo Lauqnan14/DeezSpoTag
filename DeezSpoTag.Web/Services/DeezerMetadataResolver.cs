@@ -42,7 +42,10 @@ public sealed class DeezerMetadataResolver : IMetadataResolver
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Failed loading Deezer album metadata for track {TrackId}", deezerTrack.Id);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Failed loading Deezer album metadata for track {TrackId}", deezerTrack.Id);
+                }
             }
         }
 
@@ -53,36 +56,16 @@ public sealed class DeezerMetadataResolver : IMetadataResolver
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var directId = FirstNonEmpty(
-            TryNormalizeTrackId(track.SourceId),
-            TryNormalizeTrackId(track.Urls.GetValueOrDefault("deezer_track_id")),
-            TryNormalizeTrackId(track.Urls.GetValueOrDefault("deezer_id")),
-            TryNormalizeTrackId(track.Urls.GetValueOrDefault("deezerid")),
-            TryNormalizeTrackId(track.Urls.GetValueOrDefault("deezer")),
-            TryNormalizeTrackId(track.DownloadURL));
-        if (!string.IsNullOrWhiteSpace(directId))
+        var byDirectId = await TryResolveByDirectIdAsync(track, cancellationToken);
+        if (byDirectId != null)
         {
-            var byId = await TryGetTrackAsync(directId, cancellationToken);
-            if (byId != null)
-            {
-                return byId;
-            }
+            return byDirectId;
         }
 
-        if (!string.IsNullOrWhiteSpace(track.ISRC))
+        var byIsrc = await TryResolveByIsrcAsync(track.ISRC);
+        if (byIsrc != null)
         {
-            try
-            {
-                var byIsrc = await _deezerClient.GetTrackByIsrcAsync(track.ISRC);
-                if (byIsrc != null && !string.IsNullOrWhiteSpace(byIsrc.Id) && byIsrc.Id != "0")
-                {
-                    return byIsrc;
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogDebug(ex, "Deezer ISRC lookup failed for {Isrc}", track.ISRC);
-            }
+            return byIsrc;
         }
 
         var artist = track.MainArtist?.Name ?? track.ArtistString;
@@ -92,6 +75,56 @@ public sealed class DeezerMetadataResolver : IMetadataResolver
             return null;
         }
 
+        return await TryResolveByMetadataAsync(track, artist, title, cancellationToken);
+    }
+
+    private async Task<ApiTrack?> TryResolveByDirectIdAsync(Track track, CancellationToken cancellationToken)
+    {
+        var directId = FirstNonEmpty(
+            TryNormalizeTrackId(track.SourceId),
+            TryNormalizeTrackId(track.Urls.GetValueOrDefault("deezer_track_id")),
+            TryNormalizeTrackId(track.Urls.GetValueOrDefault("deezer_id")),
+            TryNormalizeTrackId(track.Urls.GetValueOrDefault("deezerid")),
+            TryNormalizeTrackId(track.Urls.GetValueOrDefault("deezer")),
+            TryNormalizeTrackId(track.DownloadURL));
+        if (string.IsNullOrWhiteSpace(directId))
+        {
+            return null;
+        }
+
+        return await TryGetTrackAsync(directId, cancellationToken);
+    }
+
+    private async Task<ApiTrack?> TryResolveByIsrcAsync(string? isrc)
+    {
+        if (string.IsNullOrWhiteSpace(isrc))
+        {
+            return null;
+        }
+
+        try
+        {
+            var byIsrc = await _deezerClient.GetTrackByIsrcAsync(isrc);
+            return byIsrc != null && !string.IsNullOrWhiteSpace(byIsrc.Id) && byIsrc.Id != "0"
+                ? byIsrc
+                : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer ISRC lookup failed for {Isrc}", isrc);
+            }
+            return null;
+        }
+    }
+
+    private async Task<ApiTrack?> TryResolveByMetadataAsync(
+        Track track,
+        string artist,
+        string title,
+        CancellationToken cancellationToken)
+    {
         try
         {
             var durationMs = track.Duration > 0 ? track.Duration * 1000 : (int?)null;
@@ -109,7 +142,10 @@ public sealed class DeezerMetadataResolver : IMetadataResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer metadata lookup failed for {Artist} - {Title}", artist, title);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer metadata lookup failed for {Artist} - {Title}", artist, title);
+            }
             return null;
         }
     }
@@ -124,7 +160,10 @@ public sealed class DeezerMetadataResolver : IMetadataResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer track lookup failed for {TrackId}", trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer track lookup failed for {TrackId}", trackId);
+            }
             return null;
         }
     }

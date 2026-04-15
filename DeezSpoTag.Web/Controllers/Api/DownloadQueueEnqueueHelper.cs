@@ -127,7 +127,10 @@ internal static class DownloadQueueEnqueueHelper
         if (IsRetryableQueueStatus(duplicateStatus))
         {
             await queueRepository.RequeueAsync(duplicate.QueueUuid, cancellationToken);
-            logger.LogInformation("Duplicate triggered retry (engine={Engine}): {QueueUuid}", payload.Engine, duplicate.QueueUuid);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation("Duplicate triggered retry (engine={Engine}): {QueueUuid}", payload.Engine, duplicate.QueueUuid);
+            }
             listener.Send("updateQueue", new
             {
                 uuid = duplicate.QueueUuid,

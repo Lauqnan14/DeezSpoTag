@@ -71,7 +71,8 @@ public sealed class QuickTagApiController : ControllerBase
             var bytes = _quickTag.LoadThumbnail(path, size ?? 50, crop);
             return File(bytes, "image/jpeg");
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return NotFound();
         }
     }

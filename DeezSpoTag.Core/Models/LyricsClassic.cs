@@ -71,13 +71,13 @@ public class LyricsClassic : LyricsBase
             // Parse basic lyrics information
             if (json.TryGetProperty("LYRICS_ID", out var idElement))
                 Id = idElement.GetString() ?? "0";
-            
+
             if (json.TryGetProperty("LYRICS_WRITERS", out var writersElement))
                 Writers = writersElement.GetString();
-            
+
             if (json.TryGetProperty("LYRICS_TEXT", out var textElement))
                 UnsyncedLyrics = textElement.GetString();
-            
+
             if (json.TryGetProperty("LYRICS_COPYRIGHTS", out var copyrightElement))
                 Copyright = copyrightElement.GetString();
 
@@ -180,7 +180,8 @@ public class LyricsClassic : LyricsBase
 
             return new SynchronizedLyric(text, lrcTimestamp, milliseconds);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }
@@ -198,10 +199,10 @@ public class LyricsClassic : LyricsBase
 
             if (lineElement.TryGetProperty("line", out var lineProperty))
                 text = HttpUtility.HtmlDecode(lineProperty.GetString() ?? "");
-            
+
             if (lineElement.TryGetProperty("lrc_timestamp", out var timestampProperty))
                 lrcTimestamp = timestampProperty.GetString() ?? "";
-            
+
             if (lineElement.TryGetProperty("milliseconds", out var millisecondsProperty))
                 milliseconds = millisecondsProperty.GetInt32();
 
@@ -218,7 +219,8 @@ public class LyricsClassic : LyricsBase
 
             return new SynchronizedLyric(text, lrcTimestamp, milliseconds);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }

@@ -211,7 +211,8 @@ public sealed class AppleExternalToolRunner
                 new[] { stdout, stderr }.Where(part => !string.IsNullOrWhiteSpace(part)));
             return (process.ExitCode == 0, output);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return (false, string.Empty);
         }
     }

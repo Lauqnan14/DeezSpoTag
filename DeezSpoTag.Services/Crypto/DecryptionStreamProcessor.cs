@@ -317,8 +317,12 @@ public class DecryptionStreamProcessor
             blowfishKey = CryptoService.GenerateBlowfishKeyString(ResolveStreamTrackId(track));
         }
 
-        _logger.LogInformation("Attempting to download from URL: {DownloadUrl}", resolvedDownloadUrl);
-        _logger.LogInformation("Is crypted stream: {IsCryptedStream}", isCryptedStream);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Attempting to download from URL: {DownloadUrl}", resolvedDownloadUrl);        }
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Is crypted stream: {IsCryptedStream}", isCryptedStream);        }
 
         try
         {
@@ -503,8 +507,12 @@ public class DecryptionStreamProcessor
             blowfishKey = CryptoService.GenerateBlowfishKeyString(ResolveStreamTrackId(track));
         }
 
-        _logger.LogInformation("Attempting preview stream from URL: {DownloadUrl}", downloadUrl);
-        _logger.LogInformation("Is crypted stream: {IsCryptedStream}", isCryptedStream);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Attempting preview stream from URL: {DownloadUrl}", downloadUrl);        }
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Is crypted stream: {IsCryptedStream}", isCryptedStream);        }
 
         using var response = await SendRequestWithSslFallbackAsync(downloadUrl, headers[UserAgentHeader], rangeHeader: null, cancellationToken);
         response.EnsureSuccessStatusCode();
@@ -696,7 +704,9 @@ public class DecryptionStreamProcessor
             response ??= await TryWithFallbackSslAsync(downloadUrl, userAgent, rangeHeader, SslProtocols.None, cancellationToken);
             if (response != null)
             {
-                _logger.LogInformation("Fallback SSL configuration succeeded for {Url}", downloadUrl);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Fallback SSL configuration succeeded for {Url}", downloadUrl);                }
                 return response;
             }
 
@@ -739,12 +749,16 @@ public class DecryptionStreamProcessor
 
             var response = await fallbackClient.SendAsync(fallbackRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
 
-            _logger.LogInformation("Fallback SSL protocol {Protocol} succeeded for {Url}", sslProtocol, url);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Fallback SSL protocol {Protocol} succeeded for {Url}", sslProtocol, url);            }
             return response;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Fallback SSL protocol {Protocol} failed for {Url}", sslProtocol, url);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Fallback SSL protocol {Protocol} failed for {Url}", sslProtocol, url);            }
             return null;
         }
     }

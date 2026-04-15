@@ -92,8 +92,8 @@ namespace DeezSpoTag.Web.Controllers.Api
             {
                 _logger.LogInformation("Received settings save request.");
 
-                var options = new JsonSerializerOptions 
-                { 
+                var options = new JsonSerializerOptions
+                {
                     PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
                     Converters = { new JsonStringEnumConverter() },
                     PropertyNameCaseInsensitive = true
@@ -155,16 +155,16 @@ namespace DeezSpoTag.Web.Controllers.Api
             try
             {
                 _logger.LogInformation("Resetting settings to defaults");
-                
+
                 var defaultSettings = DeezSpoTagSettingsService.GetStaticDefaultSettings();
                 _settingsService.SaveSettings(defaultSettings);
-                
+
                 var response = new
                 {
                     result = true,
                     settings = defaultSettings
                 };
-                
+
                 _logger.LogInformation("Settings reset successfully");
                 return Ok(response);
             }

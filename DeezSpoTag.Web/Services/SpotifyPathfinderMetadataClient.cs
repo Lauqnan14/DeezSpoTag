@@ -1487,7 +1487,10 @@ public sealed class SpotifyPathfinderMetadataClient
 
             if (await IsUsableWebPlayerBlobPathAsync(blobPath, cancellationToken))
             {
-                _logger.LogInformation("Recovered Spotify web-player blob for user {UserId} at {BlobPath}.", userId, blobPath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Recovered Spotify web-player blob for user {UserId} at {BlobPath}.", userId, blobPath);
+                }
                 return blobPath;
             }
         }
@@ -1553,7 +1556,10 @@ public sealed class SpotifyPathfinderMetadataClient
 
             if (await IsUsableWebPlayerBlobPathAsync(blobPath, cancellationToken))
             {
-                _logger.LogInformation("Recovered platform Spotify web-player blob at {BlobPath}.", blobPath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Recovered platform Spotify web-player blob at {BlobPath}.", blobPath);
+                }
                 return blobPath;
             }
         }
@@ -1613,7 +1619,10 @@ public sealed class SpotifyPathfinderMetadataClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Skipping unusable Spotify web-player blob path {BlobPath}.", blobPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Skipping unusable Spotify web-player blob path {BlobPath}.", blobPath);
+            }
             return false;
         }
     }
@@ -1704,7 +1713,10 @@ public sealed class SpotifyPathfinderMetadataClient
         List<string> list = (from cookie in payload.Cookies
                              where !string.IsNullOrWhiteSpace(cookie.Name)
                              select string.IsNullOrWhiteSpace(cookie.Domain) ? cookie.Name.Trim() : (cookie.Name.Trim() + "@" + cookie.Domain.Trim())).Distinct<string>(StringComparer.OrdinalIgnoreCase).OrderBy<string, string>((string entry) => entry, StringComparer.OrdinalIgnoreCase).ToList();
-        _logger.LogInformation("Spotify blob snapshot: userAgent={UserAgent} cookieCount={CookieCount} cookies=[{Cookies}]", text, list.Count, string.Join(", ", list));
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Spotify blob snapshot: userAgent={UserAgent} cookieCount={CookieCount} cookies=[{Cookies}]", text, list.Count, string.Join(", ", list));
+        }
     }
 
     private static WebPlayerConfig? ParseAppServerConfig(string html)

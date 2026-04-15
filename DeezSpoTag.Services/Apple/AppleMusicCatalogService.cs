@@ -1024,7 +1024,9 @@ public sealed class AppleMusicCatalogService
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogDebug("Apple token HTML fetch failed: {Url} status {Status}", url, response.StatusCode);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Apple token HTML fetch failed: {Url} status {Status}", url, response.StatusCode);            }
             return null;
         }
 
@@ -1041,7 +1043,9 @@ public sealed class AppleMusicCatalogService
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogDebug("Apple token fetch failed: {Url} status {Status}", url, response.StatusCode);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Apple token fetch failed: {Url} status {Status}", url, response.StatusCode);                }
                 return null;
             }
 
@@ -1049,7 +1053,9 @@ public sealed class AppleMusicCatalogService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple token fetch failed: {Url}", url);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple token fetch failed: {Url}", url);            }
             return null;
         }
     }
@@ -1132,7 +1138,8 @@ public sealed class AppleMusicCatalogService
                 }
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return false;
         }
 
@@ -1186,7 +1193,9 @@ public sealed class AppleMusicCatalogService
                 {
                     throw;
                 }
-                _logger.LogDebug(ex, "Apple catalog request retry due to HTTP failure: {Url}", url);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Apple catalog request retry due to HTTP failure: {Url}", url);                }
                 await Task.Delay(GetBackoffDelay(attempt), cancellationToken);
             }
             finally

@@ -346,7 +346,10 @@ public sealed class BoomplayMetadataService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Boomplay song fetch failed for {SongId}", id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Boomplay song fetch failed for {SongId}", id);
+            }
         }
         finally
         {
@@ -362,8 +365,8 @@ public sealed class BoomplayMetadataService
             .ToList();
 
     private async Task FetchSongsSecondPassAsync(
-        IReadOnlyList<string> retryIds,
-        IDictionary<string, BoomplayTrackMetadata> firstPassById,
+        List<string> retryIds,
+        Dictionary<string, BoomplayTrackMetadata> firstPassById,
         CancellationToken cancellationToken)
     {
         if (retryIds.Count == 0)
@@ -396,7 +399,10 @@ public sealed class BoomplayMetadataService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Boomplay second-pass fetch failed for {SongId}", id);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Boomplay second-pass fetch failed for {SongId}", id);
+                }
             }
         }
     }
@@ -475,7 +481,7 @@ public sealed class BoomplayMetadataService
     }
 
     private static List<BoomplayTrackMetadata> MergeSearchTracks(
-        IReadOnlyList<string> orderedSongIds,
+        List<string> orderedSongIds,
         IReadOnlyList<BoomplayTrackMetadata> fetchedTracks,
         IReadOnlyDictionary<string, BoomplayTrackHint> songHints,
         int limit)
@@ -629,47 +635,29 @@ public sealed class BoomplayMetadataService
         streamTagAttempts = Math.Max(1, streamTagAttempts);
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            var html = await GetHtmlAsync(url, cancellationToken);
-            if (HandleEmptySongHtml(html, attempt, maxAttempts, best, out var emptyResolution))
-            {
-                if (emptyResolution.Delay)
-                {
-                    await DelayForRetryAsync(attempt, cancellationToken);
-                    continue;
-                }
-
-                return emptyResolution.Value;
-            }
-
-            if (LooksLikeNotFoundSongPage(html))
-            {
-                _logger.LogDebug("Boomplay returned not-found page for song {SongId}", songId);
-                return null;
-            }
-
-            var parseResult = await ParseSongAttemptAsync(
+            var attemptContext = new SongAttemptContext(
+                Attempt: attempt,
+                MaxAttempts: maxAttempts,
+                StreamTagAttempts: streamTagAttempts,
+                AllowLyricsGenreProbe: !probedLyricsGenre);
+            var attemptOutcome = await EvaluateSongAttemptAsync(
                 songId,
                 url,
-                html,
-                streamTagAttempts,
-                allowLyricsGenreProbe: !probedLyricsGenre,
+                best,
+                attemptContext,
                 cancellationToken);
-            var parsed = parseResult.Metadata;
-            probedLyricsGenre |= parseResult.LyricsGenreProbed;
+            probedLyricsGenre |= attemptOutcome.LyricsGenreProbed;
 
-            if (IsSongMetadataEmpty(parsed))
+            if (attemptOutcome.Completed)
             {
-                await DelayIfRetryAvailableAsync(attempt, maxAttempts, cancellationToken);
-                continue;
+                return attemptOutcome.Value;
             }
 
-            if (TryCacheAndReturnHighConfidenceSong(songId, parsed, out var resolvedTrack))
+            best = attemptOutcome.Best ?? best;
+            if (attemptOutcome.Delay)
             {
-                return resolvedTrack;
+                await DelayForRetryAsync(attempt, cancellationToken);
             }
-
-            best = PickBetterMetadata(best, parsed);
-            await DelayIfRetryAvailableAsync(attempt, maxAttempts, cancellationToken);
         }
 
         CacheLowConfidenceBest(songId, best, cacheLowConfidence);
@@ -731,12 +719,94 @@ public sealed class BoomplayMetadataService
         return new SongAttemptParseResult(parsed, LyricsGenreProbed: true);
     }
 
+    private async Task<SongAttemptOutcome> EvaluateSongAttemptAsync(
+        string songId,
+        string url,
+        BoomplayTrackMetadata? best,
+        SongAttemptContext context,
+        CancellationToken cancellationToken)
+    {
+        var html = await GetHtmlAsync(url, cancellationToken);
+        if (HandleEmptySongHtml(html, context.Attempt, context.MaxAttempts, best, out var emptyResolution))
+        {
+            return new SongAttemptOutcome(
+                Completed: !emptyResolution.Delay,
+                Value: emptyResolution.Value,
+                Delay: emptyResolution.Delay,
+                Best: best,
+                LyricsGenreProbed: false);
+        }
+
+        if (LooksLikeNotFoundSongPage(html))
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Boomplay returned not-found page for song {SongId}", songId);
+            }
+
+            return new SongAttemptOutcome(
+                Completed: true,
+                Value: null,
+                Delay: false,
+                Best: best,
+                LyricsGenreProbed: false);
+        }
+
+        var parseResult = await ParseSongAttemptAsync(
+            songId,
+            url,
+            html!,
+            context.StreamTagAttempts,
+            context.AllowLyricsGenreProbe,
+            cancellationToken);
+        var parsed = parseResult.Metadata;
+        if (IsSongMetadataEmpty(parsed))
+        {
+            return new SongAttemptOutcome(
+                Completed: false,
+                Value: null,
+                Delay: context.Attempt < context.MaxAttempts,
+                Best: best,
+                LyricsGenreProbed: parseResult.LyricsGenreProbed);
+        }
+
+        if (TryCacheAndReturnHighConfidenceSong(songId, parsed, out var resolvedTrack))
+        {
+            return new SongAttemptOutcome(
+                Completed: true,
+                Value: resolvedTrack,
+                Delay: false,
+                Best: best,
+                LyricsGenreProbed: parseResult.LyricsGenreProbed);
+        }
+
+        return new SongAttemptOutcome(
+            Completed: false,
+            Value: null,
+            Delay: context.Attempt < context.MaxAttempts,
+            Best: PickBetterMetadata(best, parsed),
+            LyricsGenreProbed: parseResult.LyricsGenreProbed);
+    }
+
     private static bool IsSongMetadataEmpty(BoomplayTrackMetadata metadata)
     {
         return string.IsNullOrWhiteSpace(metadata.Title)
                && string.IsNullOrWhiteSpace(metadata.Artist)
                && string.IsNullOrWhiteSpace(metadata.Album);
     }
+
+    private sealed record SongAttemptOutcome(
+        bool Completed,
+        BoomplayTrackMetadata? Value,
+        bool Delay,
+        BoomplayTrackMetadata? Best,
+        bool LyricsGenreProbed);
+
+    private readonly record struct SongAttemptContext(
+        int Attempt,
+        int MaxAttempts,
+        int StreamTagAttempts,
+        bool AllowLyricsGenreProbe);
 
     private static async Task DelayIfRetryAvailableAsync(int attempt, int maxAttempts, CancellationToken cancellationToken)
     {
@@ -1056,7 +1126,7 @@ public sealed class BoomplayMetadataService
     }
 
     private static IReadOnlyList<BoomplayRecommendationSection> TrimRecommendationSections(
-        IReadOnlyList<BoomplayRecommendationSection> sections,
+        List<BoomplayRecommendationSection> sections,
         int limit)
     {
         if (sections.Count == 0 || limit <= 0)
@@ -2159,7 +2229,8 @@ public sealed class BoomplayMetadataService
                 using var jsonDoc = JsonDocument.Parse(scriptText);
                 ParseSongJsonElement(jsonDoc.RootElement, target);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 // Ignore malformed JSON-LD payloads.
             }
         }
@@ -2170,66 +2241,66 @@ public sealed class BoomplayMetadataService
         switch (element.ValueKind)
         {
             case JsonValueKind.Object:
-            {
-                if (LooksLikeSongObject(element))
                 {
-                    target.Title = FirstNonEmpty(
-                        target.Title,
-                        GetJsonString(element, "name"),
-                        GetJsonString(element, TitleField)) ?? string.Empty;
-                    target.Artist = FirstNonEmpty(
-                        target.Artist,
-                        ReadArtistFromJson(element)) ?? string.Empty;
-                    target.Album = FirstNonEmpty(
-                        target.Album,
-                        ReadAlbumFromJson(element)) ?? string.Empty;
-                    target.Isrc = FirstNonEmpty(
-                        target.Isrc,
-                        GetJsonString(element, "isrc"),
-                        GetJsonString(element, "isrcCode")) ?? string.Empty;
-                    target.ReleaseDate = FirstNonEmpty(
-                        target.ReleaseDate,
-                        GetJsonString(element, "datePublished"),
-                        GetJsonString(element, "releaseDate")) ?? string.Empty;
-
-                    var genre = FirstNonEmpty(
-                        GetJsonString(element, GenreField),
-                        GetJsonArrayValue(element, GenreField));
-                    AddGenre(target, genre);
-
-                    var duration = FirstNonEmpty(
-                        GetJsonString(element, "duration"),
-                        GetJsonString(element, "durationIso8601"));
-                    if (target.DurationMs <= 0)
+                    if (LooksLikeSongObject(element))
                     {
-                        target.DurationMs = ParseDurationMs(duration);
+                        target.Title = FirstNonEmpty(
+                            target.Title,
+                            GetJsonString(element, "name"),
+                            GetJsonString(element, TitleField)) ?? string.Empty;
+                        target.Artist = FirstNonEmpty(
+                            target.Artist,
+                            ReadArtistFromJson(element)) ?? string.Empty;
+                        target.Album = FirstNonEmpty(
+                            target.Album,
+                            ReadAlbumFromJson(element)) ?? string.Empty;
+                        target.Isrc = FirstNonEmpty(
+                            target.Isrc,
+                            GetJsonString(element, "isrc"),
+                            GetJsonString(element, "isrcCode")) ?? string.Empty;
+                        target.ReleaseDate = FirstNonEmpty(
+                            target.ReleaseDate,
+                            GetJsonString(element, "datePublished"),
+                            GetJsonString(element, "releaseDate")) ?? string.Empty;
+
+                        var genre = FirstNonEmpty(
+                            GetJsonString(element, GenreField),
+                            GetJsonArrayValue(element, GenreField));
+                        AddGenre(target, genre);
+
+                        var duration = FirstNonEmpty(
+                            GetJsonString(element, "duration"),
+                            GetJsonString(element, "durationIso8601"));
+                        if (target.DurationMs <= 0)
+                        {
+                            target.DurationMs = ParseDurationMs(duration);
+                        }
+
+                        target.Publisher = FirstNonEmpty(
+                            target.Publisher,
+                            ReadNamedEntityFromJson(element, "publisher"),
+                            ReadNamedEntityFromJson(element, "recordLabel"),
+                            GetJsonString(element, "publisher"),
+                            GetJsonString(element, "recordLabel")) ?? string.Empty;
+
+                        target.Composer = FirstNonEmpty(
+                            target.Composer,
+                            ReadNamedEntityFromJson(element, "composer"),
+                            GetJsonString(element, "composer")) ?? string.Empty;
+
+                        target.Language = FirstNonEmpty(
+                            target.Language,
+                            GetJsonString(element, "inLanguage"),
+                            GetJsonString(element, "language")) ?? string.Empty;
                     }
 
-                    target.Publisher = FirstNonEmpty(
-                        target.Publisher,
-                        ReadNamedEntityFromJson(element, "publisher"),
-                        ReadNamedEntityFromJson(element, "recordLabel"),
-                        GetJsonString(element, "publisher"),
-                        GetJsonString(element, "recordLabel")) ?? string.Empty;
+                    foreach (var property in element.EnumerateObject())
+                    {
+                        ParseSongJsonElement(property.Value, target);
+                    }
 
-                    target.Composer = FirstNonEmpty(
-                        target.Composer,
-                        ReadNamedEntityFromJson(element, "composer"),
-                        GetJsonString(element, "composer")) ?? string.Empty;
-
-                    target.Language = FirstNonEmpty(
-                        target.Language,
-                        GetJsonString(element, "inLanguage"),
-                        GetJsonString(element, "language")) ?? string.Empty;
+                    break;
                 }
-
-                foreach (var property in element.EnumerateObject())
-                {
-                    ParseSongJsonElement(property.Value, target);
-                }
-
-                break;
-            }
             case JsonValueKind.Array:
                 foreach (var item in element.EnumerateArray())
                 {
@@ -2571,7 +2642,8 @@ public sealed class BoomplayMetadataService
             var decrypted = decryptor.TransformFinalBlock(encryptedBytes, 0, encryptedBytes.Length);
             return Encoding.UTF8.GetString(decrypted);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return string.Empty;
         }
     }

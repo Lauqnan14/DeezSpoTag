@@ -70,7 +70,10 @@ public sealed class ItunesCoverSource : ICoverSource
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "iTunes cover search errored for {Artist} - {Album}", query.Artist, query.Album);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "iTunes cover search errored for {Artist} - {Album}", query.Artist, query.Album);
+            }
             return Array.Empty<CoverCandidate>();
         }
     }

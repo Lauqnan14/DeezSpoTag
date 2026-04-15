@@ -107,10 +107,13 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var configuredBatchSize = ResolveConfiguredBatchSize();
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
             _logger.LogInformation(
                 "Spotify artist metadata queue started with batch size {BatchSize} and interval {BatchIntervalSeconds}s.",
                 configuredBatchSize,
                 BatchInterval.TotalSeconds);
+        }
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -219,7 +222,10 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
         }
 
         var delay = RetryDelays[Math.Min(nextRetry - 1, RetryDelays.Length - 1)];
-        _logger.LogInformation("Scheduling retry {Retry}/{Max} for {ArtistName} in {Delay}", nextRetry, MaxRetries, item.ArtistName, delay);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Scheduling retry {Retry}/{Max} for {ArtistName} in {Delay}", nextRetry, MaxRetries, item.ArtistName, delay);
+        }
 
         var retryItem = item with { Retry = nextRetry };
         lock (_queueLock)

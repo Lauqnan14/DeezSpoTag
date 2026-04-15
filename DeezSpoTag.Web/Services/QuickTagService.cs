@@ -16,6 +16,31 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class QuickTagService
 {
+    private sealed class CloneTagSnapshot
+    {
+        public required Dictionary<string, List<string>> RawTags { get; init; }
+        public string? Title { get; init; }
+        public required string[] Performers { get; init; }
+        public string? Album { get; init; }
+        public required string[] AlbumArtists { get; init; }
+        public required string[] Composers { get; init; }
+        public required string[] Genres { get; init; }
+        public uint Year { get; init; }
+        public uint BeatsPerMinute { get; init; }
+        public uint Track { get; init; }
+        public uint TrackCount { get; init; }
+        public uint Disc { get; init; }
+        public uint DiscCount { get; init; }
+        public string? Comment { get; init; }
+        public string? Lyrics { get; init; }
+        public string? Copyright { get; init; }
+        public string? InitialKey { get; init; }
+        public string? Isrc { get; init; }
+        public string? Grouping { get; init; }
+        public string? Conductor { get; init; }
+        public required IPicture[] Pictures { get; init; }
+    }
+
     private const string FlacExtension = ".flac";
     private const string AiffExtension = ".aiff";
     private const string OpusExtension = ".opus";
@@ -300,143 +325,166 @@ public sealed class QuickTagService
         {
             var sourceFullPath = Path.GetFullPath(sourcePath);
             var destinationFullPath = Path.GetFullPath(destinationPath);
-
-            if (enforceLibraryPathCheck)
+            var validationError = ValidateCloneTagPaths(
+                sourceFullPath,
+                destinationFullPath,
+                enforceLibraryPathCheck,
+                out var sourceExtension,
+                out var destinationExtension);
+            if (validationError != null)
             {
-                var allowedRoots = ResolveAllowedLibraryRoots();
-                EnsurePathAllowed(sourceFullPath, allowedRoots);
-                EnsurePathAllowed(destinationFullPath, allowedRoots);
-            }
-
-            if (!IOFile.Exists(sourceFullPath))
-            {
-                return QuickTagCloneResult.Fail($"Source file not found: {sourceFullPath}");
-            }
-
-            if (!IOFile.Exists(destinationFullPath))
-            {
-                return QuickTagCloneResult.Fail($"Destination file not found: {destinationFullPath}");
-            }
-
-            var sourceExtension = Path.GetExtension(sourceFullPath);
-            var destinationExtension = Path.GetExtension(destinationFullPath);
-            if (!AudioExtensions.Contains(sourceExtension) || ShouldIgnoreTagEditorFile(sourceFullPath, sourceExtension))
-            {
-                return QuickTagCloneResult.Fail("Unsupported source audio file type.");
-            }
-
-            if (!AudioExtensions.Contains(destinationExtension) || ShouldIgnoreTagEditorFile(destinationFullPath, destinationExtension))
-            {
-                return QuickTagCloneResult.Fail("Unsupported destination audio file type.");
+                return validationError;
             }
 
             var separators = QuickTagSeparators.Default;
             var chapterSnapshot = AtlTagHelper.CaptureChapters(sourceFullPath, sourceExtension, _logger);
-            Dictionary<string, List<string>> rawTags;
-            string? title;
-            string[] performers;
-            string? album;
-            string[] albumArtists;
-            string[] composers;
-            string[] genres;
-            uint year;
-            uint beatsPerMinute;
-            uint track;
-            uint trackCount;
-            uint disc;
-            uint discCount;
-            string? comment;
-            string? lyrics;
-            string? copyright;
-            string? initialKey;
-            string? isrc;
-            string? grouping;
-            string? conductor;
-            IPicture[] pictures;
-
-            using (var sourceFile = TagLib.File.Create(sourceFullPath))
-            {
-                rawTags = ReadAllTags(sourceFile, sourceExtension, separators);
-                title = sourceFile.Tag.Title;
-                performers = (sourceFile.Tag.Performers ?? Array.Empty<string>()).ToArray();
-                album = sourceFile.Tag.Album;
-                albumArtists = (sourceFile.Tag.AlbumArtists ?? Array.Empty<string>()).ToArray();
-                composers = (sourceFile.Tag.Composers ?? Array.Empty<string>()).ToArray();
-                genres = (sourceFile.Tag.Genres ?? Array.Empty<string>()).ToArray();
-                year = sourceFile.Tag.Year;
-                beatsPerMinute = sourceFile.Tag.BeatsPerMinute;
-                track = sourceFile.Tag.Track;
-                trackCount = sourceFile.Tag.TrackCount;
-                disc = sourceFile.Tag.Disc;
-                discCount = sourceFile.Tag.DiscCount;
-                comment = sourceFile.Tag.Comment;
-                lyrics = sourceFile.Tag.Lyrics;
-                copyright = sourceFile.Tag.Copyright;
-                initialKey = sourceFile.Tag.InitialKey;
-                isrc = sourceFile.Tag.ISRC;
-                grouping = sourceFile.Tag.Grouping;
-                conductor = sourceFile.Tag.Conductor;
-                pictures = ClonePictures(sourceFile.Tag.Pictures);
-            }
+            var snapshot = BuildCloneTagSnapshot(sourceFullPath, sourceExtension, separators);
 
             var (genreAliasMap, splitCompositeGenres) = ResolveGenreNormalization();
             var cloneRawTagWriteOptions = new RawTagWriteOptions(separators, null, genreAliasMap, splitCompositeGenres);
-            using (var destinationFile = TagLib.File.Create(destinationFullPath))
-            {
-                destinationFile.Tag.Title = title;
-                destinationFile.Tag.Performers = performers;
-                destinationFile.Tag.Album = album;
-                destinationFile.Tag.AlbumArtists = albumArtists;
-                destinationFile.Tag.Composers = composers;
-                destinationFile.Tag.Genres = FilterBlockedGenres(genres, genreAliasMap, splitCompositeGenres).ToArray();
-                destinationFile.Tag.Year = year;
-                destinationFile.Tag.BeatsPerMinute = beatsPerMinute;
-                destinationFile.Tag.Track = track;
-                destinationFile.Tag.TrackCount = trackCount;
-                destinationFile.Tag.Disc = disc;
-                destinationFile.Tag.DiscCount = discCount;
-                destinationFile.Tag.Comment = comment;
-                destinationFile.Tag.Lyrics = lyrics;
-                destinationFile.Tag.Copyright = copyright;
-                destinationFile.Tag.InitialKey = initialKey;
-                destinationFile.Tag.ISRC = isrc;
-                destinationFile.Tag.Grouping = grouping;
-                destinationFile.Tag.Conductor = conductor;
-                destinationFile.Tag.Pictures = pictures;
-
-                foreach (var pair in rawTags)
-                {
-                    if (pair.Value.Count == 0)
-                    {
-                        continue;
-                    }
-
-                    var rawName = NormalizeRawTagNameForDestination(pair.Key, destinationExtension);
-                    try
-                    {
-                        SetRawTag(destinationFile, destinationExtension, rawName, pair.Value, cloneRawTagWriteOptions);
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        _logger.LogDebug(
-                            ex,
-                            "QuickTag clone skipped raw tag {Tag} for destination {Path}",
-                            rawName,
-                            destinationFullPath);
-                    }
-                }
-
-                destinationFile.Save();
-            }
+            WriteCloneTagSnapshot(
+                destinationFullPath,
+                destinationExtension,
+                snapshot,
+                cloneRawTagWriteOptions,
+                genreAliasMap,
+                splitCompositeGenres);
 
             AtlTagHelper.RestoreChapters(destinationFullPath, chapterSnapshot, _logger);
-            return QuickTagCloneResult.Ok(rawTags.Count);
+            return QuickTagCloneResult.Ok(snapshot.RawTags.Count);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "QuickTag clone failed for {Source} -> {Destination}", sourcePath, destinationPath);
             return QuickTagCloneResult.Fail(ex.Message);
         }
+    }
+
+    private QuickTagCloneResult? ValidateCloneTagPaths(
+        string sourceFullPath,
+        string destinationFullPath,
+        bool enforceLibraryPathCheck,
+        out string sourceExtension,
+        out string destinationExtension)
+    {
+        sourceExtension = Path.GetExtension(sourceFullPath);
+        destinationExtension = Path.GetExtension(destinationFullPath);
+
+        if (enforceLibraryPathCheck)
+        {
+            var allowedRoots = ResolveAllowedLibraryRoots();
+            EnsurePathAllowed(sourceFullPath, allowedRoots);
+            EnsurePathAllowed(destinationFullPath, allowedRoots);
+        }
+
+        if (!IOFile.Exists(sourceFullPath))
+        {
+            return QuickTagCloneResult.Fail($"Source file not found: {sourceFullPath}");
+        }
+
+        if (!IOFile.Exists(destinationFullPath))
+        {
+            return QuickTagCloneResult.Fail($"Destination file not found: {destinationFullPath}");
+        }
+
+        if (!AudioExtensions.Contains(sourceExtension) || ShouldIgnoreTagEditorFile(sourceFullPath, sourceExtension))
+        {
+            return QuickTagCloneResult.Fail("Unsupported source audio file type.");
+        }
+
+        if (!AudioExtensions.Contains(destinationExtension) || ShouldIgnoreTagEditorFile(destinationFullPath, destinationExtension))
+        {
+            return QuickTagCloneResult.Fail("Unsupported destination audio file type.");
+        }
+
+        return null;
+    }
+
+    private static CloneTagSnapshot BuildCloneTagSnapshot(string sourceFullPath, string sourceExtension, QuickTagSeparators separators)
+    {
+        using var sourceFile = TagLib.File.Create(sourceFullPath);
+        return new CloneTagSnapshot
+        {
+            RawTags = ReadAllTags(sourceFile, sourceExtension, separators),
+            Title = sourceFile.Tag.Title,
+            Performers = (sourceFile.Tag.Performers ?? Array.Empty<string>()).ToArray(),
+            Album = sourceFile.Tag.Album,
+            AlbumArtists = (sourceFile.Tag.AlbumArtists ?? Array.Empty<string>()).ToArray(),
+            Composers = (sourceFile.Tag.Composers ?? Array.Empty<string>()).ToArray(),
+            Genres = (sourceFile.Tag.Genres ?? Array.Empty<string>()).ToArray(),
+            Year = sourceFile.Tag.Year,
+            BeatsPerMinute = sourceFile.Tag.BeatsPerMinute,
+            Track = sourceFile.Tag.Track,
+            TrackCount = sourceFile.Tag.TrackCount,
+            Disc = sourceFile.Tag.Disc,
+            DiscCount = sourceFile.Tag.DiscCount,
+            Comment = sourceFile.Tag.Comment,
+            Lyrics = sourceFile.Tag.Lyrics,
+            Copyright = sourceFile.Tag.Copyright,
+            InitialKey = sourceFile.Tag.InitialKey,
+            Isrc = sourceFile.Tag.ISRC,
+            Grouping = sourceFile.Tag.Grouping,
+            Conductor = sourceFile.Tag.Conductor,
+            Pictures = ClonePictures(sourceFile.Tag.Pictures)
+        };
+    }
+
+    private void WriteCloneTagSnapshot(
+        string destinationFullPath,
+        string destinationExtension,
+        CloneTagSnapshot snapshot,
+        RawTagWriteOptions cloneRawTagWriteOptions,
+        IReadOnlyDictionary<string, string> genreAliasMap,
+        bool splitCompositeGenres)
+    {
+        using var destinationFile = TagLib.File.Create(destinationFullPath);
+        destinationFile.Tag.Title = snapshot.Title;
+        destinationFile.Tag.Performers = snapshot.Performers;
+        destinationFile.Tag.Album = snapshot.Album;
+        destinationFile.Tag.AlbumArtists = snapshot.AlbumArtists;
+        destinationFile.Tag.Composers = snapshot.Composers;
+        destinationFile.Tag.Genres = FilterBlockedGenres(snapshot.Genres, genreAliasMap, splitCompositeGenres).ToArray();
+        destinationFile.Tag.Year = snapshot.Year;
+        destinationFile.Tag.BeatsPerMinute = snapshot.BeatsPerMinute;
+        destinationFile.Tag.Track = snapshot.Track;
+        destinationFile.Tag.TrackCount = snapshot.TrackCount;
+        destinationFile.Tag.Disc = snapshot.Disc;
+        destinationFile.Tag.DiscCount = snapshot.DiscCount;
+        destinationFile.Tag.Comment = snapshot.Comment;
+        destinationFile.Tag.Lyrics = snapshot.Lyrics;
+        destinationFile.Tag.Copyright = snapshot.Copyright;
+        destinationFile.Tag.InitialKey = snapshot.InitialKey;
+        destinationFile.Tag.ISRC = snapshot.Isrc;
+        destinationFile.Tag.Grouping = snapshot.Grouping;
+        destinationFile.Tag.Conductor = snapshot.Conductor;
+        destinationFile.Tag.Pictures = snapshot.Pictures;
+
+        foreach (var pair in snapshot.RawTags)
+        {
+            if (pair.Value.Count == 0)
+            {
+                continue;
+            }
+
+            var rawName = NormalizeRawTagNameForDestination(pair.Key, destinationExtension);
+            try
+            {
+                SetRawTag(destinationFile, destinationExtension, rawName, pair.Value, cloneRawTagWriteOptions);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        ex,
+                        "QuickTag clone skipped raw tag {Tag} for destination {Path}",
+                        rawName,
+                        destinationFullPath);
+                }
+            }
+        }
+
+        destinationFile.Save();
     }
 
     private void ApplyMp4AtlFallbackIfNeeded(
@@ -1070,7 +1118,7 @@ public sealed class QuickTagService
         return normalizedPath.StartsWith(rootWithSlash, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string ResolveBrowsePath(string? inputPath, string? subdir, IReadOnlyList<string> allowedRoots)
+    private static string ResolveBrowsePath(string? inputPath, string? subdir, List<string> allowedRoots)
     {
         var defaultRoot = allowedRoots[0];
         var basePath = string.IsNullOrWhiteSpace(inputPath)
@@ -2675,7 +2723,8 @@ public sealed class QuickTagService
                 }
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Ignore: quick tag save should continue even when a specific atom cannot be set.
         }
     }

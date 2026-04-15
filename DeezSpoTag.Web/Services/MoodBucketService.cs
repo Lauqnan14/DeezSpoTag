@@ -96,8 +96,11 @@ public sealed class MoodBucketService
             }
         }
 
-        _logger.LogDebug("Track {TrackId} assigned to moods: {Moods}", trackId,
-            assigned.Count > 0 ? string.Join(", ", assigned) : "none");
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Track {TrackId} assigned to moods: {Moods}", trackId,
+                assigned.Count > 0 ? string.Join(", ", assigned) : "none");
+        }
 
         return assigned;
     }
@@ -126,21 +129,21 @@ public sealed class MoodBucketService
             switch (rule)
             {
                 case StringRule sr:
-                {
-                    var value = GetStringField(analysis, sr.Field);
-                    if (value is null) continue;
-                    ruleCount++;
-                    totalScore += string.Equals(value, sr.Expected, StringComparison.OrdinalIgnoreCase) ? 1 : 0;
-                    break;
-                }
+                    {
+                        var value = GetStringField(analysis, sr.Field);
+                        if (value is null) continue;
+                        ruleCount++;
+                        totalScore += string.Equals(value, sr.Expected, StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+                        break;
+                    }
                 case NumericRule nr:
-                {
-                    var value = GetNumericField(analysis, nr.Field);
-                    if (!value.HasValue) continue;
-                    ruleCount++;
-                    totalScore += ScoreNumericConstraint(value.Value, nr.Min, nr.Max);
-                    break;
-                }
+                    {
+                        var value = GetNumericField(analysis, nr.Field);
+                        if (!value.HasValue) continue;
+                        ruleCount++;
+                        totalScore += ScoreNumericConstraint(value.Value, nr.Min, nr.Max);
+                        break;
+                    }
             }
         }
 

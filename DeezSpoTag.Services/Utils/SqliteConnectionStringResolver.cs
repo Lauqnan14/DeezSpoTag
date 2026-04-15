@@ -17,7 +17,8 @@ public static class SqliteConnectionStringResolver
         {
             builder = new SqliteConnectionStringBuilder(normalized);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return BuildFallback(defaultFileName);
         }
 

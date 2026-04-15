@@ -18,7 +18,7 @@ namespace DeezSpoTag.Web.Controllers.Api
 {
     [ApiController]
     [Route("api/deezer/download")]
-[Authorize]
+    [Authorize]
     public sealed class DeezerDownloadApiController : ControllerBase
     {
         private const string DeezerSource = "deezer";
@@ -60,7 +60,7 @@ namespace DeezSpoTag.Web.Controllers.Api
             var downloadGate = await _orchestrationService.EvaluateDownloadGateAsync(cancellationToken);
             if (!downloadGate.Allowed)
             {
-                    return StatusCode(409, new { error = string.IsNullOrWhiteSpace(downloadGate.Message) ? "Downloads paused while AutoTag is running." : downloadGate.Message });
+                return StatusCode(409, new { error = string.IsNullOrWhiteSpace(downloadGate.Message) ? "Downloads paused while AutoTag is running." : downloadGate.Message });
             }
 
             var request = ParseAddWithSettingsRequest(payload, out var invalidResult);
@@ -408,10 +408,13 @@ namespace DeezSpoTag.Web.Controllers.Api
         {
             if (accumulator.Queued.Count == 0 && accumulator.Deferred > 0)
             {
-                _logger.LogInformation(
-                    "Deezer download deferred: queued 0 deferred {Deferred} skipped {Skipped}",
-                    accumulator.Deferred,
-                    accumulator.Skipped);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "Deezer download deferred: queued 0 deferred {Deferred} skipped {Skipped}",
+                        accumulator.Deferred,
+                        accumulator.Skipped);
+                }
                 return Ok(new
                 {
                     success = true,
@@ -447,11 +450,14 @@ namespace DeezSpoTag.Web.Controllers.Api
                 });
             }
 
-            _logger.LogInformation(
-                "Deezer download mapped via intent: queued {Queued} deferred {Deferred} skipped {Skipped}",
-                accumulator.Queued.Count,
-                accumulator.Deferred,
-                accumulator.Skipped);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Deezer download mapped via intent: queued {Queued} deferred {Deferred} skipped {Skipped}",
+                    accumulator.Queued.Count,
+                    accumulator.Deferred,
+                    accumulator.Skipped);
+            }
             if (accumulator.QueuedMusicItems)
             {
                 _orchestrationService.MarkDownloadQueued();
@@ -922,7 +928,7 @@ namespace DeezSpoTag.Web.Controllers.Api
             return BuildBoomplayIntents(tracks);
         }
 
-        private static List<DownloadIntent> BuildBoomplayIntents(IReadOnlyCollection<BoomplayTrackMetadata> tracks)
+        private static List<DownloadIntent> BuildBoomplayIntents(List<BoomplayTrackMetadata> tracks)
         {
             var intents = new List<DownloadIntent>(tracks.Count);
             foreach (var track in tracks)

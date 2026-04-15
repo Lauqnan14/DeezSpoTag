@@ -60,20 +60,9 @@ public sealed class AppleDownloadApiController : ControllerBase
             });
         }
 
-        List<AppleTrackRequest> videoTracks;
-        List<AppleTrackRequest> audioTracks;
-        if (videosOnly)
-        {
-            videoTracks = tracks;
-            audioTracks = [];
-        }
-        else
-        {
-            videoTracks = tracks.Where(IsVideoTrack).ToList();
-            audioTracks = tracks.Except(videoTracks).ToList();
-        }
+        var (videoTracks, audioTracks) = SplitTracksByMode(tracks, videosOnly);
 
-        if (!videosOnly && videoTracks.Count > 0)
+        if (!videosOnly && videoTracks.Count > 0 && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation("Apple download guard: rerouting {Count} video item(s) to video pipeline.", videoTracks.Count);
         }
@@ -107,16 +96,7 @@ public sealed class AppleDownloadApiController : ControllerBase
 
         if (aggregateResult.Queued.Count == 0)
         {
-            _logger.LogInformation(
-                "Apple {Pipeline} download request queued nothing; skipped {Skipped}",
-                videosOnly ? "video" : "audio",
-                aggregateResult.Skipped);
-            return BadRequest(new
-            {
-                success = false,
-                message = string.IsNullOrWhiteSpace(aggregateResult.LastError) ? "Nothing queued." : aggregateResult.LastError,
-                reasonCodes = aggregateResult.ReasonCodes
-            });
+            return BuildEmptyQueueResponse(videosOnly, aggregateResult);
         }
 
         return Ok(new
@@ -124,6 +104,38 @@ public sealed class AppleDownloadApiController : ControllerBase
             success = true,
             queued = aggregateResult.Queued,
             skipped = aggregateResult.Skipped,
+            reasonCodes = aggregateResult.ReasonCodes
+        });
+    }
+
+    private static (List<AppleTrackRequest> VideoTracks, List<AppleTrackRequest> AudioTracks) SplitTracksByMode(
+        List<AppleTrackRequest> tracks,
+        bool videosOnly)
+    {
+        if (videosOnly)
+        {
+            return (tracks, []);
+        }
+
+        var videoTracks = tracks.Where(IsVideoTrack).ToList();
+        var audioTracks = tracks.Except(videoTracks).ToList();
+        return (videoTracks, audioTracks);
+    }
+
+    private BadRequestObjectResult BuildEmptyQueueResponse(bool videosOnly, QueueAggregateResult aggregateResult)
+    {
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Apple {Pipeline} download request queued nothing; skipped {Skipped}",
+                videosOnly ? "video" : "audio",
+                aggregateResult.Skipped);
+        }
+
+        return BadRequest(new
+        {
+            success = false,
+            message = string.IsNullOrWhiteSpace(aggregateResult.LastError) ? "Nothing queued." : aggregateResult.LastError,
             reasonCodes = aggregateResult.ReasonCodes
         });
     }

@@ -31,7 +31,9 @@ public sealed class TrackMatchService
             }
 
             // ISRC present but no match found: do not fallback to metadata search.
-            _logger.LogDebug("No Deezer ISRC match for {Isrc}; skipping metadata fallback", identity.Isrc);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("No Deezer ISRC match for {Isrc}; skipping metadata fallback", identity.Isrc);            }
             return null;
         }
 
@@ -63,7 +65,9 @@ public sealed class TrackMatchService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer ISRC lookup failed for {Isrc}", isrc);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer ISRC lookup failed for {Isrc}", isrc);            }
             return null;
         }
     }
@@ -126,7 +130,9 @@ public sealed class TrackMatchService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer metadata match failed for {Title} - {Artist}", identity.Title, identity.Artist);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer metadata match failed for {Title} - {Artist}", identity.Title, identity.Artist);            }
             return null;
         }
     }

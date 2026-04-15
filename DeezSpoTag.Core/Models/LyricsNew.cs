@@ -216,7 +216,8 @@ public class LyricsNew : LyricsBase
 
             return new SynchronizedLyric(text, lrcTimestamp, milliseconds, duration);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }

@@ -93,7 +93,10 @@ public sealed class MusicBrainzMatcher
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "MusicBrainz ID lookup failed for {RecordingId}", recordingId);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "MusicBrainz ID lookup failed for {RecordingId}", recordingId);
+                }
             }
         }
 

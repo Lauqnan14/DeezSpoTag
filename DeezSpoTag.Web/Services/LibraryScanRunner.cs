@@ -716,7 +716,7 @@ public sealed class LibraryScanRunner
     }
 
     private async Task StoreLocalGenresAsync(
-        IReadOnlyDictionary<string, List<string>> artistGenres,
+        Dictionary<string, List<string>> artistGenres,
         CancellationToken cancellationToken)
     {
         if (artistGenres.Count == 0)
@@ -829,7 +829,8 @@ public sealed class LibraryScanRunner
                 Directory.Delete(thumbPath, recursive: true);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Best-effort cleanup; scan can still proceed.
         }
     }

@@ -12,6 +12,12 @@ namespace DeezSpoTag.Services.Apple;
 
 public sealed class AppleLyricsService
 {
+    private readonly record struct TypedLyricsRequestContext(
+        string Token,
+        string AppleId,
+        string Storefront,
+        string MediaUserToken);
+
     private const string DefaultLanguage = "en-US";
     private const string SyncedLyricsType = "lyrics";
     private const string SyllableLyricsType = "syllable-lyrics";
@@ -433,7 +439,33 @@ public sealed class AppleLyricsService
 
         var languageCandidates = BuildLanguageCandidates(language);
         var typeCandidates = BuildLyricsTypeCandidates(lrcType);
+        var catalogTtml = await TryFetchLyricsFromCatalogApiAsync(
+            appleId,
+            storefront,
+            mediaUserToken,
+            languageCandidates,
+            cancellationToken);
+        if (!string.IsNullOrWhiteSpace(catalogTtml))
+        {
+            return catalogTtml;
+        }
 
+        using var client = _httpClientFactory.CreateClient();
+        return await TryFetchLyricsFromTypedEndpointsAsync(
+            client,
+            new TypedLyricsRequestContext(token, appleId, storefront, mediaUserToken),
+            typeCandidates,
+            languageCandidates,
+            cancellationToken);
+    }
+
+    private async Task<string?> TryFetchLyricsFromCatalogApiAsync(
+        string appleId,
+        string storefront,
+        string mediaUserToken,
+        IEnumerable<string> languageCandidates,
+        CancellationToken cancellationToken)
+    {
         foreach (var lang in languageCandidates)
         {
             try
@@ -452,24 +484,34 @@ public sealed class AppleLyricsService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Apple lyrics endpoint request failed for song {AppleId} lang={Lang}", appleId, lang);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Apple lyrics endpoint request failed for song {AppleId} lang={Lang}", appleId, lang);                }
             }
         }
 
-        using var client = _httpClientFactory.CreateClient();
+        return null;
+    }
 
+    private async Task<string?> TryFetchLyricsFromTypedEndpointsAsync(
+        HttpClient client,
+        TypedLyricsRequestContext context,
+        IEnumerable<string> typeCandidates,
+        IEnumerable<string> languageCandidates,
+        CancellationToken cancellationToken)
+    {
         foreach (var type in typeCandidates)
         {
             foreach (var lang in languageCandidates)
             {
-                var url = BuildLyricsTypeUrl(storefront, appleId, type, lang);
+                var url = BuildLyricsTypeUrl(context.Storefront, context.AppleId, type, lang);
 
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
                 request.Headers.TryAddWithoutValidation("Origin", BuildAppleMusicOrigin());
                 request.Headers.TryAddWithoutValidation("Referer", BuildAppleMusicReferer());
-                request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {token}");
-                request.Headers.TryAddWithoutValidation(MediaUserTokenHeader, mediaUserToken);
-                request.Headers.TryAddWithoutValidation("Cookie", BuildMediaUserCookie(mediaUserToken, storefront));
+                request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {context.Token}");
+                request.Headers.TryAddWithoutValidation(MediaUserTokenHeader, context.MediaUserToken);
+                request.Headers.TryAddWithoutValidation("Cookie", BuildMediaUserCookie(context.MediaUserToken, context.Storefront));
                 request.Headers.TryAddWithoutValidation(UserAgentHeader, AppleUserAgentPool.GetAuthenticatedUserAgent());
                 request.Headers.TryAddWithoutValidation("Accept", "application/json");
                 request.Headers.TryAddWithoutValidation("Accept-Language", lang);
@@ -477,7 +519,9 @@ public sealed class AppleLyricsService
                 using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
-                    _logger.LogDebug("Apple lyrics request failed: status={StatusCode} type={Type} lang={Lang}", response.StatusCode, type, lang);
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug("Apple lyrics request failed: status={StatusCode} type={Type} lang={Lang}", response.StatusCode, type, lang);                    }
                     continue;
                 }
 
@@ -705,26 +749,49 @@ public sealed class AppleLyricsService
             settings.AppleMusic?.MediaUserToken,
             cancellationToken);
         var language = string.IsNullOrWhiteSpace(settings.DeezerLanguage) ? DefaultLanguage : settings.DeezerLanguage;
-
-        if (!string.IsNullOrWhiteSpace(track.ISRC))
+        var resolvedFromIsrc = await TryResolveAppleIdByIsrcAsync(track.ISRC, storefront, language, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(resolvedFromIsrc))
         {
-            try
-            {
-                using var doc = await _catalogService.GetSongByIsrcAsync(track.ISRC, storefront, language, cancellationToken);
-                var id = TryExtractAppleId(doc.RootElement);
-                if (!string.IsNullOrWhiteSpace(id))
-                {
-                    return id;
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogDebug(ex, "Apple lyrics ISRC lookup failed for {Isrc}", track.ISRC);
-            }
+            return resolvedFromIsrc;
         }
 
-        var searchTerms = BuildSearchTerms(track);
-        foreach (var term in searchTerms)
+        return await TryResolveAppleIdBySearchTermsAsync(track, storefront, language, cancellationToken);
+    }
+
+    private async Task<string?> TryResolveAppleIdByIsrcAsync(
+        string? isrc,
+        string storefront,
+        string language,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(isrc))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = await _catalogService.GetSongByIsrcAsync(isrc, storefront, language, cancellationToken);
+            return TryExtractAppleId(doc.RootElement);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple lyrics ISRC lookup failed for {Isrc}", isrc);
+            }
+
+            return null;
+        }
+    }
+
+    private async Task<string?> TryResolveAppleIdBySearchTermsAsync(
+        Track track,
+        string storefront,
+        string language,
+        CancellationToken cancellationToken)
+    {
+        foreach (var term in BuildSearchTerms(track))
         {
             try
             {
@@ -746,7 +813,10 @@ public sealed class AppleLyricsService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Apple lyrics search lookup failed for {Term}", term);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Apple lyrics search lookup failed for {Term}", term);
+                }
             }
         }
 
@@ -968,7 +1038,8 @@ public sealed class AppleLyricsService
 
             return string.Join("\n", lrcLines);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return string.Empty;
         }
     }

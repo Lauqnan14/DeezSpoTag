@@ -115,16 +115,15 @@ public sealed class ArtistWatchService
 
         if (string.IsNullOrWhiteSpace(spotifyId))
         {
-            _logger.LogDebug("Spotify artist watch skipped - missing Spotify ID for {ArtistId}", artist.ArtistId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Spotify artist watch skipped - missing Spotify ID for {ArtistId}", artist.ArtistId);
+            }
             return;
         }
 
         var state = await _libraryRepository.GetArtistWatchStateAsync(artist.ArtistId, cancellationToken);
-        var offset = state?.BatchNextOffset ?? 0;
-        if (offset < 0)
-        {
-            offset = 0;
-        }
+        var offset = Math.Max(0, state?.BatchNextOffset ?? 0);
 
         var groups = settings.WatchedArtistAlbumGroup ?? new List<string>();
         var page = await _spotifyArtistService.FetchArtistAlbumsPageAsync(
@@ -339,7 +338,10 @@ public sealed class ArtistWatchService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple artist watch fetch failed for {ArtistId}:{AppleId}", artist.ArtistId, appleId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple artist watch fetch failed for {ArtistId}:{AppleId}", artist.ArtistId, appleId);
+            }
             return null;
         }
     }
@@ -407,7 +409,10 @@ public sealed class ArtistWatchService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple album fetch failed for album {AlbumId}", albumId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple album fetch failed for album {AlbumId}", albumId);
+            }
             return null;
         }
     }
@@ -428,7 +433,10 @@ public sealed class ArtistWatchService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer artist watch fetch failed for {ArtistId}:{DeezerId}", artist.ArtistId, deezerId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer artist watch fetch failed for {ArtistId}:{DeezerId}", artist.ArtistId, deezerId);
+            }
             return null;
         }
     }
@@ -709,7 +717,7 @@ public sealed class ArtistWatchService
         await _libraryRepository.AddArtistWatchAlbumsAsync(artistId, insertedAlbums, cancellationToken);
     }
 
-    private static HashSet<string> BuildAlbumGroupSet(IReadOnlyCollection<string>? configuredGroups)
+    private static HashSet<string> BuildAlbumGroupSet(List<string>? configuredGroups)
     {
         var groups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (configuredGroups == null || configuredGroups.Count == 0)

@@ -92,7 +92,10 @@ public sealed class DiscogsCoverSource : ICoverSource
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Discogs cover search failed for {Artist} - {Album}", query.Artist, query.Album);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Discogs cover search failed for {Artist} - {Album}", query.Artist, query.Album);
+            }
             return Array.Empty<CoverCandidate>();
         }
     }

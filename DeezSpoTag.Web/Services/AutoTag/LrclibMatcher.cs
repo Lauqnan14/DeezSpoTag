@@ -183,11 +183,14 @@ public sealed class LrclibMatcher
 
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogDebug(
-                    "LRCLIB metadata request failed with status {Status} for {Artist} - {Title}",
-                    (int)response.StatusCode,
-                    artistName,
-                    trackName);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        "LRCLIB metadata request failed with status {Status} for {Artist} - {Title}",
+                        (int)response.StatusCode,
+                        artistName,
+                        trackName);
+                }
                 return null;
             }
 
@@ -201,7 +204,10 @@ public sealed class LrclibMatcher
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "LRCLIB metadata request failed for {Artist} - {Title}", artistName, trackName);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "LRCLIB metadata request failed for {Artist} - {Title}", artistName, trackName);
+            }
             return null;
         }
     }
@@ -228,7 +234,10 @@ public sealed class LrclibMatcher
 
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogDebug("LRCLIB search request failed with status {Status} for query {Query}", (int)response.StatusCode, query);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("LRCLIB search request failed with status {Status} for query {Query}", (int)response.StatusCode, query);
+                }
                 return null;
             }
 
@@ -257,7 +266,10 @@ public sealed class LrclibMatcher
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "LRCLIB search request failed for query {Query}", query);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "LRCLIB search request failed for query {Query}", query);
+            }
             return null;
         }
     }
@@ -424,8 +436,8 @@ public sealed class LrclibMatcher
 
     private static void AddLyricsToTrackPayload(
         AutoTagTrack track,
-        IReadOnlyCollection<string> syncedLines,
-        IReadOnlyCollection<string> unsyncedLines)
+        List<string> syncedLines,
+        List<string> unsyncedLines)
     {
         if (syncedLines.Count > 0)
         {

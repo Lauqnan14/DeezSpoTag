@@ -485,7 +485,10 @@ public class LibraryArtistsApiController : ControllerBase
         [FromQuery] string? artistName,
         CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Spotify artist request: artistId={ArtistId} refresh={Refresh} rematch={Rematch}", id, refresh, rematch);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Spotify artist request: artistId={ArtistId} refresh={Refresh} rematch={Rematch}", id, refresh, rematch);
+        }
         var resolvedArtistName = await ResolveArtistNameAsync(id, cancellationToken);
         if (string.IsNullOrWhiteSpace(resolvedArtistName))
         {
@@ -826,11 +829,17 @@ public class LibraryArtistsApiController : ControllerBase
         }
         catch (IOException ex)
         {
-            _logger.LogDebug(ex, "Failed to remove {Label} {FilePath}", label, filePath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to remove {Label} {FilePath}", label, filePath);
+            }
         }
         catch (UnauthorizedAccessException ex)
         {
-            _logger.LogDebug(ex, "Access denied removing {Label} {FilePath}", label, filePath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Access denied removing {Label} {FilePath}", label, filePath);
+            }
         }
     }
 

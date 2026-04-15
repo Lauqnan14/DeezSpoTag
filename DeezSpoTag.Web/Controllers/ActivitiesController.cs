@@ -317,7 +317,10 @@ public class ActivitiesController : Controller
             }
 
             await _queueRepository.DeleteByUuidAsync(request.Uuid);
-            _logger.LogInformation("Removed failed download {Uuid} from queue", LogSanitizer.OneLine(request.Uuid));
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Removed failed download {Uuid} from queue", LogSanitizer.OneLine(request.Uuid));
+            }
             return Json(new { success = true, message = "Download removed from queue" });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -380,10 +383,13 @@ public class ActivitiesController : Controller
             await _queueRepository.UpdateEngineAsync(request.Uuid, firstStep.Source, HttpContext.RequestAborted);
 
             await _queueRepository.RequeueAsync(request.Uuid, requeueToFront: false, newestFirst: false, cancellationToken: HttpContext.RequestAborted);
-            _logger.LogInformation(
-                "Retried download with fallback reset: {Uuid} (engine={Engine})",
-                LogSanitizer.OneLine(request.Uuid),
-                LogSanitizer.OneLine(firstStep.Source));
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Retried download with fallback reset: {Uuid} (engine={Engine})",
+                    LogSanitizer.OneLine(request.Uuid),
+                    LogSanitizer.OneLine(firstStep.Source));
+            }
             _activityLog.Info($"Retry queued (fallback reset): {request.Uuid} engine={firstStep.Source}");
             _deezspotagListener.Send("updateQueue", new
             {

@@ -91,7 +91,7 @@ public class LyricsService
     }
 
     public LyricsService(
-        ILogger<LyricsService> logger, 
+        ILogger<LyricsService> logger,
         IHttpClientFactory httpClientFactory,
         JwtTokenService jwtTokenService,
         AuthenticatedDeezerService authenticatedDeezerService,
@@ -238,7 +238,9 @@ public class LyricsService
 
     private LyricsBase? LogUnknownLyricsProvider(string provider)
     {
-        _logger.LogDebug("Unknown lyrics provider {Provider} configured in fallback order", provider);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Unknown lyrics provider {Provider} configured in fallback order", provider);        }
         return null;
     }
 
@@ -252,9 +254,11 @@ public class LyricsService
         var deezerTrackId = await ResolveDeezerLyricsTrackIdAsync(track, settings, cancellationToken);
         if (string.IsNullOrWhiteSpace(deezerTrackId))
         {
-            _logger.LogDebug(
-                "Skipping Deezer lyrics lookup because no Deezer track id could be resolved for track {TrackId}",
-                track.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Skipping Deezer lyrics lookup because no Deezer track id could be resolved for track {TrackId}",
+                    track.Id);            }
             return null;
         }
 
@@ -342,7 +346,7 @@ public class LyricsService
         }
     }
 
-    private static bool HasLyricsLines(IReadOnlyCollection<SynchronizedLyric>? lyricsLines)
+    private static bool HasLyricsLines(List<SynchronizedLyric>? lyricsLines)
     {
         return lyricsLines != null && lyricsLines.Count > 0;
     }
@@ -505,7 +509,9 @@ public class LyricsService
         using var response = await client.GetAsync(url, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogDebug("Musixmatch request {Action} failed with status {StatusCode}", action, response.StatusCode);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Musixmatch request {Action} failed with status {StatusCode}", action, response.StatusCode);            }
             return default;
         }
 
@@ -902,7 +908,9 @@ public class LyricsService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "SongLink resolution failed for Deezer lyrics track id lookup for track {TrackId}", track.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "SongLink resolution failed for Deezer lyrics track id lookup for track {TrackId}", track.Id);            }
         }
 
         return null;
@@ -925,7 +933,9 @@ public class LyricsService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Unable to resolve Deezer track id via ISRC {Isrc}", track.ISRC);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Unable to resolve Deezer track id via ISRC {Isrc}", track.ISRC);            }
         }
 
         return null;
@@ -1109,7 +1119,9 @@ public class LyricsService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to read Spotify auth state from {Path}", statePath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to read Spotify auth state from {Path}", statePath);            }
             return null;
         }
     }
@@ -1214,7 +1226,9 @@ public class LyricsService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to parse Spotify blob payload at {Path}", blobPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to parse Spotify blob payload at {Path}", blobPath);            }
             return null;
         }
     }
@@ -1393,7 +1407,9 @@ public class LyricsService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Spotify web player token request failed for {Url}", url);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify web player token request failed for {Url}", url);            }
             return null;
         }
     }
@@ -1408,7 +1424,8 @@ public class LyricsService
             using var response = await client.SendAsync(request, cancellationToken);
             _ = response.Content;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Best-effort warmup only.
         }
     }
@@ -1450,7 +1467,9 @@ public class LyricsService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Spotify lyrics request failed for {Url}", url);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify lyrics request failed for {Url}", url);            }
             return null;
         }
     }
@@ -1673,14 +1692,18 @@ public class LyricsService
             return LyricsNew.CreateError("Track ID is required");
         }
 
-        _logger.LogDebug("Fetching lyrics for track {TrackId}", trackId);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Fetching lyrics for track {TrackId}", trackId);        }
 
         // Primary: Try Pipe API with GraphQL
         var lyricsFromPipe = await GetLyricsFromPipeApiAsync(trackId, arl, sid, cancellationToken);
-        
+
         if (lyricsFromPipe.IsLoaded())
         {
-            _logger.LogDebug("Successfully fetched lyrics from Pipe API for track {TrackId}", trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Successfully fetched lyrics from Pipe API for track {TrackId}", trackId);            }
             return lyricsFromPipe;
         }
 
@@ -1690,12 +1713,16 @@ public class LyricsService
         }
 
         // Fallback: Try legacy GW API
-        _logger.LogDebug("Falling back to GW API for track {TrackId}", trackId);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Falling back to GW API for track {TrackId}", trackId);        }
         var lyricsFromGw = await GetLyricsFromGwApiAsync(trackId, arl, sid, cancellationToken);
 
         if (lyricsFromGw.IsLoaded())
         {
-            _logger.LogDebug("Successfully fetched lyrics from GW API for track {TrackId}", trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Successfully fetched lyrics from GW API for track {TrackId}", trackId);            }
             return lyricsFromGw;
         }
 
@@ -1754,13 +1781,13 @@ public class LyricsService
 
             using var httpClient = _httpClientFactory.CreateClient(LyricsClientName);
             using var request = new HttpRequestMessage(HttpMethod.Post, DeezerPipeApiUrl);
-            
+
             // Set headers
             request.Headers.Add(UserAgentHeader, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36");
             request.Headers.Add("Accept", "*/*");
             request.Headers.Add("Accept-Language", "en-US,en;q=0.9");
             request.Headers.Add("Authorization", $"Bearer {jwtToken}");
-            
+
             // Set cookies
             var cookieValue = $"arl={arl}";
             if (!string.IsNullOrEmpty(sid))
@@ -1774,14 +1801,14 @@ public class LyricsService
             request.Content = new StringContent(jsonContent, System.Text.Encoding.UTF8, ApplicationJson);
 
             using var response = await httpClient.SendAsync(request, cancellationToken);
-            
+
             if (!response.IsSuccessStatusCode)
             {
                 return LyricsNew.CreateError($"Pipe API request failed with status: {response.StatusCode}");
             }
 
             var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
-            
+
             if (string.IsNullOrEmpty(responseContent))
             {
                 return LyricsNew.CreateError("Empty response from Pipe API");
@@ -1817,7 +1844,7 @@ public class LyricsService
         {
             // First get track data to access lyrics - EXACT PORT: Use SNG_ID like deemix
             var trackData = await CallGwApiAsync("deezer.pageTrack", $"{{\"SNG_ID\": \"{trackId}\"}}", arl, sid, cancellationToken);
-            
+
             if (trackData == null)
             {
                 return LyricsClassic.CreateError("Failed to get track data from GW API");
@@ -1832,7 +1859,7 @@ public class LyricsService
 
             // Try direct lyrics API call - EXACT PORT: Use SNG_ID like deemix
             var lyricsData = await CallGwApiAsync("song.getLyrics", $"{{\"SNG_ID\": \"{trackId}\"}}", arl, sid, cancellationToken);
-            
+
             if (lyricsData == null)
             {
                 return LyricsClassic.CreateError("No lyrics data from GW API");
@@ -1860,73 +1887,112 @@ public class LyricsService
         try
         {
             var apiToken = await GetGwTokenAsync(arl, sid, cancellationToken);
-            if (string.IsNullOrWhiteSpace(apiToken) && !string.Equals(method, "deezer.getUserData", StringComparison.Ordinal))
+            if (RequiresGwApiToken(method) && string.IsNullOrWhiteSpace(apiToken))
             {
                 _logger.LogWarning("Unable to obtain GW token for method {Method}", method);
                 return null;
             }
 
             var url = $"https://www.deezer.com/ajax/gw-light.php?method={method}&input=3&api_version=1.0&api_token={apiToken ?? "null"}";
-            
             using var httpClient = _httpClientFactory.CreateClient(LyricsClientName);
-            using var request = new HttpRequestMessage(HttpMethod.Post, url);
-            
-            // Set headers
-            request.Headers.Add(UserAgentHeader, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36");
-            request.Headers.Add("Accept", "*/*");
-            request.Headers.Add("Accept-Language", "en-US,en;q=0.9");
-            
-            // Set cookies
-            var cookieValue = $"arl={arl}";
-            if (!string.IsNullOrEmpty(sid))
-            {
-                cookieValue += $"; sid={sid}";
-            }
-            request.Headers.Add("Cookie", cookieValue);
-
-            // Set content
-            request.Content = new StringContent(body, System.Text.Encoding.UTF8, ApplicationJson);
-
+            using var request = BuildGwApiRequest(url, body, arl, sid);
             using var response = await httpClient.SendAsync(request, cancellationToken);
-            
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogWarning("GW API request failed with status: {StatusCode}", response.StatusCode);
-                return null;
-            }
-
-            var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
-            
-            if (string.IsNullOrEmpty(responseContent))
+            var root = await ParseGwApiResponseAsync(response, cancellationToken);
+            if (!root.HasValue)
             {
                 return null;
             }
 
-            using var jsonDoc = JsonDocument.Parse(responseContent);
-            var root = jsonDoc.RootElement.Clone();
-            if (root.TryGetProperty("error", out var errorElement) && errorElement.ValueKind != JsonValueKind.Null)
-            {
-                var errorText = errorElement.ToString();
-                if (!string.IsNullOrWhiteSpace(errorText) && errorText.Contains("VALID_TOKEN_REQUIRED", StringComparison.OrdinalIgnoreCase))
-                {
-                    _logger.LogDebug("GW token invalid, refreshing token for {Method}", method);
-                    _cachedGwToken = null;
-                    _cachedGwTokenExpiry = DateTime.MinValue;
-                    var refreshed = await GetGwTokenAsync(arl, sid, cancellationToken, forceRefresh: true);
-                    if (!string.IsNullOrWhiteSpace(refreshed))
-                    {
-                        return await CallGwApiAsync(method, body, arl, sid, cancellationToken);
-                    }
-                }
-            }
-
-            return root;
+            var retried = await TryRetryGwApiCallOnInvalidTokenAsync(root.Value, method, body, arl, sid, cancellationToken);
+            return retried ?? root;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error calling GW API method {Method}", method);
             return null;
         }
+    }
+
+    private static bool RequiresGwApiToken(string method)
+    {
+        return !string.Equals(method, "deezer.getUserData", StringComparison.Ordinal);
+    }
+
+    private static HttpRequestMessage BuildGwApiRequest(string url, string body, string arl, string? sid)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, url);
+        request.Headers.Add(UserAgentHeader, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36");
+        request.Headers.Add("Accept", "*/*");
+        request.Headers.Add("Accept-Language", "en-US,en;q=0.9");
+        request.Headers.Add("Cookie", BuildGwCookie(arl, sid));
+        request.Content = new StringContent(body, System.Text.Encoding.UTF8, ApplicationJson);
+        return request;
+    }
+
+    private static string BuildGwCookie(string arl, string? sid)
+    {
+        return string.IsNullOrEmpty(sid)
+            ? $"arl={arl}"
+            : $"arl={arl}; sid={sid}";
+    }
+
+    private async Task<JsonElement?> ParseGwApiResponseAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("GW API request failed with status: {StatusCode}", response.StatusCode);
+            return null;
+        }
+
+        var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (string.IsNullOrEmpty(responseContent))
+        {
+            return null;
+        }
+
+        using var jsonDoc = JsonDocument.Parse(responseContent);
+        return jsonDoc.RootElement.Clone();
+    }
+
+    private async Task<JsonElement?> TryRetryGwApiCallOnInvalidTokenAsync(
+        JsonElement root,
+        string method,
+        string body,
+        string arl,
+        string? sid,
+        CancellationToken cancellationToken)
+    {
+        if (!IsInvalidGwTokenError(root))
+        {
+            return null;
+        }
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("GW token invalid, refreshing token for {Method}", method);
+        }
+
+        _cachedGwToken = null;
+        _cachedGwTokenExpiry = DateTime.MinValue;
+        var refreshed = await GetGwTokenAsync(arl, sid, cancellationToken, forceRefresh: true);
+        if (string.IsNullOrWhiteSpace(refreshed))
+        {
+            return null;
+        }
+
+        return await CallGwApiAsync(method, body, arl, sid, cancellationToken);
+    }
+
+    private static bool IsInvalidGwTokenError(JsonElement root)
+    {
+        if (!root.TryGetProperty("error", out var errorElement) || errorElement.ValueKind == JsonValueKind.Null)
+        {
+            return false;
+        }
+
+        var errorText = errorElement.ToString();
+        return !string.IsNullOrWhiteSpace(errorText)
+               && errorText.Contains("VALID_TOKEN_REQUIRED", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<string?> GetGwTokenAsync(string arl, string? sid, CancellationToken cancellationToken, bool forceRefresh = false)
@@ -2003,7 +2069,9 @@ public class LyricsService
 
         if (!string.IsNullOrEmpty(lyrics.ErrorMessage))
         {
-            _logger.LogDebug("Lyrics have error message, skipping LRC creation: {Error}", lyrics.ErrorMessage);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Lyrics have error message, skipping LRC creation: {Error}", lyrics.ErrorMessage);            }
             return false;
         }
 
@@ -2023,11 +2091,15 @@ public class LyricsService
         var validLines = syncedLyrics.Count(l => l.IsValid());
         if (validLines < 2)
         {
-            _logger.LogDebug("Insufficient valid synchronized lyrics lines ({Count}), skipping LRC creation", validLines);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Insufficient valid synchronized lyrics lines ({Count}), skipping LRC creation", validLines);            }
             return false;
         }
 
-        _logger.LogDebug("Lyrics validation passed, LRC file can be created with {Count} lines", validLines);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Lyrics validation passed, LRC file can be created with {Count} lines", validLines);        }
         return true;
     }
 
@@ -2044,6 +2116,102 @@ public class LyricsService
         return lyrics.GenerateLrcContent(title, artist, album);
     }
 
+    private sealed record LegacyLyricsPaths(string LrcPath, string TtmlPath, string TxtPath);
+
+    private async Task<LyricsBase?> TryResolveCompatibilityLyricsAsync(string trackId, CancellationToken cancellationToken)
+    {
+        var arl = await _authenticatedDeezerService.GetArlAsync();
+        if (string.IsNullOrEmpty(arl))
+        {
+            _logger.LogWarning("No ARL available for lyrics fetching for track {TrackId}", trackId);
+            return null;
+        }
+
+        var sid = await _authenticatedDeezerService.GetSidAsync();
+        var lyrics = await GetLyricsAsync(trackId, arl, sid, cancellationToken);
+        if (lyrics == null || !string.IsNullOrEmpty(lyrics.ErrorMessage))
+        {
+            _logger.LogWarning("Failed to fetch lyrics for track {TrackId}: {Error}", trackId, lyrics?.ErrorMessage ?? "Unknown error");
+            return null;
+        }
+
+        return lyrics;
+    }
+
+    private static LegacyLyricsPaths BuildLegacyLyricsPaths(string filePath, string filename)
+    {
+        return new LegacyLyricsPaths(
+            LrcPath: Path.Join(filePath, $"{filename}.lrc"),
+            TtmlPath: Path.Join(filePath, $"{filename}.ttml"),
+            TxtPath: Path.Join(filePath, $"{filename}.txt"));
+    }
+
+    private async Task<bool> SaveLegacyRichLyricsAsync(
+        LyricsBase lyrics,
+        Track track,
+        LegacyLyricsPaths paths,
+        CancellationToken cancellationToken)
+    {
+        var savedRichLyrics = false;
+        if (lyrics.IsSynced())
+        {
+            var lrcContent = GenerateLrcContent(lyrics, track.Title, track.MainArtist?.Name, track.Album?.Title);
+            if (!string.IsNullOrEmpty(lrcContent))
+            {
+                await System.IO.File.WriteAllTextAsync(paths.LrcPath, lrcContent, cancellationToken);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Successfully saved synchronized lyrics to {LrcPath}", paths.LrcPath);
+                }
+
+                savedRichLyrics = true;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(lyrics.TtmlLyrics))
+        {
+            await System.IO.File.WriteAllTextAsync(paths.TtmlPath, lyrics.TtmlLyrics, cancellationToken);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Successfully saved TTML lyrics to {TtmlPath}", paths.TtmlPath);
+            }
+
+            savedRichLyrics = true;
+        }
+
+        return savedRichLyrics;
+    }
+
+    private async Task SaveLegacyUnsyncedLyricsAsync(
+        LyricsBase lyrics,
+        Track track,
+        LegacyLyricsPaths paths,
+        bool hasRichLyrics,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(lyrics.UnsyncedLyrics))
+        {
+            return;
+        }
+
+        var hasExistingRichLyrics = System.IO.File.Exists(paths.LrcPath) || System.IO.File.Exists(paths.TtmlPath);
+        if (hasRichLyrics || hasExistingRichLyrics)
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Skipping unsynchronized lyrics for track {TrackId} because LRC or TTML exists.", track.Id);
+            }
+
+            return;
+        }
+
+        await System.IO.File.WriteAllTextAsync(paths.TxtPath, lyrics.UnsyncedLyrics, cancellationToken);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Successfully saved unsynchronized lyrics to {TxtPath}", paths.TxtPath);
+        }
+    }
+
     /// <summary>
     /// Save lyrics to file (Downloader compatibility method)
     /// </summary>
@@ -2051,62 +2219,15 @@ public class LyricsService
     {
         try
         {
-            // Get ARL from authenticated Deezer service
-            var arl = await _authenticatedDeezerService.GetArlAsync();
-            if (string.IsNullOrEmpty(arl))
+            var lyrics = await TryResolveCompatibilityLyricsAsync(track.Id, cancellationToken);
+            if (lyrics == null)
             {
-                _logger.LogWarning("No ARL available for lyrics fetching for track {TrackId}", track.Id);
                 return;
             }
 
-            // Fetch lyrics using dual API approach
-            var sid = await _authenticatedDeezerService.GetSidAsync();
-            var lyrics = await GetLyricsAsync(track.Id, arl, sid, cancellationToken);
-            
-            if (lyrics == null || !string.IsNullOrEmpty(lyrics.ErrorMessage))
-            {
-                _logger.LogWarning("Failed to fetch lyrics for track {TrackId}: {Error}", track.Id, lyrics?.ErrorMessage ?? "Unknown error");
-                return;
-            }
-
-            var lrcPath = Path.Join(filePath, $"{filename}.lrc");
-            var ttmlPath = Path.Join(filePath, $"{filename}.ttml");
-            var txtPath = Path.Join(filePath, $"{filename}.txt");
-            var hasRichLyrics = false;
-
-            // Save synchronized lyrics as .lrc if available
-            if (lyrics.IsSynced())
-            {
-                var lrcContent = GenerateLrcContent(lyrics, track.Title, track.MainArtist?.Name, track.Album?.Title);
-                if (!string.IsNullOrEmpty(lrcContent))
-                {
-                    await System.IO.File.WriteAllTextAsync(lrcPath, lrcContent, cancellationToken);
-                    _logger.LogInformation("Successfully saved synchronized lyrics to {LrcPath}", lrcPath);
-                    hasRichLyrics = true;
-                }
-            }
-
-            if (!string.IsNullOrWhiteSpace(lyrics.TtmlLyrics))
-            {
-                await System.IO.File.WriteAllTextAsync(ttmlPath, lyrics.TtmlLyrics, cancellationToken);
-                _logger.LogInformation("Successfully saved TTML lyrics to {TtmlPath}", ttmlPath);
-                hasRichLyrics = true;
-            }
-
-            // Fallback to unsynchronized lyrics as .txt only when no rich lyrics exist.
-            if (!string.IsNullOrEmpty(lyrics.UnsyncedLyrics))
-            {
-                var hasExistingRichLyrics = System.IO.File.Exists(lrcPath) || System.IO.File.Exists(ttmlPath);
-                if (hasRichLyrics || hasExistingRichLyrics)
-                {
-                    _logger.LogInformation("Skipping unsynchronized lyrics for track {TrackId} because LRC or TTML exists.", track.Id);
-                }
-                else
-                {
-                    await System.IO.File.WriteAllTextAsync(txtPath, lyrics.UnsyncedLyrics, cancellationToken);
-                    _logger.LogInformation("Successfully saved unsynchronized lyrics to {TxtPath}", txtPath);
-                }
-            }
+            var paths = BuildLegacyLyricsPaths(filePath, filename);
+            var hasRichLyrics = await SaveLegacyRichLyricsAsync(lyrics, track, paths, cancellationToken);
+            await SaveLegacyUnsyncedLyricsAsync(lyrics, track, paths, hasRichLyrics, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -2124,13 +2245,17 @@ public class LyricsService
         DeezSpoTagSettings settings,
         CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug("SaveLyricsAsync called for track {TrackId}, SaveLyrics: {SaveLyrics}, SyncedLyrics: {SyncedLyrics}", 
-            track.Id, settings.SaveLyrics, settings.SyncedLyrics);
-        
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("SaveLyricsAsync called for track {TrackId}, SaveLyrics: {SaveLyrics}, SyncedLyrics: {SyncedLyrics}",
+                track.Id, settings.SaveLyrics, settings.SyncedLyrics);        }
+
         // Check if lyrics saving is enabled (either general lyrics or synced lyrics)
         if (!ShouldHandleLyricsBySettings(settings))
         {
-            _logger.LogDebug("Lyrics saving disabled for track {TrackId}", track.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Lyrics saving disabled for track {TrackId}", track.Id);            }
             return;
         }
 
@@ -2161,12 +2286,16 @@ public class LyricsService
         DeezSpoTagSettings settings,
         CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug("SaveLyricsAsync (prefetched) called for track {TrackId}, SaveLyrics: {SaveLyrics}, SyncedLyrics: {SyncedLyrics}", 
-            track.Id, settings.SaveLyrics, settings.SyncedLyrics);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("SaveLyricsAsync (prefetched) called for track {TrackId}, SaveLyrics: {SaveLyrics}, SyncedLyrics: {SyncedLyrics}",
+                track.Id, settings.SaveLyrics, settings.SyncedLyrics);        }
 
         if (!ShouldHandleLyricsBySettings(settings))
         {
-            _logger.LogDebug("Lyrics saving disabled for track {TrackId}", track.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Lyrics saving disabled for track {TrackId}", track.Id);            }
             return;
         }
 
@@ -2191,7 +2320,7 @@ public class LyricsService
 
         if (!saveState.SavedLyrics)
         {
-            _logger.LogWarning("No lyrics saved for track {TrackId} - SaveLyrics: {SaveLyrics}, SyncedLyrics: {SyncedLyrics}, HasSynced: {HasSynced}, HasUnsynced: {HasUnsynced}", 
+            _logger.LogWarning("No lyrics saved for track {TrackId} - SaveLyrics: {SaveLyrics}, SyncedLyrics: {SyncedLyrics}, HasSynced: {HasSynced}, HasUnsynced: {HasUnsynced}",
                 track.Id, settings.SaveLyrics, settings.SyncedLyrics, lyrics.IsSynced(), !string.IsNullOrEmpty(lyrics.UnsyncedLyrics));
         }
     }
@@ -2238,12 +2367,16 @@ public class LyricsService
 
             if (!overwriteSidecar && state.HadExistingLrc)
             {
-                _logger.LogInformation("Keeping existing LRC sidecar at {LrcPath}", state.LrcPath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Keeping existing LRC sidecar at {LrcPath}", state.LrcPath);                }
             }
             else
             {
                 await System.IO.File.WriteAllTextAsync(state.LrcPath, lrcContent, cancellationToken);
-                _logger.LogInformation("Successfully saved synchronized lyrics to {LrcPath}", state.LrcPath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Successfully saved synchronized lyrics to {LrcPath}", state.LrcPath);                }
             }
             state.SavedLyrics = true;
             state.SavedLrc = true;
@@ -2275,12 +2408,16 @@ public class LyricsService
 
             if (!overwriteSidecar && state.HadExistingLrc)
             {
-                _logger.LogInformation("Keeping existing LRC sidecar at {LrcPath}", state.LrcPath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Keeping existing LRC sidecar at {LrcPath}", state.LrcPath);                }
             }
             else
             {
                 await System.IO.File.WriteAllTextAsync(state.LrcPath, lrcFromTtml, cancellationToken);
-                _logger.LogInformation("Successfully saved LRC (from TTML) to {LrcPath}", state.LrcPath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Successfully saved LRC (from TTML) to {LrcPath}", state.LrcPath);                }
             }
             state.SavedLyrics = true;
             state.SavedLrc = true;
@@ -2307,7 +2444,9 @@ public class LyricsService
         }
 
         lyrics.TtmlLyrics = synthesizedTtml;
-        _logger.LogInformation("Synthesized TTML lyrics from synced lines for track {TrackId}", track.Id);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Synthesized TTML lyrics from synced lines for track {TrackId}", track.Id);        }
     }
 
     private async Task TrySaveTtmlAsync(
@@ -2326,12 +2465,16 @@ public class LyricsService
         {
             if (!overwriteSidecar && state.HadExistingTtml)
             {
-                _logger.LogInformation("Keeping existing TTML sidecar at {TtmlPath}", state.TtmlPath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Keeping existing TTML sidecar at {TtmlPath}", state.TtmlPath);                }
             }
             else
             {
                 await System.IO.File.WriteAllTextAsync(state.TtmlPath, lyrics.TtmlLyrics!, cancellationToken);
-                _logger.LogInformation("Successfully saved TTML lyrics to {TtmlPath}", state.TtmlPath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Successfully saved TTML lyrics to {TtmlPath}", state.TtmlPath);                }
             }
             state.SavedLyrics = true;
             state.SavedTtml = true;
@@ -2355,29 +2498,48 @@ public class LyricsService
             return;
         }
 
+        if (ShouldSkipUnsyncedTxtWrite(state))
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Skipping unsynchronized lyrics for track {TrackId} because LRC or TTML exists.", track.Id);            }
+            return;
+        }
+
+        await TryWriteUnsyncedTxtAsync(lyrics.UnsyncedLyrics, overwriteSidecar, state, cancellationToken);
+    }
+
+    private static bool ShouldSkipUnsyncedTxtWrite(LyricsSaveState state)
+    {
         var hasExistingRichLyrics = state.SavedLrc
             || state.SavedTtml
             || state.HadExistingLrc
             || state.HadExistingTtml
             || System.IO.File.Exists(state.LrcPath)
             || System.IO.File.Exists(state.TtmlPath);
-        var shouldSkipUnsyncedBecauseRichLyricsSaved = state.RichOutputRequested && (state.SavedLrc || state.SavedTtml || hasExistingRichLyrics);
-        if (shouldSkipUnsyncedBecauseRichLyricsSaved)
-        {
-            _logger.LogInformation("Skipping unsynchronized lyrics for track {TrackId} because LRC or TTML exists.", track.Id);
-            return;
-        }
+        return state.RichOutputRequested && (state.SavedLrc || state.SavedTtml || hasExistingRichLyrics);
+    }
 
+    private async Task TryWriteUnsyncedTxtAsync(
+        string unsyncedLyrics,
+        bool overwriteSidecar,
+        LyricsSaveState state,
+        CancellationToken cancellationToken)
+    {
         try
         {
             if (!overwriteSidecar && state.HadExistingTxt)
             {
-                _logger.LogInformation("Keeping existing TXT lyrics sidecar at {TxtPath}", state.TxtPath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Keeping existing TXT lyrics sidecar at {TxtPath}", state.TxtPath);                }
             }
             else
             {
-                await System.IO.File.WriteAllTextAsync(state.TxtPath, lyrics.UnsyncedLyrics, cancellationToken);
-                _logger.LogInformation("Successfully saved unsynchronized lyrics to {TxtPath}", state.TxtPath);
+                await System.IO.File.WriteAllTextAsync(state.TxtPath, unsyncedLyrics, cancellationToken);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Successfully saved unsynchronized lyrics to {TxtPath}", state.TxtPath);                }
             }
             state.SavedLyrics = true;
         }
@@ -2399,11 +2561,15 @@ public class LyricsService
         try
         {
             System.IO.File.Delete(state.TxtPath);
-            _logger.LogInformation("Removed TXT lyrics sidecar after rich-lyrics upgrade at {TxtPath}", state.TxtPath);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Removed TXT lyrics sidecar after rich-lyrics upgrade at {TxtPath}", state.TxtPath);            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed removing TXT lyrics sidecar after upgrade at {TxtPath}", state.TxtPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed removing TXT lyrics sidecar after upgrade at {TxtPath}", state.TxtPath);            }
         }
     }
 

@@ -329,7 +329,7 @@ public sealed class AutoTagProfileResolutionService
         var canonicalProfileId = profile?.Id;
         changed = !string.Equals(trimmedReference, canonicalProfileId, StringComparison.OrdinalIgnoreCase);
 
-        if (changed && !string.IsNullOrWhiteSpace(trimmedReference))
+        if (changed && !string.IsNullOrWhiteSpace(trimmedReference) && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
                 "Normalized stale AutoTag profile reference '{ProfileReference}' to '{CanonicalProfileId}'.",

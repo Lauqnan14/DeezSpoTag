@@ -8,6 +8,7 @@ using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Download.Queue;
+
 public sealed class DownloadQueueRepository
 {
     private static readonly SemaphoreSlim DequeueGate = new(1, 1);

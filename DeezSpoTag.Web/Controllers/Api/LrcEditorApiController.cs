@@ -474,7 +474,8 @@ public sealed class LrcEditorApiController : ControllerBase
         {
             return Path.GetFullPath(path);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }

@@ -137,7 +137,8 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 cancellationToken,
                 forceMediaServerSync: true);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Keep add endpoint resilient; background monitor will retry.
         }
 

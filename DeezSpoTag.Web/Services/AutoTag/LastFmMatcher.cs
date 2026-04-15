@@ -38,22 +38,7 @@ public sealed class LastFmMatcher
         var url =
             $"https://ws.audioscrobbler.com/2.0/?method=track.gettoptags&artist={Uri.EscapeDataString(artist)}&track={Uri.EscapeDataString(title)}&api_key={Uri.EscapeDataString(apiKey)}&format=json&autocorrect=1";
 
-        LastFmTopTagsResponse? response;
-        try
-        {
-            var client = _httpClientFactory.CreateClient();
-            response = await client.GetFromJsonAsync<LastFmTopTagsResponse>(url, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Last.fm tag lookup failed for {Artist} - {Title}.", artist, title);
-            return null;
-        }
-
+        var response = await TryGetTopTagsResponseAsync(url, artist, title, cancellationToken);
         if (response is null)
         {
             return null;
@@ -62,7 +47,10 @@ public sealed class LastFmMatcher
         if (response.Error.HasValue)
         {
             // Do not treat API errors as a match.
-            _logger.LogDebug("Last.fm tag lookup error {Error}: {Message} for {Artist} - {Title}.", response.Error, response.Message, artist, title);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Last.fm tag lookup error {Error}: {Message} for {Artist} - {Title}.", response.Error, response.Message, artist, title);
+            }
             return null;
         }
 
@@ -83,16 +71,7 @@ public sealed class LastFmMatcher
 
         // This is an enrichment-only lookup, so we must not "blank out" core tags
         // when the runner writes global enabled tags for every platform pass.
-        var passthroughArtists = info.Artists
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .Select(name => name.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (passthroughArtists.Count == 0 && !string.IsNullOrWhiteSpace(info.Artist))
-        {
-            passthroughArtists.Add(info.Artist.Trim());
-        }
+        var passthroughArtists = BuildPassthroughArtists(info);
 
         return new AutoTagMatchResult
         {
@@ -109,6 +88,46 @@ public sealed class LastFmMatcher
                 Genres = tags
             }
         };
+    }
+
+    private async Task<LastFmTopTagsResponse?> TryGetTopTagsResponseAsync(
+        string url,
+        string artist,
+        string title,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var client = _httpClientFactory.CreateClient();
+            return await client.GetFromJsonAsync<LastFmTopTagsResponse>(url, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Last.fm tag lookup failed for {Artist} - {Title}.", artist, title);
+            }
+            return null;
+        }
+    }
+
+    private static List<string> BuildPassthroughArtists(AutoTagAudioInfo info)
+    {
+        var passthroughArtists = info.Artists
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (passthroughArtists.Count == 0 && !string.IsNullOrWhiteSpace(info.Artist))
+        {
+            passthroughArtists.Add(info.Artist.Trim());
+        }
+
+        return passthroughArtists;
     }
 
     private static string FirstNonEmpty(params string?[] candidates)

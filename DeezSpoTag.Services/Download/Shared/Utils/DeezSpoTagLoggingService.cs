@@ -32,7 +32,9 @@ public class DeezSpoTagLoggingService
                 return;
             }
 
-            _logger.LogDebug("Creating error log with {ErrorCount} errors", errors.Count);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Creating error log with {ErrorCount} errors", errors.Count);            }
 
             var errorLogPath = Path.Join(extrasPath, "errors.txt");
             var errorLines = errors
@@ -44,8 +46,10 @@ public class DeezSpoTagLoggingService
             if (errorLines.Count > 0)
             {
                 await File.WriteAllLinesAsync(errorLogPath, errorLines);
-                _logger.LogInformation("Created error log: {ErrorLogPath} with {ErrorCount} errors", 
-                    errorLogPath, errorLines.Count);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Created error log: {ErrorLogPath} with {ErrorCount} errors",
+                        errorLogPath, errorLines.Count);                }
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -67,7 +71,9 @@ public class DeezSpoTagLoggingService
                 return;
             }
 
-            _logger.LogDebug("Creating searched log with {SearchedCount} tracks", searchedTracks.Count);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Creating searched log with {SearchedCount} tracks", searchedTracks.Count);            }
 
             var searchedLogPath = Path.Join(extrasPath, "searched.txt");
             var searchedLines = searchedTracks
@@ -79,8 +85,10 @@ public class DeezSpoTagLoggingService
             if (searchedLines.Count > 0)
             {
                 await File.WriteAllLinesAsync(searchedLogPath, searchedLines);
-                _logger.LogInformation("Created searched log: {SearchedLogPath} with {SearchedCount} tracks", 
-                    searchedLogPath, searchedLines.Count);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Created searched log: {SearchedLogPath} with {SearchedCount} tracks",
+                        searchedLogPath, searchedLines.Count);                }
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -104,7 +112,7 @@ public class DeezSpoTagLoggingService
 
             var searchedLogPath = Path.Join(extrasPath, "searched.txt");
             var trackLine = FormatSearchedTrackForLog(trackData);
-            
+
             if (string.IsNullOrEmpty(trackLine))
             {
                 return;
@@ -116,25 +124,29 @@ public class DeezSpoTagLoggingService
                 var existingContent = await File.ReadAllTextAsync(searchedLogPath);
                 if (existingContent.Contains(trackLine))
                 {
-                    _logger.LogDebug("Track already exists in searched log: {TrackLine}", trackLine);
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug("Track already exists in searched log: {TrackLine}", trackLine);                    }
                     return;
                 }
             }
 
             // Append to file
-            var content = System.IO.File.Exists(searchedLogPath) ? 
+            var content = System.IO.File.Exists(searchedLogPath) ?
                 await File.ReadAllTextAsync(searchedLogPath) : "";
-            
+
             if (!string.IsNullOrEmpty(content) && !content.EndsWith(Environment.NewLine))
             {
                 content += Environment.NewLine;
             }
-            
+
             content += trackLine + Environment.NewLine;
-            
+
             await System.IO.File.WriteAllTextAsync(searchedLogPath, content);
-            
-            _logger.LogDebug("Appended searched track to log: {TrackLine}", trackLine);
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Appended searched track to log: {TrackLine}", trackLine);            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -155,7 +167,9 @@ public class DeezSpoTagLoggingService
                 return;
             }
 
-            _logger.LogDebug("Creating M3U8 playlist for {ObjectType}: {Title}", downloadObject.Type, downloadObject.Title);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Creating M3U8 playlist for {ObjectType}: {Title}", downloadObject.Type, downloadObject.Title);            }
 
             var playlistName = GeneratePlaylistName(settings, downloadObject);
             var playlistPath = Path.Join(downloadObject.ExtrasPath ?? "", $"{playlistName}.m3u8");
@@ -173,9 +187,11 @@ public class DeezSpoTagLoggingService
             }
 
             await File.WriteAllLinesAsync(playlistPath, m3u8Lines);
-            
-            _logger.LogInformation("Created M3U8 playlist: {PlaylistPath} with {TrackCount} tracks", 
-                playlistPath, filenames.Count);
+
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Created M3U8 playlist: {PlaylistPath} with {TrackCount} tracks",
+                    playlistPath, filenames.Count);            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -195,9 +211,11 @@ public class DeezSpoTagLoggingService
             var failedTracks = downloadObject.Failed;
             var successRate = totalTracks > 0 ? (double)downloadedTracks / totalTracks * 100 : 0;
 
-            _logger.LogInformation(
-                "Download completed for {ObjectType} '{Title}': {Downloaded}/{Total} tracks downloaded ({SuccessRate:F1}% success rate), {Failed} failed",
-                downloadObject.Type, downloadObject.Title, downloadedTracks, totalTracks, successRate, failedTracks);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Download completed for {ObjectType} '{Title}': {Downloaded}/{Total} tracks downloaded ({SuccessRate:F1}% success rate), {Failed} failed",
+                    downloadObject.Type, downloadObject.Title, downloadedTracks, totalTracks, successRate, failedTracks);            }
 
             if (downloadObject.Errors.Count > 0)
             {
@@ -206,7 +224,7 @@ public class DeezSpoTagLoggingService
                 {
                     _logger.LogWarning("  - {ErrorMessage}", FormatErrorForLog(error));
                 }
-                
+
                 if (downloadObject.Errors.Count > 5)
                 {
                     _logger.LogWarning("  ... and {AdditionalErrors} more errors", downloadObject.Errors.Count - 5);
@@ -294,7 +312,7 @@ public class DeezSpoTagLoggingService
         try
         {
             var template = settings.PlaylistFilenameTemplate;
-            
+
             if (string.IsNullOrEmpty(template))
             {
                 template = "playlist";
@@ -352,7 +370,7 @@ public class DeezSpoTagLoggingService
                 }
             }
 
-            if (deletedCount > 0)
+            if (deletedCount > 0 && _logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Cleaned up {DeletedCount} old log files", deletedCount);
             }

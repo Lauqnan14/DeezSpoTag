@@ -130,12 +130,15 @@ namespace DeezSpoTag.Web.Controllers.Api
                     return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false));
                 }
 
-                _logger.LogDebug("LoginArl called with ARL length: {Length}, Child: {Child}", 
-                    normalizedArl.Length, request.Child);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("LoginArl called with ARL length: {Length}, Child: {Child}",
+                        normalizedArl.Length, request.Child);
+                }
 
                 // Exact logic from deezspotag loginArl.ts
                 int response;
-                
+
                 if (!_deezerClient.LoggedIn)
                 {
                     try
@@ -197,7 +200,10 @@ namespace DeezSpoTag.Web.Controllers.Api
                     return BadRequest(new { error = "Email and password are required" });
                 }
 
-                _logger.LogDebug("LoginEmail called for email {Email}", request.Email);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("LoginEmail called for email {Email}", request.Email);
+                }
 
                 var arl = await _authUtils.LoginWithEmailPasswordAsync(request.Email, request.Password);
                 var normalizedArl = DeezSpoTag.Services.Utils.DeezerAuthUtils.NormalizeArl(arl);

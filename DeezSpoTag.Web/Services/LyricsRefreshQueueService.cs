@@ -196,7 +196,7 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         };
     }
 
-    private static void AddUrl(IDictionary<string, string> urls, string key, string? value)
+    private static void AddUrl(Dictionary<string, string> urls, string key, string? value)
     {
         if (!string.IsNullOrWhiteSpace(value))
         {

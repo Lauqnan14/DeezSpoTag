@@ -245,7 +245,8 @@ public sealed class DeezerGatewayService : IDisposable
                 user_id = userId
             });
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return await ApiCallAsync<JObject>("episode.getData", new
             {
                 EPISODE_ID = episodeId
@@ -255,7 +256,7 @@ public sealed class DeezerGatewayService : IDisposable
 
     // -----===== Search =====-----
 
-    public async Task<GwSearchResponse> SearchAsync(string query, int index = 0, int limit = 10, 
+    public async Task<GwSearchResponse> SearchAsync(string query, int index = 0, int limit = 10,
         bool suggest = true, bool artistSuggest = true, bool topTracks = true)
     {
         return await RequireClientProxy().GwSearchAsync(query, index, limit, suggest, artistSuggest, topTracks);
@@ -455,20 +456,20 @@ public class GwUser
 {
     [JsonProperty("USER_ID")]
     public long UserId { get; set; }
-    
+
     [JsonProperty("BLOG_NAME")]
     public string? BlogName { get; set; }
-    
+
     [JsonProperty("USER_PICTURE")]
     public string? UserPicture { get; set; }
-    
+
     [JsonProperty("OPTIONS")]
     public GwUserOptions? Options { get; set; }
-    
+
     [JsonProperty("MULTI_ACCOUNT")]
     [JsonConverter(typeof(MultiAccountConverter))]
     public GwMultiAccount? MultiAccount { get; set; }
-    
+
     [JsonProperty("SETTING")]
     public GwUserSetting? Setting { get; set; }
 }
@@ -477,7 +478,7 @@ public class GwMultiAccount
 {
     [JsonProperty("ENABLED")]
     public bool Enabled { get; set; }
-    
+
     [JsonProperty("IS_SUB_ACCOUNT")]
     public bool IsSubAccount { get; set; }
 }
@@ -498,19 +499,19 @@ public class GwUserOptions
 {
     [JsonProperty("license_country")]
     public string? LicenseCountry { get; set; }
-    
+
     [JsonProperty("license_token")]
     public string? LicenseToken { get; set; }
-    
+
     [JsonProperty("web_lossless")]
     public bool WebLossless { get; set; }
-    
+
     [JsonProperty("mobile_lossless")]
     public bool MobileLossless { get; set; }
-    
+
     [JsonProperty("web_hq")]
     public bool WebHq { get; set; }
-    
+
     [JsonProperty("mobile_hq")]
     public bool MobileHq { get; set; }
 }
@@ -525,10 +526,10 @@ public class GwArtist
 {
     [JsonProperty("ART_ID")]
     public long ArtId { get; set; }
-    
+
     [JsonProperty("ART_NAME")]
     public string ArtName { get; set; } = "";
-    
+
     [JsonProperty("ART_PICTURE")]
     public string ArtPicture { get; set; } = "";
 }
@@ -564,55 +565,55 @@ public class GwAlbumRelease
 {
     [JsonProperty("ALB_ID")]
     public string AlbId { get; set; } = "";
-    
+
     [JsonProperty("ALB_TITLE")]
     public string? AlbTitle { get; set; }
-    
+
     [JsonProperty("ALB_PICTURE")]
     public string? AlbPicture { get; set; }
-    
+
     [JsonProperty("ART_ID")]
     public long ArtId { get; set; }
-    
+
     [JsonProperty("ART_NAME")]
     public string? ArtName { get; set; }
-    
+
     [JsonProperty("ROLE_ID")]
     public int RoleId { get; set; }
-    
+
     [JsonProperty("ARTISTS_ALBUMS_IS_OFFICIAL")]
     public bool ArtistsAlbumsIsOfficial { get; set; }
-    
+
     [JsonProperty("TYPE")]
     public int Type { get; set; }
-    
+
     [JsonProperty("GENRE_ID")]
     public int GenreId { get; set; }
-    
+
     [JsonProperty("NUMBER_TRACK")]
     public int NumberTrack { get; set; }
-    
+
     [JsonProperty("NUMBER_DISK")]
     public int NumberDisk { get; set; }
-    
+
     [JsonProperty("RANK")]
     public int Rank { get; set; }
-    
+
     [JsonProperty("PHYSICAL_RELEASE_DATE")]
     public string? PhysicalReleaseDate { get; set; }
-    
+
     [JsonProperty("DIGITAL_RELEASE_DATE")]
     public string? DigitalReleaseDate { get; set; }
-    
+
     [JsonProperty("ORIGINAL_RELEASE_DATE")]
     public string? OriginalReleaseDate { get; set; }
-    
+
     [JsonProperty("COPYRIGHT")]
     public string? Copyright { get; set; }
-    
+
     [JsonProperty("EXPLICIT_LYRICS")]
     public bool ExplicitLyrics { get; set; }
-    
+
     [JsonProperty("EXPLICIT_ALBUM_CONTENT")]
     public GwExplicitContent? ExplicitAlbumContent { get; set; }
 }
@@ -621,7 +622,7 @@ public class GwExplicitContent
 {
     [JsonProperty("EXPLICIT_LYRICS_STATUS")]
     public int ExplicitLyricsStatus { get; set; }
-    
+
     [JsonProperty("EXPLICIT_COVER_STATUS")]
     public int ExplicitCoverStatus { get; set; }
 }
@@ -649,19 +650,19 @@ public class GwPlaylist
 {
     [JsonProperty("PLAYLIST_ID")]
     public string PlaylistId { get; set; } = "";
-    
+
     [JsonProperty("TITLE")]
     public string Title { get; set; } = "";
-    
+
     [JsonProperty("DESCRIPTION")]
     public string Description { get; set; } = "";
-    
+
     [JsonProperty("PLAYLIST_PICTURE")]
     public string PlaylistPicture { get; set; } = "";
-    
+
     [JsonProperty("NB_SONG")]
     public int NbSong { get; set; }
-    
+
     [JsonProperty("DURATION")]
     public int Duration { get; set; }
 
@@ -716,19 +717,19 @@ public class GwSearchResponse
 {
     [JsonProperty("ORDER")]
     public List<string>? Order { get; set; }
-    
+
     [JsonProperty("TOP_RESULT")]
     public List<GwTopResult>? TopResult { get; set; }
-    
+
     [JsonProperty("ARTIST")]
     public GwSearchSection? Artist { get; set; }
-    
+
     [JsonProperty("ALBUM")]
     public GwSearchSection? Album { get; set; }
-    
+
     [JsonProperty("TRACK")]
     public GwSearchSection? Track { get; set; }
-    
+
     [JsonProperty("PLAYLIST")]
     public GwSearchSection? Playlist { get; set; }
 }
@@ -737,19 +738,19 @@ public class GwSearchSection
 {
     [JsonProperty("data")]
     public object[]? Data { get; set; }
-    
+
     [JsonProperty("count")]
     public int Count { get; set; }
-    
+
     [JsonProperty("total")]
     public int Total { get; set; }
-    
+
     [JsonProperty("filtered_count")]
     public int FilteredCount { get; set; }
-    
+
     [JsonProperty("filtered_items")]
     public object[]? FilteredItems { get; set; }
-    
+
     [JsonProperty("next")]
     public int Next { get; set; }
 }
@@ -758,49 +759,49 @@ public class GwTopResult
 {
     [JsonProperty("__TYPE__")]
     public string? Type { get; set; }
-    
+
     // Artist fields
     [JsonProperty("ART_ID")]
     public string? ArtistId { get; set; }
-    
+
     [JsonProperty("ART_PICTURE")]
     public string? ArtistPicture { get; set; }
-    
+
     [JsonProperty("ART_NAME")]
     public string? ArtistName { get; set; }
-    
+
     [JsonProperty("NB_FAN")]
     public int? NbFan { get; set; }
-    
+
     // Album fields
     [JsonProperty("ALB_ID")]
     public string? AlbumId { get; set; }
-    
+
     [JsonProperty("ALB_PICTURE")]
     public string? AlbumPicture { get; set; }
-    
+
     [JsonProperty("ALB_TITLE")]
     public string? AlbumTitle { get; set; }
-    
+
     [JsonProperty("NUMBER_TRACK")]
     public int? NumberTrack { get; set; }
-    
+
     // Playlist fields
     [JsonProperty("PLAYLIST_ID")]
     public string? PlaylistId { get; set; }
-    
+
     [JsonProperty("PLAYLIST_PICTURE")]
     public string? PlaylistPicture { get; set; }
-    
+
     [JsonProperty("PICTURE_TYPE")]
     public string? PictureType { get; set; }
-    
+
     [JsonProperty("TITLE")]
     public string? Title { get; set; }
-    
+
     [JsonProperty("PARENT_USERNAME")]
     public string? ParentUsername { get; set; }
-    
+
     [JsonProperty("NB_SONG")]
     public int? NbSong { get; set; }
 }
@@ -835,7 +836,7 @@ public class MultiAccountConverter : JsonConverter<GwMultiAccount?>
         {
             return null;
         }
-        
+
         throw new JsonSerializationException($"Unexpected token type for MULTI_ACCOUNT: {reader.TokenType}");
     }
 
@@ -861,16 +862,16 @@ public class GwChildAccount
 {
     [JsonProperty("USER_ID")]
     public long UserId { get; set; }
-    
+
     [JsonProperty("BLOG_NAME")]
     public string? BlogName { get; set; }
-    
+
     [JsonProperty("USER_PICTURE")]
     public string? UserPicture { get; set; }
-    
+
     [JsonProperty("LOVEDTRACKS_ID")]
     public string? LovedTracksId { get; set; }
-    
+
     [JsonProperty("EXTRA_FAMILY")]
     public GwExtraFamily? ExtraFamily { get; set; }
 }

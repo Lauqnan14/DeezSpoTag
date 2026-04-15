@@ -69,7 +69,10 @@ public sealed class LastFmCoverSource : ICoverSource
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Last.fm cover search failed for {Artist} - {Album}", query.Artist, query.Album);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Last.fm cover search failed for {Artist} - {Album}", query.Artist, query.Album);
+            }
             return Array.Empty<CoverCandidate>();
         }
     }
@@ -82,7 +85,10 @@ public sealed class LastFmCoverSource : ICoverSource
             && errorEl.TryGetInt32(out var errorCode))
         {
             var message = root.TryGetProperty("message", out var msgEl) ? msgEl.GetString() : null;
-            _logger.LogDebug("Last.fm cover search returned error {Error}: {Message} for {Artist} - {Album}", errorCode, message, query.Artist, query.Album);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Last.fm cover search returned error {Error}: {Message} for {Artist} - {Album}", errorCode, message, query.Artist, query.Album);
+            }
             if (errorCode == 10)
             {
                 _cachedApiKey = null;

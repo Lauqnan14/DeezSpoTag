@@ -62,12 +62,15 @@ public class LibraryMaintenanceApiController : ControllerBase
             ? await _repository.ClearFolderLocalContentAsync(folderId.Value, cancellationToken)
             : await _repository.ClearLibraryDataAsync(cancellationToken);
         var scopeLabel = await ResolveFolderScopeLabelAsync(folderId, cancellationToken);
-        _logger.LogInformation(
-            "{ScopeLabel} clear completed. artists={ArtistsRemoved}, albums={AlbumsRemoved}, tracks={TracksRemoved}",
-            scopeLabel,
-            result.ArtistsRemoved,
-            result.AlbumsRemoved,
-            result.TracksRemoved);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "{ScopeLabel} clear completed. artists={ArtistsRemoved}, albums={AlbumsRemoved}, tracks={TracksRemoved}",
+                scopeLabel,
+                result.ArtistsRemoved,
+                result.AlbumsRemoved,
+                result.TracksRemoved);
+        }
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",

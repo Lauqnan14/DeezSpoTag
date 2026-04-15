@@ -43,7 +43,8 @@ public sealed class CoverPerceptualHashService
 
             return hash;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }

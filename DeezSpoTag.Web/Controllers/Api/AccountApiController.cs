@@ -110,7 +110,8 @@ public sealed class AccountApiController : ControllerBase
         {
             detectedFormat = await Image.DetectFormatAsync(buffer);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return BadRequest(new { message = "Invalid image file." });
         }
 

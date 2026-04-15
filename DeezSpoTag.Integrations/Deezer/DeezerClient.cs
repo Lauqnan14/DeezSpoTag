@@ -28,7 +28,7 @@ public sealed class DeezerClient : IDisposable
     private readonly ILogger<DeezerClient> _logger;
     private DeezerSessionManager? _sessionManager;
     private bool _disposed;
-    
+
     // Delegate to session manager
     public bool LoggedIn => _sessionManager?.LoggedIn ?? false;
     public DeezerUser? CurrentUser => _sessionManager?.CurrentUser;
@@ -43,7 +43,7 @@ public sealed class DeezerClient : IDisposable
     {
         _logger = logger;
         _sessionManager = sessionManager;
-        
+
         // Initialize Api and Gw properties for compatibility
         Api = this;
         Gw = this;
@@ -169,7 +169,7 @@ public sealed class DeezerClient : IDisposable
         }
     }
 
-    private static List<GwTrack> ApplyTrackPositions(IReadOnlyList<GwTrack> source)
+    private static List<GwTrack> ApplyTrackPositions(List<GwTrack> source)
     {
         var tracks = new List<GwTrack>(source.Count);
         for (var i = 0; i < source.Count; i++)
@@ -249,7 +249,7 @@ public sealed class DeezerClient : IDisposable
 
         if (options.Strict == true)
             args["strict"] = "on";
-        
+
         if (!string.IsNullOrEmpty(options.Order))
             args["order"] = options.Order;
 
@@ -906,7 +906,7 @@ public sealed class DeezerClient : IDisposable
     {
         // EXACT PORT of deezspotag get_track_with_fallback method
         GwTrackPageResponse? body = null;
-        
+
         if (int.TryParse(trackId, out var id) && id > 0)
         {
             try
@@ -914,7 +914,8 @@ public sealed class DeezerClient : IDisposable
                 // EXACT PORT: First try get_track_page (deezer.pageTrack) which has full data
                 body = await ApiCallAsync<GwTrackPageResponse>("deezer.pageTrack", new { SNG_ID = trackId });
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 // EXACT PORT: Fallback to basic track data if pageTrack fails
                 body = null;
             }
@@ -924,9 +925,9 @@ public sealed class DeezerClient : IDisposable
         {
             // EXACT PORT: Merge lyrics and ISRC data like deezspotag does
             var track = body.Data;
-            if (!string.IsNullOrEmpty(body.Lyrics)) 
+            if (!string.IsNullOrEmpty(body.Lyrics))
                 track.Lyrics = body.Lyrics;
-            if (body.Isrc != null) 
+            if (body.Isrc != null)
                 track.AlbumFallback = body.Isrc.ToString();
             return track;
         }
@@ -975,8 +976,8 @@ public sealed class DeezerClient : IDisposable
 
     public async Task<List<GwTrack>> GetAlbumTracksAsync(string albumId)
     {
-        var response = await ApiCallAsync<GwAlbumTracksResponse>("song.getListByAlbum", new 
-        { 
+        var response = await ApiCallAsync<GwAlbumTracksResponse>("song.getListByAlbum", new
+        {
             ALB_ID = albumId,
             nb = -1
         });
@@ -992,8 +993,8 @@ public sealed class DeezerClient : IDisposable
 
     public async Task<List<GwTrack>> GetArtistTopTracksAsync(string artistId, int limit = 100)
     {
-        var response = await ApiCallAsync<GwArtistTopResponse>("artist.getTopTrack", new 
-        { 
+        var response = await ApiCallAsync<GwArtistTopResponse>("artist.getTopTrack", new
+        {
             ART_ID = artistId,
             nb = limit
         });
@@ -1002,8 +1003,8 @@ public sealed class DeezerClient : IDisposable
 
     public async Task<GwDiscographyResponse> GetArtistDiscographyAsync(string artistId, int index = 0, int limit = 25)
     {
-        return await ApiCallAsync<GwDiscographyResponse>("album.getDiscography", new 
-        { 
+        return await ApiCallAsync<GwDiscographyResponse>("album.getDiscography", new
+        {
             ART_ID = artistId,
             discography_mode = "all",
             nb = limit,
@@ -1020,8 +1021,10 @@ public sealed class DeezerClient : IDisposable
         var result = CreateArtistDiscographyBuckets();
         var releases = await LoadArtistDiscographyReleasesAsync(artistId, limit);
         var roleIdCounts = releases.GroupBy(r => r.RoleId).ToDictionary(g => g.Key, g => g.Count());
-        _logger.LogInformation("Retrieved {TotalReleases} releases with role IDs: {RoleIdCounts}", 
-            releases.Count, string.Join(", ", roleIdCounts.Select(kvp => $"{kvp.Key}:{kvp.Value}")));
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Retrieved {TotalReleases} releases with role IDs: {RoleIdCounts}",
+                releases.Count, string.Join(", ", roleIdCounts.Select(kvp => $"{kvp.Key}:{kvp.Value}")));        }
 
         var processedIds = new HashSet<string>();
         foreach (var release in releases.Where(release => processedIds.Add(release.AlbId)))
@@ -1086,7 +1089,9 @@ public sealed class DeezerClient : IDisposable
             return;
         }
 
-        _logger.LogDebug("Unhandled ROLE_ID {RoleId} for release {AlbumId}", release.RoleId, release.AlbId);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Unhandled ROLE_ID {RoleId} for release {AlbumId}", release.RoleId, release.AlbId);        }
     }
 
     private static bool IsMainArtistDiscographyRelease(string artistId, GwAlbumRelease release)
@@ -1106,7 +1111,9 @@ public sealed class DeezerClient : IDisposable
             result[recordType] = releases;
         }
         releases.Add(mappedAlbum);
-        _logger.LogDebug("Added to main releases: {RecordType}", recordType);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Added to main releases: {RecordType}", recordType);        }
     }
 
     /// <summary>
@@ -1116,7 +1123,7 @@ public sealed class DeezerClient : IDisposable
     {
         var releaseTypes = new[] { "single", "album", "compile", "ep", "bundle" };
         var roleIds = new string?[] { "Main", null, null, null, null, "Featured" };
-        
+
         var recordType = "unknown";
         if (album.Type >= 0 && album.Type < releaseTypes.Length)
         {
@@ -1183,8 +1190,8 @@ public sealed class DeezerClient : IDisposable
 
     public async Task<List<GwTrack>> GetPlaylistTracksAsync(string playlistId)
     {
-        var response = await ApiCallAsync<GwPlaylistTracksResponse>("playlist.getSongs", new 
-        { 
+        var response = await ApiCallAsync<GwPlaylistTracksResponse>("playlist.getSongs", new
+        {
             PLAYLIST_ID = playlistId,
             nb = -1
         });
@@ -1193,12 +1200,12 @@ public sealed class DeezerClient : IDisposable
 
     // -----===== Gateway Search =====-----
 
-    public async Task<GwSearchResponse> GwSearchAsync(string query, int index = 0, int limit = 10, 
+    public async Task<GwSearchResponse> GwSearchAsync(string query, int index = 0, int limit = 10,
         bool suggest = true, bool artistSuggest = true, bool topTracks = true)
     {
         query = CleanSearchQuery(query);
-        return await ApiCallAsync<GwSearchResponse>("deezer.pageSearch", new 
-        { 
+        return await ApiCallAsync<GwSearchResponse>("deezer.pageSearch", new
+        {
             query,
             start = index,
             nb = limit,
@@ -1259,7 +1266,7 @@ public sealed class DeezerClient : IDisposable
         try
         {
             var trackPage = await ApiCallAsync<GwTrackPageResponse>("deezer.pageTrack", new { SNG_ID = trackId });
-            
+
             var result = new Dictionary<string, object>
             {
                 ["DATA"] = ConvertGwTrackToDictionary(trackPage.Data)
@@ -1276,7 +1283,8 @@ public sealed class DeezerClient : IDisposable
                         result["LYRICS"] = lyricsData;
                     }
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException) {
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
                     // If parsing fails, store as string
                     result["LYRICS"] = trackPage.Lyrics;
                 }
@@ -1358,8 +1366,8 @@ public sealed class DeezerClient : IDisposable
     {
         EnsureLoggedIn("get album data");
         var language = CurrentUser?.Language ?? "en";
-        return await ApiCallAsync<GwAlbumPageResponse>("deezer.pageAlbum", new 
-        { 
+        return await ApiCallAsync<GwAlbumPageResponse>("deezer.pageAlbum", new
+        {
             ALB_ID = albumId,
             lang = language,
             header = true,
@@ -1383,8 +1391,8 @@ public sealed class DeezerClient : IDisposable
     {
         EnsureLoggedIn("get playlist data");
         var language = CurrentUser?.Language ?? "en";
-        return await ApiCallAsync<GwPlaylistPageResponse>("deezer.pagePlaylist", new 
-        { 
+        return await ApiCallAsync<GwPlaylistPageResponse>("deezer.pagePlaylist", new
+        {
             PLAYLIST_ID = playlistId,
             lang = language,
             header = true,

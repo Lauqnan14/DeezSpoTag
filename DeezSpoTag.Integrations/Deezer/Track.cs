@@ -18,7 +18,7 @@ namespace DeezSpoTag.Integrations.Deezer
         public Artist? Artist { get; set; }
         public Album? Album { get; set; }
         public Artist? MainArtist { get; set; }
-        
+
         // Extended properties for deezspotag compatibility
         public string TrackToken { get; set; } = string.Empty;
         public int TrackTokenExpire { get; set; }

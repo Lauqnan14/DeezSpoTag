@@ -1043,7 +1043,10 @@ namespace DeezSpoTag.Web.Controllers
                 return cachedResponse;
             }
 
-            _logger.LogInformation("Artist page cache miss. refresh={Refresh}", refreshRequested);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Artist page cache miss. refresh={Refresh}", refreshRequested);
+            }
             return await BuildFetchedArtistPageResponseAsync(
                 id,
                 normalizedSource,
@@ -1078,7 +1081,10 @@ namespace DeezSpoTag.Web.Controllers
                 return existingCache;
             }
 
-            _logger.LogInformation("Artist page cache hit. fresh={IsFresh}", _artistPageCache.IsFresh(existingCache.FetchedUtc));
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Artist page cache hit. fresh={IsFresh}", _artistPageCache.IsFresh(existingCache.FetchedUtc));
+            }
             return existingCache;
         }
 
@@ -1101,7 +1107,10 @@ namespace DeezSpoTag.Web.Controllers
             }
 
             var elapsedMs = (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds;
-            _logger.LogInformation("Artist page response (cache). elapsed_ms={ElapsedMs}", elapsedMs);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Artist page response (cache). elapsed_ms={ElapsedMs}", elapsedMs);
+            }
             return Content(existingCache.PayloadJson, ApplicationJsonContentType);
         }
 
@@ -1131,7 +1140,10 @@ namespace DeezSpoTag.Web.Controllers
                         "Returning previous artist-page payload to preserve non-empty discography. existing_releases={ExistingCount}",
                         existingReleaseCount);
                     var fallbackElapsedMs = (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds;
-                    _logger.LogInformation("Artist page response (fallback-cache). elapsed_ms={ElapsedMs}", fallbackElapsedMs);
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation("Artist page response (fallback-cache). elapsed_ms={ElapsedMs}", fallbackElapsedMs);
+                    }
                     return Content(existingCache!.PayloadJson, ApplicationJsonContentType);
                 }
 
@@ -1145,7 +1157,10 @@ namespace DeezSpoTag.Web.Controllers
                 }
 
                 var elapsedMs = (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds;
-                _logger.LogInformation("Artist page response (fetch). elapsed_ms={ElapsedMs}", elapsedMs);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Artist page response (fetch). elapsed_ms={ElapsedMs}", elapsedMs);
+                }
                 return Ok(payload);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1172,7 +1187,10 @@ namespace DeezSpoTag.Web.Controllers
                 }
 
                 var elapsedMs = (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds;
-                _logger.LogInformation("Artist page response (spotify-service). refresh={Refresh} elapsed_ms={ElapsedMs}", refreshRequested, elapsedMs);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Artist page response (spotify-service). refresh={Refresh} elapsed_ms={ElapsedMs}", refreshRequested, elapsedMs);
+                }
                 return Ok(payload);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1230,7 +1248,8 @@ namespace DeezSpoTag.Web.Controllers
                        && related.ValueKind == JsonValueKind.Array
                        && HasDiscographyEntries(doc.RootElement);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 return false;
             }
         }
@@ -1253,7 +1272,8 @@ namespace DeezSpoTag.Web.Controllers
                 using var doc = JsonDocument.Parse(payloadJson);
                 return CountReleaseEntriesElement(doc.RootElement);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 return 0;
             }
         }
@@ -1270,7 +1290,8 @@ namespace DeezSpoTag.Web.Controllers
                 using var doc = JsonDocument.Parse(payloadJson);
                 return CountDiscographyEntries(doc.RootElement);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 return 0;
             }
         }
@@ -1283,7 +1304,7 @@ namespace DeezSpoTag.Web.Controllers
             }
 
             var count = 0;
-                count += releases.EnumerateObject().Sum(static property => CountReleaseEntriesElement(property.Value));
+            count += releases.EnumerateObject().Sum(static property => CountReleaseEntriesElement(property.Value));
 
             return count;
         }
@@ -2220,13 +2241,16 @@ namespace DeezSpoTag.Web.Controllers
 
                 // Get discography tabs exactly like deezspotag
                 var discographyTabs = await _deezerGatewayService.GetArtistDiscographyTabsAsync(artistId);
-                
+
                 // Convert to the expected format and log what we got
                 var result = new Dictionary<string, object>();
                 foreach (var tab in discographyTabs)
                 {
                     result[tab.Key] = tab.Value;
-                    _logger.LogInformation("Tab '{TabName}' has {Count} releases", tab.Key, tab.Value.Count);
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation("Tab '{TabName}' has {Count} releases", tab.Key, tab.Value.Count);
+                    }
                 }
 
                 // If we got no data at all, fall back to public API
@@ -2685,46 +2709,46 @@ namespace DeezSpoTag.Web.Controllers
             switch (source)
             {
                 case AppleSource:
-                {
-                    var appleUrl = await TryResolveAppleArtworkUrlAsync(
-                        request.Title,
-                        request.Artist,
-                        request.Album,
-                        request.IsArtist,
-                        "Apple artwork lookup failed.",
-                        cancellationToken);
-
-                    if (string.IsNullOrWhiteSpace(appleUrl))
                     {
-                        return null;
-                    }
+                        var appleUrl = await TryResolveAppleArtworkUrlAsync(
+                            request.Title,
+                            request.Artist,
+                            request.Album,
+                            request.IsArtist,
+                            "Apple artwork lookup failed.",
+                            cancellationToken);
 
-                    return appleUrl;
-                }
-                case SpotifySource:
-                {
-                    if (request.IsArtist)
-                    {
-                        if (!string.IsNullOrWhiteSpace(request.Artist))
+                        if (string.IsNullOrWhiteSpace(appleUrl))
                         {
-                            return await _spotifyArtworkResolver.ResolveArtistImageByNameAsync(request.Artist, cancellationToken);
+                            return null;
                         }
-                        return null;
-                    }
 
-                    var spotifyId = await _spotifyIdResolver.ResolveTrackIdAsync(
-                        request.Title ?? string.Empty,
-                        request.Artist ?? string.Empty,
-                        request.Album,
-                        null,
-                        cancellationToken);
-                    if (string.IsNullOrWhiteSpace(spotifyId))
+                        return appleUrl;
+                    }
+                case SpotifySource:
                     {
-                        return null;
-                    }
+                        if (request.IsArtist)
+                        {
+                            if (!string.IsNullOrWhiteSpace(request.Artist))
+                            {
+                                return await _spotifyArtworkResolver.ResolveArtistImageByNameAsync(request.Artist, cancellationToken);
+                            }
+                            return null;
+                        }
 
-                    return await _spotifyArtworkResolver.ResolveAlbumCoverUrlAsync(spotifyId, cancellationToken);
-                }
+                        var spotifyId = await _spotifyIdResolver.ResolveTrackIdAsync(
+                            request.Title ?? string.Empty,
+                            request.Artist ?? string.Empty,
+                            request.Album,
+                            null,
+                            cancellationToken);
+                        if (string.IsNullOrWhiteSpace(spotifyId))
+                        {
+                            return null;
+                        }
+
+                        return await _spotifyArtworkResolver.ResolveAlbumCoverUrlAsync(spotifyId, cancellationToken);
+                    }
                 default:
                     return BuildDeezerImage(request.DeezerType, request.DeezerMd5);
             }
@@ -2969,7 +2993,8 @@ namespace DeezSpoTag.Web.Controllers
 
                 return target;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 return null;
             }
         }
@@ -3700,9 +3725,9 @@ namespace DeezSpoTag.Web.Controllers
                    || ContainsAnyToken(context.Description, PersonalHomePlaylistKeywords);
         }
 
-        private static bool ContainsAnyToken(string? value, IReadOnlyCollection<string> tokens)
+        private static bool ContainsAnyToken(string? value, string[] tokens)
         {
-            if (string.IsNullOrWhiteSpace(value) || tokens.Count == 0)
+            if (string.IsNullOrWhiteSpace(value) || tokens.Length == 0)
             {
                 return false;
             }

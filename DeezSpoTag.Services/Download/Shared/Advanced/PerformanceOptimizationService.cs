@@ -18,7 +18,7 @@ public class PerformanceOptimizationService : IDisposable
     private readonly Timer _optimizationTimer;
     private readonly object _optimizationLock = new();
     private bool _disposed;
-    
+
     private PerformanceProfile _currentProfile = PerformanceProfile.Balanced;
     private DateTime _lastOptimization = DateTime.MinValue;
     private readonly TimeSpan _optimizationInterval = TimeSpan.FromMinutes(2);
@@ -27,11 +27,13 @@ public class PerformanceOptimizationService : IDisposable
     public PerformanceOptimizationService(ILogger<PerformanceOptimizationService> logger)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        
+
         // Start optimization timer
         _optimizationTimer = new Timer(OptimizePerformance, null, _optimizationInterval, _optimizationInterval);
-        
-        _logger.LogInformation("Performance optimization service initialized with {Profile} profile", _currentProfile);
+
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Performance optimization service initialized with {Profile} profile", _currentProfile);        }
     }
 
     /// <summary>
@@ -42,7 +44,7 @@ public class PerformanceOptimizationService : IDisposable
         try
         {
             _performanceHistory.Enqueue(data);
-            
+
             // Maintain history size
             while (_performanceHistory.Count > MaxHistorySize)
             {
@@ -51,9 +53,11 @@ public class PerformanceOptimizationService : IDisposable
 
             // Update metrics
             UpdateMetrics(data);
-            
-            _logger.LogDebug("Recorded performance data: {DownloadId} - {Duration}ms, Success: {Success}",
-                data.DownloadId, data.Duration.TotalMilliseconds, data.Success);
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Recorded performance data: {DownloadId} - {Duration}ms, Success: {Success}",
+                    data.DownloadId, data.Duration.TotalMilliseconds, data.Success);            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -69,7 +73,7 @@ public class PerformanceOptimizationService : IDisposable
         try
         {
             var recentData = GetRecentPerformanceData(TimeSpan.FromMinutes(10));
-            
+
             if (recentData.Count == 0)
             {
                 return new PerformanceMetrics
@@ -111,7 +115,7 @@ public class PerformanceOptimizationService : IDisposable
         {
             var metrics = GetCurrentMetrics();
             var profile = DetermineOptimalProfile(metrics);
-            
+
             return ApplyPerformanceProfile(baseSettings, profile, metrics);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -135,7 +139,7 @@ public class PerformanceOptimizationService : IDisposable
         {
             var recommendations = new List<PerformanceRecommendation>();
             var metrics = GetCurrentMetrics();
-            
+
             // High error rate recommendations
             if (metrics.ErrorRate > 0.1)
             {
@@ -203,7 +207,7 @@ public class PerformanceOptimizationService : IDisposable
         {
             var timeframe = period ?? TimeSpan.FromHours(1);
             var data = GetRecentPerformanceData(timeframe);
-            
+
             if (data.Count == 0)
             {
                 return new PerformanceStatistics
@@ -223,11 +227,11 @@ public class PerformanceOptimizationService : IDisposable
                 SuccessfulDownloads = successful.Count,
                 FailedDownloads = failed.Count,
                 SuccessRate = (double)successful.Count / data.Count,
-                AverageDownloadTime = successful.Count > 0 ? 
-                    TimeSpan.FromMilliseconds(successful.Average(d => d.Duration.TotalMilliseconds)) : 
+                AverageDownloadTime = successful.Count > 0 ?
+                    TimeSpan.FromMilliseconds(successful.Average(d => d.Duration.TotalMilliseconds)) :
                     TimeSpan.Zero,
-                MedianDownloadTime = successful.Count > 0 ? 
-                    CalculateMedian(successful.Select(d => d.Duration)) : 
+                MedianDownloadTime = successful.Count > 0 ?
+                    CalculateMedian(successful.Select(d => d.Duration)) :
                     TimeSpan.Zero,
                 FastestDownload = successful.Count > 0 ? successful.Min(d => d.Duration) : TimeSpan.Zero,
                 SlowestDownload = successful.Count > 0 ? successful.Max(d => d.Duration) : TimeSpan.Zero,
@@ -262,12 +266,14 @@ public class PerformanceOptimizationService : IDisposable
 
             var metrics = GetCurrentMetrics();
             var newProfile = DetermineOptimalProfile(metrics);
-            
+
             if (newProfile != _currentProfile)
             {
-                _logger.LogInformation("Performance profile changed from {OldProfile} to {NewProfile} based on metrics: ErrorRate={ErrorRate:P1}, AvgResponseTime={ResponseTime}ms",
-                    _currentProfile, newProfile, metrics.ErrorRate, metrics.AverageResponseTime.TotalMilliseconds);
-                
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Performance profile changed from {OldProfile} to {NewProfile} based on metrics: ErrorRate={ErrorRate:P1}, AvgResponseTime={ResponseTime}ms",
+                        _currentProfile, newProfile, metrics.ErrorRate, metrics.AverageResponseTime.TotalMilliseconds);                }
+
                 _currentProfile = newProfile;
             }
 
@@ -286,8 +292,8 @@ public class PerformanceOptimizationService : IDisposable
     private void UpdateMetrics(DownloadPerformanceData data)
     {
         var key = $"{data.DownloadType}_{DateTime.UtcNow:yyyyMMddHH}";
-        
-        _metrics.AddOrUpdate(key, 
+
+        _metrics.AddOrUpdate(key,
             new PerformanceMetric
             {
                 TotalRequests = 1,
@@ -430,7 +436,7 @@ public class PerformanceOptimizationService : IDisposable
     private NetworkMetrics AnalyzeNetworkPerformance()
     {
         var recentData = GetRecentPerformanceData(TimeSpan.FromMinutes(5));
-        
+
         if (recentData.Count == 0)
         {
             return new NetworkMetrics();
@@ -453,7 +459,7 @@ public class PerformanceOptimizationService : IDisposable
     private static double CalculateAverageSpeed(IEnumerable<DownloadPerformanceData> data)
     {
         var validData = data.Where(d => d.Duration.TotalSeconds > 0 && d.BytesTransferred > 0).ToList();
-        
+
         if (validData.Count == 0)
         {
             return 0;
@@ -469,10 +475,10 @@ public class PerformanceOptimizationService : IDisposable
     {
         var sorted = durations.OrderBy(d => d.TotalMilliseconds).ToList();
         var count = sorted.Count;
-        
+
         if (count == 0) return TimeSpan.Zero;
         if (count == 1) return sorted[0];
-        
+
         if (count % 2 == 0)
         {
             var mid1 = sorted[count / 2 - 1];
@@ -500,7 +506,7 @@ public class PerformanceOptimizationService : IDisposable
             _metrics.TryRemove(key, out _);
         }
 
-        if (keysToRemove.Count > 0)
+        if (keysToRemove.Count > 0 && _logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug("Cleaned up {Count} old performance metrics", keysToRemove.Count);
         }

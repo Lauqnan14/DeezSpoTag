@@ -1100,7 +1100,10 @@ public sealed class DownloadIntentService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to apply download profile overrides for folder {FolderId}", destinationFolderId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to apply download profile overrides for folder {FolderId}", destinationFolderId);
+            }
             return (false, "Failed to apply destination profile settings.");
         }
     }
@@ -1180,7 +1183,10 @@ public sealed class DownloadIntentService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple catalog video lookup failed for {AppleId}", appleId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple catalog video lookup failed for {AppleId}", appleId);
+            }
             return appleId;
         }
     }
@@ -1198,12 +1204,18 @@ public sealed class DownloadIntentService
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogDebug(ex, "Apple catalog song lookup failed for {AppleId}", appleId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple catalog song lookup failed for {AppleId}", appleId);
+            }
             return null;
         }
         catch (JsonException ex)
         {
-            _logger.LogDebug(ex, "Apple catalog song payload could not be parsed for {AppleId}", appleId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple catalog song payload could not be parsed for {AppleId}", appleId);
+            }
             return null;
         }
     }
@@ -1226,12 +1238,18 @@ public sealed class DownloadIntentService
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogDebug(ex, "Apple catalog ISRC lookup failed for {Isrc}", isrc);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple catalog ISRC lookup failed for {Isrc}", isrc);
+            }
             return null;
         }
         catch (JsonException ex)
         {
-            _logger.LogDebug(ex, "Apple catalog ISRC payload could not be parsed for {Isrc}", isrc);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple catalog ISRC payload could not be parsed for {Isrc}", isrc);
+            }
             return null;
         }
     }
@@ -1813,12 +1831,15 @@ public sealed class DownloadIntentService
 
             var blockMessage = $"Skipped: blocked by global {blocklistMatch.Field} rule ({blocklistMatch.Value}).";
             _activityLog.Warn(blockMessage);
-            _logger.LogInformation(
-                "Download intent blocked by global blocklist ({Field}={Value}): {Title} - {Artist}",
-                blocklistMatch.Field,
-                blocklistMatch.Value,
-                intent.Title,
-                intent.Artist);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Download intent blocked by global blocklist ({Field}={Value}): {Title} - {Artist}",
+                    blocklistMatch.Field,
+                    blocklistMatch.Value,
+                    intent.Title,
+                    intent.Artist);
+            }
             return new DownloadIntentResult
             {
                 Success = false,
@@ -2422,7 +2443,10 @@ public sealed class DownloadIntentService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple MV metadata lookup failed for {Url}", sourceUrl);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple MV metadata lookup failed for {Url}", sourceUrl);
+            }
             return null;
         }
     }
@@ -2526,7 +2550,10 @@ public sealed class DownloadIntentService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer GW ISRC lookup failed for {TrackId}", trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer GW ISRC lookup failed for {TrackId}", trackId);
+            }
         }
 
         try
@@ -2539,7 +2566,10 @@ public sealed class DownloadIntentService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer API ISRC lookup failed for {TrackId}", trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer API ISRC lookup failed for {TrackId}", trackId);
+            }
         }
 
         return null;
@@ -2630,7 +2660,10 @@ public sealed class DownloadIntentService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Deezer ISRC URL resolve failed for {Isrc}", intent.Isrc);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Deezer ISRC URL resolve failed for {Isrc}", intent.Isrc);
+                }
             }
 
             return null;
@@ -3053,7 +3086,10 @@ public sealed class DownloadIntentService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Spotify metadata lookup failed for intent url {Url}", sourceUrl);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify metadata lookup failed for intent url {Url}", sourceUrl);
+            }
         }
     }
 
@@ -3253,7 +3289,10 @@ public sealed class DownloadIntentService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple metadata lookup failed for intent url {Url}", sourceUrl);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple metadata lookup failed for intent url {Url}", sourceUrl);
+            }
         }
     }
 
@@ -3419,31 +3458,7 @@ public sealed class DownloadIntentService
 
             var stationName = attrs.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? string.Empty : string.Empty;
             var stationUrl = attrs.TryGetProperty("url", out var urlEl) ? urlEl.GetString() ?? string.Empty : string.Empty;
-
-            if (string.IsNullOrWhiteSpace(intent.Title))
-            {
-                intent.Title = stationName;
-            }
-
-            if (string.IsNullOrWhiteSpace(intent.Album))
-            {
-                intent.Album = stationName;
-            }
-
-            if (string.IsNullOrWhiteSpace(intent.Artist))
-            {
-                intent.Artist = "Apple Music";
-            }
-
-            if (string.IsNullOrWhiteSpace(intent.AlbumArtist))
-            {
-                intent.AlbumArtist = intent.Artist;
-            }
-
-            if (string.IsNullOrWhiteSpace(intent.Url))
-            {
-                intent.Url = stationUrl;
-            }
+            ApplyAppleStationDefaults(intent, stationName, stationUrl);
 
             if (string.IsNullOrWhiteSpace(intent.Cover))
             {
@@ -3452,7 +3467,38 @@ public sealed class DownloadIntentService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple station metadata lookup failed for {StationId}", stationId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple station metadata lookup failed for {StationId}", stationId);
+            }
+        }
+    }
+
+    private static void ApplyAppleStationDefaults(DownloadIntent intent, string stationName, string stationUrl)
+    {
+        if (string.IsNullOrWhiteSpace(intent.Title))
+        {
+            intent.Title = stationName;
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.Album))
+        {
+            intent.Album = stationName;
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.Artist))
+        {
+            intent.Artist = "Apple Music";
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.AlbumArtist))
+        {
+            intent.AlbumArtist = intent.Artist;
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.Url))
+        {
+            intent.Url = stationUrl;
         }
     }
 
@@ -3500,7 +3546,10 @@ public sealed class DownloadIntentService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Boomplay metadata lookup failed for intent url {Url}", sourceUrl);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Boomplay metadata lookup failed for intent url {Url}", sourceUrl);
+            }
         }
     }
 
@@ -3541,7 +3590,10 @@ public sealed class DownloadIntentService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer metadata lookup failed for intent url {Url}", sourceUrl);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer metadata lookup failed for intent url {Url}", sourceUrl);
+            }
         }
     }
 

@@ -41,7 +41,7 @@ public class DeezSpoTagAsyncQueue<T> : IDisposable
 
         var item = new QueueItem<T>(data, callback);
         _queue.Enqueue(item);
-        
+
         // Start processing if not already at capacity
         _ = Task.Run(ProcessQueueAsync);
     }
@@ -126,7 +126,7 @@ public class DeezSpoTagAsyncQueue<T> : IDisposable
             {
                 // Decrement running counter
                 var currentRunning = Interlocked.Decrement(ref _running);
-                
+
                 // Check if we should signal drain completion
                 if (_queue.IsEmpty && currentRunning == 0)
                 {

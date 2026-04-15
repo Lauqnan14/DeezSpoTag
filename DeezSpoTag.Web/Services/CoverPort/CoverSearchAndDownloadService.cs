@@ -7,6 +7,15 @@ namespace DeezSpoTag.Web.Services.CoverPort;
 
 public sealed class CoverSearchAndDownloadService
 {
+    private readonly record struct SaveImageRequest(
+        string TempPath,
+        string SourceFormat,
+        string TargetOutputFormat,
+        string EffectiveOutputFormat,
+        bool NeedResize,
+        bool NeedFormatChange,
+        CoverSearchOptions Options);
+
     private readonly IReadOnlyList<ICoverSource> _sources;
     private readonly CoverSourceHttpService _httpService;
     private readonly CoverPerceptualHashService _hashService;
@@ -35,7 +44,10 @@ public sealed class CoverSearchAndDownloadService
         var selectedSources = ResolveSources(options.EnabledSources);
         if (selectedSources.Count == 0)
         {
-            _logger.LogDebug("No cover sources configured for query {Artist} - {Album}", query.Artist, query.Album);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("No cover sources configured for query {Artist} - {Album}", query.Artist, query.Album);
+            }
             return null;
         }
 
@@ -105,13 +117,16 @@ public sealed class CoverSearchAndDownloadService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Cover source {Source} failed for query {Artist} - {Album}", source.Name, query.Artist, query.Album);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Cover source {Source} failed for query {Artist} - {Album}", source.Name, query.Artist, query.Album);
+            }
             return Array.Empty<CoverCandidate>();
         }
     }
 
     private async Task<IReadOnlyList<CoverCandidate>> ApplySimilarityScoresAsync(
-        IReadOnlyList<CoverCandidate> candidates,
+        List<CoverCandidate> candidates,
         CoverSearchOptions options,
         string outputPath,
         CancellationToken cancellationToken)
@@ -202,7 +217,8 @@ public sealed class CoverSearchAndDownloadService
             var bytes = await File.ReadAllBytesAsync(referencePath, cancellationToken);
             return _hashService.TryComputeHash(bytes);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }
@@ -259,12 +275,12 @@ public sealed class CoverSearchAndDownloadService
             var needResize = !MatchesMaxSize(maxEdge, options);
             var needFormatChange = !string.Equals(sourceFormat, targetOutputFormat, StringComparison.OrdinalIgnoreCase) &&
                                    !options.PreserveSourceFormat;
-            var effectiveOutputFormat = targetOutputFormat;
-            var effectiveOutputPath = !needResize &&
-                                      !string.Equals(sourceFormat, targetOutputFormat, StringComparison.OrdinalIgnoreCase) &&
-                                      options.PreserveSourceFormat
-                ? NormalizeOutputPath(outputPath, sourceFormat)
-                : NormalizeOutputPath(outputPath, effectiveOutputFormat);
+            var (effectiveOutputPath, effectiveOutputFormat) = ResolveOutputTarget(
+                outputPath,
+                sourceFormat,
+                targetOutputFormat,
+                needResize,
+                options.PreserveSourceFormat);
             var tempPath = effectiveOutputPath + ".tmp";
             Directory.CreateDirectory(Path.GetDirectoryName(effectiveOutputPath)!);
 
@@ -277,22 +293,18 @@ public sealed class CoverSearchAndDownloadService
                 }));
             }
 
-            if (!needResize && !needFormatChange && string.Equals(sourceFormat, targetOutputFormat, StringComparison.OrdinalIgnoreCase))
-            {
-                await File.WriteAllBytesAsync(tempPath, sourceBytes, cancellationToken);
-            }
-            else if (string.Equals(effectiveOutputFormat, "png", StringComparison.OrdinalIgnoreCase))
-            {
-                var pngEncoder = new PngEncoder
-                {
-                    CompressionLevel = options.CrunchPng ? PngCompressionLevel.BestCompression : PngCompressionLevel.DefaultCompression
-                };
-                await image.SaveAsPngAsync(tempPath, pngEncoder, cancellationToken);
-            }
-            else
-            {
-                await image.SaveAsJpegAsync(tempPath, new JpegEncoder { Quality = 92 }, cancellationToken);
-            }
+            await SaveImageAsync(
+                image,
+                sourceBytes,
+                new SaveImageRequest(
+                    TempPath: tempPath,
+                    SourceFormat: sourceFormat,
+                    TargetOutputFormat: targetOutputFormat,
+                    EffectiveOutputFormat: effectiveOutputFormat,
+                    NeedResize: needResize,
+                    NeedFormatChange: needFormatChange,
+                    Options: options),
+                cancellationToken);
 
             File.Move(tempPath, effectiveOutputPath, overwrite: true);
             return new CoverDownloadResult(
@@ -309,9 +321,54 @@ public sealed class CoverSearchAndDownloadService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to download/convert cover from {Url}", candidate.Url);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to download/convert cover from {Url}", candidate.Url);
+            }
             return null;
         }
+    }
+
+    private static (string OutputPath, string OutputFormat) ResolveOutputTarget(
+        string outputPath,
+        string sourceFormat,
+        string targetOutputFormat,
+        bool needResize,
+        bool preserveSourceFormat)
+    {
+        var shouldKeepSourceFormat = !needResize
+                                     && !string.Equals(sourceFormat, targetOutputFormat, StringComparison.OrdinalIgnoreCase)
+                                     && preserveSourceFormat;
+        var effectiveOutputFormat = shouldKeepSourceFormat ? sourceFormat : targetOutputFormat;
+        var effectiveOutputPath = NormalizeOutputPath(outputPath, effectiveOutputFormat);
+        return (effectiveOutputPath, effectiveOutputFormat);
+    }
+
+    private static async Task SaveImageAsync(
+        Image image,
+        byte[] sourceBytes,
+        SaveImageRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!request.NeedResize
+            && !request.NeedFormatChange
+            && string.Equals(request.SourceFormat, request.TargetOutputFormat, StringComparison.OrdinalIgnoreCase))
+        {
+            await File.WriteAllBytesAsync(request.TempPath, sourceBytes, cancellationToken);
+            return;
+        }
+
+        if (string.Equals(request.EffectiveOutputFormat, "png", StringComparison.OrdinalIgnoreCase))
+        {
+            var pngEncoder = new PngEncoder
+            {
+                CompressionLevel = request.Options.CrunchPng ? PngCompressionLevel.BestCompression : PngCompressionLevel.DefaultCompression
+            };
+            await image.SaveAsPngAsync(request.TempPath, pngEncoder, cancellationToken);
+            return;
+        }
+
+        await image.SaveAsJpegAsync(request.TempPath, new JpegEncoder { Quality = 92 }, cancellationToken);
     }
 
     private static bool MatchesMinSize(CoverCandidate candidate, CoverSearchOptions options)

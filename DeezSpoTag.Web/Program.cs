@@ -431,14 +431,17 @@ public partial class Program
         var buildTimestamp = (!string.IsNullOrWhiteSpace(assemblyLocation) && File.Exists(assemblyLocation))
             ? File.GetLastWriteTimeUtc(assemblyLocation).ToString("yyyy-MM-dd HH:mm:ss 'UTC'")
             : UnknownValue;
-        app.Logger.LogInformation("DeezSpoTag.Web build: {Configuration} ({AssemblyVersion}) built {BuildTimestamp}",
+        if (app.Logger.IsEnabled(LogLevel.Information))
+        {
+            app.Logger.LogInformation("DeezSpoTag.Web build: {Configuration} ({AssemblyVersion}) built {BuildTimestamp}",
 #if DEBUG
-            "Debug",
+                "Debug",
 #else
-        "Release",
+            "Release",
 #endif
-            displayVersion,
-            buildTimestamp);
+                displayVersion,
+                buildTimestamp);
+        }
     }
 
     static string ResolveBuildDisplayVersion(Assembly entryAssembly, string fallbackVersion)
@@ -1336,7 +1339,10 @@ public partial class Program
         await userManager.SetLockoutEnabledAsync(existing, true);
         await userManager.SetLockoutEndDateAsync(existing, null);
         await userManager.ResetAccessFailedCountAsync(existing);
-        logger.LogInformation("Bootstrap user '{User}' created and lockout cleared.", seedUsername);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation("Bootstrap user '{User}' created and lockout cleared.", seedUsername);
+        }
     }
 
     static async Task EnsureSeedUserPasswordAsync(
@@ -1409,47 +1415,66 @@ public partial class Program
             .ToListAsync();
         foreach (var identityUser in allIdentityUsers)
         {
-            var claims = await userManager.GetClaimsAsync(identityUser);
-            var mustChangeClaims = claims
-                .Where(c => c.Type == "must_change_password")
-                .ToList();
-            var duplicateMustChangeClaims = mustChangeClaims
-                .Skip(1)
-                .ToList();
-            foreach (var duplicateClaim in duplicateMustChangeClaims)
-            {
-                await userManager.RemoveClaimAsync(identityUser, duplicateClaim);
-            }
-
-            if (duplicateMustChangeClaims.Count > 0)
-            {
-                logger.LogWarning(
-                    "Removed {DuplicateCount} duplicate must_change_password claims for '{UserName}'.",
-                    duplicateMustChangeClaims.Count,
-                    identityUser.UserName ?? identityUser.Id);
-            }
-
-            if (mustChangeClaims.Count == 0 || !hasSeedCredentials)
-            {
-                continue;
-            }
-
-            var hasSeedUserName = string.Equals(
-                identityUser.NormalizedUserName,
+            await CleanupUserMustChangeClaimsAsync(
+                userManager,
+                logger,
+                identityUser,
+                hasSeedCredentials,
                 normalizedSeedUserNameForCleanup,
-                StringComparison.Ordinal);
-            var hasSeedPassword = await userManager.CheckPasswordAsync(identityUser, seedPassword!);
+                seedPassword);
+        }
+    }
 
-            if (hasSeedUserName && hasSeedPassword)
-            {
-                continue;
-            }
+    static async Task CleanupUserMustChangeClaimsAsync(
+        UserManager<AppUser> userManager,
+        ILogger logger,
+        AppUser identityUser,
+        bool hasSeedCredentials,
+        string? normalizedSeedUserNameForCleanup,
+        string? seedPassword)
+    {
+        var claims = await userManager.GetClaimsAsync(identityUser);
+        var mustChangeClaims = claims
+            .Where(c => c.Type == "must_change_password")
+            .ToList();
+        var duplicateMustChangeClaims = mustChangeClaims
+            .Skip(1)
+            .ToList();
+        foreach (var duplicateClaim in duplicateMustChangeClaims)
+        {
+            await userManager.RemoveClaimAsync(identityUser, duplicateClaim);
+        }
 
-            foreach (var mustChangeClaim in mustChangeClaims)
-            {
-                await userManager.RemoveClaimAsync(identityUser, mustChangeClaim);
-            }
+        if (duplicateMustChangeClaims.Count > 0)
+        {
+            logger.LogWarning(
+                "Removed {DuplicateCount} duplicate must_change_password claims for '{UserName}'.",
+                duplicateMustChangeClaims.Count,
+                identityUser.UserName ?? identityUser.Id);
+        }
 
+        if (mustChangeClaims.Count == 0 || !hasSeedCredentials)
+        {
+            return;
+        }
+
+        var hasSeedUserName = string.Equals(
+            identityUser.NormalizedUserName,
+            normalizedSeedUserNameForCleanup,
+            StringComparison.Ordinal);
+        var hasSeedPassword = await userManager.CheckPasswordAsync(identityUser, seedPassword!);
+        if (hasSeedUserName && hasSeedPassword)
+        {
+            return;
+        }
+
+        foreach (var mustChangeClaim in mustChangeClaims)
+        {
+            await userManager.RemoveClaimAsync(identityUser, mustChangeClaim);
+        }
+
+        if (logger.IsEnabled(LogLevel.Information))
+        {
             logger.LogInformation(
                 "Removed stale must_change_password claim(s) for '{UserName}' because credentials no longer match seeded defaults.",
                 identityUser.UserName ?? identityUser.Id);
@@ -1629,10 +1654,13 @@ public partial class Program
             return;
         }
 
-        logger.LogInformation(
-            "Single-user identity mode active. Canonical account is '{CanonicalUser}' ({CanonicalId}) and no additional ASP.NET Identity accounts were found to delete.",
-            canonicalUser.UserName ?? UnknownValue,
-            canonicalUser.Id);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation(
+                "Single-user identity mode active. Canonical account is '{CanonicalUser}' ({CanonicalId}) and no additional ASP.NET Identity accounts were found to delete.",
+                canonicalUser.UserName ?? UnknownValue,
+                canonicalUser.Id);
+        }
     }
 
 }
