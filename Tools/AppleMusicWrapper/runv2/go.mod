@@ -1,6 +1,8 @@
 module applewrapper
 
-go 1.20
+go 1.25
+
+toolchain go1.25.9
 
 require (
 	github.com/grafov/m3u8 v0.12.1

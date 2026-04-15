@@ -127,7 +127,7 @@
   "albumVariousArtists": true,
   "removeAlbumVersion": false,
   "removeDuplicateArtists": true,
-  "featuredToTitle": "0",
+  "featuredToTitle": "2",
   "titleCasing": "nothing",
   "artistCasing": "nothing",
   "clearQueueOnExit": false,
