@@ -80,6 +80,7 @@
                 runDedupe: true,
                 useShazamForDedupe: false,
                 duplicatesFolderName: "%duplicates%",
+                renameSpotifyArtistFolders: DEFAULT_RENAME_SPOTIFY_ARTIST_FOLDERS,
                 includeSubfolders: true
             },
             coverMaintenance: {
@@ -263,6 +264,7 @@
     const ENHANCEMENT_LAST_SCAN_BANNER_MS = 15000;
     const DEFAULT_RECENT_DOWNLOAD_WINDOW_HOURS = 24;
     const DEFAULT_RECENT_DOWNLOAD_WINDOW_DAYS = Math.max(0, Math.round(DEFAULT_RECENT_DOWNLOAD_WINDOW_HOURS / 24));
+    const DEFAULT_RENAME_SPOTIFY_ARTIST_FOLDERS = true;
 
     const state = {
         config: structuredClone(DEFAULT_CONFIG),
@@ -6024,7 +6026,8 @@
             librarySchedules: source.librarySchedules && typeof source.librarySchedules === "object"
                 ? { ...source.librarySchedules }
                 : {},
-            recentDownloadWindowHours
+            recentDownloadWindowHours,
+            renameSpotifyArtistFolders: source.renameSpotifyArtistFolders !== false
         };
     }
 
@@ -6043,8 +6046,17 @@
             || el("enhancementQualityChecksStatus")
             || section.querySelector(".enhancement-action-row");
         const row = document.createElement("div");
-        row.className = "download-grid download-grid-2 mt-3";
+        row.className = "download-grid download-grid-3 mt-3";
         row.innerHTML = `
+            <div class="form-group">
+                <div class="checkbox-group mb-2">
+                    <input type="checkbox" id="enhancementRenameSpotifyArtistFolders" />
+                    <label for="enhancementRenameSpotifyArtistFolders">
+                        Rename artist folders to Spotify's canonical artist name
+                    </label>
+                </div>
+                <span class="helper">Applies to Spotify artist lookups across the library and watchlist flows.</span>
+            </div>
             <div class="form-group">
                 <label for="enhancementRecentDownloadWindowDays">
                     Recent downloads window (days)
@@ -6058,7 +6070,7 @@
                 <span class="helper">Applies to the automation run that enhances recent downloads moved into library folders.</span>
             </div>
             <div class="form-group d-flex align-items-end">
-                <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="saveRecentDownloadWindow">Save Recent Downloads Window</button>
+                <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="saveEnhancementDefaults">Save Enhancement Defaults</button>
             </div>
         `;
 
@@ -6102,6 +6114,10 @@
 
     function applyAutoTagDefaultsToUi() {
         ensureRecentDownloadWindowControls();
+        const renameFoldersCheckbox = el("enhancementRenameSpotifyArtistFolders");
+        if (renameFoldersCheckbox instanceof HTMLInputElement) {
+            renameFoldersCheckbox.checked = state.autoTagDefaults?.renameSpotifyArtistFolders !== false;
+        }
         const field = el("enhancementRecentDownloadWindowDays");
         if (!field) {
             return;
@@ -6126,8 +6142,8 @@
         }
     }
 
-    async function saveRecentDownloadWindow() {
-        const button = el("saveRecentDownloadWindow");
+    async function saveEnhancementDefaults() {
+        const button = el("saveEnhancementDefaults");
         if (button) {
             button.disabled = true;
         }
@@ -6136,6 +6152,10 @@
                 await loadAutoTagDefaults();
             }
             const defaults = normalizeAutoTagDefaults(state.autoTagDefaults);
+            const renameFoldersCheckbox = el("enhancementRenameSpotifyArtistFolders");
+            const renameSpotifyArtistFolders = renameFoldersCheckbox instanceof HTMLInputElement
+                ? renameFoldersCheckbox.checked
+                : defaults.renameSpotifyArtistFolders !== false;
             const recentDownloadWindowDays = readRecentDownloadWindowDays();
             const recentDownloadWindowHours = convertRecentWindowDaysToHours(recentDownloadWindowDays);
             const response = await fetch("/api/autotag/defaults", {
@@ -6144,7 +6164,8 @@
                 body: JSON.stringify({
                     defaultFileProfile: defaults.defaultFileProfile,
                     librarySchedules: defaults.librarySchedules,
-                    recentDownloadWindowHours
+                    recentDownloadWindowHours,
+                    renameSpotifyArtistFolders
                 })
             });
             if (!response.ok) {
@@ -6154,13 +6175,13 @@
             state.autoTagDefaults = normalizeAutoTagDefaults(saved);
             state.autoTagDefaultsDirty = false;
             applyAutoTagDefaultsToUi();
-            setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Recent downloads window saved.");
-            showToast("Recent downloads window saved.", "success");
+            setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement defaults saved.");
+            showToast("Enhancement defaults saved.", "success");
         } catch (error) {
             setEnhancementStatus(
                 "enhancementRecentDownloadWindowStatus",
-                `Failed to save recent downloads window: ${error?.message || error}`);
-            showToast(`Failed to save recent downloads window: ${error?.message || error}`, "error");
+                `Failed to save enhancement defaults: ${error?.message || error}`);
+            showToast(`Failed to save enhancement defaults: ${error?.message || error}`, "error");
         } finally {
             if (button) {
                 button.disabled = false;
@@ -6624,10 +6645,14 @@
     el("runCoverMaintenance")?.addEventListener("click", runCoverMaintenance);
     el("runFolderUniformity")?.addEventListener("click", runFolderUniformity);
     el("runEnhancementQualityChecks")?.addEventListener("click", runEnhancementQualityChecks);
-    el("saveRecentDownloadWindow")?.addEventListener("click", saveRecentDownloadWindow);
+    el("saveEnhancementDefaults")?.addEventListener("click", saveEnhancementDefaults);
+    el("enhancementRenameSpotifyArtistFolders")?.addEventListener("change", () => {
+        state.autoTagDefaultsDirty = true;
+        setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement defaults have unsaved changes.");
+    });
     el("enhancementRecentDownloadWindowDays")?.addEventListener("input", () => {
         state.autoTagDefaultsDirty = true;
-        setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Recent downloads window has unsaved changes.");
+        setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement defaults have unsaved changes.");
     });
     [
         "saveAnimatedArtwork"

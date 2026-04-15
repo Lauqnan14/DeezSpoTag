@@ -54,6 +54,7 @@ public sealed class SpotifyArtistService
     private readonly SpotifyMetadataService _metadataService;
     private readonly SpotifyDeezerLinkService _deezerLinkService;
     private readonly ShazamRecognitionService _shazamRecognitionService;
+    private readonly AutoTagDefaultsStore _autoTagDefaultsStore;
     private readonly ILogger<SpotifyArtistService> _logger;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private readonly ConcurrentDictionary<long, (DateTimeOffset Stamp, HashSet<string> Titles)> _localAlbumTitleSetCache = new();
@@ -65,6 +66,7 @@ public sealed class SpotifyArtistService
         LibraryRepository libraryRepository,
         ArtistPageCacheRepository cacheRepository,
         LibraryConfigStore configStore,
+        AutoTagDefaultsStore autoTagDefaultsStore,
         SpotifyArtistServiceDependencies dependencies,
         ILogger<SpotifyArtistService> logger)
     {
@@ -75,6 +77,7 @@ public sealed class SpotifyArtistService
         _metadataService = dependencies.MetadataService;
         _deezerLinkService = dependencies.DeezerLinkService;
         _shazamRecognitionService = dependencies.ShazamRecognitionService;
+        _autoTagDefaultsStore = autoTagDefaultsStore;
         _logger = logger;
     }
 
@@ -2501,6 +2504,11 @@ public sealed class SpotifyArtistService
             return;
         }
 
+        if (!await ShouldRewriteArtistFoldersToCanonicalNameAsync(cancellationToken))
+        {
+            return;
+        }
+
         var canonicalArtistName = await TryFetchCanonicalSpotifyArtistNameAsync(spotifyArtistId, cancellationToken);
 
         if (string.IsNullOrWhiteSpace(canonicalArtistName))
@@ -2538,6 +2546,24 @@ public sealed class SpotifyArtistService
             AddActivity(
                 rewriteResult.MoveFailures > 0 ? "warn" : "info",
                 $"[spotify] canonical artist folder rewrite for {currentArtistName} -> {canonicalArtistName}: moved_albums={rewriteResult.MovedAlbumCount}, conflicts={rewriteResult.MoveConflicts}, failures={rewriteResult.MoveFailures}.");
+        }
+    }
+
+    private async Task<bool> ShouldRewriteArtistFoldersToCanonicalNameAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var defaults = await _autoTagDefaultsStore.LoadAsync();
+            return defaults.RenameSpotifyArtistFolders != false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to read enhancement defaults for Spotify artist folder canonicalization.");
+            }
+
+            return true;
         }
     }
 
