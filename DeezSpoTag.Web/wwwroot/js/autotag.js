@@ -4555,7 +4555,6 @@
         const singleAlbumArtist = el("singleAlbumArtist");
         const useMainArtistFolders = singleAlbumArtist ? singleAlbumArtist.checked !== false : true;
         const dependentGroup = el("autotag-multi-artist-dependent");
-        const behaviorHint = el("singleAlbumArtistBehaviorHint");
         const dependentFieldIds = ["multiArtistSeparator", "albumVariousArtists", "removeDuplicateArtists"];
 
         dependentFieldIds.forEach((fieldId) => {
@@ -4568,12 +4567,6 @@
 
         if (dependentGroup) {
             dependentGroup.classList.toggle("autotag-disabled-group", useMainArtistFolders);
-        }
-
-        if (behaviorHint) {
-            behaviorHint.textContent = useMainArtistFolders
-                ? "Enabled: Album Artist stays single (main artist), and folders use the main artist. Disable this to allow multi-artist handling."
-                : "Disabled: multi-artist handling controls are active; Album Artist can include multiple artists.";
         }
     }
 

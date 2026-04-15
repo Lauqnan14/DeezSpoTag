@@ -14029,7 +14029,8 @@ function getLibraryLoadTargets() {
         shouldLoadViewFolders,
         shouldLoadArtists: document.getElementById('artistsGrid'),
         shouldLoadScanStatus: document.getElementById('libraryLastScan') || document.getElementById('libraryTrackCount'),
-        shouldLoadDownload: document.getElementById('downloadLocationHint'),
+        // Folder tabs still need download-location settings even when the hint text is removed.
+        shouldLoadDownload: document.getElementById('downloadLocationHint') || shouldLoadFolders,
         shouldLoadArtistAlbums: document.getElementById('discographyGrid'),
         shouldLoadAlbumTracks: document.getElementById('albumTracks'),
         shouldLoadTrackAnalysis: document.getElementById('trackAnalysisCard'),
