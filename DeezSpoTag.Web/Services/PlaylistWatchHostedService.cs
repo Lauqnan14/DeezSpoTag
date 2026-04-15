@@ -218,26 +218,59 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             }
             return WatchItemRunOutcome.Success;
         }
+        catch (OperationCanceledException ex) when (!stoppingToken.IsCancellationRequested)
+        {
+            return RecordItemFailure(item, settings, startedUtc, stopwatch, ex);
+        }
         catch (OperationCanceledException)
         {
             throw;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            var failures = _consecutiveFailures.AddOrUpdate(item.Key, 1, static (_, current) => Math.Min(current + 1, 12));
-            var baseDelaySeconds = item.Kind == ArtistKind
-                ? Math.Max(1, settings.WatchDelayBetweenArtistsSeconds)
-                : Math.Max(1, settings.WatchDelayBetweenPlaylistsSeconds);
-            var backoffSeconds = Math.Min(
-                600,
-                baseDelaySeconds * (int)Math.Pow(2, Math.Min(failures - 1, 6)));
-            var nextRunUtc = startedUtc.AddSeconds(backoffSeconds);
-            _nextAllowedRun[item.Key] = nextRunUtc;
-            if (ShouldEmitBackoffWarning(failures))
+            return RecordItemFailure(item, settings, startedUtc, stopwatch, ex);
+        }
+        finally
+        {
+            itemLock.Release();
+        }
+    }
+
+    private WatchItemRunOutcome RecordItemFailure(
+        WatchItem item,
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        DateTimeOffset startedUtc,
+        Stopwatch stopwatch,
+        Exception ex)
+    {
+        var failures = _consecutiveFailures.AddOrUpdate(item.Key, 1, static (_, current) => Math.Min(current + 1, 12));
+        var baseDelaySeconds = item.Kind == ArtistKind
+            ? Math.Max(1, settings.WatchDelayBetweenArtistsSeconds)
+            : Math.Max(1, settings.WatchDelayBetweenPlaylistsSeconds);
+        var backoffSeconds = Math.Min(
+            600,
+            baseDelaySeconds * (int)Math.Pow(2, Math.Min(failures - 1, 6)));
+        var nextRunUtc = startedUtc.AddSeconds(backoffSeconds);
+        _nextAllowedRun[item.Key] = nextRunUtc;
+        if (ShouldEmitBackoffWarning(failures))
+        {
+            _logger.LogWarning(
+                ex,
+                "Watchlist item failed: key={WatchItemKey}, kind={Kind}, source={Source}, failures={Failures}, backoffSeconds={BackoffSeconds}, nextRunUtc={NextRunUtc}, elapsedMs={ElapsedMs:0}",
+                item.Key,
+                item.Kind,
+                item.Source,
+                failures,
+                backoffSeconds,
+                nextRunUtc,
+                stopwatch.Elapsed.TotalMilliseconds);
+        }
+        else
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogWarning(
-                    ex,
-                    "Watchlist item failed: key={WatchItemKey}, kind={Kind}, source={Source}, failures={Failures}, backoffSeconds={BackoffSeconds}, nextRunUtc={NextRunUtc}, elapsedMs={ElapsedMs:0}",
+                _logger.LogDebug(
+                    "Watchlist item still failing under backoff threshold: key={WatchItemKey}, kind={Kind}, source={Source}, failures={Failures}, backoffSeconds={BackoffSeconds}, nextRunUtc={NextRunUtc}, elapsedMs={ElapsedMs:0}",
                     item.Key,
                     item.Kind,
                     item.Source,
@@ -246,27 +279,8 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                     nextRunUtc,
                     stopwatch.Elapsed.TotalMilliseconds);
             }
-            else
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(
-                        "Watchlist item still failing under backoff threshold: key={WatchItemKey}, kind={Kind}, source={Source}, failures={Failures}, backoffSeconds={BackoffSeconds}, nextRunUtc={NextRunUtc}, elapsedMs={ElapsedMs:0}",
-                        item.Key,
-                        item.Kind,
-                        item.Source,
-                        failures,
-                        backoffSeconds,
-                        nextRunUtc,
-                        stopwatch.Elapsed.TotalMilliseconds);
-                }
-            }
-            return WatchItemRunOutcome.Failure;
         }
-        finally
-        {
-            itemLock.Release();
-        }
+        return WatchItemRunOutcome.Failure;
     }
 
     private static List<WatchItem> BuildWatchItems(

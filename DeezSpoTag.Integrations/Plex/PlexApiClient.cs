@@ -754,30 +754,49 @@ public class PlexApiClient
 
     private async Task<XDocument?> TryLoadTrackSearchDocumentAsync(string endpoint, CancellationToken cancellationToken)
     {
-        var response = await _httpClient.GetAsync(endpoint, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug("Plex track search endpoint failed {Endpoint}: {StatusCode}", endpoint, response.StatusCode);            }
-            return null;
-        }
-
-        var content = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(content))
-        {
-            return null;
-        }
-
         try
         {
-            return XDocument.Parse(content);
+            using var response = await _httpClient.GetAsync(endpoint, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Plex track search endpoint failed {Endpoint}: {StatusCode}", endpoint, response.StatusCode);                }
+                return null;
+            }
+
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                return null;
+            }
+
+            try
+            {
+                return XDocument.Parse(content);
+            }
+            catch (Exception ex)
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Plex search XML parse failed for endpoint {Endpoint}", endpoint);                }
+                return null;
+            }
         }
-        catch (Exception ex)
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            if (_logger.IsEnabled(LogLevel.Warning))
+            {
+                _logger.LogWarning(ex, "Plex track search request timed out for endpoint {Endpoint}", endpoint);
+            }
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Plex search XML parse failed for endpoint {Endpoint}", endpoint);            }
+                _logger.LogDebug(ex, "Plex track search request failed for endpoint {Endpoint}", endpoint);
+            }
             return null;
         }
     }

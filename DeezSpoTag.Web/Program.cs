@@ -268,7 +268,10 @@ public partial class Program
         services.AddSingleton<QuickTagService>();
         services.AddSingleton<QuickTagTagSourceService>();
         services.AddHttpClient<DeezSpoTag.Web.Services.PlaylistCoverService>();
-        services.AddHttpClient<DeezSpoTag.Integrations.Plex.PlexApiClient>();
+        services.AddHttpClient<DeezSpoTag.Integrations.Plex.PlexApiClient>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
         services.AddHttpClient<DeezSpoTag.Integrations.Jellyfin.JellyfinApiClient>();
         services.AddHttpClient<DeezSpoTag.Integrations.Discogs.DiscogsApiClient>();
         services.AddSignalR();
