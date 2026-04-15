@@ -2249,10 +2249,6 @@
             numberInput.value = initial;
             numberInput.className = "autotag-slider-number";
 
-            const value = document.createElement("span");
-            value.className = "autotag-slider-value";
-            value.textContent = `${initial}`;
-
             const update = (nextRaw) => {
                 const parsed = Number(nextRaw);
                 if (!Number.isFinite(parsed)) {
@@ -2261,7 +2257,6 @@
                 const clamped = Math.min(max, Math.max(min, parsed));
                 slider.value = clamped;
                 numberInput.value = clamped;
-                value.textContent = `${clamped}`;
                 setPlatformOptionValue(platform.id, option.id, clamped);
             };
 
@@ -2270,7 +2265,6 @@
 
             row.appendChild(slider);
             row.appendChild(numberInput);
-            row.appendChild(value);
             field.appendChild(row);
             return field;
         }
@@ -2418,14 +2412,23 @@
             titleWrap.className = "autotag-platform-option-title-wrap";
             const heading = document.createElement("h6");
             heading.textContent = platform.name;
-            titleWrap.appendChild(heading);
 
-            const subtitle = document.createElement("div");
-            subtitle.className = "autotag-platform-option-subtitle";
-            const extraOptionCount = platform.normalizedId === "shazam" ? 1 : 0;
-            const optionCount = platform.options.length + extraOptionCount;
-            subtitle.textContent = `${platform.id} • ${optionCount} ${optionCount === 1 ? "setting" : "settings"}`;
-            titleWrap.appendChild(subtitle);
+            const helperLines = [];
+            if (platform.description) {
+                helperLines.push(platform.description);
+            }
+            if (platform.normalizedId === "itunes") {
+                helperLines.push("Uses iTunes metadata/artwork. Lyrics require an active Apple Music subscription.");
+            }
+            if (helperLines.length > 0) {
+                const infoTooltip = document.createElement("span");
+                infoTooltip.className = "autotag-tooltip-icon ms-1";
+                infoTooltip.title = helperLines.join(" ");
+                infoTooltip.setAttribute("aria-label", infoTooltip.title);
+                infoTooltip.innerHTML = '<i class="fas fa-question-circle"></i>';
+                heading.appendChild(infoTooltip);
+            }
+            titleWrap.appendChild(heading);
 
             headerMain.appendChild(titleWrap);
             header.appendChild(headerMain);
@@ -2440,20 +2443,6 @@
 
             header.appendChild(badges);
             section.appendChild(header);
-
-            if (platform.description) {
-                const description = document.createElement("div");
-                description.className = "helper";
-                description.textContent = platform.description;
-                section.appendChild(description);
-            }
-
-            if (platform.normalizedId === "itunes") {
-                const itunesNote = document.createElement("div");
-                itunesNote.className = "helper";
-                itunesNote.textContent = "Uses iTunes metadata/artwork. Lyrics require an active Apple Music subscription.";
-                section.appendChild(itunesNote);
-            }
 
             const optionsLabel = document.createElement("div");
             optionsLabel.className = "autotag-platform-option-label";
@@ -5000,7 +4989,8 @@
         }
 
         const show = saveLyrics?.checked === true;
-        embedLyricsFormatGroup.style.display = show ? "block" : "none";
+        // Reset to stylesheet-defined display (`.form-group` => flex) when visible.
+        embedLyricsFormatGroup.style.display = show ? "" : "none";
         if (lrcFormat) {
             lrcFormat.disabled = !show;
         }
