@@ -369,12 +369,6 @@
                 </div>
                 <div class="card-body autotag-card-body">
                     <div class="download-section">
-                        <div class="download-section-title">Overview</div>
-                        <p class="helper mb-3">Destination folders for tagged downloads. These folders power the Library view.</p>
-                        <p class="helper mb-0" id="downloadLocationHint"></p>
-                    </div>
-
-                    <div class="download-section">
                         <div class="download-section-title">Folders</div>
                         <!-- Folder List -->
                         <div class="folder-table-scroll">
@@ -539,11 +533,6 @@
                 </div>
                 <div class="card-body autotag-card-body">
                     <div class="download-section">
-                        <div class="download-section-title">Overview</div>
-                        <p class="helper mb-0">Configure how files are organized within library folders. Applied on download, then re-applied after Enrichment.</p>
-                    </div>
-
-                    <div class="download-section">
                         <div class="download-section-title">Structure</div>
                         <!-- Structure Options Grid -->
                         <div class="folder-structure-grid">
@@ -655,11 +644,15 @@
                         <div class="download-section-title">Primary Rule</div>
                         <div class="checkbox-group">
                             <input type="checkbox" id="singleAlbumArtist" checked />
-                            <label for="singleAlbumArtist">Single Album Artist (use main artist)</label>
+                            <label for="singleAlbumArtist">
+                                Single Album Artist (use main artist)
+                                <span class="autotag-tooltip-icon ms-1"
+                                      title="Enabled: Album Artist stays single (main artist), and folders use the main artist. Disable this to allow multi-artist handling."
+                                      aria-label="Enabled: Album Artist stays single (main artist), and folders use the main artist. Disable this to allow multi-artist handling.">
+                                    <i class="fas fa-question-circle"></i>
+                                </span>
+                            </label>
                         </div>
-                        <span class="helper" id="singleAlbumArtistBehaviorHint">
-                            Enabled: Album Artist is written as one main artist and folders follow the main artist.
-                        </span>
                     </div>
                     <div class="download-section" id="autotag-multi-artist-dependent">
                         <div class="download-section-title">Other Handling</div>
