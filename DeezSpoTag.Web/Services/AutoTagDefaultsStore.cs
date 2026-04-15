@@ -38,7 +38,8 @@ public sealed class AutoTagDefaultsStore
                 return new AutoTagDefaultsDto(
                     null,
                     new Dictionary<string, string>(),
-                    AutoTagDefaultsDto.DefaultRecentDownloadWindowHours);
+                    AutoTagDefaultsDto.DefaultRecentDownloadWindowHours,
+                    true);
             }
 
             var json = await File.ReadAllTextAsync(_defaultsPath);
@@ -46,7 +47,8 @@ public sealed class AutoTagDefaultsStore
                 ?? new AutoTagDefaultsDto(
                     null,
                     new Dictionary<string, string>(),
-                    AutoTagDefaultsDto.DefaultRecentDownloadWindowHours);
+                    AutoTagDefaultsDto.DefaultRecentDownloadWindowHours,
+                    true);
             var normalized = NormalizeDefaults(defaults, out var normalizedChanged);
             var hadLegacyLibraryProfiles = ContainsLegacyLibraryProfiles(json);
             if (normalizedChanged || hadLegacyLibraryProfiles)
@@ -62,7 +64,8 @@ public sealed class AutoTagDefaultsStore
             return new AutoTagDefaultsDto(
                 null,
                 new Dictionary<string, string>(),
-                AutoTagDefaultsDto.DefaultRecentDownloadWindowHours);
+                AutoTagDefaultsDto.DefaultRecentDownloadWindowHours,
+                true);
         }
     }
 
@@ -110,7 +113,8 @@ public sealed class AutoTagDefaultsStore
         await SaveAsync(new AutoTagDefaultsDto(
             defaultFileProfile,
             librarySchedules,
-            defaults.RecentDownloadWindowHours));
+            defaults.RecentDownloadWindowHours,
+            defaults.RenameSpotifyArtistFolders));
         return true;
     }
 
@@ -163,7 +167,14 @@ public sealed class AutoTagDefaultsStore
             changed = true;
         }
 
-        return new AutoTagDefaultsDto(defaultFileProfile, schedules, recentDownloadWindowHours);
+        var renameSpotifyArtistFolders = defaults.RenameSpotifyArtistFolders;
+        if (renameSpotifyArtistFolders is null)
+        {
+            renameSpotifyArtistFolders = true;
+            changed = true;
+        }
+
+        return new AutoTagDefaultsDto(defaultFileProfile, schedules, recentDownloadWindowHours, renameSpotifyArtistFolders);
     }
 
     private static bool ContainsLegacyLibraryProfiles(string json)
@@ -223,7 +234,8 @@ public sealed class AutoTagDefaultsStore
 public sealed record AutoTagDefaultsDto(
     string? DefaultFileProfile,
     Dictionary<string, string> LibrarySchedules,
-    int? RecentDownloadWindowHours)
+    int? RecentDownloadWindowHours,
+    bool? RenameSpotifyArtistFolders)
 {
     public const int DefaultRecentDownloadWindowHours = 24;
 }

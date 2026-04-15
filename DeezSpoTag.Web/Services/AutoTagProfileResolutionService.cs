@@ -145,7 +145,18 @@ public sealed class AutoTagProfileResolutionService
         var librarySchedules = NormalizeLibrarySchedules(defaults.LibrarySchedules, ref changed);
         var recentDownloadWindowHours = NormalizeRecentDownloadWindowHours(defaults.RecentDownloadWindowHours, ref changed);
 
-        var normalized = new AutoTagDefaultsDto(defaultFileProfile, librarySchedules, recentDownloadWindowHours);
+        var renameSpotifyArtistFolders = defaults.RenameSpotifyArtistFolders;
+        if (renameSpotifyArtistFolders is null)
+        {
+            renameSpotifyArtistFolders = true;
+            changed = true;
+        }
+
+        var normalized = new AutoTagDefaultsDto(
+            defaultFileProfile,
+            librarySchedules,
+            recentDownloadWindowHours,
+            renameSpotifyArtistFolders);
         if (changed)
         {
             normalized = await _defaultsStore.SaveAsync(normalized);
@@ -238,7 +249,8 @@ public sealed class AutoTagProfileResolutionService
             await _defaultsStore.SaveAsync(new AutoTagDefaultsDto(
                 defaults.DefaultFileProfile,
                 mergedSchedules,
-                defaults.RecentDownloadWindowHours));
+                defaults.RecentDownloadWindowHours,
+                defaults.RenameSpotifyArtistFolders));
         }
 
         return normalizedFolders;

@@ -44,7 +44,8 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
     public sealed record UpdateDefaultsRequest(
         string? DefaultFileProfile,
         Dictionary<string, string>? LibrarySchedules,
-        int? RecentDownloadWindowHours);
+        int? RecentDownloadWindowHours,
+        bool? RenameSpotifyArtistFolders);
 
     [HttpPost]
     public async Task<IActionResult> Update([FromBody] UpdateDefaultsRequest request, CancellationToken cancellationToken)
@@ -107,10 +108,14 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
         {
             recentDownloadWindowHours = AutoTagDefaultsDto.DefaultRecentDownloadWindowHours;
         }
+        var renameSpotifyArtistFolders = request.RenameSpotifyArtistFolders
+            ?? state.Defaults.RenameSpotifyArtistFolders
+            ?? true;
         var defaults = new AutoTagDefaultsDto(
             resolvedDefaultProfileId,
             scheduleCleaned,
-            recentDownloadWindowHours);
+            recentDownloadWindowHours,
+            renameSpotifyArtistFolders);
         await _store.SaveAsync(defaults);
 
         var normalizedState = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
