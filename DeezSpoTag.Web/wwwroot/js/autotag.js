@@ -1,4 +1,6 @@
 (() => {
+    const DEFAULT_RENAME_SPOTIFY_ARTIST_FOLDERS = true;
+
     const DEFAULT_CONFIG = {
         platforms: ["deezer", "itunes"],
         path: null,
@@ -264,8 +266,6 @@
     const ENHANCEMENT_LAST_SCAN_BANNER_MS = 15000;
     const DEFAULT_RECENT_DOWNLOAD_WINDOW_HOURS = 24;
     const DEFAULT_RECENT_DOWNLOAD_WINDOW_DAYS = Math.max(0, Math.round(DEFAULT_RECENT_DOWNLOAD_WINDOW_HOURS / 24));
-    const DEFAULT_RENAME_SPOTIFY_ARTIST_FOLDERS = true;
-
     const state = {
         config: structuredClone(DEFAULT_CONFIG),
         platforms: [],
@@ -1401,19 +1401,20 @@
     }
 
     function normalizeDownloadTags(selected) {
+        const selectedTags = Array.isArray(selected) ? selected : [];
         const allowed = getDownloadTagIds();
         if (!allowed.length) {
-            return selected;
+            return selectedTags;
         }
         const allowedSet = new Set(allowed.map((tag) => String(tag).toLowerCase()));
-        const filtered = (selected || []).filter((tag) => allowedSet.has(String(tag).toLowerCase()));
+        const filtered = selectedTags.filter((tag) => allowedSet.has(String(tag).toLowerCase()));
         if (filtered.length > 0) {
             return filtered;
         }
-        if (selected && selected.length > 0) {
+        if (selectedTags.length > 0) {
             return allowed.slice();
         }
-        return selected || [];
+        return selectedTags;
     }
 
     function buildMergedTagSelection(primary, secondary) {
@@ -2523,6 +2524,7 @@
         refreshDownloadTagsForSource();
         renderTags("autotag-overwrite-tags", state.config.overwriteTags, "overwriteTags");
         updateDownloadSourceAvailability();
+        renderFolderStructurePreview();
 
         const setChecked = (id, value) => {
             const field = el(id);
@@ -3073,6 +3075,10 @@
         const moveSuccessLibraryId = Number.parseInt(String(merged.moveSuccessLibraryFolderId ?? ""), 10);
         merged.moveSuccessLibraryFolderId = Number.isFinite(moveSuccessLibraryId) ? moveSuccessLibraryId : null;
         ensureEffectivePlatforms(merged);
+        merged.tags = Array.isArray(merged.tags) ? merged.tags : [];
+        merged.downloadTags = Array.isArray(merged.downloadTags) ? merged.downloadTags : [];
+        merged.gapFillTags = Array.isArray(merged.gapFillTags) ? merged.gapFillTags : [];
+        merged.overwriteTags = Array.isArray(merged.overwriteTags) ? merged.overwriteTags : [];
         state.config = merged;
         ensureCustomDefaults();
         ensurePlatformCustomDefaults();
@@ -6741,7 +6747,6 @@
     setupFallbackSourceSelectors();
     setupDownloadTagsUi();
     setupTemplateVariableHelpers();
-    loadLyricsSettings();
     initializeAutoTagStickyShell();
     bindProfileTabNavigationGuards();
     bindEnhancementTabLastScanBanner();
@@ -6751,7 +6756,7 @@
         showFolderUniformityLastScanBanner();
     }
 
-    Promise.all([loadPlatforms(), loadEnrichmentLibraryFolders()]).then(async () => {
+    Promise.all([loadPlatforms(), loadEnrichmentLibraryFolders(), loadLyricsSettings()]).then(async () => {
         loadConfigToUI();
         enforceSingleDownloadSource();
         refreshDownloadTagsForSource();
