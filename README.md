@@ -34,31 +34,25 @@ DeezSpoTag automates music workflows end-to-end:
 - Unified queueing across supported providers.
 - Fallback logic for source/quality failures.
 - Download path + library path separation.
-- Large library mount support (read-only library scanning).
+- Multiple library support
 - Multi-folder support for different content types.
 - Browse discography from your library into Spotify discography and Apple Music Atmos tracks.
 
 ### Metadata, Tagging, and File Handling
 
-- Multi-platform tagging controls with format/size preferences.
+- Multi-platform tagging controls.
 - Built-in manual lyrics editor and lyrics creator.
 - Essentia-based tagging support.
 - Animated artwork support.
 - Naming templates and folder structure customization.
 - Optional post-download conversion controls.
-
+- Multi-lyrics (.ttml and .lrc) support.
+  
 ### Recommendations and Automation
 
 - Daily music recommendations based on the music in your library.
 - Automated playlist generation based on listening patterns.
 - Sync artist avatar, background art, and biography with Plex/Jellyfin (still in progress).
-
-### Apple Music Wrapper Integration
-
-- External `apple-wrapper` service orchestration.
-- Portable login + 2FA flow via shared wrapper control paths (no Docker socket requirement).
-- Persistent wrapper state under your data folder.
-- Health-checked wrapper ports on localhost.
 
 ---
 
