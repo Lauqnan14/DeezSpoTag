@@ -164,7 +164,10 @@ public sealed class SpotifySearchService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Spotify Pathfinder typed search failed. type={Type}", type);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify Pathfinder typed search failed. type={Type}", type);
+            }
             return null;
         }
     }

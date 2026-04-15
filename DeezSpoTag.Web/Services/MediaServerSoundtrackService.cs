@@ -916,7 +916,7 @@ public sealed partial class MediaServerSoundtrackService
         }
     }
 
-    private void QueueBackgroundSoundtrackResolution(IReadOnlyCollection<MediaServerSoundtrackItemDto> rows)
+    private void QueueBackgroundSoundtrackResolution(List<MediaServerSoundtrackItemDto> rows)
     {
         if (rows == null || rows.Count == 0)
         {
@@ -967,7 +967,10 @@ public sealed partial class MediaServerSoundtrackService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Background soundtrack persistence failed for {ServerType}/{LibraryId}/{ItemId}", row.ServerType, row.LibraryId, row.ItemId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Background soundtrack persistence failed for {ServerType}/{LibraryId}/{ItemId}", row.ServerType, row.LibraryId, row.ItemId);
+            }
         }
         finally
         {
@@ -1054,7 +1057,7 @@ public sealed partial class MediaServerSoundtrackService
     }
 
     private async Task ResolveAtLeastOneSoundtrackMatchForResponseAsync(
-        IReadOnlyList<MediaServerSoundtrackItemDto> rows,
+        List<MediaServerSoundtrackItemDto> rows,
         CancellationToken cancellationToken)
     {
         if (rows == null || rows.Count == 0 || rows.Any(HasResolvedSoundtrack))
@@ -1092,7 +1095,10 @@ public sealed partial class MediaServerSoundtrackService
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Foreground soundtrack resolve failed for {Title}", row.Title);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Foreground soundtrack resolve failed for {Title}", row.Title);
+                }
                 continue;
             }
 
@@ -1221,12 +1227,12 @@ public sealed partial class MediaServerSoundtrackService
             return cached != null
                 ? FilterCachedTvShowEpisodes(cached, normalizedSeasonId, episodeLimit)
                 : new MediaServerTvShowEpisodesResponseDto
-            {
-                ServerType = NormalizeServerType(target.ServerType),
-                ServerLabel = GetServerDisplayName(target.ServerType),
-                LibraryId = target.LibraryId,
-                LibraryName = target.LibraryName
-            };
+                {
+                    ServerType = NormalizeServerType(target.ServerType),
+                    ServerLabel = GetServerDisplayName(target.ServerType),
+                    LibraryId = target.LibraryId,
+                    LibraryName = target.LibraryName
+                };
         }
 
         try
@@ -2107,7 +2113,10 @@ public sealed partial class MediaServerSoundtrackService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed resolving soundtrack for {Title}", item.Title);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed resolving soundtrack for {Title}", item.Title);
+            }
             return defaultMatch;
         }
     }
@@ -2177,7 +2186,10 @@ public sealed partial class MediaServerSoundtrackService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Spotify soundtrack candidate search failed for {Title}", itemTitle);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify soundtrack candidate search failed for {Title}", itemTitle);
+            }
             return null;
         }
     }
@@ -2280,7 +2292,10 @@ public sealed partial class MediaServerSoundtrackService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Spotify web-search bridge failed for soundtrack query {Query}", query);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify web-search bridge failed for soundtrack query {Query}", query);
+            }
             return null;
         }
     }
@@ -2474,7 +2489,10 @@ public sealed partial class MediaServerSoundtrackService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "MusicBrainz soundtrack candidate search failed for {Title}", itemTitle);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "MusicBrainz soundtrack candidate search failed for {Title}", itemTitle);
+            }
             return null;
         }
     }
@@ -2583,7 +2601,10 @@ public sealed partial class MediaServerSoundtrackService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Spotify mapping from curated soundtrack candidate failed for {Title}", candidateTitle);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify mapping from curated soundtrack candidate failed for {Title}", candidateTitle);
+            }
             return null;
         }
     }

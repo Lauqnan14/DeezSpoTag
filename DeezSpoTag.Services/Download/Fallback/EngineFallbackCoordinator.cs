@@ -276,7 +276,7 @@ public sealed class EngineFallbackCoordinator
         }
 
         var normalizedDeezerId = NormalizeDeezerTrackId(request.DeezerId);
-        if (string.Equals(request.Engine, "deezer", StringComparison.OrdinalIgnoreCase)
+        if (string.Equals(request.Engine, DeezerEngine, StringComparison.OrdinalIgnoreCase)
             && !string.IsNullOrWhiteSpace(normalizedDeezerId))
         {
             return $"https://www.deezer.com/track/{normalizedDeezerId}";
@@ -415,7 +415,7 @@ public sealed class EngineFallbackCoordinator
             "tidal" => songLink.TidalUrl,
             "amazon" => songLink.AmazonUrl,
             QobuzEngine => songLink.QobuzUrl,
-            "deezer" => songLink.DeezerUrl,
+            DeezerEngine => songLink.DeezerUrl,
             _ => null
         };
     }
@@ -424,7 +424,7 @@ public sealed class EngineFallbackCoordinator
     {
         return engine switch
         {
-            "deezer" => url.Contains("deezer.com", StringComparison.OrdinalIgnoreCase),
+            DeezerEngine => url.Contains("deezer.com", StringComparison.OrdinalIgnoreCase),
             "apple" => url.Contains("music.apple.com", StringComparison.OrdinalIgnoreCase),
             "tidal" => url.Contains("tidal.com", StringComparison.OrdinalIgnoreCase),
             "amazon" => url.Contains("amazon.", StringComparison.OrdinalIgnoreCase)

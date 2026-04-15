@@ -58,6 +58,12 @@ public sealed class AutoTagMoveSummary
 
 public sealed class AutoTagDownloadMoveService
 {
+    private static readonly string[] WatchlistSourcePropertyNames = ["watchlistSource", "watchlist_source", "WatchlistSource"];
+    private static readonly string[] WatchlistPlaylistIdPropertyNames = ["watchlistPlaylistId", "watchlist_playlist", "WatchlistPlaylistId"];
+    private static readonly string[] SourceIdsWatchlistSourcePropertyNames = ["watchlist_source", "watchlistSource", "WatchlistSource"];
+    private static readonly string[] SourceIdsWatchlistPlaylistIdPropertyNames = ["watchlist_playlist", "watchlistPlaylistId", "WatchlistPlaylistId"];
+    private static readonly char[] GenreSeparators = [';', ',', '/'];
+
     private sealed record ResidualMoveContext(
         string RootPath,
         AutoTagOrganizerOptions Options,
@@ -382,104 +388,127 @@ public sealed class AutoTagDownloadMoveService
         foreach (var item in items)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var reconciled = await ReconcileMonitoredRoutingDestinationAsync(
+                item,
+                rootPath,
+                preferencesByPlaylist,
+                cancellationToken);
+            updatedItems.Add(reconciled);
+        }
 
-            if (!IsCompletedStatus(item.Status)
-                || string.IsNullOrWhiteSpace(item.PayloadJson)
-                || !PayloadMentionsRoot(item.PayloadJson, rootPath))
+        return updatedItems;
+    }
+
+    private async Task<DownloadQueueItem> ReconcileMonitoredRoutingDestinationAsync(
+        DownloadQueueItem item,
+        string rootPath,
+        Dictionary<string, PlaylistWatchPreferenceDto?> preferencesByPlaylist,
+        CancellationToken cancellationToken)
+    {
+        if (!IsCompletedStatus(item.Status)
+            || string.IsNullOrWhiteSpace(item.PayloadJson)
+            || !PayloadMentionsRoot(item.PayloadJson, rootPath))
+        {
+            return item;
+        }
+
+        JsonDocument? document = null;
+        try
+        {
+            document = JsonDocument.Parse(item.PayloadJson);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return item;
+        }
+
+        using (document)
+        {
+            var payloadRoot = document.RootElement;
+            if (payloadRoot.ValueKind != JsonValueKind.Object
+                || !TryReadWatchlistContext(payloadRoot, out var watchlistSource, out var watchlistPlaylistId))
             {
-                updatedItems.Add(item);
-                continue;
+                return item;
             }
 
-            JsonDocument? document = null;
-            try
+            var preference = await GetCachedWatchPreferenceAsync(
+                watchlistSource,
+                watchlistPlaylistId,
+                preferencesByPlaylist,
+                cancellationToken);
+            if (preference?.RoutingRules is null || preference.RoutingRules.Count == 0)
             {
-                document = JsonDocument.Parse(item.PayloadJson);
+                return item;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+
+            var metadata = BuildRoutingMatchMetadata(item, rootPath, payloadRoot);
+            var currentDestinationFolderId = NormalizeDestinationFolderId(
+                item.DestinationFolderId ?? ReadInt64Property(payloadRoot, "destinationFolderId"));
+            var routedDestinationFolderId = NormalizeDestinationFolderId(
+                ResolveRoutingFolderId(metadata, preference.RoutingRules, currentDestinationFolderId));
+            if (routedDestinationFolderId == currentDestinationFolderId)
             {
-                updatedItems.Add(item);
-                continue;
+                return item;
             }
 
-            using (document)
+            var updatedPayloadJson = item.PayloadJson;
+            var payloadUpdated = TryRewritePayloadDestinationFolderId(
+                item.PayloadJson,
+                routedDestinationFolderId,
+                out var rewrittenPayloadJson);
+            if (payloadUpdated)
             {
-                var payloadRoot = document.RootElement;
-                if (payloadRoot.ValueKind != JsonValueKind.Object
-                    || !TryReadWatchlistContext(payloadRoot, out var watchlistSource, out var watchlistPlaylistId))
-                {
-                    updatedItems.Add(item);
-                    continue;
-                }
+                updatedPayloadJson = rewrittenPayloadJson;
+            }
 
-                var preferenceKey = BuildWatchPreferenceCacheKey(watchlistSource, watchlistPlaylistId);
-                if (!preferencesByPlaylist.TryGetValue(preferenceKey, out var preference))
-                {
-                    preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(
-                        watchlistSource,
-                        watchlistPlaylistId,
-                        cancellationToken);
-                    preferencesByPlaylist[preferenceKey] = preference;
-                }
-
-                if (preference?.RoutingRules is null || preference.RoutingRules.Count == 0)
-                {
-                    updatedItems.Add(item);
-                    continue;
-                }
-
-                var metadata = BuildRoutingMatchMetadata(item, rootPath, payloadRoot);
-                var currentDestinationFolderId = NormalizeDestinationFolderId(
-                    item.DestinationFolderId ?? ReadInt64Property(payloadRoot, "destinationFolderId"));
-                var defaultDestinationFolderId = currentDestinationFolderId;
-                var routedDestinationFolderId = NormalizeDestinationFolderId(
-                    ResolveRoutingFolderId(metadata, preference.RoutingRules, defaultDestinationFolderId));
-
-                if (routedDestinationFolderId == currentDestinationFolderId)
-                {
-                    updatedItems.Add(item);
-                    continue;
-                }
-
-                var updatedPayloadJson = item.PayloadJson;
-                var payloadUpdated = TryRewritePayloadDestinationFolderId(
-                    item.PayloadJson,
+            if (!string.IsNullOrWhiteSpace(item.QueueUuid))
+            {
+                await _queueRepository.UpdateQueueMetadataAsync(
+                    item.QueueUuid,
+                    item.QualityRank,
+                    item.ContentType,
                     routedDestinationFolderId,
-                    out var rewrittenPayloadJson);
+                    cancellationToken);
                 if (payloadUpdated)
                 {
-                    updatedPayloadJson = rewrittenPayloadJson;
+                    await _queueRepository.UpdatePayloadAsync(item.QueueUuid, updatedPayloadJson, cancellationToken);
                 }
+            }
 
-                if (!string.IsNullOrWhiteSpace(item.QueueUuid))
-                {
-                    await _queueRepository.UpdateQueueMetadataAsync(
-                        item.QueueUuid,
-                        item.QualityRank,
-                        item.ContentType,
-                        routedDestinationFolderId,
-                        cancellationToken);
-                    if (payloadUpdated)
-                    {
-                        await _queueRepository.UpdatePayloadAsync(item.QueueUuid, updatedPayloadJson, cancellationToken);
-                    }
-                }
-
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
                 _logger.LogInformation(
                     "Post-enrichment routing updated queue item {QueueUuid}: {PreviousDestination} -> {NextDestination}",
                     item.QueueUuid,
                     currentDestinationFolderId,
                     routedDestinationFolderId);
-
-                updatedItems.Add(item with
-                {
-                    DestinationFolderId = routedDestinationFolderId,
-                    PayloadJson = updatedPayloadJson
-                });
             }
+
+            return item with
+            {
+                DestinationFolderId = routedDestinationFolderId,
+                PayloadJson = updatedPayloadJson
+            };
+        }
+    }
+
+    private async Task<PlaylistWatchPreferenceDto?> GetCachedWatchPreferenceAsync(
+        string watchlistSource,
+        string watchlistPlaylistId,
+        Dictionary<string, PlaylistWatchPreferenceDto?> preferencesByPlaylist,
+        CancellationToken cancellationToken)
+    {
+        var preferenceKey = BuildWatchPreferenceCacheKey(watchlistSource, watchlistPlaylistId);
+        if (!preferencesByPlaylist.TryGetValue(preferenceKey, out var preference))
+        {
+            preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(
+                watchlistSource,
+                watchlistPlaylistId,
+                cancellationToken);
+            preferencesByPlaylist[preferenceKey] = preference;
         }
 
-        return updatedItems;
+        return preference;
     }
 
     private RoutingMatchMetadata BuildRoutingMatchMetadata(
@@ -576,7 +605,10 @@ public sealed class AutoTagDownloadMoveService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to read audio tags for post-enrichment routing from {Path}", audioFilePath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to read audio tags for post-enrichment routing from {Path}", audioFilePath);
+            }
             return (Array.Empty<string>(), null);
         }
     }
@@ -591,8 +623,8 @@ public sealed class AutoTagDownloadMoveService
             return true;
         }
 
-        if (!TryReadStringProperty(payloadRoot, new[] { "watchlistSource", "watchlist_source", "WatchlistSource" }, out source)
-            || !TryReadStringProperty(payloadRoot, new[] { "watchlistPlaylistId", "watchlist_playlist", "WatchlistPlaylistId" }, out playlistId))
+        if (!TryReadStringProperty(payloadRoot, WatchlistSourcePropertyNames, out source)
+            || !TryReadStringProperty(payloadRoot, WatchlistPlaylistIdPropertyNames, out playlistId))
         {
             return false;
         }
@@ -609,8 +641,8 @@ public sealed class AutoTagDownloadMoveService
             return false;
         }
 
-        if (!TryReadStringProperty(sourceIds, new[] { "watchlist_source", "watchlistSource", "WatchlistSource" }, out source)
-            || !TryReadStringProperty(sourceIds, new[] { "watchlist_playlist", "watchlistPlaylistId", "WatchlistPlaylistId" }, out playlistId))
+        if (!TryReadStringProperty(sourceIds, SourceIdsWatchlistSourcePropertyNames, out source)
+            || !TryReadStringProperty(sourceIds, SourceIdsWatchlistPlaylistIdPropertyNames, out playlistId))
         {
             return false;
         }
@@ -699,12 +731,12 @@ public sealed class AutoTagDownloadMoveService
         }
 
         var split = rawValue
-            .Split(new[] { ';', ',', '/' }, StringSplitOptions.RemoveEmptyEntries)
+            .Split(GenreSeparators, StringSplitOptions.RemoveEmptyEntries)
             .Select(static value => value.Trim());
         return NormalizeStringValues(split);
     }
 
-    private static IReadOnlyList<string> NormalizeStringValues(IEnumerable<string?> values)
+    private static List<string> NormalizeStringValues(IEnumerable<string?> values)
     {
         var normalized = values
             .Where(static value => !string.IsNullOrWhiteSpace(value))
@@ -928,10 +960,13 @@ public sealed class AutoTagDownloadMoveService
             return;
         }
 
-        _logger.LogInformation(
-            "Auto-move grouping: destination {Destination} with {FileCount} explicit files",
-            context.DestinationRoot,
-            fileSet.Count);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Auto-move grouping: destination {Destination} with {FileCount} explicit files",
+                context.DestinationRoot,
+                fileSet.Count);
+        }
 
         foreach (var filePath in fileSet)
         {
@@ -949,10 +984,13 @@ public sealed class AutoTagDownloadMoveService
             return;
         }
 
-        _logger.LogInformation(
-            "Auto-move grouping: destination {Destination} with {RootCount} fallback roots",
-            context.DestinationRoot,
-            rootSet.Count);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Auto-move grouping: destination {Destination} with {RootCount} fallback roots",
+                context.DestinationRoot,
+                rootSet.Count);
+        }
 
         foreach (var root in rootSet)
         {
@@ -1595,7 +1633,8 @@ public sealed class AutoTagDownloadMoveService
             {
                 result.Add(Path.GetFullPath(path));
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 result.Add(path);
             }
         }
@@ -2129,7 +2168,8 @@ public sealed class AutoTagDownloadMoveService
             using var document = JsonDocument.Parse(payloadJson);
             return ReadInt64Property(document.RootElement, "destinationFolderId");
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }
@@ -2192,7 +2232,8 @@ public sealed class AutoTagDownloadMoveService
 
             return Directory.Exists(current) ? current : rootIo;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return rootIo;
         }
     }
@@ -2224,7 +2265,8 @@ public sealed class AutoTagDownloadMoveService
                 candidateIo = Path.GetFullPath(candidateIo);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return false;
         }
 
@@ -2368,7 +2410,8 @@ public sealed class AutoTagDownloadMoveService
             var destinationKey = ResolveDestinationKey(item, root);
             AddPathsToPayloadMaps(maps, item.QueueUuid, destinationKey, qualityBucket, files, roots);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Ignore malformed payloads; move pass should stay best-effort.
         }
     }
@@ -2469,7 +2512,7 @@ public sealed class AutoTagDownloadMoveService
         long destinationKey,
         string? qualityBucket,
         string? queueUuid,
-        IReadOnlyCollection<string> paths)
+        HashSet<string> paths)
     {
         if (paths.Count == 0)
         {
@@ -3139,7 +3182,8 @@ public sealed class AutoTagDownloadMoveService
                 tracked.Add(DownloadPathResolver.NormalizeDisplayPath(path));
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // ignore malformed payload
         }
 
@@ -3148,7 +3192,7 @@ public sealed class AutoTagDownloadMoveService
 
     private static bool TryApplyFinalDestinationTransitions(
         string payloadJson,
-        IReadOnlyDictionary<string, string> transitions,
+        Dictionary<string, string> transitions,
         out string updatedPayloadJson,
         out string? finalDestinationsJson)
     {
@@ -3164,7 +3208,8 @@ public sealed class AutoTagDownloadMoveService
         {
             root = JsonNode.Parse(payloadJson) as JsonObject;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return false;
         }
 

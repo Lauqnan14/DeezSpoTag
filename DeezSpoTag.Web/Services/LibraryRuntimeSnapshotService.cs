@@ -107,12 +107,18 @@ public sealed class LibraryRuntimeSnapshotService : ILibraryRuntimeSnapshotProvi
             if (_activeScanStatsCache.TryGetValue(cacheKey, out var cached)
                 && string.Equals(cached.ProgressSignature, progressSignature, StringComparison.Ordinal))
             {
-                _logger.LogDebug("Library runtime stats cache hit for key {CacheKey} during active scan.", cacheKey);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Library runtime stats cache hit for key {CacheKey} during active scan.", cacheKey);
+                }
                 return cached.Payload;
             }
         }
 
-        _logger.LogDebug("Library runtime stats cache miss for key {CacheKey} during active scan.", cacheKey);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Library runtime stats cache miss for key {CacheKey} during active scan.", cacheKey);
+        }
         var payload = await _libraryStatsSnapshotService.BuildStatsPayloadAsync(folderId, cancellationToken);
         lock (_statsCacheLock)
         {

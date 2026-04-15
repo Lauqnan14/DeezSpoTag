@@ -98,7 +98,7 @@ public static class EngineFallbackPlanPolicy
 
     private static int ResolveCurrentStepIndex(
         EngineQueueItemBase payload,
-        IReadOnlyList<DownloadSourceOrder.AutoSourceStep> steps,
+        List<DownloadSourceOrder.AutoSourceStep> steps,
         string engineName)
     {
         var indexedMatch = -1;

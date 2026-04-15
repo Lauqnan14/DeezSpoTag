@@ -543,15 +543,7 @@ public sealed class DownloadIntentService
 
     private static string? FirstNonEmpty(params string?[] values)
     {
-        foreach (var value in values)
-        {
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
-        }
-
-        return null;
+        return values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value));
     }
 
     private async Task<DestinationRoutingResult> ResolveDestinationRoutingAsync(
@@ -1567,7 +1559,7 @@ public sealed class DownloadIntentService
         return null;
     }
 
-    private static int ResolveAutoStartIndex(string? preferredEngine, string resolvedPreferredEngine, IReadOnlyList<string> autoSources)
+    private static int ResolveAutoStartIndex(string? preferredEngine, string resolvedPreferredEngine, List<string> autoSources)
     {
         if (string.IsNullOrWhiteSpace(preferredEngine))
         {
@@ -1646,7 +1638,7 @@ public sealed class DownloadIntentService
         bool intentRequestsAuto,
         bool appleOnlyRequired,
         bool isPodcastIntent,
-        IReadOnlyList<string> autoSources)
+        List<string> autoSources)
     {
         if (appleOnlyRequired)
         {
@@ -3749,7 +3741,7 @@ public sealed class DownloadIntentService
     }
 
     private static List<string> BuildFallbackPlanSources(
-        IReadOnlyList<string> autoSources,
+        List<string> autoSources,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         string engine,
         string? requestedQuality,

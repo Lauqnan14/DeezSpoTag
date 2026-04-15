@@ -540,7 +540,10 @@ public static class AppleQueueHelpers
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogDebug(ex, "iTunes artist image lookup failed for {Artist}", artist);
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug(ex, "iTunes artist image lookup failed for {Artist}", artist);
+            }
         }
 
         return null;
@@ -928,10 +931,13 @@ public static class AppleQueueHelpers
                 effectivePath = Path.ChangeExtension(outputPath, rawExtension);
             }
 
-            logger.LogDebug(
-                "Downloading iTunes artwork with configured size preference: {Url} (target: {Path})",
-                preferredUrl,
-                effectivePath);
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug(
+                    "Downloading iTunes artwork with configured size preference: {Url} (target: {Path})",
+                    preferredUrl,
+                    effectivePath);
+            }
 
             return await downloader.DownloadImageAsync(
                 preferredUrl,

@@ -208,7 +208,7 @@ internal static class TaggingProfileDataHelper
         return null;
     }
 
-    private static bool HasSameFolderIds(JsonNode? existing, IReadOnlyList<long> expected)
+    private static bool HasSameFolderIds(JsonNode? existing, List<long> expected)
     {
         if (existing is not JsonArray array)
         {

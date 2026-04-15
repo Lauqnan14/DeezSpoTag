@@ -547,11 +547,14 @@ public static class EngineAudioPostDownloadHelper
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            execution.Request.Logger.LogDebug(
-                ex,
-                "{Engine} failed to persist prefetch payload state for {QueueUuid}",
-                execution.Request.Engine,
-                execution.Paths.QueueUuid);
+            if (execution.Request.Logger.IsEnabled(LogLevel.Debug))
+            {
+                execution.Request.Logger.LogDebug(
+                    ex,
+                    "{Engine} failed to persist prefetch payload state for {QueueUuid}",
+                    execution.Request.Engine,
+                    execution.Paths.QueueUuid);
+            }
         }
     }
 

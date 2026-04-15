@@ -92,6 +92,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string DiscNumberTag = "discNumber";
     private const string GenreTag = "genre";
     private const string ExplicitTag = "explicit";
+    private const string ItunesAdvisoryTag = "ITUNESADVISORY";
+    private const string TrackTotalRawTag = "TRACKTOTAL";
     private const string DurationTag = "duration";
     private const string ReleaseDateTag = "releaseDate";
     private const string VersionTag = "version";
@@ -1778,7 +1780,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             var parsed = node.Deserialize<T>(CaseInsensitiveJsonOptions);
             return parsed ?? fallback;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return fallback;
         }
     }
@@ -2006,7 +2009,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private static void ApplyShazamCoreValues(
         AutoTagAudioInfo info,
         ShazamRecognitionInfo payload,
-        IReadOnlyList<string> shazamArtists,
+        List<string> shazamArtists,
         bool forceShazam)
     {
         if ((forceShazam || !info.HasEmbeddedTitle || string.IsNullOrWhiteSpace(info.Title))
@@ -2413,7 +2416,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             var parent = Directory.GetParent(fileDir);
             return parent?.Name?.Trim() ?? string.Empty;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return string.Empty;
         }
     }
@@ -2425,7 +2429,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             var dir = Path.GetDirectoryName(Path.GetFullPath(filePath));
             return string.IsNullOrWhiteSpace(dir) ? string.Empty : Path.GetFileName(dir).Trim();
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return string.Empty;
         }
     }
@@ -2467,7 +2472,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 return null;
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // best effort
         }
 
@@ -2546,7 +2552,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 AtlTagHelper.RestoreChapters(filePath, chapterSnapshot);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // best effort only
         }
 
@@ -2564,7 +2571,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return true;
     }
 
-    private static bool TrySetMissingPerformers(TagLib.Tag tag, IReadOnlyCollection<string> artistCredits)
+    private static bool TrySetMissingPerformers(TagLib.Tag tag, List<string> artistCredits)
     {
         var hasPerformer = tag.Performers != null && tag.Performers.Any(value => !string.IsNullOrWhiteSpace(value));
         if (hasPerformer || artistCredits.Count == 0)
@@ -2578,7 +2585,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static bool TrySetMissingAlbumArtists(
         TagLib.Tag tag,
-        IReadOnlyList<string> artistCredits,
+        List<string> artistCredits,
         bool singleAlbumArtist)
     {
         var hasAlbumArtist = tag.AlbumArtists != null && tag.AlbumArtists.Any(value => !string.IsNullOrWhiteSpace(value));
@@ -2679,7 +2686,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
             return false;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return false;
         }
     }
@@ -2833,7 +2841,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             {
                 IOFile.Delete(tempCoverPath);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 // best effort
             }
         }
@@ -3409,7 +3418,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         SetRaw(
             tagWriteContext,
-            "ITUNESADVISORY",
+            ItunesAdvisoryTag,
             SupportedTag.Explicit,
             new List<string> { context.SourceTrack.Explicit.Value ? "1" : "2" });
     }
@@ -3991,7 +4000,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.SyncedLyrics => tag.GetFrames<TagLib.Id3v2.SynchronisedLyricsFrame>("SYLT").Any(),
             SupportedTag.UnsyncedLyrics => !string.IsNullOrWhiteSpace(tag.Lyrics),
             SupportedTag.AlbumArt => tag.Pictures?.Length > 0,
-            SupportedTag.Explicit => TagRawProbe.HasId3Raw(tag, "ITUNESADVISORY"),
+            SupportedTag.Explicit => TagRawProbe.HasId3Raw(tag, ItunesAdvisoryTag),
             _ => false
         };
     }
@@ -4023,7 +4032,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.CatalogNumber => tag.GetField(CatalogNumberUpperTag).Length > 0,
             SupportedTag.Version => tag.GetField("SUBTITLE").Length > 0,
             SupportedTag.TrackNumber => tag.GetField("TRACKNUMBER").Length > 0,
-            SupportedTag.TrackTotal => tag.GetField("TRACKTOTAL").Length > 0,
+            SupportedTag.TrackTotal => tag.GetField(TrackTotalRawTag).Length > 0,
             SupportedTag.DiscNumber => tag.GetField("DISCNUMBER").Length > 0,
             SupportedTag.Duration => tag.GetField(LengthUpperTag).Length > 0,
             SupportedTag.Remixer => tag.GetField(RemixerUpperTag).Length > 0,
@@ -4037,7 +4046,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.UnsyncedLyrics => tag.GetField("LYRICS").Length > 0,
             SupportedTag.SyncedLyrics => false,
             SupportedTag.AlbumArt => tag.Pictures?.Length > 0,
-            SupportedTag.Explicit => tag.GetField("ITUNESADVISORY").Length > 0
+            SupportedTag.Explicit => tag.GetField(ItunesAdvisoryTag).Length > 0
                 || tag.GetField("COMMENT").Any(v => string.Equals(v, "Explicit", StringComparison.OrdinalIgnoreCase)),
             _ => false
         };
@@ -4084,7 +4093,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.UnsyncedLyrics => Mp4TagHelper.HasField(file, supportedTag),
             SupportedTag.SyncedLyrics => false,
             SupportedTag.AlbumArt => Mp4TagHelper.HasField(file, supportedTag),
-            SupportedTag.Explicit => Mp4TagHelper.HasRaw(file, "ITUNESADVISORY"),
+            SupportedTag.Explicit => Mp4TagHelper.HasRaw(file, ItunesAdvisoryTag),
             _ => false
         };
     }
@@ -4096,7 +4105,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             using var file = TagLib.File.Create(filePath);
             return SanitizeGenres(file.Tag.Genres ?? Array.Empty<string>());
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return new List<string>();
         }
     }
@@ -4616,12 +4626,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         SetVorbisRaw(vorbis, field, new List<string> { numberText }, "");
-        if (!isDisc && total.HasValue)
+        if (!isDisc
+            && total.HasValue
+            && (ShouldOverwriteTag(config, SupportedTag.TrackTotal) || !TagRawProbe.HasVorbisRaw(vorbis, TrackTotalRawTag)))
         {
-            if (ShouldOverwriteTag(config, SupportedTag.TrackTotal) || !TagRawProbe.HasVorbisRaw(vorbis, "TRACKTOTAL"))
-            {
-                SetVorbisRaw(vorbis, "TRACKTOTAL", new List<string> { total.Value.ToString(CultureInfo.InvariantCulture) }, "");
-            }
+            SetVorbisRaw(vorbis, TrackTotalRawTag, new List<string> { total.Value.ToString(CultureInfo.InvariantCulture) }, "");
         }
     }
 
@@ -5624,7 +5633,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required AutoTagRunnerConfig Config { get; init; }
         public required string TargetPath { get; init; }
         public required AutoTagMatchingConfig MatchingConfig { get; init; }
-        public required IReadOnlyList<string> EffectivePlatforms { get; init; }
+        public required List<string> EffectivePlatforms { get; init; }
         public required DeezSpoTagSettings Settings { get; init; }
         public required TagSettings TagSettings { get; init; }
         public required List<string> Files { get; init; }

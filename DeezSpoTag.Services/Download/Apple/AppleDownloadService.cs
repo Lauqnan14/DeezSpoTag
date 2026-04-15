@@ -1210,7 +1210,10 @@ public sealed class AppleDownloadService : IAppleDownloadService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple device M3U8 probe failed for {AppleId} via {Endpoint}.", appleId, hostAndPort);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple device M3U8 probe failed for {AppleId} via {Endpoint}.", appleId, hostAndPort);
+            }
             return null;
         }
     }

@@ -524,11 +524,11 @@ WHERE server_type = {ServerTypeParameterName}
         SqliteCommand command,
         string normalizedServerType,
         string normalizedLibraryId,
-        IReadOnlyList<string> batch)
+        string[] batch)
     {
         command.Parameters.AddWithValue(ServerTypeParameterName, normalizedServerType);
         command.Parameters.AddWithValue(LibraryIdParameterName, normalizedLibraryId);
-        for (var index = 0; index < batch.Count; index++)
+        for (var index = 0; index < batch.Length; index++)
         {
             command.Parameters.AddWithValue($"$item_id_{index}", batch[index]);
         }
@@ -549,9 +549,9 @@ WHERE server_type = {ServerTypeParameterName}
         }
     }
 
-    private static IEnumerable<string[]> EnumerateBatches(IReadOnlyList<string> values, int batchSize)
+    private static IEnumerable<string[]> EnumerateBatches(string[] values, int batchSize)
     {
-        for (var offset = 0; offset < values.Count; offset += batchSize)
+        for (var offset = 0; offset < values.Length; offset += batchSize)
         {
             yield return values.Skip(offset).Take(batchSize).ToArray();
         }

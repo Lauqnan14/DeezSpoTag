@@ -493,7 +493,7 @@ public class AutoTagEnhancementController : ControllerBase
         object options,
         bool runOrganizer,
         bool runDedupe,
-        IReadOnlyList<string> errors)
+        List<string> errors)
     {
         var validationError = $"{FolderWriteAccessErrorPrefix} {errors[0]}";
         UpdateFolderUniformityState(jobId, state =>
@@ -666,7 +666,7 @@ public class AutoTagEnhancementController : ControllerBase
         string? jobId,
         AutoTagOrganizerOptions organizerOptions,
         AutoTagProfileResolutionService.ResolvedState profileState,
-        IReadOnlyList<FolderDto> enabledFolders,
+        List<FolderDto> enabledFolders,
         FolderUniformityExecutionState execution,
         CancellationToken cancellationToken)
     {

@@ -57,7 +57,7 @@ public sealed class DownloadSourceOrderFallbackParityTests
         Assert.Equal("deezer|3", sources[0]);
         Assert.DoesNotContain("qobuz|6", sources);
         Assert.DoesNotContain("tidal|LOSSLESS", sources);
-        Assert.Equal(new[] { "deezer|3", "deezer|1" }, sources);
+        Assert.Equal(ExpectedDeezerQualityFallback, sources);
     }
 
     [Fact]

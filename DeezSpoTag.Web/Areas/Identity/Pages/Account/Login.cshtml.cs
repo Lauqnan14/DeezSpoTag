@@ -230,7 +230,8 @@ public class LoginModel : PageModel
                 _logger.LogInformation("Login succeeded for user {UserName} id={UserId} identityDb={IdentityDb}",
                     user.UserName, user.Id, string.IsNullOrWhiteSpace(connection) ? UnknownValue : connection);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 _logger.LogInformation(ex, "Login succeeded for user {UserName} id={UserId}",
                     user.UserName, user.Id);
             }
@@ -263,10 +264,13 @@ public class LoginModel : PageModel
         await _userManager.SetLockoutEndDateAsync(attemptedUser, null);
         await _userManager.ResetAccessFailedCountAsync(attemptedUser);
         await _signInManager.SignInAsync(attemptedUser, isPersistent: true);
-        _logger.LogInformation(
-            "Recovered single-user lockout for {UserName} ({UserId}) after valid credential check.",
-            attemptedUser.UserName ?? UnknownValue,
-            attemptedUser.Id);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Recovered single-user lockout for {UserName} ({UserId}) after valid credential check.",
+                attemptedUser.UserName ?? UnknownValue,
+                attemptedUser.Id);
+        }
         return true;
     }
 
@@ -296,17 +300,23 @@ public class LoginModel : PageModel
             await _userManager.SetLockoutEnabledAsync(user, true);
             await _userManager.SetLockoutEndDateAsync(user, null);
             await _userManager.ResetAccessFailedCountAsync(user);
-            _logger.LogInformation(
-                "Single-user fallback unlocked canonical account {UserName} ({UserId}) during login recovery.",
-                user.UserName ?? UnknownValue,
-                user.Id);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Single-user fallback unlocked canonical account {UserName} ({UserId}) during login recovery.",
+                    user.UserName ?? UnknownValue,
+                    user.Id);
+            }
         }
 
-        _logger.LogInformation(
-            "Single-user fallback matched canonical account {UserName} ({UserId}) for attempted username {AttemptedUser}.",
-            user.UserName ?? UnknownValue,
-            user.Id,
-            string.IsNullOrWhiteSpace(attemptedUsername) ? UnknownValue : attemptedUsername);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Single-user fallback matched canonical account {UserName} ({UserId}) for attempted username {AttemptedUser}.",
+                user.UserName ?? UnknownValue,
+                user.Id,
+                string.IsNullOrWhiteSpace(attemptedUsername) ? UnknownValue : attemptedUsername);
+        }
         return user;
     }
 

@@ -1178,7 +1178,7 @@ public sealed class SpotifyMetadataService
     }
 
     private static void CacheResolvedTracks(
-        IDictionary<string, SpotifyTrackSummary> cache,
+        Dictionary<string, SpotifyTrackSummary> cache,
         IEnumerable<SpotifyTrackSummary> tracks)
     {
         foreach (var track in tracks)
@@ -2073,7 +2073,7 @@ public sealed class SpotifyMetadataService
 
     private async Task<Dictionary<string, SpotifyTrackSummary>> FetchHydratedLibrespotTracksByIdAsync(
         string blobPath,
-        IReadOnlyList<string> trackIds,
+        List<string> trackIds,
         CancellationToken cancellationToken)
     {
         var hydratedById = new Dictionary<string, SpotifyTrackSummary>(StringComparer.OrdinalIgnoreCase);
@@ -2116,7 +2116,7 @@ public sealed class SpotifyMetadataService
     }
 
     private static List<SpotifyTrackSummary> MergeHydratedTracks(
-        IReadOnlyList<SpotifyTrackSummary> tracks,
+        List<SpotifyTrackSummary> tracks,
         Dictionary<string, SpotifyTrackSummary> hydratedById)
     {
         var merged = new List<SpotifyTrackSummary>(tracks.Count);
@@ -2710,7 +2710,7 @@ public sealed class SpotifyMetadataService
         return parsed.Count == 0 ? null : parsed;
     }
 
-    private static string? JoinCopyrights(IReadOnlyList<SpotifyCopyrightInfo>? copyrights)
+    private static string? JoinCopyrights(List<SpotifyCopyrightInfo>? copyrights)
     {
         if (copyrights is null || copyrights.Count == 0)
         {
@@ -3183,7 +3183,7 @@ public sealed class SpotifyMetadataService
         try
         {
             var bytes = Convert.FromBase64String(picture);
-            var hex = BitConverter.ToString(bytes).Replace("-", string.Empty).ToLowerInvariant();
+            var hex = Convert.ToHexStringLower(bytes);
             return string.IsNullOrWhiteSpace(hex) ? null : $"https://i.scdn.co/image/{hex}";
         }
         catch (Exception ex) when (ex is not OperationCanceledException) {

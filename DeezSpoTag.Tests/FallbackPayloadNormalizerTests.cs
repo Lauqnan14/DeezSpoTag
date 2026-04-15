@@ -124,7 +124,7 @@ public sealed class FallbackPayloadNormalizerTests
 
         var state = FallbackPayloadNormalizer.ResolveCanonicalState(item, new DeezSpoTagSettings(), payload);
 
-        Assert.Equal(new[] { "qobuz|27", "tidal|LOSSLESS" }, state.AutoSources);
+        Assert.Equal(ExpectedCanonicalSources, state.AutoSources);
         Assert.Equal("custom-0", state.FallbackPlan[0].StepId);
         Assert.Equal("isrc", state.FallbackPlan[0].ResolutionStrategy);
         Assert.Equal("custom-1", state.FallbackPlan[1].StepId);

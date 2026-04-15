@@ -10,6 +10,9 @@ namespace DeezSpoTag.Tests;
 
 public sealed class TaggingProfilesApiControllerTests
 {
+    private static readonly string[] DownloadTagDefaults = ["title", "artist"];
+    private static readonly string[] EnrichmentTagDefaults = ["genre"];
+
     [Fact]
     public void TryBuildTagConfig_PrefersAutoTagArrays_EvenWhenTagConfigPayloadExists()
     {
@@ -24,8 +27,8 @@ public sealed class TaggingProfilesApiControllerTests
             {
                 Data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
                 {
-                    ["downloadTags"] = JsonSerializer.SerializeToElement(new[] { "title", "artist" }),
-                    ["tags"] = JsonSerializer.SerializeToElement(new[] { "genre" })
+                    ["downloadTags"] = JsonSerializer.SerializeToElement(DownloadTagDefaults),
+                    ["tags"] = JsonSerializer.SerializeToElement(EnrichmentTagDefaults)
                 }
             },
             Technical: null,

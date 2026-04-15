@@ -245,25 +245,6 @@ public static class DownloadSourceOrder
         return true;
     }
 
-    private static string? ResolvePreferredQuality(DeezSpoTagSettings settings, string engine)
-    {
-        if (settings == null || string.IsNullOrWhiteSpace(engine))
-        {
-            return null;
-        }
-
-        var normalized = engine.Trim().ToLowerInvariant();
-        return normalized switch
-        {
-            AppleSource => settings.AppleMusic?.PreferredAudioProfile,
-            DeezerSource => settings.MaxBitrate > 0 ? settings.MaxBitrate.ToString() : null,
-            TidalSource => settings.TidalQuality,
-            QobuzSource => settings.QobuzQuality,
-            AmazonSource => "FLAC",
-            _ => null
-        };
-    }
-
     public static string EncodeAutoSource(string source, string? quality)
     {
         return string.IsNullOrWhiteSpace(quality) ? source : $"{source}|{quality}";

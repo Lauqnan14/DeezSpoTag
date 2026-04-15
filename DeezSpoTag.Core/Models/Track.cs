@@ -352,11 +352,8 @@ public class Track : AudioFeaturesBase
         switch (settings.FeaturedToTitle)
         {
             case "0":
-                Title = GetCleanTitle();
-                if (Album != null)
-                {
-                    Album.Title = Album.GetCleanTitle();
-                }
+            case "3":
+                ApplyCleanTitleToTrackAndAlbum();
                 break;
             case "1":
                 Title = GetCleanTitle();
@@ -364,13 +361,15 @@ public class Track : AudioFeaturesBase
             case "2":
                 Title = GetFeatTitle();
                 break;
-            case "3":
-                Title = GetCleanTitle();
-                if (Album != null)
-                {
-                    Album.Title = Album.GetCleanTitle();
-                }
-                break;
+        }
+    }
+
+    private void ApplyCleanTitleToTrackAndAlbum()
+    {
+        Title = GetCleanTitle();
+        if (Album != null)
+        {
+            Album.Title = Album.GetCleanTitle();
         }
     }
 

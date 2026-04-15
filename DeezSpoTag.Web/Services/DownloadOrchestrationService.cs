@@ -510,9 +510,12 @@ public sealed class DownloadOrchestrationService : BackgroundService
         var recoveredCount = pendingItems.Count(item => item.UpdatedAt <= _lastPipelineCompletedAt);
         if (recoveredCount > 0)
         {
-            _logger.LogInformation(
-                "Orchestration recovered {RecoveredCount} stale completed download task(s) from download root for post-download enrichment.",
-                recoveredCount);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Orchestration recovered {RecoveredCount} stale completed download task(s) from download root for post-download enrichment.",
+                    recoveredCount);
+            }
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
@@ -1123,7 +1126,10 @@ public sealed class DownloadOrchestrationService : BackgroundService
         _lastStagingGateLogAt = now;
         _lastStagingGateLogReason = reason;
 
-        _logger.LogInformation("Automation: enhancement deferred by staging gate ({Reason}).", reason);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Automation: enhancement deferred by staging gate ({Reason}).", reason);
+        }
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             now,
             "info",
@@ -1593,15 +1599,21 @@ public sealed class DownloadOrchestrationService : BackgroundService
             if (stopped)
             {
                 await QueueResumeFoldersForPausedEnhancementJobAsync(jobId, cancellationToken);
-                _logger.LogInformation(
-                    "Automation enhancement job {JobId} paused to prioritize pending post-download enrichment.",
-                    jobId);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "Automation enhancement job {JobId} paused to prioritize pending post-download enrichment.",
+                        jobId);
+                }
             }
             else
             {
-                _logger.LogInformation(
-                    "Automation enhancement job {JobId} could not be paused while prioritizing pending post-download enrichment.",
-                    jobId);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "Automation enhancement job {JobId} could not be paused while prioritizing pending post-download enrichment.",
+                        jobId);
+                }
             }
 
             return true;
@@ -1917,7 +1929,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
             var enhancementCount = ReadArrayCount(root, "gapFillTags");
             return new AutoTagStages(enrichmentCount > 0, enhancementCount > 0);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return new AutoTagStages(false, false);
         }
     }
@@ -1932,7 +1945,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
         return ClearStageTags(configJson, clearEnrichment: true, clearEnhancement: false);
     }
 
-    private static string ApplyEnhancementTargetFiles(string configJson, IReadOnlyCollection<string> targetFiles)
+    private static string ApplyEnhancementTargetFiles(string configJson, List<string> targetFiles)
     {
         if (string.IsNullOrWhiteSpace(configJson) || targetFiles.Count == 0)
         {
@@ -2005,7 +2018,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
                 WriteIndented = true
             });
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return configJson;
         }
     }
@@ -2301,7 +2315,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
     private TaggingProfile? ResolveAutomationProfileForPendingDownloads(
         AutomationProfileContext context,
-        IReadOnlyList<DownloadQueueItem> pendingItems)
+        List<DownloadQueueItem> pendingItems)
     {
         if (pendingItems.Count == 0)
         {
