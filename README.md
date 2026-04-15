@@ -23,6 +23,10 @@ DeezSpoTag automates music workflows end-to-end:
 
 ---
 
+<p align="center">
+  <img src="Screenshots/screenshot.gif" alt="DeezSpoTag Interface Demo" />
+</p>
+
 ## Key Features
 
 ### Multi-Source Download Workflow
@@ -135,5 +139,4 @@ DeezSpoTag was informed by ideas, architecture patterns, and implementation appr
 If any project listed above needs correction or more specific attribution, open an issue and it will be updated.
 
 ---
-
 
