@@ -7,7 +7,11 @@ public static class AppDataPathResolver
     private const string WorkersProjectDirectoryName = "DeezSpoTag.Workers";
     private const string WebProjectDirectoryName = "DeezSpoTag.Web";
     private const string StableWorkersDataSuffix = "Data";
-    private const string DebugWorkersDataSuffix = "bin/Debug/net8.0/Data";
+    private static readonly string[] DebugWorkersDataSuffixes =
+    [
+        "bin/Debug/net10.0/Data",
+        "bin/Debug/net8.0/Data"
+    ];
     private static readonly string WorkspaceRoot = ResolveWorkspaceRoot();
     private static readonly string[] CanonicalWorkersDataCandidates =
     [
@@ -15,14 +19,17 @@ public static class AppDataPathResolver
     ];
     private static readonly string[] LegacyWorkersDataCandidates =
     [
-        Path.GetFullPath(Path.Join(WorkspaceRoot, WorkersProjectDirectoryName, DebugWorkersDataSuffix))
+        .. DebugWorkersDataSuffixes.Select(suffix =>
+            Path.GetFullPath(Path.Join(WorkspaceRoot, WorkersProjectDirectoryName, suffix)))
     ];
     private static readonly string[] MisplacedWorkersDataCandidates =
     [
         Path.GetFullPath(Path.Join(WorkspaceRoot, WebProjectDirectoryName, WorkersProjectDirectoryName, StableWorkersDataSuffix)),
-        Path.GetFullPath(Path.Join(WorkspaceRoot, WebProjectDirectoryName, WorkersProjectDirectoryName, DebugWorkersDataSuffix)),
+        .. DebugWorkersDataSuffixes.Select(suffix =>
+            Path.GetFullPath(Path.Join(WorkspaceRoot, WebProjectDirectoryName, WorkersProjectDirectoryName, suffix))),
         Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), WorkersProjectDirectoryName, StableWorkersDataSuffix)),
-        Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), WorkersProjectDirectoryName, DebugWorkersDataSuffix))
+        .. DebugWorkersDataSuffixes.Select(suffix =>
+            Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), WorkersProjectDirectoryName, suffix)))
     ];
 
     public static string GetDefaultWorkersDataDir()
