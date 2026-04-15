@@ -5000,7 +5000,7 @@
         }
 
         const show = saveLyrics?.checked === true;
-        embedLyricsFormatGroup.style.display = show ? "block" : "none";
+        embedLyricsFormatGroup.style.display = show ? "" : "none";
         if (lrcFormat) {
             lrcFormat.disabled = !show;
         }
