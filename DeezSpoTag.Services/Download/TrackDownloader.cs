@@ -71,7 +71,7 @@ public class TrackDownloader
     };
 
     private readonly string _tempDir;
-    
+
     // Static dictionary to track active downloads and prevent duplicates
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _activeDownloads = new();
 
@@ -282,7 +282,9 @@ public class TrackDownloader
             var pathResult = _pathProcessor.GeneratePaths(track, downloadObject.Type, settings);
             var extension = Extensions.GetValueOrDefault(track.Bitrate, ".mp3");
             var writePath = Path.Join(pathResult.FilePath, $"{pathResult.Filename}{extension}");
-            _logger.LogInformation("Downloading track to: {WritePath}", writePath);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Downloading track to: {WritePath}", writePath);            }
 
             // Create directory
             Directory.CreateDirectory(pathResult.FilePath);
@@ -290,7 +292,7 @@ public class TrackDownloader
             // CRITICAL FIX: Prevent duplicate downloads of the same file
             var downloadKey = writePath.ToLowerInvariant();
             var semaphore = _activeDownloads.GetOrAdd(downloadKey, _ => new SemaphoreSlim(1, 1));
-            
+
             await semaphore.WaitAsync(cancellationToken);
             try
             {
@@ -312,7 +314,7 @@ public class TrackDownloader
                 };
 
                 return await ExecuteTrackDownloadAsync(context);
-            
+
             } // End of semaphore try block
             finally
             {
@@ -623,7 +625,9 @@ public class TrackDownloader
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to resolve tag settings for folder {FolderId}", destinationFolderId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to resolve tag settings for folder {FolderId}", destinationFolderId);            }
         }
 
         return settings.Tags ?? new TagSettings();
@@ -668,7 +672,7 @@ public class TrackDownloader
         };
     }
 
-    
+
     /// <summary>
     /// Enrich track with additional data
     /// </summary>
@@ -725,7 +729,9 @@ public class TrackDownloader
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Shared enrichment engine failed for track {TrackId}", track.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Shared enrichment engine failed for track {TrackId}", track.Id);            }
         }
     }
 
@@ -752,7 +758,9 @@ public class TrackDownloader
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Public API track enrichment failed for {TrackId}", track.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Public API track enrichment failed for {TrackId}", track.Id);            }
         }
     }
 
@@ -771,53 +779,17 @@ public class TrackDownloader
                 return;
             }
 
-            track.Album.Title = string.IsNullOrWhiteSpace(track.Album.Title) ? apiAlbum.Title : track.Album.Title;
-            track.Album.Label = apiAlbum.Label ?? track.Album.Label;
-            track.Album.Barcode = apiAlbum.Upc ?? track.Album.Barcode;
-            track.Album.RecordType = apiAlbum.RecordType ?? track.Album.RecordType;
-            track.Album.TrackTotal = apiAlbum.NbTracks ?? track.Album.TrackTotal;
-            track.Album.DiscTotal = apiAlbum.NbDisk ?? track.Album.DiscTotal;
-            track.Album.Copyright = apiAlbum.Copyright ?? track.Album.Copyright;
-            if (!string.IsNullOrWhiteSpace(apiAlbum.Md5Image) && (track.Album.Pic == null || string.IsNullOrWhiteSpace(track.Album.Pic.Md5)))
-            {
-                track.Album.Pic = new Picture(apiAlbum.Md5Image, "cover");
-                track.Album.Md5Image = apiAlbum.Md5Image;
-            }
-
-            if (apiAlbum.Genres?.Data is { Count: > 0 })
-            {
-                track.Album.Genre = apiAlbum.Genres.Data
-                    .Select(genre => genre.Name)
-                    .Where(name => !string.IsNullOrWhiteSpace(name))
-                    .Select(name => name!)
-                    .ToList();
-            }
-
-            if (!string.IsNullOrWhiteSpace(apiAlbum.ReleaseDate)
-                && track.Album.Date != null
-                && DateTime.TryParse(apiAlbum.ReleaseDate, CultureInfo.InvariantCulture, DateTimeStyles.None, out var releaseDate))
-            {
-                track.Album.Date.Day = releaseDate.Day.ToString("D2");
-                track.Album.Date.Month = releaseDate.Month.ToString("D2");
-                track.Album.Date.Year = releaseDate.Year.ToString();
-                track.Album.Date.FixDayMonth();
-            }
-
-            if (apiAlbum.Artist != null)
-            {
-                track.Album.MainArtist = new Artist(apiAlbum.Artist.Id, apiAlbum.Artist.Name ?? "");
-                if (!string.IsNullOrWhiteSpace(apiAlbum.Artist.Md5Image))
-                {
-                    track.Album.MainArtist.Pic = new Picture(apiAlbum.Artist.Md5Image, ArtistType);
-                }
-
-                track.Album.Artist["Main"] = new List<string> { track.Album.MainArtist.Name };
-                track.Album.Artists = new List<string> { track.Album.MainArtist.Name };
-            }
+            ApplyAlbumScalarMetadata(track.Album, apiAlbum);
+            ApplyAlbumCoverIfMissing(track.Album, apiAlbum.Md5Image);
+            ApplyAlbumGenres(track.Album, apiAlbum);
+            TryApplyAlbumReleaseDate(track.Album, apiAlbum.ReleaseDate);
+            ApplyAlbumMainArtist(track.Album, apiAlbum.Artist);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Public API album enrichment failed for {AlbumId}", track.Album.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Public API album enrichment failed for {AlbumId}", track.Album.Id);            }
         }
     }
 
@@ -853,11 +825,13 @@ public class TrackDownloader
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Search fallback enrichment failed for track {TrackId}", track.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Search fallback enrichment failed for track {TrackId}", track.Id);            }
         }
     }
 
-    
+
     /// <summary>
     /// Generate cover URLs and paths
     /// </summary>
@@ -1052,7 +1026,9 @@ public class TrackDownloader
             cancellationToken);
         if (!string.IsNullOrWhiteSpace(deezerCoverUrl))
         {
-            _logger.LogInformation("Deezer album art selected: {Url}", deezerCoverUrl);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Deezer album art selected: {Url}", deezerCoverUrl);            }
             state.ResolvedCoverUrl = deezerCoverUrl;
             return true;
         }
@@ -1093,7 +1069,9 @@ public class TrackDownloader
             return false;
         }
 
-        _logger.LogInformation("Spotify album art selected: {Url}", spotifyCoverUrl);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Spotify album art selected: {Url}", spotifyCoverUrl);        }
         state.ResolvedCoverUrl = spotifyCoverUrl;
         return true;
     }
@@ -1139,7 +1117,7 @@ public class TrackDownloader
                 cancellationToken);
         }
 
-        if (!string.IsNullOrWhiteSpace(appleCoverUrl))
+        if (!string.IsNullOrWhiteSpace(appleCoverUrl) && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation("Apple album art selected: {Url}", appleCoverUrl);
         }
@@ -1265,7 +1243,9 @@ public class TrackDownloader
             request.Track.MainArtist?.Name);
         if (!string.IsNullOrWhiteSpace(deezerArtistUrl))
         {
-            _logger.LogInformation("Deezer artist art selected: {Url}", deezerArtistUrl);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Deezer artist art selected: {Url}", deezerArtistUrl);            }
             state.ResolvedArtistUrl = deezerArtistUrl;
             return true;
         }
@@ -1359,7 +1339,7 @@ public class TrackDownloader
                     cancellationToken);
             }
 
-            if (!string.IsNullOrWhiteSpace(appleArtistUrl))
+            if (!string.IsNullOrWhiteSpace(appleArtistUrl) && _logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Apple artist art selected: {Url}", appleArtistUrl);
             }
@@ -1368,7 +1348,9 @@ public class TrackDownloader
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple artist lookup failed for {ArtistName}", artistName);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple artist lookup failed for {ArtistName}", artistName);            }
             return null;
         }
     }
@@ -1390,14 +1372,16 @@ public class TrackDownloader
             spotifyArtistUrl = await _spotifyArtworkResolver.ResolveArtistImageByNameAsync(
                 track.MainArtist?.Name,
                 cancellationToken);
-            if (!string.IsNullOrWhiteSpace(spotifyArtistUrl))
+            if (!string.IsNullOrWhiteSpace(spotifyArtistUrl) && _logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Spotify artist art selected by name: {Url}", spotifyArtistUrl);
             }
         }
         else
         {
-            _logger.LogInformation("Spotify artist art selected: {Url}", spotifyArtistUrl);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Spotify artist art selected: {Url}", spotifyArtistUrl);            }
         }
 
         return spotifyArtistUrl;
@@ -1493,7 +1477,9 @@ public class TrackDownloader
                     cancellationToken: cancellationToken);
             }
 
-            _logger.LogDebug("Downloaded embedded cover: {Url} to {Path}", embeddedUrl, embeddedPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Downloaded embedded cover: {Url} to {Path}", embeddedUrl, embeddedPath);            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1644,7 +1630,7 @@ public class TrackDownloader
             }
             return $"{url}-000000-{quality}-0-0.jpg";
         }
-        
+
         if (format == "png")
         {
             return $"{url}-none-100-0-0.png";
@@ -1737,62 +1723,30 @@ public class TrackDownloader
                 return null;
             }
 
-            // Convert format number to string (port from deezspotag format mapping)
-            var formatString = format switch
+            var formatString = ResolveDownloadFormatName(format);
+
+            if (_logger.IsEnabled(LogLevel.Debug))
             {
-                9 => "FLAC",
-                3 => "MP3_320", 
-                1 => "MP3_128",
-                8 => "MP3_128", // DEFAULT
-                13 => "MP4_RA3",
-                14 => "MP4_RA2", 
-                15 => "MP4_RA1",
-                _ => "MP3_128"
-            };
+                _logger.LogDebug("Getting download URL for track {TrackId} with format {Format} ({FormatString})",
+                    track.Id, format, formatString);            }
 
-            _logger.LogDebug("Getting download URL for track {TrackId} with format {Format} ({FormatString})", 
-                track.Id, format, formatString);
-
-            // CRITICAL FIX: Use authenticated Deezer client
-            var deezerClient = await _authenticatedDeezerService.GetAuthenticatedClientAsync();
-            if (deezerClient == null)
-            {
-                throw new DownloadException("Deezer client not authenticated", "notAuthenticated");
-            }
-
-            // Use authenticated DeezerClient to get actual download URL from media API (with status)
-            var mediaResult = await deezerClient.GetTrackUrlWithStatusAsync(track.TrackToken, formatString);
+            var deezerClient = await RequireAuthenticatedClientAsync();
+            var mediaResult = await ResolveMediaResultWithTokenRefreshAsync(track, deezerClient, formatString);
             var downloadUrl = mediaResult.Url;
-
-            if (string.IsNullOrEmpty(downloadUrl) && mediaResult.ErrorCode == 2001)
-            {
-                var refreshed = await RefreshTrackTokenAsync(track, deezerClient);
-                if (refreshed)
-                {
-                    mediaResult = await deezerClient.GetTrackUrlWithStatusAsync(track.TrackToken, formatString);
-                    downloadUrl = mediaResult.Url;
-                }
-            }
-
             if (string.IsNullOrEmpty(downloadUrl) && mediaResult.ErrorCode == 2002)
             {
                 _logger.LogWarning("Track {TrackId} is geolocked for format {Format}", track.Id, formatString);
                 return null;
             }
-            
+
             if (string.IsNullOrEmpty(downloadUrl))
             {
-                if (!string.IsNullOrEmpty(track.MD5) && !string.IsNullOrEmpty(track.MediaVersion))
-                {
-                    _logger.LogInformation("Falling back to crypted URL for track {TrackId} format {Format}", track.Id, formatString);
-                    return CryptoService.GenerateCryptedStreamUrl(track.Id, track.MD5, track.MediaVersion, format.ToString());
-                }
-
-                _logger.LogWarning("No download URL returned for track {TrackId} with format {Format}", track.Id, formatString);
-                return null;
+                return TryBuildCryptedFallbackUrl(track, format, formatString);
             }
 
-            _logger.LogDebug("Got download URL for track {TrackId}: {Url}", track.Id, downloadUrl);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Got download URL for track {TrackId}: {Url}", track.Id, downloadUrl);            }
             return downloadUrl;
         }
         catch (DownloadException)
@@ -1804,6 +1758,68 @@ public class TrackDownloader
             _logger.LogError(ex, "Failed to get download URL for track {TrackId}", track.Id);
             throw new DownloadException($"Failed to get download URL: {ex.Message}", "downloadUrlError");
         }
+    }
+
+    private static string ResolveDownloadFormatName(int format)
+    {
+        return format switch
+        {
+            9 => "FLAC",
+            3 => "MP3_320",
+            1 => "MP3_128",
+            8 => "MP3_128",
+            13 => "MP4_RA3",
+            14 => "MP4_RA2",
+            15 => "MP4_RA1",
+            _ => "MP3_128"
+        };
+    }
+
+    private async Task<DeezerClient> RequireAuthenticatedClientAsync()
+    {
+        var deezerClient = await _authenticatedDeezerService.GetAuthenticatedClientAsync();
+        if (deezerClient == null)
+        {
+            throw new DownloadException("Deezer client not authenticated", "notAuthenticated");
+        }
+
+        return deezerClient;
+    }
+
+    private async Task<DeezSpoTag.Integrations.Deezer.DeezerMediaResult> ResolveMediaResultWithTokenRefreshAsync(
+        Track track,
+        DeezerClient deezerClient,
+        string formatString)
+    {
+        var mediaResult = await deezerClient.GetTrackUrlWithStatusAsync(track.TrackToken, formatString);
+        if (!string.IsNullOrEmpty(mediaResult.Url) || mediaResult.ErrorCode != 2001)
+        {
+            return mediaResult;
+        }
+
+        var refreshed = await RefreshTrackTokenAsync(track, deezerClient);
+        if (!refreshed)
+        {
+            return mediaResult;
+        }
+
+        return await deezerClient.GetTrackUrlWithStatusAsync(track.TrackToken, formatString);
+    }
+
+    private string? TryBuildCryptedFallbackUrl(Track track, int format, string formatString)
+    {
+        if (!string.IsNullOrEmpty(track.MD5) && !string.IsNullOrEmpty(track.MediaVersion))
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Falling back to crypted URL for track {TrackId} format {Format}", track.Id, formatString);
+            }
+
+            return CryptoService.GenerateCryptedStreamUrl(track.Id, track.MD5, track.MediaVersion, format.ToString());
+        }
+
+        _logger.LogWarning("No download URL returned for track {TrackId} with format {Format}", track.Id, formatString);
+        return null;
     }
 
     private async Task<bool> RefreshTrackTokenAsync(Track track, DeezerClient deezerClient)
@@ -1819,8 +1835,8 @@ public class TrackDownloader
     /// Stream track to file with decryption (used by EnhancedDeezSpoTagDownloader)
     /// </summary>
     public async Task StreamTrackToFileAsync(
-        string downloadUrl, 
-        string writePath, 
+        string downloadUrl,
+        string writePath,
         Track track,
         DownloadObject downloadObject,
         DeezSpoTagSettings settings,
@@ -1943,11 +1959,13 @@ public class TrackDownloader
         var lyricsType = string.Empty;
         try
         {
-            _logger.LogDebug(
-                "Attempting deferred lyrics save for track {TrackId} with settings SaveLyrics={SaveLyrics}, SyncedLyrics={SyncedLyrics}",
-                track.Id,
-                settings.SaveLyrics,
-                settings.SyncedLyrics);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Attempting deferred lyrics save for track {TrackId} with settings SaveLyrics={SaveLyrics}, SyncedLyrics={SyncedLyrics}",
+                    track.Id,
+                    settings.SaveLyrics,
+                    settings.SyncedLyrics);            }
 
             var outputIoPath = DownloadPathResolver.ResolveIoPath(outputPath);
             var filePath = Path.GetDirectoryName(outputIoPath)
@@ -2027,7 +2045,9 @@ public class TrackDownloader
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed pre-tag lyrics hydration for track {TrackId}", track.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed pre-tag lyrics hydration for track {TrackId}", track.Id);            }
         }
     }
 
@@ -2347,7 +2367,9 @@ public class TrackDownloader
             return;
         }
 
-        _logger.LogDebug("Downloading {ArtworkType} artwork to {OutputPath}", request.ArtworkType, request.OutputDirectory);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Downloading {ArtworkType} artwork to {OutputPath}", request.ArtworkType, request.OutputDirectory);        }
         Directory.CreateDirectory(request.OutputDirectory);
 
         var downloadTasks = request.Urls.Select(imageUrl => DownloadSingleArtworkAsync(
@@ -2373,7 +2395,9 @@ public class TrackDownloader
         try
         {
             var outputPath = Path.Join(request.OutputDirectory, $"{request.Filename}.{request.ImageUrl.Ext}");
-            _logger.LogDebug("Downloading {ArtworkType} image: {Url} to {OutputPath}", request.ArtworkType, request.ImageUrl.Url, outputPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Downloading {ArtworkType} image: {Url} to {OutputPath}", request.ArtworkType, request.ImageUrl.Url, outputPath);            }
 
             string? downloadedPath;
             if (IsAppleArtworkUrl(request.ImageUrl.Url))
@@ -2404,7 +2428,9 @@ public class TrackDownloader
 
             if (downloadedPath != null)
             {
-                _logger.LogInformation("Successfully downloaded {ArtworkType} artwork: {Path}", request.ArtworkType, downloadedPath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Successfully downloaded {ArtworkType} artwork: {Path}", request.ArtworkType, downloadedPath);                }
             }
             else
             {
@@ -2415,5 +2441,74 @@ public class TrackDownloader
         {
             _logger.LogError(ex, "Error downloading {ArtworkType} artwork: {Url}", request.ArtworkType, request.ImageUrl.Url);
         }
+    }
+
+    private static void ApplyAlbumScalarMetadata(Album album, DeezSpoTag.Core.Models.Deezer.ApiAlbum apiAlbum)
+    {
+        album.Title = string.IsNullOrWhiteSpace(album.Title) ? apiAlbum.Title : album.Title;
+        album.Label = apiAlbum.Label ?? album.Label;
+        album.Barcode = apiAlbum.Upc ?? album.Barcode;
+        album.RecordType = apiAlbum.RecordType ?? album.RecordType;
+        album.TrackTotal = apiAlbum.NbTracks ?? album.TrackTotal;
+        album.DiscTotal = apiAlbum.NbDisk ?? album.DiscTotal;
+        album.Copyright = apiAlbum.Copyright ?? album.Copyright;
+    }
+
+    private static void ApplyAlbumCoverIfMissing(Album album, string? md5Image)
+    {
+        if (string.IsNullOrWhiteSpace(md5Image)
+            || (album.Pic != null && !string.IsNullOrWhiteSpace(album.Pic.Md5)))
+        {
+            return;
+        }
+
+        album.Pic = new Picture(md5Image, "cover");
+        album.Md5Image = md5Image;
+    }
+
+    private static void ApplyAlbumGenres(Album album, DeezSpoTag.Core.Models.Deezer.ApiAlbum apiAlbum)
+    {
+        if (apiAlbum.Genres?.Data is not { Count: > 0 })
+        {
+            return;
+        }
+
+        album.Genre = apiAlbum.Genres.Data
+            .Select(genre => genre.Name)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name!)
+            .ToList();
+    }
+
+    private static void TryApplyAlbumReleaseDate(Album album, string? releaseDateText)
+    {
+        if (string.IsNullOrWhiteSpace(releaseDateText)
+            || album.Date == null
+            || !DateTime.TryParse(releaseDateText, CultureInfo.InvariantCulture, DateTimeStyles.None, out var releaseDate))
+        {
+            return;
+        }
+
+        album.Date.Day = releaseDate.Day.ToString("D2");
+        album.Date.Month = releaseDate.Month.ToString("D2");
+        album.Date.Year = releaseDate.Year.ToString();
+        album.Date.FixDayMonth();
+    }
+
+    private static void ApplyAlbumMainArtist(Album album, DeezSpoTag.Core.Models.Deezer.ApiArtist? apiArtist)
+    {
+        if (apiArtist == null)
+        {
+            return;
+        }
+
+        album.MainArtist = new Artist(apiArtist.Id, apiArtist.Name ?? "");
+        if (!string.IsNullOrWhiteSpace(apiArtist.Md5Image))
+        {
+            album.MainArtist.Pic = new Picture(apiArtist.Md5Image, ArtistType);
+        }
+
+        album.Artist["Main"] = new List<string> { album.MainArtist.Name };
+        album.Artists = new List<string> { album.MainArtist.Name };
     }
 }

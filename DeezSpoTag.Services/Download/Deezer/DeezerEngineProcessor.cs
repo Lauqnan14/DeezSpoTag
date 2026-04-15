@@ -216,7 +216,9 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
 
         await _queueRepository.UpdateStatusAsync(queueUuid, PausedStatus, cancellationToken: cancellationToken);
         _listener.Send(UpdateQueueEvent, new { uuid = queueUuid, status = PausedStatus });
-        _logger.LogInformation("Download {UUID} paused by user request", queueUuid);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Download {UUID} paused by user request", queueUuid);        }
         return false;
     }
 
@@ -983,7 +985,13 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             _serviceProvider,
             showId,
             episodeId,
-            (ex, id) => _logger.LogDebug(ex, "Failed to resolve episode stream URL via show page for {EpisodeId}", id));
+            (ex, id) =>
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Failed to resolve episode stream URL via show page for {EpisodeId}", id);
+                }
+            });
 
     private async Task<string?> ResolveEpisodeStreamUrlFromGatewayAsync(string episodeId, CancellationToken cancellationToken)
     {
@@ -997,7 +1005,9 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to resolve episode stream URL via gateway for {EpisodeId}", episodeId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to resolve episode stream URL via gateway for {EpisodeId}", episodeId);            }
             return null;
         }
     }
@@ -1026,7 +1036,9 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to resolve episode metadata via gateway for {EpisodeId}", episodeId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to resolve episode metadata via gateway for {EpisodeId}", episodeId);            }
         }
 
         return new Dictionary<string, object>();

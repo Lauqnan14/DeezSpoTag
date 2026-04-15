@@ -164,7 +164,10 @@ public sealed class ShazamRecognitionService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Shazam search failed for query '{Query}' and file {Path}.", query, filePath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Shazam search failed for query '{Query}' and file {Path}.", query, filePath);
+            }
             return Array.Empty<ShazamTrackCard>();
         }
     }
@@ -316,7 +319,10 @@ public sealed class ShazamRecognitionService
         var stderr = stderrTask.GetAwaiter().GetResult().Trim();
         if (process.ExitCode != 0)
         {
-            _logger.LogDebug("Shazam ported recognizer exited with code {Code}. stderr={Stderr}", process.ExitCode, stderr);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Shazam ported recognizer exited with code {Code}. stderr={Stderr}", process.ExitCode, stderr);
+            }
             return new PortedRecognizerExecution
             {
                 State = PortedRecognizerState.Error,
@@ -373,7 +379,10 @@ public sealed class ShazamRecognitionService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Failed to start Shazam ported recognizer using {Python}.", pythonExecutable);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to start Shazam ported recognizer using {Python}.", pythonExecutable);
+            }
             error = $"Failed to start Shazam recognizer with '{pythonExecutable}'. {ex.Message}";
             return false;
         }
@@ -440,7 +449,10 @@ public sealed class ShazamRecognitionService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Failed probing Shazam recognizer dependency {FileName} {Arguments}.", fileName, arguments);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed probing Shazam recognizer dependency {FileName} {Arguments}.", fileName, arguments);
+            }
             error = ex.Message;
             return false;
         }
@@ -466,7 +478,10 @@ public sealed class ShazamRecognitionService
                 var error = root.TryGetProperty("error", out var errElement) && errElement.ValueKind == JsonValueKind.String
                     ? errElement.GetString()
                     : null;
-                _logger.LogDebug("Shazam ported recognizer did not return ok=true. error={Error}", error ?? "unknown");
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Shazam ported recognizer did not return ok=true. error={Error}", error ?? "unknown");
+                }
                 return new PortedRecognizerExecution
                 {
                     State = PortedRecognizerState.Error,
@@ -596,7 +611,10 @@ public sealed class ShazamRecognitionService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Shazam track enrichment lookup failed for trackId {TrackId}.", ported.TrackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Shazam track enrichment lookup failed for trackId {TrackId}.", ported.TrackId);
+            }
             return null;
         }
     }
@@ -661,7 +679,10 @@ public sealed class ShazamRecognitionService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Shazam detail lookup failed for track {TrackId}.", card.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Shazam detail lookup failed for track {TrackId}.", card.Id);
+            }
             return card;
         }
     }

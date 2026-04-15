@@ -65,9 +65,12 @@ public sealed class TaggingProfileService
         }
         else
         {
-            _logger.LogDebug(
-                "Skipping legacy tagging profile cleanup because custom data root is active. DataRoot={DataRoot}",
-                _dataRoot);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Skipping legacy tagging profile cleanup because custom data root is active. DataRoot={DataRoot}",
+                    _dataRoot);
+            }
         }
 
         return profiles;
@@ -442,10 +445,13 @@ public sealed class TaggingProfileService
         try
         {
             File.Delete(_legacyProfilesPath);
-            _logger.LogInformation(
-                "Removed legacy AutoTag profile store {LegacyPath} after single-store migration (imported={Imported}).",
-                _legacyProfilesPath,
-                imported);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Removed legacy AutoTag profile store {LegacyPath} after single-store migration (imported={Imported}).",
+                    _legacyProfilesPath,
+                    imported);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -471,7 +477,8 @@ public sealed class TaggingProfileService
                 Data = data
             };
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return new AutoTagSettings();
         }
     }
@@ -496,7 +503,10 @@ public sealed class TaggingProfileService
                 await using var source = File.OpenRead(legacyPath);
                 await using var target = File.Create(_profilesPath);
                 await source.CopyToAsync(target);
-                _logger.LogInformation("Migrated tagging profiles from legacy path {LegacyPath} to {ProfilesPath}.", legacyPath, _profilesPath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Migrated tagging profiles from legacy path {LegacyPath} to {ProfilesPath}.", legacyPath, _profilesPath);
+                }
                 return;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -524,9 +534,12 @@ public sealed class TaggingProfileService
             try
             {
                 File.Delete(legacyPath);
-                _logger.LogInformation(
-                    "Removed legacy tagging profile store {LegacyPath} after single-store migration.",
-                    legacyPath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "Removed legacy tagging profile store {LegacyPath} after single-store migration.",
+                        legacyPath);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

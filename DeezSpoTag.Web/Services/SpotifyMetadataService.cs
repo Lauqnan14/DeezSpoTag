@@ -370,7 +370,10 @@ public sealed class SpotifyMetadataService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Spotify artist page fallback fetch failed for {ArtistId}.", artistId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify artist page fallback fetch failed for {ArtistId}.", artistId);
+            }
             return null;
         }
     }
@@ -1428,11 +1431,14 @@ public sealed class SpotifyMetadataService
                 requestedAlbumTitle,
                 track.Album))
         {
-            _logger.LogDebug(
-                "Rejected Spotify artwork for track {TrackId}: resolved album '{ResolvedAlbum}' did not match requested album '{RequestedAlbum}'.",
-                trackId,
-                track.Album,
-                requestedAlbumTitle);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Rejected Spotify artwork for track {TrackId}: resolved album '{ResolvedAlbum}' did not match requested album '{RequestedAlbum}'.",
+                    trackId,
+                    track.Album,
+                    requestedAlbumTitle);
+            }
             return null;
         }
 
@@ -1756,10 +1762,13 @@ public sealed class SpotifyMetadataService
         if (!string.IsNullOrWhiteSpace(webPlayerToken?.AccessToken))
         {
             var market = await ResolveMarketAsync();
-            _logger.LogInformation(
-                "Spotify metadata auth ready: tokenLen={TokenLen} market={Market} source=webplayer",
-                webPlayerToken.AccessToken.Length,
-                market);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Spotify metadata auth ready: tokenLen={TokenLen} market={Market} source=webplayer",
+                    webPlayerToken.AccessToken.Length,
+                    market);
+            }
             return new SearchContext(webPlayerToken.AccessToken, market, "webplayer", blobPath);
         }
 
@@ -1771,10 +1780,13 @@ public sealed class SpotifyMetadataService
         }
 
         var fallbackMarket = await ResolveMarketAsync();
-        _logger.LogInformation(
-            "Spotify metadata auth ready: tokenLen={TokenLen} market={Market} source=librespot",
-            tokenResult.AccessToken.Length,
-            fallbackMarket);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Spotify metadata auth ready: tokenLen={TokenLen} market={Market} source=librespot",
+                tokenResult.AccessToken.Length,
+                fallbackMarket);
+        }
         return new SearchContext(tokenResult.AccessToken, fallbackMarket, LibrespotSource, blobPath);
     }
 
@@ -3051,7 +3063,8 @@ public sealed class SpotifyMetadataService
                 totalTracks,
                 trackIds);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }
@@ -3186,7 +3199,8 @@ public sealed class SpotifyMetadataService
             var hex = Convert.ToHexStringLower(bytes);
             return string.IsNullOrWhiteSpace(hex) ? null : $"https://i.scdn.co/image/{hex}";
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }

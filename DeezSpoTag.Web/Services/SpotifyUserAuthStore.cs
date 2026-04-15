@@ -107,7 +107,10 @@ public sealed class SpotifyUserAuthStore
             }
 
             var candidate = candidates[0];
-            _logger.LogInformation("Using Spotify auth fallback from {Path} for user {UserId}.", candidate.Path, userId);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Using Spotify auth fallback from {Path} for user {UserId}.", candidate.Path, userId);
+            }
             return candidate.State;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -154,7 +157,10 @@ public sealed class SpotifyUserAuthStore
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to read Spotify auth fallback from {Path}", authPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to read Spotify auth fallback from {Path}", authPath);
+            }
             return null;
         }
 
@@ -215,7 +221,10 @@ public sealed class SpotifyUserAuthStore
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Failed to clean up temporary Spotify auth state file {Path}", tempPath);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Failed to clean up temporary Spotify auth state file {Path}", tempPath);
+                }
             }
         }
     }
@@ -291,9 +300,9 @@ public sealed class SpotifyUserAuthStore
 
     private static IReadOnlyList<SpotifyUserAccount> SelectPreferredAccountPool(
         IReadOnlyList<SpotifyUserAccount> candidates,
-        IReadOnlyList<SpotifyUserAccount> withHealthyBlobs,
-        IReadOnlyList<SpotifyUserAccount> withAnyHealthyBlob,
-        IReadOnlyList<SpotifyUserAccount> withBlobs)
+        List<SpotifyUserAccount> withHealthyBlobs,
+        List<SpotifyUserAccount> withAnyHealthyBlob,
+        List<SpotifyUserAccount> withBlobs)
     {
         if (withHealthyBlobs.Count > 0)
         {

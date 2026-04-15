@@ -212,7 +212,10 @@ internal static class SpotifyTracklistResolver
             if (IsTransientException(ex))
             {
                 sawTransientFailure = true;
-                context.Options.Logger.LogDebug(ex, "Transient resolver failure for Spotify track {TrackName}", context.Track.Name);
+                if (context.Options.Logger.IsEnabled(LogLevel.Debug))
+                {
+                    context.Options.Logger.LogDebug(ex, "Transient resolver failure for Spotify track {TrackName}", context.Track.Name);
+                }
             }
             else
             {
@@ -322,18 +325,24 @@ internal static class SpotifyTracklistResolver
         }
         catch (Exception ex) when (IsTransientException(ex))
         {
-            context.Options.Logger.LogDebug(
-                ex,
-                "Transient Deezer cache-validation failure for {TrackName}",
-                context.Track.Name);
+            if (context.Options.Logger.IsEnabled(LogLevel.Debug))
+            {
+                context.Options.Logger.LogDebug(
+                    ex,
+                    "Transient Deezer cache-validation failure for {TrackName}",
+                    context.Track.Name);
+            }
             return false;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            context.Options.Logger.LogDebug(
-                ex,
-                "Deezer cache-validation skipped for {TrackName}",
-                context.Track.Name);
+            if (context.Options.Logger.IsEnabled(LogLevel.Debug))
+            {
+                context.Options.Logger.LogDebug(
+                    ex,
+                    "Deezer cache-validation skipped for {TrackName}",
+                    context.Track.Name);
+            }
             return false;
         }
     }
@@ -407,10 +416,13 @@ internal static class SpotifyTracklistResolver
         {
             lookupTransient = true;
             sawTransientFailure = true;
-            context.Options.Logger.LogDebug(
-                ex,
-                "Transient Deezer ISRC lookup failure for {TrackName}",
-                context.Track.Name);
+            if (context.Options.Logger.IsEnabled(LogLevel.Debug))
+            {
+                context.Options.Logger.LogDebug(
+                    ex,
+                    "Transient Deezer ISRC lookup failure for {TrackName}",
+                    context.Track.Name);
+            }
         }
 
         var deezerId = NormalizeDeezerId(deezerTrack?.Id?.ToString());
@@ -419,12 +431,15 @@ internal static class SpotifyTracklistResolver
             var validation = ValidateCandidate(context.Track, deezerTrack!, context.Options.StrictMode);
             if (!validation.IsAccepted)
             {
-                context.Options.Logger.LogDebug(
-                    "Rejected ISRC Deezer candidate {DeezerId} for {TrackName}: {Reason} (score={Score:F3})",
-                    deezerId,
-                    context.Track.Name,
-                    validation.Reason,
-                    validation.Score);
+                if (context.Options.Logger.IsEnabled(LogLevel.Debug))
+                {
+                    context.Options.Logger.LogDebug(
+                        "Rejected ISRC Deezer candidate {DeezerId} for {TrackName}: {Reason} (score={Score:F3})",
+                        deezerId,
+                        context.Track.Name,
+                        validation.Reason,
+                        validation.Score);
+                }
                 deezerId = null;
                 sawTransientFailure |= validation.IsTransient;
             }
@@ -559,12 +574,15 @@ internal static class SpotifyTracklistResolver
                 lookupOutcome.SawTransientFailure);
         }
 
-        context.Options.Logger.LogDebug(
-            "Rejected metadata Deezer candidate {DeezerId} for {TrackName}: {Reason} (score={Score:F3})",
-            lookupOutcome.DeezerId,
-            context.Track.Name,
-            validation.Reason,
-            validation.Score);
+        if (context.Options.Logger.IsEnabled(LogLevel.Debug))
+        {
+            context.Options.Logger.LogDebug(
+                "Rejected metadata Deezer candidate {DeezerId} for {TrackName}: {Reason} (score={Score:F3})",
+                lookupOutcome.DeezerId,
+                context.Track.Name,
+                validation.Reason,
+                validation.Score);
+        }
 
         if (!string.IsNullOrWhiteSpace(cacheKey) && !validation.IsTransient)
         {
@@ -595,10 +613,13 @@ internal static class SpotifyTracklistResolver
             catch (Exception ex) when (IsTransientException(ex))
             {
                 sawTransientFailure = true;
-                context.Options.Logger.LogDebug(
-                    ex,
-                    "Transient Deezer metadata lookup failure for {TrackName}",
-                    context.Track.Name);
+                if (context.Options.Logger.IsEnabled(LogLevel.Debug))
+                {
+                    context.Options.Logger.LogDebug(
+                        ex,
+                        "Transient Deezer metadata lookup failure for {TrackName}",
+                        context.Track.Name);
+                }
             }
         }
 
@@ -615,10 +636,13 @@ internal static class SpotifyTracklistResolver
             catch (Exception ex) when (IsTransientException(ex))
             {
                 sawTransientFailure = true;
-                context.Options.Logger.LogDebug(
-                    ex,
-                    "Transient Deezer fast metadata lookup failure for {TrackName}",
-                    context.Track.Name);
+                if (context.Options.Logger.IsEnabled(LogLevel.Debug))
+                {
+                    context.Options.Logger.LogDebug(
+                        ex,
+                        "Transient Deezer fast metadata lookup failure for {TrackName}",
+                        context.Track.Name);
+                }
             }
         }
 
@@ -661,20 +685,26 @@ internal static class SpotifyTracklistResolver
             }
 
             sawTransientFailure |= validation.IsTransient;
-            context.Options.Logger.LogDebug(
-                "Rejected Song.link Deezer candidate {DeezerId} for {TrackName}: {Reason} (score={Score:F3})",
-                normalized,
-                context.Track.Name,
-                validation.Reason,
-                validation.Score);
+            if (context.Options.Logger.IsEnabled(LogLevel.Debug))
+            {
+                context.Options.Logger.LogDebug(
+                    "Rejected Song.link Deezer candidate {DeezerId} for {TrackName}: {Reason} (score={Score:F3})",
+                    normalized,
+                    context.Track.Name,
+                    validation.Reason,
+                    validation.Score);
+            }
         }
         catch (Exception ex) when (IsTransientException(ex))
         {
             sawTransientFailure = true;
-            context.Options.Logger.LogDebug(
-                ex,
-                "Transient Song.link resolution failure for {TrackName}",
-                context.Track.Name);
+            if (context.Options.Logger.IsEnabled(LogLevel.Debug))
+            {
+                context.Options.Logger.LogDebug(
+                    ex,
+                    "Transient Song.link resolution failure for {TrackName}",
+                    context.Track.Name);
+            }
         }
 
         return new ResolveStepResult(null, sawTransientFailure);
@@ -710,10 +740,13 @@ internal static class SpotifyTracklistResolver
         catch (Exception ex) when (IsTransientException(ex))
         {
             lookupTransient = true;
-            context.Options.Logger.LogDebug(
-                ex,
-                "Transient Deezer Song.link ISRC lookup failure for {TrackName}",
-                context.Track.Name);
+            if (context.Options.Logger.IsEnabled(LogLevel.Debug))
+            {
+                context.Options.Logger.LogDebug(
+                    ex,
+                    "Transient Deezer Song.link ISRC lookup failure for {TrackName}",
+                    context.Track.Name);
+            }
         }
 
         var deezerId = NormalizeDeezerId(deezerTrack?.Id?.ToString());
@@ -749,7 +782,10 @@ internal static class SpotifyTracklistResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogDebug(ex, "Deezer candidate validation failed for Deezer track {DeezerId}", deezerId);
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug(ex, "Deezer candidate validation failed for Deezer track {DeezerId}", deezerId);
+            }
             return CandidateValidationResult.Reject("validation_error", isTransient: true);
         }
     }
@@ -1537,7 +1573,10 @@ internal static class SpotifyTracklistResolver
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                logger.LogDebug(ex, "Failed to load Spotify-Deezer persistent mapping cache from {Path}", PersistentCachePath);
+                if (logger.IsEnabled(LogLevel.Debug))
+                {
+                    logger.LogDebug(ex, "Failed to load Spotify-Deezer persistent mapping cache from {Path}", PersistentCachePath);
+                }
             }
             finally
             {
@@ -1641,7 +1680,10 @@ internal static class SpotifyTracklistResolver
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                logger.LogDebug(ex, "Failed to persist Spotify-Deezer mapping cache to {Path}", PersistentCachePath);
+                if (logger.IsEnabled(LogLevel.Debug))
+                {
+                    logger.LogDebug(ex, "Failed to persist Spotify-Deezer mapping cache to {Path}", PersistentCachePath);
+                }
             }
         }
     }

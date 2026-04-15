@@ -44,7 +44,7 @@ public class Picture
             }
             return $"{url}-000000-{quality}-0-0.jpg";
         }
-        
+
         if (format == "png")
         {
             return $"{url}-none-100-0-0.png";

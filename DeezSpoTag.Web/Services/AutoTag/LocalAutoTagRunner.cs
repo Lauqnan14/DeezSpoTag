@@ -790,9 +790,29 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ? "us"
             : settings.AppleMusic.Storefront;
         var maxResolution = settings.Video?.AppleMusicVideoMaxResolution ?? 2160;
-        var artist = track.Artists.FirstOrDefault();
         var baseFileName = BuildAlbumArtworkBaseFileName(track, settings);
         var appleCatalogTrackId = await ResolveAppleCatalogTrackIdForExtrasAsync(track, storefront, token);
+
+        await TryPopulateAppleAnimatedArtworkAsync(
+            track,
+            outputDir,
+            storefront,
+            maxResolution,
+            baseFileName,
+            appleCatalogTrackId,
+            token);
+    }
+
+    private async Task TryPopulateAppleAnimatedArtworkAsync(
+        AutoTagTrack track,
+        string outputDir,
+        string storefront,
+        int maxResolution,
+        string baseFileName,
+        string? appleCatalogTrackId,
+        CancellationToken token)
+    {
+        var artist = track.Artists.FirstOrDefault();
 
         try
         {
@@ -834,16 +854,25 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
             if (savedAnimated)
             {
-                _logger.LogInformation("AutoTag Apple animated artwork saved for {Title} in {OutputDir}", track.Title, outputDir);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("AutoTag Apple animated artwork saved for {Title} in {OutputDir}", track.Title, outputDir);
+                }
             }
             else
             {
-                _logger.LogInformation("AutoTag Apple animated artwork unavailable for {Title}", track.Title);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("AutoTag Apple animated artwork unavailable for {Title}", track.Title);
+                }
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple animated artwork resolution failed for {Title}.", track.Title);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple animated artwork resolution failed for {Title}.", track.Title);
+            }
         }
     }
 
@@ -888,7 +917,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Spotify lyrics resolution failed for {Title}.", track.Title);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify lyrics resolution failed for {Title}.", track.Title);
+            }
             return;
         }
 
@@ -917,7 +949,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple catalog ISRC lookup failed for animated artwork {Isrc}.", track.Isrc);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple catalog ISRC lookup failed for animated artwork {Isrc}.", track.Isrc);
+            }
             return null;
         }
     }
@@ -1054,7 +1089,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple lyrics resolution failed for {Title}.", track.Title);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple lyrics resolution failed for {Title}.", track.Title);
+            }
             return;
         }
 
@@ -1976,7 +2014,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Shazam recognize failed for {File}", filePath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Shazam recognize failed for {File}", filePath);
+            }
             return null;
         }
     }
@@ -3555,7 +3596,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to remove upgraded TXT lyrics sidecar {Path}", context.SidecarState.TxtPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to remove upgraded TXT lyrics sidecar {Path}", context.SidecarState.TxtPath);
+            }
         }
     }
 

@@ -170,7 +170,7 @@ public interface IDownloadListener
     void OnDownloadError(DownloadObject downloadObject, DownloadError error);
     void OnDownloadInfo(DownloadObject downloadObject, string message, string state);
     void OnDownloadWarning(DownloadObject downloadObject, string message, string state, string solution);
-    
+
     // EXACT PORT: Additional methods from deezspotag listener
     void OnCurrentItemCancelled(DownloadObject downloadObject);
     void OnRemovedFromQueue(DownloadObject downloadObject);

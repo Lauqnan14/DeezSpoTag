@@ -38,10 +38,10 @@ public static class DeezSpoTagServiceExtensions
             return new DeezSpoTag.Services.Settings.DeezSpoTagSettingsService(logger);
         });
         services.AddSingleton<ISettingsService>(provider => provider.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>());
-        
+
         // Concurrency limit service for account-based download limits
         services.AddSingleton<ConcurrencyLimitService>();
-        
+
         // Core deezspotag services - singleton to keep a single shared queue processor
         services.AddSingleton<IDeezSpoTagAppFactory, DeezSpoTagAppFactory>();
         services.AddSingleton<DeezSpoTagApp>(provider =>
@@ -49,15 +49,15 @@ public static class DeezSpoTagServiceExtensions
             var factory = provider.GetRequiredService<IDeezSpoTagAppFactory>();
             return factory.CreateDeezSpoTagApp(provider);
         });
-        
+
         // Bitrate selection service (moved to Download.Utils)
         services.AddScoped<DeezSpoTag.Services.Download.Utils.BitrateSelector>();
         services.AddSingleton<EngineProcessorCommonDependencies>();
-        
+
         services.AddScoped<QualityFallbackManager>();
         services.AddScoped<CommandExecutionService>();
         services.AddScoped<DeezSpoTagLoggingService>();
-        
+
         // Phase 4: Advanced features and performance optimization
         // PHASE 4: Advanced features and performance optimization - COMPLETED
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.Advanced.AdvancedConcurrencyManager>();
@@ -73,13 +73,13 @@ public static class DeezSpoTagServiceExtensions
         });
         // Async queue processor factory
         services.AddTransient(typeof(AsyncQueueProcessor<>));
-        
+
         // CRITICAL FIX: Use basic listener here - SignalR listener will be registered in Web project
         // NOTE: IDeezSpoTagListener is registered in the Web project as SignalRDeezSpoTagListener
-        
+
         // CRITICAL FIX: Add the actual download engine
         // DeezSpoTagDownloader is created per-download, not registered as service
-        
+
         // Unified queue processor handles all engines.
         services.AddScoped<DeezSpoTag.Services.Download.Deezer.DeezerEngineProcessor>();
         services.AddScoped<IQueueEngineProcessor, DeezSpoTag.Services.Download.Deezer.DeezerEngineProcessor>();
@@ -87,7 +87,7 @@ public static class DeezSpoTagServiceExtensions
         services.AddScoped<IQueueEngineProcessor, DeezSpoTag.Services.Download.Qobuz.QobuzEngineProcessor>();
         services.AddScoped<IQueueEngineProcessor, DeezSpoTag.Services.Download.Tidal.TidalEngineProcessor>();
         services.AddScoped<IQueueEngineProcessor, DeezSpoTag.Services.Download.Amazon.AmazonEngineProcessor>();
-        
+
         return services;
     }
 }
@@ -123,7 +123,9 @@ public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.Bac
                 var queuedCount = await _deezSpoTagApp.GetQueuedCountAsync();
                 if (queuedCount > 0)
                 {
-                    _logger.LogDebug("Background service checking queue - {QueueCount} items pending", queuedCount);
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug("Background service checking queue - {QueueCount} items pending", queuedCount);                    }
                     try
                     {
                         await _deezSpoTagApp.EnsureQueueProcessorRunningAsync();
@@ -174,7 +176,7 @@ public class DeezSpoTagAppFactory : IDeezSpoTagAppFactory
         var retryScheduler = serviceProvider.GetRequiredService<Queue.DownloadRetryScheduler>();
         var queueRepository = serviceProvider.GetRequiredService<DownloadQueueRepository>();
         var cancellationRegistry = serviceProvider.GetRequiredService<DownloadCancellationRegistry>();
-        
+
         // Use the root service provider to avoid disposal issues when creating new scopes
         return new DeezSpoTagApp(logger, settingsService, listener, retryScheduler, queueRepository, cancellationRegistry, _rootServiceProvider);
     }

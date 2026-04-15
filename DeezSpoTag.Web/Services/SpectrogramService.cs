@@ -208,7 +208,8 @@ public sealed class SpectrogramService
         {
             File.SetLastWriteTimeUtc(filePath, DateTime.UtcNow);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Best effort only.
         }
     }
@@ -222,7 +223,8 @@ public sealed class SpectrogramService
                 File.Delete(filePath);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Best effort only.
         }
     }
@@ -236,7 +238,8 @@ public sealed class SpectrogramService
                 process.Kill(true);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Best effort only.
         }
     }

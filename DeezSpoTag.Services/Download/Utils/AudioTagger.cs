@@ -168,7 +168,9 @@ public class AudioTagger
             ? Path.GetExtension(writePath).ToLowerInvariant()
             : extension.Trim().ToLowerInvariant();
 
-        _logger.LogDebug("Tagging track: {FilePath} with extension: {Extension}", writePath, normalizedExtension);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Tagging track: {FilePath} with extension: {Extension}", writePath, normalizedExtension);        }
         UpdateDownloadCapabilities(track);
 
         const int maxAttempts = 5;
@@ -195,7 +197,9 @@ public class AudioTagger
                     await TagGenericAsync(writePath, track, tags);
                 }
 
-                _logger.LogDebug("Successfully tagged track: {FilePath}", writePath);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Successfully tagged track: {FilePath}", writePath);                }
                 return;
             }
             catch (IOException ex) when (attempt < maxAttempts)
@@ -215,7 +219,7 @@ public class AudioTagger
     {
         // Determine extension from file path
         var extension = Path.GetExtension(writePath);
-        
+
         // Use the existing method with the settings tags
         await TagTrackAsync(extension, writePath, track, settings.Tags);
     }
@@ -247,7 +251,9 @@ public class AudioTagger
 
             file.Save();
             RemoveId3v1WhenDisabled(file, save);
-            _logger.LogDebug("Successfully tagged MP3 file: {Path}", path);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Successfully tagged MP3 file: {Path}", path);            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -516,7 +522,9 @@ public class AudioTagger
             }
 
             file.Save();
-            _logger.LogDebug("Successfully tagged FLAC file: {Path}", path);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Successfully tagged FLAC file: {Path}", path);            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -550,7 +558,9 @@ public class AudioTagger
                 throw new IOException($"Atmos MP4 tag verification failed for {path}");
             }
 
-            _logger.LogInformation("Successfully tagged Atmos MP4 file with ffmpeg: {Path}", path);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Successfully tagged Atmos MP4 file with ffmpeg: {Path}", path);            }
             return;
         }
 
@@ -588,7 +598,9 @@ public class AudioTagger
             }
 
             file.Save();
-            _logger.LogDebug("Successfully tagged MP4 file: {Path}", path);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Successfully tagged MP4 file: {Path}", path);            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1149,7 +1161,9 @@ public class AudioTagger
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "MP4 tag verification failed for {Path}", path);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "MP4 tag verification failed for {Path}", path);            }
             return false;
         }
     }
@@ -1223,7 +1237,9 @@ public class AudioTagger
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Unable to compare MP4 durations for {SourcePath} and {TaggedPath}", sourcePath, taggedPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Unable to compare MP4 durations for {SourcePath} and {TaggedPath}", sourcePath, taggedPath);            }
             return true;
         }
     }
@@ -1521,7 +1537,9 @@ public class AudioTagger
             }
             else
             {
-                _logger.LogDebug("Skipping custom frame {FrameId}; ID3v2 tag not available", frameId);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Skipping custom frame {FrameId}; ID3v2 tag not available", frameId);                }
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1598,7 +1616,9 @@ public class AudioTagger
             }
             else
             {
-                _logger.LogDebug("Skipping Vorbis comment {Field}; Xiph tag not available", field);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Skipping Vorbis comment {Field}; Xiph tag not available", field);                }
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1782,7 +1802,9 @@ public class AudioTagger
             ApplyGenericFallbackTagValues(tag, track, save);
             await AttachGenericFallbackCoverAsync(tag, track, save);
             file.Save();
-            _logger.LogDebug("Successfully tagged file via generic fallback: {Path}", path);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Successfully tagged file via generic fallback: {Path}", path);            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

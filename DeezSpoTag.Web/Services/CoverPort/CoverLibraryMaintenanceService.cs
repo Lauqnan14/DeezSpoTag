@@ -123,7 +123,10 @@ public sealed class CoverLibraryMaintenanceService
                 {
                     Interlocked.Increment(ref errors);
                     logs.Enqueue($"[error] {albumDir}: {ex.Message}");
-                    _logger.LogDebug(ex, "Cover maintenance failed for {AlbumDir}", albumDir);
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug(ex, "Cover maintenance failed for {AlbumDir}", albumDir);
+                    }
                 }
             });
 
@@ -428,7 +431,8 @@ public sealed class CoverLibraryMaintenanceService
                     return (artist, album, title);
                 }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 // continue to next file
             }
         }
@@ -472,7 +476,8 @@ public sealed class CoverLibraryMaintenanceService
             var info = Image.Identify(filePath);
             return info == null ? null : (info.Width, info.Height);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }
@@ -492,7 +497,8 @@ public sealed class CoverLibraryMaintenanceService
             var info = Image.Identify(stream);
             return info == null ? null : (info.Width, info.Height);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }
@@ -505,7 +511,8 @@ public sealed class CoverLibraryMaintenanceService
             var picture = tagFile.Tag.Pictures?.FirstOrDefault(pic => pic?.Data != null && pic.Data.Count > 0);
             return picture?.Data?.Data;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }

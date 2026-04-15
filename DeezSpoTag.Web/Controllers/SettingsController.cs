@@ -26,11 +26,11 @@ namespace DeezSpoTag.Web.Controllers
             try
             {
                 _logger.LogDebug("Settings page requested");
-                
+
                 // Load settings to pass to the view
                 var settings = _settingsService.LoadSettings();
                 ViewData["Settings"] = settings;
-                
+
                 return View();
             }
             catch (Exception ex) when (ex is not OperationCanceledException)

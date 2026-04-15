@@ -13,6 +13,7 @@ using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Library;
+
 public sealed class LibraryRepository
 {
     private sealed record ExistingTrackRecord(
@@ -1478,7 +1479,7 @@ RETURNING id;";
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-const string sql = @"
+        const string sql = @"
 SELECT DISTINCT tl.track_id
 FROM track_local tl
 JOIN audio_file af ON af.id = tl.audio_file_id
@@ -1503,7 +1504,7 @@ WHERE f.library_id = @libraryId
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-const string sql = @"
+        const string sql = @"
 WITH candidate_ids AS (
     SELECT CASE
                WHEN NULLIF(TRIM(ts.source_id), '') IS NOT NULL
@@ -6450,7 +6451,7 @@ SELECT EXISTS(
         command.Parameters.AddWithValue(SourceIdField, sourceId);
         if (requireAtmosVariant.HasValue)
         {
-        command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.Value);
+            command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.Value);
         }
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is not null && result != DBNull.Value && Convert.ToInt64(result) == 1;

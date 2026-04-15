@@ -128,10 +128,13 @@ public sealed class PlaylistCoverService
         }
 
         var status = await GetPipelineStatusAsync(cancellationToken);
-        _logger.LogInformation(
-            "Playlist cover content-aware crop enabled (mode={Mode}, model={Model}).",
-            status.ToolPath,
-            status.ModelPath);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Playlist cover content-aware crop enabled (mode={Mode}, model={Model}).",
+                status.ToolPath,
+                status.ModelPath);
+        }
     }
 
     private async Task<PlaylistCoverResult?> TryUseCachedAsync(
@@ -173,7 +176,10 @@ public sealed class PlaylistCoverService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to read playlist cover metadata at {Path}.", metaPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to read playlist cover metadata at {Path}.", metaPath);
+            }
             return null;
         }
     }
@@ -196,7 +202,10 @@ public sealed class PlaylistCoverService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to write playlist cover metadata at {Path}.", metaPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to write playlist cover metadata at {Path}.", metaPath);
+            }
         }
     }
 
@@ -273,7 +282,10 @@ public sealed class PlaylistCoverService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to query playlist cover HEAD metadata for {Url}.", url);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to query playlist cover HEAD metadata for {Url}.", url);
+            }
             return null;
         }
     }

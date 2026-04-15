@@ -56,11 +56,13 @@ public sealed class AppleWebPlaybackClient
             return null;
         }
 
-        _logger.LogDebug(
-            "Apple webPlayback request starting: adamId={AdamId}, authToken={AuthTokenLength}chars, mediaUserToken={MediaUserTokenLength}chars",
-            adamId,
-            authorizationToken.Length,
-            mediaUserToken.Length);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Apple webPlayback request starting: adamId={AdamId}, authToken={AuthTokenLength}chars, mediaUserToken={MediaUserTokenLength}chars",
+                adamId,
+                authorizationToken.Length,
+                mediaUserToken.Length);        }
 
         var client = _httpClientFactory.CreateClient();
         const int maxAttempts = 3;
@@ -73,26 +75,9 @@ public sealed class AppleWebPlaybackClient
             {
                 return await ParseWebPlaybackResponseAsync(response, adamId, cancellationToken);
             }
-            else
+            await LogPlaybackFailureAsync(response, attempt, maxAttempts, cancellationToken);
+            if (await DelayForPlaybackRetryIfNeededAsync(response, attempt, maxAttempts, cancellationToken))
             {
-                var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
-                _logger.LogWarning(
-                    "Apple webPlayback request failed: StatusCode={StatusCode}, Attempt={Attempt}/{MaxAttempts}, Response={Response}",
-                    response.StatusCode,
-                    attempt + 1,
-                    maxAttempts,
-                    errorBody.Length > 500 ? errorBody[..500] + "..." : errorBody);
-
-                LogPlaybackAuthFailure(response.StatusCode);
-            }
-
-            if (ShouldRetryPlayback(response.StatusCode, attempt, maxAttempts))
-            {
-                var delay = response.StatusCode == System.Net.HttpStatusCode.TooManyRequests
-                    ? response.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(Math.Pow(2, attempt))
-                    : TimeSpan.FromSeconds(Math.Pow(2, attempt));
-                _logger.LogInformation("Apple webPlayback retry ({StatusCode}) after {Delay}ms...", response.StatusCode, delay.TotalMilliseconds);
-                await Task.Delay(delay, cancellationToken);
                 continue;
             }
 
@@ -100,6 +85,44 @@ public sealed class AppleWebPlaybackClient
         }
 
         return null;
+    }
+
+    private async Task LogPlaybackFailureAsync(
+        HttpResponseMessage response,
+        int attempt,
+        int maxAttempts,
+        CancellationToken cancellationToken)
+    {
+        var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+        _logger.LogWarning(
+            "Apple webPlayback request failed: StatusCode={StatusCode}, Attempt={Attempt}/{MaxAttempts}, Response={Response}",
+            response.StatusCode,
+            attempt + 1,
+            maxAttempts,
+            errorBody.Length > 500 ? errorBody[..500] + "..." : errorBody);
+        LogPlaybackAuthFailure(response.StatusCode);
+    }
+
+    private async Task<bool> DelayForPlaybackRetryIfNeededAsync(
+        HttpResponseMessage response,
+        int attempt,
+        int maxAttempts,
+        CancellationToken cancellationToken)
+    {
+        if (!ShouldRetryPlayback(response.StatusCode, attempt, maxAttempts))
+        {
+            return false;
+        }
+
+        var delay = response.StatusCode == System.Net.HttpStatusCode.TooManyRequests
+            ? response.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(Math.Pow(2, attempt))
+            : TimeSpan.FromSeconds(Math.Pow(2, attempt));
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Apple webPlayback retry ({StatusCode}) after {Delay}ms...", response.StatusCode, delay.TotalMilliseconds);
+        }
+        await Task.Delay(delay, cancellationToken);
+        return true;
     }
 
     private bool ValidatePlaybackInputs(string adamId, string authorizationToken, string mediaUserToken)

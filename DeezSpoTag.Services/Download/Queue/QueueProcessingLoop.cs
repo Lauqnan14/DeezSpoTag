@@ -11,7 +11,9 @@ public static class QueueProcessingLoop
         TimeSpan idleDelay,
         CancellationToken stoppingToken)
     {
-        logger.LogInformation("{QueueName} queue background service started", name);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation("{QueueName} queue background service started", name);        }
 
         try
         {
@@ -35,7 +37,9 @@ public static class QueueProcessingLoop
         }
         catch (OperationCanceledException ex)
         {
-            logger.LogInformation(ex, "{QueueName} queue background service cancelled", name);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation(ex, "{QueueName} queue background service cancelled", name);            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -43,7 +47,9 @@ public static class QueueProcessingLoop
         }
         finally
         {
-            logger.LogInformation("{QueueName} queue background service stopped", name);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                logger.LogInformation("{QueueName} queue background service stopped", name);            }
         }
     }
 }

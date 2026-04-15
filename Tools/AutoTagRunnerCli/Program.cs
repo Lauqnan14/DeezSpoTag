@@ -831,7 +831,8 @@ internal static class Program
                 Isrc = string.IsNullOrWhiteSpace(file.Tag.ISRC) ? null : file.Tag.ISRC
             };
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return new AutoTagAudioInfo
             {
                 Title = Path.GetFileNameWithoutExtension(filePath),

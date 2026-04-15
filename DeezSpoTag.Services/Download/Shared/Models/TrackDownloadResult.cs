@@ -44,7 +44,7 @@ public class TrackDownloadResult
     public bool HasError => Error != null;
 
     // Artwork-related properties (for Phase 2 integration)
-    
+
     /// <summary>
     /// Path where album artwork should be saved
     /// </summary>

@@ -41,9 +41,12 @@ public sealed class MoodBucketBackgroundService : BackgroundService
                         totalAssigned += moods.Count;
                     }
 
-                    _logger.LogInformation(
-                        "MoodBucket backfill: processed {Count} tracks, {Assigned} mood assignments",
-                        trackIds.Count, totalAssigned);
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation(
+                            "MoodBucket backfill: processed {Count} tracks, {Assigned} mood assignments",
+                            trackIds.Count, totalAssigned);
+                    }
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

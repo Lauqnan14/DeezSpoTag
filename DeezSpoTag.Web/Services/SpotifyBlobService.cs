@@ -287,7 +287,7 @@ public sealed class SpotifyBlobService
             return;
         }
 
-        if (TokenCache.TryRemove(blobPath, out _))
+        if (TokenCache.TryRemove(blobPath, out _) && _logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug("Invalidated Spotify Web API token cache for {BlobPath}", blobPath);
         }
@@ -689,8 +689,11 @@ public sealed class SpotifyBlobService
 
         var json = JsonSerializer.Serialize(payload, _jsonOptions);
         await WriteTextAtomicallyAsync(blobPath, json, cancellationToken);
-        _logger.LogInformation("Saved Spotify web player blob at {BlobPath} with {CookieCount} cookies.",
-            blobPath, payload.Cookies.Count);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Saved Spotify web player blob at {BlobPath} with {CookieCount} cookies.",
+                blobPath, payload.Cookies.Count);
+        }
 
         return new SpotifyBlobResult
         {
@@ -761,8 +764,11 @@ public sealed class SpotifyBlobService
 
         var json = JsonSerializer.Serialize(payload, _jsonOptions);
         await WriteTextAtomicallyAsync(blobPath, json, cancellationToken);
-        _logger.LogInformation("Saved Spotify web player blob at {BlobPath} with {CookieCount} cookies.",
-            blobPath, payload.Cookies.Count);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Saved Spotify web player blob at {BlobPath} with {CookieCount} cookies.",
+                blobPath, payload.Cookies.Count);
+        }
 
         return new SpotifyBlobResult
         {
@@ -797,7 +803,10 @@ public sealed class SpotifyBlobService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Failed to clean up temporary Spotify web-player blob file {Path}", tempPath);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Failed to clean up temporary Spotify web-player blob file {Path}", tempPath);
+                }
             }
         }
     }
@@ -910,7 +919,10 @@ public sealed class SpotifyBlobService
             return pythonPath;
         }
 
-        _logger.LogInformation("Preparing Spotify auth environment at {Path}", venvPath);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Preparing Spotify auth environment at {Path}", venvPath);
+        }
         var createResult = await RunProcessAsync("python3", configRoot, cancellationToken, "-m", "venv", venvPath);
         if (!createResult.Success)
         {
@@ -1179,7 +1191,8 @@ public sealed class SpotifyBlobService
                 Directory.Delete(directoryPath, recursive: true);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Best effort only.
         }
     }
@@ -1553,7 +1566,8 @@ public sealed class SpotifyBlobService
             using var response = await client.SendAsync(request, cancellationToken);
             _ = response.Content;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Best-effort warmup; token request will still run.
         }
     }

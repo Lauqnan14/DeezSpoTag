@@ -129,7 +129,7 @@ public sealed class BandcampTrack
         };
     }
 
-    
+
 }
 
 public sealed class BandcampAlbumSmall

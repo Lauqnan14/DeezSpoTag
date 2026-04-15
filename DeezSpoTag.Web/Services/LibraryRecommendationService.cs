@@ -1350,7 +1350,10 @@ public sealed class LibraryRecommendationService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Shazam recognition failed for library track {TrackId}.", trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Shazam recognition failed for library track {TrackId}.", trackId);
+            }
             await _repository.UpsertTrackShazamCacheAsync(
                 new LibraryRepository.TrackShazamCacheUpsertInput(
                     trackId,
@@ -1442,11 +1445,14 @@ public sealed class LibraryRecommendationService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(
-                ex,
-                "Shazam related-track fetch failed for track {TrackId} ({ShazamTrackId}).",
-                trackId,
-                recognizedTrack.ShazamTrackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Shazam related-track fetch failed for track {TrackId} ({ShazamTrackId}).",
+                    trackId,
+                    recognizedTrack.ShazamTrackId);
+            }
             await PersistMatchedShazamCacheAsync(
                 trackId,
                 recognizedTrack,
@@ -1603,7 +1609,10 @@ public sealed class LibraryRecommendationService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Deezer query resolve failed for Shazam Deezer query '{Query}'.", deezerQuery);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer query resolve failed for Shazam Deezer query '{Query}'.", deezerQuery);
+            }
             return string.Empty;
         }
     }
@@ -1765,11 +1774,14 @@ public sealed class LibraryRecommendationService
 
         if (HasDerivativeVersionMismatch(sourceCard, candidate))
         {
-            _logger.LogDebug(
-                "Rejected derivative mismatch for Shazam recommendation candidate {DeezerId}. Source='{SourceTitle}' Candidate='{CandidateTitle}'",
-                deezerId,
-                sourceCard.Title,
-                BuildCandidateTitle(candidate));
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Rejected derivative mismatch for Shazam recommendation candidate {DeezerId}. Source='{SourceTitle}' Candidate='{CandidateTitle}'",
+                    deezerId,
+                    sourceCard.Title,
+                    BuildCandidateTitle(candidate));
+            }
             return false;
         }
 
@@ -2338,7 +2350,10 @@ public sealed class LibraryRecommendationService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "SongLink source-link persistence failed for library track {TrackId}.", trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "SongLink source-link persistence failed for library track {TrackId}.", trackId);
+            }
             return (string.Empty, string.Empty);
         }
     }
@@ -2363,7 +2378,10 @@ public sealed class LibraryRecommendationService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Deezer ISRC source-link persistence failed for library track {TrackId}.", trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer ISRC source-link persistence failed for library track {TrackId}.", trackId);
+            }
             return string.Empty;
         }
     }
@@ -2393,7 +2411,10 @@ public sealed class LibraryRecommendationService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Deezer metadata source-link persistence failed for library track {TrackId}.", trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer metadata source-link persistence failed for library track {TrackId}.", trackId);
+            }
             return string.Empty;
         }
     }
@@ -2815,7 +2836,10 @@ public sealed class LibraryRecommendationService
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Recommendation metadata batch enrichment failed for {Count} tracks.", batch.Count);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Recommendation metadata batch enrichment failed for {Count} tracks.", batch.Count);
+                }
             }
         }
     }
@@ -2829,34 +2853,53 @@ public sealed class LibraryRecommendationService
         foreach (var unresolvedId in unresolvedTrackIds.ToArray())
         {
             cancellationToken.ThrowIfCancellationRequested();
-            try
+            var fallbackMetadata = await TryGetFallbackRecommendationMetadataAsync(unresolvedId);
+            if (fallbackMetadata == null)
             {
-                var track = await _deezerClient.GetTrackWithFallbackAsync(unresolvedId);
-                var deezerMetadata = MapGatewayTrack(track);
-                var deezerId = NormalizeId(deezerMetadata.Id);
-                if (string.IsNullOrWhiteSpace(deezerId) || !unresolvedTrackIds.Remove(deezerId))
-                {
-                    continue;
-                }
+                continue;
+            }
 
-                _deezerRecommendationMetadataCache[deezerId] = deezerMetadata;
-                ApplyRecommendationMetadata(normalized, pendingByTrackId, deezerId, deezerMetadata);
-            }
-            catch (OperationCanceledException)
+            var deezerId = NormalizeId(fallbackMetadata.Id);
+            if (string.IsNullOrWhiteSpace(deezerId) || !unresolvedTrackIds.Remove(deezerId))
             {
-                throw;
+                continue;
             }
-            catch (DeezerGatewayException ex) when (IsMissingSongData(ex))
+
+            _deezerRecommendationMetadataCache[deezerId] = fallbackMetadata;
+            ApplyRecommendationMetadata(normalized, pendingByTrackId, deezerId, fallbackMetadata);
+        }
+    }
+
+    private async Task<RecommendationTrackDto?> TryGetFallbackRecommendationMetadataAsync(
+        string unresolvedId)
+    {
+        try
+        {
+            var track = await _deezerClient.GetTrackWithFallbackAsync(unresolvedId);
+            return MapGatewayTrack(track);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (DeezerGatewayException ex) when (IsMissingSongData(ex))
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug(
                     ex,
                     "Recommendation metadata fallback confirmed missing for Deezer track {TrackId}. Keeping base recommendation payload.",
                     unresolvedId);
             }
-            catch (Exception ex)
+            return null;
+        }
+        catch (Exception ex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug(ex, "Recommendation metadata fallback enrichment failed for Deezer track {TrackId}.", unresolvedId);
             }
+            return null;
         }
     }
 

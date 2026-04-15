@@ -54,7 +54,7 @@ internal static class TrackTokenRefreshHelper
         }
     }
 
-    private static void UpdateFileSize(IDictionary<string, int> fileSizes, string key, int? value)
+    private static void UpdateFileSize(Dictionary<string, int> fileSizes, string key, int? value)
     {
         if (value.HasValue && value.Value > 0)
         {

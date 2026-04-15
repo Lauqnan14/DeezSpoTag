@@ -58,13 +58,17 @@ public class PlexSyncService
 
         // Get music library sections
         var musicLibraries = await _plexApiClient.GetMusicLibrariesAsync();
-        _logger.LogDebug("Found {LibraryCount} music libraries in Plex", musicLibraries.Count);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Found {LibraryCount} music libraries in Plex", musicLibraries.Count);        }
 
         // Trigger library refresh for each music section
         foreach (var library in musicLibraries)
         {
-            _logger.LogDebug("Refreshing Plex library: {LibraryName} (ID: {LibraryId})",
-                library.Title, library.Key);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Refreshing Plex library: {LibraryName} (ID: {LibraryId})",
+                    library.Title, library.Key);            }
 
             await _plexApiClient.RefreshLibraryAsync(library.Key);
 
@@ -81,7 +85,9 @@ public class PlexSyncService
     public async Task SyncPlaylistAsync(string playlistName, string playlistPath, CancellationToken cancellationToken = default)
     {
         _ = playlistPath;
-        _logger.LogInformation("Syncing playlist {PlaylistName} with Plex", playlistName);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Syncing playlist {PlaylistName} with Plex", playlistName);        }
 
         // Check if playlist sync is enabled
         var playlistSyncEnabled = _configuration.GetValue<bool>("Plex:SyncPlaylists", false);
@@ -98,7 +104,9 @@ public class PlexSyncService
 
         await Task.Delay(100, cancellationToken); // Placeholder
 
-        _logger.LogInformation("Successfully synced playlist {PlaylistName} with Plex", playlistName);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Successfully synced playlist {PlaylistName} with Plex", playlistName);        }
     }
 
     /// <summary>

@@ -33,20 +33,20 @@ public sealed class DeezerSessionManager : IDisposable
     private readonly Dictionary<string, string> _httpHeaders;
     private readonly Func<DeezSpoTagSettings?> _settingsProvider;
     private bool _disposed;
-    
+
     public bool LoggedIn { get; private set; }
     public DeezerUser? CurrentUser { get; private set; }
     public List<DeezerUser> Children { get; private set; } = new();
     public IReadOnlyList<string> ChildAccounts { get; private set; } = Array.Empty<string>();
     public int SelectedAccount { get; private set; }
-    
+
     // Shared authentication state
     public CookieContainer CookieContainer => _sharedCookieContainer;
     public Dictionary<string, string> HttpHeaders => _httpHeaders;
-    
+
     // Gateway API token (shared across all GW calls)
     public string? ApiToken { get; set; }
-    
+
     // API access token (for public API calls)
     public string? AccessToken { get; set; }
 
@@ -57,7 +57,7 @@ public sealed class DeezerSessionManager : IDisposable
         _logger = logger;
         _sharedCookieContainer = new CookieContainer();
         _settingsProvider = settingsProvider;
-        
+
         // EXACT PORT: Initialize headers like deezspotag deezer.ts constructor
         _httpHeaders = new Dictionary<string, string>
         {
@@ -69,7 +69,7 @@ public sealed class DeezerSessionManager : IDisposable
         };
 
         ApplyLocaleOverride();
-        
+
         LoggedIn = false;
     }
 
@@ -92,12 +92,14 @@ public sealed class DeezerSessionManager : IDisposable
                 HttpOnly = true
             };
             _sharedCookieContainer.Add(cookie);
-            
-            _logger.LogDebug("Set ARL cookie: {ArlLength} characters", arl.Trim().Length);
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Set ARL cookie: {ArlLength} characters", arl.Trim().Length);            }
 
             // Get user data to validate login - this will also set the API token
             var userData = await GetUserDataAsync();
-            
+
             // EXACT PORT: Check login validation like deezspotag
             if (userData?.User?.UserId == null || userData.User.UserId == 0)
             {
@@ -111,9 +113,11 @@ public sealed class DeezerSessionManager : IDisposable
             ChangeAccount(child);
 
             LoggedIn = true;
-            _logger.LogInformation("Successfully logged in as user: {UserName} (ID: {UserId})", 
-                CurrentUser?.Name, CurrentUser?.Id);
-            
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Successfully logged in as user: {UserName} (ID: {UserId})",
+                    CurrentUser?.Name, CurrentUser?.Id);            }
+
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -133,14 +137,14 @@ public sealed class DeezerSessionManager : IDisposable
     {
         // EXACT PORT: Call getUserData without token first, then extract token from response
         var response = await GatewayApiCallAsync<DeezerUserData>(GetUserDataMethod, new { });
-        
+
         // EXACT PORT: Extract API token from response like deezspotag
         if (string.IsNullOrEmpty(ApiToken) && response?.CheckForm != null)
         {
             ApiToken = response.CheckForm;
             _logger.LogDebug("Extracted API token from getUserData response");
         }
-        
+
         return response ?? new DeezerUserData();
     }
 
@@ -194,7 +198,7 @@ public sealed class DeezerSessionManager : IDisposable
     public async Task<T> PublicApiCallAsync<T>(string endpoint, Dictionary<string, object>? args = null) where T : class
     {
         args ??= new Dictionary<string, object>();
-        
+
         if (!string.IsNullOrEmpty(AccessToken))
         {
             args["access_token"] = AccessToken;
@@ -398,7 +402,9 @@ public sealed class DeezerSessionManager : IDisposable
             var json = JsonConvert.SerializeObject(requestBody);
             using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
-            _logger.LogDebug("Requesting media URLs for {Count} tracks with format {Format}", trackTokens.Length, format);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Requesting media URLs for {Count} tracks with format {Format}", trackTokens.Length, format);            }
 
             var response = await httpClient.PostAsync(BuildDeezerMediaApiUrl(), content);
             var responseContent = await response.Content.ReadAsStringAsync();
@@ -492,7 +498,9 @@ public sealed class DeezerSessionManager : IDisposable
         if (data.Media?.Count > 0 && data.Media[0].Sources?.Count > 0)
         {
             var url = data.Media[0].Sources[0].Url;
-            _logger.LogDebug("Got media URL: {Url}", url);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Got media URL: {Url}", url);            }
             return new DeezerMediaResult { Url = url };
         }
 
@@ -540,60 +548,74 @@ public sealed class DeezerSessionManager : IDisposable
 
         if (isFamily)
         {
-            try
-            {
-                // EXACT PORT: Get child accounts like deezspotag
-                var childAccounts = await GatewayApiCallAsync<List<GwChildAccount>>("deezer.getChildAccounts");
-                _logger.LogDebug("Retrieved {Count} child accounts", childAccounts.Count);
-                
-                foreach (var child in childAccounts.Where(static child => child.ExtraFamily?.IsLoggableAs == true))
-                {
-                    var resolvedCountry = ResolveCountry(user!.Options?.LicenseCountry);
-                    var resolvedLanguage = ResolveLanguage(user.Setting?.Global?.Language);
-                    var childUser = new DeezerUser
-                    {
-                        Id = child.UserId.ToString(),
-                        Name = child.BlogName ?? "",
-                        Picture = child.UserPicture ?? "",
-                        LicenseToken = user.Options?.LicenseToken ?? "",
-                        CanStreamHq = user.Options?.WebHq == true || user.Options?.MobileHq == true,
-                        CanStreamLossless = user.Options?.WebLossless == true || user.Options?.MobileLossless == true,
-                        Country = resolvedCountry,
-                        Language = resolvedLanguage,
-                        LovedTracksId = child.LovedTracksId ?? ""
-                    };
-
-                    Children.Add(childUser);
-                    _logger.LogDebug("Added child account: {Name} (ID: {Id})", childUser.Name, childUser.Id);
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "Failed to get child accounts");
-            }
+            await TryLoadFamilyChildAccountsAsync(user!);
         }
-        
+
         // EXACT PORT: Add main user if no children like deezspotag
         if (Children.Count == 0)
         {
-            var resolvedCountry = ResolveCountry(userData.User?.Options?.LicenseCountry);
-            var resolvedLanguage = ResolveLanguage(userData.User?.Setting?.Global?.Language);
-            var mainUser = new DeezerUser
-            {
-                Id = (userData.User?.UserId ?? 0).ToString(),
-                Name = userData.User?.BlogName ?? "",
-                Picture = userData.User?.UserPicture ?? "",
-                LicenseToken = userData.User?.Options?.LicenseToken ?? "",
-                CanStreamHq = userData.User?.Options?.WebHq == true || userData.User?.Options?.MobileHq == true,
-                CanStreamLossless = userData.User?.Options?.WebLossless == true || userData.User?.Options?.MobileLossless == true,
-                Country = resolvedCountry,
-                Language = resolvedLanguage
-            };
-
-            Children.Add(mainUser);
+            Children.Add(BuildPrimaryChild(userData.User));
         }
 
         UpdateChildAccounts();
+    }
+
+    private async Task TryLoadFamilyChildAccountsAsync(GwUser user)
+    {
+        try
+        {
+            // EXACT PORT: Get child accounts like deezspotag
+            var childAccounts = await GatewayApiCallAsync<List<GwChildAccount>>("deezer.getChildAccounts");
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Retrieved {Count} child accounts", childAccounts.Count);
+            }
+
+            foreach (var child in childAccounts.Where(static child => child.ExtraFamily?.IsLoggableAs == true))
+            {
+                var childUser = BuildFamilyChild(user, child);
+                Children.Add(childUser);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Added child account: {Name} (ID: {Id})", childUser.Name, childUser.Id);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to get child accounts");
+        }
+    }
+
+    private DeezerUser BuildFamilyChild(GwUser user, GwChildAccount child)
+    {
+        return new DeezerUser
+        {
+            Id = child.UserId.ToString(),
+            Name = child.BlogName ?? string.Empty,
+            Picture = child.UserPicture ?? string.Empty,
+            LicenseToken = user.Options?.LicenseToken ?? string.Empty,
+            CanStreamHq = user.Options?.WebHq == true || user.Options?.MobileHq == true,
+            CanStreamLossless = user.Options?.WebLossless == true || user.Options?.MobileLossless == true,
+            Country = ResolveCountry(user.Options?.LicenseCountry),
+            Language = ResolveLanguage(user.Setting?.Global?.Language),
+            LovedTracksId = child.LovedTracksId ?? string.Empty
+        };
+    }
+
+    private DeezerUser BuildPrimaryChild(GwUser? user)
+    {
+        return new DeezerUser
+        {
+            Id = (user?.UserId ?? 0).ToString(),
+            Name = user?.BlogName ?? string.Empty,
+            Picture = user?.UserPicture ?? string.Empty,
+            LicenseToken = user?.Options?.LicenseToken ?? string.Empty,
+            CanStreamHq = user?.Options?.WebHq == true || user?.Options?.MobileHq == true,
+            CanStreamLossless = user?.Options?.WebLossless == true || user?.Options?.MobileLossless == true,
+            Country = ResolveCountry(user?.Options?.LicenseCountry),
+            Language = ResolveLanguage(user?.Setting?.Global?.Language)
+        };
     }
 
     /// <summary>
@@ -603,7 +625,7 @@ public sealed class DeezerSessionManager : IDisposable
     {
         if (Children.Count == 0) return;
 
-        if (childIndex >= Children.Count) 
+        if (childIndex >= Children.Count)
             childIndex = 0;
 
         CurrentUser = Children[childIndex];
@@ -620,7 +642,9 @@ public sealed class DeezerSessionManager : IDisposable
             _httpHeaders["Accept-Language"] = lang;
         }
 
-        _logger.LogDebug("Changed to account: {UserName} (Index: {Index})", CurrentUser.Name, SelectedAccount);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Changed to account: {UserName} (Index: {Index})", CurrentUser.Name, SelectedAccount);        }
     }
 
     /// <summary>
@@ -640,13 +664,13 @@ public sealed class DeezerSessionManager : IDisposable
         {
             Timeout = HttpRequestTimeout
         };
-        
+
         // Apply all shared headers
         foreach (var header in _httpHeaders)
         {
             httpClient.DefaultRequestHeaders.TryAddWithoutValidation(header.Key, header.Value);
         }
-        
+
         return httpClient;
     }
 
@@ -734,7 +758,9 @@ public sealed class DeezerSessionManager : IDisposable
         var errorJson = JsonConvert.SerializeObject(error);
         if (errorJson.Contains("No song data", StringComparison.OrdinalIgnoreCase))
         {
-            _logger.LogDebug("Deezer GW missing track data: {Error}", errorJson);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Deezer GW missing track data: {Error}", errorJson);            }
         }
         else
         {
@@ -775,30 +801,30 @@ public sealed class DeezerSessionManager : IDisposable
     private static bool HasError(object error)
     {
         if (error == null) return false;
-        
+
         if (error is Newtonsoft.Json.Linq.JArray array)
         {
             return array.Count > 0;
         }
-        
+
         if (error is Newtonsoft.Json.Linq.JObject obj)
         {
             return obj.Count > 0;
         }
-        
+
         if (error is Dictionary<string, object> dict)
         {
             return dict.Count > 0;
         }
-        
+
         return false;
     }
 
     private static bool IsRetryableError(HttpRequestException ex)
     {
         var message = ex.Message.ToLower();
-        return message.Contains("timeout") || 
-               message.Contains("connection") || 
+        return message.Contains("timeout") ||
+               message.Contains("connection") ||
                message.Contains("network") ||
                message.Contains("reset");
     }
@@ -815,13 +841,13 @@ public sealed class DeezerSessionManager : IDisposable
         SelectedAccount = 0;
         ApiToken = null;
         AccessToken = null;
-        
+
         // Clear cookies
         foreach (Cookie cookie in _sharedCookieContainer.GetCookies(new Uri(BuildDeezerWebBaseUrl())))
         {
             cookie.Expired = true;
         }
-        
+
         _logger.LogDebug("User logged out and session cleared");
         await Task.CompletedTask;
     }
@@ -938,17 +964,17 @@ public class StringToBooleanConverter : JsonConverter<bool>
             var stringValue = reader.Value?.ToString();
             return stringValue == "1" || stringValue?.ToLower() == "true";
         }
-        
+
         if (reader.TokenType == JsonToken.Boolean)
         {
             return (bool)reader.Value!;
         }
-        
+
         if (reader.TokenType == JsonToken.Integer)
         {
             return Convert.ToInt32(reader.Value) != 0;
         }
-        
+
         return false;
     }
 

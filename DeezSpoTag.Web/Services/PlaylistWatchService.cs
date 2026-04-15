@@ -695,7 +695,10 @@ public sealed class PlaylistWatchService
                 await CheckRecommendationsPlaylistAsync(playlist, preference, effectiveBlockRules, cancellationToken);
                 break;
             default:
-                _logger.LogDebug("Playlist watch skipped for unsupported source: {Source}", source);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Playlist watch skipped for unsupported source: {Source}", source);
+                }
                 return;
         }
 
@@ -1322,7 +1325,10 @@ public sealed class PlaylistWatchService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer playlist watch failed for {SourceId}; attempting smarttracklist mode.", playlist.SourceId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer playlist watch failed for {SourceId}; attempting smarttracklist mode.", playlist.SourceId);
+            }
             await CheckSmartTracklistAsync(playlist, preference, effectiveBlockRules, DeezerSource, cancellationToken);
             return;
         }
@@ -3062,7 +3068,10 @@ public sealed class PlaylistWatchService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to mark watch track as completed: {Source}:{PlaylistId}:{TrackId}", watchlistSource, watchlistPlaylistId, trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to mark watch track as completed: {Source}:{PlaylistId}:{TrackId}", watchlistSource, watchlistPlaylistId, trackId);
+            }
         }
     }
 

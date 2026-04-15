@@ -168,7 +168,7 @@ public sealed class TraxsourceClient
         return true;
     }
 
-    private static (string? Version, TimeSpan Duration) ParseTitleParts(IReadOnlyList<string> titleParts)
+    private static (string? Version, TimeSpan Duration) ParseTitleParts(List<string> titleParts)
     {
         if (titleParts.Count >= 3)
         {

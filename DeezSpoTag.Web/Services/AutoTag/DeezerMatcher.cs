@@ -92,7 +92,10 @@ public sealed class DeezerMatcher
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer ID lookup failed for track ID {TrackId}.", trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer ID lookup failed for track ID {TrackId}.", trackId);
+            }
         }
 
         if (track == null)
@@ -113,7 +116,10 @@ public sealed class DeezerMatcher
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer ISRC lookup failed for {Isrc}.", isrc);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer ISRC lookup failed for {Isrc}.", isrc);
+            }
         }
 
         if (track == null)
@@ -176,7 +182,10 @@ public sealed class DeezerMatcher
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Deezer metadata query failed for {Query}.", query);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Deezer metadata query failed for {Query}.", query);
+                }
             }
         }
 

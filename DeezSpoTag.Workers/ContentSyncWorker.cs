@@ -70,7 +70,7 @@ public class ContentSyncWorker : BackgroundService
         _logger.LogInformation("Starting content sync operations");
 
         using var scope = _serviceProvider.CreateScope();
-        
+
         try
         {
             // Get sync orchestrator service

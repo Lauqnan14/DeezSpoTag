@@ -51,9 +51,15 @@ public sealed class LibraryRecommendationAutomationHostedService : BackgroundSer
     {
         try
         {
-            _logger.LogInformation("Refreshing library recommendations ({Reason}).", reason);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Refreshing library recommendations ({Reason}).", reason);
+            }
             await _recommendationService.RefreshDailyRecommendationsAsync(cancellationToken);
-            _logger.LogInformation("Library recommendations refreshed ({Reason}).", reason);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Library recommendations refreshed ({Reason}).", reason);
+            }
         }
         catch (OperationCanceledException)
         {

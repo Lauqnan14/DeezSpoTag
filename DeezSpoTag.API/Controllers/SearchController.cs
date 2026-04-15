@@ -31,7 +31,7 @@ public class SearchController : ControllerBase
     /// Specific search endpoint (equivalent to deezspotag /search)
     /// </summary>
     [HttpGet]
-    public async Task<IActionResult> Search([FromQuery] string term, [FromQuery] string type = "", 
+    public async Task<IActionResult> Search([FromQuery] string term, [FromQuery] string type = "",
         [FromQuery] int start = 0, [FromQuery] int nb = 25)
     {
         var (status, body) = await _searchProxy.SearchByTypeAsync("deezer", term, type, nb, start, HttpContext.RequestAborted);

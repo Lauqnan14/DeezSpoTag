@@ -228,7 +228,10 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
 
         await _userAuthStore.SaveAsync(userId, state);
-        _logger.LogInformation("Saved Spotify blob for account {AccountName}", name);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Saved Spotify blob for account {AccountName}", name);
+        }
         await UpdatePlatformSpotifyAccountAsync(name, blobPath, blobPath, state.ActiveAccount);
 
         return Ok(new { saved = true, blobPath });
@@ -653,8 +656,11 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             state.ActiveAccount = effectiveAccountName;
             var targetBlobPath = ResolveWebPlayerBlobPath(userId, account, effectiveAccountName);
 
-            _logger.LogInformation("Saving Spotify web player cookies for account {Account}. Target blob: {BlobPath}",
-                effectiveAccountName, targetBlobPath);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Saving Spotify web player cookies for account {Account}. Target blob: {BlobPath}",
+                    effectiveAccountName, targetBlobPath);
+            }
             var lastKnownGood = BackupExistingBlob(targetBlobPath, effectiveAccountName);
             var blobResult = await PersistWebPlayerBlobAsync(
                 targetBlobPath,
@@ -1744,7 +1750,10 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to collect Spotify blob artifacts for user {UserId}", userId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to collect Spotify blob artifacts for user {UserId}", userId);
+            }
         }
     }
 
@@ -1847,7 +1856,10 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to load Spotify state during single-user logout for profile {UserId}", profileId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to load Spotify state during single-user logout for profile {UserId}", profileId);
+            }
         }
 
         CollectUserBlobArtifacts(profileId, blobPaths, accountNames);
@@ -1898,7 +1910,10 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to clear Spotify user profile artifacts for {UserId}", userId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to clear Spotify user profile artifacts for {UserId}", userId);
+            }
         }
     }
 
@@ -1916,7 +1931,10 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to remove {Label} at {Path}", label, path);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to remove {Label} at {Path}", label, path);
+            }
             return false;
         }
     }
@@ -1947,7 +1965,10 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to remove {Label} at {Path}", label, path);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to remove {Label} at {Path}", label, path);
+            }
         }
     }
 
@@ -1969,7 +1990,10 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to clear Spotify session artifacts for user {UserId}", userId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to clear Spotify session artifacts for user {UserId}", userId);
+            }
         }
         finally
         {
@@ -2006,7 +2030,10 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Failed to remove Spotify auth helper folder {Path}", directory);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Failed to remove Spotify auth helper folder {Path}", directory);
+                }
             }
         }
     }
@@ -2044,7 +2071,10 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Failed to remove legacy Spotify blob artifact {Path}", file);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Failed to remove legacy Spotify blob artifact {Path}", file);
+                }
             }
         }
     }

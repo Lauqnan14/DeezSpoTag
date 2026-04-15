@@ -119,7 +119,8 @@ public sealed class TidalDownloadService
         var trackId = GetTrackIdFromUrl(tidalUrl);
         var trackInfo = await GetTrackInfoByIdAsync(trackId, cancellationToken);
         if (!string.IsNullOrWhiteSpace(request.Isrc)
-            && !string.Equals(trackInfo.Isrc, request.Isrc, StringComparison.OrdinalIgnoreCase))
+            && !string.Equals(trackInfo.Isrc, request.Isrc, StringComparison.OrdinalIgnoreCase)
+            && _logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug(
                 "ISRC mismatch for Tidal URL download: expected {ExpectedIsrc}, got {ActualIsrc}. Proceeding with URL-specified track.",
@@ -274,7 +275,7 @@ public sealed class TidalDownloadService
         }
 
         var match = allTracks.FirstOrDefault(track => string.Equals(track.Isrc, isrc, StringComparison.OrdinalIgnoreCase));
-        if (match == null)
+        if (match == null && _logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug("No ISRC match for {Isrc}, falling back to duration/title matching", isrc);
         }
@@ -403,7 +404,9 @@ public sealed class TidalDownloadService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Tidal API {Api} failed for track {TrackId}", apiBase, trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Tidal API {Api} failed for track {TrackId}", apiBase, trackId);            }
             return null;
         }
     }
@@ -614,7 +617,8 @@ public sealed class TidalDownloadService
                 manifestXml);
             return !string.IsNullOrWhiteSpace(initUrl) && !string.IsNullOrWhiteSpace(mediaTemplate);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return false;
         }
     }
@@ -943,7 +947,8 @@ public sealed class TidalDownloadService
             var decoded = Convert.FromBase64String(payload);
             return Encoding.UTF8.GetString(decoded);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return payload;
         }
     }

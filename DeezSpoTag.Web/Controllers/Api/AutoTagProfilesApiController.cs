@@ -132,7 +132,8 @@ public class AutoTagProfilesApiController : ControllerBase
                 Data = data
             };
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return new AutoTagSettings();
         }
     }

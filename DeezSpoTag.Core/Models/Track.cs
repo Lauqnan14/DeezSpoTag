@@ -31,16 +31,16 @@ public class Track : AudioFeaturesBase
     public int Rank { get; set; }
     public bool Local { get; set; }
     public bool IsLocal => Local;
-    
+
     // Artists
     public Artist? MainArtist { get; set; }
     public Dictionary<string, List<string>> Artist { get; set; } = new();
     public List<string> Artists { get; set; } = new();
-    
+
     // Album and playlist
     public Album? Album { get; set; }
     public Playlist? Playlist { get; set; }
-    
+
     // Track metadata
     public int TrackNumber { get; set; }
     public int DiscNumber { get; set; }
@@ -68,13 +68,13 @@ public class Track : AudioFeaturesBase
     public string? QobuzAlbumId { get; set; }
     public string? QobuzArtistId { get; set; }
     public QobuzQualityInfo? QobuzQuality { get; set; }
-    
+
     // Download related
     public int Bitrate { get; set; }
     public Dictionary<string, string> Urls { get; set; } = new();
     public string DownloadURL { get; set; } = "";
     public string DownloadUrl => DownloadURL;
-    
+
     // Generated strings
     public string DateString { get; set; } = "";
     public string ArtistString { get; set; } = ""; // Singular - used for default separator
@@ -82,7 +82,7 @@ public class Track : AudioFeaturesBase
     public string MainArtistsString { get; set; } = "";
     public string FeatArtistsString { get; set; } = "";
     public string FullArtistsString { get; set; } = "";
-    
+
     public Track()
     {
         Artist["Main"] = new List<string>();
@@ -93,47 +93,47 @@ public class Track : AudioFeaturesBase
     /// </summary>
     public void ParseEssentialData(EnrichedApiTrack trackApi)
     {
-    Id = trackApi.Id.ToString();
-    Duration = trackApi.Duration;
-    TrackToken = trackApi.TrackToken;
-    TrackTokenExpiration = trackApi.TrackTokenExpire;
-    TrackTokenExpire = trackApi.TrackTokenExpire;
-    MD5 = trackApi.Md5Origin;
-    MediaVersion = trackApi.MediaVersion.ToString();
-    Filesizes = trackApi.Filesizes ?? new Dictionary<string, object>();
-    
-    // CRITICAL FIX: Convert Filesizes to FileSizes for compatibility
-    FileSizes = new Dictionary<string, int>();
-    foreach (var kvp in Filesizes)
-    {
-    if (kvp.Value == null)
-    {
-    continue;
+        Id = trackApi.Id.ToString();
+        Duration = trackApi.Duration;
+        TrackToken = trackApi.TrackToken;
+        TrackTokenExpiration = trackApi.TrackTokenExpire;
+        TrackTokenExpire = trackApi.TrackTokenExpire;
+        MD5 = trackApi.Md5Origin;
+        MediaVersion = trackApi.MediaVersion.ToString();
+        Filesizes = trackApi.Filesizes ?? new Dictionary<string, object>();
+
+        // CRITICAL FIX: Convert Filesizes to FileSizes for compatibility
+        FileSizes = new Dictionary<string, int>();
+        foreach (var kvp in Filesizes)
+        {
+            if (kvp.Value == null)
+            {
+                continue;
+            }
+
+            var normalizedKey = kvp.Key?.ToLowerInvariant();
+            if (string.IsNullOrEmpty(normalizedKey))
+            {
+                continue;
+            }
+
+            if (kvp.Value is long longSize && longSize <= int.MaxValue)
+            {
+                FileSizes[normalizedKey] = (int)longSize;
+            }
+            else if (int.TryParse(kvp.Value.ToString(), out var size))
+            {
+                FileSizes[normalizedKey] = size;
+            }
+        }
+
+        FallbackID = trackApi.FallbackId ?? 0;
+        FallbackId = FallbackID;
+        Local = long.TryParse(trackApi.Id, out long idVal) && idVal < 0;
+        Urls = new Dictionary<string, string>();
     }
 
-    var normalizedKey = kvp.Key?.ToLowerInvariant();
-    if (string.IsNullOrEmpty(normalizedKey))
-    {
-    continue;
-    }
 
-    if (kvp.Value is long longSize && longSize <= int.MaxValue)
-    {
-    FileSizes[normalizedKey] = (int)longSize;
-    }
-    else if (int.TryParse(kvp.Value.ToString(), out var size))
-    {
-    FileSizes[normalizedKey] = size;
-    }
-    }
-    
-    FallbackID = trackApi.FallbackId ?? 0;
-    FallbackId = FallbackID;
-    Local = long.TryParse(trackApi.Id, out long idVal) && idVal < 0;
-    Urls = new Dictionary<string, string>();
-    }
-
-    
     /// <summary>
     /// Parse track data from API track
     /// </summary>
@@ -503,7 +503,7 @@ public class Track : AudioFeaturesBase
         MainArtistsString = string.Join(", ", Artist.GetValueOrDefault("Main", new List<string>()));
         FullArtistsString = MainArtistsString;
         FeatArtistsString = "";
-        
+
         if (Artist.TryGetValue("Featured", out var featuredArtists) && featuredArtists.Count > 0)
         {
             FeatArtistsString = $"feat. {string.Join(", ", featuredArtists)}";
@@ -538,7 +538,7 @@ public class Track : AudioFeaturesBase
     {
         // Simplified version - remove duplicates from artists list
         Artists = Artists.Distinct().ToList();
-        
+
         // Remove duplicates from artist roles
         foreach (var role in Artist.Keys.ToList())
         {

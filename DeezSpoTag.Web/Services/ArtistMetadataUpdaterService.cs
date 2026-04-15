@@ -726,7 +726,10 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Failed to enumerate Spotify cache files for artist {ArtistId}", artistId);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Failed to enumerate Spotify cache files for artist {ArtistId}", artistId);
+                }
             }
         }
 
@@ -773,7 +776,10 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple Music artist artwork lookup failed for {ArtistName}", artistName);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple Music artist artwork lookup failed for {ArtistName}", artistName);
+            }
         }
 
         if (string.IsNullOrWhiteSpace(appleImage))
@@ -945,11 +951,14 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
 
     private void LogRejectedArtworkCandidate(string slot, string managedRoot, string source)
     {
-        _logger.LogInformation(
-            "Rejected text-heavy artwork candidate for {Slot}. artist={ArtistId} source={Source}",
-            slot,
-            managedRoot,
-            source);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Rejected text-heavy artwork candidate for {Slot}. artist={ArtistId} source={Source}",
+                slot,
+                managedRoot,
+                source);
+        }
     }
 
     private static ArtworkCandidate? NormalizeCandidate(ArtworkCandidate candidate)
@@ -1162,7 +1171,10 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Artwork text inspection failed for {Path}", imagePath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Artwork text inspection failed for {Path}", imagePath);
+            }
             return true;
         }
     }

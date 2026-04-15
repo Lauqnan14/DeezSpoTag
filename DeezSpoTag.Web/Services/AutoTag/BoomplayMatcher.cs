@@ -125,7 +125,10 @@ public sealed class BoomplayMatcher
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Boomplay ID match failed for {TrackId}", id);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Boomplay ID match failed for {TrackId}", id);
+                }
             }
         }
 

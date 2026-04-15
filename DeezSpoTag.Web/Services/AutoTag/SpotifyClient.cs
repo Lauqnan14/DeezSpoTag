@@ -74,7 +74,10 @@ public sealed class SpotifyClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Spotify pathfinder enrichment failed for {TrackId}.", track.TrackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify pathfinder enrichment failed for {TrackId}.", track.TrackId);
+            }
         }
 
         return track;

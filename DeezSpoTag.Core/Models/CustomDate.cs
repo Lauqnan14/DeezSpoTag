@@ -71,7 +71,8 @@ public class CustomDate
             _ = new DateTime(year, month, day, 0, 0, 0, DateTimeKind.Unspecified);
             return true;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return false;
         }
     }
@@ -94,7 +95,8 @@ public class CustomDate
                 0,
                 DateTimeKind.Unspecified);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }
@@ -141,7 +143,8 @@ public class CustomDate
                 return new CustomDate("00", "00", parts[0]);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // If parsing fails, return empty date
         }
 

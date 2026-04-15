@@ -17,10 +17,10 @@ public class ImageDownloader
     private readonly ILogger<ImageDownloader> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly string _tempDir;
-    
+
     // User agent matching deezspotag
     private const string USER_AGENT_HEADER = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36";
-    
+
     // Timeout constants matching deezspotag
     private const int DOWNLOAD_TIMEOUT_MS = 5000;
     private const int HEAD_TIMEOUT_MS = 1200;
@@ -36,13 +36,13 @@ public class ImageDownloader
     };
 
     public ImageDownloader(
-        ILogger<ImageDownloader> logger, 
+        ILogger<ImageDownloader> logger,
         IHttpClientFactory httpClientFactory)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
         _tempDir = Path.Join(Path.GetTempPath(), "deezspotag-imgs");
-        
+
         // Create temp directory if it doesn't exist
         if (!Directory.Exists(_tempDir))
         {
@@ -60,61 +60,30 @@ public class ImageDownloader
         bool preferMaxQuality = false,
         CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug("Starting image download: {Url} to {Path}", url, path);
-        
-        // Check if file exists and handle overwrite option (matching deezspotag logic)
-        if (System.IO.File.Exists(path) && !ShouldOverwrite(overwrite))
+        if (_logger.IsEnabled(LogLevel.Debug))
         {
-            var fileInfo = new FileInfo(path);
-            if (fileInfo.Length != 0)
-            {
-                _logger.LogDebug("Image already exists and not overwriting: {Path}", path);
-                return path;
-            }
-            // File exists but is empty, delete and re-download
-            File.Delete(path);
+            _logger.LogDebug("Starting image download: {Url} to {Path}", url, path);        }
+
+        var existingPath = TryReuseExistingImagePath(path, overwrite);
+        if (existingPath != null)
+        {
+            return existingPath;
         }
 
-        // Create directory if it doesn't exist
-        var directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        // Create HttpClient for this request to avoid disposal issues
+        EnsureDestinationDirectory(path);
         using var httpClient = _httpClientFactory.CreateClient("ImageDownload");
 
         try
         {
-            // Use HttpClient timeout instead of Timer to avoid disposal issues
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(TimeSpan.FromMilliseconds(DOWNLOAD_TIMEOUT_MS));
-            
-            var downloadUrl = url;
-            if (IsSpotifyCoverUrl(url))
+
+            var downloadUrl = await ResolveDownloadUrlAsync(httpClient, url, cts.Token);
+            await DownloadImagePayloadAsync(httpClient, downloadUrl, path, cts.Token);
+
+            if (_logger.IsEnabled(LogLevel.Information))
             {
-                downloadUrl = await TryGetMaxSpotifyCoverUrlAsync(httpClient, downloadUrl, cts.Token);
-                if (!string.Equals(downloadUrl, url, StringComparison.Ordinal))
-                {
-                    _logger.LogInformation("Spotify image max-res rewrite: {OriginalUrl} -> {MaxUrl}", url, downloadUrl);
-                }
-            }
-
-            using var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
-            request.Headers.Add("User-Agent", USER_AGENT_HEADER);
-            
-            _logger.LogDebug("Sending HTTP request for image: {Url}", downloadUrl);
-            using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
-            response.EnsureSuccessStatusCode();
-
-            using var contentStream = await response.Content.ReadAsStreamAsync(cts.Token);
-            using var fileStream = new FileStream(path, FileMode.Create, FileAccess.Write);
-            
-            // Copy stream with timeout reset on data (like deezspotag pipeline behavior)
-            await CopyStreamWithTimeoutResetAsync(contentStream, fileStream, cts.Token);
-            
-            _logger.LogInformation("Successfully downloaded image: {Url} to {Path}", downloadUrl, path);
+                _logger.LogInformation("Successfully downloaded image: {Url} to {Path}", downloadUrl, path);            }
             return path;
         }
         catch (HttpRequestException ex) when (IsHttpError(ex))
@@ -132,7 +101,7 @@ public class ImageDownloader
         catch (Exception ex) when (IsRetryableError(ex))
         {
             TryDeletePartialFile(path);
-            
+
             // Retry for retryable errors (matching deezspotag behavior)
             _logger.LogDebug(ex, "Retrying image download due to retryable error");
             return await DownloadImageAsync(url, path, overwrite, preferMaxQuality, cancellationToken);
@@ -140,10 +109,79 @@ public class ImageDownloader
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             TryDeletePartialFile(path);
-            
+
             _logger.LogError(ex, "Failed to download image from {Url} to {Path}", url, path);
             return null; // Don't throw, return null like deezspotag
         }
+    }
+
+    private string? TryReuseExistingImagePath(string path, string overwrite)
+    {
+        if (!System.IO.File.Exists(path) || ShouldOverwrite(overwrite))
+        {
+            return null;
+        }
+
+        var fileInfo = new FileInfo(path);
+        if (fileInfo.Length == 0)
+        {
+            File.Delete(path);
+            return null;
+        }
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Image already exists and not overwriting: {Path}", path);
+        }
+
+        return path;
+    }
+
+    private static void EnsureDestinationDirectory(string path)
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+    }
+
+    private async Task<string> ResolveDownloadUrlAsync(HttpClient httpClient, string url, CancellationToken cancellationToken)
+    {
+        if (!IsSpotifyCoverUrl(url))
+        {
+            return url;
+        }
+
+        var rewritten = await TryGetMaxSpotifyCoverUrlAsync(httpClient, url, cancellationToken);
+        if (!string.Equals(rewritten, url, StringComparison.Ordinal) && _logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Spotify image max-res rewrite: {OriginalUrl} -> {MaxUrl}", url, rewritten);
+        }
+
+        return rewritten;
+    }
+
+    private async Task DownloadImagePayloadAsync(
+        HttpClient httpClient,
+        string downloadUrl,
+        string path,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
+        request.Headers.Add("User-Agent", USER_AGENT_HEADER);
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Sending HTTP request for image: {Url}", downloadUrl);
+        }
+
+        using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        using var contentStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var fileStream = new FileStream(path, FileMode.Create, FileAccess.Write);
+        await CopyStreamWithTimeoutResetAsync(contentStream, fileStream, cancellationToken);
     }
 
     private async Task<string> TryGetMaxSpotifyCoverUrlAsync(HttpClient httpClient, string url, CancellationToken cancellationToken)
@@ -172,16 +210,23 @@ public class ImageDownloader
             using var headResponse = await httpClient.SendAsync(headRequest, HttpCompletionOption.ResponseHeadersRead, headCts.Token);
             if (headResponse.IsSuccessStatusCode)
             {
-                _logger.LogDebug("Spotify max-res image verified via HEAD: {MaxUrl}", maxUrl);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Spotify max-res image verified via HEAD: {MaxUrl}", maxUrl);                }
                 return maxUrl;
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Fall back to original URL on any HEAD failure.
-            _logger.LogDebug(ex, "Failed to probe Spotify max-res image URL {MaxUrl}", maxUrl);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to probe Spotify max-res image URL {MaxUrl}", maxUrl);            }
         }
 
-        _logger.LogDebug("Spotify max-res image not available, using original URL: {OriginalUrl}", url);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Spotify max-res image not available, using original URL: {OriginalUrl}", url);        }
         return url;
     }
 
@@ -208,7 +253,7 @@ public class ImageDownloader
     {
         var buffer = new byte[8192];
         int bytesRead;
-        
+
         while ((bytesRead = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)) > 0)
         {
             await destination.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
@@ -230,11 +275,15 @@ public class ImageDownloader
         }
         catch (IOException ex)
         {
-            _logger.LogDebug(ex, "Failed to delete partial image file {Path}", path);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to delete partial image file {Path}", path);            }
         }
         catch (UnauthorizedAccessException ex)
         {
-            _logger.LogDebug(ex, "Access denied while deleting partial image file {Path}", path);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Access denied while deleting partial image file {Path}", path);            }
         }
     }
 
@@ -258,7 +307,7 @@ public class ImageDownloader
     /// </summary>
     private static bool IsHttpError(HttpRequestException ex)
     {
-        return ex.Message.Contains("404") || 
+        return ex.Message.Contains("404") ||
                ex.Message.Contains("Not Found") ||
                ex.Message.Contains("403") ||
                ex.Message.Contains("Forbidden");
@@ -272,16 +321,16 @@ public class ImageDownloader
         // Match deezspotag retryable errors exactly
         if (ex is OperationCanceledException && ex.Message.Contains("timeout"))
             return true;
-            
+
         if (ex is TaskCanceledException && !ex.Message.Contains("A task was canceled"))
             return true;
-            
+
         if (ex is SocketException)
             return true;
-            
+
         if (ex is IOException && ex.Message.Contains("connection"))
             return true;
-            
+
         // Check for specific error codes matching deezspotag
         var message = ex.Message.ToUpper();
         return message.Contains("ESOCKETTIMEDOUT") ||
@@ -302,12 +351,14 @@ public class ImageDownloader
         string overwriteOption = "n",
         CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug("Starting download of {Count} images to {BasePath}/{BaseFilename}", 
-            imageUrls.Count, basePath, baseFilename);
-            
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Starting download of {Count} images to {BasePath}/{BaseFilename}",
+                imageUrls.Count, basePath, baseFilename);        }
+
         if (imageUrls.Count == 0 || string.IsNullOrEmpty(basePath) || string.IsNullOrEmpty(baseFilename))
         {
-            _logger.LogWarning("Invalid parameters for image download: URLs={UrlCount}, BasePath={BasePath}, BaseFilename={BaseFilename}", 
+            _logger.LogWarning("Invalid parameters for image download: URLs={UrlCount}, BasePath={BasePath}, BaseFilename={BaseFilename}",
                 imageUrls.Count, basePath, baseFilename);
             return;
         }
@@ -317,11 +368,15 @@ public class ImageDownloader
             try
             {
                 var outputPath = Path.Join(basePath, $"{baseFilename}.{imageUrl.Extension}");
-                _logger.LogDebug("Downloading image: {Url} to {OutputPath}", imageUrl.Url, outputPath);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Downloading image: {Url} to {OutputPath}", imageUrl.Url, outputPath);                }
                 var result = await DownloadImageAsync(imageUrl.Url, outputPath, overwriteOption, true, cancellationToken);
                 if (result != null)
                 {
-                    _logger.LogInformation("Successfully downloaded image: {Url} to {OutputPath}", imageUrl.Url, outputPath);
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation("Successfully downloaded image: {Url} to {OutputPath}", imageUrl.Url, outputPath);                    }
                 }
                 else
                 {
@@ -335,7 +390,9 @@ public class ImageDownloader
         });
 
         await Task.WhenAll(tasks);
-        _logger.LogDebug("Completed download of {Count} images", imageUrls.Count);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Completed download of {Count} images", imageUrls.Count);        }
     }
 
     /// <summary>
@@ -350,15 +407,16 @@ public class ImageDownloader
         {
             var uri = new Uri(url);
             var path = uri.AbsolutePath.ToLower();
-            
-            return path.EndsWith(".jpg") || 
-                   path.EndsWith(".jpeg") || 
-                   path.EndsWith(".png") || 
-                   path.EndsWith(".gif") || 
+
+            return path.EndsWith(".jpg") ||
+                   path.EndsWith(".jpeg") ||
+                   path.EndsWith(".png") ||
+                   path.EndsWith(".gif") ||
                    path.EndsWith(".webp") ||
                    url.Contains("dzcdn.net"); // Deezer CDN images
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return false;
         }
     }
@@ -379,10 +437,11 @@ public class ImageDownloader
             if (path.EndsWith(".png")) return "png";
             if (path.EndsWith(".gif")) return "gif";
             if (path.EndsWith(".webp")) return "webp";
-            
+
             return "jpg"; // Default to jpg
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return "jpg";
         }
     }
@@ -456,7 +515,10 @@ public class ImageDownloader
                     if (fileInfo.LastWriteTimeUtc < cutoffTime)
                     {
                         File.Delete(file);
-                        _logger.LogDebug("Cleaned up temp image: {File}", file);
+                        if (_logger.IsEnabled(LogLevel.Debug))
+                        {
+                            _logger.LogDebug("Cleaned up temp image: {File}", file);
+                        }
                     }
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)

@@ -15,10 +15,10 @@ public static class AuthenticationServiceExtensions
     {
         // Register crypto service
         services.AddSingleton<ICryptoService, CryptoService>();
-        
+
         // Register unified Deezer authentication service
         services.AddScoped<IDeezerAuthenticationService, DeezerAuthenticationService>();
-        
+
         return services;
     }
 }

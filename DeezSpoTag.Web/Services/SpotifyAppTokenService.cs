@@ -163,11 +163,14 @@ public sealed class SpotifyAppTokenService
 
             _clientId = resolvedClientId ?? string.Empty;
             _clientSecret = resolvedClientSecret ?? string.Empty;
-            _logger.LogInformation(
-                "Spotify API credentials loaded. configured={Configured} clientIdLen={ClientIdLen} clientSecretLen={ClientSecretLen}",
-                !string.IsNullOrWhiteSpace(_clientId) && !string.IsNullOrWhiteSpace(_clientSecret),
-                _clientId.Length,
-                _clientSecret.Length);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Spotify API credentials loaded. configured={Configured} clientIdLen={ClientIdLen} clientSecretLen={ClientSecretLen}",
+                    !string.IsNullOrWhiteSpace(_clientId) && !string.IsNullOrWhiteSpace(_clientSecret),
+                    _clientId.Length,
+                    _clientSecret.Length);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

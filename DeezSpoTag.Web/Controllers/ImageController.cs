@@ -63,7 +63,7 @@ public class ImageController : Controller
                 if (!response.IsSuccessStatusCode)
                 {
                     _logger.LogWarning("Failed to fetch image from Deezer CDN: StatusCode for URL: DeezerUrl");
-                    
+
                     // Return a placeholder or 404
                     return NotFound("Image not found");
                 }

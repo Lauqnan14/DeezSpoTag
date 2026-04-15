@@ -435,12 +435,16 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                 {
                     appleId = resolved;
                     payload.AppleId = resolved;
-                    _logger.LogInformation("Apple ID resolved via ISRC for {QueueUuid}: {AppleId}", queueUuid, resolved);
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation("Apple ID resolved via ISRC for {QueueUuid}: {AppleId}", queueUuid, resolved);                    }
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Apple ISRC lookup failed for {QueueUuid}", queueUuid);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Apple ISRC lookup failed for {QueueUuid}", queueUuid);                }
             }
         }
 
@@ -492,22 +496,15 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
         if (!AreWrapperStreamPortsReachable(request, out var wrapperPortReason))
         {
-            var allowAudioFallback = !(request.IsVideo || queueContext.VideoPayload);
-            if (allowAudioFallback && CanFallbackToAacStereo(request) && ShouldUseInEngineAppleAacFallback(queueContext.Payload))
+            if (TryApplyWrapperAacFallback(
+                next,
+                queueContext,
+                request,
+                wrapperPortReason,
+                "wrapper_stream_fallback",
+                "Wrapper stream ports unavailable, falling back to AAC stereo.",
+                includeReasonInLog: true))
             {
-                ApplyAacStereoFallback(request);
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation(
-                        "Apple wrapper stream ports unavailable; falling back to AAC stereo for {QueueUuid}. Reason: {Reason}",
-                        next.QueueUuid,
-                        wrapperPortReason);
-                }
-                _deezspotagListener.SendDownloadWarn(
-                    next.QueueUuid,
-                    new { message = "Wrapper stream ports unavailable, falling back to AAC stereo." },
-                    "wrapper_stream_fallback",
-                    wrapperPortReason);
                 return true;
             }
 
@@ -521,18 +518,15 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             return true;
         }
 
-        var isVideoWrapperCheck = request.IsVideo || queueContext.VideoPayload;
-        if (!isVideoWrapperCheck && CanFallbackToAacStereo(request) && ShouldUseInEngineAppleAacFallback(queueContext.Payload))
+        if (TryApplyWrapperAacFallback(
+            next,
+            queueContext,
+            request,
+            "Start the Apple wrapper to restore ALAC/Atmos downloads.",
+            "wrapper_fallback",
+            "Wrapper offline, falling back to AAC stereo.",
+            includeReasonInLog: false))
         {
-            ApplyAacStereoFallback(request);
-            _logger.LogInformation(
-                "Apple wrapper unavailable; falling back to AAC stereo for {QueueUuid}.",
-                next.QueueUuid);
-            _deezspotagListener.SendDownloadWarn(
-                next.QueueUuid,
-                new { message = "Wrapper offline, falling back to AAC stereo." },
-                "wrapper_fallback",
-                "Start the Apple wrapper to restore ALAC/Atmos downloads.");
             return true;
         }
 
@@ -541,6 +535,47 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             : wrapperStatus.Message;
         await HandleDownloadFailureAsync(next, queueContext.Payload, reason, stoppingToken, itemToken, quality: null);
         return false;
+    }
+
+    private bool TryApplyWrapperAacFallback(
+        DownloadQueueItem next,
+        QueueInitializationContext queueContext,
+        AppleDownloadRequest request,
+        string warningReason,
+        string warningCode,
+        string warningMessage,
+        bool includeReasonInLog)
+    {
+        var isVideoRequest = request.IsVideo || queueContext.VideoPayload;
+        if (isVideoRequest || !CanFallbackToAacStereo(request) || !ShouldUseInEngineAppleAacFallback(queueContext.Payload))
+        {
+            return false;
+        }
+
+        ApplyAacStereoFallback(request);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            if (includeReasonInLog)
+            {
+                _logger.LogInformation(
+                    "Apple wrapper stream ports unavailable; falling back to AAC stereo for {QueueUuid}. Reason: {Reason}",
+                    next.QueueUuid,
+                    warningReason);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Apple wrapper unavailable; falling back to AAC stereo for {QueueUuid}.",
+                    next.QueueUuid);
+            }
+        }
+
+        _deezspotagListener.SendDownloadWarn(
+            next.QueueUuid,
+            new { message = warningMessage },
+            warningCode,
+            warningReason);
+        return true;
     }
 
     private static bool AreWrapperStreamPortsReachable(AppleDownloadRequest request, out string reason)
@@ -704,12 +739,14 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             payload.VideoResolution = string.IsNullOrWhiteSpace(result.VideoResolutionTier) ? payload.VideoResolution : result.VideoResolutionTier;
             payload.VideoHdr = result.VideoHdr;
             payload.VideoAudioProfile = string.IsNullOrWhiteSpace(result.VideoAudioProfile) ? payload.VideoAudioProfile : result.VideoAudioProfile;
-            _logger.LogInformation(
-                "Apple video profile: resolution={Resolution} hdr={Hdr} audio={Audio} for {QueueUuid}",
-                string.IsNullOrWhiteSpace(payload.VideoResolution) ? UnknownValue : payload.VideoResolution,
-                payload.VideoHdr,
-                string.IsNullOrWhiteSpace(payload.VideoAudioProfile) ? UnknownValue : payload.VideoAudioProfile,
-                queueUuid);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Apple video profile: resolution={Resolution} hdr={Hdr} audio={Audio} for {QueueUuid}",
+                    string.IsNullOrWhiteSpace(payload.VideoResolution) ? UnknownValue : payload.VideoResolution,
+                    payload.VideoHdr,
+                    string.IsNullOrWhiteSpace(payload.VideoAudioProfile) ? UnknownValue : payload.VideoAudioProfile,
+                    queueUuid);            }
             return;
         }
 
@@ -719,7 +756,9 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         }
 
         payload.Quality = result.QualityLabel;
-        _logger.LogInformation("Apple download quality: {Quality} for {QueueUuid}", result.QualityLabel, queueUuid);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Apple download quality: {Quality} for {QueueUuid}", result.QualityLabel, queueUuid);        }
     }
 
     private async Task<string> ApplyPostDownloadSettingsSafelyAsync(
@@ -963,7 +1002,8 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                 }
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return appleId;
         }
 
@@ -1654,7 +1694,9 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple MV metadata lookup failed for {QueueUuid}", queueUuid);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple MV metadata lookup failed for {QueueUuid}", queueUuid);            }
         }
     }
 

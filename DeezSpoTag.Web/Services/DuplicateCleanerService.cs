@@ -393,7 +393,7 @@ public class DuplicateCleanerService
         }
 
         result.FilesScanned += candidates.Count;
-        if (options.UseShazamForIdentity)
+        if (options.UseShazamForIdentity && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
                 "Duplicate cleaner scanned {FileCount} files under {Root}. Shazam-assisted identity used for {ShazamLookupCount} weak/noisy files.",
@@ -467,7 +467,10 @@ public class DuplicateCleanerService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Duplicate cleaner failed to read metadata for {Path}.", path);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Duplicate cleaner failed to read metadata for {Path}.", path);
+            }
         }
 
         var shazamData = ResolveShazamIdentity(
@@ -546,7 +549,10 @@ public class DuplicateCleanerService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Duplicate cleaner Shazam recognition failed for {Path}.", path);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Duplicate cleaner Shazam recognition failed for {Path}.", path);
+            }
             return (string.Empty, string.Empty, string.Empty, Array.Empty<string>(), true);
         }
     }

@@ -58,9 +58,9 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
         _deezerClient = deezerClient ?? throw new ArgumentNullException(nameof(deezerClient));
         _authUtils = authUtils ?? throw new ArgumentNullException(nameof(authUtils));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        
+
         _configPath = ResolveConfigPath();
-        
+
         EnsureConfigDirectory();
     }
 
@@ -105,7 +105,8 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
         var normalizedArl = DeezSpoTag.Services.Utils.DeezerAuthUtils.NormalizeArl(arl);
         if (string.IsNullOrWhiteSpace(normalizedArl) || normalizedArl.Length < 10)
         {
-            return new {
+            return new
+            {
                 status = 0, // FAILED
                 arl = normalizedArl,
                 message = "Invalid ARL token."
@@ -114,7 +115,8 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
 
         if (!DeezSpoTag.Services.Utils.DeezerAuthUtils.IsValidArlLength(normalizedArl))
         {
-            return new {
+            return new
+            {
                 status = 0, // FAILED
                 arl = normalizedArl,
                 message = "Invalid ARL token length."
@@ -124,7 +126,8 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
         // Check Deezer availability (as in deezspotag)
         if (!await _authUtils.IsDeezerAvailableAsync())
         {
-            return new {
+            return new
+            {
                 status = -1, // NOT_AVAILABLE
                 arl = normalizedArl,
                 message = "Deezer is not available."
@@ -158,7 +161,8 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
             var responseString = await response.Content.ReadAsStringAsync();
             if (!response.IsSuccessStatusCode)
             {
-                return new {
+                return new
+                {
                     status = 0, // FAILED
                     arl = normalizedArl,
                     message = $"Failed to contact Deezer API. Raw: {responseString}"
@@ -177,10 +181,12 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
                     var deezerCookies = handler.CookieContainer.GetCookies(DeezerWebCookieUri);
                     sid = deezerCookies["sid"]?.Value;
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException) {
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
                     sid = null;
                 }
-                return new {
+                return new
+                {
                     status = 1, // SUCCESS
                     arl = normalizedArl,
                     user = JsonSerializer.Deserialize<object>(user.GetRawText()),
@@ -192,7 +198,8 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
             }
             else
             {
-                return new {
+                return new
+                {
                     status = 0, // FAILED
                     arl = normalizedArl,
                     message = $"Invalid ARL token or user not found. Raw: {responseString}"
@@ -201,7 +208,8 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return new {
+            return new
+            {
                 status = 0, // FAILED
                 arl = normalizedArl,
                 message = $"Exception occurred during Deezer login: {ex.Message}"
@@ -301,7 +309,7 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
                 Arl = arl,
                 AccessToken = accessToken
             };
-            
+
             await SaveLoginCredentialsAsync(credentials);
 
             _logger.LogInformation("Successfully logged in with email/password");
@@ -386,11 +394,14 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
                 Arl = normalizedArl,
                 AccessToken = _loginData.AccessToken
             };
-            
+
             await SaveLoginCredentialsAsync(credentials);
 
-            _logger.LogInformation("Successfully logged in with ARL. User: {UserName} (ID: {UserId})", 
-                userData.Name, userData.Id);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Successfully logged in with ARL. User: {UserName} (ID: {UserId})",
+                    userData.Name, userData.Id);
+            }
 
             return BuildSuccessfulAuthenticationResult(userData, normalizedArl);
         }
@@ -491,7 +502,7 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
         {
             await LoadLoginCredentialsAsync();
         }
-        
+
         return _loginData;
     }
 
@@ -516,7 +527,7 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
         {
             // Hash password with MD5 (as per deezspotag implementation)
             var hashedPassword = ComputeMd5Hash(password);
-            
+
             // Create hash for API call
             var hashInput = $"{CLIENT_ID}{email}{hashedPassword}{CLIENT_SIGNATURE_SALT}";
             var hash = ComputeMd5Hash(hashInput);
@@ -525,7 +536,7 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
             httpClient.DefaultRequestHeaders.Add("User-Agent", USER_AGENT);
 
             var url = $"{DeezerAuthTokenBaseUrl}?app_id={CLIENT_ID}&login={Uri.EscapeDataString(email)}&password={hashedPassword}&hash={hash}";
-            
+
             var response = await httpClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
 
@@ -563,7 +574,7 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
 
             // Second request to get ARL
             var response = await httpClient.GetAsync(DeezerUserArlUrl);
-            
+
             response.EnsureSuccessStatusCode();
 
             var responseContent = await response.Content.ReadAsStringAsync();
@@ -633,19 +644,22 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
             // EXACT PORT: Update only provided fields like deezspotag
             if (!string.IsNullOrEmpty(newCredentials.Arl))
                 _loginData.Arl = newCredentials.Arl;
-            
+
             if (!string.IsNullOrEmpty(newCredentials.AccessToken))
                 _loginData.AccessToken = newCredentials.AccessToken;
 
             EnsureConfigDirectory();
 
             var credentialsPath = Path.Join(_configPath, "login.json");
-            
+
             // EXACT PORT: Write with indentation like deezspotag (JSON.stringify with 2 spaces)
             var json = JsonSerializer.Serialize(_loginData, IndentedJsonOptions);
 
             await System.IO.File.WriteAllTextAsync(credentialsPath, json);
-            _logger.LogDebug("Saved login credentials to: {Path}", credentialsPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Saved login credentials to: {Path}", credentialsPath);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -666,15 +680,15 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
 
             var credentialsPath = Path.Join(_configPath, "login.json");
             var defaultCredentials = new LoginCredentials();
-            
+
             // EXACT PORT: Write defaults with indentation like deezspotag
             var json = JsonSerializer.Serialize(defaultCredentials, IndentedJsonOptions);
 
             await System.IO.File.WriteAllTextAsync(credentialsPath, json);
-            
+
             // EXACT PORT: Update in-memory data like deezspotag
             _loginData = JsonSerializer.Deserialize<LoginCredentials>(json) ?? new LoginCredentials();
-            
+
             _logger.LogDebug("Reset login credentials to defaults");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -692,7 +706,10 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
         if (!Directory.Exists(_configPath))
         {
             Directory.CreateDirectory(_configPath);
-            _logger.LogDebug("Created config directory: {Path}", _configPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Created config directory: {Path}", _configPath);
+            }
         }
     }
 

@@ -57,7 +57,9 @@ public sealed class FolderConversionSettingsOverlay : IFolderConversionSettingsO
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to apply folder conversion override for folder {FolderId}", destinationFolderId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to apply folder conversion override for folder {FolderId}", destinationFolderId);            }
         }
     }
 

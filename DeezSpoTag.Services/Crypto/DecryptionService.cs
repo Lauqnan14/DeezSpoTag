@@ -93,15 +93,15 @@ public static class DecryptionService
             // CRITICAL: Use ISO-8859-1 encoding exactly like deezspotag
             var keyBytes = Encoding.GetEncoding(Latin1EncodingName).GetBytes(blowfishKey);
             var iv = new byte[] { 0, 1, 2, 3, 4, 5, 6, 7 };
-            
+
             // Extract exactly 2048 bytes to decrypt (exact port from deezspotag)
             var toDecrypt = new byte[2048];
             Array.Copy(chunk, 0, toDecrypt, 0, 2048);
-            
+
             // Use custom BlowfishService that matches deezspotag blowfish.cjs exactly
             var blowfish = new BlowfishService(keyBytes);
             var decrypted = blowfish.DecryptCBC(toDecrypt, iv);
-            
+
             return DecryptionChunkHelper.MergeDecryptedPrefix(chunk, decrypted, 2048);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

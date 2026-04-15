@@ -11,14 +11,14 @@ public class DownloadFailedException : Exception
     public string ErrorId { get; set; }
     public Track? Track { get; set; }
 
-    public DownloadFailedException(string errorId, Track? track = null) 
+    public DownloadFailedException(string errorId, Track? track = null)
         : base(GetErrorMessage(errorId))
     {
         ErrorId = errorId;
         Track = track;
     }
 
-    public DownloadFailedException(string message, string errorId, Track? track = null) 
+    public DownloadFailedException(string message, string errorId, Track? track = null)
         : base(message)
     {
         ErrorId = errorId;

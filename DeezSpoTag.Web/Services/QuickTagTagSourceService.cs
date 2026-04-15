@@ -179,7 +179,10 @@ public sealed class QuickTagTagSourceService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Discogs auth token load failed. Context: {Context}", context);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Discogs auth token load failed. Context: {Context}", context);
+            }
         }
     }
 

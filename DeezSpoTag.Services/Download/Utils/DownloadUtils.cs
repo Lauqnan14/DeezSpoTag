@@ -122,8 +122,8 @@ public static class DownloadUtils
         if (!settings.PadTracks)
             return num.ToString();
 
-        var paddingSize = settings.PaddingSize == 0 
-            ? maxVal.ToString().Length 
+        var paddingSize = settings.PaddingSize == 0
+            ? maxVal.ToString().Length
             : settings.PaddingSize;
 
         if (settings.PadSingleDigit && paddingSize == 1)
@@ -151,7 +151,7 @@ public static class DownloadUtils
         return format switch
         {
             TrackFormat.MP4_RA3 => "360 HQ",
-            TrackFormat.MP4_RA2 => "360 MQ", 
+            TrackFormat.MP4_RA2 => "360 MQ",
             TrackFormat.MP4_RA1 => "360 LQ",
             TrackFormat.FLAC => "FLAC",
             TrackFormat.MP3_320 => "320",
@@ -182,19 +182,19 @@ public static class DownloadUtils
     public static string GenerateUniqueFilename(string basePath, string filename, string extension)
     {
         var fullPath = Path.Join(basePath, filename + extension);
-        
+
         if (!System.IO.File.Exists(fullPath))
             return filename;
 
         var counter = 1;
         string uniqueFilename;
-        
+
         do
         {
             uniqueFilename = $"{filename} ({counter})";
             fullPath = Path.Join(basePath, uniqueFilename + extension);
             counter++;
-        } 
+        }
         while (System.IO.File.Exists(fullPath));
 
         return uniqueFilename;
@@ -218,10 +218,11 @@ public static class DownloadUtils
 
             // Create directory if it doesn't exist
             EnsureDirectoryExists(path);
-            
+
             return path;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Fallback to Music folder if path is invalid
             return Environment.GetFolderPath(Environment.SpecialFolder.MyMusic);
         }

@@ -172,7 +172,9 @@ internal static class QueueHelperUtils
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                logger.LogDebug(ex, "{Context} (queue {QueueUuid})", logMessage, queueUuid);
+                if (logger.IsEnabled(LogLevel.Debug))
+                {
+                    logger.LogDebug(ex, "{Context} (queue {QueueUuid})", logMessage, queueUuid);                }
             }
         };
     }

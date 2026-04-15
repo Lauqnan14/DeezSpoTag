@@ -394,7 +394,9 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 analysisOutput = TryPredictAnalysisOutput(track.FilePath, out predictionFailure);
             }
 
-            if (analysisOutput is null && !string.IsNullOrWhiteSpace(predictionFailure))
+            if (analysisOutput is null
+                && !string.IsNullOrWhiteSpace(predictionFailure)
+                && _logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug("Vibe analyzer fallback to standard for {FilePath}: {Reason}", track.FilePath, predictionFailure);
             }
@@ -1168,7 +1170,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             }
 
             Environment.SetEnvironmentVariable(VibeModelsDirectoryEnvironmentVariable, modelsDir);
-            if (downloaded > 0)
+            if (downloaded > 0 && _logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Vibe analysis models provisioned in {Directory}. Downloaded {Count} files.", modelsDir, downloaded);
             }
@@ -1268,7 +1270,10 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             if (SupportsEssentia(venvPython))
             {
                 Environment.SetEnvironmentVariable(VibePythonEnvironmentVariable, venvPython);
-                _logger.LogInformation("Vibe analysis python provisioned at {PythonPath}", venvPython);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Vibe analysis python provisioned at {PythonPath}", venvPython);
+                }
             }
         }
         catch (Exception ex)
@@ -2409,7 +2414,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         return (minLag, maxLag);
     }
 
-    private static double FindBestLag(IReadOnlyList<double> energies, int minLag, int maxLag)
+    private static double FindBestLag(List<double> energies, int minLag, int maxLag)
     {
         double bestLag = 0;
         double bestScore = 0;

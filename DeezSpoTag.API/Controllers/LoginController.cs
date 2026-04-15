@@ -46,7 +46,7 @@ namespace DeezSpoTag.API.Controllers
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
             _hostEnvironment = hostEnvironment ?? throw new ArgumentNullException(nameof(hostEnvironment));
-            
+
             // Get single user mode setting (like deezspotag isSingleUser)
             _isSingleUser = configuration.GetValue<bool>("IsSingleUser", false);
         }
@@ -61,12 +61,12 @@ namespace DeezSpoTag.API.Controllers
             {
                 using var httpClient = _httpClientFactory.CreateClient();
                 httpClient.DefaultRequestHeaders.Add("Cookie", "dz_lang=en; Domain=deezer.com; Path=/; Secure; hostOnly=false;");
-                
+
                 var response = await httpClient.GetAsync(BuildDeezerHomeUrl());
                 response.EnsureSuccessStatusCode();
-                
+
                 var content = await response.Content.ReadAsStringAsync();
-                
+
                 // Extract title from HTML (exact port from deezspotag)
                 var titleMatch = System.Text.RegularExpressions.Regex.Match(
                     content,
@@ -74,10 +74,10 @@ namespace DeezSpoTag.API.Controllers
                     System.Text.RegularExpressions.RegexOptions.None,
                     RegexTimeout);
                 var title = titleMatch.Success ? titleMatch.Groups[1].Value.Trim() : "";
-                
+
                 // Check if Deezer is available (exact deezspotag logic)
                 var isAvailable = title != "Deezer will soon be available in your country.";
-                
+
                 _logger.LogDebug("Deezer availability check: {IsAvailable} (title: {Title})", isAvailable, title);
                 return isAvailable;
             }
@@ -99,7 +99,7 @@ namespace DeezSpoTag.API.Controllers
             try
             {
                 var loginData = await _loginStorage.LoadLoginCredentialsAsync();
-                
+
                 if (loginData?.Arl == null || loginData.User == null)
                 {
                     return Ok(new
@@ -287,7 +287,7 @@ namespace DeezSpoTag.API.Controllers
                     // Get access token from email/password (exact deezspotag logic)
                     accessToken = await _deezerAuthService.GetAccessTokenFromEmailPasswordAsync(
                         request.Email, request.Password);
-                    
+
                     if (accessToken == "undefined")
                         accessToken = null;
                 }
@@ -424,7 +424,7 @@ namespace DeezSpoTag.API.Controllers
                 }
 
                 var credentials = await _deezerAuthService.GetLoginCredentialsAsync();
-                
+
                 return Ok(new
                 {
                     hasArl = !string.IsNullOrEmpty(credentials.Arl),
@@ -523,5 +523,5 @@ namespace DeezSpoTag.API.Controllers
         public string? AccessToken { get; set; }
     }
 
-    
+
 }

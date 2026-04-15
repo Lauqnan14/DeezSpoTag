@@ -39,9 +39,9 @@ public static class QualityCatalog
     }
 
     /// <summary>
-     /// Centralized quality options used by Settings "Library Folders" desired quality selector.
-     /// Values are engine-specific identifiers currently used throughout the download pipeline.
-     /// </summary>
+    /// Centralized quality options used by Settings "Library Folders" desired quality selector.
+    /// Values are engine-specific identifiers currently used throughout the download pipeline.
+    /// </summary>
     public static IReadOnlyList<QualityOption> GetLibraryFolderQualityOptions()
     {
         // Order MUST match the project's actual multisource fallback order (best → worst),

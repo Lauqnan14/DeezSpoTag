@@ -203,7 +203,10 @@ public sealed class AutoTagDefaultsStore
                 await using var source = File.OpenRead(legacyPath);
                 await using var target = File.Create(_defaultsPath);
                 await source.CopyToAsync(target);
-                _logger.LogInformation("Migrated AutoTag defaults from legacy path {LegacyPath} to {DefaultsPath}.", legacyPath, _defaultsPath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Migrated AutoTag defaults from legacy path {LegacyPath} to {DefaultsPath}.", legacyPath, _defaultsPath);
+                }
                 return;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)

@@ -42,13 +42,12 @@ public sealed class AudioQualitySignalAnalyzer
 
         var ffmpeg = FfmpegPath.Value;
         var ffprobe = FfprobePath.Value;
-        if (string.IsNullOrWhiteSpace(ffmpeg) || string.IsNullOrWhiteSpace(ffprobe))
+        if (!HasRequiredTools(filePath, ffmpeg, ffprobe))
         {
-            _logger.LogDebug("Signal analyzer skipped for {File}: ffmpeg/ffprobe not available.", filePath);
             return null;
         }
 
-        var probe = ProbeAudio(ffprobe, filePath);
+        var probe = ProbeAudio(ffprobe!, filePath);
         var sampleRate = probe?.SampleRateHz ?? sampleRateHint ?? 0;
         if (sampleRate <= 0)
         {
@@ -57,14 +56,13 @@ public sealed class AudioQualitySignalAnalyzer
 
         var codec = string.IsNullOrWhiteSpace(probe?.CodecName) ? codecHint : probe!.CodecName;
         var statedBitrate = probe?.BitrateKbps ?? bitrateHintKbps;
-        var samples = DecodeMonoFloatSamples(ffmpeg, filePath);
-        if (samples is null || samples.Length < 1024)
+        var samples = DecodeMonoFloatSamples(ffmpeg!, filePath);
+        if (!HasEnoughDecodedSamples(filePath, samples))
         {
-            _logger.LogDebug("Signal analyzer skipped for {File}: unable to decode enough PCM samples.", filePath);
             return null;
         }
 
-        var maxFreq = AnalyzePeakFrequency(samples, sampleRate, codec);
+        var maxFreq = AnalyzePeakFrequency(samples!, sampleRate, codec);
         if (maxFreq <= 0)
         {
             return null;
@@ -93,6 +91,34 @@ public sealed class AudioQualitySignalAnalyzer
             EquivalentBitrateKbps: equivalent,
             IsTrueLossless: isTrueLossless,
             IsLosslessCodecContainer: isLosslessCodec);
+    }
+
+    private bool HasRequiredTools(string filePath, string? ffmpeg, string? ffprobe)
+    {
+        if (!string.IsNullOrWhiteSpace(ffmpeg) && !string.IsNullOrWhiteSpace(ffprobe))
+        {
+            return true;
+        }
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Signal analyzer skipped for {File}: ffmpeg/ffprobe not available.", filePath);
+        }
+        return false;
+    }
+
+    private bool HasEnoughDecodedSamples(string filePath, float[]? samples)
+    {
+        if (samples is { Length: >= 1024 })
+        {
+            return true;
+        }
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Signal analyzer skipped for {File}: unable to decode enough PCM samples.", filePath);
+        }
+        return false;
     }
 
     private static ProbeInfo? ProbeAudio(string ffprobePath, string filePath)
@@ -145,7 +171,8 @@ public sealed class AudioQualitySignalAnalyzer
 
             return new ProbeInfo(codec, sampleRate, bitrate);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }
@@ -176,7 +203,8 @@ public sealed class AudioQualitySignalAnalyzer
 
             return ConvertToFloatSamples(bytes);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }
@@ -306,7 +334,8 @@ public sealed class AudioQualitySignalAnalyzer
                 process.Kill(true);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Best effort only.
         }
     }

@@ -26,7 +26,7 @@ public class PlexApiClient
     {
         _logger = logger;
         _httpClient = httpClient;
-        
+
         // Set default headers for Plex API
         _httpClient.DefaultRequestHeaders.Add("Accept", "application/xml");
         _httpClient.DefaultRequestHeaders.Add("X-Plex-Client-Identifier", "DeezSpoTag");
@@ -44,7 +44,9 @@ public class PlexApiClient
             var identity = await GetIdentityAsync(serverUrl, token);
             if (identity is not null)
             {
-                _logger.LogDebug("Successfully connected to Plex server at {ServerUrl}", serverUrl);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Successfully connected to Plex server at {ServerUrl}", serverUrl);                }
                 return true;
             }
 
@@ -170,7 +172,9 @@ public class PlexApiClient
                 }
             };
 
-            _logger.LogDebug("Retrieved {LibraryCount} music libraries from Plex", libraries.Count);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Retrieved {LibraryCount} music libraries from Plex", libraries.Count);            }
             return libraries;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -187,13 +191,17 @@ public class PlexApiClient
     {
         try
         {
-            _logger.LogInformation("Refreshing Plex library section {LibraryKey}", libraryKey);
-            
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Refreshing Plex library section {LibraryKey}", libraryKey);            }
+
             // This would make actual API call to refresh library
             // For now, just simulate the operation
             await Task.Delay(100);
-            
-            _logger.LogDebug("Successfully triggered refresh for library section {LibraryKey}", libraryKey);
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Successfully triggered refresh for library section {LibraryKey}", libraryKey);            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -219,7 +227,9 @@ public class PlexApiClient
                 return false;
             }
 
-            _logger.LogInformation("Triggered Plex library refresh for section {LibraryKey}", libraryKey);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Triggered Plex library refresh for section {LibraryKey}", libraryKey);            }
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -273,13 +283,15 @@ public class PlexApiClient
             .ThenBy(item => item.Value.lengthDelta)
             .First();
 
-        _logger.LogDebug(
-            "Resolved Plex artist '{ArtistName}' to '{MatchedTitle}' (section {SectionKey}, ratingKey {RatingKey}, score {Score})",
-            artistName,
-            best.Value.title,
-            best.Value.sectionKey,
-            best.Key,
-            best.Value.score);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Resolved Plex artist '{ArtistName}' to '{MatchedTitle}' (section {SectionKey}, ratingKey {RatingKey}, score {Score})",
+                artistName,
+                best.Value.title,
+                best.Value.sectionKey,
+                best.Key,
+                best.Value.score);        }
 
         return new PlexArtistLocation(best.Value.sectionKey, best.Key);
     }
@@ -535,14 +547,18 @@ public class PlexApiClient
     {
         try
         {
-            _logger.LogDebug("Searching Plex for tracks: {Query}", query);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Searching Plex for tracks: {Query}", query);            }
 
             // This would make actual search API call
             // For now, return empty results
             await Task.CompletedTask;
             var tracks = new List<PlexTrack>();
 
-            _logger.LogDebug("Found {TrackCount} tracks in Plex for query: {Query}", tracks.Count, query);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Found {TrackCount} tracks in Plex for query: {Query}", tracks.Count, query);            }
             return tracks;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -566,7 +582,9 @@ public class PlexApiClient
             }
 
             var tracks = await SearchTracksInternalAsync(serverUrl, token, query, cancellationToken);
-            _logger.LogDebug("Found {TrackCount} Plex tracks for query: {Query}", tracks.Count, query);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Found {TrackCount} Plex tracks for query: {Query}", tracks.Count, query);            }
             return tracks;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -641,7 +659,9 @@ public class PlexApiClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Plex artist candidate query failed: {Url}", url);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Plex artist candidate query failed: {Url}", url);            }
         }
     }
 
@@ -737,7 +757,9 @@ public class PlexApiClient
         var response = await _httpClient.GetAsync(endpoint, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogDebug("Plex track search endpoint failed {Endpoint}: {StatusCode}", endpoint, response.StatusCode);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Plex track search endpoint failed {Endpoint}: {StatusCode}", endpoint, response.StatusCode);            }
             return null;
         }
 
@@ -753,7 +775,9 @@ public class PlexApiClient
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Plex search XML parse failed for endpoint {Endpoint}", endpoint);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Plex search XML parse failed for endpoint {Endpoint}", endpoint);            }
             return null;
         }
     }

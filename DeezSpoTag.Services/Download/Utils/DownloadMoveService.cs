@@ -43,7 +43,9 @@ public sealed class DownloadMoveService
         if (IsSameRoot(stagingRootIo, destinationRootIo))
         {
             var stagingFull = DownloadPathResolver.IsSmbPath(stagingRootIo) ? stagingRootIo : Path.GetFullPath(stagingRootIo);
-            _logger.LogDebug("Download move skipped because staging and destination match: {Path}", stagingFull);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Download move skipped because staging and destination match: {Path}", stagingFull);            }
             return null;
         }
 
@@ -64,11 +66,13 @@ public sealed class DownloadMoveService
 
         UpdateDownloadObjectPaths(downloadObject, stagingRootDisplay, destinationRootDisplay, moveOutcome.Moved);
 
-        _logger.LogInformation(
-            "Moved {MovedCount} download files to library destination {Destination} (skipped: {Skipped})",
-            moveOutcome.Moved.Count,
-            destinationRootDisplay,
-            moveOutcome.Skipped);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Moved {MovedCount} download files to library destination {Destination} (skipped: {Skipped})",
+                moveOutcome.Moved.Count,
+                destinationRootDisplay,
+                moveOutcome.Skipped);        }
 
         return new DownloadMoveResult(destinationRootDisplay, moveOutcome.Moved, moveOutcome.Skipped);
     }

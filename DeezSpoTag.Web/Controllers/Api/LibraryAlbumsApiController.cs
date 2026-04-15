@@ -447,7 +447,8 @@ public class LibraryAlbumsApiController : ControllerBase
 
             state.HasUnsynced = true;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Fall back to persisted status + sidecar checks.
         }
     }
@@ -481,7 +482,8 @@ public class LibraryAlbumsApiController : ControllerBase
                 return true;
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return false;
         }
 

@@ -135,7 +135,9 @@ public sealed class SpotifyIdResolver : ISpotifyIdResolver
         {
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogDebug("Spotify search failed: status={Status} query={Query}", (int)response.StatusCode, request.RequestUri);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Spotify search failed: status={Status} query={Query}", (int)response.StatusCode, request.RequestUri);                }
                 response.Dispose();
                 return null;
             }
@@ -152,7 +154,9 @@ public sealed class SpotifyIdResolver : ISpotifyIdResolver
         var retryResponse = await client.SendAsync(retryRequest, cancellationToken);
         if (!retryResponse.IsSuccessStatusCode)
         {
-            _logger.LogDebug("Spotify search failed after retry: status={Status} query={Query}", (int)retryResponse.StatusCode, request.RequestUri);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Spotify search failed after retry: status={Status} query={Query}", (int)retryResponse.StatusCode, request.RequestUri);            }
             retryResponse.Dispose();
             return null;
         }
@@ -192,7 +196,9 @@ public sealed class SpotifyIdResolver : ISpotifyIdResolver
             using var response = await client.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogDebug("Spotify token request failed: status={Status}", (int)response.StatusCode);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Spotify token request failed: status={Status}", (int)response.StatusCode);                }
                 return null;
             }
 

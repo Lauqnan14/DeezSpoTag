@@ -1357,7 +1357,10 @@ public sealed class DownloadOrchestrationService : BackgroundService
                     .Select(candidate => candidate.FolderId)
                     .ToList();
                 QueueEnhancementResumeFolders(remainingTargets);
-                _logger.LogInformation("Automation halted: downloads started before enhancement target {RootPath}.", target.RootPath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Automation halted: downloads started before enhancement target {RootPath}.", target.RootPath);
+                }
                 _pipelineRequested = true;
                 _queueIdleSince = null;
                 return new EnhancementExecutionResult(attemptedTargets, false, true);
@@ -1534,11 +1537,17 @@ public sealed class DownloadOrchestrationService : BackgroundService
             if (stopped)
             {
                 await QueueResumeFoldersForPausedEnhancementJobAsync(jobId, cancellationToken);
-                _logger.LogInformation("Automation enhancement job {JobId} pause requested for incoming download.", jobId);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Automation enhancement job {JobId} pause requested for incoming download.", jobId);
+                }
             }
             else
             {
-                _logger.LogInformation("Automation enhancement job {JobId} could not be paused (already stopped).", jobId);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Automation enhancement job {JobId} could not be paused (already stopped).", jobId);
+                }
             }
 
             return true;
@@ -1797,11 +1806,17 @@ public sealed class DownloadOrchestrationService : BackgroundService
             var stopped = await _autoTagService.StopJobAsync(enrichmentJobId);
             if (stopped)
             {
-                _logger.LogInformation("Automation enrichment job {JobId} pause requested for incoming download.", enrichmentJobId);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Automation enrichment job {JobId} pause requested for incoming download.", enrichmentJobId);
+                }
             }
             else
             {
-                _logger.LogInformation("Automation enrichment job {JobId} could not be paused (already stopped).", enrichmentJobId);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Automation enrichment job {JobId} could not be paused (already stopped).", enrichmentJobId);
+                }
             }
 
             return true;
@@ -1832,11 +1847,17 @@ public sealed class DownloadOrchestrationService : BackgroundService
             var stopped = await _autoTagService.StopJobAsync(jobId);
             if (stopped)
             {
-                _logger.LogInformation("AutoTag job {JobId} pause requested for incoming download.", jobId);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("AutoTag job {JobId} pause requested for incoming download.", jobId);
+                }
             }
             else
             {
-                _logger.LogInformation("AutoTag job {JobId} could not be paused (already stopped).", jobId);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("AutoTag job {JobId} could not be paused (already stopped).", jobId);
+                }
             }
 
             return true;

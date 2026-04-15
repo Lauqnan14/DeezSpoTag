@@ -268,8 +268,8 @@ public sealed class SpotifyFavoritesService
     }
 
     private static bool HasReachedFavoritesLimit(
-        IReadOnlyCollection<FavoriteItem> playlists,
-        IReadOnlyCollection<FavoriteItem> tracks,
+        List<FavoriteItem> playlists,
+        List<FavoriteItem> tracks,
         int limit)
     {
         return playlists.Count >= limit && tracks.Count >= limit;
@@ -280,9 +280,9 @@ public sealed class SpotifyFavoritesService
         return ContainsAnyToken(title, PersonalSectionKeywords);
     }
 
-    private static bool ContainsAnyToken(string? value, IReadOnlyCollection<string> tokens)
+    private static bool ContainsAnyToken(string? value, string[] tokens)
     {
-        if (string.IsNullOrWhiteSpace(value) || tokens.Count == 0)
+        if (string.IsNullOrWhiteSpace(value) || tokens.Length == 0)
         {
             return false;
         }
@@ -685,10 +685,10 @@ public sealed class SpotifyFavoritesService
         return null;
     }
 
-    private static bool TryNavigateToElement(JsonElement element, IReadOnlyList<object> path, out JsonElement current)
+    private static bool TryNavigateToElement(JsonElement element, object[] path, out JsonElement current)
     {
         current = element;
-        if (path.Count == 0)
+        if (path.Length == 0)
         {
             return false;
         }

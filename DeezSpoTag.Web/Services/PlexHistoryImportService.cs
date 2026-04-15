@@ -72,7 +72,10 @@ public sealed class PlexHistoryImportService
             inserted++;
         }
 
-        _logger.LogInformation("Imported {Count} Plex history entries.", inserted);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Imported {Count} Plex history entries.", inserted);
+        }
         return inserted;
     }
 }

@@ -113,7 +113,10 @@ internal static class DeezerCandidateMatchHelper
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogDebug(ex, CandidateValidationFailureTemplate, options.FailureLogMessage, deezerId);
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug(ex, CandidateValidationFailureTemplate, options.FailureLogMessage, deezerId);
+            }
             return false;
         }
     }
@@ -292,7 +295,10 @@ internal static class DeezerCandidateMatchHelper
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogDebug(ex, CandidateSearchFailureTemplate, failureLogMessage, query);
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug(ex, CandidateSearchFailureTemplate, failureLogMessage, query);
+            }
             return null;
         }
     }
@@ -426,7 +432,10 @@ internal static class DeezerCandidateMatchHelper
 
                 if (attempt == maxAttempts)
                 {
-                    logger.LogDebug(ex, CandidateLoadFailureTemplate, failureLogMessage, deezerId);
+                    if (logger.IsEnabled(LogLevel.Debug))
+                    {
+                        logger.LogDebug(ex, CandidateLoadFailureTemplate, failureLogMessage, deezerId);
+                    }
                     return (false, null);
                 }
 

@@ -70,14 +70,14 @@ public class JwtTokenService
         try
         {
             using var httpClient = _httpClientFactory.CreateClient("JwtTokenService");
-            
+
             using var request = new HttpRequestMessage(HttpMethod.Post, ArlLoginUrl);
-            
+
             // Set headers
             request.Headers.Add("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36");
             request.Headers.Add("Accept", "*/*");
             request.Headers.Add("Accept-Language", "en-US,en;q=0.9");
-            
+
             // Set cookies
             var cookieValue = $"arl={arl}";
             if (!string.IsNullOrEmpty(sid))
@@ -90,7 +90,7 @@ public class JwtTokenService
             request.Content = new StringContent("", System.Text.Encoding.UTF8, "application/json");
 
             using var response = await httpClient.SendAsync(request, cancellationToken);
-            
+
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("JWT token request failed with status: {StatusCode}", response.StatusCode);
@@ -98,7 +98,7 @@ public class JwtTokenService
             }
 
             var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
-            
+
             if (string.IsNullOrEmpty(responseContent))
             {
                 _logger.LogWarning("Empty response from JWT token endpoint");

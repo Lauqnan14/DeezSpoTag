@@ -750,7 +750,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         }
     }
 
-    private static object BuildHomeFeedSectionDiagnostics(HomeFeedSelection homeFeed, IReadOnlyList<object> finalSections)
+    private static object BuildHomeFeedSectionDiagnostics(HomeFeedSelection homeFeed, List<object> finalSections)
     {
         return new
         {
@@ -1202,7 +1202,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         return BuildBrowsePageUri(DefaultMusicBrowseCategoryId, null);
     }
 
-    private static int FindPopularRadioSectionIndex(IReadOnlyList<object> sections)
+    private static int FindPopularRadioSectionIndex(List<object> sections)
     {
         for (var i = 0; i < sections.Count; i++)
         {
@@ -1329,7 +1329,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         {
             uri = "spotify:section:popular-radio-synth",
             title = PopularRadioTitle,
-                items = radioItems.Take(20).ToList()
+            items = radioItems.Take(20).ToList()
         };
     }
 
@@ -1428,7 +1428,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
                         return $"https://www.deezer.com/track/{track.Id}";
                     }
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException) {
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
                     // Best effort.
                 }
             }
@@ -1445,7 +1446,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
                 }
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Best effort.
         }
 
@@ -2742,7 +2744,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
                 (browseStart.TryGetProperty(SectionsKey, out _) || browseStart.TryGetProperty(SectionContainerKey, out _));
             return $"shape=data:{hasData} browseV2:{hasBrowseV2} dataNode:{hasBrowseData} sections:{hasSections} items:{hasItems} itemCount:{itemCount} dataKeys:{dataKeys} browseStartKeys:{browseStartKeys} browseStartHasSections:{browseStartHasSections} errors:{hasErrors}";
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return "shape=unknown";
         }
     }
@@ -2789,7 +2792,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
 
             return $"diag=browseKeys:{browseKeys} sectionCount:{sectionCount} firstKeys:{firstKeys} sectionDataKeys:{sectionDataKeys} sectionItemsKeys:{sectionDetails.SectionItemsKeys} sectionItemsCount:{sectionDetails.SectionItemsCount} itemKeys:{firstItemDetails.ItemKeys} contentDataKeys:{firstItemDetails.ContentDataKeys} contentDataInnerKeys:{firstItemDetails.ContentDataInnerKeys} cardRepKeys:{firstItemDetails.CardRepKeys} cardRepTitleKeys:{firstItemDetails.CardRepTitleKeys} contentDataInnerDataKeys:{firstItemDetails.ContentDataInnerDataKeys}";
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return "diag=error";
         }
     }
@@ -3367,7 +3371,10 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Spotify playlist metadata enrichment failed for playlist {PlaylistId}.", playlistId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify playlist metadata enrichment failed for playlist {PlaylistId}.", playlistId);
+            }
             return null;
         }
         finally
@@ -3396,7 +3403,10 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Spotify artist metadata enrichment failed for artist {ArtistId}.", artistId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify artist metadata enrichment failed for artist {ArtistId}.", artistId);
+            }
             return null;
         }
         finally
@@ -3507,9 +3517,9 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         return false;
     }
 
-    private static bool ContainsAnyToken(string? value, IReadOnlyCollection<string> tokens)
+    private static bool ContainsAnyToken(string? value, string[] tokens)
     {
-        if (string.IsNullOrWhiteSpace(value) || tokens.Count == 0)
+        if (string.IsNullOrWhiteSpace(value) || tokens.Length == 0)
         {
             return false;
         }
@@ -3571,7 +3581,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             var type = section.GetType();
             return type.GetProperty("uri")?.GetValue(section)?.ToString();
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }
@@ -3649,7 +3660,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             var expectedPlatform = SpotifyHomeFeedCacheKey.BuildPlatformCacheKey(DefaultCacheKey, platformAccount);
             return expectedPlatform.Equals(cacheKey, StringComparison.OrdinalIgnoreCase);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Best-effort cache only.
             return false;
         }
@@ -3675,7 +3687,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             var json = System.Text.Json.JsonSerializer.Serialize(payload, CompactJsonSerializerOptions);
             System.IO.File.WriteAllText(path, json);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Best-effort cache only.
         }
     }
@@ -3692,7 +3705,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
 
             System.IO.File.Delete(path);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Best-effort cache only.
         }
     }
@@ -3729,12 +3743,13 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             cache = (stamp, greeting, sections);
             return true;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return false;
         }
     }
 
-    private static void TryPersistBrowseCategoriesCache(IReadOnlyList<object> categories)
+    private static void TryPersistBrowseCategoriesCache(List<object> categories)
     {
         if (categories == null || categories.Count == 0)
         {
@@ -3755,7 +3770,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
                 System.IO.File.WriteAllText(path, json);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Best-effort cache only.
         }
     }
@@ -3787,7 +3803,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             categories = parsed;
             return true;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return false;
         }
     }
@@ -3809,12 +3826,14 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
                 {
                     System.IO.File.Delete(file);
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException) {
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
                     // Best-effort delete only.
                 }
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Best-effort delete only.
         }
     }
@@ -3831,7 +3850,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
 
             System.IO.File.Delete(path);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // Best-effort delete only.
         }
     }

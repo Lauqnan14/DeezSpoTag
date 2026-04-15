@@ -134,7 +134,8 @@ public sealed class ReferencesIsolationTests
             {
                 childDirectories = Directory.EnumerateDirectories(directory);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 continue;
             }
 
@@ -154,7 +155,8 @@ public sealed class ReferencesIsolationTests
             {
                 files = Directory.EnumerateFiles(directory);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 continue;
             }
 
@@ -243,7 +245,8 @@ public sealed class ReferencesIsolationTests
 
             return false;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return true;
         }
     }

@@ -69,7 +69,10 @@ public sealed class QobuzMetadataResolver : IMetadataResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Qobuz metadata resolver failed for track {TrackId}", track.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Qobuz metadata resolver failed for track {TrackId}", track.Id);
+            }
         }
     }
 

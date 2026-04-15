@@ -78,7 +78,9 @@ public class DownloadObjectGenerator
     {
         try
         {
-            _logger.LogDebug("Generating download object for URL: {Url}", url);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Generating download object for URL: {Url}", url);            }
 
             var (parsedUrl, type, id) = await ParseDeezerUrlAsync(url);
 
@@ -273,7 +275,9 @@ public class DownloadObjectGenerator
         int bitrate,
         CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug("Generating track item for ID: {TrackId}", trackId);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Generating track item for ID: {TrackId}", trackId);        }
 
         var deezerClient = await _authenticatedDeezerService.GetAuthenticatedClientAsync();
         if (deezerClient == null)
@@ -289,7 +293,7 @@ public class DownloadObjectGenerator
         }
 
         DeezSpoTag.Core.Models.Track track = MapGwTrackToTrack(trackData);
-        
+
         // CRITICAL FIX: Parse track data like deezspotag parseTrack method
         ParseTrackData(track, trackData);
 
@@ -313,9 +317,11 @@ public class DownloadObjectGenerator
         };
 
         downloadObject.Uuid = $"track_{trackId}_{bitrate}";
-        
-        _logger.LogInformation("Generated track download object with full metadata: {Title} by {Artist} from {Album}", 
-            downloadObject.Title, track.MainArtist?.Name, album?.Title);
+
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Generated track download object with full metadata: {Title} by {Artist} from {Album}",
+                downloadObject.Title, track.MainArtist?.Name, album?.Title);        }
         return downloadObject;
     }
 
@@ -334,13 +340,17 @@ public class DownloadObjectGenerator
 
             TryParsePublicTrackIntoTrack(trackId, track, publicTrackData);
             ApplyPublicTrackMetadata(track, publicTrackData);
-            _logger.LogDebug("Enhanced track with public API data: BPM={Bpm}, Copyright={Copyright}",
-                track.Bpm, track.Copyright);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Enhanced track with public API data: BPM={Bpm}, Copyright={Copyright}",
+                    track.Bpm, track.Copyright);            }
             return publicTrackData;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Could not get public API data for track {TrackId}, continuing with GW data", trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Could not get public API data for track {TrackId}, continuing with GW data", trackId);            }
             return null;
         }
     }
@@ -353,7 +363,9 @@ public class DownloadObjectGenerator
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to parse public API track data for {TrackId}", trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to parse public API track data for {TrackId}", trackId);            }
         }
     }
 
@@ -408,7 +420,9 @@ public class DownloadObjectGenerator
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Pipe metadata lookup failed for track {TrackId}", trackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Pipe metadata lookup failed for track {TrackId}", trackId);            }
         }
     }
 
@@ -448,14 +462,18 @@ public class DownloadObjectGenerator
                 Sync = lyricsData.GetValueOrDefault("LYRICS_SYNC_JSON", "")?.ToString() ?? "",
                 Unsync = lyricsData.GetValueOrDefault("LYRICS_TEXT", "")?.ToString() ?? ""
             };
-            _logger.LogDebug("Retrieved lyrics for track {TrackId}: Sync={HasSync}, Unsync={HasUnsync}",
-                track.Id,
-                !string.IsNullOrEmpty(track.Lyrics.Sync),
-                !string.IsNullOrEmpty(track.Lyrics.Unsync));
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Retrieved lyrics for track {TrackId}: Sync={HasSync}, Unsync={HasUnsync}",
+                    track.Id,
+                    !string.IsNullOrEmpty(track.Lyrics.Sync),
+                    !string.IsNullOrEmpty(track.Lyrics.Unsync));            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Could not get lyrics for track {TrackId}", track.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Could not get lyrics for track {TrackId}", track.Id);            }
             track.LyricsId = string.Empty;
         }
     }
@@ -486,7 +504,9 @@ public class DownloadObjectGenerator
             }
 
             await TryPopulateAlbumMainArtistPictureAsync(deezerClient, album);
-            _logger.LogDebug("Attached album {AlbumTitle} to track {TrackTitle}", album.Title, track.Title);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Attached album {AlbumTitle} to track {TrackTitle}", album.Title, track.Title);            }
             return (album, fetchedAlbumData);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -505,7 +525,9 @@ public class DownloadObjectGenerator
 
         try
         {
-            _logger.LogDebug("Album main artist missing picture, fetching artist data for {ArtistId}", album.MainArtist.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Album main artist missing picture, fetching artist data for {ArtistId}", album.MainArtist.Id);            }
             var artistData = await deezerClient.GetArtistAsync(album.MainArtist.Id.ToString());
             if (artistData == null)
             {
@@ -513,8 +535,10 @@ public class DownloadObjectGenerator
             }
 
             album.MainArtist = MapApiArtistToArtist(artistData);
-            _logger.LogDebug("Updated album main artist picture from artist API: {ArtistName} -> {ArtistPicMd5}",
-                album.MainArtist.Name, album.MainArtist.Pic?.Md5 ?? "NULL");
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Updated album main artist picture from artist API: {ArtistName} -> {ArtistPicMd5}",
+                    album.MainArtist.Name, album.MainArtist.Pic?.Md5 ?? "NULL");            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -550,13 +574,17 @@ public class DownloadObjectGenerator
             : new Picture(string.Empty, CoverPictureType);
         if (album.Pic.Md5.Length > 0)
         {
-            _logger.LogDebug("Set album cover from track data: {AlbPicture}", trackData.AlbPicture);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Set album cover from track data: {AlbPicture}", trackData.AlbPicture);            }
         }
         else
         {
             _logger.LogDebug("Set empty album cover for minimal album");
         }
-        _logger.LogDebug("Created minimal album for track {TrackTitle}", track.Title);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Created minimal album for track {TrackTitle}", track.Title);        }
         return album;
     }
 
@@ -612,7 +640,9 @@ public class DownloadObjectGenerator
         int bitrate,
         CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug("Generating episode item for ID: {EpisodeId}", episodeId);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Generating episode item for ID: {EpisodeId}", episodeId);        }
 
         var deezerClient = await _authenticatedDeezerService.GetAuthenticatedClientAsync();
         if (deezerClient == null)
@@ -697,7 +727,9 @@ public class DownloadObjectGenerator
 
         downloadObject.Uuid = $"episode_{episodeId}_{bitrate}";
 
-        _logger.LogInformation("Generated episode download object: {Title} ({Show})", track.Title, episodeInfo.ShowTitle);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Generated episode download object: {Title} ({Show})", track.Title, episodeInfo.ShowTitle);        }
         return downloadObject;
     }
 
@@ -706,7 +738,9 @@ public class DownloadObjectGenerator
         int bitrate,
         CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug("Generating show items for ID: {ShowId}", showId);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Generating show items for ID: {ShowId}", showId);        }
 
         using var scope = _serviceProvider.CreateScope();
         var gatewayService = scope.ServiceProvider.GetRequiredService<DeezerGatewayService>();
@@ -757,7 +791,9 @@ public class DownloadObjectGenerator
             throw new InvalidOperationException($"No downloadable episodes found for show: {showId}");
         }
 
-        _logger.LogInformation("Generated show download list for {ShowId}: {Count} episodes", showId, downloadObjects.Count);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Generated show download list for {ShowId}: {Count} episodes", showId, downloadObjects.Count);        }
         return downloadObjects;
     }
 
@@ -944,7 +980,9 @@ public class DownloadObjectGenerator
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to resolve episode stream URL for {EpisodeId}", episodeId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to resolve episode stream URL for {EpisodeId}", episodeId);            }
         }
 
         return null;
@@ -969,7 +1007,9 @@ public class DownloadObjectGenerator
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to resolve episode stream URL via GW for {EpisodeId}", episodeId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to resolve episode stream URL via GW for {EpisodeId}", episodeId);            }
             return null;
         }
     }
@@ -1119,7 +1159,9 @@ public class DownloadObjectGenerator
         DeezSpoTag.Core.Models.Artist? rootArtist = null,
         CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug("Generating album item for ID: {AlbumId}", albumId);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Generating album item for ID: {AlbumId}", albumId);        }
 
         var deezerClient = await _authenticatedDeezerService.GetAuthenticatedClientAsync();
         if (deezerClient == null)
@@ -1167,8 +1209,10 @@ public class DownloadObjectGenerator
         downloadObject.UpdateSize();
         downloadObject.Uuid = $"album_{albumId}_{bitrate}";
 
-        _logger.LogInformation("Generated album download object with full metadata: {Title} with {TrackCount} tracks", 
-            downloadObject.Title, tracks.Count);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Generated album download object with full metadata: {Title} with {TrackCount} tracks",
+                downloadObject.Title, tracks.Count);        }
         return downloadObject;
     }
 
@@ -1184,7 +1228,9 @@ public class DownloadObjectGenerator
         string? overridePlaylistId = null,
         CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug("Generating playlist item for ID: {PlaylistId}", playlistId);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Generating playlist item for ID: {PlaylistId}", playlistId);        }
 
         var deezerClient = await _authenticatedDeezerService.GetAuthenticatedClientAsync();
         if (deezerClient == null)
@@ -1221,8 +1267,10 @@ public class DownloadObjectGenerator
         downloadObject.UpdateSize();
         downloadObject.Uuid = $"playlist_{playlistId}_{bitrate}";
 
-        _logger.LogInformation("Generated playlist download object with full metadata: {Title} with {TrackCount} tracks", 
-            downloadObject.Title, tracks.Count);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Generated playlist download object with full metadata: {Title} with {TrackCount} tracks",
+                downloadObject.Title, tracks.Count);        }
         return downloadObject;
     }
 
@@ -1320,7 +1368,9 @@ public class DownloadObjectGenerator
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to load playlist via API for {PlaylistId}", playlistId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to load playlist via API for {PlaylistId}", playlistId);            }
             return null;
         }
     }
@@ -1334,7 +1384,9 @@ public class DownloadObjectGenerator
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to load playlist via GW for {PlaylistId}", playlistId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to load playlist via GW for {PlaylistId}", playlistId);            }
             throw new GenerationException($"https://deezer.com/playlist/{playlistId}", ex.Message);
         }
     }
@@ -1463,7 +1515,9 @@ public class DownloadObjectGenerator
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Could not get public API data for track {TrackId} in {ParentType} {ParentId}", trackId, parentType, parentId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Could not get public API data for track {TrackId} in {ParentType} {ParentId}", trackId, parentType, parentId);            }
             return null;
         }
     }
@@ -1511,7 +1565,9 @@ public class DownloadObjectGenerator
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Could not get album data for track {TrackId} in playlist {PlaylistId}", trackId, playlistId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Could not get album data for track {TrackId} in playlist {PlaylistId}", trackId, playlistId);            }
             return null;
         }
     }
@@ -1543,7 +1599,9 @@ public class DownloadObjectGenerator
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Could not get lyrics for track {TrackId} in {ParentType} {ParentId}", track.Id, parentType, parentId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Could not get lyrics for track {TrackId} in {ParentType} {ParentId}", track.Id, parentType, parentId);            }
             track.LyricsId = string.Empty;
         }
     }
@@ -1557,7 +1615,9 @@ public class DownloadObjectGenerator
         string tab = "all",
         CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug("Generating artist item for ID: {ArtistId}, tab: {Tab}", artistId, tab);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Generating artist item for ID: {ArtistId}, tab: {Tab}", artistId, tab);        }
 
         var deezerClient = await _authenticatedDeezerService.GetAuthenticatedClientAsync();
         if (deezerClient == null)
@@ -1581,7 +1641,9 @@ public class DownloadObjectGenerator
             artistId,
             cancellationToken);
 
-        _logger.LogDebug("Generated artist download list for {ArtistId}: {Count} items", artistId, albumList.Count);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Generated artist download list for {ArtistId}: {Count} items", artistId, albumList.Count);        }
         return albumList;
     }
 
@@ -1631,7 +1693,9 @@ public class DownloadObjectGenerator
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Failed to generate album {AlbumId} for artist {ArtistId}", albumId, artistId);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Failed to generate album {AlbumId} for artist {ArtistId}", albumId, artistId);                }
             }
         }
 
@@ -1697,13 +1761,15 @@ public class DownloadObjectGenerator
         var album = BuildAlbumFromGwTrack(gwTrack, mainArtist, artistName);
         var track = BuildTrackFromGwTrack(gwTrack, mainArtist, album, artistName);
 
-        _logger.LogInformation("Mapped GW track {TrackId} '{Title}' by '{Artist}': MD5='{MD5}', MediaVersion='{MediaVersion}', FileSizes={FileSizeCount}, TrackToken='{TrackToken}'", 
-            track.Id, track.Title, track.MainArtist?.Name ?? UnknownValue, track.MD5, track.MediaVersion, track.FileSizes.Count, track.TrackToken);
-        
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Mapped GW track {TrackId} '{Title}' by '{Artist}': MD5='{MD5}', MediaVersion='{MediaVersion}', FileSizes={FileSizeCount}, TrackToken='{TrackToken}'",
+                track.Id, track.Title, track.MainArtist?.Name ?? UnknownValue, track.MD5, track.MediaVersion, track.FileSizes.Count, track.TrackToken);        }
+
         // CRITICAL: Log if track is not encoded (MD5 is 0) - EXACT PORT from deezspotag
         if (string.IsNullOrWhiteSpace(gwTrack.Md5Origin))
         {
-            _logger.LogWarning("Track {TrackId} '{Title}' by '{Artist}' is not yet encoded by Deezer (MD5 is {MD5}). This is common for very new releases.", 
+            _logger.LogWarning("Track {TrackId} '{Title}' by '{Artist}' is not yet encoded by Deezer (MD5 is {MD5}). This is common for very new releases.",
                 track.Id, track.Title, track.MainArtist?.Name ?? UnknownValue, gwTrack.Md5Origin);
         }
 
@@ -1717,7 +1783,9 @@ public class DownloadObjectGenerator
         var mainArtist = new DeezSpoTag.Core.Models.Artist(gwTrack.ArtId, artistName);
         var artistPicMd5 = string.IsNullOrWhiteSpace(gwTrack.ArtPicture) ? string.Empty : gwTrack.ArtPicture.Trim();
         mainArtist.Pic = new Picture(artistPicMd5, ArtistPictureType);
-        _logger.LogDebug("Set main artist for track {TrackId}: '{ArtistName}' (ID: {ArtistId})", gwTrack.SngId, artistName, gwTrack.ArtId);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Set main artist for track {TrackId}: '{ArtistName}' (ID: {ArtistId})", gwTrack.SngId, artistName, gwTrack.ArtId);        }
         return mainArtist;
     }
 
@@ -1817,7 +1885,7 @@ public class DownloadObjectGenerator
         // CRITICAL: Set up contributors like deezspotag parseTrack
         // For now, we only have main artist from GW data, but this structure is essential
         track.Contributors = new Dictionary<string, object>();
-        
+
         // CRITICAL: Ensure Artist dictionary is properly set up (already done in MapGwTrackToTrack but reinforcing)
         if (track.Artist["Main"].Count == 0)
         {
@@ -1832,8 +1900,10 @@ public class DownloadObjectGenerator
         // CRITICAL: Generate artist strings (already done but ensuring it's called)
         track.GenerateMainFeatStrings();
 
-        _logger.LogDebug("Parsed track data for {TrackId}: Artists={Artists}, Date={Date}", 
-            track.Id, string.Join(", ", track.Artists), track.Date.Year);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Parsed track data for {TrackId}: Artists={Artists}, Date={Date}",
+                track.Id, string.Join(", ", track.Artists), track.Date.Year);        }
     }
 
     /// <summary>
@@ -1844,7 +1914,7 @@ public class DownloadObjectGenerator
     {
         var albumTitle = string.IsNullOrWhiteSpace(apiAlbum.Title) ? "Unknown Album" : apiAlbum.Title.Trim();
         DeezSpoTag.Core.Models.Album album = new DeezSpoTag.Core.Models.Album(apiAlbum.Id.ToString(), albumTitle);
-        
+
         // Set properties that exist in Core Album model
         album.Barcode = apiAlbum.Upc ?? "";
         album.Explicit = apiAlbum.ExplicitLyrics ?? false;
@@ -1890,8 +1960,10 @@ public class DownloadObjectGenerator
             }
         }
 
-        _logger.LogDebug("Mapped album {AlbumId}: Title={Title}, ArtistPic={ArtistPic}", 
-            album.Id, album.Title, album.MainArtist?.Pic?.Md5 ?? "NULL");
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Mapped album {AlbumId}: Title={Title}, ArtistPic={ArtistPic}",
+                album.Id, album.Title, album.MainArtist?.Pic?.Md5 ?? "NULL");        }
 
         return album;
     }
@@ -1903,7 +1975,7 @@ public class DownloadObjectGenerator
     {
         var playlistId = !string.IsNullOrEmpty(overrideId) ? overrideId : apiPlaylist.Id.ToString();
         DeezSpoTag.Core.Models.Playlist playlist = new DeezSpoTag.Core.Models.Playlist(playlistId, apiPlaylist.Title ?? "");
-        
+
         // Set properties that exist in Core Playlist model
         playlist.Description = apiPlaylist.Description ?? "";
         playlist.TrackTotal = apiPlaylist.NbTracks ?? 0;
@@ -1948,7 +2020,8 @@ public class DownloadObjectGenerator
                 }
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return (null, PlaylistType);
         }
 
@@ -1976,7 +2049,8 @@ public class DownloadObjectGenerator
                 }
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
 
@@ -2054,57 +2128,83 @@ public class DownloadObjectGenerator
     private DeezSpoTag.Core.Models.Artist MapApiArtistToArtist(ApiArtist apiArtist)
     {
         DeezSpoTag.Core.Models.Artist artist = new DeezSpoTag.Core.Models.Artist(apiArtist.Id, apiArtist.Name ?? "");
-        
-        // EXACT PORT from deezspotag Album.parseAlbum lines 67-75:
-        // Getting artist image ID
-        // ex: https://e-cdns-images.dzcdn.net/images/artist/f2bc007e9133c946ac3c3907ddc5d2ea/56x56-000000-80-0-0.jpg
-        string artPic = "";
-        
-        // First try md5_image if available
+        var artPic = ResolveArtistPictureMd5(apiArtist, artist.Name);
+        artist.Pic = new Picture(artPic, ArtistPictureType);
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Final artist picture MD5 for {ArtistName}: '{ArtPic}' (empty: {IsEmpty})", artist.Name, artPic, string.IsNullOrEmpty(artPic));        }
+
+        return artist;
+    }
+
+    private string ResolveArtistPictureMd5(ApiArtist apiArtist, string artistName)
+    {
         if (!string.IsNullOrEmpty(apiArtist.Md5Image))
         {
-            artPic = apiArtist.Md5Image;
-            _logger.LogDebug("Using md5_image for artist {ArtistName}: {Md5Image}", artist.Name, artPic);
-        }
-        // Otherwise extract from picture_small URL like deezspotag does
-        else if (!string.IsNullOrEmpty(apiArtist.PictureSmall))
-        {
-            var pictureSmall = apiArtist.PictureSmall;
-            _logger.LogDebug("Extracting artist picture from URL for {ArtistName}: {PictureSmallUrl}", artist.Name, pictureSmall);
-            
-            var artistIndex = pictureSmall.IndexOf("artist/");
-            if (artistIndex >= 0)
+            if (_logger.IsEnabled(LogLevel.Debug))
             {
-                // Match the upstream slice behavior by removing the trailing size suffix.
-                var startIndex = artistIndex + 7; // "artist/".Length
-                var endIndex = pictureSmall.Length - 24; // Remove last 24 characters
-                if (startIndex < endIndex && endIndex > startIndex)
-                {
-                    artPic = pictureSmall.Substring(startIndex, endIndex - startIndex);
-                    _logger.LogDebug("Extracted artist picture MD5 from URL for {ArtistName}: {ArtPic}", artist.Name, artPic);
-                }
-                else
-                {
-                    _logger.LogDebug("Failed to extract MD5 from artist URL for {ArtistName}: startIndex={StartIndex}, endIndex={EndIndex}, length={Length}", 
-                        artist.Name, startIndex, endIndex, pictureSmall.Length);
-                }
+                _logger.LogDebug("Using md5_image for artist {ArtistName}: {Md5Image}", artistName, apiArtist.Md5Image);
             }
-            else
-            {
-                _logger.LogDebug("No 'artist/' found in picture URL for {ArtistName}: {PictureSmallUrl}", artist.Name, pictureSmall);
-            }
+
+            return apiArtist.Md5Image;
         }
-        else
+
+        if (string.IsNullOrEmpty(apiArtist.PictureSmall))
         {
-            _logger.LogDebug("No picture_small or md5_image available for artist {ArtistName}", artist.Name);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("No picture_small or md5_image available for artist {ArtistName}", artistName);
+            }
+
+            return string.Empty;
         }
-        
-        // Set the picture (even if empty)
-        artist.Pic = new Picture(artPic, ArtistPictureType);
-        
-        _logger.LogDebug("Final artist picture MD5 for {ArtistName}: '{ArtPic}' (empty: {IsEmpty})", artist.Name, artPic, string.IsNullOrEmpty(artPic));
-        
-        return artist;
+
+        return ExtractArtistPictureMd5FromUrl(apiArtist.PictureSmall, artistName);
+    }
+
+    private string ExtractArtistPictureMd5FromUrl(string pictureSmall, string artistName)
+    {
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Extracting artist picture from URL for {ArtistName}: {PictureSmallUrl}", artistName, pictureSmall);
+        }
+
+        var artistIndex = pictureSmall.IndexOf("artist/");
+        if (artistIndex < 0)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("No 'artist/' found in picture URL for {ArtistName}: {PictureSmallUrl}", artistName, pictureSmall);
+            }
+
+            return string.Empty;
+        }
+
+        var startIndex = artistIndex + 7;
+        var endIndex = pictureSmall.Length - 24;
+        if (startIndex >= endIndex || endIndex <= startIndex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Failed to extract MD5 from artist URL for {ArtistName}: startIndex={StartIndex}, endIndex={EndIndex}, length={Length}",
+                    artistName,
+                    startIndex,
+                    endIndex,
+                    pictureSmall.Length);
+            }
+
+            return string.Empty;
+        }
+
+        var artPic = pictureSmall.Substring(startIndex, endIndex - startIndex);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Extracted artist picture MD5 from URL for {ArtistName}: {ArtPic}", artistName, artPic);
+        }
+
+        return artPic;
     }
 
     private static string? BuildOwnerPictureUrl(string? ownerPicture, string sizeSuffix)
@@ -2145,9 +2245,11 @@ public class DownloadObjectGenerator
 
         if (resolved != null)
         {
-            _logger.LogInformation(
-                "Normalized track MainArtist from combined '{Combined}' to '{Resolved}' (ID: {Id})",
-                track.MainArtist.Name, resolved.Name, resolved.Id);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Normalized track MainArtist from combined '{Combined}' to '{Resolved}' (ID: {Id})",
+                    track.MainArtist.Name, resolved.Name, resolved.Id);            }
             track.MainArtist = new DeezSpoTag.Core.Models.Artist(
                 resolved.Id, resolved.Name, "Main", track.MainArtist.Pic?.Md5);
             return;
@@ -2155,9 +2257,11 @@ public class DownloadObjectGenerator
 
         var (primary, additional) = DeezSpoTag.Core.Utils.ArtistNameNormalizer
             .SplitCombinedName(track.MainArtist.Name);
-        _logger.LogInformation(
-            "Split track MainArtist name from '{Combined}' to primary '{Primary}' + {Count} additional",
-            track.MainArtist.Name, primary, additional.Count);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Split track MainArtist name from '{Combined}' to primary '{Primary}' + {Count} additional",
+                track.MainArtist.Name, primary, additional.Count);        }
         track.MainArtist = new DeezSpoTag.Core.Models.Artist(
             track.MainArtist.Id, primary, "Main", track.MainArtist.Pic?.Md5);
 
@@ -2182,9 +2286,11 @@ public class DownloadObjectGenerator
 
         var primaryName = mainArtists[0];
         var extras = mainArtists.Skip(1).ToList();
-        _logger.LogInformation(
-            "Enforcing single Main artist for track '{Title}': keeping '{Primary}', moving {Count} to Featured",
-            track.Title, primaryName, extras.Count);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Enforcing single Main artist for track '{Title}': keeping '{Primary}', moving {Count} to Featured",
+                track.Title, primaryName, extras.Count);        }
 
         track.Artist["Main"] = new List<string> { primaryName };
         var featuredArtists = EnsureFeaturedArtistGroup(track.Artist);
@@ -2234,9 +2340,11 @@ public class DownloadObjectGenerator
         var resolved = TryResolveMainArtistFromContributors(album.MainArtist!.Name, albumData?.Contributors);
         if (resolved != null)
         {
-            _logger.LogInformation(
-                "Normalized album MainArtist from combined '{Combined}' to '{Resolved}' (ID: {Id})",
-                album.MainArtist.Name, resolved.Name, resolved.Id);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Normalized album MainArtist from combined '{Combined}' to '{Resolved}' (ID: {Id})",
+                    album.MainArtist.Name, resolved.Name, resolved.Id);            }
             album.MainArtist = new DeezSpoTag.Core.Models.Artist(
                 resolved.Id, resolved.Name, "Main", album.MainArtist.Pic?.Md5);
             return;
@@ -2244,9 +2352,11 @@ public class DownloadObjectGenerator
 
         var (primary, additional) = DeezSpoTag.Core.Utils.ArtistNameNormalizer
             .SplitCombinedName(album.MainArtist.Name);
-        _logger.LogInformation(
-            "Split album MainArtist name from '{Combined}' to primary '{Primary}'",
-            album.MainArtist.Name, primary);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Split album MainArtist name from '{Combined}' to primary '{Primary}'",
+                album.MainArtist.Name, primary);        }
         album.MainArtist = new DeezSpoTag.Core.Models.Artist(
             album.MainArtist.Id, primary, "Main", album.MainArtist.Pic?.Md5);
 
@@ -2271,9 +2381,11 @@ public class DownloadObjectGenerator
 
         var primaryName = mainArtists[0];
         var extras = mainArtists.Skip(1).ToList();
-        _logger.LogInformation(
-            "Enforcing single Main artist for album '{Title}': keeping '{Primary}', moving {Count} to Featured",
-            album.Title, primaryName, extras.Count);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Enforcing single Main artist for album '{Title}': keeping '{Primary}', moving {Count} to Featured",
+                album.Title, primaryName, extras.Count);        }
 
         album.Artist["Main"] = new List<string> { primaryName };
         var featuredArtists = EnsureFeaturedArtistGroup(album.Artist);

@@ -259,7 +259,10 @@ public sealed class ExternalTrackMatchService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Qobuz ISRC lookup failed: {Isrc}", isrc);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Qobuz ISRC lookup failed: {Isrc}", isrc);
+            }
             return null;
         }
     }
@@ -280,27 +283,43 @@ public sealed class ExternalTrackMatchService
             {
                 return null;
             }
-            foreach (var item in data.EnumerateArray())
-            {
-                var id = item.TryGetProperty("id", out var idElement) ? idElement.GetString() : null;
-                if (string.IsNullOrWhiteSpace(id))
-                {
-                    continue;
-                }
-                var attributes = item.TryGetProperty("attributes", out var attrs) ? attrs : default;
-                var url = attributes.ValueKind == JsonValueKind.Object &&
-                          attributes.TryGetProperty("url", out var urlElement)
-                    ? urlElement.GetString()
-                    : null;
-                return (id!, url ?? string.Empty);
-            }
-            return null;
+            return TryExtractAppleSong(data);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple Music ISRC lookup failed: {Isrc}", isrc);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple Music ISRC lookup failed: {Isrc}", isrc);
+            }
             return null;
         }
+    }
+
+    private static (string Id, string Url)? TryExtractAppleSong(JsonElement data)
+    {
+        foreach (var item in data.EnumerateArray())
+        {
+            var id = item.TryGetProperty("id", out var idElement) ? idElement.GetString() : null;
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                continue;
+            }
+
+            var url = TryExtractAppleSongUrl(item);
+            return (id, url ?? string.Empty);
+        }
+
+        return null;
+    }
+
+    private static string? TryExtractAppleSongUrl(JsonElement item)
+    {
+        if (!item.TryGetProperty("attributes", out var attributes) || attributes.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return attributes.TryGetProperty("url", out var urlElement) ? urlElement.GetString() : null;
     }
 }
 

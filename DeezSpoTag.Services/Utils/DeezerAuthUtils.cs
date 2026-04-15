@@ -29,7 +29,7 @@ public class DeezerAuthUtils
     private static readonly string DeezerUserDataUrl = BuildUrl(DeezerWebHost, "/ajax/gw-light.php?method=deezer.getUserData&input=3&api_version=1.0&api_token=null");
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly SearchValues<char> ArlValueTerminators = SearchValues.Create(";, \t\r\n");
-    
+
     private readonly HttpClient _httpClient;
     private readonly ILogger<DeezerAuthUtils> _logger;
 
@@ -160,7 +160,7 @@ public class DeezerAuthUtils
         {
             // Hash password with MD5 using UTF-8 encoding (exact port from deezspotag)
             var hashedPassword = DecryptionService.GenerateMd5(password, "utf8");
-            
+
             // Create hash for authentication (exact port from deezspotag)
             var authString = string.Join("", ClientId, email, hashedPassword, ClientSignatureSalt);
             var hash = DecryptionService.GenerateMd5(authString, "utf8");
@@ -185,7 +185,7 @@ public class DeezerAuthUtils
             _logger.LogDebug("Attempting to get Deezer access token");
 
             var response = await _httpClient.GetAsync(requestUrl, cancellationToken);
-            
+
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("Failed to get access token via api.deezer.com/auth/token. Status: {StatusCode}", response.StatusCode);
@@ -193,7 +193,7 @@ public class DeezerAuthUtils
             }
 
             var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
-            
+
             using var jsonDoc = JsonDocument.Parse(responseContent);
             var root = jsonDoc.RootElement;
 
@@ -268,7 +268,7 @@ public class DeezerAuthUtils
             {
                 UseCookies = true
             };
-            
+
             using var client = new HttpClient(handler);
             client.DefaultRequestHeaders.Add(UserAgentHeader, CoreUtils.UserAgentHeader);
 
@@ -277,9 +277,9 @@ public class DeezerAuthUtils
             // First request to set cookies (exact port from deezspotag)
             var authUrl = DeezerGenericTrackUrl;
             client.DefaultRequestHeaders.Add("Authorization", $"Bearer {accessToken}");
-            
+
             var authResponse = await client.GetAsync(authUrl, cancellationToken);
-            
+
             if (!authResponse.IsSuccessStatusCode)
             {
                 _logger.LogWarning("Failed to authenticate with access token. Status: {StatusCode}", authResponse.StatusCode);
@@ -289,9 +289,9 @@ public class DeezerAuthUtils
             // Second request to get ARL (exact port from deezspotag)
             client.DefaultRequestHeaders.Remove("Authorization");
             var arlUrl = DeezerUserArlUrl;
-            
+
             var arlResponse = await client.GetAsync(arlUrl, cancellationToken);
-            
+
             if (!arlResponse.IsSuccessStatusCode)
             {
                 _logger.LogWarning("Failed to get ARL. Status: {StatusCode}", arlResponse.StatusCode);
@@ -299,14 +299,14 @@ public class DeezerAuthUtils
             }
 
             var arlContent = await arlResponse.Content.ReadAsStringAsync(cancellationToken);
-            
+
             using var jsonDoc = JsonDocument.Parse(arlContent);
             var root = jsonDoc.RootElement;
 
             if (root.TryGetProperty(ResultsField, out var resultsElement))
             {
                 var arl = resultsElement.GetString();
-                
+
                 if (!string.IsNullOrEmpty(arl))
                 {
                     _logger.LogDebug("Successfully obtained ARL");
@@ -342,7 +342,7 @@ public class DeezerAuthUtils
 
             // Step 1: Get access token
             var accessToken = await GetDeezerAccessTokenFromEmailPasswordAsync(email, password, cancellationToken);
-            
+
             if (string.IsNullOrEmpty(accessToken))
             {
                 _logger.LogWarning("Failed to get access token");
@@ -351,7 +351,7 @@ public class DeezerAuthUtils
 
             // Step 2: Get ARL from access token
             var arl = await GetDeezerArlFromAccessTokenAsync(accessToken, cancellationToken);
-            
+
             if (string.IsNullOrEmpty(arl))
             {
                 _logger.LogWarning("Failed to get ARL");
@@ -468,12 +468,12 @@ public class DeezerAuthUtils
                 return false;
 
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
-            
+
             using var jsonDoc = JsonDocument.Parse(content);
             var root = jsonDoc.RootElement;
 
             // Check if we got valid user data
-            if (root.TryGetProperty(ResultsField, out var results) && 
+            if (root.TryGetProperty(ResultsField, out var results) &&
                 results.TryGetProperty("USER", out var user) &&
                 user.TryGetProperty("USER_ID", out var userId))
             {
@@ -511,11 +511,11 @@ public class DeezerAuthUtils
                 return null;
 
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
-            
+
             using var jsonDoc = JsonDocument.Parse(content);
             var root = jsonDoc.RootElement;
 
-            if (root.TryGetProperty(ResultsField, out var results) && 
+            if (root.TryGetProperty(ResultsField, out var results) &&
                 results.TryGetProperty("USER", out var user))
             {
                 return new DeezerUserInfo
@@ -524,9 +524,9 @@ public class DeezerAuthUtils
                     Username = user.TryGetProperty("BLOG_NAME", out var username) ? username.GetString() : null,
                     Email = user.TryGetProperty("EMAIL", out var email) ? email.GetString() : null,
                     Country = user.TryGetProperty("COUNTRY", out var country) ? country.GetString() : null,
-                    CanStreamHQ = user.TryGetProperty("OPTIONS", out var options) && 
+                    CanStreamHQ = user.TryGetProperty("OPTIONS", out var options) &&
                                  options.TryGetProperty("web_hq", out var hq) && hq.GetBoolean(),
-                    CanStreamLossless = user.TryGetProperty("OPTIONS", out var options2) && 
+                    CanStreamLossless = user.TryGetProperty("OPTIONS", out var options2) &&
                                        options2.TryGetProperty("web_lossless", out var lossless) && lossless.GetBoolean()
                 };
             }

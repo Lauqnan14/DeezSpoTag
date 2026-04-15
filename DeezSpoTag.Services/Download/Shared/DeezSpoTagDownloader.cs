@@ -130,7 +130,9 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
         {
             DownloadObject.IsCanceled = true;
             SendCancellationEvents();
-            _logger?.LogInformation(ex, "Download cancelled: {Title}", DownloadObject.Title);
+            if (_logger?.IsEnabled(LogLevel.Information) == true)
+            {
+                _logger?.LogInformation(ex, "Download cancelled: {Title}", DownloadObject.Title);            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -183,7 +185,9 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
     {
         var tracks = new DownloadResult?[collection.Collection.Tracks.Count];
         var queueWorkerConcurrency = Math.Max(1, Settings.MaxConcurrentDownloads);
-        _logger?.LogInformation("DeezSpoTag collection worker concurrency: {Concurrency}", queueWorkerConcurrency);
+        if (_logger?.IsEnabled(LogLevel.Information) == true)
+        {
+            _logger?.LogInformation("DeezSpoTag collection worker concurrency: {Concurrency}", queueWorkerConcurrency);        }
 
         using var q = new DeezSpoTagAsyncQueue<TrackQueueData>(
             async (data) =>
@@ -256,7 +260,9 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
 
         if (System.IO.File.Exists(outputPath) && (string.IsNullOrWhiteSpace(Settings.OverwriteFile) || Settings.OverwriteFile == "n"))
         {
-            _logger?.LogInformation("Episode already exists, skipping: {Path}", outputPath);
+            if (_logger?.IsEnabled(LogLevel.Information) == true)
+            {
+                _logger?.LogInformation("Episode already exists, skipping: {Path}", outputPath);            }
             DownloadObject.CompleteTrackProgress(Listener);
             return;
         }
@@ -425,7 +431,9 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger?.LogDebug(ex, "Failed to resolve tag settings for download {Uuid}", DownloadObject.UUID);
+            if (_logger?.IsEnabled(LogLevel.Debug) == true)
+            {
+                _logger?.LogDebug(ex, "Failed to resolve tag settings for download {Uuid}", DownloadObject.UUID);            }
         }
 
         return _resolvedTagSettings ?? Settings.Tags ?? new TagSettings();
@@ -464,7 +472,9 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger?.LogDebug(ex, "Failed to resolve episode stream URL for {EpisodeId}", episodeId);
+            if (_logger?.IsEnabled(LogLevel.Debug) == true)
+            {
+                _logger?.LogDebug(ex, "Failed to resolve episode stream URL for {EpisodeId}", episodeId);            }
         }
 
         var gatewayStream = await ResolveEpisodeStreamUrlFromGatewayAsync(episodeId);
@@ -494,7 +504,9 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger?.LogDebug(ex, "Failed to resolve episode stream URL via gateway for {EpisodeId}", episodeId);
+            if (_logger?.IsEnabled(LogLevel.Debug) == true)
+            {
+                _logger?.LogDebug(ex, "Failed to resolve episode stream URL via gateway for {EpisodeId}", episodeId);            }
             return null;
         }
     }
@@ -504,7 +516,13 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
             _serviceProvider,
             showId,
             episodeId,
-            (ex, id) => _logger?.LogDebug(ex, "Failed to resolve episode stream URL via show page for {EpisodeId}", id));
+            (ex, id) =>
+            {
+                if (_logger?.IsEnabled(LogLevel.Debug) == true)
+                {
+                    _logger.LogDebug(ex, "Failed to resolve episode stream URL via show page for {EpisodeId}", id);
+                }
+            });
 
     private static string? ResolveEpisodeShowId(Dictionary<string, object> trackApi)
     {
@@ -580,7 +598,9 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger?.LogDebug(ex, "Metadata resolver failed for track {TrackId}", track.Id);
+            if (_logger?.IsEnabled(LogLevel.Debug) == true)
+            {
+                _logger?.LogDebug(ex, "Metadata resolver failed for track {TrackId}", track.Id);            }
         }
     }
 
@@ -1042,10 +1062,12 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
         var allowSearchFallback = string.IsNullOrWhiteSpace(trackObj.ISRC);
         if (!allowSearchFallback)
         {
-            _logger?.LogDebug(
-                "Skipping metadata search fallback because ISRC is set for track {TrackId} ({Isrc})",
-                trackObj.Id,
-                trackObj.ISRC);
+            if (_logger?.IsEnabled(LogLevel.Debug) == true)
+            {
+                _logger?.LogDebug(
+                    "Skipping metadata search fallback because ISRC is set for track {TrackId} ({Isrc})",
+                    trackObj.Id,
+                    trackObj.ISRC);            }
             return null;
         }
 
@@ -1659,7 +1681,9 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger?.LogDebug(ex, "Failed to delete temp encrypted file {Path}", tempEnc);
+            if (_logger?.IsEnabled(LogLevel.Debug) == true)
+            {
+                _logger?.LogDebug(ex, "Failed to delete temp encrypted file {Path}", tempEnc);            }
         }
     }
 
@@ -1753,7 +1777,8 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
                 {
                     searchedFile = await System.IO.File.ReadAllTextAsync(searchedFilePath);
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException) {
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
                     searchedFile = "";
                 }
 
@@ -2151,7 +2176,9 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
             return;
         }
 
-        state.Logger.LogInformation("Apple album art selected: {Url}", state.AppleCoverUrl);
+        if (state.Logger.IsEnabled(LogLevel.Information))
+        {
+            state.Logger.LogInformation("Apple album art selected: {Url}", state.AppleCoverUrl);        }
         state.ResolvedCoverUrl = state.AppleCoverUrl;
         state.CoverIsApple = true;
     }
@@ -2201,7 +2228,9 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
 
         if (!string.IsNullOrWhiteSpace(deezerCoverUrl))
         {
-            state.Logger.LogInformation("Deezer album art selected: {Url}", deezerCoverUrl);
+            if (state.Logger.IsEnabled(LogLevel.Information))
+            {
+                state.Logger.LogInformation("Deezer album art selected: {Url}", deezerCoverUrl);            }
             state.ResolvedCoverUrl = deezerCoverUrl;
             return;
         }
@@ -2236,7 +2265,9 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
             return;
         }
 
-        _logger?.LogInformation("Spotify album art selected: {Url}", state.SpotifyCoverUrl);
+        if (_logger?.IsEnabled(LogLevel.Information) == true)
+        {
+            _logger?.LogInformation("Spotify album art selected: {Url}", state.SpotifyCoverUrl);        }
         state.ResolvedCoverUrl = state.SpotifyCoverUrl;
     }
 
@@ -2283,14 +2314,16 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
                     state.Track.MainArtist!.Name,
                     state.Logger,
                     CancellationToken.None);
-                if (!string.IsNullOrWhiteSpace(state.AppleArtistUrl))
+                if (!string.IsNullOrWhiteSpace(state.AppleArtistUrl) && state.Logger.IsEnabled(LogLevel.Information))
                 {
                     state.Logger.LogInformation("Apple artist art selected: {Url}", state.AppleArtistUrl);
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                state.Logger.LogDebug(ex, "Apple artist lookup failed for {ArtistName}", state.Track.MainArtist!.Name);
+                if (state.Logger.IsEnabled(LogLevel.Debug))
+                {
+                    state.Logger.LogDebug(ex, "Apple artist lookup failed for {ArtistName}", state.Track.MainArtist!.Name);                }
             }
         }
 
@@ -2316,7 +2349,9 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
                 state.Track.MainArtist?.Name);
             if (!string.IsNullOrWhiteSpace(deezerArtistUrl))
             {
-                state.Logger.LogInformation("Deezer artist art selected: {Url}", deezerArtistUrl);
+                if (state.Logger.IsEnabled(LogLevel.Information))
+                {
+                    state.Logger.LogInformation("Deezer artist art selected: {Url}", deezerArtistUrl);                }
                 state.ResolvedArtistUrl = deezerArtistUrl;
                 return;
             }
@@ -2345,14 +2380,16 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
             state.SpotifyArtistUrl = await state.SpotifyArtworkResolver.ResolveArtistImageByNameAsync(
                 state.Track.MainArtist?.Name,
                 CancellationToken.None);
-            if (!string.IsNullOrWhiteSpace(state.SpotifyArtistUrl))
+            if (!string.IsNullOrWhiteSpace(state.SpotifyArtistUrl) && _logger?.IsEnabled(LogLevel.Information) == true)
             {
-                _logger?.LogInformation("Spotify artist art selected by name: {Url}", state.SpotifyArtistUrl);
+                _logger.LogInformation("Spotify artist art selected by name: {Url}", state.SpotifyArtistUrl);
             }
         }
         else
         {
-            _logger?.LogInformation("Spotify artist art selected: {Url}", state.SpotifyArtistUrl);
+            if (_logger?.IsEnabled(LogLevel.Information) == true)
+            {
+                _logger?.LogInformation("Spotify artist art selected: {Url}", state.SpotifyArtistUrl);            }
         }
 
         if (!string.IsNullOrWhiteSpace(state.SpotifyArtistUrl))
@@ -3376,7 +3413,8 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
                 prop.SetValue(target, converted);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             // swallow – ID is optional for fallbacks
         }
     }

@@ -630,7 +630,9 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         }
 
         var existingTrackId = ExtractQobuzTrackId(payload.SourceUrl) ?? ExtractQobuzTrackId(payload.Url);
-        if (existingTrackId.HasValue && existingTrackId.Value != resolution.Track.Id)
+        if (existingTrackId.HasValue
+            && existingTrackId.Value != resolution.Track.Id
+            && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
                 "Qobuz resolution corrected track for {QueueUuid}: existing={ExistingTrackId} resolved={ResolvedTrackId} source={Source} score={Score}",

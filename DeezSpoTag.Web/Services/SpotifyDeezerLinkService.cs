@@ -70,7 +70,7 @@ public sealed class SpotifyDeezerLinkService
     }
 
     private async Task<List<SpotifyAlbum>> EnrichAlbumListAsync(
-        IReadOnlyList<SpotifyAlbum> albums,
+        List<SpotifyAlbum> albums,
         CancellationToken cancellationToken)
     {
         var enriched = new List<SpotifyAlbum>(albums.Count);
@@ -88,7 +88,7 @@ public sealed class SpotifyDeezerLinkService
     }
 
     private async Task<List<SpotifyTrack>> EnrichTrackListAsync(
-        IReadOnlyList<SpotifyTrack> tracks,
+        List<SpotifyTrack> tracks,
         string artistName,
         CancellationToken cancellationToken)
     {
@@ -106,7 +106,7 @@ public sealed class SpotifyDeezerLinkService
         return enriched;
     }
 
-    private async Task<List<SpotifyRelatedArtist>> EnrichRelatedArtistsAsync(IReadOnlyList<SpotifyRelatedArtist> relatedArtists)
+    private async Task<List<SpotifyRelatedArtist>> EnrichRelatedArtistsAsync(List<SpotifyRelatedArtist> relatedArtists)
     {
         var enriched = new List<SpotifyRelatedArtist>(relatedArtists.Count);
         foreach (var relatedArtist in relatedArtists)

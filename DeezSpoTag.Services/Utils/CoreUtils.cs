@@ -161,7 +161,7 @@ public static class CoreUtils
 
         foreach (var item in arr)
         {
-            var isDuplicate = result.Any(existing => 
+            var isDuplicate = result.Any(existing =>
                 existing.Equals(item, StringComparison.OrdinalIgnoreCase) ||
                 existing.Contains(item, StringComparison.OrdinalIgnoreCase) ||
                 item.Contains(existing, StringComparison.OrdinalIgnoreCase));
@@ -204,7 +204,7 @@ public static class CoreUtils
     /// Remove duplicate artists (port of removeDuplicateArtists function)
     /// </summary>
     public static (Dictionary<string, List<string>> artists, List<string> artistList) RemoveDuplicateArtists(
-        Dictionary<string, List<string>> artists, 
+        Dictionary<string, List<string>> artists,
         List<string> artistList)
     {
         // Clean up artist list
@@ -236,7 +236,8 @@ public static class CoreUtils
             File.Delete(tempFile);
             return true;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return false;
         }
     }
@@ -251,7 +252,7 @@ public static class CoreUtils
         return key switch
         {
             "startAddingArtist" => $"Started gathering artist's albums",
-            "finishAddingArtist" => $"Finished gathering artist's albums", 
+            "finishAddingArtist" => $"Finished gathering artist's albums",
             "updateQueue" => "Queue updated",
             "downloadInfo" => "Download info",
             "downloadWarn" => "Download warning",

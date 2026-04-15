@@ -3,9 +3,9 @@ namespace DeezSpoTag.Core.Models.Settings;
 public sealed class AppleMusicSettings
 {
     /// <summary>
-     /// Cookie value from https://music.apple.com named "media-user-token".
-     /// Required for AAC LC + Apple lyrics in the referenced tooling.
-     /// </summary>
+    /// Cookie value from https://music.apple.com named "media-user-token".
+    /// Required for AAC LC + Apple lyrics in the referenced tooling.
+    /// </summary>
     public string MediaUserToken { get; set; } = string.Empty;
 
     /// <summary>
@@ -22,9 +22,9 @@ public sealed class AppleMusicSettings
     public bool PreferAppleCovers { get; set; } = true;
 
     /// <summary>
-     /// Desired Apple audio profile. The download runner maps this to concrete
-     /// formats and applies fallback when DeezSpoTagSettings.FallbackBitrate is enabled.
-     /// </summary>
+    /// Desired Apple audio profile. The download runner maps this to concrete
+    /// formats and applies fallback when DeezSpoTagSettings.FallbackBitrate is enabled.
+    /// </summary>
     public string PreferredAudioProfile { get; set; } = "atmos";
 
     /// <summary>

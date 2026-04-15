@@ -322,7 +322,10 @@ public sealed class SpotifySearchService
                 }
 
                 var userMarket = await ResolveMarketAsync();
-                _logger.LogDebug("Spotify search auth ready: tokenLen={TokenLen} market={Market} source=web-player", userToken.Length, userMarket);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Spotify search auth ready: tokenLen={TokenLen} market={Market} source=web-player", userToken.Length, userMarket);
+                }
                 return new SearchContext(
                     userToken,
                     userMarket,
@@ -351,7 +354,10 @@ public sealed class SpotifySearchService
             }
 
             var market = await ResolveMarketAsync();
-            _logger.LogDebug("Spotify search auth ready: tokenLen={TokenLen} market={Market} source=web-player", token.Length, market);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Spotify search auth ready: tokenLen={TokenLen} market={Market} source=web-player", token.Length, market);
+            }
             return new SearchContext(
                 token,
                 market,
@@ -381,10 +387,13 @@ public sealed class SpotifySearchService
         if (!string.IsNullOrWhiteSpace(webPlayerToken?.AccessToken))
         {
             var market = await ResolveMarketAsync();
-            _logger.LogDebug(
-                "Spotify search auth ready: tokenLen={TokenLen} market={Market} source=webplayer",
-                webPlayerToken.AccessToken.Length,
-                market);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Spotify search auth ready: tokenLen={TokenLen} market={Market} source=webplayer",
+                    webPlayerToken.AccessToken.Length,
+                    market);
+            }
             return new SearchContext(webPlayerToken.AccessToken, market, "webplayer", blobPath, null, null, null);
         }
 
@@ -396,10 +405,13 @@ public sealed class SpotifySearchService
         }
 
         var fallbackMarket = await ResolveMarketAsync();
-        _logger.LogDebug(
-            "Spotify search auth ready: tokenLen={TokenLen} market={Market} source=librespot",
-            tokenResult.AccessToken.Length,
-            fallbackMarket);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Spotify search auth ready: tokenLen={TokenLen} market={Market} source=librespot",
+                tokenResult.AccessToken.Length,
+                fallbackMarket);
+        }
         return new SearchContext(tokenResult.AccessToken, fallbackMarket, "librespot", blobPath, null, null, null);
     }
 
@@ -492,9 +504,15 @@ public sealed class SpotifySearchService
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         ApplySpotifyWebHeaders(request);
-        _logger.LogDebug("Spotify search request prepared: url={Url} tokenLen={TokenLen}", url, token.Length);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Spotify search request prepared: url={Url} tokenLen={TokenLen}", url, token.Length);
+        }
 
-        _logger.LogInformation("Spotify search request: {Url}", url);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Spotify search request: {Url}", url);
+        }
         using var response = await client.SendAsync(request, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
 
@@ -502,10 +520,16 @@ public sealed class SpotifySearchService
         if (allowRetryAfter && response.StatusCode == HttpStatusCode.TooManyRequests)
         {
             retryAfter = ParseRetryAfter(response);
-            _logger.LogInformation("Spotify search throttled: {Url} retryAfter={DelayMs}ms", url, retryAfter.Value.TotalMilliseconds);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Spotify search throttled: {Url} retryAfter={DelayMs}ms", url, retryAfter.Value.TotalMilliseconds);
+            }
         }
 
-        _logger.LogInformation("Spotify search response: {Url} status={StatusCode}", url, (int)response.StatusCode);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Spotify search response: {Url} status={StatusCode}", url, (int)response.StatusCode);
+        }
         return (response.StatusCode, body, retryAfter);
     }
 
@@ -533,13 +557,16 @@ public sealed class SpotifySearchService
         request.Headers.TryAddWithoutValidation("Referer", "https://open.spotify.com/");
         request.Headers.TryAddWithoutValidation("Origin", "https://open.spotify.com");
         request.Headers.TryAddWithoutValidation("User-Agent", _userAgent);
-        _logger.LogDebug(
-            "Spotify search headers: ua={UserAgent} acceptLang={AcceptLanguage} origin={Origin} referer={Referer} secFetchSite={SecFetchSite}",
-            _userAgent,
-            "en-US,en;q=0.9",
-            "https://open.spotify.com",
-            "https://open.spotify.com/",
-            "same-origin");
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Spotify search headers: ua={UserAgent} acceptLang={AcceptLanguage} origin={Origin} referer={Referer} secFetchSite={SecFetchSite}",
+                _userAgent,
+                "en-US,en;q=0.9",
+                "https://open.spotify.com",
+                "https://open.spotify.com/",
+                "same-origin");
+        }
     }
 
     private static string? RewriteSpotifyImageUrl(string? url)
@@ -603,7 +630,10 @@ public sealed class SpotifySearchService
 
             if (status == HttpStatusCode.TooManyRequests && retryAfter.HasValue && retryAfter.Value <= TimeSpan.FromSeconds(30))
             {
-                _logger.LogInformation("Spotify fetch throttled; waiting {DelaySeconds}s then retrying once: {Url}", retryAfter.Value.TotalSeconds, url);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Spotify fetch throttled; waiting {DelaySeconds}s then retrying once: {Url}", retryAfter.Value.TotalSeconds, url);
+                }
                 await Task.Delay(retryAfter.Value, cancellationToken);
                 var retry = await ExecuteRequestAsync(client, url, accessToken, allowRetryAfter: false, cancellationToken);
                 status = retry.Status;
@@ -614,7 +644,10 @@ public sealed class SpotifySearchService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Spotify fetch failed: {Url}", url);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify fetch failed: {Url}", url);
+            }
             return null;
         }
     }

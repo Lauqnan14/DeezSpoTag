@@ -44,7 +44,8 @@ internal static class SpotifyCredentialParser
             var bytes = Convert.FromBase64String(value);
             return Encoding.UTF8.GetString(bytes);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }

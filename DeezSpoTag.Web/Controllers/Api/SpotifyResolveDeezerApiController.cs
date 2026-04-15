@@ -291,7 +291,10 @@ public class SpotifyResolveDeezerApiController : ControllerBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to fetch Deezer discography for artist {ArtistId}", artistId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to fetch Deezer discography for artist {ArtistId}", artistId);
+            }
             return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
     }

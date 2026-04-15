@@ -202,43 +202,63 @@ public class LoginModel : PageModel
 
     private async Task<IActionResult> CompleteSuccessfulSignInAsync(AppUser? user)
     {
-        if (user != null)
+        if (user == null)
         {
-            if (IsSingleUserMode)
-            {
-                var canonicalUser = await ResolveCanonicalSingleUserAsync(user);
-                if (canonicalUser != null &&
-                    !string.Equals(canonicalUser.Id, user.Id, StringComparison.Ordinal))
-                {
-                    await _signInManager.SignOutAsync();
-                    _logger.LogWarning(
-                        "Blocked login for non-canonical account in single-user mode. attempted={AttemptedUser}({AttemptedId}) canonical={CanonicalUser}({CanonicalId})",
-                        user.UserName ?? Input.Username,
-                        user.Id,
-                        canonicalUser.UserName ?? UnknownValue,
-                        canonicalUser.Id);
-                    ModelState.AddModelError(string.Empty, "Single-user mode only allows one account.");
-                    return Page();
-                }
+            _logger.LogInformation("User logged in.");
+            return LocalRedirect(ReturnUrl);
+        }
 
-                await EnforceSingleUserCanonicalAsync(user);
-            }
+        var singleUserGuard = await EnforceSingleUserModeForSignInAsync(user);
+        if (singleUserGuard != null)
+        {
+            return singleUserGuard;
+        }
 
-            try
+        LogSuccessfulSignIn(user);
+        _logger.LogInformation("User logged in.");
+        return LocalRedirect(ReturnUrl);
+    }
+
+    private async Task<IActionResult?> EnforceSingleUserModeForSignInAsync(AppUser user)
+    {
+        var canonicalUser = await ResolveCanonicalSingleUserAsync(user);
+        if (canonicalUser != null &&
+            !string.Equals(canonicalUser.Id, user.Id, StringComparison.Ordinal))
+        {
+            await _signInManager.SignOutAsync();
+            _logger.LogWarning(
+                "Blocked login for non-canonical account in single-user mode. attempted={AttemptedUser}({AttemptedId}) canonical={CanonicalUser}({CanonicalId})",
+                user.UserName ?? Input.Username,
+                user.Id,
+                canonicalUser.UserName ?? UnknownValue,
+                canonicalUser.Id);
+            ModelState.AddModelError(string.Empty, "Single-user mode only allows one account.");
+            return Page();
+        }
+
+        await EnforceSingleUserCanonicalAsync(user);
+        return null;
+    }
+
+    private void LogSuccessfulSignIn(AppUser user)
+    {
+        try
+        {
+            var connection = _identityDb.Database.GetDbConnection().ConnectionString;
+            if (_logger.IsEnabled(LogLevel.Information))
             {
-                var connection = _identityDb.Database.GetDbConnection().ConnectionString;
                 _logger.LogInformation("Login succeeded for user {UserName} id={UserId} identityDb={IdentityDb}",
                     user.UserName, user.Id, string.IsNullOrWhiteSpace(connection) ? UnknownValue : connection);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation(ex, "Login succeeded for user {UserName} id={UserId}",
                     user.UserName, user.Id);
             }
         }
-
-        _logger.LogInformation("User logged in.");
-        return LocalRedirect(ReturnUrl);
     }
 
     private async Task<bool> TryRecoverSingleUserLockoutAsync(AppUser attemptedUser, string password)

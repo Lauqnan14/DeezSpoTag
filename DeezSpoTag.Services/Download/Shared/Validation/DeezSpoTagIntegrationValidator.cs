@@ -75,8 +75,10 @@ public class DeezSpoTagIntegrationValidator
                 OverallSuccess = results.All(r => r.Passed)
             };
 
-            _logger.LogInformation("Integration validation completed: {PassedTests}/{TotalTests} tests passed in {Duration}ms",
-                validationResult.PassedTests, validationResult.TotalTests, duration.TotalMilliseconds);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Integration validation completed: {PassedTests}/{TotalTests} tests passed in {Duration}ms",
+                    validationResult.PassedTests, validationResult.TotalTests, duration.TotalMilliseconds);            }
 
             return validationResult;
         }
@@ -163,7 +165,7 @@ public class DeezSpoTagIntegrationValidator
             // Test Blowfish key generation
             var testTrackId = "123456789";
             var blowfishKey = DecryptionService.GenerateBlowfishKey(testTrackId);
-            
+
             if (string.IsNullOrEmpty(blowfishKey))
             {
                 issues.Add("Blowfish key generation returned empty result");
@@ -189,7 +191,7 @@ public class DeezSpoTagIntegrationValidator
             System.Security.Cryptography.RandomNumberGenerator.Fill(testChunk);
             var cryptoService = _serviceProvider.GetService<CryptoService>();
             var decryptedChunk = cryptoService?.DecryptChunk(testChunk, blowfishKey);
-            
+
             if (decryptedChunk == null)
             {
                 issues.Add("Chunk decryption returned null");
@@ -474,7 +476,7 @@ public class DeezSpoTagIntegrationValidator
             {
                 // Test default settings creation
                 var defaultSettings = new DeezSpoTagSettings();
-                
+
                 // Validate critical settings have proper defaults
                 if (string.IsNullOrEmpty(defaultSettings.DownloadLocation))
                     issues.Add("Default download location not set");
@@ -525,7 +527,7 @@ public class DeezSpoTagIntegrationValidator
 
                 var settings = new DeezSpoTagSettings();
                 var template = "%artist% - %title%";
-                
+
                 var result = templateProcessor.GenerateTrackName(template, testTrack, settings);
                 if (string.IsNullOrEmpty(result))
                 {
@@ -609,7 +611,7 @@ public class DeezSpoTagIntegrationValidator
         {
             // Test memory usage and performance of key operations
             var startMemory = GC.GetTotalMemory(false);
-            
+
             // Simulate some operations
             for (int i = 0; i < 1000; i++)
             {
@@ -619,7 +621,7 @@ public class DeezSpoTagIntegrationValidator
                     Title = $"Test Track {i}",
                     MainArtist = new DeezSpoTag.Core.Models.Artist { Name = $"Artist {i}" }
                 };
-                
+
                 // Basic object creation performance test
                 if (testTrack.Id != i.ToString())
                 {
@@ -630,7 +632,7 @@ public class DeezSpoTagIntegrationValidator
 
             var endMemory = GC.GetTotalMemory(false);
             var memoryUsed = endMemory - startMemory;
-            
+
             // Check for excessive memory usage (arbitrary threshold)
             if (memoryUsed > 10 * 1024 * 1024) // 10MB
             {
@@ -753,7 +755,7 @@ public class DeezSpoTagIntegrationValidator
     private static string ShellEscape(string input)
     {
         if (string.IsNullOrEmpty(input)) return "";
-        
+
         if (input.Contains(' ') || input.Contains('"') || input.Contains('\''))
         {
             return $"\"{input.Replace("\"", "\\\"")}\"";
@@ -764,7 +766,7 @@ public class DeezSpoTagIntegrationValidator
     private static string SanitizePath(string path)
     {
         if (string.IsNullOrEmpty(path)) return "";
-        
+
         var invalidChars = Path.GetInvalidPathChars();
         foreach (var invalidChar in invalidChars)
         {

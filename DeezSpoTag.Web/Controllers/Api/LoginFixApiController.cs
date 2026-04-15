@@ -46,7 +46,7 @@ public class LoginFixApiController : ControllerBase
 
             // Step 1: Try to extract ARL from corrupted file
             var extractedArl = await ExtractArlFromCorruptedFileAsync();
-            
+
             if (string.IsNullOrEmpty(extractedArl))
             {
                 return Ok(new
@@ -57,7 +57,10 @@ public class LoginFixApiController : ControllerBase
                 });
             }
 
-            _logger.LogDebug("Successfully extracted ARL from corrupted file: {ArlLength} characters", extractedArl.Length);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Successfully extracted ARL from corrupted file: {ArlLength} characters", extractedArl.Length);
+            }
 
             // Step 2: Reset login file to clean state
             await _loginStorage.ResetLoginCredentialsAsync();
@@ -73,7 +76,7 @@ public class LoginFixApiController : ControllerBase
 
             // Step 4: Re-authenticate with extracted ARL
             var loginResult = await _authService.LoginWithArlAsync(extractedArl);
-            
+
             if (!loginResult.Success)
             {
                 return Ok(new
@@ -85,15 +88,21 @@ public class LoginFixApiController : ControllerBase
                 });
             }
 
-            _logger.LogInformation("Successfully re-authenticated user: {UserName} (ID: {UserId})", 
-                loginResult.User?.Name, loginResult.User?.Id);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Successfully re-authenticated user: {UserName} (ID: {UserId})",
+                    loginResult.User?.Name, loginResult.User?.Id);
+            }
 
             // Step 5: Verify lossless streaming capability
             var canStreamLossless = loginResult.User?.CanStreamLossless == true;
             var canStreamHq = loginResult.User?.CanStreamHq == true;
 
-            _logger.LogDebug("User streaming capabilities - Lossless: {Lossless}, HQ: {HQ}",
-                canStreamLossless, canStreamHq);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("User streaming capabilities - Lossless: {Lossless}, HQ: {HQ}",
+                    canStreamLossless, canStreamHq);
+            }
 
             return Ok(new
             {
@@ -215,7 +224,7 @@ public class LoginFixApiController : ControllerBase
 
             // Get current credentials
             var credentials = await _authService.GetLoginCredentialsAsync();
-            
+
             if (string.IsNullOrEmpty(credentials.Arl))
             {
                 return Ok(new
@@ -235,7 +244,7 @@ public class LoginFixApiController : ControllerBase
 
             // Re-authenticate
             var loginResult = await _authService.LoginWithArlAsync(credentials.Arl);
-            
+
             if (!loginResult.Success)
             {
                 return Ok(new
@@ -245,8 +254,11 @@ public class LoginFixApiController : ControllerBase
                 });
             }
 
-            _logger.LogInformation("Forced re-authentication successful for user: {UserName}", 
-                loginResult.User?.Name);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Forced re-authentication successful for user: {UserName}",
+                    loginResult.User?.Name);
+            }
 
             return Ok(new
             {
@@ -327,7 +339,7 @@ public class LoginFixApiController : ControllerBase
             // Try to get track token first
             using var scope = HttpContext.RequestServices.CreateScope();
             var gatewayService = scope.ServiceProvider.GetRequiredService<DeezerGatewayService>();
-            
+
             var track = await gatewayService.GetTrackAsync(request.TrackId);
             if (track == null)
             {
@@ -439,25 +451,34 @@ public class LoginFixApiController : ControllerBase
 
             foreach (var path in possiblePaths.Where(System.IO.File.Exists))
             {
-                _logger.LogDebug("Checking login file at: {Path}", path);
-                
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Checking login file at: {Path}", path);
+                }
+
                 var content = await System.IO.File.ReadAllTextAsync(path);
-                
+
                 // Try to extract ARL using regex
                 var arlMatch = Regex.Match(content, @"""arl"":\s*""([^""]+)""", RegexOptions.IgnoreCase, RegexTimeout);
                 if (arlMatch.Success)
                 {
                     var arl = arlMatch.Groups[1].Value;
-                    _logger.LogInformation("Extracted ARL from {Path}: {ArlLength} characters", path, arl.Length);
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation("Extracted ARL from {Path}: {ArlLength} characters", path, arl.Length);
+                    }
                     return arl;
                 }
-                
+
                 // Try alternative pattern without quotes
                 var arlMatch2 = Regex.Match(content, @"arl"":\s*""([^""]+)""", RegexOptions.IgnoreCase, RegexTimeout);
                 if (arlMatch2.Success)
                 {
                     var arl = arlMatch2.Groups[1].Value;
-                    _logger.LogInformation("Extracted ARL (alt pattern) from {Path}: {ArlLength} characters", path, arl.Length);
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation("Extracted ARL (alt pattern) from {Path}: {ArlLength} characters", path, arl.Length);
+                    }
                     return arl;
                 }
             }

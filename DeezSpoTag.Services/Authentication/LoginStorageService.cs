@@ -47,7 +47,9 @@ public class LoginStorageService : ILoginStorageService
         _configFolder = DeezSpoTagConfigPathResolver.GetConfigFolder();
         _loginFilePath = Path.Join(_configFolder, "login.json");
 
-        _logger.LogDebug("Login storage initialized with path: {LoginFilePath}", _loginFilePath);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Login storage initialized with path: {LoginFilePath}", _loginFilePath);        }
     }
 
     public async Task<LoginData?> LoadLoginCredentialsAsync()
@@ -57,7 +59,9 @@ public class LoginStorageService : ILoginStorageService
             if (!Directory.Exists(_configFolder))
             {
                 Directory.CreateDirectory(_configFolder);
-                _logger.LogDebug("Created config folder: {ConfigFolder}", _configFolder);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Created config folder: {ConfigFolder}", _configFolder);                }
             }
 
             if (!System.IO.File.Exists(_loginFilePath))

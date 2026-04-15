@@ -69,13 +69,16 @@ public sealed class LastFmTagService
             {
                 // Last.fm sometimes returns HTTP 200 with an error payload. Don't poison the cache for auth/transient errors.
                 var cacheable = IsCacheableLastFmError(response.Error.Value);
-                _logger.LogDebug(
-                    "Last.fm track tags returned error {Error}: {Message} (cacheable={Cacheable}) for {Artist} - {Track}",
-                    response.Error,
-                    response.Message,
-                    cacheable,
-                    artistName,
-                    trackTitle);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        "Last.fm track tags returned error {Error}: {Message} (cacheable={Cacheable}) for {Artist} - {Track}",
+                        response.Error,
+                        response.Message,
+                        cacheable,
+                        artistName,
+                        trackTitle);
+                }
 
                 if (!cacheable)
                 {
@@ -142,12 +145,15 @@ public sealed class LastFmTagService
             if (response.Error.HasValue)
             {
                 var cacheable = IsCacheableLastFmError(response.Error.Value);
-                _logger.LogDebug(
-                    "Last.fm similar artists returned error {Error}: {Message} (cacheable={Cacheable}) for {Artist}",
-                    response.Error,
-                    response.Message,
-                    cacheable,
-                    artistName);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        "Last.fm similar artists returned error {Error}: {Message} (cacheable={Cacheable}) for {Artist}",
+                        response.Error,
+                        response.Message,
+                        cacheable,
+                        artistName);
+                }
 
                 if (!cacheable)
                 {
@@ -214,13 +220,16 @@ public sealed class LastFmTagService
             if (response.Error.HasValue)
             {
                 var cacheable = IsCacheableLastFmError(response.Error.Value);
-                _logger.LogDebug(
-                    "Last.fm similar tracks returned error {Error}: {Message} (cacheable={Cacheable}) for {Artist} - {Track}",
-                    response.Error,
-                    response.Message,
-                    cacheable,
-                    artistName,
-                    trackName);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        "Last.fm similar tracks returned error {Error}: {Message} (cacheable={Cacheable}) for {Artist} - {Track}",
+                        response.Error,
+                        response.Message,
+                        cacheable,
+                        artistName,
+                        trackName);
+                }
 
                 if (!cacheable)
                 {

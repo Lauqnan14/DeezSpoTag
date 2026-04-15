@@ -53,7 +53,9 @@ public static class DownloadEngineSettingsHelper
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogDebug(ex, "Failed to resolve download tag profile for folder {FolderId}", destinationFolderId);
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug(ex, "Failed to resolve download tag profile for folder {FolderId}", destinationFolderId);            }
             throw new InvalidOperationException("Failed to apply destination profile settings.", ex);
         }
     }

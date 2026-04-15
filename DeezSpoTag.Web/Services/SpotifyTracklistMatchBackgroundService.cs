@@ -122,15 +122,21 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
             }
             catch (TaskCanceledException ex) when (hydrateAttempt < MaxIsrcHydrationAttempts)
             {
-                _logger.LogDebug(
-                    ex,
-                    "Spotify tracklist ISRC hydration attempt {Attempt} timed out for {TrackName}; retrying",
-                    hydrateAttempt,
-                    item.Track.Name);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        ex,
+                        "Spotify tracklist ISRC hydration attempt {Attempt} timed out for {TrackName}; retrying",
+                        hydrateAttempt,
+                        item.Track.Name);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Spotify tracklist ISRC hydration skipped for {TrackName}", item.Track.Name);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Spotify tracklist ISRC hydration skipped for {TrackName}", item.Track.Name);
+                }
                 break;
             }
         }

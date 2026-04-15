@@ -48,58 +48,13 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             return validationError;
         }
 
-        _logger.LogInformation(
-            "Shazam mic request accepted: bytes={Bytes}, contentType={ContentType}, fileName={FileName}.",
-            audio!.Length,
-            string.IsNullOrWhiteSpace(audio.ContentType) ? "unknown" : audio.ContentType,
-            string.IsNullOrWhiteSpace(audio.FileName) ? "unknown" : audio.FileName);
-
-        var extension = ResolveAudioExtension(audio!.FileName);
+        var audioFile = audio!;
+        var extension = ResolveAudioExtension(audioFile.FileName);
         var tempPath = Path.Combine(Path.GetTempPath(), $"deezspotag-shazam-{Guid.NewGuid():N}{extension}");
 
         try
         {
-            await CopyUploadedAudioAsync(audio, tempPath, cancellationToken);
-
-            var captureDurationSeconds = ResolveCaptureDurationSeconds();
-            var signatureWindowSeconds = ResolveMicSignatureWindowSeconds(captureDurationSeconds);
-            _logger.LogInformation(
-                "Shazam mic recognition windows: captureDurationSeconds={CaptureDurationSeconds}, signatureWindowSeconds={SignatureWindowSeconds}.",
-                captureDurationSeconds,
-                signatureWindowSeconds);
-            var attempt = _recognitionService.RecognizeWithDetails(
-                tempPath,
-                signatureWindowSeconds,
-                ShazamRecognitionService.RecognitionMode.AudioOnly,
-                cancellationToken);
-            if (!attempt.Matched)
-            {
-                _logger.LogInformation(
-                    "Shazam mic match failed: outcome={Outcome}, error={Error}.",
-                    attempt.Outcome,
-                    string.IsNullOrWhiteSpace(attempt.Error) ? "none" : attempt.Error);
-                return BuildNoMatchResponse(attempt);
-            }
-
-            _logger.LogInformation(
-                "Shazam mic matched: title={Title}, artist={Artist}, trackId={TrackId}.",
-                attempt.Recognition?.Title,
-                attempt.Recognition?.Artist,
-                attempt.Recognition?.TrackId);
-
-            try
-            {
-                return Ok(await BuildMatchPayloadAsync(attempt.Recognition!, cancellationToken));
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Shazam enrichment failed after a successful recognition match.");
-                return Ok(BuildMinimalMatchPayload(attempt.Recognition!));
-            }
+            return await ProcessMicRecognitionAsync(audioFile, tempPath, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -116,6 +71,73 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         finally
         {
             TryDelete(tempPath);
+        }
+    }
+
+    private async Task<IActionResult> ProcessMicRecognitionAsync(
+        IFormFile audioFile,
+        string tempPath,
+        CancellationToken cancellationToken)
+    {
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Shazam mic request accepted: bytes={Bytes}, contentType={ContentType}, fileName={FileName}.",
+                audioFile.Length,
+                string.IsNullOrWhiteSpace(audioFile.ContentType) ? "unknown" : audioFile.ContentType,
+                string.IsNullOrWhiteSpace(audioFile.FileName) ? "unknown" : audioFile.FileName);
+        }
+
+        await CopyUploadedAudioAsync(audioFile, tempPath, cancellationToken);
+
+        var captureDurationSeconds = ResolveCaptureDurationSeconds();
+        var signatureWindowSeconds = ResolveMicSignatureWindowSeconds(captureDurationSeconds);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Shazam mic recognition windows: captureDurationSeconds={CaptureDurationSeconds}, signatureWindowSeconds={SignatureWindowSeconds}.",
+                captureDurationSeconds,
+                signatureWindowSeconds);
+        }
+
+        var attempt = _recognitionService.RecognizeWithDetails(
+            tempPath,
+            signatureWindowSeconds,
+            ShazamRecognitionService.RecognitionMode.AudioOnly,
+            cancellationToken);
+        if (!attempt.Matched)
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Shazam mic match failed: outcome={Outcome}, error={Error}.",
+                    attempt.Outcome,
+                    string.IsNullOrWhiteSpace(attempt.Error) ? "none" : attempt.Error);
+            }
+            return BuildNoMatchResponse(attempt);
+        }
+
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Shazam mic matched: title={Title}, artist={Artist}, trackId={TrackId}.",
+                attempt.Recognition?.Title,
+                attempt.Recognition?.Artist,
+                attempt.Recognition?.TrackId);
+        }
+
+        try
+        {
+            return Ok(await BuildMatchPayloadAsync(attempt.Recognition!, cancellationToken));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Shazam enrichment failed after a successful recognition match.");
+            return Ok(BuildMinimalMatchPayload(attempt.Recognition!));
         }
     }
 

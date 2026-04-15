@@ -242,7 +242,9 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         }
 
         var statusUrl = $"{baseUrl}/dl/{submit.Id}";
-        _logger.LogInformation("Amazon status URL: {StatusUrl}", statusUrl);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Amazon status URL: {StatusUrl}", statusUrl);        }
         var fileUrl = await PollStatusAsync(statusUrl, cancellationToken);
         if (string.IsNullOrWhiteSpace(fileUrl))
         {
@@ -251,7 +253,9 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         }
 
         fileUrl = NormalizeDoubleDoubleFileUrl(fileUrl, baseUrl);
-        _logger.LogInformation("Amazon download URL resolved: {FileUrl}", fileUrl);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Amazon download URL resolved: {FileUrl}", fileUrl);        }
 
         var filename = $"{Guid.NewGuid():N}{FlacExtension}";
         var outputPath = Path.Join(outputDir, filename);
@@ -699,7 +703,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
                 throw new InvalidOperationException(status.FriendlyStatus ?? "Amazon processing failed");
             }
 
-            if (!string.IsNullOrWhiteSpace(status.Status))
+            if (!string.IsNullOrWhiteSpace(status.Status) && _logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Amazon status: {Status}", status.Status);
             }

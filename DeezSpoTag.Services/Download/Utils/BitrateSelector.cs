@@ -302,12 +302,14 @@ public class BitrateSelector
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to get fallback track for {TrackId}", currentTrack.FallbackID);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to get fallback track for {TrackId}", currentTrack.FallbackID);            }
             return null;
         }
     }
 
-    private static void TrySetFileSize(IDictionary<string, int> fileSizes, string key, int? value)
+    private static void TrySetFileSize(Dictionary<string, int> fileSizes, string key, int? value)
     {
         if (value.HasValue && value.Value > 0)
         {
@@ -467,7 +469,9 @@ public class BitrateSelector
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Media API failed for format {Format}", formatName);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Media API failed for format {Format}", formatName);            }
             return new MediaUrlAttempt { TransientNetworkFailure = true };
         }
     }
@@ -495,11 +499,13 @@ public class BitrateSelector
 
         try
         {
-            _logger.LogInformation(
-                "Trying fallback crypted URL for format {Format} (feelingLucky={FeelingLucky}) - Track {TrackId}",
-                formatName,
-                feelingLucky,
-                track.Id);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Trying fallback crypted URL for format {Format} (feelingLucky={FeelingLucky}) - Track {TrackId}",
+                    formatName,
+                    feelingLucky,
+                    track.Id);            }
 
             var url = CryptoService.GenerateCryptedStreamUrl(
                 track.Id,
@@ -507,11 +513,13 @@ public class BitrateSelector
                 track.MediaVersion!,
                 formatNumber.ToString());
 
-            _logger.LogDebug(
-                "Generated crypted URL for track {TrackId}, format {Format}: {Url}",
-                track.Id,
-                formatName,
-                url);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Generated crypted URL for track {TrackId}, format {Format}: {Url}",
+                    track.Id,
+                    formatName,
+                    url);            }
 
             return !string.IsNullOrEmpty(url) && await TestUrlAsync(track, url, formatName)
                 ? url
@@ -623,14 +631,14 @@ public class BitrateSelector
     /// </summary>
     private async Task<bool> TestUrlAsync(DeezSpoTag.Core.Models.Track track, string url, string formatName)
     {
-        if (string.IsNullOrEmpty(url)) 
+        if (string.IsNullOrEmpty(url))
             return false;
 
         try
         {
             var handler = new HttpClientHandler();
             TlsPolicy.ApplyIfAllowed(handler, configuration: null);
-            
+
             using var httpClient = new HttpClient(handler);
             httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36");
             httpClient.Timeout = TimeSpan.FromSeconds(5); // Shorter timeout like deezspotag
@@ -638,12 +646,12 @@ public class BitrateSelector
             // EXACT PORT: Make request and cancel immediately after getting headers
             using var cts = new CancellationTokenSource();
             var request = httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cts.Token);
-            
+
             using var response = await request;
-            
+
             // EXACT PORT: Update file sizes like deezspotag does
             var fileSizeKey = formatName.ToLower();
-            
+
             if (track.FileSizes == null)
                 track.FileSizes = new Dictionary<string, int>();
 
@@ -662,13 +670,15 @@ public class BitrateSelector
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "URL test failed for track {TrackId}, format {Format}", track.Id, formatName);
-            
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "URL test failed for track {TrackId}, format {Format}", track.Id, formatName);            }
+
             // EXACT PORT: Set file size to 0 on failure
             if (track.FileSizes == null)
                 track.FileSizes = new Dictionary<string, int>();
             track.FileSizes[formatName.ToLower()] = 0;
-            
+
             return false;
         }
     }
@@ -679,13 +689,13 @@ public class BitrateSelector
     private async Task CheckAndRenewTrackTokenAsync(DeezSpoTag.Core.Models.Track track, DeezerClient deezerClient)
     {
         var tokenExpire = track.TrackTokenExpire > 0 ? track.TrackTokenExpire : track.TrackTokenExpiration ?? 0;
-        
+
         if (tokenExpire <= 0)
             return;
 
         var now = DateTimeOffset.UtcNow;
         var expiration = DateTimeOffset.FromUnixTimeSeconds(tokenExpire);
-        
+
         if (now > expiration)
         {
             try

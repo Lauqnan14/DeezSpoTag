@@ -77,7 +77,9 @@ public sealed class AppleWrapperDecryptor
                 return false;
             }
 
-            _logger.LogInformation("Apple wrapper decrypt helper completed successfully using {ToolPath}.", toolPath);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Apple wrapper decrypt helper completed successfully using {ToolPath}.", toolPath);            }
             return File.Exists(outputPath);
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)

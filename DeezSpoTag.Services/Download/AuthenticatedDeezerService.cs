@@ -116,7 +116,7 @@ public class AuthenticatedDeezerService
         {
             var configFolder = DeezSpoTag.Services.Authentication.DeezSpoTagConfigPathResolver.GetConfigFolder();
             var loginFilePath = Path.Join(configFolder, "login.json");
-            
+
             if (!System.IO.File.Exists(loginFilePath))
             {
                 return null;

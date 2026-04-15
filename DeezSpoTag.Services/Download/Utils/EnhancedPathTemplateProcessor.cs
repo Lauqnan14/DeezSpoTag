@@ -75,12 +75,14 @@ public class EnhancedPathTemplateProcessor
         if (PathTemplateCommon.ShouldCreateArtistFolder(track, settings))
         {
             var artistToUse = ResolveArtistForFolder(track);
-            _logger.LogDebug("Creating artist folder - Track: {TrackTitle}, Album Artist: {AlbumArtist}, Track Artist: {TrackArtist}, Using: {UsingArtist}", 
-                track.Title, 
-                track.Album?.MainArtist?.Name ?? "NULL", 
-                track.MainArtist?.Name ?? "NULL", 
-                artistToUse?.Name ?? "NULL");
-                
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Creating artist folder - Track: {TrackTitle}, Album Artist: {AlbumArtist}, Track Artist: {TrackArtist}, Using: {UsingArtist}",
+                    track.Title,
+                    track.Album?.MainArtist?.Name ?? "NULL",
+                    track.MainArtist?.Name ?? "NULL",
+                    artistToUse?.Name ?? "NULL");            }
+
             var artistName = GenerateArtistName(
                 settings.ArtistNameTemplate,
                 artistToUse,
@@ -88,8 +90,10 @@ public class EnhancedPathTemplateProcessor
                 track.Album?.RootArtist);
             filepath += $"/{artistName}";
             artistPath = filepath;
-            
-            _logger.LogDebug("Artist folder created: {ArtistFolder}", artistName);
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Artist folder created: {ArtistFolder}", artistName);            }
         }
 
         // EXACT PORT: Create album folder if needed
@@ -275,15 +279,17 @@ public class EnhancedPathTemplateProcessor
     {
         var normalizedArtistName = GetPathArtistName(artist?.Name, settings);
         // CRITICAL FIX: Log what we're working with to debug UnknownArtist issue
-        _logger.LogDebug("GenerateArtistName called with artist: {ArtistName} (normalized: {NormalizedArtistName}) (ID: {ArtistId}), template: {Template}", 
-            artist?.Name ?? "NULL", normalizedArtistName, artist?.Id ?? "NULL", template);
-            
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("GenerateArtistName called with artist: {ArtistName} (normalized: {NormalizedArtistName}) (ID: {ArtistId}), template: {Template}",
+                artist?.Name ?? "NULL", normalizedArtistName, artist?.Id ?? "NULL", template);        }
+
         if (artist == null)
         {
             _logger.LogWarning("Artist is null in GenerateArtistName, returning 'Unknown Artist'");
             return UnknownArtist;
         }
-        
+
         if (string.IsNullOrEmpty(normalizedArtistName) || normalizedArtistName == UnknownValue || normalizedArtistName == UnknownArtist)
         {
             _logger.LogWarning("Artist name is empty or 'Unknown' in GenerateArtistName: '{ArtistName}', returning 'Unknown Artist'", normalizedArtistName);
@@ -309,8 +315,10 @@ public class EnhancedPathTemplateProcessor
 
         foldername = foldername.Replace("\\", "/");
         var result = AntiDot(FixLongName(foldername, settings.LimitMax));
-        
-        _logger.LogDebug("GenerateArtistName result: {Result}", result);
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("GenerateArtistName result: {Result}", result);        }
         return result;
     }
 

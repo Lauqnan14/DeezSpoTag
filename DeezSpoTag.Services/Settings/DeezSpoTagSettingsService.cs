@@ -212,7 +212,7 @@ public class DeezSpoTagSettingsService : ISettingsService
     private DeezSpoTagSettings LoadSettingsLocked()
     {
         var logLoad = ShouldLogSettingsLoad();
-        if (logLoad)
+        if (logLoad && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation("Loading settings from: {FilePath}", _settingsFilePath);
         }
@@ -296,10 +296,12 @@ public class DeezSpoTagSettingsService : ISettingsService
         var newFields = fixedFields.Where(field => !_loggedFixFields.Contains(field)).ToList();
         if (newFields.Count > 0)
         {
-            _logger.LogInformation(
-                "Fixed {Changes} settings: {Fields}",
-                changes,
-                string.Join(", ", newFields));
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Fixed {Changes} settings: {Fields}",
+                    changes,
+                    string.Join(", ", newFields));            }
             foreach (var field in newFields)
             {
                 _loggedFixFields.Add(field);
@@ -308,7 +310,9 @@ public class DeezSpoTagSettingsService : ISettingsService
             return;
         }
 
-        _logger.LogInformation("Fixed {Changes} settings", changes);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Fixed {Changes} settings", changes);        }
     }
 
     /// <summary>
@@ -325,7 +329,9 @@ public class DeezSpoTagSettingsService : ISettingsService
 
     private void SaveSettingsLocked(DeezSpoTagSettings settings)
     {
-        _logger.LogInformation("Saving settings to: {FilePath}", _settingsFilePath);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Saving settings to: {FilePath}", _settingsFilePath);        }
 
         if (!Directory.Exists(_configFolder))
         {
@@ -337,7 +343,7 @@ public class DeezSpoTagSettingsService : ISettingsService
         File.WriteAllText(tmpPath, json);
         File.Move(tmpPath, _settingsFilePath, overwrite: true);
         _lastLoggedWriteUtc = File.GetLastWriteTimeUtc(_settingsFilePath);
-        
+
         _logger.LogInformation("Settings saved successfully");
     }
 
@@ -782,8 +788,8 @@ public class DeezSpoTagSettingsService : ISettingsService
     }
 
     private static bool AreGenreTagAliasRulesEqual(
-        IReadOnlyList<GenreTagAliasRule> current,
-        IReadOnlyList<GenreTagAliasRule> normalized)
+        List<GenreTagAliasRule> current,
+        List<GenreTagAliasRule> normalized)
     {
         if (ReferenceEquals(current, normalized))
         {
@@ -860,7 +866,8 @@ public class DeezSpoTagSettingsService : ISettingsService
             Directory.CreateDirectory(ioPath);
             return normalized;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return normalized;
         }
     }

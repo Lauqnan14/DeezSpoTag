@@ -9,17 +9,17 @@ public enum FeaturesOption
     /// Do nothing
     /// </summary>
     NoChange = 0,
-    
+
     /// <summary>
     /// Remove from track title
     /// </summary>
     RemoveTitle = 1,
-    
+
     /// <summary>
     /// Move to track title
     /// </summary>
     MoveTitle = 2,
-    
+
     /// <summary>
     /// Remove from track title and album title
     /// </summary>

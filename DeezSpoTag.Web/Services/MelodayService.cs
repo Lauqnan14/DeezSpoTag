@@ -111,7 +111,7 @@ public sealed class MelodayService
     private static readonly int[] NightHours = [19, 20, 21];
     private static readonly int[] LateNightHours = [22, 23, 0, 1, 2];
 
-    private static readonly IReadOnlyDictionary<string, MelodayPeriod> DefaultPeriods = new Dictionary<string, MelodayPeriod>
+    private static readonly Dictionary<string, MelodayPeriod> DefaultPeriods = new Dictionary<string, MelodayPeriod>
     {
         [DawnPeriodName] = new MelodayPeriod(DawnHours, "at dawn"),
         [EarlyMorningPeriodName] = new MelodayPeriod(EarlyMorningHours, "in the early morning"),
@@ -412,7 +412,7 @@ public sealed class MelodayService
     }
 
     private async Task<List<long>> BuildExtraCandidatesAsync(
-        IReadOnlyList<long> finalTracks,
+        List<long> finalTracks,
         IReadOnlyList<long> balancedHistorical,
         SimilarTrackContext context)
     {
@@ -686,7 +686,7 @@ public sealed class MelodayService
     }
 
     private async Task<IReadOnlyList<long>> FetchSonicSimilarTrackIdsAsync(
-        IReadOnlyList<long> referenceTrackIds,
+        List<long> referenceTrackIds,
         SimilarTrackContext context)
     {
         if (referenceTrackIds.Count == 0)
@@ -809,7 +809,7 @@ public sealed class MelodayService
     }
 
     private async Task<IReadOnlyList<long>> ProcessTracksAsync(
-        IReadOnlyList<long> trackIds,
+        List<long> trackIds,
         MelodayOptions options,
         Dictionary<long, PlexTrackMetadata> liveMetadataByTrackId,
         CancellationToken cancellationToken)
@@ -969,7 +969,7 @@ public sealed class MelodayService
     }
 
     private async Task<IReadOnlyList<long>> OrderTracksAsync(
-        IReadOnlyList<long> trackIds,
+        List<long> trackIds,
         MelodayPeriod period,
         PlexAuth plex,
         MelodayOptions options,
@@ -1051,7 +1051,7 @@ public sealed class MelodayService
     }
 
     private async Task<List<long>> SortBySonicSimilarityGreedyAsync(
-        IReadOnlyList<long> trackIds,
+        List<long> trackIds,
         PlexAuth plex,
         MelodayOptions options,
         Dictionary<long, string> ratingKeyByTrackId,
@@ -1103,7 +1103,7 @@ public sealed class MelodayService
 
     private static int SimilarityScore(
         long candidateTrackId,
-        IReadOnlyList<string>? currentSimilars,
+        List<string>? currentSimilars,
         Dictionary<long, string> ratingKeyByTrackId)
     {
         if (currentSimilars is null || currentSimilars.Count == 0)
@@ -1176,7 +1176,7 @@ public sealed class MelodayService
         return mapping;
     }
 
-    private static PlexTrack? SelectBestPlexTrackMatch(MixTrackDto track, IReadOnlyList<PlexTrack> candidates)
+    private static PlexTrack? SelectBestPlexTrackMatch(MixTrackDto track, List<PlexTrack> candidates)
     {
         if (candidates.Count == 0)
         {
@@ -1413,7 +1413,7 @@ public sealed class MelodayService
         return highlights;
     }
 
-    private static string FormatHighlightStyles(IReadOnlyList<string> styles)
+    private static string FormatHighlightStyles(List<string> styles)
     {
         if (styles.Count == 0)
         {

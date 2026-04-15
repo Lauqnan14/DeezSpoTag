@@ -116,7 +116,9 @@ internal static class AppleQueueItemHelpers
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                logger.LogDebug(ex, "Failed to report progress for {QueueUuid}", queueUuid);
+                if (logger.IsEnabled(LogLevel.Debug))
+                {
+                    logger.LogDebug(ex, "Failed to report progress for {QueueUuid}", queueUuid);                }
             }
         };
     }

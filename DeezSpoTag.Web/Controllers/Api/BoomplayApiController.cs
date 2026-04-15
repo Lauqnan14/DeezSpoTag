@@ -197,7 +197,7 @@ public sealed class BoomplayApiController : ControllerBase
         };
     }
 
-    private static string GetGenreSource(BoomplayTrackMetadata track, IReadOnlyCollection<string> genres)
+    private static string GetGenreSource(BoomplayTrackMetadata track, List<string> genres)
     {
         if (track.HasStreamGenreMetadata)
         {
@@ -511,7 +511,8 @@ public sealed class BoomplayApiController : ControllerBase
             {
                 await WriteSseEventAsync("error", new { error = "Failed to stream Boomplay playlist tracks." }, CancellationToken.None);
             }
-            catch (Exception streamEx) when (streamEx is not OperationCanceledException) {
+            catch (Exception streamEx) when (streamEx is not OperationCanceledException)
+            {
                 // Best-effort stream error signaling.
             }
 
@@ -541,7 +542,10 @@ public sealed class BoomplayApiController : ControllerBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Boomplay stream track fetch failed for {SongId}", songId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Boomplay stream track fetch failed for {SongId}", songId);
+            }
             return BuildFallbackTrack(songId);
         }
     }
@@ -567,7 +571,10 @@ public sealed class BoomplayApiController : ControllerBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Boomplay stream Deezer resolve failed for {SongId}", songId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Boomplay stream Deezer resolve failed for {SongId}", songId);
+            }
             return null;
         }
     }
@@ -827,10 +834,10 @@ public sealed class BoomplayApiController : ControllerBase
     }
 
     private async Task<Dictionary<string, DeezerResolvedMetadata>> ResolveDeezerIdsForTracksAsync(
-        IReadOnlyList<BoomplayTrackMetadata> tracks,
+        BoomplayTrackMetadata[] tracks,
         CancellationToken cancellationToken)
     {
-        if (tracks.Count == 0)
+        if (tracks.Length == 0)
         {
             return new Dictionary<string, DeezerResolvedMetadata>(StringComparer.Ordinal);
         }
@@ -881,7 +888,10 @@ public sealed class BoomplayApiController : ControllerBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed resolving Deezer ID for Boomplay track {TrackId}", track.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed resolving Deezer ID for Boomplay track {TrackId}", track.Id);
+            }
         }
 
         return null;
@@ -1137,7 +1147,10 @@ public sealed class BoomplayApiController : ControllerBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed hydrating Deezer metadata for track {DeezerId}", deezerId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed hydrating Deezer metadata for track {DeezerId}", deezerId);
+            }
         }
 
         return new DeezerResolvedMetadata(

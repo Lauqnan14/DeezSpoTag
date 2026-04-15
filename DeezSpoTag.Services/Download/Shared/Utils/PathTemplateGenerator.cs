@@ -54,8 +54,8 @@ public class PathTemplateGenerator
 
         if (downloadObjectType == TrackType || downloadObjectType == EpisodeType)
         {
-            filenameTemplate = settings.CreateSingleFolder 
-                ? settings.AlbumTracknameTemplate 
+            filenameTemplate = settings.CreateSingleFolder
+                ? settings.AlbumTracknameTemplate
                 : settings.TracknameTemplate;
             singleTrack = true;
         }

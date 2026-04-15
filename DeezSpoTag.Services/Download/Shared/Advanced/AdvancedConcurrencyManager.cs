@@ -37,16 +37,16 @@ public class AdvancedConcurrencyManager : IDisposable
     /// PHASE 4: Execute operation with concurrency control
     /// </summary>
     public async Task<T> ExecuteWithConcurrencyAsync<T>(
-        string operationType, 
-        Func<Task<T>> operation, 
+        string operationType,
+        Func<Task<T>> operation,
         CancellationToken cancellationToken = default)
     {
         var semaphore = GetSemaphore(operationType);
         var metrics = _metrics.GetOrAdd(operationType, key => new ConcurrencyMetrics { OperationType = key });
-        
+
         await semaphore.WaitAsync(cancellationToken);
         var startTime = DateTime.UtcNow;
-        
+
         try
         {
             metrics.RecordStart();
@@ -76,20 +76,22 @@ public class AdvancedConcurrencyManager : IDisposable
             {
                 var operationType = kvp.Key;
                 var metrics = kvp.Value;
-                
+
                 if (metrics.TotalOperations < 10) continue; // Need enough data
-                
+
                 var newConcurrency = CalculateOptimalConcurrency(metrics);
                 if (newConcurrency != metrics.CurrentConcurrency)
                 {
                     AdjustSemaphore(operationType, newConcurrency);
-                    _logger.LogInformation("Adjusted concurrency for {OperationType}: {OldConcurrency} -> {NewConcurrency} (Success rate: {SuccessRate}%, Avg time: {AvgTime}ms)",
-                        operationType, metrics.CurrentConcurrency, newConcurrency, 
-                        metrics.SuccessRate * 100, metrics.AverageResponseTime.TotalMilliseconds);
-                    
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation("Adjusted concurrency for {OperationType}: {OldConcurrency} -> {NewConcurrency} (Success rate: {SuccessRate}%, Avg time: {AvgTime}ms)",
+                            operationType, metrics.CurrentConcurrency, newConcurrency,
+                            metrics.SuccessRate * 100, metrics.AverageResponseTime.TotalMilliseconds);                    }
+
                     metrics.CurrentConcurrency = newConcurrency;
                 }
-                
+
                 // Reset metrics for next period
                 metrics.Reset();
             }
@@ -108,7 +110,7 @@ public class AdvancedConcurrencyManager : IDisposable
         var current = metrics.CurrentConcurrency;
         var successRate = metrics.SuccessRate;
         var avgResponseTime = metrics.AverageResponseTime.TotalMilliseconds;
-        
+
         // DeezSpoTag-style adaptive algorithm
         if (successRate < 0.8) // Less than 80% success rate
         {
@@ -126,7 +128,7 @@ public class AdvancedConcurrencyManager : IDisposable
         {
             return Math.Max(1, current - 1); // Reduce to improve response time
         }
-        
+
         return current; // No change needed
     }
 
@@ -138,7 +140,7 @@ public class AdvancedConcurrencyManager : IDisposable
         if (_semaphores.TryGetValue(operationType, out var semaphore))
         {
             var difference = newConcurrency - _metrics[operationType].CurrentConcurrency;
-            
+
             if (difference > 0)
             {
                 // Increase capacity

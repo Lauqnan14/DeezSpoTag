@@ -92,7 +92,8 @@ public sealed class CoverSourceHttpService
             {
                 throw;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) {
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
                 if (stale != null && stale.Length > 0)
                 {
                     return stale[0] == (byte)'1';
@@ -134,7 +135,10 @@ public sealed class CoverSourceHttpService
                 using var response = await _httpClientFactory.CreateClient().SendAsync(request, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
-                    _logger.LogDebug("Cover source request failed ({StatusCode}) for {Url}", response.StatusCode, url);
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug("Cover source request failed ({StatusCode}) for {Url}", response.StatusCode, url);
+                    }
                     return stale;
                 }
 
@@ -148,7 +152,10 @@ public sealed class CoverSourceHttpService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Cover source request failed for {Url}", url);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Cover source request failed for {Url}", url);
+                }
                 return stale;
             }
         }

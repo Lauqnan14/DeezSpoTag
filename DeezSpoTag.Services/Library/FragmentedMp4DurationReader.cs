@@ -52,7 +52,8 @@ public static class FragmentedMp4DurationReader
 
             return false;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return false;
         }
     }
@@ -115,7 +116,8 @@ public static class FragmentedMp4DurationReader
             using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             return TryReadCore(stream);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) {
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
             return null;
         }
     }

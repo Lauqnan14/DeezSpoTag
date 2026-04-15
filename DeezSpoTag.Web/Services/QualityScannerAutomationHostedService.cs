@@ -75,11 +75,14 @@ public sealed class QualityScannerAutomationHostedService : BackgroundService
             return;
         }
 
-        _logger.LogInformation(
-            "Quality scanner automation run started (scope={Scope}, folderId={FolderId}, queueAtmos={QueueAtmos}).",
-            settings.Scope,
-            settings.FolderId,
-            settings.QueueAtmosAlternatives);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Quality scanner automation run started (scope={Scope}, folderId={FolderId}, queueAtmos={QueueAtmos}).",
+                settings.Scope,
+                settings.FolderId,
+                settings.QueueAtmosAlternatives);
+        }
     }
 
     private static async Task<bool> DelayUntilNextPollAsync(CancellationToken stoppingToken)

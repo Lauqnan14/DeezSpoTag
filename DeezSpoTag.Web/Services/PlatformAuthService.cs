@@ -119,6 +119,15 @@ public class PlatformAuthService
         bool PlexConfigured,
         bool JellyfinConfigured,
         bool AppleConfigured);
+    private readonly record struct AuthStatusLogFields(
+        string SpotifyAccount,
+        string SpotifyBlob,
+        string Discogs,
+        string LastFm,
+        string BpmSupreme,
+        string Plex,
+        string Jellyfin,
+        string AppleMusic);
     private static readonly string[] PlatformFileNames =
     {
         SpotifyFileName,
@@ -364,10 +373,13 @@ public class PlatformAuthService
             }
 
             await SaveNoLockAsync(legacyState);
-            _logger.LogInformation(
-                "Migrated platform auth state from legacy aggregate {LegacyPath} into dedicated platform auth files under {CurrentPath}.",
-                candidate,
-                _authDirectory);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Migrated platform auth state from legacy aggregate {LegacyPath} into dedicated platform auth files under {CurrentPath}.",
+                    candidate,
+                    _authDirectory);
+            }
             return;
         }
     }
@@ -414,10 +426,13 @@ public class PlatformAuthService
             {
                 var retiredPath = $"{candidate}.retired-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}";
                 File.Move(candidate, retiredPath, overwrite: true);
-                _logger.LogInformation(
-                    "Retired legacy aggregate platform auth file at {LegacyPath}. Backup: {RetiredPath}",
-                    candidate,
-                    retiredPath);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "Retired legacy aggregate platform auth file at {LegacyPath}. Backup: {RetiredPath}",
+                        candidate,
+                        retiredPath);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -437,6 +452,7 @@ public class PlatformAuthService
     {
         var snapshot = BuildAuthStatusSnapshot(state);
         var signature = BuildAuthStatusSignature(snapshot);
+        var logFields = BuildAuthStatusLogFields(snapshot);
 
         lock (_statusLock)
         {
@@ -448,16 +464,19 @@ public class PlatformAuthService
             _lastStatusSignature = signature;
         }
 
-        _logger.LogInformation(
-            "Auth status: SpotifyAccount={SpotifyAccount} SpotifyBlob={SpotifyBlob} Discogs={Discogs} LastFm={LastFm} BpmSupreme={BpmSupreme} Plex={Plex} Jellyfin={Jellyfin} AppleMusic={AppleMusic}",
-            string.IsNullOrWhiteSpace(snapshot.SpotifyAccount) ? MissingStatus : PresentStatus,
-            string.IsNullOrWhiteSpace(snapshot.SpotifyWebPlayerBlob) ? MissingStatus : PresentStatus,
-            snapshot.DiscogsConfigured ? PresentStatus : MissingStatus,
-            snapshot.LastFmConfigured ? PresentStatus : MissingStatus,
-            snapshot.BpmSupremeConfigured ? PresentStatus : MissingStatus,
-            snapshot.PlexConfigured ? PresentStatus : MissingStatus,
-            snapshot.JellyfinConfigured ? PresentStatus : MissingStatus,
-            snapshot.AppleConfigured ? "ready" : MissingStatus);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Auth status: SpotifyAccount={SpotifyAccount} SpotifyBlob={SpotifyBlob} Discogs={Discogs} LastFm={LastFm} BpmSupreme={BpmSupreme} Plex={Plex} Jellyfin={Jellyfin} AppleMusic={AppleMusic}",
+                logFields.SpotifyAccount,
+                logFields.SpotifyBlob,
+                logFields.Discogs,
+                logFields.LastFm,
+                logFields.BpmSupreme,
+                logFields.Plex,
+                logFields.Jellyfin,
+                logFields.AppleMusic);
+        }
     }
 
     private static AuthStatusSnapshot BuildAuthStatusSnapshot(PlatformAuthState state)
@@ -491,6 +510,29 @@ public class PlatformAuthService
             $"Plex:{(snapshot.PlexConfigured ? PresentStatus : MissingStatus)}|" +
             $"Jellyfin:{(snapshot.JellyfinConfigured ? PresentStatus : MissingStatus)}|" +
             $"AppleMusic:{(snapshot.AppleConfigured ? "ready" : MissingStatus)}";
+    }
+
+    private static AuthStatusLogFields BuildAuthStatusLogFields(AuthStatusSnapshot snapshot)
+    {
+        return new AuthStatusLogFields(
+            SpotifyAccount: ResolveStatus(snapshot.SpotifyAccount),
+            SpotifyBlob: ResolveStatus(snapshot.SpotifyWebPlayerBlob),
+            Discogs: ResolveStatus(snapshot.DiscogsConfigured),
+            LastFm: ResolveStatus(snapshot.LastFmConfigured),
+            BpmSupreme: ResolveStatus(snapshot.BpmSupremeConfigured),
+            Plex: ResolveStatus(snapshot.PlexConfigured),
+            Jellyfin: ResolveStatus(snapshot.JellyfinConfigured),
+            AppleMusic: snapshot.AppleConfigured ? "ready" : MissingStatus);
+    }
+
+    private static string ResolveStatus(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? MissingStatus : PresentStatus;
+    }
+
+    private static string ResolveStatus(bool configured)
+    {
+        return configured ? PresentStatus : MissingStatus;
     }
 
     private static bool IsSpotifyConfigured(SpotifyConfig? spotify)

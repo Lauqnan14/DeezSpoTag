@@ -2898,7 +2898,10 @@ public class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "AutoTag job {JobId}: completion handler failed.", job.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "AutoTag job {JobId}: completion handler failed.", job.Id);
+            }
         }
     }
 
@@ -2906,27 +2909,39 @@ public class AutoTagService
     {
         if (job.Status is not AutoTagLiterals.CompletedStatus and not AutoTagLiterals.FailedStatus)
         {
-            _logger.LogInformation("AutoTag job {JobId}: organizer skipped (status {Status})", job.Id, job.Status);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("AutoTag job {JobId}: organizer skipped (status {Status})", job.Id, job.Status);
+            }
             return;
         }
 
         if (ShouldSkipOrganizerForMultiQualityStaging(rootPath))
         {
-            _logger.LogInformation("AutoTag job {JobId}: organizer skipped (multi-quality staging root).", job.Id);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("AutoTag job {JobId}: organizer skipped (multi-quality staging root).", job.Id);
+            }
             AppendLog(job, "organizer skipped: multi-quality staging root");
             return;
         }
 
         if (_disableAutoMove)
         {
-            _logger.LogInformation("AutoTag job {JobId}: organizer skipped (disabled).", job.Id);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("AutoTag job {JobId}: organizer skipped (disabled).", job.Id);
+            }
             AppendLog(job, "organizer skipped: disabled");
             return;
         }
 
         if (!await WaitForOrganizerCooldownAsync(_organizerCooldown, CancellationToken.None))
         {
-            _logger.LogInformation("AutoTag job {JobId}: organizer skipped (downloads active).", job.Id);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("AutoTag job {JobId}: organizer skipped (downloads active).", job.Id);
+            }
             AppendLog(job, "organizer skipped: downloads active");
             return;
         }
@@ -3134,7 +3149,10 @@ public class AutoTagService
     {
         if (_disableAutoMove)
         {
-            _logger.LogInformation("AutoTag job {JobId}: auto-move skipped (disabled).", job.Id);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("AutoTag job {JobId}: auto-move skipped (disabled).", job.Id);
+            }
             AppendLog(job, "auto-move skipped: disabled");
             var disabledSummary = new AutoTagMoveSummary
             {
@@ -3673,7 +3691,10 @@ public class AutoTagService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Failed deleting runtime AutoTag config file {Path}", path);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Failed deleting runtime AutoTag config file {Path}", path);
+                }
             }
         }
     }
@@ -4432,7 +4453,10 @@ public class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "AutoTag diff snapshot failed for {Path}", normalizedPath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "AutoTag diff snapshot failed for {Path}", normalizedPath);
+            }
             snapshot = null;
             return false;
         }
@@ -4901,7 +4925,10 @@ public class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to initialize AutoTag run archive for {JobId}", job.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to initialize AutoTag run archive for {JobId}", job.Id);
+            }
         }
     }
 
@@ -4963,7 +4990,10 @@ public class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to append archived AutoTag log for {JobId}", jobId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to append archived AutoTag log for {JobId}", jobId);
+            }
         }
     }
 
@@ -4986,7 +5016,10 @@ public class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to append archived AutoTag status for {JobId}", jobId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to append archived AutoTag status for {JobId}", jobId);
+            }
         }
     }
 
@@ -5007,7 +5040,10 @@ public class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to save AutoTag run summary for {JobId}", job.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to save AutoTag run summary for {JobId}", job.Id);
+            }
         }
     }
 
@@ -5049,7 +5085,10 @@ public class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to load AutoTag run summary for {JobId}", jobId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to load AutoTag run summary for {JobId}", jobId);
+            }
             return null;
         }
     }
@@ -5088,7 +5127,10 @@ public class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to read archived AutoTag logs for {JobId}", jobId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to read archived AutoTag logs for {JobId}", jobId);
+            }
             return new List<string>();
         }
     }
@@ -5125,7 +5167,10 @@ public class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to read archived AutoTag status history for {JobId}", jobId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to read archived AutoTag status history for {JobId}", jobId);
+            }
             return new List<TaggingStatusSnapshot>();
         }
     }
@@ -5144,15 +5189,21 @@ public class AutoTagService
             }
 
             File.WriteAllLines(archiveLogPath, logs, new UTF8Encoding(false));
-            _logger.LogInformation(
-                "Recovered archived AutoTag logs for {JobId} from job snapshot ({Count} lines).",
-                jobId,
-                logs.Count);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Recovered archived AutoTag logs for {JobId} from job snapshot ({Count} lines).",
+                    jobId,
+                    logs.Count);
+            }
             return logs;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to recover archived AutoTag logs for {JobId}", jobId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to recover archived AutoTag logs for {JobId}", jobId);
+            }
             return new List<string>();
         }
     }
@@ -5172,15 +5223,21 @@ public class AutoTagService
                 .Select(entry => JsonSerializer.Serialize(entry, _jsonCompactOptions))
                 .ToList();
             File.WriteAllLines(archiveStatusPath, statusLines, new UTF8Encoding(false));
-            _logger.LogInformation(
-                "Recovered archived AutoTag status history for {JobId} from job snapshot ({Count} entries).",
-                jobId,
-                statusHistory.Count);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Recovered archived AutoTag status history for {JobId} from job snapshot ({Count} entries).",
+                    jobId,
+                    statusHistory.Count);
+            }
             return statusHistory;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to recover archived AutoTag status history for {JobId}", jobId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to recover archived AutoTag status history for {JobId}", jobId);
+            }
             return new List<TaggingStatusSnapshot>();
         }
     }
@@ -5247,7 +5304,10 @@ public class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to persist archived AutoTag tag diffs for {JobId}", jobId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to persist archived AutoTag tag diffs for {JobId}", jobId);
+            }
         }
     }
 
@@ -5276,7 +5336,10 @@ public class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to read archived AutoTag tag diffs for {JobId}", jobId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to read archived AutoTag tag diffs for {JobId}", jobId);
+            }
             return new Dictionary<string, AutoTagTagDiff>(StringComparer.OrdinalIgnoreCase);
         }
     }
@@ -5296,15 +5359,21 @@ public class AutoTagService
                 archiveTagDiffPath,
                 JsonSerializer.Serialize(repaired, _jsonOptions),
                 new UTF8Encoding(false));
-            _logger.LogInformation(
-                "Recovered archived AutoTag tag diffs for {JobId} from job snapshot ({Count} entries).",
-                jobId,
-                repaired.Count);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Recovered archived AutoTag tag diffs for {JobId} from job snapshot ({Count} entries).",
+                    jobId,
+                    repaired.Count);
+            }
             return repaired;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to recover archived AutoTag tag diffs for {JobId}", jobId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to recover archived AutoTag tag diffs for {JobId}", jobId);
+            }
             return new Dictionary<string, AutoTagTagDiff>(StringComparer.OrdinalIgnoreCase);
         }
     }
@@ -5436,7 +5505,7 @@ public class AutoTagService
                 }
 
                 MaterializeRunArchive(job);
-                if (needsRepair)
+                if (needsRepair && _logger.IsEnabled(LogLevel.Information))
                 {
                     _logger.LogInformation("Repaired stale AutoTag archive for {JobId}.", jobId);
                 }
@@ -5526,7 +5595,10 @@ public class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to materialize AutoTag run archive for {JobId}", job.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to materialize AutoTag run archive for {JobId}", job.Id);
+            }
         }
     }
 
@@ -5542,7 +5614,10 @@ public class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to persist AutoTag job {JobId}", job.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to persist AutoTag job {JobId}", job.Id);
+            }
         }
     }
 

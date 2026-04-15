@@ -511,7 +511,9 @@ public sealed class SongLinkResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Qobuz resolver lookup failed for {Isrc}", isrc);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Qobuz resolver lookup failed for {Isrc}", isrc);            }
             return null;
         }
     }
@@ -535,7 +537,9 @@ public sealed class SongLinkResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Qobuz metadata ISRC lookup failed for {Isrc}", isrc);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Qobuz metadata ISRC lookup failed for {Isrc}", isrc);            }
             return null;
         }
     }
@@ -566,7 +570,9 @@ public sealed class SongLinkResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Qobuz public ISRC lookup failed for {Isrc}", isrc);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Qobuz public ISRC lookup failed for {Isrc}", isrc);            }
             return null;
         }
     }
@@ -596,7 +602,9 @@ public sealed class SongLinkResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Deezer ISRC lookup failed for track {TrackId}", deezerTrackId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer ISRC lookup failed for track {TrackId}", deezerTrackId);            }
             return null;
         }
     }
@@ -620,7 +628,41 @@ public sealed class SongLinkResolver
         var expectedDuration = durationMs.HasValue && durationMs.Value > 0
             ? (int)Math.Round(durationMs.Value / 1000d)
             : 0;
+        var queries = BuildQobuzQueries(title, artist);
 
+        var resolved = await TryResolveQobuzUrlWithMetadataStrategyAsync(title, artist, durationMs, expectedDuration, queries, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(resolved))
+        {
+            return resolved;
+        }
+
+        resolved = await TryResolveQobuzUrlByCandidateSearchAsync(
+            title,
+            artist,
+            expectedDuration,
+            "autosuggest lookup",
+            () => SearchQobuzAutosuggestAcrossStoresAsync(queries, cancellationToken));
+        if (!string.IsNullOrWhiteSpace(resolved))
+        {
+            return resolved;
+        }
+
+        return await TryResolveQobuzUrlByCandidateSearchAsync(
+            title,
+            artist,
+            expectedDuration,
+            "public search",
+            () => SearchQobuzPublicByQueriesAsync(queries, cancellationToken));
+    }
+
+    private async Task<string?> TryResolveQobuzUrlWithMetadataStrategyAsync(
+        string title,
+        string artist,
+        int? durationMs,
+        int expectedDuration,
+        IReadOnlyList<string> queries,
+        CancellationToken cancellationToken)
+    {
         try
         {
             if (_qobuzTrackResolver != null)
@@ -638,52 +680,48 @@ public sealed class SongLinkResolver
                 }
             }
 
-            var candidates = await SearchQobuzByQueriesAsync(BuildQobuzQueries(title, artist), cancellationToken);
-            var bestId = PickBestQobuzCandidate(candidates, title, artist, expectedDuration);
-            if (bestId != null)
-            {
-                return $"https://play.qobuz.com/track/{bestId}";
-            }
+            var candidates = await SearchQobuzByQueriesAsync(queries, cancellationToken);
+            return BuildQobuzTrackUrl(PickBestQobuzCandidate(candidates, title, artist, expectedDuration));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Qobuz metadata lookup failed for {Title} - {Artist}", title, artist);
-        }
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Qobuz metadata lookup failed for {Title} - {Artist}", title, artist);
+            }
 
+            return null;
+        }
+    }
+
+    private async Task<string?> TryResolveQobuzUrlByCandidateSearchAsync(
+        string title,
+        string artist,
+        int expectedDuration,
+        string strategyLabel,
+        Func<Task<List<QobuzTrack>>> candidateFactory)
+    {
         try
         {
-            var autosuggestCandidates = await SearchQobuzAutosuggestAcrossStoresAsync(
-                BuildQobuzQueries(title, artist),
-                cancellationToken);
-            var bestId = PickBestQobuzCandidate(autosuggestCandidates, title, artist, expectedDuration);
-            if (bestId != null)
-            {
-                return $"https://play.qobuz.com/track/{bestId}";
-            }
+            var candidates = await candidateFactory();
+            return BuildQobuzTrackUrl(PickBestQobuzCandidate(candidates, title, artist, expectedDuration));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Qobuz autosuggest lookup failed for {Title} - {Artist}", title, artist);
-        }
-
-        // Fallback to public Qobuz search (no auth) to improve reliability.
-        try
-        {
-            var publicCandidates = await SearchQobuzPublicByQueriesAsync(
-                BuildQobuzQueries(title, artist),
-                cancellationToken);
-            var bestId = PickBestQobuzCandidate(publicCandidates, title, artist, expectedDuration);
-            if (bestId != null)
+            if (_logger.IsEnabled(LogLevel.Debug))
             {
-                return $"https://play.qobuz.com/track/{bestId}";
+                _logger.LogDebug(ex, "Qobuz {Strategy} failed for {Title} - {Artist}", strategyLabel, title, artist);
             }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Qobuz public search failed for {Title} - {Artist}", title, artist);
-        }
 
-        return null;
+            return null;
+        }
+    }
+
+    private static string? BuildQobuzTrackUrl(long? bestId)
+    {
+        return bestId.HasValue
+            ? $"https://play.qobuz.com/track/{bestId.Value}"
+            : null;
     }
 
     private static string? ExtractId(string? platform, string? entityId, string? link)
@@ -695,13 +733,13 @@ public sealed class SongLinkResolver
 
         if (!string.IsNullOrWhiteSpace(link))
         {
-                var last = link.Split('/').LastOrDefault();
-                if (!string.IsNullOrWhiteSpace(last))
+            var last = link.Split('/').LastOrDefault();
+            if (!string.IsNullOrWhiteSpace(last))
+            {
+                var queryTrimmed = last.Split(QueryAndFragmentSeparators, StringSplitOptions.None)[0];
+                if (!string.IsNullOrWhiteSpace(queryTrimmed))
                 {
-                    var queryTrimmed = last.Split(QueryAndFragmentSeparators, StringSplitOptions.None)[0];
-                    if (!string.IsNullOrWhiteSpace(queryTrimmed))
-                    {
-                        return queryTrimmed;
+                    return queryTrimmed;
                 }
             }
         }
@@ -886,11 +924,13 @@ public sealed class SongLinkResolver
         }
 
         var bestArtist = GetQobuzTrackArtist(best);
-        _logger.LogDebug(
-            "Qobuz best score {Score} (candidate_duration={CandDur}s, candidate_artist_present={HasArtist})",
-            bestScore,
-            best.Duration,
-            !string.IsNullOrWhiteSpace(bestArtist));
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Qobuz best score {Score} (candidate_duration={CandDur}s, candidate_artist_present={HasArtist})",
+                bestScore,
+                best.Duration,
+                !string.IsNullOrWhiteSpace(bestArtist));        }
     }
 
     private static List<string> BuildQobuzQueries(string title, string artist)
@@ -1266,7 +1306,7 @@ public sealed class SongLinkResolver
             results.Add(track);
         }
 
-        if (results.Count == 0)
+        if (results.Count == 0 && _logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug("Qobuz public search returned 0 candidates for {Query}", query);
         }
@@ -1375,7 +1415,9 @@ public sealed class SongLinkResolver
                 var wait = TimeSpan.FromMinutes(1) - (now - _windowStart);
                 if (wait > TimeSpan.Zero)
                 {
-                    _logger.LogDebug("song.link rate limit hit; waiting {Delay}", wait);
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug("song.link rate limit hit; waiting {Delay}", wait);                    }
                     await Task.Delay(wait, cancellationToken);
                     _windowStart = DateTimeOffset.UtcNow;
                     _windowCount = 0;
@@ -1388,7 +1430,9 @@ public sealed class SongLinkResolver
                 if (since < MinDelay)
                 {
                     var wait = MinDelay - since;
-                    _logger.LogDebug("song.link spacing delay {Delay}", wait);
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug("song.link spacing delay {Delay}", wait);                    }
                     await Task.Delay(wait, cancellationToken);
                 }
             }

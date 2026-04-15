@@ -25,8 +25,8 @@ public class CommandExecutionService
     /// Ported from: executeCommand logic in deezspotag downloader.ts afterDownloadSingle/afterDownloadCollection
     /// </summary>
     public async Task<CommandExecutionResult> ExecutePostDownloadCommandAsync(
-        DeezSpoTagSettings settings, 
-        string? extrasPath = null, 
+        DeezSpoTagSettings settings,
+        string? extrasPath = null,
         string? filename = null,
         CancellationToken cancellationToken = default)
     {
@@ -37,21 +37,23 @@ public class CommandExecutionService
                 return new CommandExecutionResult { Success = true, Message = "No command configured" };
             }
 
-            _logger.LogDebug("Executing post-download command: {Command}", settings.ExecuteCommand);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Executing post-download command: {Command}", settings.ExecuteCommand);            }
 
             var command = PrepareCommand(settings.ExecuteCommand, extrasPath, filename);
-            
+
             if (string.IsNullOrWhiteSpace(command))
             {
-                return new CommandExecutionResult 
-                { 
-                    Success = false, 
-                    Message = "Command is empty after variable substitution" 
+                return new CommandExecutionResult
+                {
+                    Success = false,
+                    Message = "Command is empty after variable substitution"
                 };
             }
 
             var result = await ExecuteCommandAsync(command, cancellationToken);
-            
+
             if (result.Success)
             {
                 _logger.LogInformation("Post-download command executed successfully");
@@ -97,7 +99,9 @@ public class CommandExecutionService
             // Clean up extra spaces
             preparedCommand = Regex.Replace(preparedCommand, @"\s+", " ", RegexOptions.None, RegexTimeout).Trim();
 
-            _logger.LogDebug("Prepared command: {PreparedCommand}", preparedCommand);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Prepared command: {PreparedCommand}", preparedCommand);            }
             return preparedCommand;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -132,10 +136,12 @@ public class CommandExecutionService
                 WorkingDirectory = Environment.CurrentDirectory
             };
 
-            _logger.LogDebug("Starting process: {Shell} {Args}", shell, fullCommand);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Starting process: {Shell} {Args}", shell, fullCommand);            }
 
             using var process = new Process { StartInfo = processStartInfo };
-            
+
             var outputBuilder = new System.Text.StringBuilder();
             var errorBuilder = new System.Text.StringBuilder();
 
@@ -161,7 +167,7 @@ public class CommandExecutionService
 
             // Wait for process to complete with cancellation support
             var processTask = Task.Run(() => process.WaitForExit(), cancellationToken);
-            
+
             try
             {
                 await processTask;
@@ -169,7 +175,7 @@ public class CommandExecutionService
             catch (OperationCanceledException ex)
             {
                 _logger.LogWarning(ex, "Command execution was cancelled");
-                
+
                 if (!process.HasExited)
                 {
                     try
@@ -181,7 +187,7 @@ public class CommandExecutionService
                         _logger.LogWarning(killEx, "Failed to kill process after cancellation");
                     }
                 }
-                
+
                 return new CommandExecutionResult
                 {
                     Success = false,
@@ -200,8 +206,10 @@ public class CommandExecutionService
                 result.ErrorMessage = $"Command failed with exit code {process.ExitCode}";
             }
 
-            _logger.LogDebug("Command completed with exit code: {ExitCode}, execution time: {ExecutionTime}", 
-                result.ExitCode, result.ExecutionTime);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Command completed with exit code: {ExitCode}, execution time: {ExecutionTime}",
+                    result.ExitCode, result.ExecutionTime);            }
 
             return result;
         }
