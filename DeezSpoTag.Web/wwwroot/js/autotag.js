@@ -2249,10 +2249,6 @@
             numberInput.value = initial;
             numberInput.className = "autotag-slider-number";
 
-            const value = document.createElement("span");
-            value.className = "autotag-slider-value";
-            value.textContent = `${initial}`;
-
             const update = (nextRaw) => {
                 const parsed = Number(nextRaw);
                 if (!Number.isFinite(parsed)) {
@@ -2261,7 +2257,6 @@
                 const clamped = Math.min(max, Math.max(min, parsed));
                 slider.value = clamped;
                 numberInput.value = clamped;
-                value.textContent = `${clamped}`;
                 setPlatformOptionValue(platform.id, option.id, clamped);
             };
 
@@ -2270,7 +2265,6 @@
 
             row.appendChild(slider);
             row.appendChild(numberInput);
-            row.appendChild(value);
             field.appendChild(row);
             return field;
         }
