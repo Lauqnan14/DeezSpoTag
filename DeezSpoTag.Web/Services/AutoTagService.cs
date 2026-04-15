@@ -2041,7 +2041,7 @@ public class AutoTagService
 
     private static IReadOnlyList<QualityScanTrackDto> FilterTracksByScopedFolders(
         IReadOnlyList<QualityScanTrackDto> tracks,
-        IReadOnlyList<long> scopedFolderIds)
+        List<long> scopedFolderIds)
     {
         if (scopedFolderIds.Count <= 1)
         {
