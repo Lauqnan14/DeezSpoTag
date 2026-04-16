@@ -70,6 +70,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string SyncedLyricsTag = "syncedLyrics";
     private const string UnsyncedLyricsTag = "unsyncedLyrics";
     private const string TtmlLyricsTag = "ttmlLyrics";
+    private const string ItunesPlatform = "itunes";
     private const string SpotifyPlatform = "spotify";
     private const string LyricsTag = "lyrics";
     private const string SyllableLyricsType = "syllable-lyrics";
@@ -604,7 +605,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Artwork fallback match failed for {File} using {Platform}.", context.File, platform);
+                LogArtworkFallbackMatchFailure(ex, context.File, platform);
                 continue;
             }
 
@@ -624,12 +625,20 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
+    private void LogArtworkFallbackMatchFailure(Exception ex, string filePath, string platform)
+    {
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(ex, "Artwork fallback match failed for {File} using {Platform}.", filePath, platform);
+        }
+    }
+
     private static string? ResolveArtworkFallbackPlatform(string provider)
     {
         var normalized = provider?.Trim().ToLowerInvariant();
         return normalized switch
         {
-            "apple" => "itunes",
+            "apple" => ItunesPlatform,
             "deezer" => DeezerPlatform,
             SpotifyPlatform => SpotifyPlatform,
             _ => null
@@ -835,7 +844,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         DeezSpoTagSettings settings,
         CancellationToken token)
     {
-        var itunesConfig = LoadConfig(config.Custom, "itunes", new ItunesMatchConfig());
+        var itunesConfig = LoadConfig(config.Custom, ItunesPlatform, new ItunesMatchConfig());
         var saveAnimatedArtwork = itunesConfig.AnimatedArtwork ?? settings.SaveAnimatedArtwork;
         var wantsAnimatedArtwork = saveAnimatedArtwork && HasAnyTags(config, AlbumArtTag);
         var wantsAppleLyrics = ShouldRequestAnyLyrics(config, settings);
@@ -1548,8 +1557,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 return await _beatsourceMatcher.MatchAsync(info, matchingConfig, LoadConfig(config.Custom, "beatsource", new BeatsourceMatchConfig()), token);
             case "bpmsupreme":
                 return await _bpmSupremeMatcher.MatchAsync(info, matchingConfig, LoadConfig(config.Custom, "bpmsupreme", new BpmSupremeConfig()), token);
-            case "itunes":
-                return await _itunesMatcher.MatchAsync(info, matchingConfig, LoadConfig(config.Custom, "itunes", new ItunesMatchConfig()), token);
+            case ItunesPlatform:
+                return await _itunesMatcher.MatchAsync(info, matchingConfig, LoadConfig(config.Custom, ItunesPlatform, new ItunesMatchConfig()), token);
             case SpotifyPlatform:
                 return await _spotifyMatcher.MatchAsync(info, matchingConfig, token);
             case DeezerPlatform:
@@ -3596,12 +3605,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         SetTrackNumber(
             file,
-            context.Extension,
+            context,
             context.SourceTrack.DiscNumber.Value,
             null,
             SupportedTag.DiscNumber,
-            context.Config,
-            context.EffectiveTagSettings.UseNullSeparator,
             isDisc: true);
     }
 
@@ -3621,12 +3628,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             : null;
         SetTrackNumber(
             file,
-            context.Extension,
+            context,
             context.SourceTrack.TrackNumber.Value,
             total,
             SupportedTag.TrackNumber,
-            context.Config,
-            context.EffectiveTagSettings.UseNullSeparator,
             isDisc: false);
     }
 
@@ -4835,31 +4840,29 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static void SetTrackNumber(
         TagLib.File file,
-        string extension,
+        TagWriteExecutionContext context,
         int number,
         int? total,
         SupportedTag tag,
-        AutoTagRunnerConfig config,
-        bool useNullSeparator,
         bool isDisc)
     {
-        var numberText = config.TrackNumberLeadingZeroes > 0
-            ? number.ToString($"D{config.TrackNumberLeadingZeroes}", CultureInfo.InvariantCulture)
+        var numberText = context.Config.TrackNumberLeadingZeroes > 0
+            ? number.ToString($"D{context.Config.TrackNumberLeadingZeroes}", CultureInfo.InvariantCulture)
             : number.ToString(CultureInfo.InvariantCulture);
 
-        if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
+        if (context.Extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
         {
-            WriteId3TrackNumber(file, numberText, total, tag, config, useNullSeparator, isDisc);
+            WriteId3TrackNumber(file, numberText, total, tag, context.Config, context.EffectiveTagSettings.UseNullSeparator, isDisc);
             return;
         }
 
-        if (extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
+        if (context.Extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
         {
-            WriteVorbisTrackNumber(file, numberText, total, tag, config, isDisc);
+            WriteVorbisTrackNumber(file, numberText, total, tag, context.Config, isDisc);
             return;
         }
 
-        WriteMp4TrackNumber(file, number, total, tag, config, isDisc, extension);
+        WriteMp4TrackNumber(file, number, total, tag, context.Config, isDisc, context.Extension);
     }
 
     private static void WriteId3TrackNumber(
@@ -5489,21 +5492,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             var apple = (TagLib.Mpeg4.AppleTag)file.GetTag(TagTypes.Apple, true);
             TrySetAppleDashBox(apple, "©day", new[] { dateString });
         }
-    }
-
-    private static string BuildFullTitle(AutoTagTrack track)
-    {
-        if (string.IsNullOrWhiteSpace(track.Version))
-        {
-            return track.Title;
-        }
-
-        if (track.Title.Contains(track.Version, StringComparison.OrdinalIgnoreCase))
-        {
-            return track.Title;
-        }
-
-        return $"{track.Title} ({track.Version})";
     }
 
     private static string CapitalizeGenre(string input)

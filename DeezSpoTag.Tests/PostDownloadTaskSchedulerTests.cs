@@ -44,6 +44,7 @@ public sealed class PostDownloadTaskSchedulerTests
 
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await processed.Task.WaitAsync(timeout.Token);
+            Assert.True(processed.Task.IsCompletedSuccessfully);
         }
         finally
         {
