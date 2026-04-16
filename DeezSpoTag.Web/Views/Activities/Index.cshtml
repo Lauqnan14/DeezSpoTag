@@ -4109,7 +4109,7 @@ function renderTasks() {
             : progressValue;
         queueProgressCache[task.taskId] = progressStart;
         const progressHtml = task.status === 'running'
-            ? `<div class="progress-text"><span>Downloading...</span><span class="progress-value" data-progress-start="${progressStart}" data-progress-target="${progressValue}">${normalizeQueueProgressPercent(progressStart)}%</span></div>
+            ? `<div class="progress-text"><span>Downloading...</span><span class="progress-value" data-progress-start="${progressStart}" data-progress-target="${progressValue}">${formatQueueProgressPercent(progressStart)}%</span></div>
                <div class="progress-bar"><div class="progress-fill" style="width: ${progressStart}%" data-progress-start="${progressStart}" data-progress-target="${progressValue}"></div></div>`
             : '';
         if (task.status !== 'running' && queueProgressTextAnimationByTask[task.taskId] != null) {
@@ -4259,10 +4259,15 @@ function clampQueueProgressPercent(value) {
     if (!Number.isFinite(numeric)) {
         return 0;
     }
-    return Math.max(0, Math.min(100, numeric));
+    const normalized = (numeric > 0 && numeric < 1) ? numeric * 100 : numeric;
+    return Math.max(0, Math.min(100, normalized));
 }
 
 function normalizeQueueProgressPercent(value) {
+    return clampQueueProgressPercent(value);
+}
+
+function formatQueueProgressPercent(value) {
     return Math.round(clampQueueProgressPercent(value));
 }
 
@@ -4276,7 +4281,7 @@ function animateQueueProgress(taskId, fillEl, valueEl, start, target) {
 
     if (startValue === targetValue) {
         fillEl.style.width = `${targetValue}%`;
-        valueEl.textContent = `${normalizeQueueProgressPercent(targetValue)}%`;
+        valueEl.textContent = `${formatQueueProgressPercent(targetValue)}%`;
         queueProgressCache[taskId] = targetValue;
         return;
     }
@@ -4293,7 +4298,7 @@ function animateQueueProgress(taskId, fillEl, valueEl, start, target) {
         const current = clampQueueProgressPercent(startValue + (delta * t));
         queueProgressCache[taskId] = current;
         fillEl.style.width = `${current}%`;
-        valueEl.textContent = `${normalizeQueueProgressPercent(current)}%`;
+        valueEl.textContent = `${formatQueueProgressPercent(current)}%`;
 
         if (t < 1) {
             queueProgressTextAnimationByTask[taskId] = requestAnimationFrame(step);
@@ -5259,6 +5264,11 @@ function describeQueueEventState(state) {
     return normalized === 'post' ? 'Finalizing items...' : '';
 }
 
+function parseQueueRealtimeProgressValue(value) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+}
+
 function applyQueueRealtimeProgress(payload) {
     const taskId = normalizeQueueEventUuid(payload);
     if (!taskId) {
@@ -5335,9 +5345,13 @@ function applyQueueRealtimeUpdate(payload) {
         return;
     }
 
-    const nextProgress = (typeof update?.progress === 'number' || typeof update?.progressNext === 'number')
-        ? normalizeQueueProgressPercent(update?.progress ?? update?.progressNext)
-        : null;
+    const rawNextProgress = parseQueueRealtimeProgressValue(
+        update?.progress !== undefined && update?.progress !== null
+            ? update.progress
+            : update?.progressNext);
+    const nextProgress = rawNextProgress === null
+        ? null
+        : normalizeQueueProgressPercent(rawNextProgress);
     let taskChanged = false;
 
     const mergedStatus = resolveMergedQueueStatus(task.status, status, task.progress);
@@ -5453,7 +5467,11 @@ function applyQueueRealtimeUpdate(payload) {
         return;
     }
 
-    if (typeof update?.progress === 'number' || typeof update?.progressNext === 'number') {
+    const trailingProgress = parseQueueRealtimeProgressValue(
+        update?.progress !== undefined && update?.progress !== null
+            ? update.progress
+            : update?.progressNext);
+    if (trailingProgress !== null) {
         applyQueueRealtimeProgress(update);
     }
 }
