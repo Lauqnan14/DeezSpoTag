@@ -251,7 +251,12 @@ internal static class DownloadQueueEnqueueHelper
             CreatedAt: DateTimeOffset.UtcNow,
             UpdatedAt: DateTimeOffset.UtcNow);
 
-        await queueRepository.EnqueueAsync(item, cancellationToken);
+        var insertId = await queueRepository.EnqueueAsync(item, cancellationToken);
+        if (!insertId.HasValue || insertId.Value <= 0)
+        {
+            return EnqueueOutcome.Skipped("queue_duplicate", "Skipped: matching track is already in queue.");
+        }
+
         return EnqueueOutcome.Queued();
     }
 }
