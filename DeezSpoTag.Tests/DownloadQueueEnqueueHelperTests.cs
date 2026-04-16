@@ -100,6 +100,46 @@ public sealed class DownloadQueueEnqueueHelperTests
         Assert.Equal(payload.DestinationFolderId, persisted!.DestinationFolderId);
     }
 
+    [Fact]
+    public async Task EnqueueAsync_ReturnsNull_WhenInsertIsIgnoredByQueueUuidConstraint()
+    {
+        await using var context = await CreateContextAsync();
+        var existingPayload = CreatePayload("insert-ignore-1");
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(existingPayload, "queued"), CancellationToken.None);
+
+        var conflictingPayload = CreatePayload("insert-ignore-1");
+        conflictingPayload.Artist = "Different Artist";
+        conflictingPayload.Title = "Different Track";
+
+        var result = await context.QueueRepository.EnqueueAsync(CreateQueueItem(conflictingPayload, "queued"), CancellationToken.None);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task EnqueueWithDedupAsync_ReturnsQueueDuplicate_WhenInsertIsIgnored()
+    {
+        await using var context = await CreateContextAsync();
+        var existingPayload = CreatePayload("helper-ignore-1");
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(existingPayload, "queued"), CancellationToken.None);
+
+        var conflictingPayload = CreatePayload("helper-ignore-1");
+        conflictingPayload.Artist = "Different Artist";
+        conflictingPayload.Title = "Different Track";
+
+        var outcome = await DownloadQueueEnqueueHelper.EnqueueWithDedupAsync(
+            conflictingPayload,
+            redownloadCooldownMinutes: 720,
+            context.QueueRepository,
+            context.Listener,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        Assert.False(outcome.Success);
+        Assert.True(outcome.AlreadyQueued);
+        Assert.Equal("queue_duplicate", outcome.ReasonCode);
+    }
+
     private static Task<TestContext> CreateContextAsync()
     {
         var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-download-queue-tests-" + Path.GetRandomFileName());

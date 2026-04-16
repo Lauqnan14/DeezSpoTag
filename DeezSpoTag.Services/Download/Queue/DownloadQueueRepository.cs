@@ -54,7 +54,10 @@ INSERT OR IGNORE INTO " + DownloadTaskTable + @"
     (queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id, spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id, duration_ms, destination_folder_id, quality_rank, queue_order, content_type, status, payload, progress, downloaded, failed, error, created_at, updated_at)
 VALUES
     (@queueUuid, @engine, @artistName, @trackTitle, @isrc, @deezerTrackId, @deezerAlbumId, @deezerArtistId, @spotifyTrackId, @spotifyAlbumId, @spotifyArtistId, @appleTrackId, @appleAlbumId, @appleArtistId, @durationMs, @destinationFolderId, @qualityRank, @queueOrder, @contentType, @status, @payload, @progress, @downloaded, @failed, @error, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-SELECT last_insert_rowid();";
+SELECT CASE
+    WHEN changes() = 0 THEN NULL
+    ELSE last_insert_rowid()
+END;";
         await using var command = new SqliteCommand(sql, connection);
         BindCommonParameters(command, item with { QueueOrder = queueOrder });
         var result = await command.ExecuteScalarAsync(cancellationToken);
