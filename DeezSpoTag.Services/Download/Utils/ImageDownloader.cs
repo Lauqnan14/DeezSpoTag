@@ -98,6 +98,13 @@ public class ImageDownloader
             TryDeletePartialFile(path);
             throw;
         }
+        catch (OperationCanceledException ex)
+        {
+            TryDeletePartialFile(path);
+
+            _logger.LogWarning(ex, "Image download timed out or was canceled internally: {Url}", url);
+            return null;
+        }
         catch (Exception ex) when (IsRetryableError(ex))
         {
             TryDeletePartialFile(path);
@@ -215,6 +222,13 @@ public class ImageDownloader
                     _logger.LogDebug("Spotify max-res image verified via HEAD: {MaxUrl}", maxUrl);                }
                 return maxUrl;
             }
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Head probe timed out; fall back to original URL.
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Timed out probing Spotify max-res image URL {MaxUrl}", maxUrl);            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
