@@ -647,17 +647,28 @@ public class TrackDownloader
 
     private async Task<TagSettings> ResolveTagSettingsAsync(long? destinationFolderId, DeezSpoTagSettings settings, CancellationToken cancellationToken)
     {
-        settings.MetadataSource = DownloadTagSourceHelper.NormalizeMetadataResolverSource(settings.MetadataSource) ?? string.Empty;
-
         try
         {
             var profile = await _tagSettingsResolver.ResolveProfileAsync(destinationFolderId, cancellationToken);
-            if (profile != null)
+            if (profile == null)
             {
-                settings.MetadataSource = DownloadTagSourceHelper.ResolveMetadataSource(
+                if (destinationFolderId.HasValue)
+                {
+                    throw new InvalidOperationException("Destination music folder requires a valid AutoTag profile.");
+                }
+            }
+            else
+            {
+                var resolvedSource = DownloadTagSourceHelper.ResolveDownloadTagSource(
                     profile.DownloadTagSource,
                     DeezerSource,
-                    settings.Service) ?? settings.MetadataSource;
+                    settings.Service);
+                if (string.IsNullOrWhiteSpace(resolvedSource))
+                {
+                    var configuredSource = profile.DownloadTagSource?.Trim();
+                    throw new InvalidOperationException(
+                        $"Download profile source resolution failed: downloadTagSource '{configuredSource}' is invalid for engine '{settings.Service ?? "unknown"}'.");
+                }
 
                 TechnicalLyricsSettingsApplier.Apply(settings, profile.Technical);
 
@@ -669,6 +680,13 @@ public class TrackDownloader
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            if (ex is InvalidOperationException invalidOperationException
+                && (invalidOperationException.Message.StartsWith("Destination music folder requires a valid AutoTag profile.", StringComparison.Ordinal)
+                    || invalidOperationException.Message.StartsWith("Download profile source resolution failed:", StringComparison.Ordinal)))
+            {
+                throw;
+            }
+
             if (_logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug(ex, "Failed to resolve tag settings for folder {FolderId}", destinationFolderId);            }
@@ -789,16 +807,7 @@ public class TrackDownloader
                 return;
             }
 
-            track.ParseTrack(apiTrack);
-            track.Bpm = apiTrack.Bpm;
-            track.Copyright = string.IsNullOrWhiteSpace(track.Copyright) ? apiTrack.Copyright ?? "" : track.Copyright;
-            track.PhysicalReleaseDate ??= apiTrack.PhysicalReleaseDate;
-            track.Rank = apiTrack.Rank;
-            track.Gain = apiTrack.Gain;
-            if (string.IsNullOrWhiteSpace(track.LyricsId))
-            {
-                track.LyricsId = apiTrack.LyricsId;
-            }
+            MergePublicTrackMetadata(track, apiTrack);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -823,11 +832,11 @@ public class TrackDownloader
                 return;
             }
 
-            ApplyAlbumScalarMetadata(track.Album, apiAlbum);
+            MergePublicAlbumMetadata(track.Album, apiAlbum);
             ApplyAlbumCoverIfMissing(track.Album, apiAlbum.Md5Image);
-            ApplyAlbumGenres(track.Album, apiAlbum);
+            MergeAlbumGenres(track.Album, apiAlbum);
             TryApplyAlbumReleaseDate(track.Album, apiAlbum.ReleaseDate);
-            ApplyAlbumMainArtist(track.Album, apiAlbum.Artist);
+            MergeAlbumMainArtist(track.Album, apiAlbum.Artist);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -2487,15 +2496,101 @@ public class TrackDownloader
         }
     }
 
-    private static void ApplyAlbumScalarMetadata(Album album, DeezSpoTag.Core.Models.Deezer.ApiAlbum apiAlbum)
+    private static void MergePublicTrackMetadata(Track track, DeezSpoTag.Core.Models.Deezer.ApiTrack apiTrack)
+    {
+        if (string.IsNullOrWhiteSpace(track.Title) && !string.IsNullOrWhiteSpace(apiTrack.Title))
+        {
+            track.Title = apiTrack.Title;
+        }
+
+        if (track.Duration <= 0 && apiTrack.Duration > 0)
+        {
+            track.Duration = apiTrack.Duration;
+        }
+
+        if (track.TrackNumber <= 0 && apiTrack.TrackPosition > 0)
+        {
+            track.TrackNumber = apiTrack.TrackPosition;
+        }
+
+        if (track.DiscNumber <= 0 && apiTrack.DiskNumber > 0)
+        {
+            track.DiscNumber = apiTrack.DiskNumber;
+        }
+
+        if (!track.Explicit && (apiTrack.ExplicitLyrics || apiTrack.ExplicitContentLyrics == 1))
+        {
+            track.Explicit = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(track.ISRC) && !string.IsNullOrWhiteSpace(apiTrack.Isrc))
+        {
+            track.ISRC = apiTrack.Isrc;
+        }
+
+        if (track.Bpm <= 0 && apiTrack.Bpm > 0)
+        {
+            track.Bpm = apiTrack.Bpm;
+        }
+
+        if (string.IsNullOrWhiteSpace(track.Copyright) && !string.IsNullOrWhiteSpace(apiTrack.Copyright))
+        {
+            track.Copyright = apiTrack.Copyright;
+        }
+
+        if (string.IsNullOrWhiteSpace(track.PhysicalReleaseDate) && !string.IsNullOrWhiteSpace(apiTrack.PhysicalReleaseDate))
+        {
+            track.PhysicalReleaseDate = apiTrack.PhysicalReleaseDate;
+        }
+
+        if (track.Rank <= 0 && apiTrack.Rank > 0)
+        {
+            track.Rank = apiTrack.Rank;
+        }
+
+        if (Math.Abs(track.Gain) <= double.Epsilon && Math.Abs(apiTrack.Gain) > double.Epsilon)
+        {
+            track.Gain = apiTrack.Gain;
+        }
+
+        if (string.IsNullOrWhiteSpace(track.LyricsId) && !string.IsNullOrWhiteSpace(apiTrack.LyricsId))
+        {
+            track.LyricsId = apiTrack.LyricsId;
+        }
+    }
+
+    private static void MergePublicAlbumMetadata(Album album, DeezSpoTag.Core.Models.Deezer.ApiAlbum apiAlbum)
     {
         album.Title = string.IsNullOrWhiteSpace(album.Title) ? apiAlbum.Title : album.Title;
-        album.Label = apiAlbum.Label ?? album.Label;
-        album.Barcode = apiAlbum.Upc ?? album.Barcode;
-        album.RecordType = apiAlbum.RecordType ?? album.RecordType;
-        album.TrackTotal = apiAlbum.NbTracks ?? album.TrackTotal;
-        album.DiscTotal = apiAlbum.NbDisk ?? album.DiscTotal;
-        album.Copyright = apiAlbum.Copyright ?? album.Copyright;
+        if (string.IsNullOrWhiteSpace(album.Label) && !string.IsNullOrWhiteSpace(apiAlbum.Label))
+        {
+            album.Label = apiAlbum.Label;
+        }
+
+        if (string.IsNullOrWhiteSpace(album.Barcode) && !string.IsNullOrWhiteSpace(apiAlbum.Upc))
+        {
+            album.Barcode = apiAlbum.Upc;
+        }
+
+        if (string.IsNullOrWhiteSpace(album.RecordType) && !string.IsNullOrWhiteSpace(apiAlbum.RecordType))
+        {
+            album.RecordType = apiAlbum.RecordType;
+        }
+
+        if (album.TrackTotal <= 0 && apiAlbum.NbTracks is > 0)
+        {
+            album.TrackTotal = apiAlbum.NbTracks.Value;
+        }
+
+        if ((!album.DiscTotal.HasValue || album.DiscTotal.Value <= 0) && apiAlbum.NbDisk is > 0)
+        {
+            album.DiscTotal = apiAlbum.NbDisk.Value;
+        }
+
+        if (string.IsNullOrWhiteSpace(album.Copyright) && !string.IsNullOrWhiteSpace(apiAlbum.Copyright))
+        {
+            album.Copyright = apiAlbum.Copyright;
+        }
     }
 
     private static void ApplyAlbumCoverIfMissing(Album album, string? md5Image)
@@ -2510,18 +2605,37 @@ public class TrackDownloader
         album.Md5Image = md5Image;
     }
 
-    private static void ApplyAlbumGenres(Album album, DeezSpoTag.Core.Models.Deezer.ApiAlbum apiAlbum)
+    private static void MergeAlbumGenres(Album album, DeezSpoTag.Core.Models.Deezer.ApiAlbum apiAlbum)
     {
         if (apiAlbum.Genres?.Data is not { Count: > 0 })
         {
             return;
         }
 
-        album.Genre = apiAlbum.Genres.Data
+        var incomingGenres = apiAlbum.Genres.Data
             .Select(genre => genre.Name)
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .Select(name => name!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+        if (incomingGenres.Count == 0)
+        {
+            return;
+        }
+
+        if (album.Genre is not { Count: > 0 })
+        {
+            album.Genre = incomingGenres;
+            return;
+        }
+
+        foreach (var genre in incomingGenres)
+        {
+            if (!album.Genre.Contains(genre, StringComparer.OrdinalIgnoreCase))
+            {
+                album.Genre.Add(genre);
+            }
+        }
     }
 
     private static void TryApplyAlbumReleaseDate(Album album, string? releaseDateText)
@@ -2539,20 +2653,44 @@ public class TrackDownloader
         album.Date.FixDayMonth();
     }
 
-    private static void ApplyAlbumMainArtist(Album album, DeezSpoTag.Core.Models.Deezer.ApiArtist? apiArtist)
+    private static void MergeAlbumMainArtist(Album album, DeezSpoTag.Core.Models.Deezer.ApiArtist? apiArtist)
     {
-        if (apiArtist == null)
+        if (apiArtist == null || string.IsNullOrWhiteSpace(apiArtist.Name))
         {
             return;
         }
 
-        album.MainArtist = new Artist(apiArtist.Id, apiArtist.Name ?? "");
-        if (!string.IsNullOrWhiteSpace(apiArtist.Md5Image))
+        if (album.MainArtist == null || string.IsNullOrWhiteSpace(album.MainArtist.Name))
+        {
+            album.MainArtist = new Artist(apiArtist.Id, apiArtist.Name);
+        }
+
+        if (!string.IsNullOrWhiteSpace(apiArtist.Md5Image)
+            && string.IsNullOrWhiteSpace(album.MainArtist.Pic?.Md5))
         {
             album.MainArtist.Pic = new Picture(apiArtist.Md5Image, ArtistType);
         }
 
-        album.Artist["Main"] = new List<string> { album.MainArtist.Name };
-        album.Artists = new List<string> { album.MainArtist.Name };
+        if (!album.Artist.TryGetValue("Main", out var mainArtists))
+        {
+            mainArtists = new List<string>();
+            album.Artist["Main"] = mainArtists;
+        }
+
+        if (mainArtists.Count == 0)
+        {
+            mainArtists.Add(album.MainArtist.Name);
+        }
+
+        if (album.Artists is not { Count: > 0 })
+        {
+            album.Artists = new List<string>(mainArtists);
+            return;
+        }
+
+        if (!album.Artists.Contains(album.MainArtist.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            album.Artists.Add(album.MainArtist.Name);
+        }
     }
 }

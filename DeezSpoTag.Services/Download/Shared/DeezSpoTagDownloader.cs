@@ -400,14 +400,10 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
     {
         if (_tagSettingsResolved)
         {
-            Settings.MetadataSource = _resolvedDownloadTagSource
-                ?? DownloadTagSourceHelper.NormalizeMetadataResolverSource(Settings.MetadataSource)
-                ?? string.Empty;
             return _resolvedTagSettings ?? Settings.Tags ?? new TagSettings();
         }
 
         _tagSettingsResolved = true;
-        Settings.MetadataSource = DownloadTagSourceHelper.NormalizeMetadataResolverSource(Settings.MetadataSource) ?? string.Empty;
         try
         {
             using var scope = _serviceProvider.CreateScope();
@@ -415,12 +411,22 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
             if (resolver != null)
             {
                 var profile = await resolver.ResolveProfileAsync(DownloadObject.DestinationFolderId, _cancellationTokenSource.Token);
+                if (profile == null && DownloadObject.DestinationFolderId.HasValue)
+                {
+                    throw new InvalidOperationException("Destination music folder requires a valid AutoTag profile.");
+                }
+
                 _resolvedTagSettings = TagSettingsMerge.UseProfileOnly(profile?.TagSettings);
-                _resolvedDownloadTagSource = DownloadTagSourceHelper.ResolveMetadataSource(
+                _resolvedDownloadTagSource = DownloadTagSourceHelper.ResolveDownloadTagSource(
                     profile?.DownloadTagSource,
                     DeezerSource,
                     Settings.Service);
-                Settings.MetadataSource = _resolvedDownloadTagSource ?? Settings.MetadataSource;
+                if (profile != null && string.IsNullOrWhiteSpace(_resolvedDownloadTagSource))
+                {
+                    var configuredSource = profile.DownloadTagSource?.Trim();
+                    throw new InvalidOperationException(
+                        $"Download profile source resolution failed: downloadTagSource '{configuredSource}' is invalid for engine '{Settings.Service ?? "unknown"}'.");
+                }
             }
 
             var conversionOverlay = scope.ServiceProvider.GetService<IFolderConversionSettingsOverlay>();
@@ -431,6 +437,13 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            if (ex is InvalidOperationException invalidOperationException
+                && (invalidOperationException.Message.StartsWith("Destination music folder requires a valid AutoTag profile.", StringComparison.Ordinal)
+                    || invalidOperationException.Message.StartsWith("Download profile source resolution failed:", StringComparison.Ordinal)))
+            {
+                throw;
+            }
+
             if (_logger?.IsEnabled(LogLevel.Debug) == true)
             {
                 _logger?.LogDebug(ex, "Failed to resolve tag settings for download {Uuid}", DownloadObject.UUID);            }
@@ -581,14 +594,14 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(Settings.MetadataSource))
+            if (string.IsNullOrWhiteSpace(_resolvedDownloadTagSource))
             {
                 return;
             }
 
             using var scope = _serviceProvider.CreateScope();
             var registry = scope.ServiceProvider.GetService<DeezSpoTag.Services.Metadata.IMetadataResolverRegistry>();
-            var resolver = registry?.GetResolver(Settings.MetadataSource);
+            var resolver = registry?.GetResolver(_resolvedDownloadTagSource);
             if (resolver == null)
             {
                 return;

@@ -24,33 +24,33 @@ public sealed class DownloadTagSourceHelperTests
     [InlineData("qobuz", "qobuz")]
     [InlineData("apple", null)]
     [InlineData(null, null)]
-    public void NormalizeMetadataResolverSource_ReturnsExpectedValue(string? input, string? expected)
+    public void NormalizeResolvedDownloadTagSource_ReturnsExpectedValue(string? input, string? expected)
     {
-        var actual = DownloadTagSourceHelper.NormalizeMetadataResolverSource(input);
+        var actual = DownloadTagSourceHelper.NormalizeResolvedDownloadTagSource(input);
 
         Assert.Equal(expected, actual);
     }
 
     [Fact]
-    public void ResolveMetadataSource_UsesExplicitSourceBeforeEngineCandidates()
+    public void ResolveDownloadTagSource_UsesExplicitSourceBeforeEngineCandidates()
     {
-        var actual = DownloadTagSourceHelper.ResolveMetadataSource("spotify", "deezer", "qobuz");
+        var actual = DownloadTagSourceHelper.ResolveDownloadTagSource("spotify", "deezer", "qobuz");
 
         Assert.Equal("spotify", actual);
     }
 
     [Fact]
-    public void ResolveMetadataSource_UsesFirstSupportedEngineCandidate_WhenConfiguredToFollowEngine()
+    public void ResolveDownloadTagSource_UsesFirstSupportedEngineCandidate_WhenConfiguredToFollowEngine()
     {
-        var actual = DownloadTagSourceHelper.ResolveMetadataSource("engine", "apple", "qobuz", "deezer");
+        var actual = DownloadTagSourceHelper.ResolveDownloadTagSource("engine", "apple", "qobuz", "deezer");
 
         Assert.Equal("qobuz", actual);
     }
 
     [Fact]
-    public void ResolveMetadataSource_ReturnsNull_WhenNoSupportedEngineCandidateExists()
+    public void ResolveDownloadTagSource_ReturnsNull_WhenNoSupportedEngineCandidateExists()
     {
-        var actual = DownloadTagSourceHelper.ResolveMetadataSource("engine", "apple", "tidal", "amazon");
+        var actual = DownloadTagSourceHelper.ResolveDownloadTagSource("engine", "apple", "tidal", "amazon");
 
         Assert.Null(actual);
     }

@@ -11,7 +11,7 @@ public static class DownloadEngineSettingsHelper
         bool WrapResolutionExceptions = true,
         bool RequireProfile = true);
 
-    public static async Task ResolveAndApplyProfileAsync(
+    public static async Task<string?> ResolveAndApplyProfileAsync(
         IDownloadTagSettingsResolver resolver,
         DeezSpoTagSettings settings,
         long? destinationFolderId,
@@ -26,14 +26,13 @@ public static class DownloadEngineSettingsHelper
             {
                 if (!options.RequireProfile)
                 {
-                    return;
+                    return null;
                 }
 
                 throw new InvalidOperationException("Destination music folder requires a valid AutoTag profile.");
             }
 
-            ApplyResolvedProfileToSettings(settings, unwrappedProfile, currentEngine: options.CurrentEngine);
-            return;
+            return ApplyResolvedProfileToSettings(settings, unwrappedProfile, currentEngine: options.CurrentEngine);
         }
 
         try
@@ -43,19 +42,25 @@ public static class DownloadEngineSettingsHelper
             {
                 if (!options.RequireProfile)
                 {
-                    return;
+                    return null;
                 }
 
                 throw new InvalidOperationException("Destination music folder requires a valid AutoTag profile.");
             }
 
-            ApplyResolvedProfileToSettings(settings, profile, currentEngine: options.CurrentEngine);
+            return ApplyResolvedProfileToSettings(settings, profile, currentEngine: options.CurrentEngine);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             if (logger.IsEnabled(LogLevel.Debug))
             {
                 logger.LogDebug(ex, "Failed to resolve download tag profile for folder {FolderId}", destinationFolderId);            }
+            if (ex is InvalidOperationException invalidOperationException
+                && invalidOperationException.Message.StartsWith("Download profile source resolution failed:", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(invalidOperationException.Message, ex);
+            }
+
             throw new InvalidOperationException("Failed to apply destination profile settings.", ex);
         }
     }
@@ -108,25 +113,28 @@ public static class DownloadEngineSettingsHelper
             && quality.Contains("atmos", StringComparison.OrdinalIgnoreCase);
     }
 
-    public static void ApplyResolvedProfileToSettings(
+    public static string ApplyResolvedProfileToSettings(
         DeezSpoTagSettings settings,
         DownloadTagProfileSettings profile,
-        string? metadataSourceOverride = null,
         string? currentEngine = null)
     {
         settings.Tags = TagSettingsMerge.UseProfileOnly(profile.TagSettings);
-        var normalizedSource = metadataSourceOverride != null
-            ? DownloadTagSourceHelper.NormalizeMetadataResolverSource(metadataSourceOverride)
-            : DownloadTagSourceHelper.ResolveMetadataSource(profile.DownloadTagSource, currentEngine, settings.Service);
-        settings.MetadataSource = normalizedSource
-            ?? DownloadTagSourceHelper.NormalizeMetadataResolverSource(settings.MetadataSource)
-            ?? string.Empty;
+        var normalizedSource = DownloadTagSourceHelper.ResolveDownloadTagSource(
+            profile.DownloadTagSource,
+            currentEngine,
+            settings.Service);
+        if (string.IsNullOrWhiteSpace(normalizedSource))
+        {
+            var configuredSource = profile.DownloadTagSource?.Trim();
+            throw new InvalidOperationException(
+                $"Download profile source resolution failed: downloadTagSource '{configuredSource}' is invalid for engine '{currentEngine ?? settings.Service ?? "unknown"}'.");
+        }
         TechnicalLyricsSettingsApplier.Apply(settings, profile.Technical);
 
         var folder = profile.FolderStructure;
         if (folder == null)
         {
-            return;
+            return normalizedSource;
         }
 
         settings.CreateArtistFolder = folder.CreateArtistFolder;
@@ -155,6 +163,8 @@ public static class DownloadEngineSettingsHelper
         {
             settings.IllegalCharacterReplacer = folder.IllegalCharacterReplacer;
         }
+
+        return normalizedSource;
     }
 
 }

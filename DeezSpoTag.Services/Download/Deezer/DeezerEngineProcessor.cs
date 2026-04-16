@@ -184,7 +184,7 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             return false;
         }
 
-        await DownloadEngineSettingsHelper.ResolveAndApplyProfileAsync(
+        var resolvedDownloadTagSource = await DownloadEngineSettingsHelper.ResolveAndApplyProfileAsync(
             _tagSettingsResolver,
             settings,
             payload.DestinationFolderId,
@@ -209,7 +209,15 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
 
         var completedSuccessfully = isEpisodePayload
             ? await ProcessEpisodePayloadAsync(payload, settings, queueUuid, cancellationToken)
-            : await ProcessTrackPayloadAsync(nextItem, context, payloadJson, payload, settings, queueUuid, cancellationToken);
+            : await ProcessTrackPayloadAsync(
+                nextItem,
+                context,
+                payloadJson,
+                payload,
+                settings,
+                queueUuid,
+                resolvedDownloadTagSource,
+                cancellationToken);
         if (!completedSuccessfully)
         {
             return false;
@@ -318,6 +326,7 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         DeezerQueueItem payload,
         DeezSpoTagSettings settings,
         string queueUuid,
+        string? resolvedDownloadTagSource,
         CancellationToken cancellationToken)
     {
         var authenticated = await _authenticatedDeezerService.EnsureAuthenticatedAsync();
@@ -332,7 +341,7 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             return false;
         }
 
-        var track = await BuildTrackAsync(payload, settings.MetadataSource);
+        var track = await BuildTrackAsync(payload, resolvedDownloadTagSource);
         if (track == null)
         {
             if (await TryFallbackAsync(queueUuid, queueItem.Engine, payload, cancellationToken))
@@ -525,7 +534,7 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         return EngineFallbackPlanPolicy.ShouldUseInEngineFallback(payload, EngineName);
     }
 
-    private async Task<CoreTrack?> BuildTrackAsync(DeezerQueueItem payload, string? metadataSource)
+    private async Task<CoreTrack?> BuildTrackAsync(DeezerQueueItem payload, string? downloadTagSource)
     {
         if (string.IsNullOrWhiteSpace(payload.DeezerId))
         {
@@ -546,7 +555,7 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         await track.ParseData(_deezerClient, track.Id, apiTrack, apiTrack.Album, null, true);
         ApplyTrackUrlsFromPayload(track, payload);
 
-        if (ShouldPreferPayloadMetadata(metadataSource))
+        if (ShouldPreferPayloadMetadata(downloadTagSource))
         {
             ApplyPayloadMetadataOverrides(track, payload);
         }
@@ -579,9 +588,9 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         }
     }
 
-    private static bool ShouldPreferPayloadMetadata(string? metadataSource)
+    private static bool ShouldPreferPayloadMetadata(string? downloadTagSource)
     {
-        return string.Equals(metadataSource?.Trim(), SpotifySource, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(downloadTagSource?.Trim(), SpotifySource, StringComparison.OrdinalIgnoreCase);
     }
 
     private static void ApplyPayloadMetadataOverrides(CoreTrack track, DeezerQueueItem payload)

@@ -466,12 +466,6 @@ public class DeezSpoTagSettingsService : ISettingsService
             () => settings.Service = defaultSettings.Service,
             fixes,
             nameof(settings.Service));
-
-        ApplyFixIf(
-            string.IsNullOrWhiteSpace(settings.MetadataSource) || !IsSupportedMetadataSource(settings.MetadataSource),
-            () => settings.MetadataSource = defaultSettings.MetadataSource,
-            fixes,
-            nameof(settings.MetadataSource));
     }
 
     private static void EnsureNestedSettings(DeezSpoTagSettings settings, SettingsFixTracker fixes)
@@ -1333,10 +1327,4 @@ public class DeezSpoTagSettingsService : ISettingsService
         };
     }
 
-    private static bool IsSupportedMetadataSource(string? source)
-    {
-        return string.Equals(source, "spotify", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(source, "deezer", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(source, "qobuz", StringComparison.OrdinalIgnoreCase);
-    }
 }

@@ -696,13 +696,13 @@ public sealed class DownloadIntentService
         }
 
         var preparation = await PrepareEnqueueAsync(intent, cancellationToken);
-        var profileFailure = await TryValidateEnqueueProfileAsync(intent, preparation, cancellationToken);
-        if (profileFailure != null)
+        var profileValidation = await TryValidateEnqueueProfileAsync(intent, preparation, cancellationToken);
+        if (profileValidation.Failure != null)
         {
-            return (profileFailure, null);
+            return (profileValidation.Failure, null);
         }
 
-        await PopulateIntentMetadataAsync(intent, preparation.Settings, cancellationToken);
+        await PopulateIntentMetadataAsync(intent, preparation.Settings, profileValidation.ResolvedDownloadTagSource, cancellationToken);
         var blocklistFailure = await TryBlockByGlobalBlocklistAsync(intent, cancellationToken);
         if (blocklistFailure != null)
         {
@@ -1145,7 +1145,7 @@ public sealed class DownloadIntentService
         return sourceUrl;
     }
 
-    private async Task<(bool Applied, string? Error)> ApplyDownloadProfileOverridesAsync(
+    private async Task<(bool Applied, string? Error, string? ResolvedDownloadTagSource)> ApplyDownloadProfileOverridesAsync(
         DownloadIntent intent,
         DeezSpoTagSettings settings,
         long? destinationFolderId,
@@ -1156,17 +1156,19 @@ public sealed class DownloadIntentService
             var profile = await _downloadTagSettingsResolver.ResolveProfileAsync(destinationFolderId, cancellationToken);
             if (profile == null)
             {
-                return (false, "Destination music folder requires a valid AutoTag profile.");
+                return (false, "Destination music folder requires a valid AutoTag profile.", null);
             }
 
-            var normalizedSource = DownloadTagSourceHelper.ResolveMetadataSource(
-                profile.DownloadTagSource,
-                intent.PreferredEngine,
-                settings.Service,
-                intent.SourceService);
+            var engineContext = string.IsNullOrWhiteSpace(intent.PreferredEngine)
+                || string.Equals(intent.PreferredEngine, AutoService, StringComparison.OrdinalIgnoreCase)
+                ? intent.SourceService
+                : intent.PreferredEngine;
 
-            DownloadEngineSettingsHelper.ApplyResolvedProfileToSettings(settings, profile, metadataSourceOverride: normalizedSource ?? string.Empty);
-            return (true, null);
+            var resolvedSource = DownloadEngineSettingsHelper.ApplyResolvedProfileToSettings(
+                settings,
+                profile,
+                currentEngine: engineContext);
+            return (true, null, resolvedSource);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1174,7 +1176,15 @@ public sealed class DownloadIntentService
             {
                 _logger.LogDebug(ex, "Failed to apply download profile overrides for folder {FolderId}", destinationFolderId);
             }
-            return (false, "Failed to apply destination profile settings.");
+
+            if (ex is InvalidOperationException invalidOperationException
+                && (invalidOperationException.Message.StartsWith("Destination music folder requires a valid AutoTag profile.", StringComparison.Ordinal)
+                    || invalidOperationException.Message.StartsWith("Download profile source resolution failed:", StringComparison.Ordinal)))
+            {
+                return (false, invalidOperationException.Message, null);
+            }
+
+            return (false, "Failed to apply destination profile settings.", null);
         }
     }
 
@@ -1394,8 +1404,6 @@ public sealed class DownloadIntentService
         {
             settings.Service = AutoService;
         }
-
-        settings.MetadataSource = NormalizeMetadataSource(settings.MetadataSource) ?? string.Empty;
     }
 
     private static bool NormalizeIntentContentType(DownloadIntent intent)
@@ -1866,25 +1874,25 @@ public sealed class DownloadIntentService
         }
     }
 
-    private async Task<DownloadIntentResult?> TryValidateEnqueueProfileAsync(DownloadIntent intent, EnqueuePreparation preparation, CancellationToken cancellationToken)
+    private async Task<(DownloadIntentResult? Failure, string? ResolvedDownloadTagSource)> TryValidateEnqueueProfileAsync(DownloadIntent intent, EnqueuePreparation preparation, CancellationToken cancellationToken)
     {
         if (!IsMusicIntent(intent))
         {
-            return null;
+            return (null, null);
         }
 
         var profileResult = await ApplyDownloadProfileOverridesAsync(intent, preparation.Settings, preparation.MetadataDestinationFolderId, cancellationToken);
         if (profileResult.Applied)
         {
-            return null;
+            return (null, profileResult.ResolvedDownloadTagSource);
         }
 
-        return new DownloadIntentResult
+        return (new DownloadIntentResult
         {
             Success = false,
             Engine = string.Empty,
             Message = profileResult.Error ?? "Destination music folder requires a valid AutoTag profile."
-        };
+        }, null);
     }
 
     private async Task<DownloadIntentResult?> TryBlockByGlobalBlocklistAsync(DownloadIntent intent, CancellationToken cancellationToken)
@@ -2808,7 +2816,11 @@ public sealed class DownloadIntentService
         }
     }
 
-    private async Task PopulateIntentMetadataAsync(DownloadIntent intent, DeezSpoTagSettings settings, CancellationToken cancellationToken)
+    private async Task PopulateIntentMetadataAsync(
+        DownloadIntent intent,
+        DeezSpoTagSettings settings,
+        string? resolvedDownloadTagSource,
+        CancellationToken cancellationToken)
     {
         var sourceUrl = intent.SourceUrl ?? string.Empty;
         if (string.IsNullOrWhiteSpace(sourceUrl) && !string.IsNullOrWhiteSpace(intent.SpotifyId))
@@ -2818,10 +2830,10 @@ public sealed class DownloadIntentService
         var isBoomplaySource = BoomplayMetadataService.IsBoomplayUrl(sourceUrl)
             || string.Equals(intent.SourceService, "boomplay", StringComparison.OrdinalIgnoreCase);
 
-        var metadataSource = NormalizeMetadataSource(settings.MetadataSource);
-        if (!string.IsNullOrWhiteSpace(metadataSource))
+        var downloadTagSource = DownloadTagSourceHelper.NormalizeResolvedDownloadTagSource(resolvedDownloadTagSource);
+        if (!string.IsNullOrWhiteSpace(downloadTagSource))
         {
-            await PopulatePreferredMetadataSourceAsync(intent, metadataSource, sourceUrl, cancellationToken);
+            await PopulatePreferredMetadataSourceAsync(intent, downloadTagSource, sourceUrl, cancellationToken);
         }
 
         if (isBoomplaySource)
@@ -2840,11 +2852,11 @@ public sealed class DownloadIntentService
 
     private async Task PopulatePreferredMetadataSourceAsync(
         DownloadIntent intent,
-        string metadataSource,
+        string downloadTagSource,
         string sourceUrl,
         CancellationToken cancellationToken)
     {
-        if (string.Equals(metadataSource, SpotifyPlatform, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(downloadTagSource, SpotifyPlatform, StringComparison.OrdinalIgnoreCase))
         {
             await EnsureSpotifyIdentityAsync(intent, sourceUrl, cancellationToken);
 
@@ -2860,7 +2872,7 @@ public sealed class DownloadIntentService
             return;
         }
 
-        if (string.Equals(metadataSource, DeezerPlatform, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(downloadTagSource, DeezerPlatform, StringComparison.OrdinalIgnoreCase))
         {
             await EnsureDeezerIdentityAsync(intent, sourceUrl, cancellationToken);
 
@@ -2960,11 +2972,6 @@ public sealed class DownloadIntentService
             && !string.IsNullOrWhiteSpace(intent.Isrc)
             && !string.IsNullOrWhiteSpace(intent.Cover)
             && intent.DurationMs > 0;
-    }
-
-    private static string? NormalizeMetadataSource(string? metadataSource)
-    {
-        return DownloadTagSourceHelper.NormalizeMetadataResolverSource(metadataSource);
     }
 
     private static bool ShouldOverwriteString(bool overwriteExisting, string? existingValue, string? resolvedValue) =>
