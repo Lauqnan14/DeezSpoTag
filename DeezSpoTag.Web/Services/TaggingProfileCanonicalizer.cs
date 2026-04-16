@@ -115,8 +115,7 @@ public static class TaggingProfileCanonicalizer
             changed |= WriteTagArray(data, enrichmentKey, enrichmentTags);
         }
 
-        var enhancementKey = ResolveTagArrayKey(data, EnhancementTagsKey);
-        var hasEnhancementTags = TryReadTagArray(data, EnhancementTagsKey, out var enhancementTags, out enhancementKey);
+        var hasEnhancementTags = TryReadTagArray(data, EnhancementTagsKey, out var enhancementTags, out var enhancementKey);
         if (hasEnhancementTags)
         {
             changed |= WriteTagArray(data, enhancementKey, enhancementTags);
@@ -152,8 +151,7 @@ public static class TaggingProfileCanonicalizer
         var enrichmentTags = BuildTagListFromConfig(profile.TagConfig, includeAutoTagSource: true);
         changed |= WriteTagArray(data, ResolveTagArrayKey(data, DownloadTagsKey), downloadTags);
         changed |= WriteTagArray(data, ResolveTagArrayKey(data, EnrichmentTagsKey), enrichmentTags);
-        var enhancementKey = ResolveTagArrayKey(data, EnhancementTagsKey);
-        TryReadTagArray(data, EnhancementTagsKey, out var enhancementTags, out enhancementKey);
+        TryReadTagArray(data, EnhancementTagsKey, out var enhancementTags, out var enhancementKey);
         changed |= WriteTagArray(data, enhancementKey, BuildEnhancementTagParityList(enhancementTags, enrichmentTags));
         return changed;
     }
@@ -169,11 +167,9 @@ public static class TaggingProfileCanonicalizer
 
         var downloadKey = ResolveTagArrayKey(data, DownloadTagsKey);
         var enrichmentKey = ResolveTagArrayKey(data, EnrichmentTagsKey);
-        var enhancementKey = ResolveTagArrayKey(data, EnhancementTagsKey);
-
         var downloadTags = BuildTagListFromConfig(config, includeDownloadSource: true);
         var enrichmentTags = BuildTagListFromConfig(config, includeAutoTagSource: true);
-        TryReadTagArray(data, EnhancementTagsKey, out var enhancementTags, out enhancementKey);
+        TryReadTagArray(data, EnhancementTagsKey, out var enhancementTags, out var enhancementKey);
 
         WriteTagArray(data, downloadKey, downloadTags);
         WriteTagArray(data, enrichmentKey, enrichmentTags);
