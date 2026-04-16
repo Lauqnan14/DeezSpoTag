@@ -463,7 +463,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        await ApplyResolvedMatchAsync(context, match, usedShazamForStatus);
+        await ApplyResolvedMatchAsync(context, info, match, usedShazamForStatus);
     }
 
     private static bool TryHandlePreSkippedFile(AutoTagFileRunContext context)
@@ -524,6 +524,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private async Task ApplyResolvedMatchAsync(
         AutoTagFileRunContext context,
+        AutoTagAudioInfo info,
         AutoTagMatchResult match,
         bool usedShazamForStatus)
     {
@@ -531,6 +532,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         try
         {
+            await EnsureArtworkFallbackAsync(context, info, match.Track);
             await PopulatePlatformLyricsAsync(
                 context.Platform,
                 context.File,
@@ -560,6 +562,78 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             _logger.LogWarning(ex, "AutoTag failed for {File} on {Platform}", context.File, context.Platform);
             EmitErrorStatus(context, ex.Message, usedShazamForStatus);
         }
+    }
+
+    private async Task EnsureArtworkFallbackAsync(
+        AutoTagFileRunContext context,
+        AutoTagAudioInfo info,
+        AutoTagTrack track)
+    {
+        if (!HasAnyTags(context.Plan.Config, AlbumArtTag)
+            || !string.IsNullOrWhiteSpace(track.Art))
+        {
+            return;
+        }
+
+        var providerOrder = ArtworkFallbackHelper.ResolveOrder(context.Plan.Settings);
+        if (providerOrder.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var provider in providerOrder)
+        {
+            var platform = ResolveArtworkFallbackPlatform(provider);
+            if (string.IsNullOrWhiteSpace(platform)
+                || string.Equals(platform, context.Platform, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            AutoTagMatchResult? fallbackMatch;
+            try
+            {
+                fallbackMatch = await MatchPlatformAsync(
+                    platform,
+                    context.File,
+                    info,
+                    context.Plan.Config,
+                    context.Plan.MatchingConfig,
+                    context.Plan.ShazamCache,
+                    context.Token);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Artwork fallback match failed for {File} using {Platform}.", context.File, platform);
+                continue;
+            }
+
+            var fallbackArt = fallbackMatch?.Track?.Art;
+            if (string.IsNullOrWhiteSpace(fallbackArt))
+            {
+                continue;
+            }
+
+            track.Art = fallbackArt;
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Artwork fallback resolved for {File} via {Platform}.", context.File, platform);
+            }
+
+            return;
+        }
+    }
+
+    private static string? ResolveArtworkFallbackPlatform(string provider)
+    {
+        var normalized = provider?.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "apple" => "itunes",
+            "deezer" => DeezerPlatform,
+            SpotifyPlatform => SpotifyPlatform,
+            _ => null
+        };
     }
 
     private static void EmitSkippedStatus(AutoTagFileRunContext context, string message, bool usedShazam = false)
@@ -2973,6 +3047,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ApplyTrackAndLyricsTagWrites(file, tagWriteContext, context);
             ApplyAlbumArtTagWrite(file, context);
             file.Save();
+            RemoveId3v1TagIfDisabled(file, context);
         }
 
         AtlTagHelper.RestoreChapters(context.FilePath, chapterSnapshot, _logger);
@@ -3031,6 +3106,18 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         var id3 = (TagLib.Id3v2.Tag)file.GetTag(TagTypes.Id3v2, true);
         id3.Version = context.Config.Id3v24 ? (byte)4 : (byte)3;
+    }
+
+    private static void RemoveId3v1TagIfDisabled(TagLib.File file, TagWriteExecutionContext context)
+    {
+        if (!context.Extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase)
+            || context.EffectiveTagSettings.SaveID3v1)
+        {
+            return;
+        }
+
+        file.RemoveTags(TagTypes.Id3v1);
+        file.Save();
     }
 
     private static void ApplyPrimaryTagWrites(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
