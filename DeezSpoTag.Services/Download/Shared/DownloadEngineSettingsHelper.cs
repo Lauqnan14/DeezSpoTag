@@ -85,6 +85,14 @@ public static class DownloadEngineSettingsHelper
             return;
         }
 
+        var normalizedRoot = settings.DownloadLocation.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var terminalSegment = Path.GetFileName(normalizedRoot);
+        if (!string.IsNullOrWhiteSpace(terminalSegment)
+            && string.Equals(terminalSegment, suffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
         settings.DownloadLocation = Path.Join(settings.DownloadLocation, suffix);
     }
 

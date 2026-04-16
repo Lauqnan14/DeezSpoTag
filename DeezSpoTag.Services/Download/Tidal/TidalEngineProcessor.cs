@@ -29,7 +29,11 @@ public sealed class TidalEngineProcessor : QueueEngineProcessorBase
             CommonDependencies.CreateProcessorDeps(_logger),
             new EngineQueueProcessorHelper.ProcessorCallbacks<TidalQueueItem>(
                 payload => string.IsNullOrWhiteSpace(payload.TidalId) ? payload.SpotifyId : payload.TidalId,
-                static (payload, settings) => TidalRequestBuilder.BuildRequest(payload, settings),
+                (payload, settings) =>
+                {
+                    DownloadEngineSettingsHelper.ApplyQualityBucketToSettings(settings, payload.QualityBucket);
+                    return TidalRequestBuilder.BuildRequest(payload, settings);
+                },
                 static (request, context) =>
                 {
                     var tidalRequest = (TidalDownloadRequest)request;

@@ -425,22 +425,42 @@ public class TrackDownloader
         context.Result.ItemData = BuildTrackItemData(context.Track);
         EnsureExtrasPath(context);
 
-        await GenerateCoverUrlsAsync(
-            context.Track,
-            context.Album,
-            context.Playlist,
-            context.Settings,
-            context.Result,
-            context.PathResult,
-            context.CancellationToken);
+        try
+        {
+            await GenerateCoverUrlsAsync(
+                context.Track,
+                context.Album,
+                context.Playlist,
+                context.Settings,
+                context.Result,
+                context.PathResult,
+                context.CancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Deferred Deezer artwork preparation failed for track {TrackId}; continuing with audio download.",
+                context.Track.Id);
+        }
 
-        await QueueDeferredPostDownloadTasksAsync(
-            context.DownloadObject,
-            context.Track,
-            context.Result,
-            context.PathResult,
-            context.Settings,
-            context.WritePath);
+        try
+        {
+            await QueueDeferredPostDownloadTasksAsync(
+                context.DownloadObject,
+                context.Track,
+                context.Result,
+                context.PathResult,
+                context.Settings,
+                context.WritePath);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Deferred Deezer sidecar scheduling failed for track {TrackId}; continuing with audio download.",
+                context.Track.Id);
+        }
 
         var downloadUrl = await ResolveRequiredDownloadUrlAsync(context.Track, context.SelectedFormat);
         await StreamTrackToFileAsync(
@@ -464,14 +484,22 @@ public class TrackDownloader
         if (context.Settings.OverwriteFile == "t" || context.Settings.OverwriteFile == "y")
         {
             context.Listener?.OnDownloadInfo(context.DownloadObject, "Tagging track", "tagging");
-            await EnsureLyricsForTaggingAsync(
-                context.Track,
-                context.WritePath,
-                context.Settings,
-                context.TagSettings,
-                context.CancellationToken);
-            await _audioTagger.TagTrackAsync(context.Extension, context.WritePath, context.Track, context.TagSettings);
-            context.Listener?.OnDownloadInfo(context.DownloadObject, "Track tagged", "tagged");
+            try
+            {
+                await EnsureLyricsForTaggingAsync(
+                    context.Track,
+                    context.WritePath,
+                    context.Settings,
+                    context.TagSettings,
+                    context.CancellationToken);
+                await _audioTagger.TagTrackAsync(context.Extension, context.WritePath, context.Track, context.TagSettings);
+                context.Listener?.OnDownloadInfo(context.DownloadObject, "Track tagged", "tagged");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Tagging existing Deezer file failed for {Path}; keeping audio file.", context.WritePath);
+                context.Listener?.OnDownloadInfo(context.DownloadObject, "Track tag update failed; keeping audio file", "tagWarning");
+            }
         }
 
         context.Result.Path = context.WritePath;
@@ -553,14 +581,22 @@ public class TrackDownloader
         }
 
         context.Listener?.OnDownloadInfo(context.DownloadObject, "Tagging track", "tagging");
-        await EnsureLyricsForTaggingAsync(
-            context.Track,
-            context.WritePath,
-            context.Settings,
-            context.TagSettings,
-            context.CancellationToken);
-        await _audioTagger.TagTrackAsync(context.Extension, context.WritePath, context.Track, context.TagSettings);
-        context.Listener?.OnDownloadInfo(context.DownloadObject, "Track tagged", "tagged");
+        try
+        {
+            await EnsureLyricsForTaggingAsync(
+                context.Track,
+                context.WritePath,
+                context.Settings,
+                context.TagSettings,
+                context.CancellationToken);
+            await _audioTagger.TagTrackAsync(context.Extension, context.WritePath, context.Track, context.TagSettings);
+            context.Listener?.OnDownloadInfo(context.DownloadObject, "Track tagged", "tagged");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Tagging Deezer download failed for {Path}; keeping audio file.", context.WritePath);
+            context.Listener?.OnDownloadInfo(context.DownloadObject, "Track tagging failed; keeping audio file", "tagWarning");
+        }
     }
 
     private static void FinalizeTrackDownloadResult(TrackDownloadExecutionContext context)

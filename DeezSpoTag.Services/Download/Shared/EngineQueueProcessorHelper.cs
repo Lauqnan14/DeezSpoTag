@@ -315,9 +315,17 @@ internal static class EngineQueueProcessorHelper
             throw new InvalidOperationException($"Downloaded file missing or empty: {outputPath}");
         }
 
-        await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(
+        var prefetchFailure = await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(
             workContext.Item.QueueUuid,
             workContext.ItemToken);
+        if (!string.IsNullOrWhiteSpace(prefetchFailure))
+        {
+            workContext.Deps.Logger.LogWarning(
+                "{Engine} sidecar prefetch failed for {QueueUuid}: {Reason}",
+                workContext.EngineName,
+                workContext.Item.QueueUuid,
+                prefetchFailure);
+        }
         await workContext.Deps.QueueRepository.UpdateStatusAsync(
             workContext.Item.QueueUuid,
             "completed",

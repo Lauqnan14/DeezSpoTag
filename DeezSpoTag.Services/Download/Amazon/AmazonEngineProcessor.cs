@@ -27,7 +27,11 @@ public sealed class AmazonEngineProcessor : QueueEngineProcessorBase
             CommonDependencies.CreateProcessorDeps(_logger),
             new EngineQueueProcessorHelper.ProcessorCallbacks<AmazonQueueItem>(
                 payload => string.IsNullOrWhiteSpace(payload.AmazonId) ? payload.SpotifyId : payload.AmazonId,
-                static (payload, settings) => AmazonRequestBuilder.BuildRequest(payload, settings),
+                (payload, settings) =>
+                {
+                    DownloadEngineSettingsHelper.ApplyQualityBucketToSettings(settings, payload.QualityBucket);
+                    return AmazonRequestBuilder.BuildRequest(payload, settings);
+                },
                 static (request, context) =>
                 {
                     var amazonRequest = (AmazonDownloadRequest)request;
