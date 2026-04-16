@@ -2948,7 +2948,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 TempCoverPath = tempCoverPath
             },
             token);
-        await ApplyCustomTagsAsync(filePath, track, config, platformId);
+        await ApplyCustomTagsAsync(
+            filePath,
+            track,
+            config,
+            platformId,
+            effectiveTagSettings.UseNullSeparator);
 
         if (!string.IsNullOrWhiteSpace(tempCoverPath) && !string.Equals(Path.GetDirectoryName(tempCoverPath), Path.GetDirectoryName(filePath), StringComparison.OrdinalIgnoreCase))
         {
@@ -3039,7 +3044,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             PrepareId3Version(file, context);
 
-            var tagWriteContext = new TagWriteContext(file, context.Extension, context.Config, context.Separator, context.PlatformId);
+            var tagWriteContext = new TagWriteContext(
+                file,
+                context.Extension,
+                context.Config,
+                context.Separator,
+                context.PlatformId,
+                context.EffectiveTagSettings.UseNullSeparator);
             ApplyPrimaryTagWrites(tagWriteContext, context);
             ApplyAudioFeatureTagWrites(tagWriteContext, context);
             ApplyGenreAndStyleTagWrites(file, tagWriteContext, context);
@@ -3435,7 +3446,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        WriteDate(file, context.Extension, ReleaseDateTag, context.SourceTrack.ReleaseDate.Value, SupportedTag.ReleaseDate, context.Config);
+        WriteDate(
+            file,
+            context.Extension,
+            ReleaseDateTag,
+            context.SourceTrack.ReleaseDate.Value,
+            SupportedTag.ReleaseDate,
+            context.Config,
+            context.EffectiveTagSettings.UseNullSeparator);
     }
 
     private static void WritePublishDateTag(TagLib.File file, TagWriteExecutionContext context)
@@ -3445,7 +3463,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        WriteDate(file, context.Extension, PublishDateTag, context.SourceTrack.PublishDate.Value, SupportedTag.PublishDate, context.Config);
+        WriteDate(
+            file,
+            context.Extension,
+            PublishDateTag,
+            context.SourceTrack.PublishDate.Value,
+            SupportedTag.PublishDate,
+            context.Config,
+            context.EffectiveTagSettings.UseNullSeparator);
     }
 
     private static void WriteUrlTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -3569,7 +3594,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        SetTrackNumber(file, context.Extension, context.SourceTrack.DiscNumber.Value, null, SupportedTag.DiscNumber, context.Config, isDisc: true);
+        SetTrackNumber(
+            file,
+            context.Extension,
+            context.SourceTrack.DiscNumber.Value,
+            null,
+            SupportedTag.DiscNumber,
+            context.Config,
+            context.EffectiveTagSettings.UseNullSeparator,
+            isDisc: true);
     }
 
     private static void WriteTrackNumberTag(TagLib.File file, TagWriteExecutionContext context)
@@ -3586,7 +3619,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             && context.SourceTrack.TrackTotal is > 0
             ? context.SourceTrack.TrackTotal
             : null;
-        SetTrackNumber(file, context.Extension, context.SourceTrack.TrackNumber.Value, total, SupportedTag.TrackNumber, context.Config, isDisc: false);
+        SetTrackNumber(
+            file,
+            context.Extension,
+            context.SourceTrack.TrackNumber.Value,
+            total,
+            SupportedTag.TrackNumber,
+            context.Config,
+            context.EffectiveTagSettings.UseNullSeparator,
+            isDisc: false);
     }
 
     private static void WriteSyncedLyrics(TagLib.File file, TagWriteExecutionContext context)
@@ -3686,7 +3727,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (ShouldOverwriteTag(context.Config, SupportedTag.AlbumArt)
             || !HasTag(file, context.Extension, SupportedTag.AlbumArt, context.Config, context.PlatformId))
         {
-            ApplyAlbumArt(file, tempCoverPath);
+            ApplyAlbumArt(file, tempCoverPath, context.EffectiveTagSettings.CoverDescriptionUTF8);
         }
 
         if (!context.Config.AlbumArtFile)
@@ -3889,7 +3930,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private Task ApplyCustomTagsAsync(string filePath, AutoTagTrack track, AutoTagRunnerConfig config, string platformId)
+    private Task ApplyCustomTagsAsync(
+        string filePath,
+        AutoTagTrack track,
+        AutoTagRunnerConfig config,
+        string platformId,
+        bool useNullSeparator)
     {
         if (config.Tags.Count == 0)
         {
@@ -3908,7 +3954,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
             {
                 var id3 = (TagLib.Id3v2.Tag)file.GetTag(TagTypes.Id3v2, true);
-                ApplyId3CustomTags(id3, writes, config, separator, enabledTags);
+                ApplyId3CustomTags(id3, writes, config, separator, useNullSeparator, enabledTags);
             }
             else if (extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
             {
@@ -4117,11 +4163,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return tags;
     }
 
-    private static string[] ApplySeparator(List<string> values, string separator)
+    private static string[] ApplySeparator(List<string> values, string separator, bool useNullSeparator = false)
     {
         if (values.Count == 0)
         {
             return Array.Empty<string>();
+        }
+
+        if (useNullSeparator)
+        {
+            return values.ToArray();
         }
 
         if (string.IsNullOrEmpty(separator))
@@ -4532,7 +4583,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string Extension,
         AutoTagRunnerConfig Config,
         string Separator,
-        string PlatformId);
+        string PlatformId,
+        bool UseNullSeparator);
 
     private readonly record struct TagFieldBinding(
         string Id3Frame,
@@ -4613,7 +4665,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (context.Extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
         {
             var id3 = (TagLib.Id3v2.Tag)context.File.GetTag(TagTypes.Id3v2, true);
-            SetId3Raw(id3, rawName, values, context.Separator);
+            SetId3Raw(id3, rawName, values, context.Separator, context.UseNullSeparator);
             return;
         }
 
@@ -4652,7 +4704,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return false;
     }
 
-    private static void WriteDate(TagLib.File file, string extension, string kind, DateTime date, SupportedTag tag, AutoTagRunnerConfig config)
+    private static void WriteDate(
+        TagLib.File file,
+        string extension,
+        string kind,
+        DateTime date,
+        SupportedTag tag,
+        AutoTagRunnerConfig config,
+        bool useNullSeparator)
     {
         var payload = new DateWritePayload(
             Date: date,
@@ -4664,7 +4723,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
         {
-            WriteId3Date(file, kind, tag, config, payload);
+            WriteId3Date(file, kind, tag, config, payload, useNullSeparator);
             return;
         }
 
@@ -4682,7 +4741,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string kind,
         SupportedTag tag,
         AutoTagRunnerConfig config,
-        DateWritePayload payload)
+        DateWritePayload payload,
+        bool useNullSeparator)
     {
         var id3 = (TagLib.Id3v2.Tag)file.GetTag(TagTypes.Id3v2, true);
         if (kind == ReleaseDateTag)
@@ -4694,14 +4754,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
             if (config.Id3v24)
             {
-                SetId3Raw(id3, "TDRC", new List<string> { payload.DateString }, ", ");
+                SetId3Raw(id3, "TDRC", new List<string> { payload.DateString }, ", ", useNullSeparator);
                 return;
             }
 
-            SetId3Raw(id3, "TYER", new List<string> { payload.Year }, ", ");
+            SetId3Raw(id3, "TYER", new List<string> { payload.Year }, ", ", useNullSeparator);
             if (!payload.UseYearOnly)
             {
-                SetId3Raw(id3, "TDAT", new List<string> { payload.Date.ToString("ddMM", CultureInfo.InvariantCulture) }, ", ");
+                SetId3Raw(id3, "TDAT", new List<string> { payload.Date.ToString("ddMM", CultureInfo.InvariantCulture) }, ", ", useNullSeparator);
             }
             return;
         }
@@ -4711,7 +4771,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        SetId3Raw(id3, "TDRL", new List<string> { payload.DateString }, ", ");
+        SetId3Raw(id3, "TDRL", new List<string> { payload.DateString }, ", ", useNullSeparator);
     }
 
     private static bool ShouldSkipId3ReleaseDate(
@@ -4773,7 +4833,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         Mp4TagHelper.SetDate(file, dateString);
     }
 
-    private static void SetTrackNumber(TagLib.File file, string extension, int number, int? total, SupportedTag tag, AutoTagRunnerConfig config, bool isDisc)
+    private static void SetTrackNumber(
+        TagLib.File file,
+        string extension,
+        int number,
+        int? total,
+        SupportedTag tag,
+        AutoTagRunnerConfig config,
+        bool useNullSeparator,
+        bool isDisc)
     {
         var numberText = config.TrackNumberLeadingZeroes > 0
             ? number.ToString($"D{config.TrackNumberLeadingZeroes}", CultureInfo.InvariantCulture)
@@ -4781,7 +4849,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
         {
-            WriteId3TrackNumber(file, numberText, total, tag, config, isDisc);
+            WriteId3TrackNumber(file, numberText, total, tag, config, useNullSeparator, isDisc);
             return;
         }
 
@@ -4800,6 +4868,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         int? total,
         SupportedTag tag,
         AutoTagRunnerConfig config,
+        bool useNullSeparator,
         bool isDisc)
     {
         var id3 = (TagLib.Id3v2.Tag)file.GetTag(TagTypes.Id3v2, true);
@@ -4810,6 +4879,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         var value = total.HasValue ? $"{numberText}/{total.Value}" : numberText;
         var frame = TagLib.Id3v2.TextInformationFrame.Get(id3, isDisc ? "TPOS" : "TRCK", true);
+        if (useNullSeparator)
+        {
+            frame.TextEncoding = TagLib.StringType.UTF16;
+        }
         frame.Text = new[] { value };
     }
 
@@ -5290,7 +5363,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return $"{(int)ts.TotalHours:00}:{ts.Minutes:00}:{ts.Seconds:00}.{ts.Milliseconds:000}";
     }
 
-    private static void ApplyAlbumArt(TagLib.File file, string imagePath)
+    private static void ApplyAlbumArt(TagLib.File file, string imagePath, bool coverDescriptionUtf8)
     {
         if (!IOFile.Exists(imagePath))
         {
@@ -5305,6 +5378,21 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             MimeType = "image/jpeg",
             Description = "Cover"
         };
+
+        var extension = Path.GetExtension(file.Name);
+        if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
+        {
+            var id3 = (TagLib.Id3v2.Tag)file.GetTag(TagTypes.Id3v2, true);
+            id3.RemoveFrames("APIC");
+#pragma warning disable CS0618
+            var apic = new TagLib.Id3v2.AttachedPictureFrame(picture)
+            {
+                TextEncoding = coverDescriptionUtf8 ? TagLib.StringType.UTF8 : TagLib.StringType.Latin1
+            };
+#pragma warning restore CS0618
+            id3.AddFrame(apic);
+        }
+
         file.Tag.Pictures = new[] { picture };
     }
 
@@ -5517,17 +5605,25 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         ("E", "12B")
     };
 
-    private static void SetId3Raw(TagLib.Id3v2.Tag tag, string name, List<string> values, string separator)
+    private static void SetId3Raw(TagLib.Id3v2.Tag tag, string name, List<string> values, string separator, bool useNullSeparator = false)
     {
-        var output = ApplySeparator(values, separator);
+        var output = ApplySeparator(values, separator, useNullSeparator);
         if (name.Length == 4)
         {
             var frame = TagLib.Id3v2.TextInformationFrame.Get(tag, name, true);
+            if (useNullSeparator)
+            {
+                frame.TextEncoding = TagLib.StringType.UTF16;
+            }
             frame.Text = output;
             return;
         }
 
         var user = TagLib.Id3v2.UserTextInformationFrame.Get(tag, name, true);
+        if (useNullSeparator)
+        {
+            user.TextEncoding = TagLib.StringType.UTF16;
+        }
         user.Text = output;
     }
 
@@ -5589,7 +5685,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return new List<string>();
     }
 
-    private static void ApplyId3CustomTags(TagLib.Id3v2.Tag tag, List<CustomTagWrite> writes, AutoTagRunnerConfig config, string separator, HashSet<string> enabledTags)
+    private static void ApplyId3CustomTags(
+        TagLib.Id3v2.Tag tag,
+        List<CustomTagWrite> writes,
+        AutoTagRunnerConfig config,
+        string separator,
+        bool useNullSeparator,
+        HashSet<string> enabledTags)
     {
         foreach (var write in writes)
         {
@@ -5603,7 +5705,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 continue;
             }
 
-            SetId3Raw(tag, write.RawTagName, write.Values, separator);
+            SetId3Raw(tag, write.RawTagName, write.Values, separator, useNullSeparator);
         }
     }
 
