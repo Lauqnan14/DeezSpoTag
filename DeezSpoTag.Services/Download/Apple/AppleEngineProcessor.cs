@@ -855,7 +855,15 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         AppleQueueItem payload,
         CancellationToken itemToken)
     {
-        await EnsureRequiredPrefetchCompletedAsync(queueUuid, itemToken);
+        var prefetchFailure = await EnsureRequiredPrefetchCompletedAsync(queueUuid, itemToken);
+        if (!string.IsNullOrWhiteSpace(prefetchFailure))
+        {
+            _logger.LogWarning(
+                "Apple sidecar prefetch failed for {QueueUuid}: {Reason}",
+                queueUuid,
+                prefetchFailure);
+            _activityLog.Warn($"Sidecar prefetch failed (engine={EngineName}): {queueUuid} {prefetchFailure}");
+        }
         payload.Progress = 100;
         payload.Downloaded = Math.Max(payload.Size, 1);
         payload.Status = AppleDownloadStatus.Completed;
@@ -892,12 +900,12 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         ScheduleRetryIfEligible(queueUuid, CancelledStatus);
     }
 
-    private async Task EnsureRequiredPrefetchCompletedAsync(string queueUuid, CancellationToken cancellationToken)
+    private async Task<string?> EnsureRequiredPrefetchCompletedAsync(string queueUuid, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(queueUuid)
             || !_prefetchGates.TryGetValue(queueUuid, out var gateState))
         {
-            return;
+            return null;
         }
 
         PrefetchGateResult result;
@@ -910,13 +918,11 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             TryRemovePrefetchGate(queueUuid, gateState);
         }
 
-        if (!result.Success)
-        {
-            throw new InvalidOperationException(
-                string.IsNullOrWhiteSpace(result.FailureReason)
-                    ? "Artwork prefetch did not complete successfully."
-                    : result.FailureReason);
-        }
+        return result.Success
+            ? null
+            : (string.IsNullOrWhiteSpace(result.FailureReason)
+                ? "Artwork prefetch did not complete successfully."
+                : result.FailureReason);
     }
 
     private void ClearPrefetchGate(string queueUuid)
@@ -1323,11 +1329,19 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                 (provider, token) => RunParallelPostDownloadPrefetchWorkAsync(provider, work, token),
                 CancellationToken.None);
         }
-        catch
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            _logger.LogWarning(
+                ex,
+                "Apple prefetch scheduling failed for {QueueUuid}",
+                prefetchPaths.QueueUuid);
+            QueuePrefetchStatusHelper.Send(
+                _deezspotagListener,
+                prefetchPaths.QueueUuid,
+                shouldFetchArtwork ? FailedStatus : SkippedState,
+                shouldFetchLyrics ? FailedStatus : SkippedState);
             gateState.Completion.TrySetResult(new PrefetchGateResult(false, "Artwork prefetch could not be scheduled."));
-            TryRemovePrefetchGate(prefetchPaths.QueueUuid, gateState);
-            throw;
+            return;
         }
     }
 

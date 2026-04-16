@@ -39,7 +39,7 @@ internal static class AudioFileTaggingHelper
             input.Isrc);
     }
 
-    public static async Task TryTagAsync(AudioTaggingRequest request, CancellationToken cancellationToken)
+    public static async Task<bool> TryTagAsync(AudioTaggingRequest request, CancellationToken cancellationToken)
     {
         try
         {
@@ -62,10 +62,12 @@ internal static class AudioFileTaggingHelper
             }
 
             file.Save();
+            return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             request.Logger.LogWarning(ex, "Failed to tag {Engine} download at {Path}", request.EngineName, request.FilePath);
+            return false;
         }
     }
 }

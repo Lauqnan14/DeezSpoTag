@@ -467,14 +467,23 @@ public static class EngineAudioPostDownloadHelper
                 (provider, token) => RunPrefetchWorkAsync(provider, execution, token),
                 CancellationToken.None);
         }
-        catch
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            request.Logger.LogWarning(
+                ex,
+                "{Engine} prefetch scheduling failed for {QueueUuid}",
+                request.Engine,
+                prefetchPaths.QueueUuid);
+            QueuePrefetchStatusHelper.Send(
+                request.Listener,
+                prefetchPaths.QueueUuid,
+                requirements.ShouldFetchArtwork ? FailedStatus : SkippedStatus,
+                requirements.ShouldFetchLyrics ? FailedStatus : SkippedStatus);
             gateState.Completion.TrySetResult(new PrefetchCompletionResult(
                 requirements.ShouldFetchArtwork,
                 false,
                 "Artwork prefetch could not be scheduled."));
-            TryRemovePrefetchState(prefetchPaths.QueueUuid, gateState);
-            throw;
+            return;
         }
     }
 
@@ -992,14 +1001,14 @@ public static class EngineAudioPostDownloadHelper
 
     public static bool ShouldSaveLyrics(DeezSpoTagSettings settings) => LyricsSettingsPolicy.CanFetchLyrics(settings);
 
-    public static async Task EnsureArtworkPrefetchCompletedAsync(
+    public static async Task<string?> EnsureArtworkPrefetchCompletedAsync(
         string queueUuid,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(queueUuid)
             || !PrefetchGates.TryGetValue(queueUuid, out var gateState))
         {
-            return;
+            return null;
         }
 
         PrefetchCompletionResult result;
@@ -1012,13 +1021,11 @@ public static class EngineAudioPostDownloadHelper
             TryRemovePrefetchState(queueUuid, gateState);
         }
 
-        if (result.ShouldValidateArtwork && !result.ArtworkReady)
-        {
-            throw new InvalidOperationException(
-                string.IsNullOrWhiteSpace(result.ArtworkFailureReason)
-                    ? "Artwork prefetch did not complete successfully."
-                    : result.ArtworkFailureReason);
-        }
+        return result.ShouldValidateArtwork && !result.ArtworkReady
+            ? (string.IsNullOrWhiteSpace(result.ArtworkFailureReason)
+                ? "Artwork prefetch did not complete successfully."
+                : result.ArtworkFailureReason)
+            : null;
     }
 
     public static void ClearPrefetchState(string queueUuid)

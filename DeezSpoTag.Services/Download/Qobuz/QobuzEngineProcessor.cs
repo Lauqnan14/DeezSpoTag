@@ -238,6 +238,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
                 CurrentEngine: EngineName,
                 WrapResolutionExceptions: false));
         await _folderConversionSettingsOverlay.ApplyAsync(settings, payload.DestinationFolderId, itemToken);
+        DownloadEngineSettingsHelper.ApplyQualityBucketToSettings(settings, payload.QualityBucket);
 
         _deezspotagListener.SendStartDownload(next.QueueUuid);
         _deezspotagListener.Send(UpdateQueueEvent, new
@@ -494,7 +495,15 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             throw new InvalidOperationException($"Downloaded file missing or empty: {outputPath}");
         }
 
-        await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(queueUuid, cancellationToken);
+        var prefetchFailure = await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(queueUuid, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(prefetchFailure))
+        {
+            _logger.LogWarning(
+                "Qobuz sidecar prefetch failed for {QueueUuid}: {Reason}",
+                queueUuid,
+                prefetchFailure);
+            _activityLog.Warn($"Sidecar prefetch failed (engine={EngineName}): {queueUuid} {prefetchFailure}");
+        }
         await _queueRepository.UpdateStatusAsync(queueUuid, CompletedStatus, downloaded: 1, progress: 100, cancellationToken: cancellationToken);
         await QueueHelperUtils.UpdatePayloadAsync(
             new QueueHelperUtils.UpdatePayloadRequest<QobuzQueueItem>(

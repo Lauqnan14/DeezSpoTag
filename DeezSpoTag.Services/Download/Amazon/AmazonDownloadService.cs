@@ -773,7 +773,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
             newPath = request.FilePath;
         }
 
-        await AudioFileTaggingHelper.TryTagAsync(
+        var taggingSucceeded = await AudioFileTaggingHelper.TryTagAsync(
             new AudioFileTaggingHelper.AudioTaggingRequest(
                 Logger: _logger,
                 EngineName: "Amazon",
@@ -795,7 +795,19 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
                 TagSettings: request.TagSettings),
             cancellationToken);
 
-        AudioFilePathHelper.EnsureIsrcMatchOrThrow(newPath, request.Isrc);
+        if (!string.IsNullOrWhiteSpace(request.Isrc))
+        {
+            if (taggingSucceeded)
+            {
+                AudioFilePathHelper.EnsureIsrcMatchOrThrow(newPath, request.Isrc);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Skipping strict ISRC verification for Amazon download at {Path} because tagging failed.",
+                    newPath);
+            }
+        }
 
         return newPath;
     }
