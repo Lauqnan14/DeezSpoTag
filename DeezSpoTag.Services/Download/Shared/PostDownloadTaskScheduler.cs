@@ -68,6 +68,15 @@ public sealed class PostDownloadTaskScheduler : BackgroundService, IPostDownload
             {
                 return;
             }
+            catch (OperationCanceledException ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Deferred post-download task canceled. engine={Engine} queue={QueueUuid} worker={WorkerId}",
+                    item.Engine,
+                    item.QueueUuid,
+                    workerId);
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogWarning(
