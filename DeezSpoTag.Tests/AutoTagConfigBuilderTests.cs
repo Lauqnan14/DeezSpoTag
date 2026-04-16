@@ -12,10 +12,13 @@ public sealed class AutoTagConfigBuilderTests
 {
     private static readonly string[] ExpectedDownloadTagsFromConfig = { "title", "genre" };
     private static readonly string[] ExpectedAutoTagsFromConfig = { "genre", "style" };
+    private static readonly string[] ExpectedEnhancementTagsFromConfig = { "genre", "style" };
     private static readonly string[] LegacyDownloadTags = { "artist" };
     private static readonly string[] LegacyAutoTags = { "label" };
+    private static readonly string[] LegacyEnhancementTags = { "label" };
     private static readonly string[] ExpectedTitleOnlyDownloadTags = { "title" };
     private static readonly string[] ExpectedReleaseDateOnlyTags = { "releaseDate" };
+    private static readonly string[] ExpectedReleaseDateEnhancementTags = { "releaseDate", "label" };
 
     [Fact]
     public void BuildConfigJson_DerivesTagArraysFromTagConfig_WhenAutoTagDataIsEmpty()
@@ -47,6 +50,9 @@ public sealed class AutoTagConfigBuilderTests
         Assert.Equal(
             ExpectedAutoTagsFromConfig,
             ReadStringArray(root.GetProperty("tags")));
+        Assert.Equal(
+            ExpectedEnhancementTagsFromConfig,
+            ReadStringArray(root.GetProperty("gapFillTags")));
     }
 
     [Fact]
@@ -61,6 +67,7 @@ public sealed class AutoTagConfigBuilderTests
                 {
                     ["downloadTags"] = JsonSerializer.SerializeToElement(LegacyDownloadTags),
                     ["tags"] = JsonSerializer.SerializeToElement(LegacyAutoTags),
+                    ["gapFillTags"] = JsonSerializer.SerializeToElement(LegacyEnhancementTags),
                     ["downloadTagSource"] = JsonSerializer.SerializeToElement("spotify")
                 }
             }
@@ -79,6 +86,7 @@ public sealed class AutoTagConfigBuilderTests
 
         Assert.Equal(ExpectedTitleOnlyDownloadTags, ReadStringArray(root.GetProperty("downloadTags")));
         Assert.Equal(ExpectedReleaseDateOnlyTags, ReadStringArray(root.GetProperty("tags")));
+        Assert.Equal(ExpectedReleaseDateEnhancementTags, ReadStringArray(root.GetProperty("gapFillTags")));
         Assert.Equal("spotify", root.GetProperty("downloadTagSource").GetString());
     }
 

@@ -3371,7 +3371,7 @@ public class AutoTagService
             EnsureEffectivePlatforms(node);
             EnsureSupportedDownloadTagSource(node);
             EnsureOverwriteDefaults(node);
-            EnsureEnhancementTagsMirrorEnrichmentAndDownload(node);
+            EnsureEnhancementTagsMergeEnrichmentAndEnhancement(node);
             EnsureEnhancementFolderScopesCanonical(node);
             EnsureLegacyFolderUniformityStructureMirrorsRemoved(node);
             EnsureSpotifySecret(node);
@@ -3494,24 +3494,24 @@ public class AutoTagService
         CanonicalizeEnhancementFolderScopeSection(enhancement, "qualityChecks");
     }
 
-    private static void EnsureEnhancementTagsMirrorEnrichmentAndDownload(JsonNode node)
+    private static void EnsureEnhancementTagsMergeEnrichmentAndEnhancement(JsonNode node)
     {
         if (node is not JsonObject root)
         {
             return;
         }
 
-        var downloadTags = ReadCanonicalTagArray(root, "downloadTags");
+        var enhancementTags = ReadCanonicalTagArray(root, "gapFillTags");
         var enrichmentTags = ReadCanonicalTagArray(root, "tags");
         var merged = new JsonArray();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var tag in downloadTags.Where(seen.Add))
+        foreach (var tag in enrichmentTags.Where(seen.Add))
         {
             merged.Add(tag);
         }
 
-        foreach (var tag in enrichmentTags.Where(seen.Add))
+        foreach (var tag in enhancementTags.Where(seen.Add))
         {
             merged.Add(tag);
         }

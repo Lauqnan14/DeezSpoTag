@@ -643,7 +643,6 @@
         const container = el(containerId);
         container.innerHTML = "";
         const list = name === "downloadTags" ? getDownloadTagsList() : TAGS;
-        const enhancementMirrorOnly = name === "gapFillTags";
         list.forEach((tag) => {
             const label = document.createElement("label");
             const input = document.createElement("input");
@@ -657,11 +656,6 @@
             if (!supported) {
                 input.disabled = true;
                 label.classList.add("tag-disabled");
-            }
-            if (enhancementMirrorOnly) {
-                input.disabled = true;
-                label.classList.add("tag-disabled");
-                label.title = "Enhancement tags mirror Download and Enrichment tag selections.";
             }
             label.appendChild(input);
             label.appendChild(document.createTextNode(tag.label));
@@ -1437,14 +1431,15 @@
         return merged;
     }
 
-    function syncEnhancementTagsWithDownloadAndEnrichment() {
+    function syncEnhancementTagsWithEnrichment() {
         const enrichmentTags = Array.isArray(state.config.tags) ? state.config.tags : [];
+        const enhancementTags = Array.isArray(state.config.gapFillTags) ? state.config.gapFillTags : [];
         const normalizedDownloadTags = normalizeDownloadTags(
             Array.isArray(state.config.downloadTags) ? state.config.downloadTags : []
         );
         state.config.tags = enrichmentTags;
         state.config.downloadTags = normalizedDownloadTags;
-        state.config.gapFillTags = buildMergedTagSelection(normalizedDownloadTags, enrichmentTags);
+        state.config.gapFillTags = buildMergedTagSelection(enrichmentTags, enhancementTags);
     }
 
     function isDownloadTagSupported(tagKey) {
@@ -1472,13 +1467,13 @@
             if (downloadTagsContainer) {
                 downloadTagsContainer.innerHTML = "";
             }
-            syncEnhancementTagsWithDownloadAndEnrichment();
+            syncEnhancementTagsWithEnrichment();
             renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
             return;
         }
         const selected = normalizeDownloadTags(state.config.downloadTags || []);
         state.config.downloadTags = selected;
-        syncEnhancementTagsWithDownloadAndEnrichment();
+        syncEnhancementTagsWithEnrichment();
         renderTags("autotag-download-tags", selected, "downloadTags");
         renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
     }
@@ -2116,7 +2111,7 @@
         }
         storeSelectedPlatforms();
         renderPlatforms();
-        syncEnhancementTagsWithDownloadAndEnrichment();
+        syncEnhancementTagsWithEnrichment();
         renderTags("autotag-tags", state.config.tags, "tags");
         renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
         renderTags("autotag-overwrite-tags", state.config.overwriteTags, "overwriteTags");
@@ -2513,7 +2508,7 @@
         renderEnhancementFolderOptions();
         renderPlatforms();
         setDownloadTagSource(state.config.downloadTagSource || "engine");
-        syncEnhancementTagsWithDownloadAndEnrichment();
+        syncEnhancementTagsWithEnrichment();
         renderTags("autotag-tags", state.config.tags || [], "tags");
         refreshDownloadTagsForSource();
         renderTags("autotag-overwrite-tags", state.config.overwriteTags, "overwriteTags");
@@ -3076,7 +3071,7 @@
         state.config = merged;
         ensureCustomDefaults();
         ensurePlatformCustomDefaults();
-        syncEnhancementTagsWithDownloadAndEnrichment();
+        syncEnhancementTagsWithEnrichment();
         loadConfigToUI();
     }
 
@@ -3403,7 +3398,8 @@
         ensureEnhancementDefaults();
         state.config.tags = getCheckedTags("tags");
         state.config.downloadTags = normalizeDownloadTags(getCheckedTags("downloadTags"));
-        syncEnhancementTagsWithDownloadAndEnrichment();
+        state.config.gapFillTags = getCheckedTags("gapFillTags");
+        syncEnhancementTagsWithEnrichment();
         state.config.overwriteTags = getCheckedTags("overwriteTags");
 
         const getChecked = (id, fallback = false) => el(id)?.checked ?? fallback;
@@ -6548,18 +6544,11 @@
     function handleTagsActionButton(target) {
         const action = target.dataset.tagsAction;
         const targetName = target.dataset.tagsTarget || "tags";
-        if (targetName === "gapFillTags") {
-            syncEnhancementTagsWithDownloadAndEnrichment();
-            loadConfigToUI();
-            showToast("Enhancement tags mirror Download and Enrichment tags.", "info");
-            return;
-        }
-
         if (!tryApplyTagAction(action, targetName)) {
             return;
         }
 
-        syncEnhancementTagsWithDownloadAndEnrichment();
+        syncEnhancementTagsWithEnrichment();
         loadConfigToUI();
         const toastMessage = getTagActionToastMessage(action);
         if (toastMessage) {
@@ -6578,7 +6567,8 @@
                 && ["tags", "downloadTags", "gapFillTags"].includes(target.name)) {
                 state.config.tags = getCheckedTags("tags");
                 state.config.downloadTags = normalizeDownloadTags(getCheckedTags("downloadTags"));
-                syncEnhancementTagsWithDownloadAndEnrichment();
+                state.config.gapFillTags = getCheckedTags("gapFillTags");
+                syncEnhancementTagsWithEnrichment();
                 renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
             }
         }
@@ -6769,7 +6759,7 @@
                 renderPlatforms();
                 updateDownloadSourceAvailability();
                 refreshDownloadTagsForSource();
-                syncEnhancementTagsWithDownloadAndEnrichment();
+                syncEnhancementTagsWithEnrichment();
                 renderTags("autotag-tags", state.config.tags, "tags");
                 renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
                 renderTags("autotag-overwrite-tags", state.config.overwriteTags, "overwriteTags");
