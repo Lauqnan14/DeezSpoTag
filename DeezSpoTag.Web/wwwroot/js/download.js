@@ -660,8 +660,9 @@ DeezSpoTag.Download = {
                         this.engineById[downloadId] = this.normalizeEngine(resolvedEngine);
                     }
 
-                    if (typeof update.progress === 'number') {
-                        this.updateDownloadProgress(downloadId, update.progress);
+                    const queueProgress = this.parseProgressValue(update.progress);
+                    if (queueProgress !== null) {
+                        this.updateDownloadProgress(downloadId, queueProgress);
                     }
 
                     if (update.failed) {
@@ -674,13 +675,11 @@ DeezSpoTag.Download = {
                     if (!update) return;
                     const downloadId = update.uuid || update.id;
                     if (!downloadId) return;
-                    let progress = null;
-                    if (typeof update.progress === 'number') {
-                        progress = update.progress;
-                    } else if (typeof update.progressNext === 'number') {
-                        progress = update.progressNext;
-                    }
-                    if (typeof progress === 'number') {
+                    const progress = this.parseProgressValue(
+                        update.progress !== undefined && update.progress !== null
+                            ? update.progress
+                            : update.progressNext);
+                    if (progress !== null) {
                         this.updateDownloadProgress(downloadId, progress);
                     }
                 });
@@ -1945,10 +1944,19 @@ DeezSpoTag.Download = {
         if (!Number.isFinite(numeric)) {
             return 0;
         }
+        // Some emitters report fractional progress (0..1) while others report percent (0..100).
+        // Keep 1 as 1% to avoid accidental 100% jumps.
+        if (numeric > 0 && numeric < 1) {
+            return Math.max(0, Math.min(100, numeric * 100));
+        }
         return Math.max(0, Math.min(100, numeric));
     },
     isResetQueueStatus(status) {
         return status === 'queued';
+    },
+    parseProgressValue(value) {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? numeric : null;
     },
     mergeProgressPercent(currentProgress, incomingProgress, currentStatus, incomingStatus) {
         const current = this.normalizeProgressPercent(currentProgress);
