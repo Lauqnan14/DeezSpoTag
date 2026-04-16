@@ -503,7 +503,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
                 queueUuid,
                 prefetchFailure);
             _activityLog.Warn($"Sidecar prefetch failed (engine={EngineName}): {queueUuid} {prefetchFailure}");
-            throw new InvalidOperationException(prefetchFailure);
         }
         await _queueRepository.UpdateStatusAsync(queueUuid, CompletedStatus, downloaded: 1, progress: 100, cancellationToken: cancellationToken);
         await QueueHelperUtils.UpdatePayloadAsync(
