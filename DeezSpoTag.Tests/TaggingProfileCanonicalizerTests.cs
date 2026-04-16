@@ -21,8 +21,10 @@ public sealed class TaggingProfileCanonicalizerTests
     private static readonly string[] ExpectedNormalizedAutoTags = { "length", "lyrics" };
     private static readonly string[] StaleDownloadTags = { "artist", "album" };
     private static readonly string[] StaleAutoTags = { "genre" };
+    private static readonly string[] StaleEnhancementTags = { "label" };
     private static readonly string[] ExpectedSyncedDownloadTags = { "title" };
     private static readonly string[] ExpectedSyncedAutoTags = { "releaseDate" };
+    private static readonly string[] ExpectedSyncedEnhancementTags = { "releaseDate", "label" };
 
     [Fact]
     public void BuildTagConfig_UsesAutoTagArraysAsCanonicalSource()
@@ -71,6 +73,9 @@ public sealed class TaggingProfileCanonicalizerTests
         Assert.Equal(
             ExpectedSeededAutoTags,
             ReadStringArray(profile.AutoTag.Data["tags"]));
+        Assert.Equal(
+            ExpectedSeededAutoTags,
+            ReadStringArray(profile.AutoTag.Data["gapFillTags"]));
 
         Assert.Equal(TagSource.DownloadSource, profile.TagConfig.Title);
         Assert.Equal(TagSource.Both, profile.TagConfig.Genre);
@@ -103,6 +108,9 @@ public sealed class TaggingProfileCanonicalizerTests
         Assert.Equal(
             ExpectedNormalizedAutoTags,
             ReadStringArray(profile.AutoTag.Data["tags"]));
+        Assert.Equal(
+            ExpectedNormalizedAutoTags,
+            ReadStringArray(profile.AutoTag.Data["gapFillTags"]));
 
         Assert.Equal(TagSource.Both, profile.TagConfig.Duration);
         Assert.Equal(TagSource.DownloadSource, profile.TagConfig.Cover);
@@ -121,7 +129,8 @@ public sealed class TaggingProfileCanonicalizerTests
                 Data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
                 {
                     ["downloadTags"] = JsonSerializer.SerializeToElement(StaleDownloadTags),
-                    ["tags"] = JsonSerializer.SerializeToElement(StaleAutoTags)
+                    ["tags"] = JsonSerializer.SerializeToElement(StaleAutoTags),
+                    ["gapFillTags"] = JsonSerializer.SerializeToElement(StaleEnhancementTags)
                 }
             }
         };
@@ -134,6 +143,7 @@ public sealed class TaggingProfileCanonicalizerTests
         Assert.True(changed);
         Assert.Equal(ExpectedSyncedDownloadTags, ReadStringArray(profile.AutoTag.Data["downloadTags"]));
         Assert.Equal(ExpectedSyncedAutoTags, ReadStringArray(profile.AutoTag.Data["tags"]));
+        Assert.Equal(ExpectedSyncedEnhancementTags, ReadStringArray(profile.AutoTag.Data["gapFillTags"]));
     }
 
     private static UnifiedTagConfig CreateEmptyTagConfig()
