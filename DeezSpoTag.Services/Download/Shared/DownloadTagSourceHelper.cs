@@ -12,7 +12,7 @@ public static class DownloadTagSourceHelper
         return NormalizeStoredSourceOrNull(source) ?? NormalizeStoredSourceOrNull(defaultSource) ?? DeezerSource;
     }
 
-    public static string? NormalizeMetadataResolverSource(string? source)
+    public static string? NormalizeResolvedDownloadTagSource(string? source)
     {
         return source?.Trim().ToLowerInvariant() switch
         {
@@ -23,7 +23,7 @@ public static class DownloadTagSourceHelper
         };
     }
 
-    public static string? ResolveMetadataSource(string? storedSource, params string?[] engineCandidates)
+    public static string? ResolveDownloadTagSource(string? storedSource, params string?[] engineCandidates)
     {
         var normalizedStoredSource = NormalizeStoredSourceOrNull(storedSource);
         if (normalizedStoredSource == null)
@@ -33,12 +33,12 @@ public static class DownloadTagSourceHelper
 
         if (!string.Equals(normalizedStoredSource, FollowDownloadEngineSource, StringComparison.OrdinalIgnoreCase))
         {
-            return NormalizeMetadataResolverSource(normalizedStoredSource);
+            return NormalizeResolvedDownloadTagSource(normalizedStoredSource);
         }
 
         foreach (var candidate in engineCandidates)
         {
-            var resolved = NormalizeMetadataResolverSource(candidate);
+            var resolved = NormalizeResolvedDownloadTagSource(candidate);
             if (!string.IsNullOrWhiteSpace(resolved))
             {
                 return resolved;
