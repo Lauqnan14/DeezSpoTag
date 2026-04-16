@@ -64,6 +64,7 @@ internal static class AppleQueueItemHelpers
         var gate = new object();
         var lastSegmentTotal = 0;
         var lastSegmentCompleted = 0;
+        const double MinProgressDelta = 0.25d;
 
         return async (progress, speedMbps) =>
         {
@@ -72,6 +73,9 @@ internal static class AppleQueueItemHelpers
             var shouldSend = false;
             var segmentTotal = 0;
             var segmentCompleted = 0;
+            var progressToSend = 0d;
+            var segmentTotalToSend = 0;
+            var segmentCompletedToSend = 0;
 
             if (speedMbps >= 100000)
             {
@@ -81,7 +85,17 @@ internal static class AppleQueueItemHelpers
 
             lock (gate)
             {
-                if (normalized >= 100 || normalized - lastProgress >= 1 || (now - lastUpdate).TotalSeconds >= 1)
+                var baseline = lastProgress < 0 ? 0 : lastProgress;
+                if (normalized < baseline)
+                {
+                    normalized = baseline;
+                }
+
+                var shouldEmitSnapshot = (now - lastUpdate).TotalSeconds >= 1 && normalized > lastProgress;
+                if (lastProgress < 0
+                    || normalized >= 100
+                    || normalized - lastProgress >= MinProgressDelta
+                    || shouldEmitSnapshot)
                 {
                     lastProgress = normalized;
                     lastUpdate = now;
@@ -91,6 +105,10 @@ internal static class AppleQueueItemHelpers
                         lastSegmentTotal = segmentTotal;
                         lastSegmentCompleted = Math.Clamp(segmentCompleted, 0, segmentTotal);
                     }
+
+                    progressToSend = normalized;
+                    segmentTotalToSend = lastSegmentTotal;
+                    segmentCompletedToSend = lastSegmentCompleted;
                 }
             }
 
@@ -101,17 +119,18 @@ internal static class AppleQueueItemHelpers
 
             try
             {
-                payload.SegmentTotal = lastSegmentTotal;
-                payload.SegmentProgress = lastSegmentCompleted;
+                payload.Progress = progressToSend;
+                payload.SegmentTotal = segmentTotalToSend;
+                payload.SegmentProgress = segmentCompletedToSend;
                 var json = JsonSerializer.Serialize(payload);
-                await queueRepository.UpdateProgressAsync(queueUuid, normalized, cancellationToken);
+                await queueRepository.UpdateProgressAsync(queueUuid, progressToSend, cancellationToken);
                 await queueRepository.UpdatePayloadAsync(queueUuid, json, cancellationToken);
                 listener.Send("updateQueue", new
                 {
                     uuid = queueUuid,
-                    progress = normalized,
-                    segmentProgress = lastSegmentCompleted,
-                    segmentTotal = lastSegmentTotal
+                    progress = progressToSend,
+                    segmentProgress = segmentCompletedToSend,
+                    segmentTotal = segmentTotalToSend
                 });
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
