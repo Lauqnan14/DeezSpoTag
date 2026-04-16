@@ -19,6 +19,11 @@ public class TrackDownloadResult
     public string Filename { get; set; } = "";
 
     /// <summary>
+    /// Generated path metadata used for shared post-download sidecars.
+    /// </summary>
+    public PathGenerationResult? GeneratedPathResult { get; set; }
+
+    /// <summary>
     /// Track metadata used for download
     /// </summary>
     public Dictionary<string, object> ItemData { get; set; } = new();

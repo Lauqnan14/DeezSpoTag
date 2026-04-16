@@ -6,6 +6,7 @@ using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Utils;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Linq;
 using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 
 namespace DeezSpoTag.Services.Download.Shared;
@@ -36,7 +37,8 @@ public static class DownloadEngineArtworkHelper
         string EmbedPrefix,
         ImageDownloader ImageDownloader,
         AudioTagger AudioTagger,
-        ILogger Logger);
+        ILogger Logger,
+        IReadOnlyList<string>? CoverUrls = null);
 
     public sealed record ArtistImageResolveRequest(
         AppleMusicCatalogService? AppleCatalog,
@@ -66,11 +68,20 @@ public static class DownloadEngineArtworkHelper
         StandardAudioCoverResolveRequest request,
         CancellationToken cancellationToken)
     {
+        var coverUrls = await ResolveStandardAudioCoverUrlsAsync(request, cancellationToken);
+        return coverUrls.Count > 0 ? coverUrls[0] : null;
+    }
+
+    public static async Task<IReadOnlyList<string>> ResolveStandardAudioCoverUrlsAsync(
+        StandardAudioCoverResolveRequest request,
+        CancellationToken cancellationToken)
+    {
         var fallbackOrder = ArtworkFallbackHelper.ResolveOrder(request.Settings);
-        string? coverUrl = null;
+        var coverUrls = new List<string>();
 
         foreach (var fallback in fallbackOrder)
         {
+            string? coverUrl = null;
             switch (fallback)
             {
                 case "apple":
@@ -111,59 +122,77 @@ public static class DownloadEngineArtworkHelper
 
             if (!string.IsNullOrWhiteSpace(coverUrl))
             {
-                break;
+                var normalizedCoverUrl = coverUrl.Trim();
+                if (!coverUrls.Contains(normalizedCoverUrl, StringComparer.OrdinalIgnoreCase))
+                {
+                    coverUrls.Add(normalizedCoverUrl);
+                }
             }
         }
 
-        return coverUrl;
+        return coverUrls;
     }
 
     public static async Task TagAudioWithResolvedCoverAsync(
         AudioTagWithCoverRequest request,
         CancellationToken cancellationToken)
     {
+        var coverUrls = request.CoverUrls?
+            .Where(url => !string.IsNullOrWhiteSpace(url))
+            .Select(url => url!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? new List<string>();
+        if (coverUrls.Count == 0 && !string.IsNullOrWhiteSpace(request.CoverUrl))
+        {
+            coverUrls.Add(request.CoverUrl.Trim());
+        }
+
         if (request.Settings.Tags?.Cover == true
-            && !string.IsNullOrWhiteSpace(request.CoverUrl)
+            && coverUrls.Count > 0
             && request.Track.Album != null)
         {
             var embedSize = request.Settings.EmbedMaxQualityCover
                 ? request.Settings.LocalArtworkSize
                 : request.Settings.EmbeddedArtworkSize;
-            var isAppleCover = request.CoverUrl.Contains("mzstatic.com", StringComparison.OrdinalIgnoreCase);
-            string embedExt;
-            if (isAppleCover)
+            foreach (var coverUrl in coverUrls)
             {
-                embedExt = $".{AppleQueueHelpers.GetAppleArtworkExtension(request.CoverUrl, AppleQueueHelpers.GetAppleArtworkFormat(request.Settings))}";
-            }
-            else
-            {
-                embedExt = request.CoverUrl.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ? ".png" : ".jpg";
-            }
-            var embedPath = Path.Join(Path.GetTempPath(), $"{request.EmbedPrefix}-embed-{Guid.NewGuid():N}{embedExt}");
-            var downloadedCover = isAppleCover
-                ? await AppleQueueHelpers.DownloadAppleArtworkAsync(
-                    request.ImageDownloader,
-                    new AppleQueueHelpers.AppleArtworkDownloadRequest
-                    {
-                        RawUrl = request.CoverUrl,
-                        OutputPath = embedPath,
-                        Settings = request.Settings,
-                        Size = embedSize,
-                        Overwrite = request.Settings.OverwriteFile,
-                        PreferMaxQuality = true,
-                        Logger = request.Logger
-                    },
-                    cancellationToken)
-                : await request.ImageDownloader.DownloadImageAsync(
-                    request.CoverUrl,
-                    embedPath,
-                    request.Settings.OverwriteFile,
-                    true,
-                    cancellationToken);
+                var isAppleCover = coverUrl.Contains("mzstatic.com", StringComparison.OrdinalIgnoreCase);
+                string embedExt;
+                if (isAppleCover)
+                {
+                    embedExt = $".{AppleQueueHelpers.GetAppleArtworkExtension(coverUrl, AppleQueueHelpers.GetAppleArtworkFormat(request.Settings))}";
+                }
+                else
+                {
+                    embedExt = coverUrl.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ? ".png" : ".jpg";
+                }
+                var embedPath = Path.Join(Path.GetTempPath(), $"{request.EmbedPrefix}-embed-{Guid.NewGuid():N}{embedExt}");
+                var downloadedCover = isAppleCover
+                    ? await AppleQueueHelpers.DownloadAppleArtworkAsync(
+                        request.ImageDownloader,
+                        new AppleQueueHelpers.AppleArtworkDownloadRequest
+                        {
+                            RawUrl = coverUrl,
+                            OutputPath = embedPath,
+                            Settings = request.Settings,
+                            Size = embedSize,
+                            Overwrite = request.Settings.OverwriteFile,
+                            PreferMaxQuality = true,
+                            Logger = request.Logger
+                        },
+                        cancellationToken)
+                    : await request.ImageDownloader.DownloadImageAsync(
+                        coverUrl,
+                        embedPath,
+                        request.Settings.OverwriteFile,
+                        true,
+                        cancellationToken);
 
-            if (!string.IsNullOrWhiteSpace(downloadedCover))
-            {
-                request.Track.Album.EmbeddedCoverPath = downloadedCover;
+                if (!string.IsNullOrWhiteSpace(downloadedCover))
+                {
+                    request.Track.Album.EmbeddedCoverPath = downloadedCover;
+                    break;
+                }
             }
         }
 
