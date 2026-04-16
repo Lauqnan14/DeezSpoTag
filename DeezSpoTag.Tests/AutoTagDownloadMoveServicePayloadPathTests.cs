@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
 using System.Text.Json;
+using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using Xunit;
@@ -110,6 +113,172 @@ public sealed class AutoTagDownloadMoveServicePayloadPathTests
         Assert.Equal(35, document.RootElement.GetProperty("DestinationFolderId").GetInt64());
     }
 
+    [Fact]
+    public void ShouldUseCopyFallback_ReturnsFalse_ForSameVolumeLocalPaths()
+    {
+        var method = GetPrivateStaticMethod("ShouldUseCopyFallback");
+        var root = Path.Combine(Path.GetTempPath(), "deezspotag-tests");
+        var sourcePath = Path.Combine(root, "source", "track.lrc");
+        var destinationPath = Path.Combine(root, "destination", "track.lrc");
+
+        var result = (bool)method.Invoke(null, new object[] { sourcePath, destinationPath })!;
+
+        Assert.False(result);
+    }
+
+    [Fact]
+    public void ShouldUseCopyFallback_ReturnsTrue_ForSmbPaths()
+    {
+        var method = GetPrivateStaticMethod("ShouldUseCopyFallback");
+
+        var result = (bool)method.Invoke(null, new object[] { "smb://nas/music/source/track.lrc", "smb://nas/music/destination/track.lrc" })!;
+
+        Assert.True(result);
+    }
+
+    [Fact]
+    public void MoveFileWithFallback_MovesLocalFile_AndRemovesSource()
+    {
+        var method = GetPrivateStaticMethod("MoveFileWithFallback");
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-move-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        var sourcePath = Path.Combine(tempRoot, "track.txt");
+        var destinationPath = Path.Combine(tempRoot, "nested", "track.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+        File.WriteAllText(sourcePath, "lyrics");
+
+        try
+        {
+            method.Invoke(null, new object[] { sourcePath, destinationPath });
+
+            Assert.False(File.Exists(sourcePath));
+            Assert.True(File.Exists(destinationPath));
+            Assert.Equal("lyrics", File.ReadAllText(destinationPath));
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(tempRoot))
+                {
+                    Directory.Delete(tempRoot, recursive: true);
+                }
+            }
+            catch
+            {
+                // Best-effort test cleanup.
+            }
+        }
+    }
+
+    [Fact]
+    public void MoveFileUnderRoot_MultiQualityAtmos_StripsBucketAndMoves()
+    {
+        var method = GetPrivateStaticMethod("MoveFileUnderRoot");
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-autotag-mq-atmos-{Guid.NewGuid():N}");
+        var stagingRoot = Path.Combine(tempRoot, "Downs");
+        var destinationRoot = Path.Combine(tempRoot, "Library");
+        var sourcePath = Path.Combine(stagingRoot, "Atmos", "Artist", "Album", "01 - Demo.lrc");
+        Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+        Directory.CreateDirectory(destinationRoot);
+        File.WriteAllText(sourcePath, "lyrics");
+
+        try
+        {
+            var moved = (string?)method.Invoke(null, new object?[]
+            {
+                stagingRoot,
+                sourcePath,
+                destinationRoot,
+                new DeezSpoTagSettings { OverwriteFile = "y" },
+                "atmos"
+            });
+
+            var expectedDestination = Path.Combine(destinationRoot, "Artist", "Album", "01 - Demo.lrc");
+            Assert.Equal(
+                DownloadPathResolver.NormalizeDisplayPath(expectedDestination),
+                DownloadPathResolver.NormalizeDisplayPath(moved ?? string.Empty));
+            Assert.True(File.Exists(expectedDestination));
+            Assert.False(File.Exists(sourcePath));
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
+    [Fact]
+    public void MoveFileUnderRoot_SingleQuality_PreservesRelativePath()
+    {
+        var method = GetPrivateStaticMethod("MoveFileUnderRoot");
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-autotag-sq-{Guid.NewGuid():N}");
+        var stagingRoot = Path.Combine(tempRoot, "Downs");
+        var destinationRoot = Path.Combine(tempRoot, "Library");
+        var sourcePath = Path.Combine(stagingRoot, "Artist", "Album", "01 - Demo.lrc");
+        Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+        Directory.CreateDirectory(destinationRoot);
+        File.WriteAllText(sourcePath, "lyrics");
+
+        try
+        {
+            var moved = (string?)method.Invoke(null, new object?[]
+            {
+                stagingRoot,
+                sourcePath,
+                destinationRoot,
+                new DeezSpoTagSettings { OverwriteFile = "y" },
+                null
+            });
+
+            var expectedDestination = Path.Combine(destinationRoot, "Artist", "Album", "01 - Demo.lrc");
+            Assert.Equal(
+                DownloadPathResolver.NormalizeDisplayPath(expectedDestination),
+                DownloadPathResolver.NormalizeDisplayPath(moved ?? string.Empty));
+            Assert.True(File.Exists(expectedDestination));
+            Assert.False(File.Exists(sourcePath));
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
+    [Fact]
+    public void MoveFileUnderRoot_LegacyStereoPath_StripsKnownBucketWithoutPayloadBucket()
+    {
+        var method = GetPrivateStaticMethod("MoveFileUnderRoot");
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-autotag-mq-stereo-{Guid.NewGuid():N}");
+        var stagingRoot = Path.Combine(tempRoot, "Downs");
+        var destinationRoot = Path.Combine(tempRoot, "Library");
+        var sourcePath = Path.Combine(stagingRoot, "Stereo", "Artist", "Album", "01 - Demo.lrc");
+        Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+        Directory.CreateDirectory(destinationRoot);
+        File.WriteAllText(sourcePath, "lyrics");
+
+        try
+        {
+            var moved = (string?)method.Invoke(null, new object?[]
+            {
+                stagingRoot,
+                sourcePath,
+                destinationRoot,
+                new DeezSpoTagSettings { OverwriteFile = "y" },
+                null
+            });
+
+            var expectedDestination = Path.Combine(destinationRoot, "Artist", "Album", "01 - Demo.lrc");
+            Assert.Equal(
+                DownloadPathResolver.NormalizeDisplayPath(expectedDestination),
+                DownloadPathResolver.NormalizeDisplayPath(moved ?? string.Empty));
+            Assert.True(File.Exists(expectedDestination));
+            Assert.False(File.Exists(sourcePath));
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
     private static MethodInfo GetPrivateStaticMethod(string methodName)
     {
         return typeof(AutoTagDownloadMoveService).GetMethod(
@@ -141,5 +310,20 @@ public sealed class AutoTagDownloadMoveServicePayloadPathTests
     {
         var method = GetPrivateStaticMethod("ResolveRoutingFolderId");
         return (long?)method.Invoke(null, new object?[] { metadata, rules, defaultFolderId });
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch
+        {
+            // Best-effort test cleanup.
+        }
     }
 }
