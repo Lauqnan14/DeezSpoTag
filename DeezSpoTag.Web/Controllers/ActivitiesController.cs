@@ -352,9 +352,11 @@ public class ActivitiesController : Controller
             }
 
             if (!string.Equals(item.Status, FailedStatus, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(item.Status, CanceledStatus, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(item.Status, CancelledStatus, StringComparison.OrdinalIgnoreCase)
                 && !(string.Equals(item.Status, CompletedStatus, StringComparison.OrdinalIgnoreCase) && (item.Failed ?? 0) > 0))
             {
-                return BadRequest("Only failed downloads can be retried");
+                return BadRequest("Only failed or canceled downloads can be retried");
             }
 
             if (string.IsNullOrWhiteSpace(item.PayloadJson))

@@ -4129,7 +4129,9 @@ function renderTasks() {
             ? `<button class="action-btn action-btn-sm" onclick="resumeTask('${task.taskId}')">${activityActionIconSvg('play')}<span>Resume</span></button>`
             : '';
 
-        const canRetry = task.status === 'failed' || (task.status === 'complete' && task.failed > 0);
+        const canRetry = task.status === 'failed'
+            || task.status === 'canceled'
+            || (task.status === 'complete' && task.failed > 0);
         const isRetrying = task.status === 'retrying' || task._retryInFlight;
         const retryButton = canRetry
             ? (isRetrying
