@@ -197,6 +197,7 @@ public class TrackDownloader
         public required string Extension { get; init; }
         public required string WritePath { get; set; }
         public required int SelectedFormat { get; init; }
+        public bool EnableDeferredSidecarTasks { get; init; } = true;
         public required CancellationToken CancellationToken { get; init; }
     }
 
@@ -207,6 +208,7 @@ public class TrackDownloader
         DownloadObject DownloadObject,
         DeezSpoTagSettings Settings,
         IDownloadListener? Listener,
+        bool EnableDeferredSidecarTasks = true,
         bool AllowInEngineBitrateFallback = true,
         CancellationToken CancellationToken = default);
 
@@ -310,6 +312,7 @@ public class TrackDownloader
                     Extension = extension,
                     WritePath = writePath,
                     SelectedFormat = selectedFormat,
+                    EnableDeferredSidecarTasks = request.EnableDeferredSidecarTasks,
                     CancellationToken = cancellationToken
                 };
 
@@ -444,22 +447,25 @@ public class TrackDownloader
                 context.Track.Id);
         }
 
-        try
+        if (context.EnableDeferredSidecarTasks)
         {
-            await QueueDeferredPostDownloadTasksAsync(
-                context.DownloadObject,
-                context.Track,
-                context.Result,
-                context.PathResult,
-                context.Settings,
-                context.WritePath);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(
-                ex,
-                "Deferred Deezer sidecar scheduling failed for track {TrackId}; continuing with audio download.",
-                context.Track.Id);
+            try
+            {
+                await QueueDeferredPostDownloadTasksAsync(
+                    context.DownloadObject,
+                    context.Track,
+                    context.Result,
+                    context.PathResult,
+                    context.Settings,
+                    context.WritePath);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Deferred Deezer sidecar scheduling failed for track {TrackId}; continuing with audio download.",
+                    context.Track.Id);
+            }
         }
 
         var downloadUrl = await ResolveRequiredDownloadUrlAsync(context.Track, context.SelectedFormat);
@@ -504,6 +510,7 @@ public class TrackDownloader
 
         context.Result.Path = context.WritePath;
         context.Result.Filename = context.WritePath.Substring(context.PathResult.ExtrasPath.Length + 1);
+        context.Result.GeneratedPathResult = context.PathResult;
         context.Result.ItemData = BuildTrackItemData(context.Track);
 
         context.DownloadObject.Files.Add(new DownloadFile
@@ -603,6 +610,7 @@ public class TrackDownloader
     {
         context.Result.Path = context.WritePath;
         context.Result.Filename = context.WritePath.Substring(context.PathResult.ExtrasPath.Length + 1);
+        context.Result.GeneratedPathResult = context.PathResult;
         context.Result.Searched = context.Track.Searched;
 
         context.DownloadObject.Downloaded++;

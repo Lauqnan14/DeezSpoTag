@@ -6,6 +6,7 @@ using DeezSpoTag.Core.Models.Download;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
+using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Library;
@@ -50,6 +51,8 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
     private readonly EngineFallbackCoordinator _fallbackCoordinator;
     private readonly IServiceProvider _serviceProvider;
     private readonly IActivityLogWriter _activityLog;
+    private readonly DeezSpoTag.Services.Download.Utils.LyricsService _lyricsService;
+    private readonly IPostDownloadTaskScheduler _postDownloadTaskScheduler;
     private readonly DeezerClient _deezerClient;
     private readonly AuthenticatedDeezerService _authenticatedDeezerService;
     private readonly TrackDownloader _trackDownloader;
@@ -70,6 +73,8 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         _retryScheduler = serviceProvider.GetRequiredService<DownloadRetryScheduler>();
         _fallbackCoordinator = serviceProvider.GetRequiredService<EngineFallbackCoordinator>();
         _activityLog = serviceProvider.GetRequiredService<IActivityLogWriter>();
+        _lyricsService = serviceProvider.GetRequiredService<DeezSpoTag.Services.Download.Utils.LyricsService>();
+        _postDownloadTaskScheduler = serviceProvider.GetRequiredService<IPostDownloadTaskScheduler>();
         _deezerClient = serviceProvider.GetRequiredService<DeezerClient>();
         _authenticatedDeezerService = serviceProvider.GetRequiredService<AuthenticatedDeezerService>();
         _trackDownloader = serviceProvider.GetRequiredService<TrackDownloader>();
@@ -225,6 +230,7 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
 
     private async Task HandleCancellationAsync(string queueUuid, CancellationToken cancellationToken)
     {
+        EngineAudioPostDownloadHelper.ClearPrefetchState(queueUuid);
         if (_cancellationRegistry.WasUserPaused(queueUuid))
         {
             await _queueRepository.UpdateStatusAsync(queueUuid, PausedStatus, cancellationToken: cancellationToken);
@@ -250,6 +256,7 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         DeezerQueueItem? payload,
         CancellationToken cancellationToken)
     {
+        EngineAudioPostDownloadHelper.ClearPrefetchState(queueUuid);
         _logger.LogError(ex, "Error during Deezer download of {UUID}", queueUuid);
         var isEpisodePayload = payload != null && IsEpisodePayload(payload);
         var fallbackAdvanced = payload != null
@@ -369,6 +376,7 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             DownloadObject: downloadObject,
             Settings: settings,
             Listener: new DownloadListenerAdapter(_listener),
+            EnableDeferredSidecarTasks: false,
             AllowInEngineBitrateFallback: ShouldUseInEngineQualityFallback(payload),
             CancellationToken: cancellationToken));
 
@@ -385,7 +393,46 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         }
 
         await SyncEffectiveQualityAsync(queueUuid, payload, track.Bitrate, cancellationToken);
-        UpdatePayloadFiles(payload, result.Path);
+        if (result.GeneratedPathResult != null)
+        {
+            var trackContext = new EngineAudioPostDownloadHelper.EngineTrackContext(
+                track,
+                result.GeneratedPathResult,
+                DownloadPathResolver.ResolveIoPath(result.GeneratedPathResult.FilePath),
+                $"literal:{result.GeneratedPathResult.Filename}");
+            var expectedOutputPath = DownloadPathResolver.ResolveIoPath(result.Path);
+            await EngineAudioPostDownloadHelper.QueueParallelPostDownloadPrefetchAsync(
+                new EngineAudioPostDownloadHelper.PrefetchRequest(
+                    queueUuid,
+                    trackContext,
+                    payload,
+                    settings,
+                    expectedOutputPath,
+                    _postDownloadTaskScheduler,
+                    _lyricsService,
+                    _listener,
+                    _activityLog,
+                    _logger,
+                    EngineName),
+                cancellationToken);
+
+            var prefetchFailure = await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(queueUuid, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(prefetchFailure))
+            {
+                _logger.LogWarning(
+                    "Deezer sidecar prefetch failed for {QueueUuid}: {Reason}",
+                    queueUuid,
+                    prefetchFailure);
+                _activityLog.Warn($"Sidecar prefetch failed (engine={EngineName}): {queueUuid} {prefetchFailure}");
+                throw new InvalidOperationException(prefetchFailure);
+            }
+
+            EngineAudioPostDownloadHelper.UpdateAudioPayloadFiles(payload, result.GeneratedPathResult, result.Path);
+        }
+        else
+        {
+            UpdatePayloadFiles(payload, result.Path);
+        }
         var sizeMb = QueueHelperUtils.TryGetFileSizeMb(result.Path);
         await QueueHelperUtils.UpdateFinalDestinationPayloadAsync(
             new QueueHelperUtils.UpdateFinalDestinationPayloadRequest<DeezerQueueItem>(
