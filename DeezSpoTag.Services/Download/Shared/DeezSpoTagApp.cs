@@ -170,6 +170,8 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                     break;
                 }
 
+                // Reload queue settings every dequeue cycle so user preference changes apply immediately.
+                Settings = _settingsService.LoadSettings();
                 var newestFirst = string.Equals(Settings.QueueOrder, "recent", StringComparison.OrdinalIgnoreCase);
                 var nextItem = await _queueRepository.DequeueNextAnyAsync(newestFirst);
                 if (nextItem == null || string.IsNullOrWhiteSpace(nextItem.QueueUuid))

@@ -395,6 +395,7 @@ WHERE queue_uuid = @queueUuid
     private static string BuildDequeueSelectSql(bool newestFirst, string extraWhereClause)
     {
         var orderBy = newestFirst ? "DESC" : "ASC";
+        var queueOrderBy = newestFirst ? "DESC" : "ASC";
         return $@"
 SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
        spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
@@ -403,7 +404,7 @@ SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, 
 FROM download_task
 WHERE status = 'queued'
   {extraWhereClause}
-ORDER BY (queue_order IS NULL), queue_order ASC, created_at {orderBy}
+ORDER BY (queue_order IS NULL), queue_order {queueOrderBy}, created_at {orderBy}, id {orderBy}
 LIMIT 1;";
     }
 
