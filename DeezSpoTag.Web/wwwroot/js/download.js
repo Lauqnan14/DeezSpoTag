@@ -1945,9 +1945,6 @@ DeezSpoTag.Download = {
         if (!Number.isFinite(numeric)) {
             return 0;
         }
-        if (numeric <= 1) {
-            return Math.max(0, Math.min(100, numeric * 100));
-        }
         return Math.max(0, Math.min(100, numeric));
     },
     isResetQueueStatus(status) {

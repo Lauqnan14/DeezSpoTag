@@ -139,20 +139,33 @@ internal static class QueueHelperUtils
         var lastProgress = -1d;
         var lastUpdate = DateTimeOffset.UtcNow;
         var gate = new object();
+        const double MinProgressDelta = 0.25d;
 
         return async (progress, speedMbps) =>
         {
             var normalized = Math.Clamp(progress, 0, 100);
             var now = DateTimeOffset.UtcNow;
             var shouldSend = false;
+            var progressToSend = 0d;
 
             lock (gate)
             {
-                if (normalized >= 100 || normalized - lastProgress >= 1 || (now - lastUpdate).TotalSeconds >= 1)
+                var baseline = lastProgress < 0 ? 0 : lastProgress;
+                if (normalized < baseline)
+                {
+                    normalized = baseline;
+                }
+
+                var shouldEmitSnapshot = (now - lastUpdate).TotalSeconds >= 1 && normalized > lastProgress;
+                if (lastProgress < 0
+                    || normalized >= 100
+                    || normalized - lastProgress >= MinProgressDelta
+                    || shouldEmitSnapshot)
                 {
                     lastProgress = normalized;
                     lastUpdate = now;
                     shouldSend = true;
+                    progressToSend = normalized;
                 }
             }
 
@@ -163,11 +176,11 @@ internal static class QueueHelperUtils
 
             try
             {
-                await queueRepository.UpdateProgressAsync(queueUuid, normalized, cancellationToken);
+                await queueRepository.UpdateProgressAsync(queueUuid, progressToSend, cancellationToken);
                 listener.Send("updateQueue", new
                 {
                     uuid = queueUuid,
-                    progress = normalized
+                    progress = progressToSend
                 });
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
