@@ -325,7 +325,8 @@ internal static class EngineQueueProcessorHelper
                 workContext.EngineName,
                 workContext.Item.QueueUuid,
                 prefetchFailure);
-            throw new InvalidOperationException(prefetchFailure);
+            workContext.Deps.ActivityLog.Warn(
+                $"Sidecar prefetch failed (engine={workContext.EngineName}): {workContext.Item.QueueUuid} {prefetchFailure}");
         }
         await workContext.Deps.QueueRepository.UpdateStatusAsync(
             workContext.Item.QueueUuid,

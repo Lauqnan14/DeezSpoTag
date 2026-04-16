@@ -424,7 +424,6 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
                     queueUuid,
                     prefetchFailure);
                 _activityLog.Warn($"Sidecar prefetch failed (engine={EngineName}): {queueUuid} {prefetchFailure}");
-                throw new InvalidOperationException(prefetchFailure);
             }
 
             EngineAudioPostDownloadHelper.UpdateAudioPayloadFiles(payload, result.GeneratedPathResult, result.Path);
