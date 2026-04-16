@@ -2157,6 +2157,30 @@ DeezSpoTag.Download = {
             this.showNotification(`Failed to cancel download: ${error.message}`, 'error');
         }
     },
+    async retryDownload(downloadId) {
+        try {
+            const response = await this.apiFetch(`/api/deezer/download/retry/${downloadId}`, {
+                method: 'POST'
+            });
+
+            if (!response.ok) {
+                throw await this.buildApiError(response, 'Failed to retry download');
+            }
+
+            const result = await response.json();
+            this.updateLocalQueueItem(downloadId, {
+                status: 'queued',
+                progress: 0,
+                error: null
+            });
+            this.showNotification('Retry queued', 'success');
+            this.updateQueueDisplay();
+            return result;
+        } catch (error) {
+            console.error('Error retrying download:', error);
+            this.showNotification(`Failed to retry download: ${error.message}`, 'error');
+        }
+    },
 
     // Local queue management
     addToLocalQueue(downloadId, url, type, engineOverride) {
@@ -2555,7 +2579,9 @@ DeezSpoTag.Download = {
                 <div class="download-actions">
                     ${item.status === 'queued' || item.status === 'downloading' ? 
                         `<button onclick="DeezSpoTag.Download.cancelDownload('${item.id}')" class="btn-danger action-btn action-btn-sm">Cancel</button>` : 
-                        ''
+                        item.status === 'cancelled'
+                            ? `<button onclick="DeezSpoTag.Download.retryDownload('${item.id}')" class="btn-secondary action-btn action-btn-sm">Retry</button>`
+                            : ''
                     }
                 </div>
             </div>

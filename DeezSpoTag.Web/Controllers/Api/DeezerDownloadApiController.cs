@@ -599,6 +599,35 @@ namespace DeezSpoTag.Web.Controllers.Api
             return Ok(new { success = true });
         }
 
+        [HttpPost("retry/{uuid}")]
+        public async Task<IActionResult> Retry(string uuid, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(uuid))
+            {
+                return BadRequest(new { error = "UUID is required." });
+            }
+
+            var item = await _queueRepository.GetByUuidAsync(uuid, cancellationToken);
+            if (item == null)
+            {
+                return NotFound(new { error = "Download not found." });
+            }
+
+            if (!IsCancelledStatus(item.Status))
+            {
+                var currentStatus = string.IsNullOrWhiteSpace(item.Status) ? "unknown" : item.Status;
+                return Conflict(new { error = $"Retry is only available for cancelled downloads. Current status: {currentStatus}." });
+            }
+
+            var requeued = await _deezSpoTagApp.RetryDownloadAsync(uuid, cancellationToken);
+            if (!requeued)
+            {
+                return StatusCode(500, new { error = "Failed to retry download." });
+            }
+
+            return Ok(new { success = true, status = "queued" });
+        }
+
         [HttpGet("queue/status")]
         public async Task<IActionResult> GetQueueStatus()
         {
@@ -753,6 +782,12 @@ namespace DeezSpoTag.Web.Controllers.Api
             }
 
             return true;
+        }
+
+        private static bool IsCancelledStatus(string? status)
+        {
+            return string.Equals(status, "canceled", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(status, "cancelled", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsPodcastSourceUrl(string? sourceUrl)

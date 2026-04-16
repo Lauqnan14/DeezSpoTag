@@ -370,6 +370,44 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         DeezSpoTagSpeedTracker.Clear(uuid);
     }
 
+    public async Task<bool> RetryDownloadAsync(string uuid, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(uuid))
+        {
+            return false;
+        }
+
+        var queueItem = await _queueRepository.GetByUuidAsync(uuid, cancellationToken);
+        if (queueItem == null)
+        {
+            return false;
+        }
+
+        _retryScheduler.Clear(uuid);
+        _cancellationRegistry.ClearUserCanceled(uuid);
+
+        var requeued = await _queueRepository.RequeueAsync(uuid, cancellationToken);
+        if (!requeued)
+        {
+            return false;
+        }
+
+        await UpdateWatchlistTrackStatusAsync(queueItem.PayloadJson ?? string.Empty, "queued", cancellationToken);
+        Listener?.Send("updateQueue", new
+        {
+            uuid,
+            status = "inQueue",
+            progress = 0,
+            downloaded = 0,
+            failed = 0,
+            error = default(string)
+        });
+        DeezSpoTagSpeedTracker.Clear(uuid);
+        await EnsureQueueProcessorRunningAsync();
+
+        return true;
+    }
+
     private async Task UpdateWatchlistTrackStatusAsync(string payloadJson, string status, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(payloadJson))
