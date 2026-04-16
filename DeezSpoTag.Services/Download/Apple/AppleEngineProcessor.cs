@@ -11,6 +11,7 @@ using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
 using System.Net.Sockets;
 using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 
@@ -56,6 +57,8 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
     private readonly IDownloadTagSettingsResolver _tagSettingsResolver;
     private readonly IFolderConversionSettingsOverlay _folderConversionSettingsOverlay;
     private readonly ILogger<AppleEngineProcessor> _logger;
+    private readonly ConcurrentDictionary<string, PrefetchGateState> _prefetchGates =
+        new(StringComparer.OrdinalIgnoreCase);
 
     private sealed record CoverFallbackServices(
         AppleMusicCatalogService? AppleCatalog,
@@ -77,8 +80,22 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         public required string ArtistPath { get; init; }
         public required string ExtrasPath { get; init; }
         public required bool AllowPlaylistCover { get; init; }
+        public required bool ShouldFetchPrimaryArtwork { get; init; }
+        public required bool ShouldFetchAnimatedArtwork { get; init; }
+        public required bool ShouldFetchArtistArtwork { get; init; }
         public required bool ShouldFetchArtwork { get; init; }
         public required bool ShouldFetchLyrics { get; init; }
+        public required PrefetchGateState GateState { get; init; }
+    }
+
+    private sealed record PrefetchArtworkResult(bool Success, string? FailureReason = null);
+
+    private sealed record PrefetchGateResult(bool Success, string? FailureReason = null);
+
+    private sealed class PrefetchGateState
+    {
+        public TaskCompletionSource<PrefetchGateResult> Completion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     private sealed class ArtworkPrefetchContext
@@ -282,6 +299,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         string message,
         CancellationToken stoppingToken)
     {
+        ClearPrefetchGate(next.QueueUuid);
         if (queueContext != null)
         {
             await HandleDownloadFailureAsync(next, queueContext.Payload, message, stoppingToken, CancellationToken.None);
@@ -686,6 +704,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         CancellationToken itemToken,
         string? quality = null)
     {
+        ClearPrefetchGate(next.QueueUuid);
         if (string.IsNullOrWhiteSpace(quality))
         {
             _activityLog.Warn($"Download failed (engine=apple): {next.QueueUuid} {reason}");
@@ -836,6 +855,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         AppleQueueItem payload,
         CancellationToken itemToken)
     {
+        await EnsureRequiredPrefetchCompletedAsync(queueUuid, itemToken);
         payload.Progress = 100;
         payload.Downloaded = Math.Max(payload.Size, 1);
         payload.Status = AppleDownloadStatus.Completed;
@@ -846,6 +866,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
     private async Task HandleCanceledQueueItemAsync(string queueUuid)
     {
+        ClearPrefetchGate(queueUuid);
         var current = await _queueRepository.GetByUuidAsync(queueUuid, CancellationToken.None);
         var status = current?.Status ?? CancelledStatus;
         if (status is CompletedStatus or FailedStatus)
@@ -869,6 +890,57 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
         await _queueRepository.UpdateStatusAsync(queueUuid, CancelledStatus, "Cancelled", cancellationToken: CancellationToken.None);
         ScheduleRetryIfEligible(queueUuid, CancelledStatus);
+    }
+
+    private async Task EnsureRequiredPrefetchCompletedAsync(string queueUuid, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid)
+            || !_prefetchGates.TryGetValue(queueUuid, out var gateState))
+        {
+            return;
+        }
+
+        PrefetchGateResult result;
+        try
+        {
+            result = await gateState.Completion.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            TryRemovePrefetchGate(queueUuid, gateState);
+        }
+
+        if (!result.Success)
+        {
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(result.FailureReason)
+                    ? "Artwork prefetch did not complete successfully."
+                    : result.FailureReason);
+        }
+    }
+
+    private void ClearPrefetchGate(string queueUuid)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return;
+        }
+
+        _prefetchGates.TryRemove(queueUuid, out _);
+    }
+
+    private void TryRemovePrefetchGate(string queueUuid, PrefetchGateState expected)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return;
+        }
+
+        if (_prefetchGates.TryGetValue(queueUuid, out var current)
+            && ReferenceEquals(current, expected))
+        {
+            _prefetchGates.TryRemove(queueUuid, out _);
+        }
     }
 
     private void ScheduleRetryIfEligible(string queueUuid, string? reason)
@@ -1200,17 +1272,21 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
     {
         var isPlaylist = string.Equals(payload.CollectionType, PlaylistType, StringComparison.OrdinalIgnoreCase);
         var allowPlaylistCover = !isPlaylist || settings.DlAlbumcoverForPlaylist;
-        var shouldFetchArtwork = (allowPlaylistCover && settings.SaveArtwork)
-            || (allowPlaylistCover && settings.SaveAnimatedArtwork)
-            || settings.SaveArtworkArtist;
+        var shouldFetchPrimaryArtwork = allowPlaylistCover && settings.SaveArtwork;
+        var shouldFetchAnimatedArtwork = allowPlaylistCover && settings.SaveAnimatedArtwork;
+        var shouldFetchArtistArtwork = settings.SaveArtworkArtist;
+        var shouldFetchArtwork = shouldFetchPrimaryArtwork || shouldFetchAnimatedArtwork || shouldFetchArtistArtwork;
         var shouldFetchLyrics = ShouldSaveLyrics(settings);
         var shouldQueue = shouldFetchArtwork || shouldFetchLyrics;
         if (!shouldQueue)
         {
+            ClearPrefetchGate(queueUuid);
             return;
         }
 
         var prefetchPaths = EngineAudioPostDownloadHelper.BuildPrefetchPathContext(queueUuid, context, expectedOutputPath);
+        var gateState = new PrefetchGateState();
+        _prefetchGates[prefetchPaths.QueueUuid] = gateState;
 
         QueuePrefetchStatusHelper.Send(
             _deezspotagListener,
@@ -1231,15 +1307,28 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             ArtistPath = prefetchPaths.ArtistPath,
             ExtrasPath = prefetchPaths.ExtrasPath,
             AllowPlaylistCover = allowPlaylistCover,
+            ShouldFetchPrimaryArtwork = shouldFetchPrimaryArtwork,
+            ShouldFetchAnimatedArtwork = shouldFetchAnimatedArtwork,
+            ShouldFetchArtistArtwork = shouldFetchArtistArtwork,
             ShouldFetchArtwork = shouldFetchArtwork,
-            ShouldFetchLyrics = shouldFetchLyrics
+            ShouldFetchLyrics = shouldFetchLyrics,
+            GateState = gateState
         };
 
-        await _postDownloadTaskScheduler.EnqueueAsync(
-            prefetchPaths.QueueUuid,
-            Engine,
-            (provider, token) => RunParallelPostDownloadPrefetchWorkAsync(provider, work, token),
-            CancellationToken.None);
+        try
+        {
+            await _postDownloadTaskScheduler.EnqueueAsync(
+                prefetchPaths.QueueUuid,
+                Engine,
+                (provider, token) => RunParallelPostDownloadPrefetchWorkAsync(provider, work, token),
+                CancellationToken.None);
+        }
+        catch
+        {
+            gateState.Completion.TrySetResult(new PrefetchGateResult(false, "Artwork prefetch could not be scheduled."));
+            TryRemovePrefetchGate(prefetchPaths.QueueUuid, gateState);
+            throw;
+        }
     }
 
     private async Task RunParallelPostDownloadPrefetchWorkAsync(
@@ -1247,71 +1336,115 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         PrefetchWorkContext work,
         CancellationToken token)
     {
-        var imageDownloader = provider.GetRequiredService<ImageDownloader>();
-        var pathProcessor = provider.GetRequiredService<EnhancedPathTemplateProcessor>();
-        var spotifyArtworkResolver = provider.GetService<ISpotifyArtworkResolver>();
-        var spotifyIdResolver = provider.GetService<ISpotifyIdResolver>();
-        var httpClientFactory = provider.GetService<IHttpClientFactory>();
-        var appleCatalog = provider.GetService<AppleMusicCatalogService>();
-        var deezerClient = provider.GetService<DeezerClient>();
-        var services = new CoverFallbackServices(appleCatalog, deezerClient, spotifyIdResolver, spotifyArtworkResolver, httpClientFactory);
-        var preferMaxQualityCover = work.Settings.EmbedMaxQualityCover;
-        var appleArtworkSize = AppleQueueHelpers.GetAppleArtworkSize(work.Settings);
-        var artworkStatus = work.ShouldFetchArtwork ? FetchingState : SkippedState;
-        var lyricsStatus = work.ShouldFetchLyrics ? FetchingState : SkippedState;
-        var lyricsType = string.Empty;
+        var gateResult = new PrefetchGateResult(!work.ShouldFetchArtwork);
+        try
+        {
+            var imageDownloader = provider.GetRequiredService<ImageDownloader>();
+            var pathProcessor = provider.GetRequiredService<EnhancedPathTemplateProcessor>();
+            var spotifyArtworkResolver = provider.GetService<ISpotifyArtworkResolver>();
+            var spotifyIdResolver = provider.GetService<ISpotifyIdResolver>();
+            var httpClientFactory = provider.GetService<IHttpClientFactory>();
+            var appleCatalog = provider.GetService<AppleMusicCatalogService>();
+            var deezerClient = provider.GetService<DeezerClient>();
+            var services = new CoverFallbackServices(appleCatalog, deezerClient, spotifyIdResolver, spotifyArtworkResolver, httpClientFactory);
+            var preferMaxQualityCover = work.Settings.EmbedMaxQualityCover;
+            var appleArtworkSize = AppleQueueHelpers.GetAppleArtworkSize(work.Settings);
+            var artworkStatus = work.ShouldFetchArtwork ? FetchingState : SkippedState;
+            var lyricsStatus = work.ShouldFetchLyrics ? FetchingState : SkippedState;
+            var lyricsType = string.Empty;
 
-        var coverUrl = await ResolveCoverUrlWithFallbackAsync(
-            work.Payload,
-            work.Settings,
-            services,
-            token);
-        var isAppleCover = IsAppleArtworkUrl(coverUrl);
+            var coverUrl = await ResolveCoverUrlWithFallbackAsync(
+                work.Payload,
+                work.Settings,
+                services,
+                token);
+            var isAppleCover = IsAppleArtworkUrl(coverUrl);
+            var artworkResult = new PrefetchArtworkResult(!work.ShouldFetchArtwork);
 
-        var artworkTask = work.ShouldFetchArtwork
-            ? Task.Run(
-                () => RunArtworkPrefetchAsync(
-                    new ArtworkPrefetchContext
+            var artworkTask = work.ShouldFetchArtwork
+                ? Task.Run(
+                    async () =>
                     {
-                        Work = work,
-                        CoverUrl = coverUrl,
-                        IsAppleCover = isAppleCover,
-                        PreferMaxQualityCover = preferMaxQualityCover,
-                        AppleArtworkSize = appleArtworkSize,
-                        ImageDownloader = imageDownloader,
-                        PathProcessor = pathProcessor,
-                        AppleCatalog = appleCatalog,
-                        DeezerClient = deezerClient,
-                        SpotifyArtworkResolver = spotifyArtworkResolver,
-                        HttpClientFactory = httpClientFactory,
-                        GetArtworkStatus = () => artworkStatus,
-                        GetLyricsStatus = () => lyricsStatus,
-                        SetArtworkStatus = status => artworkStatus = status
+                        try
+                        {
+                            artworkResult = await RunArtworkPrefetchAsync(
+                                new ArtworkPrefetchContext
+                                {
+                                    Work = work,
+                                    CoverUrl = coverUrl,
+                                    IsAppleCover = isAppleCover,
+                                    PreferMaxQualityCover = preferMaxQualityCover,
+                                    AppleArtworkSize = appleArtworkSize,
+                                    ImageDownloader = imageDownloader,
+                                    PathProcessor = pathProcessor,
+                                    AppleCatalog = appleCatalog,
+                                    DeezerClient = deezerClient,
+                                    SpotifyArtworkResolver = spotifyArtworkResolver,
+                                    HttpClientFactory = httpClientFactory,
+                                    GetArtworkStatus = () => artworkStatus,
+                                    GetLyricsStatus = () => lyricsStatus,
+                                    SetArtworkStatus = status => artworkStatus = status
+                                },
+                                token);
+                            artworkStatus = artworkResult.Success ? CompletedStatus : FailedStatus;
+                            if (!artworkResult.Success && !string.IsNullOrWhiteSpace(artworkResult.FailureReason))
+                            {
+                                _logger.LogWarning(
+                                    "Apple artwork prefetch incomplete for {QueueUuid}: {Reason}",
+                                    work.QueueUuid,
+                                    artworkResult.FailureReason);
+                            }
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
+                            artworkResult = new PrefetchArtworkResult(false, ex.Message);
+                            artworkStatus = FailedStatus;
+                            _logger.LogWarning(ex, "Apple artwork prefetch failed for {Path}", work.ExpectedOutputPath);
+                        }
+                        finally
+                        {
+                            QueuePrefetchStatusHelper.Send(_deezspotagListener, work.QueueUuid, artworkStatus, lyricsStatus);
+                        }
                     },
-                    token),
-                token)
-            : Task.CompletedTask;
+                    token)
+                : Task.CompletedTask;
 
-        var lyricsTask = work.ShouldFetchLyrics
-            ? Task.Run(
-                () => RunLyricsPrefetchAsync(
-                    new LyricsPrefetchContext
-                    {
-                        Work = work,
-                        GetArtworkStatus = () => artworkStatus,
-                        GetLyricsStatus = () => lyricsStatus,
-                        SetLyricsStatus = status => lyricsStatus = status,
-                        SetLyricsType = type => lyricsType = type,
-                        GetLyricsType = () => lyricsType
-                    },
-                    token),
-                token)
-            : Task.CompletedTask;
+            var lyricsTask = work.ShouldFetchLyrics
+                ? Task.Run(
+                    () => RunLyricsPrefetchAsync(
+                        new LyricsPrefetchContext
+                        {
+                            Work = work,
+                            GetArtworkStatus = () => artworkStatus,
+                            GetLyricsStatus = () => lyricsStatus,
+                            SetLyricsStatus = status => lyricsStatus = status,
+                            SetLyricsType = type => lyricsType = type,
+                            GetLyricsType = () => lyricsType
+                        },
+                        token),
+                    token)
+                : Task.CompletedTask;
 
-        await Task.WhenAll(artworkTask, lyricsTask);
+            await Task.WhenAll(artworkTask, lyricsTask);
+            gateResult = new PrefetchGateResult(artworkResult.Success, artworkResult.FailureReason);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            gateResult = new PrefetchGateResult(false, "Artwork prefetch canceled.");
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            gateResult = new PrefetchGateResult(false, ex.Message);
+            _logger.LogWarning(ex, "Apple prefetch worker failed for {QueueUuid}", work.QueueUuid);
+        }
+        finally
+        {
+            work.GateState.Completion.TrySetResult(gateResult);
+        }
     }
 
-    private async Task RunArtworkPrefetchAsync(ArtworkPrefetchContext context, CancellationToken token)
+    private async Task<PrefetchArtworkResult> RunArtworkPrefetchAsync(ArtworkPrefetchContext context, CancellationToken token)
     {
         try
         {
@@ -1321,10 +1454,15 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                 context.Work.Settings,
                 context.Work.Context.Track.Playlist);
 
-            if (context.Work.AllowPlaylistCover && context.Work.Settings.SaveArtwork && !string.IsNullOrWhiteSpace(context.CoverUrl))
+            if (context.Work.ShouldFetchPrimaryArtwork)
             {
+                if (string.IsNullOrWhiteSpace(context.CoverUrl))
+                {
+                    return new PrefetchArtworkResult(false, "Album artwork URL could not be resolved.");
+                }
+
                 Directory.CreateDirectory(context.Work.CoverPath);
-                await SavePrefetchCoverArtworkAsync(
+                var coverSaved = await SavePrefetchCoverArtworkAsync(
                     new CoverSaveContext(
                         context.Work.Settings,
                         context.CoverUrl,
@@ -1335,16 +1473,24 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                         context.AppleArtworkSize,
                         context.ImageDownloader),
                     token);
+                if (!coverSaved)
+                {
+                    return new PrefetchArtworkResult(false, "Album artwork download failed.");
+                }
             }
 
-            if (context.Work.AllowPlaylistCover && context.Work.Settings.SaveAnimatedArtwork && context.AppleCatalog != null && context.HttpClientFactory != null)
+            if (context.Work.ShouldFetchAnimatedArtwork && context.AppleCatalog != null && context.HttpClientFactory != null)
             {
-                await SaveAnimatedPrefetchArtworkAsync(context.Work.Settings, context.Work.Payload, context.Work.CoverPath, coverName, context.AppleCatalog, context.HttpClientFactory, token);
+                var animatedSaved = await SaveAnimatedPrefetchArtworkAsync(context.Work.Settings, context.Work.Payload, context.Work.CoverPath, coverName, context.AppleCatalog, context.HttpClientFactory, token);
+                if (!animatedSaved && _logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Apple animated artwork not available for {QueueUuid}", context.Work.QueueUuid);
+                }
             }
 
-            if (context.Work.Settings.SaveArtworkArtist)
+            if (context.Work.ShouldFetchArtistArtwork)
             {
-                await SaveArtistPrefetchArtworkAsync(
+                var artistSaved = await SaveArtistPrefetchArtworkAsync(
                     new ArtistPrefetchSaveContext(
                         context.Work.Settings,
                         context.Work.Payload,
@@ -1359,14 +1505,20 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                         context.SpotifyArtworkResolver,
                         context.HttpClientFactory),
                     token);
+                if (!artistSaved)
+                {
+                    return new PrefetchArtworkResult(false, "Artist artwork download failed.");
+                }
             }
 
             context.SetArtworkStatus(CompletedStatus);
+            return new PrefetchArtworkResult(true);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             context.SetArtworkStatus(FailedStatus);
             _logger.LogWarning(ex, "Apple artwork prefetch failed for {Path}", context.Work.ExpectedOutputPath);
+            return new PrefetchArtworkResult(false, ex.Message);
         }
         finally
         {
@@ -1417,14 +1569,15 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         }
     }
 
-    private async Task SavePrefetchCoverArtworkAsync(CoverSaveContext context, CancellationToken token)
+    private async Task<bool> SavePrefetchCoverArtworkAsync(CoverSaveContext context, CancellationToken token)
     {
+        var anySaved = false;
         if (context.IsAppleCover)
         {
             foreach (var format in AppleQueueHelpers.GetArtworkOutputFormats(context.Settings))
             {
                 var targetPath = Path.Join(context.CoverPath, $"{context.CoverName}.{format}");
-                await AppleQueueHelpers.DownloadAppleArtworkAsync(
+                var downloaded = await AppleQueueHelpers.DownloadAppleArtworkAsync(
                     context.ImageDownloader,
                     new AppleQueueHelpers.AppleArtworkDownloadRequest
                     {
@@ -1437,8 +1590,9 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                         Logger = _logger
                     },
                     token);
+                anySaved |= !string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded);
             }
-            return;
+            return anySaved;
         }
 
         var formats = (context.Settings.LocalArtworkFormat ?? "jpg")
@@ -1447,16 +1601,19 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         {
             var ext = format.Equals("png", StringComparison.OrdinalIgnoreCase) ? "png" : "jpg";
             var targetPath = Path.Join(context.CoverPath, $"{context.CoverName}.{ext}");
-            await context.ImageDownloader.DownloadImageAsync(
+            var downloaded = await context.ImageDownloader.DownloadImageAsync(
                 context.CoverUrl,
                 targetPath,
                 context.Settings.OverwriteFile,
                 context.PreferMaxQualityCover,
                 token);
+            anySaved |= !string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded);
         }
+
+        return anySaved;
     }
 
-    private async Task SaveAnimatedPrefetchArtworkAsync(
+    private async Task<bool> SaveAnimatedPrefetchArtworkAsync(
         DeezSpoTagSettings settings,
         AppleQueueItem payload,
         string coverPath,
@@ -1489,9 +1646,11 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         {
             _activityLog.Info($"Animated artwork saved: {coverPath}");
         }
+
+        return savedAnimated;
     }
 
-    private async Task SaveArtistPrefetchArtworkAsync(ArtistPrefetchSaveContext context, CancellationToken token)
+    private async Task<bool> SaveArtistPrefetchArtworkAsync(ArtistPrefetchSaveContext context, CancellationToken token)
     {
         var artistImageUrl = await DownloadEngineArtworkHelper.ResolveArtistImageUrlAsync(
             new DownloadEngineArtworkHelper.ArtistImageResolveRequest(
@@ -1509,10 +1668,10 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
         if (string.IsNullOrWhiteSpace(artistImageUrl))
         {
-            return;
+            return false;
         }
 
-        await DownloadEngineArtworkHelper.SaveArtistArtworkAsync(
+        return await DownloadEngineArtworkHelper.SaveArtistArtworkAsync(
             new DownloadEngineArtworkHelper.SaveArtistArtworkRequest(
                 context.ImageDownloader,
                 context.PathProcessor,

@@ -494,6 +494,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             throw new InvalidOperationException($"Downloaded file missing or empty: {outputPath}");
         }
 
+        await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(queueUuid, cancellationToken);
         await _queueRepository.UpdateStatusAsync(queueUuid, CompletedStatus, downloaded: 1, progress: 100, cancellationToken: cancellationToken);
         await QueueHelperUtils.UpdatePayloadAsync(
             new QueueHelperUtils.UpdatePayloadRequest<QobuzQueueItem>(
@@ -525,6 +526,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
 
     private async Task HandleCancellationAsync(string queueUuid, QobuzQueueItem? payload)
     {
+        EngineAudioPostDownloadHelper.ClearPrefetchState(queueUuid);
         var current = await _queueRepository.GetByUuidAsync(queueUuid, CancellationToken.None);
         var status = current?.Status ?? CancelledStatus;
         if (status is CompletedStatus or FailedStatus)
@@ -547,6 +549,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         Exception ex,
         CancellationToken stoppingToken)
     {
+        EngineAudioPostDownloadHelper.ClearPrefetchState(next.QueueUuid);
         _logger.LogError(ex, "Qobuz download failed for {QueueUuid}", next.QueueUuid);
         if (payload != null && !stoppingToken.IsCancellationRequested)
         {

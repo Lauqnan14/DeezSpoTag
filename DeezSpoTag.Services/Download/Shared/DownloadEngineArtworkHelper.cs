@@ -268,11 +268,12 @@ public static class DownloadEngineArtworkHelper
         return null;
     }
 
-    public static async Task SaveArtistArtworkAsync(
+    public static async Task<bool> SaveArtistArtworkAsync(
         SaveArtistArtworkRequest request,
         CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(request.ArtistPath);
+        var anySaved = false;
         var artistName = request.PathProcessor.GenerateArtistName(
             request.Settings.ArtistImageTemplate,
             request.Track.MainArtist,
@@ -289,7 +290,7 @@ public static class DownloadEngineArtworkHelper
             foreach (var format in AppleQueueHelpers.GetArtworkOutputFormats(request.Settings))
             {
                 var targetPath = Path.Join(request.ArtistPath, $"{artistName}.{format}");
-                await AppleQueueHelpers.DownloadAppleArtworkAsync(
+                var downloaded = await AppleQueueHelpers.DownloadAppleArtworkAsync(
                     request.ImageDownloader,
                     new AppleQueueHelpers.AppleArtworkDownloadRequest
                     {
@@ -302,21 +303,22 @@ public static class DownloadEngineArtworkHelper
                         Logger = request.Logger
                     },
                     cancellationToken);
+                anySaved |= !string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded);
             }
 
-            return;
+            return anySaved;
         }
 
         if (request.SingleJpegForNonApple)
         {
             var artistFilePath = Path.Join(request.ArtistPath, $"{artistName}.jpg");
-            await request.ImageDownloader.DownloadImageAsync(
+            var downloaded = await request.ImageDownloader.DownloadImageAsync(
                 request.ArtistImageUrl,
                 artistFilePath,
                 request.Settings.OverwriteFile,
                 request.PreferMaxQualityCover,
                 cancellationToken);
-            return;
+            return !string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded);
         }
 
         var formats = (request.Settings.LocalArtworkFormat ?? "jpg")
@@ -326,12 +328,15 @@ public static class DownloadEngineArtworkHelper
         {
             var ext = format.Equals("png", StringComparison.OrdinalIgnoreCase) ? "png" : "jpg";
             var targetPath = Path.Join(request.ArtistPath, $"{artistName}.{ext}");
-            await request.ImageDownloader.DownloadImageAsync(
+            var downloaded = await request.ImageDownloader.DownloadImageAsync(
                 request.ArtistImageUrl,
                 targetPath,
                 request.Settings.OverwriteFile,
                 request.PreferMaxQualityCover,
                 cancellationToken);
+            anySaved |= !string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded);
         }
+
+        return anySaved;
     }
 }

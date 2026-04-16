@@ -315,6 +315,9 @@ internal static class EngineQueueProcessorHelper
             throw new InvalidOperationException($"Downloaded file missing or empty: {outputPath}");
         }
 
+        await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(
+            workContext.Item.QueueUuid,
+            workContext.ItemToken);
         await workContext.Deps.QueueRepository.UpdateStatusAsync(
             workContext.Item.QueueUuid,
             "completed",
