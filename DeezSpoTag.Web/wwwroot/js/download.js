@@ -652,33 +652,56 @@ DeezSpoTag.Download = {
                 // Deezer queue progress updates
                 this.connection.on("updateQueue", (update) => {
                     if (!update) return;
-                    const downloadId = update.uuid || update.id;
-                    if (!downloadId) return;
+                    const eventContext = this.resolveQueueEventContext(update);
+                    if (!eventContext) return;
+                    const { downloadId, payload } = eventContext;
 
-                    if (update.engine || update.sourceService) {
-                        const resolvedEngine = this.resolveEngine(update.engine, update.sourceService);
+                    if (payload.engine || payload.sourceService) {
+                        const resolvedEngine = this.resolveEngine(payload.engine, payload.sourceService);
                         this.engineById[downloadId] = this.normalizeEngine(resolvedEngine);
                     }
 
-                    const queueProgress = this.parseProgressValue(update.progress);
+                    const queueProgress = this.parseProgressValue(
+                        payload.progress !== undefined && payload.progress !== null
+                            ? payload.progress
+                            : payload.progressNext);
                     if (queueProgress !== null) {
                         this.updateDownloadProgress(downloadId, queueProgress);
                     }
 
-                    if (update.failed) {
-                        this.handleDownloadError(downloadId, { message: update.error || 'Download failed' });
+                    const nextStatus = this.mapServerQueueStatus(payload.status);
+                    if (nextStatus === 'completed') {
+                        this.handleDownloadCompleted(downloadId, payload);
+                        return;
+                    }
+
+                    if (nextStatus === 'failed' || payload.failed === true) {
+                        this.handleDownloadError(downloadId, { message: payload.error || payload.message || 'Download failed' });
+                        return;
+                    }
+
+                    if (nextStatus === 'downloading' && queueProgress === null) {
+                        this.updateLocalQueueItem(downloadId, { status: 'downloading' });
+                        this.updateQueueDisplay();
+                        return;
+                    }
+
+                    if (nextStatus === 'paused' || nextStatus === 'cancelled') {
+                        this.updateLocalQueueItem(downloadId, { status: nextStatus });
+                        this.updateQueueDisplay();
                     }
                 });
 
                 // Progress updates emitted by the Deezer adapter
                 this.connection.on("downloadProgress", (update) => {
                     if (!update) return;
-                    const downloadId = update.uuid || update.id;
-                    if (!downloadId) return;
+                    const eventContext = this.resolveQueueEventContext(update);
+                    if (!eventContext) return;
+                    const { downloadId, payload } = eventContext;
                     const progress = this.parseProgressValue(
-                        update.progress !== undefined && update.progress !== null
-                            ? update.progress
-                            : update.progressNext);
+                        payload.progress !== undefined && payload.progress !== null
+                            ? payload.progress
+                            : payload.progressNext);
                     if (progress !== null) {
                         this.updateDownloadProgress(downloadId, progress);
                     }
@@ -752,9 +775,10 @@ DeezSpoTag.Download = {
 
                 this.connection.on("downloadError", (error) => {
                     if (!error) return;
-                    const downloadId = error.uuid || error.id;
-                    if (!downloadId) return;
-                    const message = error?.error || error?.message || 'Download failed';
+                    const eventContext = this.resolveQueueEventContext(error);
+                    if (!eventContext) return;
+                    const { downloadId, payload } = eventContext;
+                    const message = payload?.error || payload?.message || 'Download failed';
                     this.handleDownloadError(downloadId, { message });
                 });
 
@@ -1939,15 +1963,33 @@ DeezSpoTag.Download = {
                 return normalized || 'queued';
         }
     },
+    resolveQueueEventContext(payload) {
+        if (!payload || typeof payload !== 'object') {
+            return null;
+        }
+
+        const updateData = payload.updateData && typeof payload.updateData === 'object'
+            ? payload.updateData
+            : null;
+        const normalizedPayload = updateData || payload;
+        const rawId = normalizedPayload.uuid
+            || normalizedPayload.id
+            || payload.uuid
+            || payload.id;
+        const downloadId = String(rawId || '').trim();
+        if (!downloadId) {
+            return null;
+        }
+
+        return {
+            downloadId,
+            payload: normalizedPayload
+        };
+    },
     normalizeProgressPercent(progress) {
         const numeric = Number(progress);
         if (!Number.isFinite(numeric)) {
             return 0;
-        }
-        // Some emitters report fractional progress (0..1) while others report percent (0..100).
-        // Keep 1 as 1% to avoid accidental 100% jumps.
-        if (numeric > 0 && numeric < 1) {
-            return Math.max(0, Math.min(100, numeric * 100));
         }
         return Math.max(0, Math.min(100, numeric));
     },
@@ -1955,6 +1997,16 @@ DeezSpoTag.Download = {
         return status === 'queued';
     },
     parseProgressValue(value) {
+        if (typeof value === 'string') {
+            const trimmed = value.trim();
+            if (!trimmed) {
+                return null;
+            }
+            if (trimmed.endsWith('%')) {
+                const percentValue = Number(trimmed.slice(0, -1).trim());
+                return Number.isFinite(percentValue) ? percentValue : null;
+            }
+        }
         const numeric = Number(value);
         return Number.isFinite(numeric) ? numeric : null;
     },
@@ -2051,7 +2103,10 @@ DeezSpoTag.Download = {
                 type: payload.type || normalizedEngine || existing.type || '',
                 engine: normalizedEngine,
                 status: this.mapServerQueueStatus(payload.status),
-                progress: this.normalizeProgressPercent(payload.progress),
+                progress: this.normalizeProgressPercent(
+                    payload.progress !== undefined && payload.progress !== null
+                        ? payload.progress
+                        : payload.progressNext),
                 addedAt: existing.addedAt || new Date()
             }));
         });
@@ -2160,6 +2215,10 @@ DeezSpoTag.Download = {
 
     handleDownloadCompleted(downloadId, result) {
         const item = this.queue.items.find(entry => entry.id === downloadId);
+        if (item?.status === 'completed') {
+            this.updateQueueDisplay();
+            return;
+        }
         const isFailureResult = !!(result && (
             result.failed === true
             || result.error

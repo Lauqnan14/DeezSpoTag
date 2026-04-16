@@ -408,6 +408,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
         {
             _logger.LogInformation("Attempting Apple wrapper decrypt for {AppleId} using playlist {PlaylistUrl}.", appleId, variant.Uri);        }
         var outputPath = BuildOutputPath(request, appleId);
+        await ReportProgressAsync(request.ProgressCallback, 8);
         var success = await _wrapperDecryptor.TryDecryptAsync(
             variant.Uri,
             outputPath,
@@ -416,6 +417,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
             cancellationToken);
         if (success)
         {
+            await ReportProgressAsync(request.ProgressCallback, 98);
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Apple wrapper decrypt succeeded for {AppleId}.", appleId);            }
@@ -1475,7 +1477,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
         string tempVideoPath,
         CancellationToken cancellationToken)
     {
-        var videoProgress = CreateScaledProgress(request.ProgressCallback, 0, 40);
+        var videoProgress = CreateScaledProgress(request.ProgressCallback, 0, 42);
         return await _hlsDownloader.DownloadAsync(videoVariant.Uri, tempVideoPath, videoProgress, cancellationToken);
     }
 
@@ -1607,6 +1609,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
             return new VideoCandidateAttemptResult(false, attemptContext.ResolvedVideoKeyUri, videoDecrypt.KeyAcquisitionFailed, false, false);
         }
 
+        await ReportProgressAsync(attemptContext.Request.ProgressCallback, 84);
+
         var audioDecrypt = await DecryptVideoAudioTrackAsync(
             attemptContext,
             candidate,
@@ -1617,12 +1621,20 @@ public sealed class AppleDownloadService : IAppleDownloadService
             return new VideoCandidateAttemptResult(false, videoKeyUri, audioDecrypt.KeyAcquisitionFailed, false, false);
         }
 
+        await ReportProgressAsync(attemptContext.Request.ProgressCallback, 92);
+
         var muxStatus = await MuxVideoAndAudioTrackAsync(
             attemptContext.DownloadContext,
             candidate,
             attemptContext.TempPaths,
             attemptContext.Tags,
             attemptContext.CancellationToken);
+
+        if (muxStatus == VideoMuxStatus.Success)
+        {
+            await ReportProgressAsync(attemptContext.Request.ProgressCallback, 97);
+        }
+
         return muxStatus switch
         {
             VideoMuxStatus.Success => new VideoCandidateAttemptResult(true, videoKeyUri, false, false, false),
@@ -1674,7 +1686,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
         string tempAudioPath,
         CancellationToken cancellationToken)
     {
-        var audioProgress = CreateScaledProgress(request.ProgressCallback, 40, 80);
+        var audioProgress = CreateScaledProgress(request.ProgressCallback, 42, 75);
         var audioDownload = await _hlsDownloader.DownloadAsync(candidate.Uri, tempAudioPath, audioProgress, cancellationToken);
         if (audioDownload.Success)
         {
@@ -1884,7 +1896,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
     {
         if (request.ProgressCallback != null)
         {
-            await request.ProgressCallback(100, 0);
+            await request.ProgressCallback(99, 0);
         }
     }
 
@@ -1984,7 +1996,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
         CancellationToken cancellationToken)
     {
         var tempPath = Path.Join(Path.GetTempPath(), $"{context.TempPrefix}-{Guid.NewGuid():N}.mp4");
-        var hlsDownload = await _hlsDownloader.DownloadAsync(context.MediaPlaylistUrl, tempPath, request.ProgressCallback, cancellationToken);
+        var hlsProgress = CreateScaledProgress(request.ProgressCallback, 0, 82);
+        var hlsDownload = await _hlsDownloader.DownloadAsync(context.MediaPlaylistUrl, tempPath, hlsProgress, cancellationToken);
         if (!hlsDownload.Success)
         {
             context.FailureHandlers.OnHlsFailure?.Invoke(hlsDownload.Message);
@@ -2001,6 +2014,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
                 context.Pssh,
                 cancellationToken,
                 context.LicenseEndpointOverride);
+
+            await ReportProgressAsync(request.ProgressCallback, 90);
 
             var key = BuildDecryptKeySpec(hlsDownload.KeyUri, keyBytes);
             if (string.IsNullOrWhiteSpace(key))
@@ -2025,6 +2040,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
                 return AppleDownloadResult.Fail(context.DecryptFailureMessage);
             }
 
+            await ReportProgressAsync(request.ProgressCallback, 98);
             return AppleDownloadResult.Ok(outputPath, context.StreamGroup);
         }
         finally
@@ -3162,6 +3178,16 @@ public sealed class AppleDownloadService : IAppleDownloadService
             var scaled = start + (progress / 100d) * span;
             await callback(scaled, speed);
         };
+    }
+
+    private static Task ReportProgressAsync(Func<double, double, Task>? callback, double progress, double speed = 0)
+    {
+        if (callback == null)
+        {
+            return Task.CompletedTask;
+        }
+
+        return callback(Math.Clamp(progress, 0, 100), speed);
     }
 
     private static async Task<string> DownloadTempCoverAsync(HttpClient client, string url, CancellationToken cancellationToken)
