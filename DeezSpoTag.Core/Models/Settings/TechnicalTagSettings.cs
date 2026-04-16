@@ -23,7 +23,7 @@ public class TechnicalTagSettings
     public string LrcType { get; set; } = "lyrics,syllable-lyrics,unsynced-lyrics";
     public string LrcFormat { get; set; } = "both";
     public bool LyricsFallbackEnabled { get; set; } = true;
-    public string LyricsFallbackOrder { get; set; } = "apple,deezer,spotify,lrclib";
+    public string LyricsFallbackOrder { get; set; } = "apple,deezer,spotify,lrclib,musixmatch";
 
     public bool ArtworkFallbackEnabled { get; set; } = true;
     public string ArtworkFallbackOrder { get; set; } = "apple,deezer,spotify";

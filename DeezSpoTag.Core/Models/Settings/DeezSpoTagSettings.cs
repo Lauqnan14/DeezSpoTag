@@ -59,7 +59,7 @@ public class DeezSpoTagSettings
 
     // Lyrics preference + fallback
     public bool LyricsFallbackEnabled { get; set; } = true;
-    public string LyricsFallbackOrder { get; set; } = "apple,deezer,spotify,lrclib";
+    public string LyricsFallbackOrder { get; set; } = "apple,deezer,spotify,lrclib,musixmatch";
     public bool NormalizeGenreTags { get; set; } = false;
     public List<GenreTagAliasRule> GenreTagAliasRules { get; set; } = new()
     {

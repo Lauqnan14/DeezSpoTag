@@ -59,6 +59,7 @@ public sealed class PlatformInfo
     public PlatformCustomOptions CustomOptions { get; set; } = new();
     public List<SupportedTag> SupportedTags { get; set; } = new();
     public List<string> DownloadTags { get; set; } = new();
+    public bool SupportsLyrics { get; set; }
     public bool RequiresAuth { get; set; }
 }
 
@@ -123,6 +124,7 @@ public sealed class AutoTagPlatformDescriptor
     public PlatformInfo Platform { get; set; } = new();
     public string Icon { get; set; } = "";
     public bool RequiresAuth { get; set; }
+    public bool SupportsLyrics { get; set; }
     public List<SupportedTag> SupportedTags { get; set; } = new();
     public List<string> DownloadTags { get; set; } = new();
 }

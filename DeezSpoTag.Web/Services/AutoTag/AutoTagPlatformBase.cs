@@ -2,6 +2,22 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 
 public abstract class AutoTagPlatformBase : IAutoTagPlatform
 {
+    private static readonly HashSet<SupportedTag> LyricsSupportedTags = new()
+    {
+        SupportedTag.SyncedLyrics,
+        SupportedTag.UnsyncedLyrics,
+        SupportedTag.TtmlLyrics
+    };
+    private static readonly HashSet<string> LyricsDownloadTags = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "lyrics",
+        "syncedLyrics",
+        "unsyncedLyrics",
+        "ttmlLyrics",
+        "syllableLyrics",
+        "timeSyncedLyrics"
+    };
+
     private readonly IWebHostEnvironment _environment;
 
     protected AutoTagPlatformBase(IWebHostEnvironment environment)
@@ -13,6 +29,10 @@ public abstract class AutoTagPlatformBase : IAutoTagPlatform
 
     protected AutoTagPlatformDescriptor CreateDescriptor(PlatformInfo info, string iconFileName)
     {
+        var supportsLyrics = info.SupportsLyrics
+            || (info.SupportedTags?.Any(tag => LyricsSupportedTags.Contains(tag)) ?? false)
+            || (info.DownloadTags?.Any(tag => LyricsDownloadTags.Contains(tag)) ?? false);
+        info.SupportsLyrics = supportsLyrics;
         return new AutoTagPlatformDescriptor
         {
             Id = info.Id,
@@ -20,8 +40,9 @@ public abstract class AutoTagPlatformBase : IAutoTagPlatform
             Platform = info,
             Icon = LoadIcon(iconFileName),
             RequiresAuth = info.RequiresAuth,
-            SupportedTags = info.SupportedTags,
-            DownloadTags = info.DownloadTags
+            SupportsLyrics = supportsLyrics,
+            SupportedTags = info.SupportedTags ?? new List<SupportedTag>(),
+            DownloadTags = info.DownloadTags ?? new List<string>()
         };
     }
 

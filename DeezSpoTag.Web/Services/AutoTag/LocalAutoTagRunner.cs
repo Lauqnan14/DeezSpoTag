@@ -1133,7 +1133,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SaveLyrics = baseSettings.SaveLyrics && shouldFetchUnsyncedPayload,
             LyricsFallbackEnabled = baseSettings.LyricsFallbackEnabled,
             LyricsFallbackOrder = string.IsNullOrWhiteSpace(baseSettings.LyricsFallbackOrder)
-                ? "apple,deezer,spotify,lrclib"
+                ? "apple,deezer,spotify,lrclib,musixmatch"
                 : baseSettings.LyricsFallbackOrder,
             LrcFormat = NormalizeLyricsFormat(baseSettings.LrcFormat),
             LrcType = string.IsNullOrWhiteSpace(baseSettings.LrcType)

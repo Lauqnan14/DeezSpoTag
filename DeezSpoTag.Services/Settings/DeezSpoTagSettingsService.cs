@@ -25,7 +25,7 @@ public class DeezSpoTagSettingsService : ISettingsService
     private const string LegacyAppDataDownloadsPath = "/app/Data/downloads";
     private const string SyllableLyricsType = "syllable-lyrics";
     private const string UnsyncedLyricsType = "unsynced-lyrics";
-    private static readonly string[] CanonicalLyricsProviders = { "apple", "deezer", "spotify", "lrclib" };
+    private static readonly string[] CanonicalLyricsProviders = { "apple", "deezer", "spotify", "lrclib", "musixmatch" };
     private static readonly string[] CanonicalLyricsTypes = { "lyrics", SyllableLyricsType, UnsyncedLyricsType };
     private static readonly string[] CanonicalLyricsFormats = { "both", "lrc", "ttml" };
     private static readonly JsonSerializerOptions SettingsDeserializeOptions = new()
@@ -1244,7 +1244,7 @@ public class DeezSpoTagSettingsService : ISettingsService
     {
         var parsed = (fallbackOrder ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(p => p.ToLowerInvariant())
+            .Select(NormalizeLyricsProviderToken)
             .Where(p => CanonicalLyricsProviders.Contains(p, StringComparer.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -1255,6 +1255,24 @@ public class DeezSpoTagSettingsService : ISettingsService
         }
 
         return string.Join(",", parsed);
+    }
+
+    private static string NormalizeLyricsProviderToken(string? token)
+    {
+        var normalized = (token ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "itunes" => "apple",
+            "applemusic" => "apple",
+            "apple-music" => "apple",
+            "apple_music" => "apple",
+            "apple music" => "apple",
+            "music.apple" => "apple",
+            "lrcget" => "lrclib",
+            "lrc-get" => "lrclib",
+            "lrc_get" => "lrclib",
+            _ => normalized
+        };
     }
 
     private static string NormalizeLyricsTypeSelection(string? value)

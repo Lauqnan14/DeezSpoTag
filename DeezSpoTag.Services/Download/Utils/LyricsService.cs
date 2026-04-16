@@ -371,6 +371,9 @@ public class LyricsService
             "apple_music" => AppleProvider,
             "apple music" => AppleProvider,
             "music.apple" => AppleProvider,
+            "lrcget" => LrclibProvider,
+            "lrc-get" => LrclibProvider,
+            "lrc_get" => LrclibProvider,
             "lrclib" => LrclibProvider,
             "musixmatch" => MusixmatchProvider,
             _ => normalized

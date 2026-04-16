@@ -203,7 +203,7 @@
     );
     const DEFAULT_LYRICS_TYPE_SELECTION = "lyrics,syllable-lyrics,unsynced-lyrics";
     const DEFAULT_ARTWORK_SOURCE_ORDER = Object.freeze(["apple", "deezer", "spotify"]);
-    const DEFAULT_LYRICS_SOURCE_ORDER = Object.freeze(["apple", "deezer", "spotify", "lrclib"]);
+    const DEFAULT_LYRICS_SOURCE_ORDER = Object.freeze(["apple", "deezer", "spotify", "lrclib", "musixmatch"]);
     const ARTWORK_SOURCE_ORDER = [...DEFAULT_ARTWORK_SOURCE_ORDER];
     const LYRICS_SOURCE_ORDER = [...DEFAULT_LYRICS_SOURCE_ORDER];
     const SOURCE_LABELS = new Map([
@@ -219,7 +219,7 @@
         apple: Object.freeze(["itunes", "applemusic", "apple"]),
         deezer: Object.freeze(["deezer"]),
         spotify: Object.freeze(["spotify"]),
-        lrclib: Object.freeze(["lrclib"]),
+        lrclib: Object.freeze(["lrclib", "lrcget", "lrc-get", "lrc_get"]),
         musixmatch: Object.freeze(["musixmatch"]),
         shazam: Object.freeze(["shazam"]),
         boomplay: Object.freeze(["boomplay"])
@@ -233,7 +233,6 @@
         "syllablelyrics",
         "timesyncedlyrics"
     ]);
-    const ALWAYS_AVAILABLE_LYRICS_PROVIDERS = Object.freeze([]);
 
     const LYRICS_TYPE_OPTIONS = [
         { value: "lyrics", label: "Synced Lyrics" },
@@ -406,6 +405,10 @@
             return [];
         }
 
+        if (capabilityType === "lyrics") {
+            return [...allowedOrder];
+        }
+
         if (!Array.isArray(state.platforms) || state.platforms.length === 0) {
             return [...allowedOrder];
         }
@@ -419,16 +422,6 @@
         allowedOrder.forEach((provider) => {
             const providerKey = String(provider || "").toLowerCase();
             const mappedIds = PROVIDER_PLATFORM_IDS[providerKey] || [providerKey];
-            const knownMappedIds = mappedIds.filter((id) => platformById.has(normalizePlatformId(id)));
-
-            if (
-                capabilityType === "lyrics"
-                && ALWAYS_AVAILABLE_LYRICS_PROVIDERS.includes(providerKey)
-                && knownMappedIds.length === 0
-            ) {
-                available.push(providerKey);
-                return;
-            }
 
             const enabledMappedIds = mappedIds.filter((id) => enabledPlatforms.has(normalizePlatformId(id)));
             if (enabledMappedIds.length === 0) {
@@ -551,7 +544,6 @@
 
         const enabledPlatforms = new Set((state.config.platforms || []).map((id) => normalizePlatformId(id)));
         const artworkOrder = [];
-        const lyricsOrder = [];
 
         state.platforms.forEach((platform) => {
             const platformId = normalizePlatformId(platform?.id);
@@ -572,19 +564,13 @@
                 artworkOrder.push(provider);
             }
 
-            if (platformHasCapability(platform, "lyrics") && !lyricsOrder.includes(provider)) {
-                lyricsOrder.push(provider);
-            }
         });
 
         updateOrder(
             ARTWORK_SOURCE_ORDER,
             artworkOrder.length > 0 ? artworkOrder : DEFAULT_ARTWORK_SOURCE_ORDER
         );
-        updateOrder(
-            LYRICS_SOURCE_ORDER,
-            lyricsOrder.length > 0 ? lyricsOrder : DEFAULT_LYRICS_SOURCE_ORDER
-        );
+        updateOrder(LYRICS_SOURCE_ORDER, DEFAULT_LYRICS_SOURCE_ORDER);
     }
 
     function syncDefaultSourceSelectFromOrder(selectId, orderValue, allowedOrder) {
@@ -3127,6 +3113,7 @@
                     description: platformInfo.description || "",
                     maxThreads: platformInfo.maxThreads ?? 0,
                     requiresAuth: platformInfo.requiresAuth ?? false,
+                    supportsLyrics: platform.supportsLyrics === true || platformInfo.supportsLyrics === true,
                     supportedTags,
                     downloadTags,
                     customOptions: platformInfo.customOptions || { options: [] },

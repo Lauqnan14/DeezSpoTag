@@ -1491,6 +1491,7 @@
                                     <option value="deezer">Deezer</option>
                                     <option value="spotify">Spotify</option>
                                     <option value="lrclib">LRCLIB</option>
+                                    <option value="musixmatch">Musixmatch</option>
                                 </select>
                             </div>
                             <div class="checkbox-group align-self-start source-priority-toggle">
@@ -1505,7 +1506,7 @@
                                     </span>
                                 </label>
                                 <div class="dropdown-select lyrics-order-dropdown" id="lyricsFallbackOrderDropdown">
-                                    <button type="button" class="dropdown-trigger" id="lyricsFallbackOrderTrigger">apple → deezer → spotify → lrclib</button>
+                                    <button type="button" class="dropdown-trigger" id="lyricsFallbackOrderTrigger">apple → deezer → spotify → lrclib → musixmatch</button>
                                     <div class="dropdown-menu lyrics-order-menu" id="lyricsFallbackOrderMenu">
                                         <div class="lyrics-order-hint">Drag to reorder. First item is the preferred source.</div>
                                         <ul class="lyrics-order-list" id="lyricsFallbackOrderList">
@@ -1525,6 +1526,10 @@
                                                 <span>LRCLIB</span>
                                                 <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
                                             </li>
+                                            <li class="lyrics-order-item" draggable="true" data-value="musixmatch">
+                                                <span>Musixmatch</span>
+                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
+                                            </li>
                                         </ul>
                                         <div class="lyrics-order-hint">Add or remove sources</div>
                                         <div class="fallback-source-toggles" id="lyricsFallbackSources">
@@ -1532,9 +1537,10 @@
                                             <label class="fallback-source-toggle"><input type="checkbox" data-value="deezer" checked /> Deezer</label>
                                             <label class="fallback-source-toggle"><input type="checkbox" data-value="spotify" checked /> Spotify</label>
                                             <label class="fallback-source-toggle"><input type="checkbox" data-value="lrclib" checked /> LRCLIB</label>
+                                            <label class="fallback-source-toggle"><input type="checkbox" data-value="musixmatch" checked /> Musixmatch</label>
                                         </div>
                                     </div>
-                                    <input type="hidden" id="lyricsFallbackOrder" value="apple,deezer,spotify,lrclib" />
+                                    <input type="hidden" id="lyricsFallbackOrder" value="apple,deezer,spotify,lrclib,musixmatch" />
                                 </div>
                             </div>
                         </div>
