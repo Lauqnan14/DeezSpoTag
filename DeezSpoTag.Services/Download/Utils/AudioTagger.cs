@@ -246,7 +246,7 @@ public class AudioTagger
 
             if (save.Cover)
             {
-                await AttachCoverArtAsync(tag, track.Album?.EmbeddedCoverPath);
+                await AttachCoverArtAsync(tag, track.Album?.EmbeddedCoverPath, save);
             }
 
             file.Save();
@@ -294,6 +294,12 @@ public class AudioTagger
         if (save.MultiArtistSeparator == DefaultMultiArtistSeparator)
         {
             tag.Performers = track.Artists.ToArray();
+            if (save.UseNullSeparator && tag is TagLib.Id3v2.Tag id3Tag)
+            {
+                var frame = TagLib.Id3v2.TextInformationFrame.Get(id3Tag, "TPE1", true);
+                frame.TextEncoding = TagLib.StringType.UTF16;
+                frame.Text = track.Artists.ToArray();
+            }
             return;
         }
 
@@ -303,7 +309,7 @@ public class AudioTagger
 
         if (save.Artists)
         {
-            SetCustomFrame(tag, "TXXX", "ARTISTS", ResolveMultiArtistValue(track, save));
+            SetCustomFrame(tag, "TXXX", "ARTISTS", ResolveMultiArtistValue(track, save), save);
         }
     }
 
@@ -344,41 +350,42 @@ public class AudioTagger
         if (save.Date)
         {
             var dateString = $"{track.Date.Day}{track.Date.Month}";
-            SetCustomFrame(tag, "TDAT", "", dateString);
+            SetCustomFrame(tag, "TDAT", "", dateString, save);
         }
     }
 
     private void ApplyMp3AdditionalMetadata(Tag tag, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
-        SetId3FrameIf(tag, save.Length, "TLEN", "", (track.Duration * 1000).ToString(CultureInfo.InvariantCulture));
-        SetId3FrameIf(tag, save.Bpm && track.Bpm > 0, "TBPM", "", track.Bpm.ToString(CultureInfo.InvariantCulture));
-        SetId3FrameIf(tag, save.Key, "TKEY", "", track.Key);
+        SetId3FrameIf(tag, save.Length, "TLEN", "", (track.Duration * 1000).ToString(CultureInfo.InvariantCulture), save);
+        SetId3FrameIf(tag, save.Bpm && track.Bpm > 0, "TBPM", "", track.Bpm.ToString(CultureInfo.InvariantCulture), save);
+        SetId3FrameIf(tag, save.Key, "TKEY", "", track.Key, save);
 
-        WriteMp3FeatureFrame(tag, save.Danceability, "DANCEABILITY", track.Danceability);
-        WriteMp3FeatureFrame(tag, save.Energy, "ENERGY", track.Energy);
-        WriteMp3FeatureFrame(tag, save.Valence, "VALENCE", track.Valence);
-        WriteMp3FeatureFrame(tag, save.Acousticness, "ACOUSTICNESS", track.Acousticness);
-        WriteMp3FeatureFrame(tag, save.Instrumentalness, "INSTRUMENTALNESS", track.Instrumentalness);
-        WriteMp3FeatureFrame(tag, save.Speechiness, "SPEECHINESS", track.Speechiness);
-        WriteMp3FeatureFrame(tag, save.Loudness, "LOUDNESS", track.Loudness);
-        WriteMp3FeatureFrame(tag, save.Tempo, "TEMPO", track.Tempo);
-        WriteMp3FeatureFrame(tag, save.Liveness, "LIVENESS", track.Liveness);
+        WriteMp3FeatureFrame(tag, save.Danceability, "DANCEABILITY", track.Danceability, save);
+        WriteMp3FeatureFrame(tag, save.Energy, "ENERGY", track.Energy, save);
+        WriteMp3FeatureFrame(tag, save.Valence, "VALENCE", track.Valence, save);
+        WriteMp3FeatureFrame(tag, save.Acousticness, "ACOUSTICNESS", track.Acousticness, save);
+        WriteMp3FeatureFrame(tag, save.Instrumentalness, "INSTRUMENTALNESS", track.Instrumentalness, save);
+        WriteMp3FeatureFrame(tag, save.Speechiness, "SPEECHINESS", track.Speechiness, save);
+        WriteMp3FeatureFrame(tag, save.Loudness, "LOUDNESS", track.Loudness, save);
+        WriteMp3FeatureFrame(tag, save.Tempo, "TEMPO", track.Tempo, save);
+        WriteMp3FeatureFrame(tag, save.Liveness, "LIVENESS", track.Liveness, save);
 
         SetId3FrameIf(
             tag,
             save.TimeSignature && track.TimeSignature.HasValue,
             "TXXX",
             "TIME_SIGNATURE",
-            track.TimeSignature?.ToString(CultureInfo.InvariantCulture));
-        SetId3FrameIf(tag, save.Label, "TPUB", "", track.Album?.Label);
-        SetId3FrameIf(tag, save.Isrc, "TSRC", "", track.ISRC);
-        SetId3FrameIf(tag, save.Barcode, "TXXX", "BARCODE", track.Album?.Barcode);
-        SetId3FrameIf(tag, save.Explicit, "TXXX", "ITUNESADVISORY", track.Explicit ? "1" : "0");
-        SetId3FrameIf(tag, save.ReplayGain, "TXXX", "REPLAYGAIN_TRACK_GAIN", track.ReplayGain);
+            track.TimeSignature?.ToString(CultureInfo.InvariantCulture),
+            save);
+        SetId3FrameIf(tag, save.Label, "TPUB", "", track.Album?.Label, save);
+        SetId3FrameIf(tag, save.Isrc, "TSRC", "", track.ISRC, save);
+        SetId3FrameIf(tag, save.Barcode, "TXXX", "BARCODE", track.Album?.Barcode, save);
+        SetId3FrameIf(tag, save.Explicit, "TXXX", "ITUNESADVISORY", track.Explicit ? "1" : "0", save);
+        SetId3FrameIf(tag, save.ReplayGain, "TXXX", "REPLAYGAIN_TRACK_GAIN", track.ReplayGain, save);
 
         if (TryGetAppleDigitalMasterMarker(track, out var appleDigitalMasterMarker))
         {
-            SetCustomFrame(tag, "TXXX", AppleDigitalMasterTag, appleDigitalMasterMarker);
+            SetCustomFrame(tag, "TXXX", AppleDigitalMasterTag, appleDigitalMasterMarker, save);
         }
     }
 
@@ -418,23 +425,23 @@ public class AudioTagger
 
             if (role == ComposerRole && save.Composer && contributor.Value is List<string> composers)
             {
-                SetCustomFrame(tag, "TCOM", "", string.Join(", ", composers));
+                SetCustomFrame(tag, "TCOM", "", string.Join(", ", composers), save);
             }
         }
 
         if (involvedPeople.Count > 0)
         {
-            SetCustomFrame(tag, "TXXX", "INVOLVEDPEOPLE", string.Join("; ", involvedPeople));
+            SetCustomFrame(tag, "TXXX", "INVOLVEDPEOPLE", string.Join("; ", involvedPeople), save);
         }
     }
 
     private void ApplyMp3OwnershipAndCompilationMetadata(Tag tag, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
-        SetId3FrameIf(tag, save.Copyright, "TCOP", "", track.Copyright);
+        SetId3FrameIf(tag, save.Copyright, "TCOP", "", track.Copyright, save);
 
         if ((save.SavePlaylistAsCompilation && track.Playlist != null) || track.Album?.RecordType == "compile")
         {
-            SetCustomFrame(tag, "TCMP", "", "1");
+            SetCustomFrame(tag, "TCMP", "", "1", save);
         }
     }
 
@@ -442,18 +449,18 @@ public class AudioTagger
     {
         if (save.Source)
         {
-            SetCustomFrame(tag, "TXXX", "SOURCE", ResolveSourceName(track));
-            SetCustomFrame(tag, "TXXX", "SOURCEID", ResolveSourceId(track));
+            SetCustomFrame(tag, "TXXX", "SOURCE", ResolveSourceName(track), save);
+            SetCustomFrame(tag, "TXXX", "SOURCEID", ResolveSourceId(track), save);
         }
 
-        SetId3FrameIf(tag, save.Url, "TXXX", "WWWAUDIOFILE", ResolveTrackUrl(track));
+        SetId3FrameIf(tag, save.Url, "TXXX", "WWWAUDIOFILE", ResolveTrackUrl(track), save);
 
         if (save.TrackId)
         {
             var sourceId = ResolveSourceId(track);
             if (!string.IsNullOrWhiteSpace(sourceId))
             {
-                SetCustomFrame(tag, "TXXX", $"{ResolveSourceTagPrefix(track)}_TRACK_ID", sourceId);
+                SetCustomFrame(tag, "TXXX", $"{ResolveSourceTagPrefix(track)}_TRACK_ID", sourceId, save);
             }
         }
 
@@ -462,7 +469,7 @@ public class AudioTagger
             var releaseId = ResolveReleaseId(track);
             if (!string.IsNullOrWhiteSpace(releaseId))
             {
-                SetCustomFrame(tag, "TXXX", $"{ResolveSourceTagPrefix(track)}_RELEASE_ID", releaseId);
+                SetCustomFrame(tag, "TXXX", $"{ResolveSourceTagPrefix(track)}_RELEASE_ID", releaseId, save);
             }
         }
     }
@@ -478,21 +485,27 @@ public class AudioTagger
         file.Save();
     }
 
-    private void WriteMp3FeatureFrame(Tag tag, bool enabled, string description, double? value)
+    private void WriteMp3FeatureFrame(Tag tag, bool enabled, string description, double? value, TagSettings save)
     {
         if (!enabled || !value.HasValue)
         {
             return;
         }
 
-        SetCustomFrame(tag, "TXXX", description, FormatAudioFeature(value.Value));
+        SetCustomFrame(tag, "TXXX", description, FormatAudioFeature(value.Value), save);
     }
 
-    private void SetId3FrameIf(Tag tag, bool condition, string frameId, string description, string? value)
+    private void SetId3FrameIf(
+        Tag tag,
+        bool condition,
+        string frameId,
+        string description,
+        string? value,
+        TagSettings save)
     {
         if (condition && !string.IsNullOrWhiteSpace(value))
         {
-            SetCustomFrame(tag, frameId, description, value);
+            SetCustomFrame(tag, frameId, description, value, save);
         }
     }
 
@@ -518,7 +531,7 @@ public class AudioTagger
 
             if (save.Cover)
             {
-                await AttachCoverArtAsync(tag, track.Album?.EmbeddedCoverPath);
+                await AttachCoverArtAsync(tag, track.Album?.EmbeddedCoverPath, save);
             }
 
             file.Save();
@@ -594,7 +607,7 @@ public class AudioTagger
 
             if (save.Cover)
             {
-                await AttachCoverArtAsync(tag, track.Album?.EmbeddedCoverPath);
+                await AttachCoverArtAsync(tag, track.Album?.EmbeddedCoverPath, save);
             }
 
             file.Save();
@@ -1492,7 +1505,7 @@ public class AudioTagger
 
     private static string? ResolveFfprobePath() => ExternalToolResolver.ResolveFfprobePath();
 
-    private static async Task AttachCoverArtAsync(TagLib.Tag tag, string? embeddedCoverPath)
+    private static async Task AttachCoverArtAsync(TagLib.Tag tag, string? embeddedCoverPath, TagSettings save)
     {
         if (string.IsNullOrEmpty(embeddedCoverPath) || !System.IO.File.Exists(embeddedCoverPath))
         {
@@ -1502,6 +1515,12 @@ public class AudioTagger
         var coverData = await System.IO.File.ReadAllBytesAsync(embeddedCoverPath);
         if (coverData.Length == 0)
         {
+            return;
+        }
+
+        if (tag is TagLib.Id3v2.Tag id3Tag)
+        {
+            SetId3CoverFrame(id3Tag, coverData, save.CoverDescriptionUTF8);
             return;
         }
 
@@ -1518,7 +1537,7 @@ public class AudioTagger
     /// <summary>
     /// Set custom ID3v2 frame
     /// </summary>
-    private void SetCustomFrame(Tag tag, string frameId, string description, string value)
+    private void SetCustomFrame(Tag tag, string frameId, string description, string value, TagSettings save)
     {
         try
         {
@@ -1527,12 +1546,20 @@ public class AudioTagger
                 if (frameId == "TXXX")
                 {
                     var frame = TagLib.Id3v2.UserTextInformationFrame.Get(id3Tag, description ?? string.Empty, true);
-                    frame.Text = new[] { value };
+                    if (save.UseNullSeparator)
+                    {
+                        frame.TextEncoding = TagLib.StringType.UTF16;
+                    }
+                    frame.Text = BuildId3TextValues(value, save.UseNullSeparator);
                 }
                 else
                 {
                     var frame = TagLib.Id3v2.TextInformationFrame.Get(id3Tag, frameId, true);
-                    frame.Text = new[] { value };
+                    if (save.UseNullSeparator)
+                    {
+                        frame.TextEncoding = TagLib.StringType.UTF16;
+                    }
+                    frame.Text = BuildId3TextValues(value, save.UseNullSeparator);
                 }
             }
             else
@@ -1546,6 +1573,35 @@ public class AudioTagger
         {
             _logger.LogWarning(ex, "Failed to set custom frame {FrameId}", frameId);
         }
+    }
+
+    private static void SetId3CoverFrame(TagLib.Id3v2.Tag id3Tag, byte[] coverData, bool coverDescriptionUtf8)
+    {
+        var picture = new TagLib.Picture(coverData)
+        {
+            Type = PictureType.FrontCover,
+            Description = CoverDescription
+        };
+        id3Tag.RemoveFrames("APIC");
+#pragma warning disable CS0618
+        var apic = new TagLib.Id3v2.AttachedPictureFrame(picture)
+        {
+            TextEncoding = coverDescriptionUtf8 ? TagLib.StringType.UTF8 : TagLib.StringType.Latin1
+        };
+#pragma warning restore CS0618
+        id3Tag.AddFrame(apic);
+    }
+
+    private static string[] BuildId3TextValues(string value, bool useNullSeparator)
+    {
+        if (!useNullSeparator)
+        {
+            return new[] { value };
+        }
+
+        var split = value
+            .Split('\0', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return split.Length > 0 ? split : new[] { value };
     }
 
     /// <summary>
@@ -1899,6 +1955,12 @@ public class AudioTagger
         var coverData = await System.IO.File.ReadAllBytesAsync(track.Album.EmbeddedCoverPath);
         if (coverData.Length == 0)
         {
+            return;
+        }
+
+        if (tag is TagLib.Id3v2.Tag id3Tag)
+        {
+            SetId3CoverFrame(id3Tag, coverData, save.CoverDescriptionUTF8);
             return;
         }
 
