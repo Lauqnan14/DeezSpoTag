@@ -501,7 +501,7 @@ public class DeezSpoTagSettingsValidator
             PlaylistFilenameTemplate = "playlist",
             SyncedLyrics = true,
             LyricsFallbackEnabled = true,
-            LyricsFallbackOrder = "apple,deezer,spotify,lrclib",
+            LyricsFallbackOrder = "apple,deezer,spotify,lrclib,musixmatch",
             ArtworkFallbackEnabled = true,
             ArtworkFallbackOrder = "apple,deezer,spotify",
             ArtistArtworkFallbackEnabled = true,

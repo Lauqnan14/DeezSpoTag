@@ -69,6 +69,21 @@ public class AutoTagMetadataService
     }
 
     private static readonly Dictionary<string, SupportedTag> SupportedTagLookup = CreateSupportedTagLookup();
+    private static readonly HashSet<SupportedTag> LyricsSupportedTags = new()
+    {
+        SupportedTag.SyncedLyrics,
+        SupportedTag.UnsyncedLyrics,
+        SupportedTag.TtmlLyrics
+    };
+    private static readonly HashSet<string> LyricsDownloadTags = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "lyrics",
+        "syncedLyrics",
+        "unsyncedLyrics",
+        "ttmlLyrics",
+        "syllableLyrics",
+        "timeSyncedLyrics"
+    };
 
     private static Dictionary<string, SupportedTag> CreateSupportedTagLookup()
     {
@@ -207,6 +222,11 @@ public class AutoTagMetadataService
                 platform.Platform.SupportedTags = mergedSupportedTags;
             }
         }
+
+        platform.SupportsLyrics = platform.SupportsLyrics
+            || (platform.SupportedTags?.Any(tag => LyricsSupportedTags.Contains(tag)) ?? false)
+            || (platform.DownloadTags?.Any(tag => LyricsDownloadTags.Contains(tag)) ?? false);
+        platform.Platform.SupportsLyrics = platform.SupportsLyrics;
     }
 
     private static List<string> MergeDownloadTags(AutoTagPlatformDescriptor platform, IEnumerable<string> snapshotTags)

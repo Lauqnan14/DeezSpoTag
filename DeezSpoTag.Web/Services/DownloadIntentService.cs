@@ -355,6 +355,12 @@ public sealed class DownloadIntentService
         var resolved = resolvedTarget.Resolution;
         var resolvedSourceUrl = resolved.SourceUrl;
         var isMusicIntent = IsMusicIntent(intent);
+        await HydrateIntentAppleIdForLyricsAsync(
+            intent,
+            settings,
+            resolvedSourceUrl,
+            availability,
+            cancellationToken);
         var durationSeconds = intent.DurationMs > 0 ? (int)Math.Round(intent.DurationMs / 1000d) : 0;
         var queued = new List<string>();
         var skipReasonCodes = new List<string>();
@@ -450,6 +456,70 @@ public sealed class DownloadIntentService
             SkipReasonCodes = skipReasonCodes,
             SkipReasons = skipReasons
         };
+    }
+
+    private async Task HydrateIntentAppleIdForLyricsAsync(
+        DownloadIntent intent,
+        DeezSpoTagSettings settings,
+        string? resolvedSourceUrl,
+        SongLinkResult? availability,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(intent.AppleId))
+        {
+            return;
+        }
+
+        var canResolveByIdentity = !string.IsNullOrWhiteSpace(intent.Isrc)
+            || (!string.IsNullOrWhiteSpace(intent.Title) && !string.IsNullOrWhiteSpace(intent.Artist));
+        if (!canResolveByIdentity)
+        {
+            return;
+        }
+
+        var candidateSourceUrl = resolvedSourceUrl ?? intent.SourceUrl ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(candidateSourceUrl)
+            || !candidateSourceUrl.Contains(AppleMusicDomain, StringComparison.OrdinalIgnoreCase))
+        {
+            candidateSourceUrl = availability?.AppleMusicUrl ?? candidateSourceUrl;
+        }
+
+        try
+        {
+            var resolvedAppleId = await ResolveAppleIdForStorefrontAsync(
+                intent.AppleId,
+                candidateSourceUrl,
+                intent.Isrc,
+                IsVideoIntent(intent),
+                preferSourceAppleId: false,
+                settings,
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(resolvedAppleId))
+            {
+                var resolvedAppleUrl = await ResolveAppleSongUrlAsync(intent, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(resolvedAppleUrl))
+                {
+                    resolvedAppleId = AppleIdParser.TryExtractFromUrl(resolvedAppleUrl);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(resolvedAppleId))
+            {
+                intent.AppleId = resolvedAppleId;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Apple ID hydration for lyrics failed: title='{Title}' artist='{Artist}' isrc='{Isrc}'",
+                    intent.Title ?? string.Empty,
+                    intent.Artist ?? string.Empty,
+                    intent.Isrc ?? string.Empty);
+            }
+        }
     }
 
     private static DownloadIntent CloneIntentForAvailabilityLookup(DownloadIntent source)
@@ -1119,7 +1189,6 @@ public sealed class DownloadIntentService
     {
         appleId = ResolveAppleIdFromSourcePreference(appleId, sourceUrl, preferSourceAppleId, out var shouldReturnPreferredSourceId);
         if (shouldReturnPreferredSourceId
-            || string.IsNullOrWhiteSpace(appleId)
             || IsAppleStationId(appleId)
             || IsAppleStationUrl(sourceUrl))
         {
@@ -1131,13 +1200,21 @@ public sealed class DownloadIntentService
 
         if (isVideo)
         {
+            if (string.IsNullOrWhiteSpace(appleId))
+            {
+                return appleId;
+            }
+
             return await ResolveAppleVideoIdOrFallbackAsync(appleId, storefront, cancellationToken);
         }
 
-        var songResolved = await TryResolveAppleSongIdAsync(appleId, storefront, mediaUserToken, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(songResolved))
+        if (!string.IsNullOrWhiteSpace(appleId))
         {
-            return songResolved;
+            var songResolved = await TryResolveAppleSongIdAsync(appleId, storefront, mediaUserToken, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(songResolved))
+            {
+                return songResolved;
+            }
         }
 
         var isrcResolved = await TryResolveAppleSongIdByIsrcAsync(isrc, storefront, mediaUserToken, cancellationToken);

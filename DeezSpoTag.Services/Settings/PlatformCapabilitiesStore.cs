@@ -7,6 +7,18 @@ namespace DeezSpoTag.Services.Settings;
 
 public sealed class PlatformCapabilitiesStore
 {
+    private static readonly IReadOnlyDictionary<string, string> PlatformIdAliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["apple"] = "itunes",
+        ["applemusic"] = "itunes",
+        ["apple-music"] = "itunes",
+        ["apple_music"] = "itunes",
+        ["music.apple"] = "itunes",
+        ["lrcget"] = "lrclib",
+        ["lrc-get"] = "lrclib",
+        ["lrc_get"] = "lrclib"
+    };
+
     private readonly string _path;
     private readonly ILogger<PlatformCapabilitiesStore>? _logger;
     private readonly object _lock = new();
@@ -63,7 +75,12 @@ public sealed class PlatformCapabilitiesStore
             return;
         }
 
-        var normalized = platformId.Trim().ToLowerInvariant();
+        var normalized = NormalizePlatformId(platformId);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return;
+        }
+
         var normalizedTags = tags?
             .Select(t => t?.Trim())
             .Where(t => !string.IsNullOrWhiteSpace(t))
@@ -117,13 +134,94 @@ public sealed class PlatformCapabilitiesStore
 
             var json = File.ReadAllText(_path);
             var snapshot = JsonSerializer.Deserialize<PlatformCapabilitiesSnapshot>(json, _jsonOptions);
-            return snapshot ?? new PlatformCapabilitiesSnapshot();
+            return NormalizeSnapshot(snapshot ?? new PlatformCapabilitiesSnapshot());
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger?.LogWarning(ex, "Failed reading platform capabilities; starting fresh.");
             return new PlatformCapabilitiesSnapshot();
         }
+    }
+
+    private PlatformCapabilitiesSnapshot NormalizeSnapshot(PlatformCapabilitiesSnapshot snapshot)
+    {
+        if (snapshot.Platforms.Count == 0)
+        {
+            return snapshot;
+        }
+
+        var normalizedPlatforms = new Dictionary<string, PlatformCapabilitiesEntry>(StringComparer.OrdinalIgnoreCase);
+        var changed = false;
+        foreach (var (platformId, entry) in snapshot.Platforms)
+        {
+            var normalizedId = NormalizePlatformId(platformId);
+            if (string.IsNullOrWhiteSpace(normalizedId))
+            {
+                changed = true;
+                continue;
+            }
+
+            if (!string.Equals(platformId, normalizedId, StringComparison.OrdinalIgnoreCase))
+            {
+                changed = true;
+            }
+
+            if (!normalizedPlatforms.TryGetValue(normalizedId, out var merged))
+            {
+                merged = entry.Clone();
+                normalizedPlatforms[normalizedId] = merged;
+                continue;
+            }
+
+            changed = true;
+            MergeEntries(merged, entry);
+        }
+
+        if (!changed)
+        {
+            return snapshot;
+        }
+
+        snapshot.Platforms = normalizedPlatforms;
+        SaveSnapshot(snapshot);
+        return snapshot;
+    }
+
+    private static void MergeEntries(PlatformCapabilitiesEntry target, PlatformCapabilitiesEntry source)
+    {
+        target.UpdatedAt = target.UpdatedAt >= source.UpdatedAt ? target.UpdatedAt : source.UpdatedAt;
+        foreach (var tag in source.DownloadTags)
+        {
+            if (target.DownloadTags.Contains(tag, StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            target.DownloadTags.Add(tag);
+        }
+
+        foreach (var tag in source.SupportedTags)
+        {
+            if (target.SupportedTags.Contains(tag, StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            target.SupportedTags.Add(tag);
+        }
+    }
+
+    private static string NormalizePlatformId(string? platformId)
+    {
+        var normalized = platformId?.Trim().ToLowerInvariant() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        return PlatformIdAliases.TryGetValue(normalized, out var mapped)
+            ? mapped
+            : normalized;
     }
 
     private void SaveSnapshot(PlatformCapabilitiesSnapshot snapshot)
