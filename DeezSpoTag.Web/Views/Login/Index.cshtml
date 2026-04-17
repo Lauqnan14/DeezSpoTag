@@ -353,14 +353,14 @@
                             <input type="password" id="jellyfinApiKey" placeholder="Jellyfin API Key" class="w-full" />
                         </label>
                         <label class="block mb-4">
-                            <span class="block mb-2">Username (optional)</span>
-                            <input type="text" id="jellyfinUsername" placeholder="Username" class="w-full" />
+                            <span class="block mb-2">Username</span>
+                            <input type="text" id="jellyfinUsername" placeholder="Username" class="w-full" required />
                         </label>
                         <button class="btn btn-primary action-btn" type="submit">Login</button>
                         <p class="text-muted" id="jellyfinStatus"></p>
                     </form>
                 </div>
-                <partial name="~/Views/Shared/_PlatformLoginStatusCard.cshtml" model='new PlatformLoginStatusCardModel { ContainerId = "jellyfinLoggedInInfo", ImageId = "jellyfinLoggedInPicture", ImageAlt = "Jellyfin Profile", ButtonId = "jellyfinDisconnectBtn", NameId = "jellyfinLoggedInName", NameFallback = "Jellyfin account" }' />
+                <partial name="~/Views/Shared/_PlatformLoginStatusCard.cshtml" model='new PlatformLoginStatusCardModel { ContainerId = "jellyfinLoggedInInfo", ImageAlt = "Jellyfin", ImageSrc = "/images/icons/jellyfin.png", ImageCssClass = "h-20 w-20", ButtonId = "jellyfinDisconnectBtn", NameId = "jellyfinLoggedInName", NameFallback = "Jellyfin account" }' />
             </div>
         </div>
     </div>
@@ -2063,12 +2063,8 @@ function renderPlexInfo(auth) {
 
 function renderJellyfinInfo(auth) {
     const nameLabel = document.getElementById('jellyfinLoggedInName');
-    const picture = document.getElementById('jellyfinLoggedInPicture');
     if (nameLabel) {
         nameLabel.textContent = auth?.username || auth?.serverName || auth?.url || 'Jellyfin account';
-    }
-    if (picture) {
-        picture.src = auth?.avatarUrl || getPlatformIcon('jellyfin');
     }
 }
 
@@ -2662,8 +2658,8 @@ async function loginPlex(url, token) {
 }
 
 async function loginJellyfin(url, apiKey, username) {
-    if (!url || !apiKey) {
-        showToast('Jellyfin URL and API key are required', 'error');
+    if (!url || !apiKey || !username) {
+        showToast('Jellyfin URL, API key, and username are required', 'error');
         return;
     }
 
