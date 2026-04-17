@@ -3,14 +3,12 @@ using Microsoft.AspNetCore.Authorization;
 using System.Collections.Concurrent;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Download;
-using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Shared;
 using System.Linq;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using DeezSpoTag.Core.Security;
 
 namespace DeezSpoTag.Web.Controllers;
@@ -359,53 +357,23 @@ public class ActivitiesController : Controller
                 return BadRequest("Only failed or canceled downloads can be retried");
             }
 
-            if (string.IsNullOrWhiteSpace(item.PayloadJson))
+            var retryQueued = await _deezSpoTagApp.RetryDownloadAsync(request.Uuid, HttpContext.RequestAborted);
+            if (!retryQueued)
             {
-                _activityLog.Warn($"Retry blocked: missing payload for {request.Uuid}");
-                return BadRequest("Retry blocked: missing payload for this download.");
-            }
-
-            var settings = _settingsService.LoadSettings();
-
-            // Reset payload using canonical fallback normalization so retry behavior
-            // matches queue retry scheduler and engine coordinator expectations.
-            var payloadNode = JsonNode.Parse(item.PayloadJson);
-            if (payloadNode is not JsonObject payloadObj)
-            {
-                _activityLog.Warn($"Retry blocked: invalid payload JSON for {request.Uuid}");
                 return BadRequest("Retry blocked: invalid payload for this download.");
             }
 
-            var canonicalState = FallbackPayloadNormalizer.ResolveCanonicalState(item, settings, payloadObj);
-            FallbackPayloadNormalizer.ApplyCanonicalState(payloadObj, canonicalState, resetIndexAndHistory: true);
-            var firstStep = canonicalState.FirstStep;
-            await _queueRepository.UpdatePayloadAsync(request.Uuid, payloadObj.ToJsonString(), HttpContext.RequestAborted);
-
-            // Update the engine column so the correct engine processor picks up the item.
-            await _queueRepository.UpdateEngineAsync(request.Uuid, firstStep.Source, HttpContext.RequestAborted);
-
-            await _queueRepository.RequeueAsync(request.Uuid, requeueToFront: false, newestFirst: false, cancellationToken: HttpContext.RequestAborted);
+            var updated = await _queueRepository.GetByUuidAsync(request.Uuid, HttpContext.RequestAborted);
+            var resolvedEngine = updated?.Engine ?? item.Engine ?? string.Empty;
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation(
                     "Retried download with fallback reset: {Uuid} (engine={Engine})",
                     LogSanitizer.OneLine(request.Uuid),
-                    LogSanitizer.OneLine(firstStep.Source));
+                    LogSanitizer.OneLine(resolvedEngine));
             }
-            _activityLog.Info($"Retry queued (fallback reset): {request.Uuid} engine={firstStep.Source}");
-            _deezspotagListener.Send("updateQueue", new
-            {
-                uuid = request.Uuid,
-                status = "inQueue",
-                progress = 0,
-                downloaded = 0,
-                failed = 0,
-                error = default(string),
-                engine = firstStep.Source,
-                quality = firstStep.Quality ?? ""
-            });
-
-            return Json(new { success = true, message = "Download retry initiated successfully", originalUuid = request.Uuid, newUuid = request.Uuid, engine = firstStep.Source });
+            _activityLog.Info($"Retry queued (fallback reset): {request.Uuid} engine={resolvedEngine}");
+            return Json(new { success = true, message = "Download retry initiated successfully", originalUuid = request.Uuid, newUuid = request.Uuid, engine = resolvedEngine });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

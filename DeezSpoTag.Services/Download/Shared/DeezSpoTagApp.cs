@@ -383,8 +383,40 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             return false;
         }
 
+        var firstStepEngine = queueItem.Engine ?? string.Empty;
+        var firstStepQuality = string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(queueItem.PayloadJson))
+        {
+            try
+            {
+                if (JsonNode.Parse(queueItem.PayloadJson) is JsonObject payloadObj)
+                {
+                    var settings = _settingsService.LoadSettings();
+                    var canonicalState = FallbackPayloadNormalizer.ResolveCanonicalState(queueItem, settings, payloadObj);
+                    _ = FallbackPayloadNormalizer.ApplyCanonicalState(payloadObj, canonicalState, resetIndexAndHistory: true);
+                    ResetPayloadRetryState(payloadObj);
+
+                    var updatedPayload = payloadObj.ToJsonString();
+                    await _queueRepository.UpdatePayloadAsync(uuid, updatedPayload, cancellationToken);
+
+                    firstStepEngine = canonicalState.FirstStep.Source;
+                    firstStepQuality = canonicalState.FirstStep.Quality ?? string.Empty;
+                    if (!string.IsNullOrWhiteSpace(firstStepEngine))
+                    {
+                        await _queueRepository.UpdateEngineAsync(uuid, firstStepEngine, cancellationToken);
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+                // Keep retry best-effort for legacy payloads that cannot be normalized.
+            }
+        }
+
         _retryScheduler.Clear(uuid);
         _cancellationRegistry.ClearUserCanceled(uuid);
+        await _queueRepository.ClearRetryArtifactsAsync(uuid, cancellationToken);
 
         var requeued = await _queueRepository.RequeueAsync(uuid, cancellationToken);
         if (!requeued)
@@ -400,12 +432,39 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             progress = 0,
             downloaded = 0,
             failed = 0,
-            error = default(string)
+            error = default(string),
+            engine = firstStepEngine,
+            quality = firstStepQuality,
+            lyricsStatus = string.Empty,
+            lyrics_status = string.Empty
         });
         DeezSpoTagSpeedTracker.Clear(uuid);
         await EnsureQueueProcessorRunningAsync();
 
         return true;
+    }
+
+    private static void ResetPayloadRetryState(JsonObject payloadObj)
+    {
+        payloadObj["Progress"] = 0;
+        payloadObj["progress"] = 0;
+        payloadObj["Downloaded"] = 0;
+        payloadObj["downloaded"] = 0;
+        payloadObj["Failed"] = 0;
+        payloadObj["failed"] = 0;
+        payloadObj["Files"] = new JsonArray();
+        payloadObj["files"] = new JsonArray();
+        payloadObj["FinalDestinations"] = new JsonObject();
+        payloadObj["finalDestinations"] = new JsonObject();
+        payloadObj["ErrorMessage"] = string.Empty;
+        payloadObj["errorMessage"] = string.Empty;
+        payloadObj["error"] = string.Empty;
+        payloadObj["FilePath"] = string.Empty;
+        payloadObj["filePath"] = string.Empty;
+
+        payloadObj.Remove("LyricsStatus");
+        payloadObj.Remove("lyricsStatus");
+        payloadObj.Remove("lyrics_status");
     }
 
     private async Task UpdateWatchlistTrackStatusAsync(string payloadJson, string status, CancellationToken cancellationToken)
