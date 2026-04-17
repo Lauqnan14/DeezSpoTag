@@ -189,13 +189,40 @@
         return value === toDateToken(new Date());
     }
 
+    function normalizeRunId(value) {
+        if (value === null || value === undefined) {
+            return "";
+        }
+        return String(value).trim();
+    }
+
+    function isTerminalRunStatus(status) {
+        const normalized = String(status || "").toLowerCase();
+        return normalized === STATUS_COMPLETED
+            || normalized === STATUS_FAILED
+            || normalized === "canceled"
+            || normalized === "cancelled"
+            || normalized === "interrupted"
+            || normalized === "idle"
+            || normalized === "error";
+    }
+
+    function hasActiveLiveRun() {
+        const runId = normalizeRunId(state.liveJobSummary?.id);
+        if (!runId) {
+            return false;
+        }
+
+        return !isTerminalRunStatus(state.liveJobSummary?.status);
+    }
+
     function isHistoryTabActive() {
         const historyPane = el("history-content");
         return !!historyPane?.classList.contains("active");
     }
 
     function canShowLiveRunForSelectedDate() {
-        if (!state.liveJobSummary?.id) {
+        if (!hasActiveLiveRun()) {
             return false;
         }
 
@@ -225,7 +252,12 @@
             return archivedRuns;
         }
 
-        if (archivedRuns.some((run) => run?.id === state.liveJobSummary.id)) {
+        const liveRunId = normalizeRunId(state.liveJobSummary?.id);
+        if (!liveRunId) {
+            return archivedRuns;
+        }
+
+        if (archivedRuns.some((run) => normalizeRunId(run?.id) === liveRunId)) {
             return archivedRuns;
         }
 
@@ -607,7 +639,7 @@
             const started = run?.startedAt ? new Date(run.startedAt).toLocaleTimeString() : "--";
             const duration = formatDuration(run?.startedAt, run?.finishedAt);
             const path = run?.rootPath || "--";
-            const liveBadge = run?.id === state.liveJobSummary?.id
+            const liveBadge = hasActiveLiveRun() && normalizeRunId(run?.id) === normalizeRunId(state.liveJobSummary?.id)
                 ? '<span class="badge bg-info text-dark">Live</span>'
                 : "";
             return `<button type="button" class="autotag-run-item" data-run-id="${escapeHtml(run.id)}">

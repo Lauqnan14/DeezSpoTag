@@ -950,7 +950,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
     private bool HandleRecentEnhancementPauseState(AutoTagJob? enhancementJob, string folderRootPath)
     {
         if (enhancementJob != null
-            && string.Equals(enhancementJob.Status, "canceled", StringComparison.OrdinalIgnoreCase)
+            && (string.Equals(enhancementJob.Status, "canceled", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(enhancementJob.Status, "interrupted", StringComparison.OrdinalIgnoreCase))
             && _enhancementPauseRequested)
         {
             _pipelineRequested = true;
@@ -1547,7 +1548,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
             $"Automation: enhancement ({sourceLabel}) finished for {target.RootPath} (status={enhancementJob?.Status ?? "skipped"})."));
 
         if (enhancementJob != null
-            && string.Equals(enhancementJob.Status, "canceled", StringComparison.OrdinalIgnoreCase)
+            && (string.Equals(enhancementJob.Status, "canceled", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(enhancementJob.Status, "interrupted", StringComparison.OrdinalIgnoreCase))
             && _enhancementPauseRequested)
         {
             QueueEnhancementResumeFolder(target.FolderId);
@@ -1559,7 +1561,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
         }
 
         var attempted = enhancementJob != null
-            && !string.Equals(enhancementJob.Status, "canceled", StringComparison.OrdinalIgnoreCase);
+            && !string.Equals(enhancementJob.Status, "canceled", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(enhancementJob.Status, "interrupted", StringComparison.OrdinalIgnoreCase);
         return new EnhancementTargetRunResult(attempted, false);
     }
 

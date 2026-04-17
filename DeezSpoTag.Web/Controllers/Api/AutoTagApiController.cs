@@ -72,6 +72,12 @@ public class AutoTagJobsController : ControllerBase
             selectedProfileResult.Profile?.Technical,
             selectedProfileResult.Profile?.Id,
             selectedProfileResult.Profile?.Name);
+        if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(job.Id))
+        {
+            return Conflict(job.Error ?? "AutoTag did not start.");
+        }
+
         return Ok(new { jobId = job.Id, status = job.Status });
     }
 
