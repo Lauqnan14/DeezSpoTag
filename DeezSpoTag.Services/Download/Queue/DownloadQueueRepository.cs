@@ -496,6 +496,21 @@ WHERE queue_uuid = @queueUuid;";
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task ClearRetryArtifactsAsync(string queueUuid, CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET final_destinations_json = NULL,
+    lyrics_status = NULL,
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task UpdateQueueMetadataAsync(
         string queueUuid,
         int? qualityRank,
