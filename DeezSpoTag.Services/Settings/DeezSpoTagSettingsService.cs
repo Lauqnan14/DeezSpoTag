@@ -25,7 +25,9 @@ public class DeezSpoTagSettingsService : ISettingsService
     private const string LegacyAppDataDownloadsPath = "/app/Data/downloads";
     private const string SyllableLyricsType = "syllable-lyrics";
     private const string UnsyncedLyricsType = "unsynced-lyrics";
-    private static readonly string[] CanonicalLyricsProviders = { "apple", "deezer", "spotify", "lrclib", "musixmatch" };
+    private const string AppleLyricsProvider = "apple";
+    private const string LRCLibLyricsProvider = "lrclib";
+    private static readonly string[] CanonicalLyricsProviders = { AppleLyricsProvider, "deezer", "spotify", LRCLibLyricsProvider, "musixmatch" };
     private static readonly string[] CanonicalLyricsTypes = { "lyrics", SyllableLyricsType, UnsyncedLyricsType };
     private static readonly string[] CanonicalLyricsFormats = { "both", "lrc", "ttml" };
     private static readonly JsonSerializerOptions SettingsDeserializeOptions = new()
@@ -1256,15 +1258,15 @@ public class DeezSpoTagSettingsService : ISettingsService
         var normalized = (token ?? string.Empty).Trim().ToLowerInvariant();
         return normalized switch
         {
-            "itunes" => "apple",
-            "applemusic" => "apple",
-            "apple-music" => "apple",
-            "apple_music" => "apple",
-            "apple music" => "apple",
-            "music.apple" => "apple",
-            "lrcget" => "lrclib",
-            "lrc-get" => "lrclib",
-            "lrc_get" => "lrclib",
+            "itunes" => AppleLyricsProvider,
+            "applemusic" => AppleLyricsProvider,
+            "apple-music" => AppleLyricsProvider,
+            "apple_music" => AppleLyricsProvider,
+            "apple music" => AppleLyricsProvider,
+            "music.apple" => AppleLyricsProvider,
+            "lrcget" => LRCLibLyricsProvider,
+            "lrc-get" => LRCLibLyricsProvider,
+            "lrc_get" => LRCLibLyricsProvider,
             _ => normalized
         };
     }

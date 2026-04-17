@@ -7,16 +7,18 @@ namespace DeezSpoTag.Services.Settings;
 
 public sealed class PlatformCapabilitiesStore
 {
+    private const string ITunesPlatform = "itunes";
+    private const string LRCLibPlatform = "lrclib";
     private static readonly IReadOnlyDictionary<string, string> PlatformIdAliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
-        ["apple"] = "itunes",
-        ["applemusic"] = "itunes",
-        ["apple-music"] = "itunes",
-        ["apple_music"] = "itunes",
-        ["music.apple"] = "itunes",
-        ["lrcget"] = "lrclib",
-        ["lrc-get"] = "lrclib",
-        ["lrc_get"] = "lrclib"
+        ["apple"] = ITunesPlatform,
+        ["applemusic"] = ITunesPlatform,
+        ["apple-music"] = ITunesPlatform,
+        ["apple_music"] = ITunesPlatform,
+        ["music.apple"] = ITunesPlatform,
+        ["lrcget"] = LRCLibPlatform,
+        ["lrc-get"] = LRCLibPlatform,
+        ["lrc_get"] = LRCLibPlatform
     };
 
     private readonly string _path;

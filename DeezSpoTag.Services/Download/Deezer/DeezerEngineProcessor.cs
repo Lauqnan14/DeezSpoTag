@@ -210,13 +210,14 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         var completedSuccessfully = isEpisodePayload
             ? await ProcessEpisodePayloadAsync(payload, settings, queueUuid, cancellationToken)
             : await ProcessTrackPayloadAsync(
-                nextItem,
-                context,
-                payloadJson,
-                payload,
-                settings,
-                queueUuid,
-                resolvedDownloadTagSource,
+                new TrackPayloadProcessingRequest(
+                    nextItem,
+                    context,
+                    payloadJson,
+                    payload,
+                    settings,
+                    queueUuid,
+                    resolvedDownloadTagSource),
                 cancellationToken);
         if (!completedSuccessfully)
         {
@@ -319,53 +320,112 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         return await ProcessEpisodeAsync(payload, settings, queueUuid, cancellationToken);
     }
 
+    private sealed record TrackPayloadProcessingRequest(
+        DownloadQueueItem QueueItem,
+        IDeezerQueueContext Context,
+        string PayloadJson,
+        DeezerQueueItem Payload,
+        DeezSpoTagSettings Settings,
+        string QueueUuid,
+        string? ResolvedDownloadTagSource);
+
+    private sealed record TrackDownloadPreparation(
+        CoreTrack Track,
+        SingleDownloadObject DownloadObject);
+
     private async Task<bool> ProcessTrackPayloadAsync(
-        DownloadQueueItem queueItem,
-        IDeezerQueueContext context,
-        string payloadJson,
-        DeezerQueueItem payload,
-        DeezSpoTagSettings settings,
-        string queueUuid,
-        string? resolvedDownloadTagSource,
+        TrackPayloadProcessingRequest request,
         CancellationToken cancellationToken)
     {
-        var authenticated = await _authenticatedDeezerService.EnsureAuthenticatedAsync();
-        if (!authenticated)
+        if (!await EnsureAuthenticatedForTrackDownloadAsync(request, cancellationToken))
         {
-            if (await TryFallbackAsync(queueUuid, queueItem.Engine, payload, cancellationToken))
-            {
-                return false;
-            }
-
-            await FailQueueWithRetryAsync(queueUuid, DeezerLoginRequiredMessage, "not logged in", notify: false, cancellationToken);
             return false;
         }
 
-        var track = await BuildTrackAsync(payload, resolvedDownloadTagSource);
+        var track = await ResolveTrackForDownloadAsync(request, cancellationToken);
         if (track == null)
         {
-            if (await TryFallbackAsync(queueUuid, queueItem.Engine, payload, cancellationToken))
-            {
-                return false;
-            }
-
-            await FailQueueWithRetryAsync(queueUuid, "Track metadata unavailable", "metadata missing", notify: false, cancellationToken);
             return false;
         }
 
-        var requestedBitrate = ResolveRequestedBitrate(payload);
-        var resolvedBitrate = DownloadSourceOrder.ResolveDeezerBitrate(settings, requestedBitrate);
+        var preparation = BuildTrackDownloadPreparation(request, track);
+        _activityLog.Info($"Download start: {request.QueueUuid} engine=deezer bitrate={preparation.Track.Bitrate}");
+
+        var result = await ExecuteTrackDownloadAsync(request, preparation, cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(result.Path))
+        {
+            await HandleTrackDownloadFailureAsync(request, result, cancellationToken);
+            return false;
+        }
+
+        await FinalizeSuccessfulTrackDownloadAsync(request, preparation.Track, result, cancellationToken);
+        return true;
+    }
+
+    private async Task<bool> EnsureAuthenticatedForTrackDownloadAsync(
+        TrackPayloadProcessingRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (await _authenticatedDeezerService.EnsureAuthenticatedAsync())
+        {
+            return true;
+        }
+
+        if (await TryFallbackAsync(request.QueueUuid, request.QueueItem.Engine, request.Payload, cancellationToken))
+        {
+            return false;
+        }
+
+        await FailQueueWithRetryAsync(
+            request.QueueUuid,
+            DeezerLoginRequiredMessage,
+            "not logged in",
+            notify: false,
+            cancellationToken);
+        return false;
+    }
+
+    private async Task<CoreTrack?> ResolveTrackForDownloadAsync(
+        TrackPayloadProcessingRequest request,
+        CancellationToken cancellationToken)
+    {
+        var track = await BuildTrackAsync(request.Payload, request.ResolvedDownloadTagSource);
+        if (track != null)
+        {
+            return track;
+        }
+
+        if (await TryFallbackAsync(request.QueueUuid, request.QueueItem.Engine, request.Payload, cancellationToken))
+        {
+            return null;
+        }
+
+        await FailQueueWithRetryAsync(
+            request.QueueUuid,
+            "Track metadata unavailable",
+            "metadata missing",
+            notify: false,
+            cancellationToken);
+        return null;
+    }
+
+    private static TrackDownloadPreparation BuildTrackDownloadPreparation(
+        TrackPayloadProcessingRequest request,
+        CoreTrack track)
+    {
+        var requestedBitrate = ResolveRequestedBitrate(request.Payload);
+        var resolvedBitrate = DownloadSourceOrder.ResolveDeezerBitrate(request.Settings, requestedBitrate);
         track.Bitrate = resolvedBitrate;
-        var resolvedTagSource = ResolveTagSource(payload.SourceService, resolvedDownloadTagSource);
+        var resolvedTagSource = ResolveTagSource(request.Payload.SourceService, request.ResolvedDownloadTagSource);
         track.Source = resolvedTagSource;
-        track.SourceId = ResolveTagSourceId(payload, resolvedTagSource);
-        track.ApplySettings(settings);
-        _activityLog.Info($"Download start: {queueUuid} engine=deezer bitrate={track.Bitrate}");
+        track.SourceId = ResolveTagSourceId(request.Payload, resolvedTagSource);
+        track.ApplySettings(request.Settings);
 
         var downloadObject = new SingleDownloadObject
         {
-            Uuid = queueUuid,
-            Title = string.IsNullOrWhiteSpace(payload.Title) ? (track.Title ?? string.Empty) : payload.Title,
+            Uuid = request.QueueUuid,
+            Title = string.IsNullOrWhiteSpace(request.Payload.Title) ? (track.Title ?? string.Empty) : request.Payload.Title,
             Bitrate = resolvedBitrate,
             Track = track,
             Album = track.Album,
@@ -379,79 +439,118 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             }
         };
 
-        var result = await _trackDownloader.DownloadTrackAsync(new TrackDownloader.TrackDownloadRequest(
-            Track: track,
-            Album: track.Album,
+        return new TrackDownloadPreparation(track, downloadObject);
+    }
+
+    private Task<TrackDownloadResult> ExecuteTrackDownloadAsync(
+        TrackPayloadProcessingRequest request,
+        TrackDownloadPreparation preparation,
+        CancellationToken cancellationToken)
+    {
+        return _trackDownloader.DownloadTrackAsync(new TrackDownloader.TrackDownloadRequest(
+            Track: preparation.Track,
+            Album: preparation.Track.Album,
             Playlist: null,
-            DownloadObject: downloadObject,
-            Settings: settings,
+            DownloadObject: preparation.DownloadObject,
+            Settings: request.Settings,
             Listener: new DownloadListenerAdapter(_listener),
             EnableDeferredSidecarTasks: false,
-            AllowInEngineBitrateFallback: ShouldUseInEngineQualityFallback(payload),
+            AllowInEngineBitrateFallback: ShouldUseInEngineQualityFallback(request.Payload),
             CancellationToken: cancellationToken));
+    }
 
-        if (string.IsNullOrWhiteSpace(result.Path))
+    private async Task HandleTrackDownloadFailureAsync(
+        TrackPayloadProcessingRequest request,
+        TrackDownloadResult result,
+        CancellationToken cancellationToken)
+    {
+        var message = string.IsNullOrWhiteSpace(result.Error?.Message) ? "Download failed" : result.Error.Message;
+        if (await TryFallbackAsync(request.QueueUuid, request.QueueItem.Engine, request.Payload, cancellationToken))
         {
-            var message = string.IsNullOrWhiteSpace(result.Error?.Message) ? "Download failed" : result.Error.Message;
-            if (await TryFallbackAsync(queueUuid, queueItem.Engine, payload, cancellationToken))
-            {
-                return false;
-            }
-
-            await FailQueueWithRetryAsync(queueUuid, message, message, notify: false, cancellationToken);
-            return false;
+            return;
         }
 
-        await SyncEffectiveQualityAsync(queueUuid, payload, track.Bitrate, cancellationToken);
-        if (result.GeneratedPathResult != null)
-        {
-            var trackContext = new EngineAudioPostDownloadHelper.EngineTrackContext(
-                track,
-                result.GeneratedPathResult,
-                DownloadPathResolver.ResolveIoPath(result.GeneratedPathResult.FilePath),
-                $"literal:{result.GeneratedPathResult.Filename}");
-            var expectedOutputPath = DownloadPathResolver.ResolveIoPath(result.Path);
-            await EngineAudioPostDownloadHelper.QueueParallelPostDownloadPrefetchAsync(
-                new EngineAudioPostDownloadHelper.PrefetchRequest(
-                    queueUuid,
-                    trackContext,
-                    payload,
-                    settings,
-                    expectedOutputPath,
-                    _postDownloadTaskScheduler,
-                    _lyricsService,
-                    _listener,
-                    _activityLog,
-                    _logger,
-                    EngineName),
-                cancellationToken);
+        await FailQueueWithRetryAsync(request.QueueUuid, message, message, notify: false, cancellationToken);
+    }
 
-            var prefetchFailure = await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(queueUuid, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(prefetchFailure))
-            {
-                _logger.LogWarning(
-                    "Deezer sidecar prefetch failed for {QueueUuid}: {Reason}",
-                    queueUuid,
-                    prefetchFailure);
-                _activityLog.Warn($"Sidecar prefetch failed (engine={EngineName}): {queueUuid} {prefetchFailure}");
-            }
+    private async Task FinalizeSuccessfulTrackDownloadAsync(
+        TrackPayloadProcessingRequest request,
+        CoreTrack track,
+        TrackDownloadResult result,
+        CancellationToken cancellationToken)
+    {
+        await SyncEffectiveQualityAsync(request.QueueUuid, request.Payload, track.Bitrate, cancellationToken);
+        await UpdateTrackPayloadFilesAsync(request, track, result, cancellationToken);
+        await UpdateCompletedTrackQueueStateAsync(request, result.Path!, cancellationToken);
+    }
 
-            EngineAudioPostDownloadHelper.UpdateAudioPayloadFiles(payload, result.GeneratedPathResult, result.Path);
-        }
-        else
+    private async Task UpdateTrackPayloadFilesAsync(
+        TrackPayloadProcessingRequest request,
+        CoreTrack track,
+        TrackDownloadResult result,
+        CancellationToken cancellationToken)
+    {
+        if (result.GeneratedPathResult == null)
         {
-            UpdatePayloadFiles(payload, result.Path);
+            UpdatePayloadFiles(request.Payload, result.Path!);
+            return;
         }
-        var sizeMb = QueueHelperUtils.TryGetFileSizeMb(result.Path);
+
+        var trackContext = new EngineAudioPostDownloadHelper.EngineTrackContext(
+            track,
+            result.GeneratedPathResult,
+            DownloadPathResolver.ResolveIoPath(result.GeneratedPathResult.FilePath),
+            $"literal:{result.GeneratedPathResult.Filename}");
+        var expectedOutputPath = DownloadPathResolver.ResolveIoPath(result.Path!);
+        await EngineAudioPostDownloadHelper.QueueParallelPostDownloadPrefetchAsync(
+            new EngineAudioPostDownloadHelper.PrefetchRequest(
+                request.QueueUuid,
+                trackContext,
+                request.Payload,
+                request.Settings,
+                expectedOutputPath,
+                _postDownloadTaskScheduler,
+                _lyricsService,
+                _listener,
+                _activityLog,
+                _logger,
+                EngineName),
+            cancellationToken);
+
+        await LogTrackPrefetchFailureIfAnyAsync(request.QueueUuid, cancellationToken);
+        EngineAudioPostDownloadHelper.UpdateAudioPayloadFiles(request.Payload, result.GeneratedPathResult, result.Path!);
+    }
+
+    private async Task LogTrackPrefetchFailureIfAnyAsync(string queueUuid, CancellationToken cancellationToken)
+    {
+        var prefetchFailure = await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(queueUuid, cancellationToken);
+        if (string.IsNullOrWhiteSpace(prefetchFailure))
+        {
+            return;
+        }
+
+        _logger.LogWarning(
+            "Deezer sidecar prefetch failed for {QueueUuid}: {Reason}",
+            queueUuid,
+            prefetchFailure);
+        _activityLog.Warn($"Sidecar prefetch failed (engine={EngineName}): {queueUuid} {prefetchFailure}");
+    }
+
+    private async Task UpdateCompletedTrackQueueStateAsync(
+        TrackPayloadProcessingRequest request,
+        string outputPath,
+        CancellationToken cancellationToken)
+    {
+        var sizeMb = QueueHelperUtils.TryGetFileSizeMb(outputPath);
         await QueueHelperUtils.UpdateFinalDestinationPayloadAsync(
             new QueueHelperUtils.UpdateFinalDestinationPayloadRequest<DeezerQueueItem>(
                 _queueRepository,
-                queueUuid,
-                payload,
-                result.Path,
+                request.QueueUuid,
+                request.Payload,
+                outputPath,
                 sizeMb,
-                payload.Size,
-                payload.Files,
+                request.Payload.Size,
+                request.Payload.Files,
                 new QueueHelperUtils.FinalDestinationMutators<DeezerQueueItem>(
                     item => item.FinalDestinations,
                     (item, value) => item.FinalDestinations = value,
@@ -462,9 +561,8 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
                         (item, value) => item.Downloaded = value))),
             cancellationToken);
 
-        await _queueRepository.UpdateStatusAsync(queueUuid, CompletedStatus, cancellationToken: cancellationToken);
-        await context.UpdateWatchlistTrackStatusAsync(payloadJson, CompletedStatus, cancellationToken);
-        return true;
+        await _queueRepository.UpdateStatusAsync(request.QueueUuid, CompletedStatus, cancellationToken: cancellationToken);
+        await request.Context.UpdateWatchlistTrackStatusAsync(request.PayloadJson, CompletedStatus, cancellationToken);
     }
 
     private async Task FailQueueAsync(

@@ -13,6 +13,8 @@ namespace DeezSpoTag.Services.Download.Shared;
 
 public static class DownloadEngineArtworkHelper
 {
+    private const string MzStaticHost = "mzstatic.com";
+
     public sealed record StandardAudioCoverResolveRequest(
         DeezSpoTagSettings Settings,
         AppleMusicCatalogService? AppleCatalog,
@@ -137,6 +139,21 @@ public static class DownloadEngineArtworkHelper
         AudioTagWithCoverRequest request,
         CancellationToken cancellationToken)
     {
+        var coverUrls = NormalizeCoverUrls(request);
+        await TryEmbedCoverAsync(request, coverUrls, cancellationToken);
+
+        try
+        {
+            await request.AudioTagger.TagTrackAsync(request.OutputPath, request.Track, request.Settings);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            request.Logger.LogWarning(ex, "{Engine} tagging failed for {Path}", request.EmbedPrefix, request.OutputPath);
+        }
+    }
+
+    private static List<string> NormalizeCoverUrls(AudioTagWithCoverRequest request)
+    {
         var coverUrls = request.CoverUrls?
             .Where(url => !string.IsNullOrWhiteSpace(url))
             .Select(url => url!.Trim())
@@ -147,63 +164,76 @@ public static class DownloadEngineArtworkHelper
             coverUrls.Add(request.CoverUrl.Trim());
         }
 
-        if (request.Settings.Tags?.Cover == true
-            && coverUrls.Count > 0
-            && request.Track.Album != null)
-        {
-            var embedSize = request.Settings.EmbedMaxQualityCover
-                ? request.Settings.LocalArtworkSize
-                : request.Settings.EmbeddedArtworkSize;
-            foreach (var coverUrl in coverUrls)
-            {
-                var isAppleCover = coverUrl.Contains("mzstatic.com", StringComparison.OrdinalIgnoreCase);
-                string embedExt;
-                if (isAppleCover)
-                {
-                    embedExt = $".{AppleQueueHelpers.GetAppleArtworkExtension(coverUrl, AppleQueueHelpers.GetAppleArtworkFormat(request.Settings))}";
-                }
-                else
-                {
-                    embedExt = coverUrl.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ? ".png" : ".jpg";
-                }
-                var embedPath = Path.Join(Path.GetTempPath(), $"{request.EmbedPrefix}-embed-{Guid.NewGuid():N}{embedExt}");
-                var downloadedCover = isAppleCover
-                    ? await AppleQueueHelpers.DownloadAppleArtworkAsync(
-                        request.ImageDownloader,
-                        new AppleQueueHelpers.AppleArtworkDownloadRequest
-                        {
-                            RawUrl = coverUrl,
-                            OutputPath = embedPath,
-                            Settings = request.Settings,
-                            Size = embedSize,
-                            Overwrite = request.Settings.OverwriteFile,
-                            PreferMaxQuality = true,
-                            Logger = request.Logger
-                        },
-                        cancellationToken)
-                    : await request.ImageDownloader.DownloadImageAsync(
-                        coverUrl,
-                        embedPath,
-                        request.Settings.OverwriteFile,
-                        true,
-                        cancellationToken);
+        return coverUrls;
+    }
 
-                if (!string.IsNullOrWhiteSpace(downloadedCover))
-                {
-                    request.Track.Album.EmbeddedCoverPath = downloadedCover;
-                    break;
-                }
+    private static async Task TryEmbedCoverAsync(
+        AudioTagWithCoverRequest request,
+        IReadOnlyList<string> coverUrls,
+        CancellationToken cancellationToken)
+    {
+        if (request.Settings.Tags?.Cover != true
+            || coverUrls.Count == 0
+            || request.Track.Album == null)
+        {
+            return;
+        }
+
+        var embedSize = request.Settings.EmbedMaxQualityCover
+            ? request.Settings.LocalArtworkSize
+            : request.Settings.EmbeddedArtworkSize;
+        foreach (var coverUrl in coverUrls)
+        {
+            var downloadedCover = await DownloadEmbeddedCoverAsync(request, coverUrl, embedSize, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(downloadedCover))
+            {
+                request.Track.Album.EmbeddedCoverPath = downloadedCover;
+                return;
             }
         }
+    }
 
-        try
+    private static async Task<string?> DownloadEmbeddedCoverAsync(
+        AudioTagWithCoverRequest request,
+        string coverUrl,
+        int embedSize,
+        CancellationToken cancellationToken)
+    {
+        var isAppleCover = coverUrl.Contains(MzStaticHost, StringComparison.OrdinalIgnoreCase);
+        var embedPath = Path.Join(Path.GetTempPath(), $"{request.EmbedPrefix}-embed-{Guid.NewGuid():N}{ResolveEmbeddedCoverExtension(request, coverUrl, isAppleCover)}");
+        if (isAppleCover)
         {
-            await request.AudioTagger.TagTrackAsync(request.OutputPath, request.Track, request.Settings);
+            return await AppleQueueHelpers.DownloadAppleArtworkAsync(
+                request.ImageDownloader,
+                new AppleQueueHelpers.AppleArtworkDownloadRequest
+                {
+                    RawUrl = coverUrl,
+                    OutputPath = embedPath,
+                    Settings = request.Settings,
+                    Size = embedSize,
+                    Overwrite = request.Settings.OverwriteFile,
+                    PreferMaxQuality = true,
+                    Logger = request.Logger
+                },
+                cancellationToken);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+
+        return await request.ImageDownloader.DownloadImageAsync(
+            coverUrl,
+            embedPath,
+            request.Settings.OverwriteFile,
+            true,
+            cancellationToken);
+    }
+
+    private static string ResolveEmbeddedCoverExtension(AudioTagWithCoverRequest request, string coverUrl, bool isAppleCover)
+    {
+        if (isAppleCover)
         {
-            request.Logger.LogWarning(ex, "{Engine} tagging failed for {Path}", request.EmbedPrefix, request.OutputPath);
+            return $".{AppleQueueHelpers.GetAppleArtworkExtension(coverUrl, AppleQueueHelpers.GetAppleArtworkFormat(request.Settings))}";
         }
+
+        return coverUrl.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ? ".png" : ".jpg";
     }
 
     public static async Task<string?> ResolveArtistImageUrlAsync(

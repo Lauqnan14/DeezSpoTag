@@ -7,6 +7,9 @@ namespace DeezSpoTag.Web.Controllers.Api;
 
 internal static class DownloadQueueEnqueueHelper
 {
+    private const string DuplicateReasonCode = "queue_duplicate";
+    private const string DuplicateQueueMessage = "Skipped: matching track is already in queue.";
+
     public static Func<TPayload, int, CancellationToken, Task<EnqueueOutcome>> CreateDedupEnqueueDelegate<TPayload>(
         DownloadQueueRepository queueRepository,
         IDeezSpoTagListener listener,
@@ -108,7 +111,7 @@ internal static class DownloadQueueEnqueueHelper
                 payload.Engine,
                 payload.Artist,
                 payload.Title);
-            return EnqueueOutcome.Skipped("queue_duplicate", "Skipped: matching track is already in queue.");
+            return EnqueueOutcome.Skipped(DuplicateReasonCode, DuplicateQueueMessage);
         }
 
         return await HandleDuplicateStatusAsync(payload, duplicate, queueRepository, listener, logger, cancellationToken);
@@ -161,7 +164,7 @@ internal static class DownloadQueueEnqueueHelper
             payload.Engine,
             payload.Artist,
             payload.Title);
-        return EnqueueOutcome.Skipped("queue_duplicate", "Skipped: matching track is already in queue.");
+        return EnqueueOutcome.Skipped(DuplicateReasonCode, DuplicateQueueMessage);
     }
 
     private static bool IsRetryableQueueStatus(string status)
@@ -181,7 +184,7 @@ internal static class DownloadQueueEnqueueHelper
         var existingStatus = existing.Status ?? string.Empty;
         if (IsQueuedQueueStatus(existingStatus))
         {
-            return EnqueueOutcome.Skipped("queue_duplicate", "Skipped: matching track is already in queue.");
+            return EnqueueOutcome.Skipped(DuplicateReasonCode, DuplicateQueueMessage);
         }
 
         if (IsCompletedStatus(existingStatus))
@@ -254,7 +257,7 @@ internal static class DownloadQueueEnqueueHelper
         var insertId = await queueRepository.EnqueueAsync(item, cancellationToken);
         if (!insertId.HasValue || insertId.Value <= 0)
         {
-            return EnqueueOutcome.Skipped("queue_duplicate", "Skipped: matching track is already in queue.");
+            return EnqueueOutcome.Skipped(DuplicateReasonCode, DuplicateQueueMessage);
         }
 
         return EnqueueOutcome.Queued();

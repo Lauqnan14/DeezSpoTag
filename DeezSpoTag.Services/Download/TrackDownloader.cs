@@ -2498,6 +2498,13 @@ public class TrackDownloader
 
     private static void MergePublicTrackMetadata(Track track, DeezSpoTag.Core.Models.Deezer.ApiTrack apiTrack)
     {
+        MergePublicTrackCoreMetadata(track, apiTrack);
+        MergePublicTrackFlags(track, apiTrack);
+        MergePublicTrackExtraMetadata(track, apiTrack);
+    }
+
+    private static void MergePublicTrackCoreMetadata(Track track, DeezSpoTag.Core.Models.Deezer.ApiTrack apiTrack)
+    {
         if (string.IsNullOrWhiteSpace(track.Title) && !string.IsNullOrWhiteSpace(apiTrack.Title))
         {
             track.Title = apiTrack.Title;
@@ -2517,30 +2524,18 @@ public class TrackDownloader
         {
             track.DiscNumber = apiTrack.DiskNumber;
         }
+    }
 
+    private static void MergePublicTrackFlags(Track track, DeezSpoTag.Core.Models.Deezer.ApiTrack apiTrack)
+    {
         if (!track.Explicit && (apiTrack.ExplicitLyrics || apiTrack.ExplicitContentLyrics == 1))
         {
             track.Explicit = true;
         }
 
-        if (string.IsNullOrWhiteSpace(track.ISRC) && !string.IsNullOrWhiteSpace(apiTrack.Isrc))
-        {
-            track.ISRC = apiTrack.Isrc;
-        }
-
         if (track.Bpm <= 0 && apiTrack.Bpm > 0)
         {
             track.Bpm = apiTrack.Bpm;
-        }
-
-        if (string.IsNullOrWhiteSpace(track.Copyright) && !string.IsNullOrWhiteSpace(apiTrack.Copyright))
-        {
-            track.Copyright = apiTrack.Copyright;
-        }
-
-        if (string.IsNullOrWhiteSpace(track.PhysicalReleaseDate) && !string.IsNullOrWhiteSpace(apiTrack.PhysicalReleaseDate))
-        {
-            track.PhysicalReleaseDate = apiTrack.PhysicalReleaseDate;
         }
 
         if (track.Rank <= 0 && apiTrack.Rank > 0)
@@ -2551,6 +2546,24 @@ public class TrackDownloader
         if (Math.Abs(track.Gain) <= double.Epsilon && Math.Abs(apiTrack.Gain) > double.Epsilon)
         {
             track.Gain = apiTrack.Gain;
+        }
+    }
+
+    private static void MergePublicTrackExtraMetadata(Track track, DeezSpoTag.Core.Models.Deezer.ApiTrack apiTrack)
+    {
+        if (string.IsNullOrWhiteSpace(track.ISRC) && !string.IsNullOrWhiteSpace(apiTrack.Isrc))
+        {
+            track.ISRC = apiTrack.Isrc;
+        }
+
+        if (string.IsNullOrWhiteSpace(track.Copyright) && !string.IsNullOrWhiteSpace(apiTrack.Copyright))
+        {
+            track.Copyright = apiTrack.Copyright;
+        }
+
+        if (string.IsNullOrWhiteSpace(track.PhysicalReleaseDate) && !string.IsNullOrWhiteSpace(apiTrack.PhysicalReleaseDate))
+        {
+            track.PhysicalReleaseDate = apiTrack.PhysicalReleaseDate;
         }
 
         if (string.IsNullOrWhiteSpace(track.LyricsId) && !string.IsNullOrWhiteSpace(apiTrack.LyricsId))
@@ -2629,12 +2642,9 @@ public class TrackDownloader
             return;
         }
 
-        foreach (var genre in incomingGenres)
+        foreach (var genre in incomingGenres.Where(genre => !album.Genre.Contains(genre, StringComparer.OrdinalIgnoreCase)))
         {
-            if (!album.Genre.Contains(genre, StringComparer.OrdinalIgnoreCase))
-            {
-                album.Genre.Add(genre);
-            }
+            album.Genre.Add(genre);
         }
     }
 

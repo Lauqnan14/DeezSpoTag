@@ -24,6 +24,7 @@ namespace DeezSpoTag.Web.Controllers.Api
         private const string DeezerSource = "deezer";
         private const string TrackType = "track";
         private const string DeezerDomain = "deezer.com";
+        private const string UuidRequiredError = "UUID is required.";
         private readonly ILogger<DeezerDownloadApiController> _logger;
         private readonly DownloadIntentService _intentService;
         private readonly DeezerClient _deezerClient;
@@ -543,7 +544,7 @@ namespace DeezSpoTag.Web.Controllers.Api
         {
             if (string.IsNullOrWhiteSpace(uuid))
             {
-                return BadRequest(new { error = "UUID is required." });
+                return BadRequest(new { error = UuidRequiredError });
             }
 
             var item = await _queueRepository.GetByUuidAsync(uuid, cancellationToken);
@@ -569,7 +570,7 @@ namespace DeezSpoTag.Web.Controllers.Api
         {
             if (string.IsNullOrWhiteSpace(uuid))
             {
-                return BadRequest(new { error = "UUID is required." });
+                return BadRequest(new { error = UuidRequiredError });
             }
 
             var item = await _queueRepository.GetByUuidAsync(uuid, cancellationToken);
@@ -592,7 +593,7 @@ namespace DeezSpoTag.Web.Controllers.Api
         {
             if (string.IsNullOrWhiteSpace(uuid))
             {
-                return BadRequest(new { error = "UUID is required." });
+                return BadRequest(new { error = UuidRequiredError });
             }
 
             await _deezSpoTagApp.CancelDownloadAsync(uuid);
@@ -604,7 +605,7 @@ namespace DeezSpoTag.Web.Controllers.Api
         {
             if (string.IsNullOrWhiteSpace(uuid))
             {
-                return BadRequest(new { error = "UUID is required." });
+                return BadRequest(new { error = UuidRequiredError });
             }
 
             var item = await _queueRepository.GetByUuidAsync(uuid, cancellationToken);

@@ -93,20 +93,14 @@ public class ImageDownloader
 
                 return path;
             }
-            catch (HttpRequestException ex) when (IsHttpError(ex))
-            {
-                TryDeletePartialFile(path);
-                _logger.LogWarning(ex, "Image not found: {Url}", url);
-                return null;
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                TryDeletePartialFile(path);
-                throw;
-            }
             catch (OperationCanceledException ex)
             {
                 TryDeletePartialFile(path);
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+
                 if (attempt >= MAX_DOWNLOAD_RETRY_ATTEMPTS)
                 {
                     _logger.LogWarning(ex, "Image download timed out or was canceled internally: {Url}", url);
@@ -119,24 +113,32 @@ public class ImageDownloader
                     _logger.LogDebug(ex, "Retrying image download after internal cancellation (attempt {Attempt}/{MaxAttempts})", attempt, MAX_DOWNLOAD_RETRY_ATTEMPTS);
                 }
             }
-            catch (Exception ex) when (IsRetryableError(ex))
-            {
-                TryDeletePartialFile(path);
-                if (attempt >= MAX_DOWNLOAD_RETRY_ATTEMPTS)
-                {
-                    _logger.LogWarning(ex, "Image download failed after retry attempts: {Url}", url);
-                    return null;
-                }
-
-                attempt++;
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(ex, "Retrying image download due to retryable error (attempt {Attempt}/{MaxAttempts})", attempt, MAX_DOWNLOAD_RETRY_ATTEMPTS);
-                }
-            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 TryDeletePartialFile(path);
+                if (ex is HttpRequestException httpError && IsHttpError(httpError))
+                {
+                    _logger.LogWarning(ex, "Image not found: {Url}", url);
+                    return null;
+                }
+
+                if (IsRetryableError(ex))
+                {
+                    if (attempt >= MAX_DOWNLOAD_RETRY_ATTEMPTS)
+                    {
+                        _logger.LogWarning(ex, "Image download failed after retry attempts: {Url}", url);
+                        return null;
+                    }
+
+                    attempt++;
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug(ex, "Retrying image download due to retryable error (attempt {Attempt}/{MaxAttempts})", attempt, MAX_DOWNLOAD_RETRY_ATTEMPTS);
+                    }
+
+                    continue;
+                }
+
                 _logger.LogError(ex, "Failed to download image from {Url} to {Path}", url, path);
                 return null;
             }

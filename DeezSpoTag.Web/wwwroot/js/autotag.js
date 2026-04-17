@@ -3013,7 +3013,6 @@
                 state.profileSaveTimer = null;
             }
             state.profileSaveDirty = false;
-            await saveLyricsSettings();
             await upsertProfileFromUi({ silent: true, requireActiveProfile: true });
             try {
                 localStorage.setItem(AUTOTAG_PREFERENCES_KEY, JSON.stringify(config));
@@ -5603,36 +5602,6 @@
         );
 
         return settings;
-    }
-
-    async function saveLyricsSettings() {
-        try {
-            if (!state.settingsCache) {
-                await loadLyricsSettings();
-            }
-            if (!state.settingsCache) {
-                throw new Error("Settings unavailable");
-            }
-            let updated = readLyricsSettingsFromUI(state.settingsCache);
-            updated = readArtworkSettingsFromUI(updated);
-            updated = readTemplateSettingsFromUI(updated);
-            updated = readOtherSettingsFromUI(updated);
-            updated = readFolderStructureSettingsFromUI(updated);
-            const response = await fetch("/api/settings", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(updated)
-            });
-            if (!response.ok) {
-                const payload = await response.json().catch(() => null);
-                const message = payload?.error || `HTTP ${response.status}`;
-                throw new Error(message);
-            }
-            state.settingsCache = updated;
-        } catch (error) {
-            console.error("Failed to save lyrics settings.", error);
-            showToast("Failed to save lyrics settings.", "error");
-        }
     }
 
     function loadItunesArtOptions() {

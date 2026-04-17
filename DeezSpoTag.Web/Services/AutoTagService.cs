@@ -59,6 +59,7 @@ internal static class AutoTagLiterals
     internal const string BpmSupremePlatform = "bpmsupreme";
     internal const string MultiArtistSeparatorKey = "multiArtistSeparator";
     internal const string TargetFilesKey = "targetFiles";
+    internal const string IncludeSubfoldersKey = "includeSubfolders";
 }
 
 public abstract class AutoTagRunState
@@ -508,38 +509,26 @@ public class AutoTagService
             ? (resumeSourceJob?.StartedAt ?? DateTimeOffset.UtcNow)
             : DateTimeOffset.UtcNow;
 
-        if (await _queueRepository.HasActiveDownloadsAsync())
+        var blockedByActiveDownloads = await TryCreateBlockedJobForActiveDownloadsAsync(
+            normalizedPath,
+            normalizedTrigger,
+            normalizedRunIntent,
+            profileId,
+            profileName);
+        if (blockedByActiveDownloads != null)
         {
-            var blockedJob = CreateBlockedJob(
-                "Downloads active; AutoTag skipped.",
-                normalizedPath,
-                normalizedTrigger,
-                normalizedRunIntent,
-                profileId,
-                profileName);
-            AppendActivityLog(blockedJob.Id, "autotag skipped: downloads active");
-            _logger.LogInformation("AutoTag skipped: downloads active.");
-            return blockedJob;
+            return blockedByActiveDownloads;
         }
 
-        var runIntentScopeError = await ValidateRunIntentScopeAsync(normalizedPath, normalizedRunIntent, CancellationToken.None);
-        if (!string.IsNullOrWhiteSpace(runIntentScopeError))
+        var blockedByScope = await TryCreateBlockedJobForScopePolicyAsync(
+            normalizedPath,
+            normalizedTrigger,
+            normalizedRunIntent,
+            profileId,
+            profileName);
+        if (blockedByScope != null)
         {
-            var blockedJob = CreateBlockedJob(
-                runIntentScopeError,
-                normalizedPath,
-                normalizedTrigger,
-                normalizedRunIntent,
-                profileId,
-                profileName);
-            AppendActivityLog(blockedJob.Id, $"autotag blocked: {runIntentScopeError}");
-            _logger.LogWarning(
-                "AutoTag blocked by scope policy. intent={Intent}, trigger={Trigger}, path={Path}, reason={Reason}",
-                normalizedRunIntent,
-                normalizedTrigger,
-                normalizedPath,
-                runIntentScopeError);
-            return blockedJob;
+            return blockedByScope;
         }
 
         if (!HasEligibleInputFiles(normalizedPath, configJson))
@@ -568,28 +557,7 @@ public class AutoTagService
         };
         if (isEnhancementResume && resumeSourceJob != null)
         {
-            job.OkCount = resumeSourceJob.OkCount;
-            job.ErrorCount = resumeSourceJob.ErrorCount;
-            job.SkippedCount = resumeSourceJob.SkippedCount;
-            job.Progress = resumeSourceJob.Progress;
-            job.ExitCode = null;
-            job.Error = null;
-            if (resumeSourceJob.Logs.Count > 0)
-            {
-                job.Logs.AddRange(resumeSourceJob.Logs);
-            }
-            if (resumeSourceJob.StatusHistory.Count > 0)
-            {
-                job.StatusHistory.AddRange(resumeSourceJob.StatusHistory);
-            }
-            if (resumeSourceJob.StartedPlatforms.Count > 0)
-            {
-                job.StartedPlatforms.AddRange(resumeSourceJob.StartedPlatforms);
-            }
-            foreach (var (diffPath, diffValue) in resumeSourceJob.TagDiffs)
-            {
-                job.TagDiffs[diffPath] = diffValue;
-            }
+            HydrateResumeJob(job, resumeSourceJob);
         }
 
         _jobs[job.Id] = job;
@@ -620,6 +588,89 @@ public class AutoTagService
         _ = Task.Run(() => RunJobAsync(job, normalizedPath, runtimeConfigPath));
 
         return job;
+    }
+
+    private async Task<AutoTagJob?> TryCreateBlockedJobForActiveDownloadsAsync(
+        string normalizedPath,
+        string normalizedTrigger,
+        string normalizedRunIntent,
+        string? profileId,
+        string? profileName)
+    {
+        if (!await _queueRepository.HasActiveDownloadsAsync())
+        {
+            return null;
+        }
+
+        var blockedJob = CreateBlockedJob(
+            "Downloads active; AutoTag skipped.",
+            normalizedPath,
+            normalizedTrigger,
+            normalizedRunIntent,
+            profileId,
+            profileName);
+        AppendActivityLog(blockedJob.Id, "autotag skipped: downloads active");
+        _logger.LogInformation("AutoTag skipped: downloads active.");
+        return blockedJob;
+    }
+
+    private async Task<AutoTagJob?> TryCreateBlockedJobForScopePolicyAsync(
+        string normalizedPath,
+        string normalizedTrigger,
+        string normalizedRunIntent,
+        string? profileId,
+        string? profileName)
+    {
+        var runIntentScopeError = await ValidateRunIntentScopeAsync(normalizedPath, normalizedRunIntent, CancellationToken.None);
+        if (string.IsNullOrWhiteSpace(runIntentScopeError))
+        {
+            return null;
+        }
+
+        var blockedJob = CreateBlockedJob(
+            runIntentScopeError,
+            normalizedPath,
+            normalizedTrigger,
+            normalizedRunIntent,
+            profileId,
+            profileName);
+        AppendActivityLog(blockedJob.Id, $"autotag blocked: {runIntentScopeError}");
+        _logger.LogWarning(
+            "AutoTag blocked by scope policy. intent={Intent}, trigger={Trigger}, path={Path}, reason={Reason}",
+            normalizedRunIntent,
+            normalizedTrigger,
+            normalizedPath,
+            runIntentScopeError);
+        return blockedJob;
+    }
+
+    private static void HydrateResumeJob(AutoTagJob target, AutoTagJob source)
+    {
+        target.OkCount = source.OkCount;
+        target.ErrorCount = source.ErrorCount;
+        target.SkippedCount = source.SkippedCount;
+        target.Progress = source.Progress;
+        target.ExitCode = null;
+        target.Error = null;
+        if (source.Logs.Count > 0)
+        {
+            target.Logs.AddRange(source.Logs);
+        }
+
+        if (source.StatusHistory.Count > 0)
+        {
+            target.StatusHistory.AddRange(source.StatusHistory);
+        }
+
+        if (source.StartedPlatforms.Count > 0)
+        {
+            target.StartedPlatforms.AddRange(source.StartedPlatforms);
+        }
+
+        foreach (var (diffPath, diffValue) in source.TagDiffs)
+        {
+            target.TagDiffs[diffPath] = diffValue;
+        }
     }
 
     private AutoTagJob CreateBlockedJob(
@@ -921,17 +972,47 @@ public class AutoTagService
 
     private static bool HasEligibleInputFiles(string rootPath, string configJson)
     {
-        var normalizedRoot = NormalizePathForJob(rootPath)
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (string.IsNullOrWhiteSpace(normalizedRoot) || !Directory.Exists(normalizedRoot))
+        var normalizedRoot = NormalizeRootPath(rootPath);
+        if (normalizedRoot == null)
         {
             return false;
         }
 
-        JsonObject? root = null;
+        if (!TryParseAutoTagConfig(configJson, out var root))
+        {
+            // Avoid suppressing valid runs due to config parse issues.
+            return true;
+        }
+
+        var includeSubfolders = ReadBool(root, AutoTagLiterals.IncludeSubfoldersKey) ?? true;
+        var targetFiles = ReadStringList(root, AutoTagLiterals.TargetFilesKey);
+        if (targetFiles.Count > 0)
+        {
+            return HasEligibleTargetFiles(targetFiles, normalizedRoot);
+        }
+
+        return HasEligibleFilesInDirectory(normalizedRoot, includeSubfolders);
+    }
+
+    private static string? NormalizeRootPath(string rootPath)
+    {
+        var normalizedRoot = NormalizePathForJob(rootPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.IsNullOrWhiteSpace(normalizedRoot) || !Directory.Exists(normalizedRoot))
+        {
+            return null;
+        }
+
+        return normalizedRoot;
+    }
+
+    private static bool TryParseAutoTagConfig(string configJson, out JsonObject root)
+    {
+        root = new JsonObject();
         try
         {
-            root = JsonNode.Parse(configJson) as JsonObject;
+            root = JsonNode.Parse(configJson) as JsonObject ?? new JsonObject();
+            return true;
         }
         catch (OperationCanceledException)
         {
@@ -939,49 +1020,23 @@ public class AutoTagService
         }
         catch
         {
-            // Avoid suppressing valid runs due to config parse issues.
-            return true;
-        }
-
-        var includeSubfolders = root == null
-            ? true
-            : (ReadBool(root, "includeSubfolders") ?? true);
-        var targetFiles = root == null
-            ? new List<string>()
-            : ReadStringList(root, AutoTagLiterals.TargetFilesKey);
-
-        if (targetFiles.Count > 0)
-        {
-            foreach (var rawPath in targetFiles)
-            {
-                var candidate = NormalizePathForJob(rawPath)
-                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                if (!IsPathWithinScope(candidate, normalizedRoot)
-                    || !File.Exists(candidate))
-                {
-                    continue;
-                }
-
-                var extension = Path.GetExtension(candidate);
-                if (!string.IsNullOrWhiteSpace(extension) && EligibleAudioExtensions.Contains(extension))
-                {
-                    return true;
-                }
-            }
-
             return false;
         }
+    }
 
-        var options = new EnumerationOptions
+    private static bool HasEligibleTargetFiles(IEnumerable<string> targetFiles, string normalizedRoot)
+    {
+        foreach (var rawPath in targetFiles)
         {
-            RecurseSubdirectories = includeSubfolders,
-            IgnoreInaccessible = true,
-            ReturnSpecialDirectories = false,
-            AttributesToSkip = 0
-        };
-        foreach (var filePath in Directory.EnumerateFiles(normalizedRoot, "*", options))
-        {
-            var extension = Path.GetExtension(filePath);
+            var candidate = NormalizePathForJob(rawPath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (!IsPathWithinScope(candidate, normalizedRoot)
+                || !File.Exists(candidate))
+            {
+                continue;
+            }
+
+            var extension = Path.GetExtension(candidate);
             if (!string.IsNullOrWhiteSpace(extension) && EligibleAudioExtensions.Contains(extension))
             {
                 return true;
@@ -989,6 +1044,21 @@ public class AutoTagService
         }
 
         return false;
+    }
+
+    private static bool HasEligibleFilesInDirectory(string normalizedRoot, bool includeSubfolders)
+    {
+        var options = new EnumerationOptions
+        {
+            RecurseSubdirectories = includeSubfolders,
+            IgnoreInaccessible = true,
+            ReturnSpecialDirectories = false,
+            AttributesToSkip = 0
+        };
+
+        return Directory.EnumerateFiles(normalizedRoot, "*", options)
+            .Select(Path.GetExtension)
+            .Any(extension => !string.IsNullOrWhiteSpace(extension) && EligibleAudioExtensions.Contains(extension));
     }
 
     private static bool IsPathWithinScope(string candidatePath, string scopePath)
@@ -1626,70 +1696,91 @@ public class AutoTagService
         string path,
         Dictionary<string, FileTagOutcome> fileOutcomes)
     {
-        var success = true;
         for (var index = 0; index < stages.Count; index++)
         {
             var stage = stages[index];
-            AppendLog(job, BuildStageStartedLog(stage, index, stages.Count));
-            _activeJobStages[job.Id] = stage.Name;
-            var resumeCursor = ResolveResumeCursor(job, stage);
-            if (resumeCursor != null)
+            var stageResult = await ExecuteSingleStageAsync(job, stage, index, stages.Count, path, fileOutcomes);
+            if (!stageResult.Success)
             {
-                AppendLog(
-                    job,
-                    $"resume checkpoint active for stage '{stage.Name}': platformIndex={resumeCursor.PlatformIndex}, fileIndex={resumeCursor.FileIndex}");
+                return false;
             }
-            else if (job.ResumeCheckpoint != null && !CanApplyResumeCheckpoint(job.ResumeCheckpoint, stage))
+        }
+
+        return true;
+    }
+
+    private readonly record struct StageExecutionResult(bool Success);
+
+    private async Task<StageExecutionResult> ExecuteSingleStageAsync(
+        AutoTagJob job,
+        AutoTagStageConfig stage,
+        int stageIndex,
+        int totalStages,
+        string path,
+        Dictionary<string, FileTagOutcome> fileOutcomes)
+    {
+        AppendLog(job, BuildStageStartedLog(stage, stageIndex, totalStages));
+        _activeJobStages[job.Id] = stage.Name;
+        var resumeCursor = ResolveResumeCursor(job, stage);
+        if (resumeCursor != null)
+        {
+            AppendLog(
+                job,
+                $"resume checkpoint active for stage '{stage.Name}': platformIndex={resumeCursor.PlatformIndex}, fileIndex={resumeCursor.FileIndex}");
+        }
+        else if (job.ResumeCheckpoint != null && !CanApplyResumeCheckpoint(job.ResumeCheckpoint, stage))
+        {
+            job.ResumeCheckpoint = null;
+            SaveJob(job);
+        }
+
+        try
+        {
+            var result = await _autoTagRunner.RunAsync(
+                job.Id,
+                path,
+                stage.ConfigPath,
+                status => UpdateStatus(job, status, stage.Name, stage.ConfigHash, stageIndex, totalStages, fileOutcomes),
+                line => AppendLog(job, line),
+                resumeCursor,
+                CancellationToken.None);
+            if (string.Equals(result.Error, "stopped", StringComparison.OrdinalIgnoreCase))
+            {
+                return HandleStoppedStage(job);
+            }
+
+            if (!result.Success)
+            {
+                job.Status = AutoTagLiterals.FailedStatus;
+                job.Error = result.Error;
+                return new StageExecutionResult(false);
+            }
+
+            AppendLog(job, BuildStageFinishedLog(stage, stageIndex, totalStages));
+            if (CanApplyResumeCheckpoint(job.ResumeCheckpoint, stage))
             {
                 job.ResumeCheckpoint = null;
                 SaveJob(job);
             }
 
-            try
-            {
-                var result = await _autoTagRunner.RunAsync(
-                    job.Id,
-                    path,
-                    stage.ConfigPath,
-                    status => UpdateStatus(job, status, stage.Name, stage.ConfigHash, index, stages.Count, fileOutcomes),
-                    line => AppendLog(job, line),
-                    resumeCursor,
-                    CancellationToken.None);
-
-                if (string.Equals(result.Error, "stopped", StringComparison.OrdinalIgnoreCase))
-                {
-                    var interruptedStatus = IsEnhancementRunIntent(job.RunIntent)
-                        ? AutoTagLiterals.InterruptedStatus
-                        : AutoTagLiterals.CanceledStatus;
-                    job.Status = interruptedStatus;
-                    job.Error = IsEnhancementRunIntent(job.RunIntent)
-                        ? "Interrupted by user. Resume is available."
-                        : "Stopped by user.";
-                    return false;
-                }
-
-                if (!result.Success)
-                {
-                    job.Status = AutoTagLiterals.FailedStatus;
-                    job.Error = result.Error;
-                    success = false;
-                    break;
-                }
-
-                AppendLog(job, BuildStageFinishedLog(stage, index, stages.Count));
-                if (CanApplyResumeCheckpoint(job.ResumeCheckpoint, stage))
-                {
-                    job.ResumeCheckpoint = null;
-                    SaveJob(job);
-                }
-            }
-            finally
-            {
-                _activeJobStages.TryRemove(job.Id, out _);
-            }
+            return new StageExecutionResult(true);
         }
+        finally
+        {
+            _activeJobStages.TryRemove(job.Id, out _);
+        }
+    }
 
-        return success;
+    private StageExecutionResult HandleStoppedStage(AutoTagJob job)
+    {
+        var interrupted = IsEnhancementRunIntent(job.RunIntent);
+        job.Status = interrupted
+            ? AutoTagLiterals.InterruptedStatus
+            : AutoTagLiterals.CanceledStatus;
+        job.Error = interrupted
+            ? "Interrupted by user. Resume is available."
+            : "Stopped by user.";
+        return new StageExecutionResult(false);
     }
 
     private async Task RunSuccessPostProcessingAsync(
@@ -2505,7 +2596,7 @@ public class AutoTagService
     {
         var options = new AutoTagOrganizerOptions
         {
-            IncludeSubfolders = ReadBool(folderUniformity, "includeSubfolders") ?? true,
+            IncludeSubfolders = ReadBool(folderUniformity, AutoTagLiterals.IncludeSubfoldersKey) ?? true,
             MoveMisplacedFiles = ReadBool(folderUniformity, "moveMisplacedFiles") ?? true,
             MergeIntoExistingDestinationFolders = ReadBool(folderUniformity, "mergeIntoExistingDestinationFolders") != false,
             RenameFilesToTemplate = ReadBool(folderUniformity, "renameFilesToTemplate") != false,
@@ -2619,13 +2710,11 @@ public class AutoTagService
         var merged = new List<string>(requested);
         var seen = new HashSet<string>(merged, StringComparer.OrdinalIgnoreCase);
         var carryOverTags = new[] { "trackId", "releaseId", "source", "url" };
-        foreach (var tag in carryOverTags)
+        foreach (var tag in carryOverTags
+                     .Where(tag => downloadTags.Any(downloadTag => string.Equals(downloadTag, tag, StringComparison.OrdinalIgnoreCase)))
+                     .Where(seen.Add))
         {
-            if (downloadTags.Any(downloadTag => string.Equals(downloadTag, tag, StringComparison.OrdinalIgnoreCase))
-                && seen.Add(tag))
-            {
-                merged.Add(tag);
-            }
+            merged.Add(tag);
         }
 
         return merged;
@@ -2761,7 +2850,7 @@ public class AutoTagService
             "matchById",
             "enableShazam",
             "forceShazam",
-            "includeSubfolders",
+            AutoTagLiterals.IncludeSubfoldersKey,
             AutoTagLiterals.MultiPlatformKey,
             "parseFilename",
             "filenameTemplate",
@@ -3076,8 +3165,13 @@ public class AutoTagService
              !string.IsNullOrWhiteSpace(jellyfin.Username));
     }
 
-    private static bool? ReadBool(JsonObject node, string propertyName)
+    private static bool? ReadBool(JsonObject? node, string propertyName)
     {
+        if (node == null)
+        {
+            return null;
+        }
+
         if (!node.TryGetPropertyValue(propertyName, out var value) || value is not JsonValue jsonValue)
         {
             return null;
@@ -3243,7 +3337,7 @@ public class AutoTagService
                 MoveTaggedPath = organizerNode?["moveTaggedPath"]?.GetValue<string>(),
                 MoveUntaggedPath = organizerNode?["moveUntaggedPath"]?.GetValue<string>(),
                 DryRun = organizerNode?["dryRun"]?.GetValue<bool>() ?? false,
-                IncludeSubfolders = node["includeSubfolders"]?.GetValue<bool>() ?? true,
+                IncludeSubfolders = node[AutoTagLiterals.IncludeSubfoldersKey]?.GetValue<bool>() ?? true,
                 MoveMisplacedFiles = organizerNode?["moveMisplacedFiles"]?.GetValue<bool>() ?? true,
                 RenameFilesToTemplate = organizerNode?["renameFilesToTemplate"]?.GetValue<bool>() ?? true,
                 RemoveEmptyFolders = organizerNode?["removeEmptyFolders"]?.GetValue<bool>() ?? true,
