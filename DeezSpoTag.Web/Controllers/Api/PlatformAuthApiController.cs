@@ -274,6 +274,10 @@ public class PlatformAuthApiController : ControllerBase
         {
             return BadRequest("Jellyfin URL and API key are required.");
         }
+        if (string.IsNullOrWhiteSpace(request.Username))
+        {
+            return BadRequest("Jellyfin username is required.");
+        }
 
         var systemInfo = await _jellyfinApiClient.GetSystemInfoAsync(request.Url, request.ApiKey, cancellationToken);
         if (systemInfo is null)
@@ -289,7 +293,7 @@ public class PlatformAuthApiController : ControllerBase
             cancellationToken);
         if (userInfo is null)
         {
-            return BadRequest("Jellyfin API key is valid, but user lookup failed. Enter a Jellyfin username (or user id) and retry.");
+            return BadRequest("Jellyfin API key is valid, but user lookup failed for the provided username.");
         }
 
         var jellyfin = await _authService.UpdateAsync(state =>
