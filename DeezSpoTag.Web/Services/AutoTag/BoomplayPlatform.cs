@@ -10,7 +10,7 @@ public sealed class BoomplayPlatform : AutoTagPlatformBase
         {
             Id = "boomplay",
             Name = "Boomplay",
-            Description = "Metadata from Boomplay tracks (especially genre)",
+            Description = "Metadata from Boomplay tracks",
             Version = "1.0.0",
             MaxThreads = 1,
             RequiresAuth = false,
