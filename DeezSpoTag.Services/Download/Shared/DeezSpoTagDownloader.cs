@@ -407,39 +407,13 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
         try
         {
             using var scope = _serviceProvider.CreateScope();
-            var resolver = scope.ServiceProvider.GetService<IDownloadTagSettingsResolver>();
-            if (resolver != null)
-            {
-                var profile = await resolver.ResolveProfileAsync(DownloadObject.DestinationFolderId, _cancellationTokenSource.Token);
-                if (profile == null && DownloadObject.DestinationFolderId.HasValue)
-                {
-                    throw new InvalidOperationException("Destination music folder requires a valid AutoTag profile.");
-                }
-
-                _resolvedTagSettings = TagSettingsMerge.UseProfileOnly(profile?.TagSettings);
-                _resolvedDownloadTagSource = DownloadTagSourceHelper.ResolveDownloadTagSource(
-                    profile?.DownloadTagSource,
-                    DeezerSource,
-                    Settings.Service);
-                if (profile != null && string.IsNullOrWhiteSpace(_resolvedDownloadTagSource))
-                {
-                    var configuredSource = profile.DownloadTagSource?.Trim();
-                    throw new InvalidOperationException(
-                        $"Download profile source resolution failed: downloadTagSource '{configuredSource}' is invalid for engine '{Settings.Service ?? "unknown"}'.");
-                }
-            }
-
-            var conversionOverlay = scope.ServiceProvider.GetService<IFolderConversionSettingsOverlay>();
-            if (conversionOverlay != null)
-            {
-                await conversionOverlay.ApplyAsync(Settings, DownloadObject.DestinationFolderId, _cancellationTokenSource.Token);
-            }
+            await ResolveTagSettingsFromProfileAsync(scope.ServiceProvider);
+            await ApplyFolderConversionOverlayAsync(scope.ServiceProvider);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             if (ex is InvalidOperationException invalidOperationException
-                && (invalidOperationException.Message.StartsWith("Destination music folder requires a valid AutoTag profile.", StringComparison.Ordinal)
-                    || invalidOperationException.Message.StartsWith("Download profile source resolution failed:", StringComparison.Ordinal)))
+                && IsProfileResolutionValidationException(invalidOperationException))
             {
                 throw;
             }
@@ -450,6 +424,52 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
         }
 
         return _resolvedTagSettings ?? Settings.Tags ?? new TagSettings();
+    }
+
+    private async Task ResolveTagSettingsFromProfileAsync(IServiceProvider provider)
+    {
+        var resolver = provider.GetService<IDownloadTagSettingsResolver>();
+        if (resolver == null)
+        {
+            return;
+        }
+
+        var profile = await resolver.ResolveProfileAsync(DownloadObject.DestinationFolderId, _cancellationTokenSource.Token);
+        if (profile == null && DownloadObject.DestinationFolderId.HasValue)
+        {
+            throw new InvalidOperationException("Destination music folder requires a valid AutoTag profile.");
+        }
+
+        _resolvedTagSettings = TagSettingsMerge.UseProfileOnly(profile?.TagSettings);
+        _resolvedDownloadTagSource = DownloadTagSourceHelper.ResolveDownloadTagSource(
+            profile?.DownloadTagSource,
+            DeezerSource,
+            Settings.Service);
+        if (profile == null || !string.IsNullOrWhiteSpace(_resolvedDownloadTagSource))
+        {
+            return;
+        }
+
+        var configuredSource = profile.DownloadTagSource?.Trim();
+        throw new InvalidOperationException(
+            $"Download profile source resolution failed: downloadTagSource '{configuredSource}' is invalid for engine '{Settings.Service ?? "unknown"}'.");
+    }
+
+    private async Task ApplyFolderConversionOverlayAsync(IServiceProvider provider)
+    {
+        var conversionOverlay = provider.GetService<IFolderConversionSettingsOverlay>();
+        if (conversionOverlay == null)
+        {
+            return;
+        }
+
+        await conversionOverlay.ApplyAsync(Settings, DownloadObject.DestinationFolderId, _cancellationTokenSource.Token);
+    }
+
+    private static bool IsProfileResolutionValidationException(InvalidOperationException exception)
+    {
+        return exception.Message.StartsWith("Destination music folder requires a valid AutoTag profile.", StringComparison.Ordinal)
+            || exception.Message.StartsWith("Download profile source resolution failed:", StringComparison.Ordinal);
     }
     private async Task<string?> ResolveEpisodeStreamUrlAsync(string? episodeId, string? showId)
     {

@@ -1,5 +1,6 @@
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -14,12 +15,15 @@ public sealed class TaggingProfilesApiController : ControllerBase
 {
     private readonly TaggingProfileService _profiles;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
+    private readonly DeezSpoTagSettingsService _settingsService;
     public TaggingProfilesApiController(
         TaggingProfileService profiles,
-        AutoTagProfileResolutionService profileResolutionService)
+        AutoTagProfileResolutionService profileResolutionService,
+        DeezSpoTagSettingsService settingsService)
     {
         _profiles = profiles;
         _profileResolutionService = profileResolutionService;
+        _settingsService = settingsService;
     }
 
     [HttpGet]
@@ -72,6 +76,7 @@ public sealed class TaggingProfilesApiController : ControllerBase
         {
             return BadRequest("Profile name is required.");
         }
+        await SyncRuntimeSettingsFromDefaultProfileAsync(saved);
 
         return Ok(ToResponseModel(saved));
     }
@@ -174,6 +179,58 @@ public sealed class TaggingProfilesApiController : ControllerBase
     private static TaggingProfile DeepCloneProfile(TaggingProfile profile)
         => JsonSerializer.Deserialize<TaggingProfile>(JsonSerializer.Serialize(profile))
             ?? new TaggingProfile();
+
+    private async Task SyncRuntimeSettingsFromDefaultProfileAsync(TaggingProfile profile)
+    {
+        if (profile == null || !profile.IsDefault)
+        {
+            return;
+        }
+
+        var settings = _settingsService.LoadSettings();
+        settings.Tags ??= new TagSettings();
+        var technical = profile.Technical ?? new TechnicalTagSettings();
+        var folder = profile.FolderStructure ?? new FolderStructureSettings();
+
+        settings.Tags.SavePlaylistAsCompilation = technical.SavePlaylistAsCompilation;
+        settings.Tags.UseNullSeparator = technical.UseNullSeparator;
+        settings.Tags.SaveID3v1 = technical.SaveID3v1;
+        settings.Tags.MultiArtistSeparator = technical.MultiArtistSeparator ?? "default";
+        settings.Tags.SingleAlbumArtist = technical.SingleAlbumArtist;
+        settings.Tags.CoverDescriptionUTF8 = technical.CoverDescriptionUTF8;
+
+        settings.AlbumVariousArtists = technical.AlbumVariousArtists;
+        settings.RemoveDuplicateArtists = technical.RemoveDuplicateArtists;
+        settings.RemoveAlbumVersion = technical.RemoveAlbumVersion;
+        settings.DateFormat = technical.DateFormat ?? "Y-M-D";
+        settings.FeaturedToTitle = technical.FeaturedToTitle ?? "0";
+        settings.TitleCasing = technical.TitleCasing ?? "nothing";
+        settings.ArtistCasing = technical.ArtistCasing ?? "nothing";
+        settings.SyncedLyrics = technical.SyncedLyrics;
+        settings.SaveLyrics = technical.SaveLyrics;
+        settings.LrcType = technical.LrcType ?? "lyrics,syllable-lyrics,unsynced-lyrics";
+        settings.LrcFormat = technical.LrcFormat ?? "both";
+        settings.LyricsFallbackEnabled = technical.LyricsFallbackEnabled;
+        settings.LyricsFallbackOrder = technical.LyricsFallbackOrder ?? "apple,deezer,spotify,lrclib,musixmatch";
+        settings.ArtworkFallbackEnabled = technical.ArtworkFallbackEnabled;
+        settings.ArtworkFallbackOrder = technical.ArtworkFallbackOrder ?? "apple,deezer,spotify";
+        settings.ArtistArtworkFallbackEnabled = technical.ArtistArtworkFallbackEnabled;
+        settings.ArtistArtworkFallbackOrder = technical.ArtistArtworkFallbackOrder ?? "apple,deezer,spotify";
+
+        settings.CreateArtistFolder = folder.CreateArtistFolder;
+        settings.ArtistNameTemplate = folder.ArtistNameTemplate ?? "%artist%";
+        settings.CreateAlbumFolder = folder.CreateAlbumFolder;
+        settings.AlbumNameTemplate = folder.AlbumNameTemplate ?? "%album%";
+        settings.CreateCDFolder = folder.CreateCDFolder;
+        settings.CreateStructurePlaylist = folder.CreateStructurePlaylist;
+        settings.CreateSingleFolder = folder.CreateSingleFolder;
+        settings.CreatePlaylistFolder = folder.CreatePlaylistFolder;
+        settings.PlaylistNameTemplate = folder.PlaylistNameTemplate ?? "%playlist%";
+        settings.IllegalCharacterReplacer = folder.IllegalCharacterReplacer ?? "_";
+
+        _settingsService.SaveSettings(settings);
+        await Task.CompletedTask;
+    }
 
     private static UnifiedTagConfig ConvertTagConfig(JsonElement? input)
     {

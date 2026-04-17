@@ -59,78 +59,29 @@ internal static class AppleQueueItemHelpers
         ILogger logger,
         CancellationToken cancellationToken)
     {
-        var lastProgress = -1d;
-        var lastUpdate = DateTimeOffset.UtcNow;
-        var gate = new object();
-        var lastSegmentTotal = 0;
-        var lastSegmentCompleted = 0;
-        const double MinProgressDelta = 0.25d;
+        var state = new ProgressReporterState();
 
         return async (progress, speedMbps) =>
         {
-            var normalized = Math.Clamp(progress, 0, 100);
-            var now = DateTimeOffset.UtcNow;
-            var shouldSend = false;
-            var segmentTotal = 0;
-            var segmentCompleted = 0;
-            var progressToSend = 0d;
-            var segmentTotalToSend = 0;
-            var segmentCompletedToSend = 0;
-
-            if (speedMbps >= 100000)
-            {
-                segmentTotal = (int)Math.Floor(speedMbps / 100000d);
-                segmentCompleted = (int)Math.Round(speedMbps - (segmentTotal * 100000d));
-            }
-
-            lock (gate)
-            {
-                var baseline = lastProgress < 0 ? 0 : lastProgress;
-                if (normalized < baseline)
-                {
-                    normalized = baseline;
-                }
-
-                var shouldEmitSnapshot = (now - lastUpdate).TotalSeconds >= 1 && normalized > lastProgress;
-                if (lastProgress < 0
-                    || normalized >= 100
-                    || normalized - lastProgress >= MinProgressDelta
-                    || shouldEmitSnapshot)
-                {
-                    lastProgress = normalized;
-                    lastUpdate = now;
-                    shouldSend = true;
-                    if (segmentTotal > 0)
-                    {
-                        lastSegmentTotal = segmentTotal;
-                        lastSegmentCompleted = Math.Clamp(segmentCompleted, 0, segmentTotal);
-                    }
-
-                    progressToSend = normalized;
-                    segmentTotalToSend = lastSegmentTotal;
-                    segmentCompletedToSend = lastSegmentCompleted;
-                }
-            }
-
-            if (!shouldSend)
+            if (!state.TryBuildSnapshot(progress, speedMbps, DateTimeOffset.UtcNow, out var snapshot))
             {
                 return;
             }
 
             try
             {
-                payload.Progress = progressToSend;
-                payload.SegmentTotal = segmentTotalToSend;
-                payload.SegmentProgress = segmentCompletedToSend;
+                payload.Progress = snapshot.Progress;
+                payload.SegmentTotal = snapshot.SegmentTotal;
+                payload.SegmentProgress = snapshot.SegmentCompleted;
                 var json = JsonSerializer.Serialize(payload);
-                await queueRepository.UpdateProgressAsync(queueUuid, progressToSend, cancellationToken);
+                await queueRepository.UpdateProgressAsync(queueUuid, snapshot.Progress, cancellationToken);
                 await queueRepository.UpdatePayloadAsync(queueUuid, json, cancellationToken);
                 listener.Send("updateQueue", new
                 {
                     uuid = queueUuid,
-                    progress = progressToSend,
-                    segmentProgress = segmentCompletedToSend,
-                    segmentTotal = segmentTotalToSend
+                    progress = snapshot.Progress,
+                    segmentProgress = snapshot.SegmentCompleted,
+                    segmentTotal = snapshot.SegmentTotal
                 });
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -140,5 +91,68 @@ internal static class AppleQueueItemHelpers
                     logger.LogDebug(ex, "Failed to report progress for {QueueUuid}", queueUuid);                }
             }
         };
+    }
+
+    private readonly record struct ProgressSnapshot(
+        double Progress,
+        int SegmentTotal,
+        int SegmentCompleted);
+
+    private sealed class ProgressReporterState
+    {
+        private const double MinProgressDelta = 0.25d;
+        private readonly object _gate = new();
+        private double _lastProgress = -1d;
+        private DateTimeOffset _lastUpdate = DateTimeOffset.UtcNow;
+        private int _lastSegmentTotal;
+        private int _lastSegmentCompleted;
+
+        public bool TryBuildSnapshot(double progress, double speedMbps, DateTimeOffset now, out ProgressSnapshot snapshot)
+        {
+            snapshot = default;
+            var normalized = Math.Clamp(progress, 0, 100);
+            var (segmentTotal, segmentCompleted) = ParseSegmentProgress(speedMbps);
+
+            lock (_gate)
+            {
+                normalized = Math.Max(normalized, _lastProgress < 0 ? 0 : _lastProgress);
+                var shouldEmitSnapshot = (now - _lastUpdate).TotalSeconds >= 1 && normalized > _lastProgress;
+                if (!ShouldSendProgressUpdate(normalized, shouldEmitSnapshot))
+                {
+                    return false;
+                }
+
+                _lastProgress = normalized;
+                _lastUpdate = now;
+                if (segmentTotal > 0)
+                {
+                    _lastSegmentTotal = segmentTotal;
+                    _lastSegmentCompleted = Math.Clamp(segmentCompleted, 0, segmentTotal);
+                }
+
+                snapshot = new ProgressSnapshot(normalized, _lastSegmentTotal, _lastSegmentCompleted);
+                return true;
+            }
+        }
+
+        private bool ShouldSendProgressUpdate(double normalized, bool shouldEmitSnapshot)
+        {
+            return _lastProgress < 0
+                || normalized >= 100
+                || normalized - _lastProgress >= MinProgressDelta
+                || shouldEmitSnapshot;
+        }
+
+        private static (int SegmentTotal, int SegmentCompleted) ParseSegmentProgress(double speedMbps)
+        {
+            if (speedMbps < 100000)
+            {
+                return (0, 0);
+            }
+
+            var segmentTotal = (int)Math.Floor(speedMbps / 100000d);
+            var segmentCompleted = (int)Math.Round(speedMbps - (segmentTotal * 100000d));
+            return (segmentTotal, segmentCompleted);
+        }
     }
 }

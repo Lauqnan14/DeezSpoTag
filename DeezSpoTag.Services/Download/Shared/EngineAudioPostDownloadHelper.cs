@@ -23,7 +23,6 @@ public static class EngineAudioPostDownloadHelper
     private const string TrackType = "track";
     private const string DeezerSource = "deezer";
     private const string AppleSource = "apple";
-    private const string SpotifySource = "spotify";
     private const string MzStaticHost = "mzstatic.com";
     private const string UnknownArtist = "Unknown Artist";
     private const string CompletedStatus = "completed";
@@ -146,6 +145,24 @@ public static class EngineAudioPostDownloadHelper
         bool ShouldValidateArtwork,
         bool ArtworkReady,
         string? ArtworkFailureReason);
+
+    private sealed class PrefetchRunState
+    {
+        public PrefetchRunState(PrefetchRequirements requirements)
+        {
+            ArtworkStatus = requirements.ShouldFetchArtwork ? FetchingStatus : SkippedStatus;
+            LyricsStatus = requirements.ShouldFetchLyrics ? FetchingStatus : SkippedStatus;
+            ArtworkResult = new PrefetchArtworkResult(!requirements.ShouldFetchArtwork);
+        }
+
+        public string ArtworkStatus { get; set; }
+
+        public string LyricsStatus { get; set; }
+
+        public string LyricsType { get; set; } = string.Empty;
+
+        public PrefetchArtworkResult ArtworkResult { get; set; }
+    }
 
     private sealed class PrefetchGateState
     {
@@ -498,10 +515,7 @@ public static class EngineAudioPostDownloadHelper
         PrefetchExecutionContext execution,
         CancellationToken token)
     {
-        var completionResult = new PrefetchCompletionResult(
-            execution.Requirements.ShouldFetchArtwork,
-            !execution.Requirements.ShouldFetchArtwork,
-            execution.Requirements.ShouldFetchArtwork ? "Artwork prefetch did not complete." : null);
+        var completionResult = BuildDefaultPrefetchCompletionResult(execution.Requirements);
 
         try
         {
@@ -509,9 +523,6 @@ public static class EngineAudioPostDownloadHelper
             var settings = execution.Request.Settings;
             var appleArtworkSize = AppleQueueHelpers.GetAppleArtworkSize(settings);
             var preferMaxQualityCover = settings.EmbedMaxQualityCover;
-            var artworkStatus = execution.Requirements.ShouldFetchArtwork ? FetchingStatus : SkippedStatus;
-            var lyricsStatus = execution.Requirements.ShouldFetchLyrics ? FetchingStatus : SkippedStatus;
-            var lyricsType = string.Empty;
             var coverUrls = await DownloadEngineArtworkHelper.ResolveStandardAudioCoverUrlsAsync(
                 new DownloadEngineArtworkHelper.StandardAudioCoverResolveRequest(
                     settings,
@@ -529,80 +540,18 @@ public static class EngineAudioPostDownloadHelper
                     execution.Request.Payload.Isrc,
                     execution.Request.Logger),
                 token);
-            var artworkResult = new PrefetchArtworkResult(!execution.Requirements.ShouldFetchArtwork);
-
-            Task artworkTask = Task.CompletedTask;
-            if (execution.Requirements.ShouldFetchArtwork)
-            {
-                artworkTask = Task.Run(async () =>
-                {
-                    try
-                    {
-                        artworkResult = await RunArtworkPrefetchAsync(
-                            execution,
-                            runtime,
-                            coverUrls,
-                            appleArtworkSize,
-                            preferMaxQualityCover,
-                            token);
-                        artworkStatus = artworkResult.Success ? CompletedStatus : FailedStatus;
-                        if (!artworkResult.Success && !string.IsNullOrWhiteSpace(artworkResult.FailureReason))
-                        {
-                            execution.Request.Logger.LogWarning(
-                                "{Engine} artwork prefetch incomplete for {Path}: {Reason}",
-                                execution.Request.Engine,
-                                execution.Request.ExpectedOutputPath,
-                                artworkResult.FailureReason);
-                        }
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        artworkResult = new PrefetchArtworkResult(false, ex.Message);
-                        artworkStatus = FailedStatus;
-                        execution.Request.Logger.LogWarning(
-                            ex,
-                            "{Engine} artwork prefetch failed for {Path}",
-                            execution.Request.Engine,
-                            execution.Request.ExpectedOutputPath);
-                    }
-                    finally
-                    {
-                        QueuePrefetchStatusHelper.Send(execution.Request.Listener, execution.Paths.QueueUuid, artworkStatus, lyricsStatus);
-                    }
-                }, token);
-            }
-
-            Task lyricsTask = Task.CompletedTask;
-            if (execution.Requirements.ShouldFetchLyrics)
-            {
-                lyricsTask = Task.Run(async () =>
-                {
-                    try
-                    {
-                        lyricsType = await RunLyricsPrefetchAsync(execution, token);
-                        lyricsStatus = string.IsNullOrWhiteSpace(lyricsType) ? NoLyricsStatus : CompletedStatus;
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        lyricsStatus = FailedStatus;
-                        execution.Request.Logger.LogWarning(
-                            ex,
-                            "{Engine} lyrics download failed for {Path}",
-                            execution.Request.Engine,
-                            execution.Request.ExpectedOutputPath);
-                    }
-                    finally
-                    {
-                        QueuePrefetchStatusHelper.Send(execution.Request.Listener, execution.Paths.QueueUuid, artworkStatus, lyricsStatus, lyricsType);
-                    }
-                }, token);
-            }
-
+            var runState = new PrefetchRunState(execution.Requirements);
+            var artworkTask = BuildArtworkPrefetchTask(
+                execution,
+                runtime,
+                coverUrls,
+                appleArtworkSize,
+                preferMaxQualityCover,
+                runState,
+                token);
+            var lyricsTask = BuildLyricsPrefetchTask(execution, runState, token);
             await Task.WhenAll(artworkTask, lyricsTask);
-            completionResult = new PrefetchCompletionResult(
-                execution.Requirements.ShouldFetchArtwork,
-                artworkResult.Success,
-                artworkResult.FailureReason);
+            completionResult = BuildPrefetchCompletionResult(execution.Requirements, runState);
             await PersistPrefetchPayloadStateAsync(provider, execution, token);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -629,6 +578,122 @@ public static class EngineAudioPostDownloadHelper
         {
             execution.GateState.Completion.TrySetResult(completionResult);
         }
+    }
+
+    private static PrefetchCompletionResult BuildDefaultPrefetchCompletionResult(PrefetchRequirements requirements)
+    {
+        return new PrefetchCompletionResult(
+            requirements.ShouldFetchArtwork,
+            !requirements.ShouldFetchArtwork,
+            requirements.ShouldFetchArtwork ? "Artwork prefetch did not complete." : null);
+    }
+
+    private static PrefetchCompletionResult BuildPrefetchCompletionResult(
+        PrefetchRequirements requirements,
+        PrefetchRunState runState)
+    {
+        return new PrefetchCompletionResult(
+            requirements.ShouldFetchArtwork,
+            runState.ArtworkResult.Success,
+            runState.ArtworkResult.FailureReason);
+    }
+
+    private static Task BuildArtworkPrefetchTask(
+        PrefetchExecutionContext execution,
+        PrefetchRuntimeServices runtime,
+        IReadOnlyList<string> coverUrls,
+        int appleArtworkSize,
+        bool preferMaxQualityCover,
+        PrefetchRunState runState,
+        CancellationToken token)
+    {
+        if (!execution.Requirements.ShouldFetchArtwork)
+        {
+            return Task.CompletedTask;
+        }
+
+        return Task.Run(
+            async () =>
+            {
+                try
+                {
+                    runState.ArtworkResult = await RunArtworkPrefetchAsync(
+                        execution,
+                        runtime,
+                        coverUrls,
+                        appleArtworkSize,
+                        preferMaxQualityCover,
+                        token);
+                    runState.ArtworkStatus = runState.ArtworkResult.Success ? CompletedStatus : FailedStatus;
+                    if (!runState.ArtworkResult.Success && !string.IsNullOrWhiteSpace(runState.ArtworkResult.FailureReason))
+                    {
+                        execution.Request.Logger.LogWarning(
+                            "{Engine} artwork prefetch incomplete for {Path}: {Reason}",
+                            execution.Request.Engine,
+                            execution.Request.ExpectedOutputPath,
+                            runState.ArtworkResult.FailureReason);
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    runState.ArtworkResult = new PrefetchArtworkResult(false, ex.Message);
+                    runState.ArtworkStatus = FailedStatus;
+                    execution.Request.Logger.LogWarning(
+                        ex,
+                        "{Engine} artwork prefetch failed for {Path}",
+                        execution.Request.Engine,
+                        execution.Request.ExpectedOutputPath);
+                }
+                finally
+                {
+                    QueuePrefetchStatusHelper.Send(
+                        execution.Request.Listener,
+                        execution.Paths.QueueUuid,
+                        runState.ArtworkStatus,
+                        runState.LyricsStatus);
+                }
+            },
+            token);
+    }
+
+    private static Task BuildLyricsPrefetchTask(
+        PrefetchExecutionContext execution,
+        PrefetchRunState runState,
+        CancellationToken token)
+    {
+        if (!execution.Requirements.ShouldFetchLyrics)
+        {
+            return Task.CompletedTask;
+        }
+
+        return Task.Run(
+            async () =>
+            {
+                try
+                {
+                    runState.LyricsType = await RunLyricsPrefetchAsync(execution, token);
+                    runState.LyricsStatus = string.IsNullOrWhiteSpace(runState.LyricsType) ? NoLyricsStatus : CompletedStatus;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    runState.LyricsStatus = FailedStatus;
+                    execution.Request.Logger.LogWarning(
+                        ex,
+                        "{Engine} lyrics download failed for {Path}",
+                        execution.Request.Engine,
+                        execution.Request.ExpectedOutputPath);
+                }
+                finally
+                {
+                    QueuePrefetchStatusHelper.Send(
+                        execution.Request.Listener,
+                        execution.Paths.QueueUuid,
+                        runState.ArtworkStatus,
+                        runState.LyricsStatus,
+                        runState.LyricsType);
+                }
+            },
+            token);
     }
 
     private static async Task PersistPrefetchPayloadStateAsync(
@@ -721,7 +786,6 @@ public static class EngineAudioPostDownloadHelper
         bool preferMaxQualityCover,
         CancellationToken token)
     {
-        var settings = execution.Request.Settings;
         if (execution.Requirements.ShouldFetchPrimaryArtwork)
         {
             if (coverUrls.Count == 0)
@@ -1001,11 +1065,14 @@ public static class EngineAudioPostDownloadHelper
             TryRemovePrefetchState(queueUuid, gateState);
         }
 
-        return result.ShouldValidateArtwork && !result.ArtworkReady
-            ? (string.IsNullOrWhiteSpace(result.ArtworkFailureReason)
-                ? "Artwork prefetch did not complete successfully."
-                : result.ArtworkFailureReason)
-            : null;
+        if (!result.ShouldValidateArtwork || result.ArtworkReady)
+        {
+            return null;
+        }
+
+        return string.IsNullOrWhiteSpace(result.ArtworkFailureReason)
+            ? "Artwork prefetch did not complete successfully."
+            : result.ArtworkFailureReason;
     }
 
     public static void ClearPrefetchState(string queueUuid)
