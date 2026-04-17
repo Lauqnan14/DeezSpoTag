@@ -90,15 +90,9 @@ public static class GenreTagAliasNormalizer
             return string.Empty;
         }
 
-        if (aliasMap == null || aliasMap.Count == 0)
+        if (TryNormalizeAliasMatch(trimmed, aliasMap, out var normalized))
         {
-            return trimmed;
-        }
-
-        var key = ToLookupKey(trimmed);
-        if (key.Length > 0 && aliasMap.TryGetValue(key, out var canonical) && !string.IsNullOrWhiteSpace(canonical))
-        {
-            return canonical.Trim();
+            return normalized;
         }
 
         return trimmed;
@@ -122,9 +116,20 @@ public static class GenreTagAliasNormalizer
                 continue;
             }
 
-            var tokens = splitComposite
-                ? rawValue.Split(CompositeGenreSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                : new[] { rawValue };
+            var trimmed = rawValue.Trim();
+            if (TryNormalizeAliasMatch(trimmed, aliasMap, out var normalizedWholeValue))
+            {
+                output.Add(normalizedWholeValue);
+                continue;
+            }
+
+            if (!splitComposite)
+            {
+                output.Add(trimmed);
+                continue;
+            }
+
+            var tokens = trimmed.Split(CompositeGenreSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
             foreach (var token in tokens)
             {
@@ -137,6 +142,29 @@ public static class GenreTagAliasNormalizer
         }
 
         return output;
+    }
+
+    private static bool TryNormalizeAliasMatch(
+        string value,
+        IReadOnlyDictionary<string, string>? aliasMap,
+        out string normalized)
+    {
+        normalized = value;
+        if (aliasMap == null || aliasMap.Count == 0)
+        {
+            return false;
+        }
+
+        var key = ToLookupKey(value);
+        if (key.Length == 0
+            || !aliasMap.TryGetValue(key, out var canonical)
+            || string.IsNullOrWhiteSpace(canonical))
+        {
+            return false;
+        }
+
+        normalized = canonical.Trim();
+        return true;
     }
 
     public static string ToLookupKey(string? value)

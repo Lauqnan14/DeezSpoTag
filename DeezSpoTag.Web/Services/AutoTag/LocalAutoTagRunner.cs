@@ -3059,7 +3059,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 context.Config,
                 context.Separator,
                 context.PlatformId,
-                context.EffectiveTagSettings.UseNullSeparator);
+                context.EffectiveTagSettings.UseNullSeparator,
+                context.GenreAliasMap,
+                context.SplitCompositeGenres);
             ApplyPrimaryTagWrites(tagWriteContext, context);
             ApplyAudioFeatureTagWrites(tagWriteContext, context);
             ApplyGenreAndStyleTagWrites(file, tagWriteContext, context);
@@ -4589,7 +4591,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagRunnerConfig Config,
         string Separator,
         string PlatformId,
-        bool UseNullSeparator);
+        bool UseNullSeparator,
+        IReadOnlyDictionary<string, string> GenreAliasMap,
+        bool SplitCompositeGenres);
 
     private readonly record struct TagFieldBinding(
         string Id3Frame,
@@ -4627,12 +4631,19 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         if (binding.Tag == SupportedTag.Genre)
         {
-            values = SanitizeGenres(values);
+            values = SanitizeGenres(values, context.GenreAliasMap, context.SplitCompositeGenres);
         }
 
         if (IsMp4Family(context.Extension))
         {
-            Mp4TagHelper.SetMp4Field(context.File, binding.Tag, values, context.Config, context.PlatformId);
+            Mp4TagHelper.SetMp4Field(
+                context.File,
+                binding.Tag,
+                values,
+                context.Config,
+                context.PlatformId,
+                context.GenreAliasMap,
+                context.SplitCompositeGenres);
             return;
         }
 
@@ -4649,7 +4660,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         if (tag == SupportedTag.Genre || IsGenreRawTag(rawName))
         {
-            values = SanitizeGenres(values);
+            values = SanitizeGenres(values, context.GenreAliasMap, context.SplitCompositeGenres);
         }
 
         if (!force && !ShouldOverwriteTag(context.Config, tag))
@@ -4683,7 +4694,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (IsMp4Family(context.Extension))
         {
-            Mp4TagHelper.SetMp4Raw(context.File, rawName, ApplySeparator(values, context.Separator));
+            Mp4TagHelper.SetMp4Raw(
+                context.File,
+                rawName,
+                ApplySeparator(values, context.Separator),
+                context.GenreAliasMap,
+                context.SplitCompositeGenres);
         }
     }
 
@@ -5420,7 +5436,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             };
         }
 
-        public static void SetMp4Field(TagLib.File file, SupportedTag tag, List<string> values, AutoTagRunnerConfig config, string platformId)
+        public static void SetMp4Field(
+            TagLib.File file,
+            SupportedTag tag,
+            List<string> values,
+            AutoTagRunnerConfig config,
+            string platformId,
+            IReadOnlyDictionary<string, string> genreAliasMap,
+            bool splitCompositeGenres)
         {
             if (!ShouldOverwriteTag(config, tag) && HasTag(file, ".mp4", tag, config, platformId))
             {
@@ -5442,7 +5465,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     file.Tag.Album = values.FirstOrDefault() ?? "";
                     break;
                 case SupportedTag.Genre:
-                    file.Tag.Genres = SanitizeGenres(values).ToArray();
+                    file.Tag.Genres = SanitizeGenres(values, genreAliasMap, splitCompositeGenres).ToArray();
                     break;
                 case SupportedTag.BPM:
                     if (int.TryParse(values.FirstOrDefault(), out var bpm))
@@ -5471,12 +5494,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             }
         }
 
-        public static void SetMp4Raw(TagLib.File file, string rawName, string[] values)
+        public static void SetMp4Raw(
+            TagLib.File file,
+            string rawName,
+            string[] values,
+            IReadOnlyDictionary<string, string> genreAliasMap,
+            bool splitCompositeGenres)
         {
             var apple = (TagLib.Mpeg4.AppleTag)file.GetTag(TagTypes.Apple, true);
             var normalized = Mp4RawTagNameNormalizer.Normalize(rawName);
             var output = IsGenreRawTag(normalized) || IsGenreRawTag(rawName)
-                ? SanitizeGenres(values).ToArray()
+                ? SanitizeGenres(values, genreAliasMap, splitCompositeGenres).ToArray()
                 : values;
             TrySetAppleDashBox(apple, normalized, output);
         }
