@@ -6,6 +6,9 @@ namespace DeezSpoTag.Tests;
 
 public sealed class GenreTagAliasNormalizerTests
 {
+    private static readonly string[] RnbSoulComposite = ["R&B/Soul"];
+    private static readonly string[] HipHopPopComposite = ["Hip-Hop/Pop"];
+
     [Fact]
     public void NormalizeAndExpandValues_PrefersWholeAliasBeforeCompositeSplit()
     {
@@ -19,7 +22,7 @@ public sealed class GenreTagAliasNormalizerTests
         ]);
 
         var values = GenreTagAliasNormalizer.NormalizeAndExpandValues(
-            new[] { "R&B/Soul" },
+            RnbSoulComposite,
             aliasMap,
             splitComposite: true);
 
@@ -40,7 +43,7 @@ public sealed class GenreTagAliasNormalizerTests
         ]);
 
         var values = GenreTagAliasNormalizer.NormalizeAndExpandValues(
-            new[] { "Hip-Hop/Pop" },
+            HipHopPopComposite,
             aliasMap,
             splitComposite: true);
 
