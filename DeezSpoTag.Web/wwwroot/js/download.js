@@ -2557,6 +2557,16 @@ DeezSpoTag.Download = {
         this.logger[level]?.(`${prefix}${message}`, { engine });
     },
 
+    getQueueActionHtml(item) {
+        if (item.status === 'queued' || item.status === 'downloading') {
+            return `<button onclick="DeezSpoTag.Download.cancelDownload('${item.id}')" class="btn-danger action-btn action-btn-sm">Cancel</button>`;
+        }
+        if (item.status === 'cancelled') {
+            return `<button onclick="DeezSpoTag.Download.retryDownload('${item.id}')" class="btn-secondary action-btn action-btn-sm">Retry</button>`;
+        }
+        return '';
+    },
+
     // UI Updates
     updateQueueDisplay() {
         const queueContainer = document.getElementById('download-queue');
@@ -2577,12 +2587,7 @@ DeezSpoTag.Download = {
                     <div class="download-progress" data-download-id="${item.id}" data-progress-target="${targetProgress}" style="width: ${startProgress}%"></div>
                 </div>
                 <div class="download-actions">
-                    ${item.status === 'queued' || item.status === 'downloading' ? 
-                        `<button onclick="DeezSpoTag.Download.cancelDownload('${item.id}')" class="btn-danger action-btn action-btn-sm">Cancel</button>` : 
-                        item.status === 'cancelled'
-                            ? `<button onclick="DeezSpoTag.Download.retryDownload('${item.id}')" class="btn-secondary action-btn action-btn-sm">Retry</button>`
-                            : ''
-                    }
+                    ${this.getQueueActionHtml(item)}
                 </div>
             </div>
         `;}).join('');

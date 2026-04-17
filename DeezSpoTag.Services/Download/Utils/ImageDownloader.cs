@@ -29,6 +29,19 @@ public class ImageDownloader
     private const string SpotifyCoverSize300 = "ab67616d00001e02";
     private const string SpotifyCoverSize64 = "ab67616d00004851";
     private const string SpotifyCoverSizeMax = "ab67616d000082c1";
+    private enum DownloadAttemptOutcome
+    {
+        Retry,
+        Fail
+    }
+
+    private enum DownloadAttemptResult
+    {
+        Success,
+        Retry,
+        Fail
+    }
+
     private static readonly string[] SpotifyCoverSizeTokens =
     {
         SpotifyCoverSize640,
@@ -74,75 +87,140 @@ public class ImageDownloader
 
         EnsureDestinationDirectory(path);
         using var httpClient = _httpClientFactory.CreateClient("ImageDownload");
+        return await DownloadImageWithRetriesAsync(httpClient, url, path, cancellationToken);
+    }
 
+    private async Task<string?> DownloadImageWithRetriesAsync(
+        HttpClient httpClient,
+        string url,
+        string path,
+        CancellationToken cancellationToken)
+    {
         var attempt = 0;
         while (true)
         {
-            try
+            var attemptResult = await RunDownloadAttemptAsync(
+                httpClient,
+                url,
+                path,
+                attempt,
+                cancellationToken);
+
+            switch (attemptResult)
             {
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                cts.CancelAfter(TimeSpan.FromMilliseconds(DOWNLOAD_TIMEOUT_MS));
-
-                var downloadUrl = await ResolveDownloadUrlAsync(httpClient, url, cts.Token);
-                await DownloadImagePayloadAsync(httpClient, downloadUrl, path, cts.Token);
-
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation("Successfully downloaded image: {Url} to {Path}", downloadUrl, path);
-                }
-
-                return path;
-            }
-            catch (OperationCanceledException ex)
-            {
-                TryDeletePartialFile(path);
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-
-                if (attempt >= MAX_DOWNLOAD_RETRY_ATTEMPTS)
-                {
-                    _logger.LogWarning(ex, "Image download timed out or was canceled internally: {Url}", url);
+                case DownloadAttemptResult.Success:
+                    return path;
+                case DownloadAttemptResult.Fail:
                     return null;
-                }
-
-                attempt++;
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(ex, "Retrying image download after internal cancellation (attempt {Attempt}/{MaxAttempts})", attempt, MAX_DOWNLOAD_RETRY_ATTEMPTS);
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                TryDeletePartialFile(path);
-                if (ex is HttpRequestException httpError && IsHttpError(httpError))
-                {
-                    _logger.LogWarning(ex, "Image not found: {Url}", url);
-                    return null;
-                }
-
-                if (IsRetryableError(ex))
-                {
-                    if (attempt >= MAX_DOWNLOAD_RETRY_ATTEMPTS)
-                    {
-                        _logger.LogWarning(ex, "Image download failed after retry attempts: {Url}", url);
-                        return null;
-                    }
-
+                case DownloadAttemptResult.Retry:
                     attempt++;
-                    if (_logger.IsEnabled(LogLevel.Debug))
-                    {
-                        _logger.LogDebug(ex, "Retrying image download due to retryable error (attempt {Attempt}/{MaxAttempts})", attempt, MAX_DOWNLOAD_RETRY_ATTEMPTS);
-                    }
-
-                    continue;
-                }
-
-                _logger.LogError(ex, "Failed to download image from {Url} to {Path}", url, path);
-                return null;
+                    break;
             }
         }
+    }
+
+    private async Task<DownloadAttemptResult> RunDownloadAttemptAsync(
+        HttpClient httpClient,
+        string url,
+        string path,
+        int attempt,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(TimeSpan.FromMilliseconds(DOWNLOAD_TIMEOUT_MS));
+
+            var downloadUrl = await ResolveDownloadUrlAsync(httpClient, url, cts.Token);
+            await DownloadImagePayloadAsync(httpClient, downloadUrl, path, cts.Token);
+
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Successfully downloaded image: {Url} to {Path}", downloadUrl, path);
+            }
+
+            return DownloadAttemptResult.Success;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            return HandleCancellationFailure(ex, path, url, attempt) == DownloadAttemptOutcome.Fail
+                ? DownloadAttemptResult.Fail
+                : DownloadAttemptResult.Retry;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return HandleExceptionFailure(ex, path, url, attempt) == DownloadAttemptOutcome.Fail
+                ? DownloadAttemptResult.Fail
+                : DownloadAttemptResult.Retry;
+        }
+    }
+
+    private DownloadAttemptOutcome HandleCancellationFailure(
+        OperationCanceledException ex,
+        string path,
+        string url,
+        int attempt)
+    {
+        TryDeletePartialFile(path);
+        if (attempt >= MAX_DOWNLOAD_RETRY_ATTEMPTS)
+        {
+            _logger.LogWarning(ex, "Image download timed out or was canceled internally: {Url}", url);
+            return DownloadAttemptOutcome.Fail;
+        }
+
+        var nextAttempt = attempt + 1;
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                ex,
+                "Retrying image download after internal cancellation (attempt {Attempt}/{MaxAttempts})",
+                nextAttempt,
+                MAX_DOWNLOAD_RETRY_ATTEMPTS);
+        }
+
+        return DownloadAttemptOutcome.Retry;
+    }
+
+    private DownloadAttemptOutcome HandleExceptionFailure(
+        Exception ex,
+        string path,
+        string url,
+        int attempt)
+    {
+        TryDeletePartialFile(path);
+        if (ex is HttpRequestException httpError && IsHttpError(httpError))
+        {
+            _logger.LogWarning(ex, "Image not found: {Url}", url);
+            return DownloadAttemptOutcome.Fail;
+        }
+
+        if (IsRetryableError(ex))
+        {
+            if (attempt >= MAX_DOWNLOAD_RETRY_ATTEMPTS)
+            {
+                _logger.LogWarning(ex, "Image download failed after retry attempts: {Url}", url);
+                return DownloadAttemptOutcome.Fail;
+            }
+
+            var nextAttempt = attempt + 1;
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Retrying image download due to retryable error (attempt {Attempt}/{MaxAttempts})",
+                    nextAttempt,
+                    MAX_DOWNLOAD_RETRY_ATTEMPTS);
+            }
+
+            return DownloadAttemptOutcome.Retry;
+        }
+
+        _logger.LogError(ex, "Failed to download image from {Url} to {Path}", url, path);
+        return DownloadAttemptOutcome.Fail;
     }
 
     private string? TryReuseExistingImagePath(string path, string overwrite)

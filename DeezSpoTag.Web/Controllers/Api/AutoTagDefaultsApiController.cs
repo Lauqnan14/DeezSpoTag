@@ -196,55 +196,17 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
         return normalized;
     }
 
-    private async Task SyncRuntimeSettingsFromDefaultProfileAsync(IReadOnlyList<TaggingProfile> profiles)
+    private Task SyncRuntimeSettingsFromDefaultProfileAsync(IReadOnlyList<TaggingProfile> profiles)
     {
         var profile = profiles?.FirstOrDefault(item => item.IsDefault);
         if (profile == null)
         {
-            return;
+            return Task.CompletedTask;
         }
 
         var settings = _settingsService.LoadSettings();
-        settings.Tags ??= new TagSettings();
-        var technical = profile.Technical ?? new TechnicalTagSettings();
-        var folder = profile.FolderStructure ?? new FolderStructureSettings();
-
-        settings.Tags.SavePlaylistAsCompilation = technical.SavePlaylistAsCompilation;
-        settings.Tags.UseNullSeparator = technical.UseNullSeparator;
-        settings.Tags.SaveID3v1 = technical.SaveID3v1;
-        settings.Tags.MultiArtistSeparator = technical.MultiArtistSeparator ?? "default";
-        settings.Tags.SingleAlbumArtist = technical.SingleAlbumArtist;
-        settings.Tags.CoverDescriptionUTF8 = technical.CoverDescriptionUTF8;
-        settings.AlbumVariousArtists = technical.AlbumVariousArtists;
-        settings.RemoveDuplicateArtists = technical.RemoveDuplicateArtists;
-        settings.RemoveAlbumVersion = technical.RemoveAlbumVersion;
-        settings.DateFormat = technical.DateFormat ?? "Y-M-D";
-        settings.FeaturedToTitle = technical.FeaturedToTitle ?? "0";
-        settings.TitleCasing = technical.TitleCasing ?? "nothing";
-        settings.ArtistCasing = technical.ArtistCasing ?? "nothing";
-        settings.SyncedLyrics = technical.SyncedLyrics;
-        settings.SaveLyrics = technical.SaveLyrics;
-        settings.LrcType = technical.LrcType ?? "lyrics,syllable-lyrics,unsynced-lyrics";
-        settings.LrcFormat = technical.LrcFormat ?? "both";
-        settings.LyricsFallbackEnabled = technical.LyricsFallbackEnabled;
-        settings.LyricsFallbackOrder = technical.LyricsFallbackOrder ?? "apple,deezer,spotify,lrclib,musixmatch";
-        settings.ArtworkFallbackEnabled = technical.ArtworkFallbackEnabled;
-        settings.ArtworkFallbackOrder = technical.ArtworkFallbackOrder ?? "apple,deezer,spotify";
-        settings.ArtistArtworkFallbackEnabled = technical.ArtistArtworkFallbackEnabled;
-        settings.ArtistArtworkFallbackOrder = technical.ArtistArtworkFallbackOrder ?? "apple,deezer,spotify";
-
-        settings.CreateArtistFolder = folder.CreateArtistFolder;
-        settings.ArtistNameTemplate = folder.ArtistNameTemplate ?? "%artist%";
-        settings.CreateAlbumFolder = folder.CreateAlbumFolder;
-        settings.AlbumNameTemplate = folder.AlbumNameTemplate ?? "%album%";
-        settings.CreateCDFolder = folder.CreateCDFolder;
-        settings.CreateStructurePlaylist = folder.CreateStructurePlaylist;
-        settings.CreateSingleFolder = folder.CreateSingleFolder;
-        settings.CreatePlaylistFolder = folder.CreatePlaylistFolder;
-        settings.PlaylistNameTemplate = folder.PlaylistNameTemplate ?? "%playlist%";
-        settings.IllegalCharacterReplacer = folder.IllegalCharacterReplacer ?? "_";
-
+        TaggingProfileSettingsMapper.ApplyProfileToSettings(settings, profile);
         _settingsService.SaveSettings(settings);
-        await Task.CompletedTask;
+        return Task.CompletedTask;
     }
 }

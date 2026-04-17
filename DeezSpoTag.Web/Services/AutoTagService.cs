@@ -1771,7 +1771,7 @@ public class AutoTagService
         }
     }
 
-    private StageExecutionResult HandleStoppedStage(AutoTagJob job)
+    private static StageExecutionResult HandleStoppedStage(AutoTagJob job)
     {
         var interrupted = IsEnhancementRunIntent(job.RunIntent);
         job.Status = interrupted

@@ -489,23 +489,9 @@ public class TrackDownloader
     {
         if (context.Settings.OverwriteFile == "t" || context.Settings.OverwriteFile == "y")
         {
-            context.Listener?.OnDownloadInfo(context.DownloadObject, "Tagging track", "tagging");
-            try
-            {
-                await EnsureLyricsForTaggingAsync(
-                    context.Track,
-                    context.WritePath,
-                    context.Settings,
-                    context.TagSettings,
-                    context.CancellationToken);
-                await _audioTagger.TagTrackAsync(context.Extension, context.WritePath, context.Track, context.TagSettings);
-                context.Listener?.OnDownloadInfo(context.DownloadObject, "Track tagged", "tagged");
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "Tagging existing Deezer file failed for {Path}; keeping audio file.", context.WritePath);
-                context.Listener?.OnDownloadInfo(context.DownloadObject, "Track tag update failed; keeping audio file", "tagWarning");
-            }
+            await TryTagTrackAsync(
+                context,
+                isExistingFile: true);
         }
 
         context.Result.Path = context.WritePath;
@@ -587,6 +573,15 @@ public class TrackDownloader
             return;
         }
 
+        await TryTagTrackAsync(
+            context,
+            isExistingFile: false);
+    }
+
+    private async Task TryTagTrackAsync(
+        TrackDownloadExecutionContext context,
+        bool isExistingFile)
+    {
         context.Listener?.OnDownloadInfo(context.DownloadObject, "Tagging track", "tagging");
         try
         {
@@ -601,6 +596,13 @@ public class TrackDownloader
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            if (isExistingFile)
+            {
+                _logger.LogWarning(ex, "Tagging existing Deezer file failed for {Path}; keeping audio file.", context.WritePath);
+                context.Listener?.OnDownloadInfo(context.DownloadObject, "Track tag update failed; keeping audio file", "tagWarning");
+                return;
+            }
+
             _logger.LogWarning(ex, "Tagging Deezer download failed for {Path}; keeping audio file.", context.WritePath);
             context.Listener?.OnDownloadInfo(context.DownloadObject, "Track tagging failed; keeping audio file", "tagWarning");
         }
