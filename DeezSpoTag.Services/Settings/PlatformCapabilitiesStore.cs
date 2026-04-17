@@ -9,7 +9,7 @@ public sealed class PlatformCapabilitiesStore
 {
     private const string ITunesPlatform = "itunes";
     private const string LRCLibPlatform = "lrclib";
-    private static readonly IReadOnlyDictionary<string, string> PlatformIdAliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    private static readonly Dictionary<string, string> PlatformIdAliases = new(StringComparer.OrdinalIgnoreCase)
     {
         ["apple"] = ITunesPlatform,
         ["applemusic"] = ITunesPlatform,

@@ -2384,39 +2384,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
     private static bool IsPathUnderRoot(string rootPath, string candidatePath)
     {
-        if (string.IsNullOrWhiteSpace(rootPath) || string.IsNullOrWhiteSpace(candidatePath))
-        {
-            return false;
-        }
-
-        var rootIo = DownloadPathResolver.ResolveIoPath(rootPath);
-        var candidateIo = DownloadPathResolver.ResolveIoPath(candidatePath);
-        if (string.IsNullOrWhiteSpace(rootIo) || string.IsNullOrWhiteSpace(candidateIo))
-        {
-            return false;
-        }
-
-        try
-        {
-            if (!DownloadPathResolver.IsSmbPath(rootIo))
-            {
-                rootIo = Path.GetFullPath(rootIo);
-            }
-
-            if (!DownloadPathResolver.IsSmbPath(candidateIo))
-            {
-                candidateIo = Path.GetFullPath(candidateIo);
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return false;
-        }
-
-        var normalizedRoot = rootIo.Replace('\\', '/').TrimEnd('/');
-        var normalizedCandidate = candidateIo.Replace('\\', '/').TrimEnd('/');
-        return string.Equals(normalizedCandidate, normalizedRoot, StringComparison.OrdinalIgnoreCase)
-            || normalizedCandidate.StartsWith(normalizedRoot + "/", StringComparison.OrdinalIgnoreCase);
+        return PathComparisonHelper.IsPathUnderRoot(rootPath, candidatePath);
     }
 
     private TaggingProfile? ResolveAutomationProfileForPendingDownloads(

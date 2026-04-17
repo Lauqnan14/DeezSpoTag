@@ -169,7 +169,7 @@ public static class DownloadEngineArtworkHelper
 
     private static async Task TryEmbedCoverAsync(
         AudioTagWithCoverRequest request,
-        IReadOnlyList<string> coverUrls,
+        List<string> coverUrls,
         CancellationToken cancellationToken)
     {
         if (request.Settings.Tags?.Cover != true

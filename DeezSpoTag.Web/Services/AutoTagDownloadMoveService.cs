@@ -2092,140 +2092,6 @@ public sealed class AutoTagDownloadMoveService
         }
     }
 
-    private static void MoveFileWithFallback(string sourcePath, string destinationPath)
-    {
-        var allowCopyFallback = ShouldUseCopyFallback(sourcePath, destinationPath);
-        const int maxMoveAttempts = 6;
-        for (var attempt = 1; attempt <= maxMoveAttempts; attempt++)
-        {
-            try
-            {
-                IOFile.Move(sourcePath, destinationPath, overwrite: true);
-                return;
-            }
-            catch (IOException) when (attempt < maxMoveAttempts)
-            {
-                // Move can fail transiently when another process still has a read handle.
-                System.Threading.Thread.Sleep(50 * attempt);
-            }
-            catch (IOException) when (allowCopyFallback)
-            {
-                MoveFileByCopyWithDeleteGuard(sourcePath, destinationPath);
-                return;
-            }
-        }
-
-        IOFile.Move(sourcePath, destinationPath, overwrite: true);
-    }
-
-    private static bool ShouldUseCopyFallback(string sourcePath, string destinationPath)
-    {
-        var sourceIo = DownloadPathResolver.ResolveIoPath(sourcePath);
-        var destinationIo = DownloadPathResolver.ResolveIoPath(destinationPath);
-        if (string.IsNullOrWhiteSpace(sourceIo) || string.IsNullOrWhiteSpace(destinationIo))
-        {
-            return false;
-        }
-
-        if (DownloadPathResolver.IsSmbPath(sourceIo) || DownloadPathResolver.IsSmbPath(destinationIo))
-        {
-            return true;
-        }
-
-        try
-        {
-            var sourceRoot = Path.GetPathRoot(Path.GetFullPath(sourceIo));
-            var destinationRoot = Path.GetPathRoot(Path.GetFullPath(destinationIo));
-            if (string.IsNullOrWhiteSpace(sourceRoot) || string.IsNullOrWhiteSpace(destinationRoot))
-            {
-                return false;
-            }
-
-            return !string.Equals(sourceRoot, destinationRoot, StringComparison.OrdinalIgnoreCase);
-        }
-        catch (ArgumentException)
-        {
-            return false;
-        }
-        catch (NotSupportedException)
-        {
-            return false;
-        }
-        catch (PathTooLongException)
-        {
-            return false;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return false;
-        }
-        catch (IOException)
-        {
-            return false;
-        }
-    }
-
-    private static void MoveFileByCopyWithDeleteGuard(string sourcePath, string destinationPath)
-    {
-        IOFile.Copy(sourcePath, destinationPath, overwrite: true);
-        if (TryDeleteWithRetries(sourcePath))
-        {
-            return;
-        }
-
-        TryDeleteSilently(destinationPath);
-        throw new IOException($"Move fallback copied file but could not delete source: {sourcePath}");
-    }
-
-    private static bool TryDeleteWithRetries(string path)
-    {
-        const int maxDeleteAttempts = 12;
-        for (var attempt = 1; attempt <= maxDeleteAttempts; attempt++)
-        {
-            try
-            {
-                IOFile.Delete(path);
-                return true;
-            }
-            catch (IOException) when (attempt < maxDeleteAttempts)
-            {
-                System.Threading.Thread.Sleep(50 * attempt);
-            }
-            catch (UnauthorizedAccessException) when (attempt < maxDeleteAttempts)
-            {
-                System.Threading.Thread.Sleep(50 * attempt);
-            }
-            catch (IOException)
-            {
-                return false;
-            }
-            catch (UnauthorizedAccessException)
-            {
-                return false;
-            }
-        }
-
-        return !IOFile.Exists(path);
-    }
-
-    private static void TryDeleteSilently(string path)
-    {
-        try
-        {
-            if (IOFile.Exists(path))
-            {
-                IOFile.Delete(path);
-            }
-        }
-        catch (IOException)
-        {
-            // Best-effort cleanup only.
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // Best-effort cleanup only.
-        }
-    }
 
     private static bool IsAudioExtension(string path)
     {
@@ -2365,58 +2231,20 @@ public sealed class AutoTagDownloadMoveService
 
     private static bool TryGetRelativePathUnderRoot(string rootPath, string candidatePath, out string relative)
     {
-        relative = string.Empty;
-        if (string.IsNullOrWhiteSpace(rootPath) || string.IsNullOrWhiteSpace(candidatePath))
-        {
-            return false;
-        }
+        return PathComparisonHelper.TryGetRelativePathUnderRoot(rootPath, candidatePath, out relative);
+    }
 
-        var rootIo = DownloadPathResolver.ResolveIoPath(rootPath);
-        var candidateIo = DownloadPathResolver.ResolveIoPath(candidatePath);
-        if (string.IsNullOrWhiteSpace(rootIo) || string.IsNullOrWhiteSpace(candidateIo))
-        {
-            return false;
-        }
+    // Kept for reflection-based tests; delegates to shared implementation.
+    private static void MoveFileWithFallback(string sourcePath, string destinationPath)
+    {
+        _ = ShouldUseCopyFallback(sourcePath, destinationPath);
+        FileMoveFallbackHelper.MoveWithFallback(sourcePath, destinationPath);
+    }
 
-        try
-        {
-            if (!DownloadPathResolver.IsSmbPath(rootIo))
-            {
-                rootIo = Path.GetFullPath(rootIo);
-            }
-
-            if (!DownloadPathResolver.IsSmbPath(candidateIo))
-            {
-                candidateIo = Path.GetFullPath(candidateIo);
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return false;
-        }
-
-        var normalizedRoot = rootIo.Replace('\\', '/').TrimEnd('/') + "/";
-        var normalizedCandidate = candidateIo.Replace('\\', '/');
-        if (normalizedCandidate.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
-        {
-            var trimmed = normalizedCandidate[normalizedRoot.Length..].TrimStart('/');
-            if (string.IsNullOrWhiteSpace(trimmed))
-            {
-                return false;
-            }
-
-            relative = trimmed.Replace('/', Path.DirectorySeparatorChar);
-            return true;
-        }
-
-        var fallback = Path.GetRelativePath(rootIo, candidateIo);
-        if (fallback.StartsWith("..", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        relative = fallback;
-        return true;
+    // Kept for reflection-based tests; delegates to shared implementation.
+    private static bool ShouldUseCopyFallback(string sourcePath, string destinationPath)
+    {
+        return FileMoveFallbackHelper.ShouldUseCopyFallback(sourcePath, destinationPath);
     }
 
     private static string BuildSidecarKey(string path)

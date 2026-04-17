@@ -788,57 +788,95 @@ public static class EngineAudioPostDownloadHelper
     {
         if (execution.Requirements.ShouldFetchPrimaryArtwork)
         {
-            if (coverUrls.Count == 0)
+            var primaryResult = await TrySavePrimaryArtworkAsync(
+                execution,
+                runtime,
+                coverUrls,
+                appleArtworkSize,
+                preferMaxQualityCover,
+                token);
+            if (!primaryResult.Success)
             {
-                return new PrefetchArtworkResult(false, "Album artwork URL could not be resolved.");
-            }
-
-            var primarySaved = false;
-            foreach (var coverUrl in coverUrls)
-            {
-                var isAppleCover = coverUrl.Contains(MzStaticHost, StringComparison.OrdinalIgnoreCase);
-                primarySaved = await SavePrimaryArtworkAsync(
-                    execution,
-                    runtime,
-                    coverUrl,
-                    isAppleCover,
-                    appleArtworkSize,
-                    preferMaxQualityCover,
-                    token);
-                if (primarySaved)
-                {
-                    break;
-                }
-            }
-
-            if (!primarySaved)
-            {
-                return new PrefetchArtworkResult(false, "Album artwork download failed.");
+                return primaryResult;
             }
         }
 
         if (execution.Requirements.ShouldFetchAnimatedArtwork && runtime.AppleCatalog != null && runtime.HttpClientFactory != null)
         {
-            var animatedSaved = await SaveAnimatedArtworkAsync(execution, runtime, token);
-            if (!animatedSaved && execution.Request.Logger.IsEnabled(LogLevel.Debug))
-            {
-                execution.Request.Logger.LogDebug(
-                    "{Engine} animated artwork not available for {QueueUuid}",
-                    execution.Request.Engine,
-                    execution.Paths.QueueUuid);
-            }
+            await LogMissingAnimatedArtworkAsync(execution, runtime, token);
         }
 
         if (execution.Requirements.ShouldFetchArtistArtwork)
         {
-            var artistSaved = await SaveArtistArtworkAsync(execution, runtime, appleArtworkSize, preferMaxQualityCover, token);
-            if (!artistSaved)
+            var artistResult = await TrySaveArtistArtworkAsync(execution, runtime, appleArtworkSize, preferMaxQualityCover, token);
+            if (!artistResult.Success)
             {
-                return new PrefetchArtworkResult(false, "Artist artwork download failed.");
+                return artistResult;
             }
         }
 
         return new PrefetchArtworkResult(true);
+    }
+
+    private static async Task<PrefetchArtworkResult> TrySavePrimaryArtworkAsync(
+        PrefetchExecutionContext execution,
+        PrefetchRuntimeServices runtime,
+        IReadOnlyList<string> coverUrls,
+        int appleArtworkSize,
+        bool preferMaxQualityCover,
+        CancellationToken token)
+    {
+        if (coverUrls.Count == 0)
+        {
+            return new PrefetchArtworkResult(false, "Album artwork URL could not be resolved.");
+        }
+
+        foreach (var coverUrl in coverUrls)
+        {
+            var isAppleCover = coverUrl.Contains(MzStaticHost, StringComparison.OrdinalIgnoreCase);
+            var primarySaved = await SavePrimaryArtworkAsync(
+                execution,
+                runtime,
+                coverUrl,
+                isAppleCover,
+                appleArtworkSize,
+                preferMaxQualityCover,
+                token);
+            if (primarySaved)
+            {
+                return new PrefetchArtworkResult(true);
+            }
+        }
+
+        return new PrefetchArtworkResult(false, "Album artwork download failed.");
+    }
+
+    private static async Task LogMissingAnimatedArtworkAsync(
+        PrefetchExecutionContext execution,
+        PrefetchRuntimeServices runtime,
+        CancellationToken token)
+    {
+        var animatedSaved = await SaveAnimatedArtworkAsync(execution, runtime, token);
+        if (!animatedSaved && execution.Request.Logger.IsEnabled(LogLevel.Debug))
+        {
+            execution.Request.Logger.LogDebug(
+                "{Engine} animated artwork not available for {QueueUuid}",
+                execution.Request.Engine,
+                execution.Paths.QueueUuid);
+        }
+    }
+
+    private static async Task<PrefetchArtworkResult> TrySaveArtistArtworkAsync(
+        PrefetchExecutionContext execution,
+        PrefetchRuntimeServices runtime,
+        int appleArtworkSize,
+        bool preferMaxQualityCover,
+        CancellationToken token)
+    {
+        var artistSaved = await SaveArtistArtworkAsync(execution, runtime, appleArtworkSize, preferMaxQualityCover, token);
+        return artistSaved
+            ? new PrefetchArtworkResult(true)
+            : new PrefetchArtworkResult(false, "Artist artwork download failed.");
     }
 
     private static async Task<bool> SavePrimaryArtworkAsync(

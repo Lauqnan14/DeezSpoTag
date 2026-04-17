@@ -8,6 +8,22 @@ namespace DeezSpoTag.Tests;
 
 public sealed class AutoTagEnrichmentTagSelectionTests
 {
+    private static readonly string[] ExpectedDownloadEnrichmentTags =
+    {
+        "artist",
+        "genre",
+        "trackId",
+        "releaseId",
+        "source",
+        "url"
+    };
+
+    private static readonly string[] ExpectedEnhancementOnlyTags =
+    {
+        "artist",
+        "genre"
+    };
+
     [Fact]
     public void ResolveEnrichmentRequestedTags_DownloadEnrichment_CarriesIdAndSourceTagsFromDownloadTags()
     {
@@ -23,7 +39,7 @@ public sealed class AutoTagEnrichmentTagSelectionTests
         };
 
         var actual = Assert.IsType<List<string>>(method!.Invoke(null, new object?[] { root, "download_enrichment" }));
-        Assert.Equal(new[] { "artist", "genre", "trackId", "releaseId", "source", "url" }, actual);
+        Assert.Equal(ExpectedDownloadEnrichmentTags, actual);
     }
 
     [Fact]
@@ -41,6 +57,6 @@ public sealed class AutoTagEnrichmentTagSelectionTests
         };
 
         var actual = Assert.IsType<List<string>>(method!.Invoke(null, new object?[] { root, "enhancement_only" }));
-        Assert.Equal(new[] { "artist", "genre" }, actual);
+        Assert.Equal(ExpectedEnhancementOnlyTags, actual);
     }
 }

@@ -10,6 +10,16 @@ namespace DeezSpoTag.Tests;
 public sealed class PlatformCapabilitiesStoreTests : IDisposable
 {
     private readonly string _tempRoot;
+    private static readonly string[] AppleDownloadTags = { "title", "syncedLyrics" };
+    private static readonly JsonSerializerOptions CamelCaseIndentedJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true
+    };
+    private static readonly JsonSerializerOptions CaseInsensitiveJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
 
     public PlatformCapabilitiesStoreTests()
     {
@@ -22,7 +32,7 @@ public sealed class PlatformCapabilitiesStoreTests : IDisposable
     {
         var store = new PlatformCapabilitiesStore(_tempRoot);
 
-        store.RecordDownloadTags("apple", new[] { "title", "syncedLyrics" });
+        store.RecordDownloadTags("apple", AppleDownloadTags);
 
         var snapshot = store.GetSnapshot();
         Assert.True(snapshot.Platforms.ContainsKey("itunes"));
@@ -61,11 +71,7 @@ public sealed class PlatformCapabilitiesStoreTests : IDisposable
             capabilitiesPath,
             JsonSerializer.Serialize(
                 legacySnapshot,
-                new JsonSerializerOptions
-                {
-                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                    WriteIndented = true
-                }));
+                CamelCaseIndentedJsonOptions));
 
         var store = new PlatformCapabilitiesStore(_tempRoot);
         var snapshot = store.GetSnapshot();
@@ -76,10 +82,9 @@ public sealed class PlatformCapabilitiesStoreTests : IDisposable
         Assert.Contains(snapshot.Platforms["itunes"].DownloadTags, tag => string.Equals(tag, "cover", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(snapshot.Platforms["itunes"].SupportedTags, tag => string.Equals(tag, "unsyncedLyrics", StringComparison.OrdinalIgnoreCase));
 
-        var persisted = JsonSerializer.Deserialize<PlatformCapabilitiesSnapshot>(File.ReadAllText(capabilitiesPath), new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        });
+        var persisted = JsonSerializer.Deserialize<PlatformCapabilitiesSnapshot>(
+            File.ReadAllText(capabilitiesPath),
+            CaseInsensitiveJsonOptions);
         Assert.NotNull(persisted);
         Assert.DoesNotContain(persisted!.Platforms.Keys, key => string.Equals(key, "apple", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(persisted.Platforms.Keys, key => string.Equals(key, "itunes", StringComparison.OrdinalIgnoreCase));

@@ -6194,21 +6194,14 @@
         };
     }
 
-    async function upsertProfileFromUi(options = {}) {
-        const { silent = false, requireActiveProfile = false, reconcileUi = true } = options;
-        const nameInput = el("autotag-profile-name");
-        const currentActive = getActiveProfile();
-        const selected = getSelectedProfile();
-        const name = nameInput?.value.trim() || selected?.name?.trim() || currentActive?.name?.trim() || "";
-        if (requireActiveProfile && !state.activeProfileId) {
-            throw new Error("Select and load a profile first.");
-        }
-        if (!name) {
-            throw new Error("Profile name is required.");
-        }
+    function resolveProfileNameForSave(nameInput, selectedProfile, activeProfile) {
+        return nameInput?.value.trim()
+            || selectedProfile?.name?.trim()
+            || activeProfile?.name?.trim()
+            || "";
+    }
 
-        const saveTarget = resolveProfileSaveTarget(name, selected, currentActive);
-
+    async function submitProfileUpsertRequest(saveTarget, name) {
         const response = await fetch("/api/tagging/profiles", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -6225,6 +6218,10 @@
 
         const savedProfile = await response.json().catch(() => null);
         const savedProfileId = savedProfile?.id || savedProfile?.Id || saveTarget.profileId || null;
+        return { savedProfile, savedProfileId };
+    }
+
+    function mergeSavedProfileIntoState(savedProfile, savedProfileId, name) {
         const nextProfiles = Array.isArray(state.profiles) ? [...state.profiles] : [];
         let replaceIndex = -1;
         if (savedProfileId) {
@@ -6233,6 +6230,7 @@
         if (replaceIndex < 0) {
             replaceIndex = nextProfiles.findIndex((profile) => String(profile?.name || "").toLowerCase() === name.toLowerCase());
         }
+
         if (savedProfile) {
             if (replaceIndex >= 0) {
                 nextProfiles[replaceIndex] = savedProfile;
@@ -6240,23 +6238,52 @@
                 nextProfiles.push(savedProfile);
             }
         }
+
         state.profileSaveDirty = false;
         state.profiles = nextProfiles;
         renderProfileSelect();
 
-        const resolvedProfile = (savedProfileId ? getProfileById(savedProfileId) : null)
+        return (savedProfileId ? getProfileById(savedProfileId) : null)
             || state.profiles.find((profile) => String(profile?.name || "").toLowerCase() === name.toLowerCase())
             || null;
+    }
+
+    function reconcileSavedProfileUi(resolvedProfile, savedProfileId, name, nameInput, reconcileUi) {
         if (resolvedProfile && reconcileUi) {
             applyLoadedProfile(resolvedProfile);
-        } else if (resolvedProfile && savedProfileId) {
+            return;
+        }
+
+        if (resolvedProfile && savedProfileId) {
             setActiveProfileId(savedProfileId, { persist: true });
             if (nameInput && !nameInput.matches(":focus")) {
                 nameInput.value = resolvedProfile.name || name;
             }
-        } else if (nameInput) {
+            return;
+        }
+
+        if (nameInput) {
             nameInput.value = name;
         }
+    }
+
+    async function upsertProfileFromUi(options = {}) {
+        const { silent = false, requireActiveProfile = false, reconcileUi = true } = options;
+        const nameInput = el("autotag-profile-name");
+        const currentActive = getActiveProfile();
+        const selected = getSelectedProfile();
+        const name = resolveProfileNameForSave(nameInput, selected, currentActive);
+        if (requireActiveProfile && !state.activeProfileId) {
+            throw new Error("Select and load a profile first.");
+        }
+        if (!name) {
+            throw new Error("Profile name is required.");
+        }
+
+        const saveTarget = resolveProfileSaveTarget(name, selected, currentActive);
+        const { savedProfile, savedProfileId } = await submitProfileUpsertRequest(saveTarget, name);
+        const resolvedProfile = mergeSavedProfileIntoState(savedProfile, savedProfileId, name);
+        reconcileSavedProfileUi(resolvedProfile, savedProfileId, name, nameInput, reconcileUi);
 
         await initAutoTagDefaultsPanel();
         if (!silent) {
