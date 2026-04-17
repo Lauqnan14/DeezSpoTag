@@ -60,7 +60,7 @@
   "createAlbumFolder": true,
   "albumNameTemplate": "%album%",
   "createCDFolder": false,
-  "createStructurePlaylist": true,
+  "createStructurePlaylist": false,
   "createSingleFolder": false,
   "padTracks": true,
   "padSingleDigit": true,
@@ -81,7 +81,7 @@
   "syncedLyrics": true,
   "queueOrder": "fifo",
   "lyricsFallbackEnabled": true,
-  "lyricsFallbackOrder": "apple,deezer,spotify",
+  "lyricsFallbackOrder": "apple,deezer,spotify,lrclib",
   "normalizeGenreTags": false,
   "genreTagAliasRules": [
     {
@@ -94,9 +94,9 @@
     }
   ],
   "artworkFallbackEnabled": true,
-  "artworkFallbackOrder": "apple,spotify,deezer",
+  "artworkFallbackOrder": "apple,deezer,spotify",
   "artistArtworkFallbackEnabled": true,
-  "artistArtworkFallbackOrder": "apple,spotify,deezer",
+  "artistArtworkFallbackOrder": "apple,deezer,spotify",
   "shazamEnabled": true,
   "shazamUseCenteredOverlay": true,
   "shazamCaptureDurationSeconds": 11,
@@ -127,7 +127,7 @@
   "albumVariousArtists": true,
   "removeAlbumVersion": false,
   "removeDuplicateArtists": true,
-  "featuredToTitle": "2",
+  "featuredToTitle": "0",
   "titleCasing": "nothing",
   "artistCasing": "nothing",
   "clearQueueOnExit": false,
@@ -154,7 +154,6 @@
   "convertSkipLossyToLossless": false,
   "mvFileFormat": "{ArtistName} - {VideoName} [{ReleaseYear}]",
   "service": "auto",
-  "metadataSource": "spotify",
   "fallback": false,
   "librespotConcurrency": 2,
   "spotifyResolveConcurrency": 10,
@@ -189,7 +188,7 @@
     "authorizationToken": "",
     "storefront": "us",
     "preferAppleCovers": true,
-    "preferredAudioProfile": "atmos",
+    "preferredAudioProfile": "alac",
     "getM3u8Mode": "hires",
     "aacType": "aac-lc",
     "decryptM3u8Port": "127.0.0.1:10020",
@@ -220,5 +219,5 @@
     "secondaryQuality": "",
     "secondaryExcludeApple": true
   },
-  "saveLyrics": true
+  "saveLyrics": false
 }
