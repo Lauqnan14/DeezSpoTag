@@ -85,6 +85,50 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTests : IDisposable
     }
 
     [Fact]
+    public async Task PushToPlexAsync_SkipsArtworkLockAndBiographyUpdate_WhenNoArtworkOrBioProvided()
+    {
+        var seenRequests = new List<string>();
+        var service = CreateService(CreatePlexClient(request =>
+        {
+            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            var query = request.RequestUri?.Query ?? string.Empty;
+            seenRequests.Add($"{request.Method.Method} {path}{query}");
+
+            if (path.EndsWith("/library/sections", StringComparison.Ordinal))
+            {
+                return Xml("<MediaContainer><Directory type=\"artist\" key=\"1\" /></MediaContainer>");
+            }
+
+            if (request.Method == HttpMethod.Get &&
+                (path.Contains("/search", StringComparison.Ordinal) || path.Contains("/library/sections/1/all", StringComparison.Ordinal)))
+            {
+                return Xml("<MediaContainer><Directory type=\"artist\" ratingKey=\"rk1\" title=\"Artist\" librarySectionID=\"1\" /></MediaContainer>");
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }));
+        var updates = CreateUpdates();
+        var warnings = new List<string>();
+        var request = CreateRequest(
+            localArtistId: 0,
+            auth: CreatePlexAuth(),
+            avatarPath: null,
+            backgroundPath: null,
+            biography: "   ");
+
+        await InvokePushToPlexAsync(service, request, updates, warnings);
+
+        Assert.Empty(warnings);
+        Assert.False(GetUpdateFlag(updates, "AvatarUpdated"));
+        Assert.False(GetUpdateFlag(updates, "BackgroundUpdated"));
+        Assert.False(GetUpdateFlag(updates, "BioUpdated"));
+        Assert.DoesNotContain(seenRequests, entry => entry.Contains("/posters", StringComparison.Ordinal));
+        Assert.DoesNotContain(seenRequests, entry => entry.Contains("/arts", StringComparison.Ordinal));
+        Assert.DoesNotContain(seenRequests, entry => entry.Contains("thumb.locked=1", StringComparison.Ordinal));
+        Assert.DoesNotContain(seenRequests, entry => entry.Contains("summary.value=", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task PushToPlexAsync_AddsFailureWarning_WhenPlexClientThrows()
     {
         var service = CreateService(CreatePlexClient(_ => new HttpResponseMessage(HttpStatusCode.OK)
