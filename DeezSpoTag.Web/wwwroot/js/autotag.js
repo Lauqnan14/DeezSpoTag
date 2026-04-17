@@ -2914,7 +2914,7 @@
             state.profileSaveTimer = null;
         }
         try {
-            await upsertProfileFromUi({ silent: true, requireActiveProfile: true });
+            await upsertProfileFromUi({ silent: true, requireActiveProfile: true, reconcileUi: false });
         } catch (error) {
             state.profileSaveDirty = true;
             console.warn("Auto-saving active AutoTag profile failed", error);
@@ -6232,7 +6232,7 @@
     }
 
     async function upsertProfileFromUi(options = {}) {
-        const { silent = false, requireActiveProfile = false } = options;
+        const { silent = false, requireActiveProfile = false, reconcileUi = true } = options;
         const nameInput = el("autotag-profile-name");
         const currentActive = getActiveProfile();
         const selected = getSelectedProfile();
@@ -6284,8 +6284,13 @@
         const resolvedProfile = (savedProfileId ? getProfileById(savedProfileId) : null)
             || state.profiles.find((profile) => String(profile?.name || "").toLowerCase() === name.toLowerCase())
             || null;
-        if (resolvedProfile) {
+        if (resolvedProfile && reconcileUi) {
             applyLoadedProfile(resolvedProfile);
+        } else if (resolvedProfile && savedProfileId) {
+            setActiveProfileId(savedProfileId, { persist: true });
+            if (nameInput && !nameInput.matches(":focus")) {
+                nameInput.value = resolvedProfile.name || name;
+            }
         } else if (nameInput) {
             nameInput.value = name;
         }
