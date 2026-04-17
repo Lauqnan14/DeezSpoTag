@@ -2393,14 +2393,22 @@
             titleWrap.className = "autotag-platform-option-title-wrap";
             const heading = document.createElement("h6");
             heading.textContent = platform.name;
+            const tooltipLines = [];
+            if (platform.description) {
+                tooltipLines.push(platform.description);
+            }
+            if (platform.normalizedId === "itunes") {
+                tooltipLines.push("Uses iTunes metadata/artwork. Lyrics require an active Apple Music subscription.");
+            }
+            if (tooltipLines.length > 0) {
+                const tooltip = document.createElement("span");
+                tooltip.className = "autotag-tooltip-icon ms-1";
+                tooltip.title = tooltipLines.join("\n");
+                tooltip.setAttribute("aria-label", tooltipLines.join(" "));
+                tooltip.innerHTML = '<i class="fas fa-question-circle"></i>';
+                heading.appendChild(tooltip);
+            }
             titleWrap.appendChild(heading);
-
-            const subtitle = document.createElement("div");
-            subtitle.className = "autotag-platform-option-subtitle";
-            const extraOptionCount = platform.normalizedId === "shazam" ? 1 : 0;
-            const optionCount = platform.options.length + extraOptionCount;
-            subtitle.textContent = `${platform.id} • ${optionCount} ${optionCount === 1 ? "setting" : "settings"}`;
-            titleWrap.appendChild(subtitle);
 
             headerMain.appendChild(titleWrap);
             header.appendChild(headerMain);
@@ -2415,20 +2423,6 @@
 
             header.appendChild(badges);
             section.appendChild(header);
-
-            if (platform.description) {
-                const description = document.createElement("div");
-                description.className = "helper";
-                description.textContent = platform.description;
-                section.appendChild(description);
-            }
-
-            if (platform.normalizedId === "itunes") {
-                const itunesNote = document.createElement("div");
-                itunesNote.className = "helper";
-                itunesNote.textContent = "Uses iTunes metadata/artwork. Lyrics require an active Apple Music subscription.";
-                section.appendChild(itunesNote);
-            }
 
             const optionsLabel = document.createElement("div");
             optionsLabel.className = "autotag-platform-option-label";
