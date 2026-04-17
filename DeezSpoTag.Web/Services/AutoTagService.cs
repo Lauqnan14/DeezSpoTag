@@ -35,6 +35,7 @@ internal static class AutoTagLiterals
     internal const string RunIntentEnhancementOnly = "enhancement_only";
     internal const string RunIntentEnhancementRecentDownloads = "enhancement_recent_downloads";
     internal const string CanceledStatus = "canceled";
+    internal const string InterruptedStatus = "interrupted";
     internal const string FailedStatus = "failed";
     internal const string CompletedStatus = "completed";
     internal const string EnrichmentStage = "enrichment";
@@ -304,6 +305,31 @@ public class AutoTagService
     };
     private static readonly HashSet<string> EnrichmentStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: false, includeConflictResolution: true, includeTargetFiles: false);
     private static readonly HashSet<string> EnhancementStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: true, includeConflictResolution: false, includeTargetFiles: true);
+    private static readonly HashSet<string> EligibleAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".flac",
+        ".wav",
+        ".aiff",
+        ".aif",
+        ".alac",
+        ".m4a",
+        ".m4b",
+        ".mp4",
+        ".aac",
+        ".mp3",
+        ".wma",
+        ".ogg",
+        ".opus",
+        ".oga",
+        ".ape",
+        ".wv",
+        ".mp2",
+        ".mp1",
+        ".tta",
+        ".dsf",
+        ".dff",
+        ".mka"
+    };
     private const string AutoTagFolderName = "autotag";
     private const string HistoryFolderName = "history";
     private static readonly string[] DiffMetaKeys =
@@ -475,6 +501,12 @@ public class AutoTagService
         var normalizedTrigger = NormalizeRunTrigger(trigger);
         var normalizedRunIntent = NormalizeRunIntent(runIntent);
         var resumeSeed = TryResolveResumeCheckpointSeed(normalizedPath, normalizedRunIntent, profileId);
+        var isEnhancementResume = resumeSeed != null && IsEnhancementRunIntent(normalizedRunIntent);
+        var resumeSourceJob = isEnhancementResume ? GetJob(resumeSeed!.SourceJobId) : null;
+        var resumedJobId = isEnhancementResume ? resumeSeed!.SourceJobId : Guid.NewGuid().ToString("N");
+        var resumedStartedAt = isEnhancementResume
+            ? (resumeSourceJob?.StartedAt ?? DateTimeOffset.UtcNow)
+            : DateTimeOffset.UtcNow;
 
         if (await _queueRepository.HasActiveDownloadsAsync())
         {
@@ -510,19 +542,55 @@ public class AutoTagService
             return blockedJob;
         }
 
+        if (!HasEligibleInputFiles(normalizedPath, configJson))
+        {
+            return CreateNotStartedJob(
+                "No eligible audio files were found for this run.",
+                normalizedPath,
+                normalizedTrigger,
+                normalizedRunIntent,
+                profileId,
+                profileName);
+        }
+
         var job = new AutoTagJob
         {
-            Id = Guid.NewGuid().ToString("N"),
+            Id = resumedJobId,
             Status = AutoTagLiterals.RunningStatus,
-            StartedAt = DateTimeOffset.UtcNow,
+            StartedAt = resumedStartedAt,
             RootPath = normalizedPath,
             Trigger = normalizedTrigger,
             RunIntent = normalizedRunIntent,
             ProfileId = string.IsNullOrWhiteSpace(profileId) ? null : profileId.Trim(),
             ProfileName = string.IsNullOrWhiteSpace(profileName) ? null : profileName.Trim(),
             ResumeCheckpoint = resumeSeed?.Checkpoint,
-            ResumeFromJobId = resumeSeed?.SourceJobId
+            ResumeFromJobId = isEnhancementResume ? null : resumeSeed?.SourceJobId
         };
+        if (isEnhancementResume && resumeSourceJob != null)
+        {
+            job.OkCount = resumeSourceJob.OkCount;
+            job.ErrorCount = resumeSourceJob.ErrorCount;
+            job.SkippedCount = resumeSourceJob.SkippedCount;
+            job.Progress = resumeSourceJob.Progress;
+            job.ExitCode = null;
+            job.Error = null;
+            if (resumeSourceJob.Logs.Count > 0)
+            {
+                job.Logs.AddRange(resumeSourceJob.Logs);
+            }
+            if (resumeSourceJob.StatusHistory.Count > 0)
+            {
+                job.StatusHistory.AddRange(resumeSourceJob.StatusHistory);
+            }
+            if (resumeSourceJob.StartedPlatforms.Count > 0)
+            {
+                job.StartedPlatforms.AddRange(resumeSourceJob.StartedPlatforms);
+            }
+            foreach (var (diffPath, diffValue) in resumeSourceJob.TagDiffs)
+            {
+                job.TagDiffs[diffPath] = diffValue;
+            }
+        }
 
         _jobs[job.Id] = job;
         _activeJobIds.TryAdd(job.Id, 0);
@@ -580,6 +648,29 @@ public class AutoTagService
         SaveJob(blockedJob);
         TrySaveLastJobId(blockedJob.Id);
         return blockedJob;
+    }
+
+    private static AutoTagJob CreateNotStartedJob(
+        string message,
+        string rootPath,
+        string trigger,
+        string runIntent,
+        string? profileId,
+        string? profileName)
+    {
+        return new AutoTagJob
+        {
+            Id = string.Empty,
+            Status = "skipped",
+            StartedAt = DateTimeOffset.UtcNow,
+            FinishedAt = DateTimeOffset.UtcNow,
+            Error = message,
+            RootPath = rootPath,
+            Trigger = trigger,
+            RunIntent = runIntent,
+            ProfileId = string.IsNullOrWhiteSpace(profileId) ? null : profileId.Trim(),
+            ProfileName = string.IsNullOrWhiteSpace(profileName) ? null : profileName.Trim()
+        };
     }
 
     private async Task<string?> ValidateRunIntentScopeAsync(
@@ -781,6 +872,7 @@ public class AutoTagService
         var staleRunning = string.Equals(status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase)
             && !_activeJobIds.ContainsKey(job.Id);
         if (!string.Equals(status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase)
             && !staleRunning)
         {
@@ -825,6 +917,97 @@ public class AutoTagService
         {
             return path.Trim();
         }
+    }
+
+    private static bool HasEligibleInputFiles(string rootPath, string configJson)
+    {
+        var normalizedRoot = NormalizePathForJob(rootPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.IsNullOrWhiteSpace(normalizedRoot) || !Directory.Exists(normalizedRoot))
+        {
+            return false;
+        }
+
+        JsonObject? root = null;
+        try
+        {
+            root = JsonNode.Parse(configJson) as JsonObject;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            // Avoid suppressing valid runs due to config parse issues.
+            return true;
+        }
+
+        var includeSubfolders = root == null
+            ? true
+            : (ReadBool(root, "includeSubfolders") ?? true);
+        var targetFiles = root == null
+            ? new List<string>()
+            : ReadStringList(root, AutoTagLiterals.TargetFilesKey);
+
+        if (targetFiles.Count > 0)
+        {
+            foreach (var rawPath in targetFiles)
+            {
+                var candidate = NormalizePathForJob(rawPath)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (!IsPathWithinScope(candidate, normalizedRoot)
+                    || !File.Exists(candidate))
+                {
+                    continue;
+                }
+
+                var extension = Path.GetExtension(candidate);
+                if (!string.IsNullOrWhiteSpace(extension) && EligibleAudioExtensions.Contains(extension))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        var options = new EnumerationOptions
+        {
+            RecurseSubdirectories = includeSubfolders,
+            IgnoreInaccessible = true,
+            ReturnSpecialDirectories = false,
+            AttributesToSkip = 0
+        };
+        foreach (var filePath in Directory.EnumerateFiles(normalizedRoot, "*", options))
+        {
+            var extension = Path.GetExtension(filePath);
+            if (!string.IsNullOrWhiteSpace(extension) && EligibleAudioExtensions.Contains(extension))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsPathWithinScope(string candidatePath, string scopePath)
+    {
+        if (string.IsNullOrWhiteSpace(candidatePath) || string.IsNullOrWhiteSpace(scopePath))
+        {
+            return false;
+        }
+
+        if (string.Equals(candidatePath, scopePath, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var scopeWithSeparator = scopePath.EndsWith(Path.DirectorySeparatorChar)
+                                 || scopePath.EndsWith(Path.AltDirectorySeparatorChar)
+            ? scopePath
+            : scopePath + Path.DirectorySeparatorChar;
+        return candidatePath.StartsWith(scopeWithSeparator, StringComparison.OrdinalIgnoreCase);
     }
 
     public AutoTagJob? GetJob(string id)
@@ -1325,10 +1508,19 @@ public class AutoTagService
         var stopped = await _autoTagRunner.StopAsync(id, CancellationToken.None);
         if (stopped)
         {
-            job.Status = AutoTagLiterals.CanceledStatus;
-            job.Error = "Stopped by user.";
+            var interruptedStatus = IsEnhancementRunIntent(job.RunIntent)
+                ? AutoTagLiterals.InterruptedStatus
+                : AutoTagLiterals.CanceledStatus;
+            job.Status = interruptedStatus;
+            job.Error = IsEnhancementRunIntent(job.RunIntent)
+                ? "Interrupted by user. Resume is available."
+                : "Stopped by user.";
             SaveJob(job);
-            AppendActivityLog(job.Id, "autotag canceled by user");
+            AppendActivityLog(
+                job.Id,
+                string.Equals(interruptedStatus, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+                    ? "autotag interrupted by user"
+                    : "autotag canceled by user");
         }
 
         return stopped;
@@ -1352,7 +1544,8 @@ public class AutoTagService
 
             var success = await ExecuteStagesAsync(job, stages, path, fileOutcomes);
 
-            if (job.Status != AutoTagLiterals.CanceledStatus)
+            if (!string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase))
             {
                 job.Status = success ? AutoTagLiterals.CompletedStatus : AutoTagLiterals.FailedStatus;
             }
@@ -1367,7 +1560,8 @@ public class AutoTagService
             SaveJob(job);
             AppendActivityLog(job.Id, $"autotag finished: status={job.Status}");
 
-            if (job.Status != AutoTagLiterals.CanceledStatus)
+            if (!string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase))
             {
                 await RunSuccessPostProcessingAsync(job, path, configPath, includesEnhancementStage, fileOutcomes);
             }
@@ -1464,8 +1658,13 @@ public class AutoTagService
 
                 if (string.Equals(result.Error, "stopped", StringComparison.OrdinalIgnoreCase))
                 {
-                    job.Status = AutoTagLiterals.CanceledStatus;
-                    job.Error = "Stopped by user.";
+                    var interruptedStatus = IsEnhancementRunIntent(job.RunIntent)
+                        ? AutoTagLiterals.InterruptedStatus
+                        : AutoTagLiterals.CanceledStatus;
+                    job.Status = interruptedStatus;
+                    job.Error = IsEnhancementRunIntent(job.RunIntent)
+                        ? "Interrupted by user. Resume is available."
+                        : "Stopped by user.";
                     return false;
                 }
 
