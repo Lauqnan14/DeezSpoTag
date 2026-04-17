@@ -306,7 +306,22 @@ SELECT t.id,
            SELECT ts.source
            FROM track_source ts
            WHERE ts.track_id = t.id
-           ORDER BY CASE LOWER(ts.source)
+           ORDER BY CASE
+                        WHEN t.tag_url IS NOT NULL
+                             AND TRIM(t.tag_url) <> ''
+                             AND LOWER(t.tag_url) LIKE '%open.spotify.com/%'
+                             AND LOWER(ts.source) = 'spotify' THEN 0
+                        WHEN t.tag_url IS NOT NULL
+                             AND TRIM(t.tag_url) <> ''
+                             AND LOWER(t.tag_url) LIKE '%deezer.com/%'
+                             AND LOWER(ts.source) = 'deezer' THEN 0
+                        WHEN t.tag_url IS NOT NULL
+                             AND TRIM(t.tag_url) <> ''
+                             AND LOWER(t.tag_url) LIKE '%music.apple.com/%'
+                             AND LOWER(ts.source) = 'apple' THEN 0
+                        ELSE 1
+                    END,
+                    CASE LOWER(ts.source)
                         WHEN 'deezer' THEN 0
                         WHEN 'spotify' THEN 1
                         WHEN 'apple' THEN 2
@@ -320,7 +335,22 @@ SELECT t.id,
            SELECT ts.source_id
            FROM track_source ts
            WHERE ts.track_id = t.id
-           ORDER BY CASE LOWER(ts.source)
+           ORDER BY CASE
+                        WHEN t.tag_url IS NOT NULL
+                             AND TRIM(t.tag_url) <> ''
+                             AND LOWER(t.tag_url) LIKE '%open.spotify.com/%'
+                             AND LOWER(ts.source) = 'spotify' THEN 0
+                        WHEN t.tag_url IS NOT NULL
+                             AND TRIM(t.tag_url) <> ''
+                             AND LOWER(t.tag_url) LIKE '%deezer.com/%'
+                             AND LOWER(ts.source) = 'deezer' THEN 0
+                        WHEN t.tag_url IS NOT NULL
+                             AND TRIM(t.tag_url) <> ''
+                             AND LOWER(t.tag_url) LIKE '%music.apple.com/%'
+                             AND LOWER(ts.source) = 'apple' THEN 0
+                        ELSE 1
+                    END,
+                    CASE LOWER(ts.source)
                         WHEN 'deezer' THEN 0
                         WHEN 'spotify' THEN 1
                         WHEN 'apple' THEN 2

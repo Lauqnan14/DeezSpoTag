@@ -356,8 +356,9 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         var requestedBitrate = ResolveRequestedBitrate(payload);
         var resolvedBitrate = DownloadSourceOrder.ResolveDeezerBitrate(settings, requestedBitrate);
         track.Bitrate = resolvedBitrate;
-        track.Source = payload.SourceService;
-        track.SourceId = payload.DeezerId;
+        var resolvedTagSource = ResolveTagSource(payload.SourceService, resolvedDownloadTagSource);
+        track.Source = resolvedTagSource;
+        track.SourceId = ResolveTagSourceId(payload, resolvedTagSource);
         track.ApplySettings(settings);
         _activityLog.Info($"Download start: {queueUuid} engine=deezer bitrate={track.Bitrate}");
 
@@ -591,6 +592,25 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
     private static bool ShouldPreferPayloadMetadata(string? downloadTagSource)
     {
         return string.Equals(downloadTagSource?.Trim(), SpotifySource, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveTagSource(string? payloadSourceService, string? resolvedDownloadTagSource)
+    {
+        return DownloadTagSourceHelper.NormalizeResolvedDownloadTagSource(resolvedDownloadTagSource)
+            ?? DownloadTagSourceHelper.NormalizeResolvedDownloadTagSource(payloadSourceService)
+            ?? DeezerSource;
+    }
+
+    private static string ResolveTagSourceId(DeezerQueueItem payload, string resolvedTagSource)
+    {
+        if (string.Equals(resolvedTagSource, SpotifySource, StringComparison.OrdinalIgnoreCase))
+        {
+            return !string.IsNullOrWhiteSpace(payload.SpotifyId)
+                ? payload.SpotifyId
+                : string.Empty;
+        }
+
+        return payload.DeezerId;
     }
 
     private static void ApplyPayloadMetadataOverrides(CoreTrack track, DeezerQueueItem payload)
