@@ -1014,8 +1014,7 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         List<string> warnings,
         CancellationToken cancellationToken)
     {
-        var plex = request.Auth.Plex;
-        if (plex is null || string.IsNullOrWhiteSpace(plex.Url) || string.IsNullOrWhiteSpace(plex.Token))
+        if (!TryGetPlexConnection(request.Auth.Plex, out var plexUrl, out var plexToken))
         {
             warnings.Add("Plex is not configured.");
             return;
@@ -1023,68 +1022,19 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
 
         try
         {
-            var location = await _plexClient.FindArtistLocationAsync(plex.Url, plex.Token, request.ArtistName, cancellationToken);
+            var location = await _plexClient.FindArtistLocationAsync(plexUrl, plexToken, request.ArtistName, cancellationToken);
             if (location is null)
             {
                 warnings.Add("Plex artist not found.");
                 return;
             }
 
-            if (request.LocalArtistId > 0 && !string.IsNullOrWhiteSpace(location.RatingKey))
-            {
-                await _libraryRepository.UpsertArtistSourceIdAsync(request.LocalArtistId, PlexTarget, location.RatingKey, cancellationToken);
-            }
-
-            var avatarUpdated = false;
-            if (!string.IsNullOrWhiteSpace(request.AvatarPath) && File.Exists(request.AvatarPath))
-            {
-                avatarUpdated = await _plexClient.UpdateArtistPosterFromFileAsync(
-                    plex.Url,
-                    plex.Token,
-                    location.RatingKey,
-                    request.AvatarPath,
-                    cancellationToken);
-                updates.AvatarUpdated = avatarUpdated || updates.AvatarUpdated;
-            }
-
-            var backgroundUpdated = false;
-            if (!string.IsNullOrWhiteSpace(request.BackgroundPath) && File.Exists(request.BackgroundPath))
-            {
-                backgroundUpdated = await _plexClient.UpdateArtistArtFromFileAsync(
-                    plex.Url,
-                    plex.Token,
-                    location.RatingKey,
-                    request.BackgroundPath,
-                    cancellationToken);
-                updates.BackgroundUpdated = backgroundUpdated || updates.BackgroundUpdated;
-            }
-
-            if (avatarUpdated || backgroundUpdated)
-            {
-                var locked = await _plexClient.LockArtistArtworkAsync(
-                    plex.Url,
-                    plex.Token,
-                    location.SectionKey,
-                    location.RatingKey,
-                    lockPoster: avatarUpdated,
-                    lockBackground: backgroundUpdated,
-                    cancellationToken);
-                if (!locked)
-                {
-                    warnings.Add("Plex artwork lock failed; Plex may revert avatar/background on refresh.");
-                }
-            }
-
-            if (!string.IsNullOrWhiteSpace(request.Biography))
-            {
-                updates.BioUpdated = await _plexClient.UpdateArtistBiographyAsync(
-                    plex.Url,
-                    plex.Token,
-                    location.SectionKey,
-                    location.RatingKey,
-                    request.Biography,
-                    cancellationToken) || updates.BioUpdated;
-            }
+            await UpsertPlexSourceIdAsync(request, location, cancellationToken);
+            var artworkUpdates = await UpdatePlexArtworkAsync(request, plexUrl, plexToken, location, cancellationToken);
+            updates.AvatarUpdated = artworkUpdates.AvatarUpdated || updates.AvatarUpdated;
+            updates.BackgroundUpdated = artworkUpdates.BackgroundUpdated || updates.BackgroundUpdated;
+            await TryLockPlexArtworkAsync(plexUrl, plexToken, location, artworkUpdates, warnings, cancellationToken);
+            await UpdatePlexBiographyAsync(request, plexUrl, plexToken, location, updates, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1092,6 +1042,117 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
             warnings.Add("Plex update failed.");
         }
     }
+
+    private static bool TryGetPlexConnection(PlexAuth? plex, out string url, out string token)
+    {
+        url = string.Empty;
+        token = string.Empty;
+        if (plex is null || string.IsNullOrWhiteSpace(plex.Url) || string.IsNullOrWhiteSpace(plex.Token))
+        {
+            return false;
+        }
+
+        url = plex.Url;
+        token = plex.Token;
+        return true;
+    }
+
+    private async Task UpsertPlexSourceIdAsync(
+        PushMetadataRequest request,
+        PlexArtistLocation location,
+        CancellationToken cancellationToken)
+    {
+        if (request.LocalArtistId <= 0 || string.IsNullOrWhiteSpace(location.RatingKey))
+        {
+            return;
+        }
+
+        await _libraryRepository.UpsertArtistSourceIdAsync(request.LocalArtistId, PlexTarget, location.RatingKey, cancellationToken);
+    }
+
+    private async Task<PlexArtworkUpdates> UpdatePlexArtworkAsync(
+        PushMetadataRequest request,
+        string plexUrl,
+        string plexToken,
+        PlexArtistLocation location,
+        CancellationToken cancellationToken)
+    {
+        var avatarUpdated = false;
+        if (HasLocalFile(request.AvatarPath))
+        {
+            avatarUpdated = await _plexClient.UpdateArtistPosterFromFileAsync(
+                plexUrl,
+                plexToken,
+                location.RatingKey,
+                request.AvatarPath!,
+                cancellationToken);
+        }
+
+        var backgroundUpdated = false;
+        if (HasLocalFile(request.BackgroundPath))
+        {
+            backgroundUpdated = await _plexClient.UpdateArtistArtFromFileAsync(
+                plexUrl,
+                plexToken,
+                location.RatingKey,
+                request.BackgroundPath!,
+                cancellationToken);
+        }
+
+        return new PlexArtworkUpdates(avatarUpdated, backgroundUpdated);
+    }
+
+    private async Task TryLockPlexArtworkAsync(
+        string plexUrl,
+        string plexToken,
+        PlexArtistLocation location,
+        PlexArtworkUpdates artworkUpdates,
+        List<string> warnings,
+        CancellationToken cancellationToken)
+    {
+        if (!artworkUpdates.HasAnyUpdate)
+        {
+            return;
+        }
+
+        var locked = await _plexClient.LockArtistArtworkAsync(
+            plexUrl,
+            plexToken,
+            location.SectionKey,
+            location.RatingKey,
+            lockPoster: artworkUpdates.AvatarUpdated,
+            lockBackground: artworkUpdates.BackgroundUpdated,
+            cancellationToken);
+        if (!locked)
+        {
+            warnings.Add("Plex artwork lock failed; Plex may revert avatar/background on refresh.");
+        }
+    }
+
+    private async Task UpdatePlexBiographyAsync(
+        PushMetadataRequest request,
+        string plexUrl,
+        string plexToken,
+        PlexArtistLocation location,
+        PushUpdateAccumulator updates,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Biography))
+        {
+            return;
+        }
+
+        updates.BioUpdated = await _plexClient.UpdateArtistBiographyAsync(
+            plexUrl,
+            plexToken,
+            location.SectionKey,
+            location.RatingKey,
+            request.Biography,
+            cancellationToken) || updates.BioUpdated;
+    }
+
+    private static bool HasLocalFile(string? path)
+        => !string.IsNullOrWhiteSpace(path) && File.Exists(path);
 
     private async Task PushToJellyfinAsync(
         PushMetadataRequest request,
@@ -1493,6 +1554,10 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
 
     private sealed record PreparedVisuals(string? AvatarPath, string? BackgroundPath, int NextAvatarIndex, int NextBackgroundIndex);
     private sealed record ArtworkBandAnalysis(double EdgeDensity, double TransitionDensity);
+    private sealed record PlexArtworkUpdates(bool AvatarUpdated, bool BackgroundUpdated)
+    {
+        public bool HasAnyUpdate => AvatarUpdated || BackgroundUpdated;
+    }
     private sealed record ArtworkCandidate(string Identity, string Source, string? LocalPath, string? RemoteUrl)
     {
         public static ArtworkCandidate FromLocal(string path, string identity, string source)

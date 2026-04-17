@@ -5394,47 +5394,6 @@
         }
     }
 
-    function readLyricsSettingsFromUI(baseSettings) {
-        const settings = baseSettings ? { ...baseSettings } : {};
-        const getChecked = (id, fallback = false) => document.getElementById(id)?.checked ?? fallback;
-        const getValue = (id, fallback = "") => document.getElementById(id)?.value ?? fallback;
-
-        settings.saveLyrics = getChecked("saveLyrics", settings.saveLyrics ?? settings.syncedLyrics ?? false);
-        settings.syncedLyrics = settings.saveLyrics;
-        settings.embedLyrics = getChecked("embedLyrics", settings.embedLyrics ?? true);
-        settings.lrcType = normalizeLyricsTypeSetting(getValue("lrcType", settings.lrcType ?? DEFAULT_LYRICS_TYPE_SELECTION));
-        settings.lrcFormat = getValue("lrcFormat", settings.lrcFormat ?? "both");
-        settings.lyricsFallbackEnabled = getChecked("lyricsFallbackEnabled", settings.lyricsFallbackEnabled ?? true);
-        settings.lyricsFallbackOrder = resolveSavedFallbackOrder({
-            fallbackEnabled: settings.lyricsFallbackEnabled,
-            defaultSourceId: "lyricsDefaultSource",
-            fallbackOrderValue: getValue("lyricsFallbackOrder", settings.lyricsFallbackOrder ?? LYRICS_SOURCE_ORDER.join(",")),
-            allowedOrder: LYRICS_SOURCE_ORDER
-        });
-
-        return settings;
-    }
-
-    function readTemplateSettingsFromUI(baseSettings) {
-        const settings = baseSettings ? { ...baseSettings } : {};
-        const getValue = (id, fallback = "") => document.getElementById(id)?.value ?? fallback;
-
-        settings.tracknameTemplate = getValue(
-            "autotag-trackname-template",
-            settings.tracknameTemplate ?? "%artist% - %title%"
-        );
-        settings.albumTracknameTemplate = getValue(
-            "autotag-album-trackname-template",
-            settings.albumTracknameTemplate ?? "%tracknumber% - %title%"
-        );
-        settings.playlistTracknameTemplate = getValue(
-            "autotag-playlist-trackname-template",
-            settings.playlistTracknameTemplate ?? "%artist% - %title%"
-        );
-
-        return settings;
-    }
-
     function readArtworkSettingsFromUI(baseSettings) {
         const settings = baseSettings ? { ...baseSettings } : {};
         const getValue = (id, fallback = "") => document.getElementById(id)?.value ?? fallback;
@@ -5473,30 +5432,6 @@
         tags.coverDescriptionUTF8 = getChecked("coverDescriptionUTF8", tags.coverDescriptionUTF8 ?? false);
         settings.tags = tags;
         settings.jpegImageQuality = getNumber("jpegImageQuality", settings.jpegImageQuality ?? 90);
-
-        return settings;
-    }
-
-    function readOtherSettingsFromUI(baseSettings) {
-        const settings = baseSettings ? { ...baseSettings } : {};
-        const getValue = (id, fallback = "") => document.getElementById(id)?.value ?? fallback;
-        const getChecked = (id, fallback = false) => document.getElementById(id)?.checked ?? fallback;
-
-        settings.dateFormat = getValue("dateFormat", settings.dateFormat ?? "Y-M-D");
-        settings.albumVariousArtists = getChecked("albumVariousArtists", settings.albumVariousArtists ?? false);
-        settings.removeAlbumVersion = getChecked("removeAlbumVersion", settings.removeAlbumVersion ?? false);
-        settings.removeDuplicateArtists = getChecked("removeDuplicateArtists", settings.removeDuplicateArtists ?? false);
-        settings.featuredToTitle = getValue("featuredToTitle", settings.featuredToTitle ?? "0");
-        settings.titleCasing = getValue("titleCasing", settings.titleCasing ?? "nothing");
-        settings.artistCasing = getValue("artistCasing", settings.artistCasing ?? "nothing");
-
-        const tags = settings.tags ? { ...settings.tags } : {};
-        tags.savePlaylistAsCompilation = getChecked("savePlaylistAsCompilation", tags.savePlaylistAsCompilation ?? false);
-        tags.useNullSeparator = getChecked("useNullSeparator", tags.useNullSeparator ?? false);
-        tags.saveID3v1 = getChecked("saveID3v1", tags.saveID3v1 ?? false);
-        tags.multiArtistSeparator = getValue("multiArtistSeparator", tags.multiArtistSeparator ?? "default");
-        tags.singleAlbumArtist = getChecked("singleAlbumArtist", tags.singleAlbumArtist ?? true);
-        settings.tags = tags;
 
         return settings;
     }
@@ -5553,55 +5488,6 @@
         });
 
         return technical;
-    }
-
-    function readFolderStructureSettingsFromUI(baseSettings) {
-        const settings = baseSettings ? { ...baseSettings } : {};
-        const getValue = (id, fallback = "") => document.getElementById(id)?.value ?? fallback;
-        const getChecked = (id, fallback = false) => document.getElementById(id)?.checked ?? fallback;
-
-        settings.createPlaylistFolder = getChecked(
-            "createPlaylistFolder",
-            settings.createPlaylistFolder ?? true
-        );
-        settings.playlistNameTemplate = getValue(
-            "playlistNameTemplate",
-            settings.playlistNameTemplate ?? "%playlist%"
-        );
-        settings.createArtistFolder = getChecked(
-            "createArtistFolder",
-            settings.createArtistFolder ?? true
-        );
-        settings.artistNameTemplate = getValue(
-            "artistNameTemplate",
-            settings.artistNameTemplate ?? "%artist%"
-        );
-        settings.createAlbumFolder = getChecked(
-            "createAlbumFolder",
-            settings.createAlbumFolder ?? true
-        );
-        settings.albumNameTemplate = getValue(
-            "albumNameTemplate",
-            settings.albumNameTemplate ?? "%album%"
-        );
-        settings.createCDFolder = getChecked(
-            "createCDFolder",
-            settings.createCDFolder ?? false
-        );
-        settings.createStructurePlaylist = getChecked(
-            "createStructurePlaylist",
-            settings.createStructurePlaylist ?? false
-        );
-        settings.createSingleFolder = getChecked(
-            "createSingleFolder",
-            settings.createSingleFolder ?? false
-        );
-        settings.illegalCharacterReplacer = getValue(
-            "illegalCharacterReplacer",
-            settings.illegalCharacterReplacer ?? "_"
-        );
-
-        return settings;
     }
 
     function loadItunesArtOptions() {
