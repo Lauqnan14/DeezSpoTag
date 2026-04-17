@@ -281,10 +281,15 @@ public class PlatformAuthApiController : ControllerBase
             return BadRequest("Unable to connect to Jellyfin with the provided URL/API key.");
         }
 
-        var userInfo = await _jellyfinApiClient.GetCurrentUserAsync(request.Url, request.ApiKey, cancellationToken);
+        var userInfo = await _jellyfinApiClient.ResolveUserAsync(
+            request.Url,
+            request.ApiKey,
+            request.Username,
+            request.UserId,
+            cancellationToken);
         if (userInfo is null)
         {
-            return BadRequest("Jellyfin API key is valid, but user lookup failed.");
+            return BadRequest("Jellyfin API key is valid, but user lookup failed. Enter a Jellyfin username (or user id) and retry.");
         }
 
         var jellyfin = await _authService.UpdateAsync(state =>
@@ -293,11 +298,11 @@ public class PlatformAuthApiController : ControllerBase
             {
                 Url = request.Url,
                 ApiKey = request.ApiKey,
-                Username = userInfo.Name,
-                UserId = userInfo.Id,
+                Username = userInfo.Name ?? request.Username,
+                UserId = userInfo.Id ?? request.UserId,
                 ServerName = systemInfo.ServerName,
                 Version = systemInfo.Version,
-                AvatarUrl = BuildJellyfinAvatarUrl(request.Url, userInfo.Id)
+                AvatarUrl = BuildJellyfinAvatarUrl(request.Url, userInfo.Id ?? request.UserId)
             };
 
             return state.Jellyfin;

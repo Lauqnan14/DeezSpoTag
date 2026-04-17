@@ -44,6 +44,92 @@ public class JellyfinApiClient
         return await response.Content.ReadFromJsonAsync<JellyfinUserInfo>(cancellationToken: cancellationToken);
     }
 
+    public async Task<JellyfinUserInfo?> ResolveUserAsync(
+        string serverUrl,
+        string apiKey,
+        string? username = null,
+        string? userId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var currentUser = await GetCurrentUserAsync(serverUrl, apiKey, cancellationToken);
+        if (currentUser is not null)
+        {
+            return currentUser;
+        }
+
+        if (!string.IsNullOrWhiteSpace(userId))
+        {
+            var byId = await GetUserByIdAsync(serverUrl, apiKey, userId, cancellationToken);
+            if (byId is not null)
+            {
+                return byId;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(username))
+        {
+            var byName = await GetUserByNameAsync(serverUrl, apiKey, username, cancellationToken);
+            if (byName is not null)
+            {
+                return byName;
+            }
+        }
+
+        return null;
+    }
+
+    public async Task<JellyfinUserInfo?> GetUserByIdAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            return null;
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, $"/Users/{Uri.EscapeDataString(userId)}"));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        return await response.Content.ReadFromJsonAsync<JellyfinUserInfo>(cancellationToken: cancellationToken);
+    }
+
+    public async Task<JellyfinUserInfo?> GetUserByNameAsync(
+        string serverUrl,
+        string apiKey,
+        string username,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            return null;
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, "/Users"));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        var users = await response.Content.ReadFromJsonAsync<List<JellyfinUserInfo>>(cancellationToken: cancellationToken);
+        if (users is null || users.Count == 0)
+        {
+            return null;
+        }
+
+        return users.FirstOrDefault(user =>
+            !string.IsNullOrWhiteSpace(user.Name)
+            && string.Equals(user.Name, username, StringComparison.OrdinalIgnoreCase));
+    }
+
     public async Task<bool> RefreshLibraryAsync(string serverUrl, string apiKey, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(apiKey))
