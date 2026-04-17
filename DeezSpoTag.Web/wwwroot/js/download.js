@@ -11,7 +11,8 @@ DeezSpoTag.Download = {
     // Download queue management
     queue: {
         items: [],
-        isProcessing: false
+        isProcessing: false,
+        resumeNotified: false
     },
     queueSyncTimer: null,
     queueSyncDelayMs: 4000,
@@ -1811,15 +1812,19 @@ DeezSpoTag.Download = {
             this.savePendingQueue(pending);
         }
     },
-    async processPendingQueue() {
+    async processPendingQueue(options = {}) {
         if (this.queue.isProcessing) {
-            return;
+            return { resumed: 0 };
         }
+        const notifyResumeStart = typeof options?.notifyResumeStart === 'function'
+            ? options.notifyResumeStart
+            : null;
         const pending = this.loadPendingQueue();
         if (!pending.length) {
-            return;
+            return { resumed: 0 };
         }
         this.queue.isProcessing = true;
+        let resumed = 0;
         try {
             while (pending.length > 0) {
                 const next = pending.shift();
@@ -1827,12 +1832,19 @@ DeezSpoTag.Download = {
                 if (!next?.url) {
                     continue;
                 }
-                await this.addToQueue(next.url, next.bitrate || 0, next.destinationFolderId ?? null, {
+                const outcome = await this.addToQueue(next.url, next.bitrate || 0, next.destinationFolderId ?? null, {
                     skipPending: true,
                     silent: true,
                     metadata: next?.metadata && typeof next.metadata === 'object' ? next.metadata : undefined
                 });
+                if (outcome?.success || outcome?.deferred || outcome?.alreadyQueued) {
+                    resumed++;
+                    if (resumed === 1 && notifyResumeStart) {
+                        notifyResumeStart();
+                    }
+                }
             }
+            return { resumed };
         } finally {
             this.queue.isProcessing = false;
         }
@@ -1841,17 +1853,19 @@ DeezSpoTag.Download = {
         if (document.visibilityState === 'hidden') {
             document.addEventListener('visibilitychange', () => {
                 if (document.visibilityState === 'visible') {
-                    this.processPendingQueue();
+                    this.resumePendingQueue();
                 }
             }, { once: true });
             return;
         }
-        const pending = this.loadPendingQueue();
-        if (pending.length && !this.queue.resumeNotified) {
-            this.queue.resumeNotified = true;
-            this.showNotification('Resuming downloads...', 'info');
-        }
-        this.processPendingQueue();
+        this.processPendingQueue({
+            notifyResumeStart: () => {
+                if (!this.queue.resumeNotified) {
+                    this.queue.resumeNotified = true;
+                    this.showNotification('Resuming downloads...', 'info');
+                }
+            }
+        });
     },
 
     // Parse URL to get information
