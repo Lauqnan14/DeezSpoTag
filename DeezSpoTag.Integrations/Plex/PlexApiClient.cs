@@ -415,6 +415,56 @@ public class PlexApiClient
         return true;
     }
 
+    /// <summary>
+    /// Lock artist artwork fields in Plex so scans/agent refreshes do not overwrite manually pushed art.
+    /// </summary>
+    public async Task<bool> LockArtistArtworkAsync(
+        string serverUrl,
+        string token,
+        string sectionKey,
+        string ratingKey,
+        bool lockPoster,
+        bool lockBackground,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(token)
+            || string.IsNullOrWhiteSpace(sectionKey)
+            || string.IsNullOrWhiteSpace(ratingKey)
+            || (!lockPoster && !lockBackground))
+        {
+            return false;
+        }
+
+        var url = $"{serverUrl.TrimEnd('/')}/library/sections/{sectionKey}/all" +
+                  $"?type=8&id={Uri.EscapeDataString(ratingKey)}";
+
+        if (lockPoster)
+        {
+            url += "&thumb.locked=1";
+        }
+
+        if (lockBackground)
+        {
+            url += "&art.locked=1";
+        }
+
+        url += $"&X-Plex-Token={token}";
+        var response = await _httpClient.PutAsync(url, null, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning(
+                "Failed to lock Plex artist artwork for {RatingKey} (poster={LockPoster} background={LockBackground}): {StatusCode}",
+                ratingKey,
+                lockPoster,
+                lockBackground,
+                response.StatusCode);
+            return false;
+        }
+
+        return true;
+    }
+
     private static string GetMimeTypeForFile(string filePath)
     {
         return Path.GetExtension(filePath).ToLowerInvariant() switch

@@ -417,8 +417,28 @@ public class SpotifyCacheApiController : ControllerBase
                 return;
             }
 
-            updates.AvatarUpdated = await PushPlexAvatarAsync(plex, plexLocation, context, cancellationToken) || updates.AvatarUpdated;
-            updates.BackgroundUpdated = await PushPlexBackgroundAsync(plex, plexLocation, context, cancellationToken) || updates.BackgroundUpdated;
+            var avatarUpdated = await PushPlexAvatarAsync(plex, plexLocation, context, cancellationToken);
+            updates.AvatarUpdated = avatarUpdated || updates.AvatarUpdated;
+
+            var backgroundUpdated = await PushPlexBackgroundAsync(plex, plexLocation, context, cancellationToken);
+            updates.BackgroundUpdated = backgroundUpdated || updates.BackgroundUpdated;
+
+            if (avatarUpdated || backgroundUpdated)
+            {
+                var locked = await PlexClient.LockArtistArtworkAsync(
+                    plex.Url!,
+                    plex.Token!,
+                    plexLocation.SectionKey,
+                    plexLocation.RatingKey,
+                    lockPoster: avatarUpdated,
+                    lockBackground: backgroundUpdated,
+                    cancellationToken);
+                if (!locked)
+                {
+                    warnings.Add("Plex artwork lock failed; Plex may revert avatar/background on refresh.");
+                }
+            }
+
             updates.BioUpdated = await PushPlexBiographyAsync(plex, plexLocation, context, cancellationToken) || updates.BioUpdated;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

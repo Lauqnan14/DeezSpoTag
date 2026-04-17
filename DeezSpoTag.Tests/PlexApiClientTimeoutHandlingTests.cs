@@ -42,6 +42,33 @@ public sealed class PlexApiClientTimeoutHandlingTests
                 cts.Token));
     }
 
+    [Fact]
+    public async Task LockArtistArtworkAsync_SetsThumbAndArtLockedFlags()
+    {
+        using var handler = new CaptureRequestHandler();
+        using var httpClient = new HttpClient(handler);
+        var client = new PlexApiClient(NullLogger<PlexApiClient>.Instance, httpClient);
+
+        var locked = await client.LockArtistArtworkAsync(
+            "http://plex.local:32400",
+            "token",
+            "7",
+            "1234",
+            lockPoster: true,
+            lockBackground: true,
+            CancellationToken.None);
+
+        Assert.True(locked);
+        Assert.NotNull(handler.LastRequest);
+        Assert.Equal(HttpMethod.Put, handler.LastRequest!.Method);
+        var uri = handler.LastRequest.RequestUri!.ToString();
+        Assert.Contains("/library/sections/7/all", uri, StringComparison.Ordinal);
+        Assert.Contains("type=8", uri, StringComparison.Ordinal);
+        Assert.Contains("id=1234", uri, StringComparison.Ordinal);
+        Assert.Contains("thumb.locked=1", uri, StringComparison.Ordinal);
+        Assert.Contains("art.locked=1", uri, StringComparison.Ordinal);
+    }
+
     private sealed class TimeoutHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -55,6 +82,17 @@ public sealed class PlexApiClientTimeoutHandlingTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        }
+    }
+
+    private sealed class CaptureRequestHandler : HttpMessageHandler
+    {
+        public HttpRequestMessage? LastRequest { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            LastRequest = request;
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
         }
     }

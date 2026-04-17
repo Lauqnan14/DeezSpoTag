@@ -1035,24 +1035,44 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
                 await _libraryRepository.UpsertArtistSourceIdAsync(request.LocalArtistId, PlexTarget, location.RatingKey, cancellationToken);
             }
 
+            var avatarUpdated = false;
             if (!string.IsNullOrWhiteSpace(request.AvatarPath) && File.Exists(request.AvatarPath))
             {
-                updates.AvatarUpdated = await _plexClient.UpdateArtistPosterFromFileAsync(
+                avatarUpdated = await _plexClient.UpdateArtistPosterFromFileAsync(
                     plex.Url,
                     plex.Token,
                     location.RatingKey,
                     request.AvatarPath,
-                    cancellationToken) || updates.AvatarUpdated;
+                    cancellationToken);
+                updates.AvatarUpdated = avatarUpdated || updates.AvatarUpdated;
             }
 
+            var backgroundUpdated = false;
             if (!string.IsNullOrWhiteSpace(request.BackgroundPath) && File.Exists(request.BackgroundPath))
             {
-                updates.BackgroundUpdated = await _plexClient.UpdateArtistArtFromFileAsync(
+                backgroundUpdated = await _plexClient.UpdateArtistArtFromFileAsync(
                     plex.Url,
                     plex.Token,
                     location.RatingKey,
                     request.BackgroundPath,
-                    cancellationToken) || updates.BackgroundUpdated;
+                    cancellationToken);
+                updates.BackgroundUpdated = backgroundUpdated || updates.BackgroundUpdated;
+            }
+
+            if (avatarUpdated || backgroundUpdated)
+            {
+                var locked = await _plexClient.LockArtistArtworkAsync(
+                    plex.Url,
+                    plex.Token,
+                    location.SectionKey,
+                    location.RatingKey,
+                    lockPoster: avatarUpdated,
+                    lockBackground: backgroundUpdated,
+                    cancellationToken);
+                if (!locked)
+                {
+                    warnings.Add("Plex artwork lock failed; Plex may revert avatar/background on refresh.");
+                }
             }
 
             if (!string.IsNullOrWhiteSpace(request.Biography))
