@@ -2342,7 +2342,7 @@ public class AutoTagService
         skipReason = "tags not configured";
         strippedKeys = new List<string>();
 
-        var requested = ReadStringList(baseRoot, "tags");
+        var requested = ResolveEnrichmentRequestedTags(baseRoot, context.RunIntent);
         if (requested.Count == 0)
         {
             return false;
@@ -2401,6 +2401,35 @@ public class AutoTagService
             filtered.Count,
             ComputeConfigHash(configJson));
         return true;
+    }
+
+    private static List<string> ResolveEnrichmentRequestedTags(JsonObject baseRoot, string? runIntent)
+    {
+        var requested = ReadStringList(baseRoot, "tags");
+        if (!string.Equals(NormalizeRunIntent(runIntent), AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
+        {
+            return requested;
+        }
+
+        var downloadTags = ReadStringList(baseRoot, "downloadTags");
+        if (downloadTags.Count == 0)
+        {
+            return requested;
+        }
+
+        var merged = new List<string>(requested);
+        var seen = new HashSet<string>(merged, StringComparer.OrdinalIgnoreCase);
+        var carryOverTags = new[] { "trackId", "releaseId", "source", "url" };
+        foreach (var tag in carryOverTags)
+        {
+            if (downloadTags.Any(downloadTag => string.Equals(downloadTag, tag, StringComparison.OrdinalIgnoreCase))
+                && seen.Add(tag))
+            {
+                merged.Add(tag);
+            }
+        }
+
+        return merged;
     }
 
     private bool TryBuildEnhancementStage(
