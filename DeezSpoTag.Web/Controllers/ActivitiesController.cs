@@ -103,7 +103,7 @@ public class ActivitiesController : Controller
             var status = (item.Status ?? string.Empty).Trim().ToLowerInvariant();
             if (status == RunningStatus)
             {
-                await _deezSpoTagApp.PauseQueueAsync();
+                await _deezSpoTagApp.PauseDownloadAsync(request.Uuid);
             }
             else if (status is QueuedStatus or InQueueStatus)
             {
@@ -214,6 +214,7 @@ public class ActivitiesController : Controller
             {
                 await _queueRepository.DeleteByStatusAsync(engine, CanceledStatus);
                 await _queueRepository.DeleteByStatusAsync(engine, CancelledStatus);
+                await _queueRepository.DeleteByStatusAsync(engine, SkippedStatus);
             }
             _deezspotagListener.SendRemovedFinishedDownloads();
             _logger.LogInformation("Cleared canceled downloads");
