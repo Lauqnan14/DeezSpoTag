@@ -5534,26 +5534,25 @@
     }
 
     async function startAutoTag() {
-        const config = readConfigFromUI();
-        if (String(config.conflictResolution || "").toLowerCase() === "shazam") {
-            config.moveFailed = true;
-            if (!String(config.moveFailedPath || "").trim()) {
-                const message = "Set Failed/Conflict files destination path before running AutoTag.";
-                setExternalStartStatus(message);
-                showToast(message, "warning");
-                return;
-            }
-        }
-        if (config.moveSuccess && !config.moveSuccessPath) {
-            const message = "Select a success library destination before running AutoTag.";
+        const resolvedProfileId = String(
+            state.activeProfileId
+            || ""
+        ).trim();
+        if (!resolvedProfileId) {
+            const message = "Select and load a profile before running AutoTag.";
             setExternalStartStatus(message);
             showToast(message, "warning");
             return;
         }
-        const storedAuth = await loadStoredAuth();
-        mergeStoredAuth(config, storedAuth);
-        await applyProjectSpotifyConfig(config);
-        normalizeSpotifyConfig(config);
+
+        try {
+            await upsertProfileFromUi({ silent: true, requireActiveProfile: true, reconcileUi: false });
+        } catch (error) {
+            const message = `Failed to save active profile before run: ${error?.message || error}`;
+            setExternalStartStatus(message);
+            showToast(message, "error");
+            return;
+        }
 
         // Manual enrichment runs in the configured download/staging folder only.
         const defaultStagingPath = String(state.settingsCache?.downloadLocation || "").trim();
@@ -5566,28 +5565,14 @@
             return;
         }
 
-        config.path = targetPath;
-        config.customPath = null;
-        // Playlist intake is intentionally disabled for AutoTag manual runs.
-        // config.isPlaylist = false;
         setExternalStartStatus("Starting enrichment in Download/Staging folder...");
-
-        const selectedProfile = getSelectedProfile();
-        const resolvedProfileId = String(
-            selectedProfile?.id
-            || state.activeProfileId
-            || ""
-        ).trim();
 
         const response = await fetch("/api/autotag/start", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            // Playlist intake is intentionally disabled for AutoTag manual runs.
-            // body: JSON.stringify({ path: targetPath, config, isPlaylist: false })
             body: JSON.stringify({
                 path: targetPath,
-                config,
-                profileId: resolvedProfileId || null
+                profileId: resolvedProfileId
             })
         });
 
