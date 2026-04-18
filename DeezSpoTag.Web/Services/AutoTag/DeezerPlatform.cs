@@ -48,17 +48,6 @@ public sealed class DeezerPlatform : AutoTagPlatformBase
                     "releaseId"),
                 CustomOptions = CreateOptions(
                     NumberOption("art_resolution", "Album Art Resolution", new NumberOptionValues(100, 1600, 100, 1200)),
-                    new PlatformCustomOption
-                    {
-                        Id = "arl",
-                        Label = "ARL (optional)",
-                        Tooltip = "Used for Deezer lyrics API. If empty, AutoTag uses the profile/user ARL setting.",
-                        Value = new PlatformCustomOptionString
-                        {
-                            Value = string.Empty,
-                            Hidden = true
-                        }
-                    },
                     BooleanOption("match_by_id", "Match by existing Deezer ID tag first", true))
             },
             "deezer.png");
