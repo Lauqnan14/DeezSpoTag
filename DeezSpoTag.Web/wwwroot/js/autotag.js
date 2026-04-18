@@ -5555,23 +5555,34 @@
             )
         };
 
+        const normalizedRecentDownloadWindowHours = convertRecentWindowDaysToHours(profileScoped.recentDownloadWindowDays);
+
         const fallbackLibrarySettings = base.libraryFolderSettings;
+        const withSyncedRecentWindow = (value) => {
+            if (!value || typeof value !== "object") {
+                return null;
+            }
+            return {
+                ...value,
+                recentDownloadWindowHours: normalizedRecentDownloadWindowHours
+            };
+        };
         if (typeof globalThis.collectAutoTagProfileLibrarySettings === "function") {
             try {
                 const libraryFolderSettings = globalThis.collectAutoTagProfileLibrarySettings();
                 if (libraryFolderSettings && typeof libraryFolderSettings === "object") {
-                    profileScoped.libraryFolderSettings = libraryFolderSettings;
+                    profileScoped.libraryFolderSettings = withSyncedRecentWindow(libraryFolderSettings);
                 } else if (fallbackLibrarySettings && typeof fallbackLibrarySettings === "object") {
-                    profileScoped.libraryFolderSettings = fallbackLibrarySettings;
+                    profileScoped.libraryFolderSettings = withSyncedRecentWindow(fallbackLibrarySettings);
                 }
             } catch (error) {
                 console.warn("Failed to collect profile-scoped library folder settings.", error);
                 if (fallbackLibrarySettings && typeof fallbackLibrarySettings === "object") {
-                    profileScoped.libraryFolderSettings = fallbackLibrarySettings;
+                    profileScoped.libraryFolderSettings = withSyncedRecentWindow(fallbackLibrarySettings);
                 }
             }
         } else if (fallbackLibrarySettings && typeof fallbackLibrarySettings === "object") {
-            profileScoped.libraryFolderSettings = fallbackLibrarySettings;
+            profileScoped.libraryFolderSettings = withSyncedRecentWindow(fallbackLibrarySettings);
         }
 
         return profileScoped;
@@ -5602,9 +5613,13 @@
             }
         }
 
-        if (source.recentDownloadWindowDays !== undefined && source.recentDownloadWindowDays !== null) {
+        const fallbackRecentWindowDays = source.libraryFolderSettings
+            ? convertRecentWindowHoursToDays(Number.parseInt(String(source.libraryFolderSettings.recentDownloadWindowHours ?? ""), 10))
+            : null;
+        const recentWindowDays = source.recentDownloadWindowDays ?? fallbackRecentWindowDays;
+        if (recentWindowDays !== undefined && recentWindowDays !== null) {
             ensureRecentDownloadWindowControls();
-            const parsedDays = Number.parseInt(String(source.recentDownloadWindowDays), 10);
+            const parsedDays = Number.parseInt(String(recentWindowDays), 10);
             if (Number.isFinite(parsedDays)) {
                 applyFieldValueIfPresent(
                     "enhancementRecentDownloadWindowDays",
@@ -6598,6 +6613,10 @@
         if (event.isTrusted && isProfileAutoSaveTarget(event.target)) {
             scheduleProfileAutoSave();
         }
+    });
+
+    document.addEventListener("autotag:library-profile-settings-changed", () => {
+        scheduleProfileAutoSave();
     });
 
     document.addEventListener("click", (event) => {

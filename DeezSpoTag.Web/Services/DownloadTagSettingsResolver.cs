@@ -1,5 +1,6 @@
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Shared;
+using System.Text.Json;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -77,7 +78,13 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
             }
 
             var downloadTagSource = ExtractDownloadTagSource(profile.AutoTag);
-            return new DownloadTagProfileSettings(tagSettings, downloadTagSource, profile.FolderStructure, profile.Technical);
+            var runtimeOverrides = ExtractRuntimeOverrides(profile.AutoTag);
+            return new DownloadTagProfileSettings(
+                tagSettings,
+                downloadTagSource,
+                profile.FolderStructure,
+                profile.Technical,
+                runtimeOverrides);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -93,12 +100,121 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
     {
         if (autoTag?.Data == null
             || !autoTag.Data.TryGetValue("downloadTagSource", out var sourceElement)
-            || sourceElement.ValueKind != System.Text.Json.JsonValueKind.String)
+            || sourceElement.ValueKind != JsonValueKind.String)
         {
             return null;
         }
 
         return DownloadTagSourceHelper.NormalizeStoredSource(sourceElement.GetString(), DownloadTagSourceHelper.DeezerSource);
+    }
+
+    private static DownloadProfileRuntimeOverrides? ExtractRuntimeOverrides(AutoTagSettings? autoTag)
+    {
+        if (autoTag?.Data == null || autoTag.Data.Count == 0)
+        {
+            return null;
+        }
+
+        var data = autoTag.Data;
+        var runtime = new DownloadProfileRuntimeOverrides(
+            TracknameTemplate: ReadStringValue(data, "tracknameTemplate"),
+            AlbumTracknameTemplate: ReadStringValue(data, "albumTracknameTemplate"),
+            PlaylistTracknameTemplate: ReadStringValue(data, "playlistTracknameTemplate"),
+            SaveArtwork: ReadBooleanValue(data, "saveArtwork"),
+            DlAlbumcoverForPlaylist: ReadBooleanValue(data, "dlAlbumcoverForPlaylist"),
+            SaveArtworkArtist: ReadBooleanValue(data, "saveArtworkArtist"),
+            CoverImageTemplate: ReadStringValue(data, "coverImageTemplate"),
+            ArtistImageTemplate: ReadStringValue(data, "artistImageTemplate"),
+            LocalArtworkFormat: ReadStringValue(data, "localArtworkFormat"),
+            EmbedMaxQualityCover: ReadBooleanValue(data, "embedMaxQualityCover"),
+            JpegImageQuality: ReadIntValue(data, "jpegImageQuality"));
+
+        var hasAnyValue =
+            !string.IsNullOrWhiteSpace(runtime.TracknameTemplate)
+            || !string.IsNullOrWhiteSpace(runtime.AlbumTracknameTemplate)
+            || !string.IsNullOrWhiteSpace(runtime.PlaylistTracknameTemplate)
+            || runtime.SaveArtwork.HasValue
+            || runtime.DlAlbumcoverForPlaylist.HasValue
+            || runtime.SaveArtworkArtist.HasValue
+            || !string.IsNullOrWhiteSpace(runtime.CoverImageTemplate)
+            || !string.IsNullOrWhiteSpace(runtime.ArtistImageTemplate)
+            || !string.IsNullOrWhiteSpace(runtime.LocalArtworkFormat)
+            || runtime.EmbedMaxQualityCover.HasValue
+            || runtime.JpegImageQuality.HasValue;
+
+        return hasAnyValue ? runtime : null;
+    }
+
+    private static string? ReadStringValue(Dictionary<string, JsonElement> data, string key)
+    {
+        if (!TryGetCaseInsensitiveValue(data, key, out var element)
+            || element.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var value = element.GetString()?.Trim();
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
+    private static bool? ReadBooleanValue(Dictionary<string, JsonElement> data, string key)
+    {
+        if (!TryGetCaseInsensitiveValue(data, key, out var element))
+        {
+            return null;
+        }
+
+        return element.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.String when bool.TryParse(element.GetString(), out var parsed) => parsed,
+            _ => null
+        };
+    }
+
+    private static int? ReadIntValue(Dictionary<string, JsonElement> data, string key)
+    {
+        if (!TryGetCaseInsensitiveValue(data, key, out var element))
+        {
+            return null;
+        }
+
+        if (element.ValueKind == JsonValueKind.Number && element.TryGetInt32(out var numeric))
+        {
+            return numeric;
+        }
+
+        if (element.ValueKind == JsonValueKind.String
+            && int.TryParse(element.GetString(), out var parsed))
+        {
+            return parsed;
+        }
+
+        return null;
+    }
+
+    private static bool TryGetCaseInsensitiveValue(
+        Dictionary<string, JsonElement> data,
+        string key,
+        out JsonElement value)
+    {
+        if (data.TryGetValue(key, out value))
+        {
+            return true;
+        }
+
+        foreach (var entry in data)
+        {
+            if (string.Equals(entry.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = entry.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
     }
 
     private static string ResolveFolderMode(string? desiredQuality)
