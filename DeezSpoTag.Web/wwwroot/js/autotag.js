@@ -2967,6 +2967,8 @@
         applyProfileConfig(autoTagData);
         applyFolderStructureToUI(profile.folderStructure || profile.FolderStructure);
         applyTechnicalSettingsToUI(profile.technical || profile.Technical);
+        applyProfileScopedExtrasToUI(autoTagData);
+        void applyProfileScopedLibrarySettings(autoTagData);
         const nameInput = el("autotag-profile-name");
         if (nameInput) {
             nameInput.value = profile.name || profile.Name || "";
@@ -5490,6 +5492,152 @@
         return technical;
     }
 
+    function readProfileScopedExtrasFromUI(baseData) {
+        const base = baseData && typeof baseData === "object" ? baseData : {};
+        const getInputValue = (id, fallback = "") => {
+            const field = el(id);
+            return field && "value" in field
+                ? String(field.value ?? "").trim()
+                : String(fallback ?? "").trim();
+        };
+        const getInputChecked = (id, fallback = false) => {
+            const field = el(id);
+            return field instanceof HTMLInputElement
+                ? field.checked
+                : fallback === true;
+        };
+        const getInputNumber = (id, fallback = 0, min = 0, max = Number.MAX_SAFE_INTEGER) => {
+            const field = el(id);
+            if (!(field && "value" in field)) {
+                return fallback;
+            }
+            const parsed = Number.parseInt(String(field.value ?? "").trim(), 10);
+            if (!Number.isFinite(parsed)) {
+                return fallback;
+            }
+            return Math.min(max, Math.max(min, parsed));
+        };
+        const getBaseBool = (key, fallback = false) => typeof base[key] === "boolean" ? base[key] : fallback;
+        const getBaseString = (key, fallback = "") => {
+            const raw = base[key];
+            return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : fallback;
+        };
+        const getBaseNumber = (key, fallback = 0, min = 0, max = Number.MAX_SAFE_INTEGER) => {
+            const parsed = Number.parseInt(String(base[key] ?? ""), 10);
+            if (!Number.isFinite(parsed)) {
+                return fallback;
+            }
+            return Math.min(max, Math.max(min, parsed));
+        };
+
+        const profileScoped = {
+            tracknameTemplate: getInputValue("autotag-trackname-template", getBaseString("tracknameTemplate", "")),
+            albumTracknameTemplate: getInputValue("autotag-album-trackname-template", getBaseString("albumTracknameTemplate", "")),
+            playlistTracknameTemplate: getInputValue("autotag-playlist-trackname-template", getBaseString("playlistTracknameTemplate", "")),
+            saveArtwork: getInputChecked("saveArtwork", getBaseBool("saveArtwork", false)),
+            dlAlbumcoverForPlaylist: getInputChecked("dlAlbumcoverForPlaylist", getBaseBool("dlAlbumcoverForPlaylist", true)),
+            saveArtworkArtist: getInputChecked("saveArtworkArtist", getBaseBool("saveArtworkArtist", false)),
+            coverImageTemplate: getInputValue("coverImageTemplate", getBaseString("coverImageTemplate", "cover")),
+            artistImageTemplate: getInputValue("artistImageTemplate", getBaseString("artistImageTemplate", "folder")),
+            localArtworkFormat: getInputValue("localArtworkFormat", getBaseString("localArtworkFormat", "jpg")),
+            embedMaxQualityCover: getInputChecked("embedMaxQualityCover", getBaseBool("embedMaxQualityCover", true)),
+            jpegImageQuality: getInputNumber(
+                "jpegImageQuality",
+                getBaseNumber("jpegImageQuality", 90, 1, 100),
+                1,
+                100
+            ),
+            recentDownloadWindowDays: getInputNumber(
+                "enhancementRecentDownloadWindowDays",
+                getBaseNumber("recentDownloadWindowDays", DEFAULT_RECENT_DOWNLOAD_WINDOW_DAYS, 0, 3650),
+                0,
+                3650
+            )
+        };
+
+        const fallbackLibrarySettings = base.libraryFolderSettings;
+        if (typeof globalThis.collectAutoTagProfileLibrarySettings === "function") {
+            try {
+                const libraryFolderSettings = globalThis.collectAutoTagProfileLibrarySettings();
+                if (libraryFolderSettings && typeof libraryFolderSettings === "object") {
+                    profileScoped.libraryFolderSettings = libraryFolderSettings;
+                } else if (fallbackLibrarySettings && typeof fallbackLibrarySettings === "object") {
+                    profileScoped.libraryFolderSettings = fallbackLibrarySettings;
+                }
+            } catch (error) {
+                console.warn("Failed to collect profile-scoped library folder settings.", error);
+                if (fallbackLibrarySettings && typeof fallbackLibrarySettings === "object") {
+                    profileScoped.libraryFolderSettings = fallbackLibrarySettings;
+                }
+            }
+        } else if (fallbackLibrarySettings && typeof fallbackLibrarySettings === "object") {
+            profileScoped.libraryFolderSettings = fallbackLibrarySettings;
+        }
+
+        return profileScoped;
+    }
+
+    function applyProfileScopedExtrasToUI(data) {
+        const source = data && typeof data === "object" ? data : null;
+        if (!source) {
+            return;
+        }
+
+        applyFieldValueIfPresent("autotag-trackname-template", source.tracknameTemplate);
+        applyFieldValueIfPresent("autotag-album-trackname-template", source.albumTracknameTemplate);
+        applyFieldValueIfPresent("autotag-playlist-trackname-template", source.playlistTracknameTemplate);
+
+        applyFieldCheckedWhenBoolean("saveArtwork", source.saveArtwork);
+        applyFieldCheckedWhenBoolean("dlAlbumcoverForPlaylist", source.dlAlbumcoverForPlaylist);
+        applyFieldCheckedWhenBoolean("saveArtworkArtist", source.saveArtworkArtist);
+        applyFieldValueIfPresent("coverImageTemplate", source.coverImageTemplate);
+        applyFieldValueIfPresent("artistImageTemplate", source.artistImageTemplate);
+        applyFieldValueIfPresent("localArtworkFormat", source.localArtworkFormat);
+        applyFieldCheckedWhenBoolean("embedMaxQualityCover", source.embedMaxQualityCover);
+
+        if (source.jpegImageQuality !== undefined && source.jpegImageQuality !== null) {
+            const parsedQuality = Number.parseInt(String(source.jpegImageQuality), 10);
+            if (Number.isFinite(parsedQuality)) {
+                applyFieldValueIfPresent("jpegImageQuality", Math.min(100, Math.max(1, parsedQuality)));
+            }
+        }
+
+        if (source.recentDownloadWindowDays !== undefined && source.recentDownloadWindowDays !== null) {
+            ensureRecentDownloadWindowControls();
+            const parsedDays = Number.parseInt(String(source.recentDownloadWindowDays), 10);
+            if (Number.isFinite(parsedDays)) {
+                applyFieldValueIfPresent(
+                    "enhancementRecentDownloadWindowDays",
+                    Math.min(3650, Math.max(0, parsedDays))
+                );
+            }
+        }
+
+        refreshArtworkTemplateFieldState();
+        renderFolderStructurePreview();
+    }
+
+    async function applyProfileScopedLibrarySettings(autoTagData) {
+        if (!autoTagData || typeof autoTagData !== "object") {
+            return;
+        }
+
+        const libraryFolderSettings = autoTagData.libraryFolderSettings;
+        if (!libraryFolderSettings || typeof libraryFolderSettings !== "object") {
+            return;
+        }
+
+        if (typeof globalThis.applyAutoTagProfileLibrarySettings !== "function") {
+            return;
+        }
+
+        try {
+            await globalThis.applyAutoTagProfileLibrarySettings(libraryFolderSettings, { silent: true });
+        } catch (error) {
+            console.warn("Failed to apply profile-scoped library folder settings.", error);
+        }
+    }
+
     function loadItunesArtOptions() {
         const select = el("autotag-itunes-art-resolution");
         const animatedControls = getAnimatedArtworkControls();
@@ -5785,6 +5933,16 @@
             console.error("Failed to load AutoTag defaults.", error);
             showToast("Failed to load enhancement defaults.", "error");
         }
+
+        const activeProfile = getActiveProfile() || getSelectedProfile();
+        const activeAutoTagData = activeProfile?.autoTag?.data
+            || activeProfile?.autoTag
+            || activeProfile?.AutoTag?.data
+            || activeProfile?.AutoTag
+            || null;
+        if (activeAutoTagData && typeof activeAutoTagData === "object") {
+            applyProfileScopedExtrasToUI(activeAutoTagData);
+        }
     }
 
     function renderProfileSelect() {
@@ -6001,15 +6159,21 @@
 
     function getProfileAutoTagSnapshot(profile) {
         const rawAutoTag = profile?.autoTag?.data || profile?.autoTag || {};
+        const currentConfig = readConfigFromUI();
+        const profileScopedExtras = readProfileScopedExtrasFromUI(rawAutoTag);
         if (!rawAutoTag || typeof rawAutoTag !== "object") {
-            return readConfigFromUI();
+            return {
+                ...currentConfig,
+                ...profileScopedExtras
+            };
         }
 
         const snapshot = structuredClone(rawAutoTag);
         delete snapshot.data;
         return {
             ...snapshot,
-            ...readConfigFromUI()
+            ...currentConfig,
+            ...profileScopedExtras
         };
     }
 

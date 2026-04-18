@@ -2932,6 +2932,266 @@ async function saveAutoTagFolderDefault(folderId, profileId, schedule) {
     libraryState.autotagDefaults = normalizeAutoTagDefaults(saved);
 }
 
+function buildAutoTagProfileLibrarySettingsSnapshot() {
+    const folders = Array.isArray(libraryState.folders)
+        ? libraryState.folders
+        : [];
+    const defaults = normalizeAutoTagDefaults(libraryState.autotagDefaults);
+    const schedules = defaults?.librarySchedules && typeof defaults.librarySchedules === 'object'
+        ? defaults.librarySchedules
+        : {};
+    const entries = folders
+        .filter((folder) => String(folder?.rootPath || '').trim().length > 0)
+        .map((folder) => {
+            const normalizedFolder = normalizeFolderConversionState(folder);
+            return {
+                rootPath: String(normalizedFolder?.rootPath || '').trim(),
+                displayName: String(normalizedFolder?.displayName || normalizedFolder?.libraryName || '').trim(),
+                enabled: isFolderEnabledFlag(normalizedFolder?.enabled),
+                desiredQuality: String(normalizedFolder?.desiredQuality || '27').trim() || '27',
+                convertEnabled: normalizedFolder?.convertEnabled === true,
+                convertFormat: normalizedFolder?.convertEnabled === true
+                    ? normalizeFolderConvertFormatValue(normalizedFolder?.convertFormat)
+                    : null,
+                convertBitrate: normalizedFolder?.convertEnabled === true
+                    ? normalizeFolderConvertBitrateValue(normalizedFolder?.convertBitrate)
+                    : null,
+                autoTagProfileId: resolveFolderProfileReference(normalizedFolder) || null,
+                enhancementSchedule: String(schedules[String(normalizedFolder?.id ?? '')] || '').trim() || null
+            };
+        });
+    const atmosFolder = folders.find((folder) =>
+        Number.parseInt(String(folder?.id ?? ''), 10) === Number.parseInt(String(libraryState.atmosDestinationFolderId ?? ''), 10));
+
+    return {
+        version: 1,
+        folders: entries,
+        defaultFileProfile: defaults.defaultFileProfile || null,
+        recentDownloadWindowHours: Number.isFinite(Number(defaults.recentDownloadWindowHours))
+            ? Number(defaults.recentDownloadWindowHours)
+            : null,
+        destinations: {
+            atmosRootPath: String(atmosFolder?.rootPath || '').trim() || null,
+            videoRootPath: String(libraryState.videoDownloadLocation || '').trim() || null,
+            podcastRootPath: String(libraryState.podcastDownloadLocation || '').trim() || null
+        }
+    };
+}
+
+function normalizeAutoTagProfileLibrarySettingsSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') {
+        return null;
+    }
+
+    const rawFolders = Array.isArray(snapshot.folders) ? snapshot.folders : [];
+    const dedupedByPath = new Map();
+    rawFolders.forEach((item) => {
+        const rootPath = String(item?.rootPath || '').trim();
+        if (!rootPath) {
+            return;
+        }
+        const pathKey = normalizePath(rootPath);
+        if (!pathKey || dedupedByPath.has(pathKey)) {
+            return;
+        }
+
+        dedupedByPath.set(pathKey, {
+            rootPath,
+            pathKey,
+            displayName: String(item?.displayName || '').trim(),
+            enabled: isFolderEnabledFlag(item?.enabled),
+            desiredQuality: String(item?.desiredQuality || '27').trim() || '27',
+            convertEnabled: item?.convertEnabled === true,
+            convertFormat: item?.convertEnabled === true
+                ? normalizeFolderConvertFormatValue(item?.convertFormat)
+                : null,
+            convertBitrate: item?.convertEnabled === true
+                ? normalizeFolderConvertBitrateValue(item?.convertBitrate)
+                : null,
+            autoTagProfileId: String(item?.autoTagProfileId || '').trim() || null,
+            enhancementSchedule: String(item?.enhancementSchedule || '').trim() || null
+        });
+    });
+
+    const hasDefaultFileProfile = Object.hasOwn(snapshot, 'defaultFileProfile');
+    const hasRecentDownloadWindowHours = Object.hasOwn(snapshot, 'recentDownloadWindowHours');
+    const defaultFileProfile = hasDefaultFileProfile
+        ? (String(snapshot.defaultFileProfile || '').trim() || null)
+        : null;
+    const parsedRecentDownloadWindowHours = Number.parseInt(String(snapshot.recentDownloadWindowHours ?? ''), 10);
+    const recentDownloadWindowHours = hasRecentDownloadWindowHours && Number.isFinite(parsedRecentDownloadWindowHours)
+        ? Math.max(0, parsedRecentDownloadWindowHours)
+        : null;
+    const destinations = snapshot.destinations && typeof snapshot.destinations === 'object'
+        ? {
+            hasAtmosRootPath: Object.hasOwn(snapshot.destinations, 'atmosRootPath'),
+            atmosRootPath: String(snapshot.destinations.atmosRootPath || '').trim() || null,
+            hasVideoRootPath: Object.hasOwn(snapshot.destinations, 'videoRootPath'),
+            videoRootPath: String(snapshot.destinations.videoRootPath || '').trim() || null,
+            hasPodcastRootPath: Object.hasOwn(snapshot.destinations, 'podcastRootPath'),
+            podcastRootPath: String(snapshot.destinations.podcastRootPath || '').trim() || null
+        }
+        : {
+            hasAtmosRootPath: false,
+            atmosRootPath: null,
+            hasVideoRootPath: false,
+            videoRootPath: null,
+            hasPodcastRootPath: false,
+            podcastRootPath: null
+        };
+
+    return {
+        folders: Array.from(dedupedByPath.values()),
+        hasDefaultFileProfile,
+        defaultFileProfile,
+        hasRecentDownloadWindowHours,
+        recentDownloadWindowHours,
+        destinations
+    };
+}
+
+async function applyAutoTagProfileLibrarySettingsSnapshot(snapshot, options = {}) {
+    const normalized = normalizeAutoTagProfileLibrarySettingsSnapshot(snapshot);
+    if (!normalized) {
+        return false;
+    }
+
+    const { silent = true } = options || {};
+    const existingFoldersRaw = await fetchJson('/api/library/folders?includeDisabled=true');
+    const existingFolders = Array.isArray(existingFoldersRaw)
+        ? existingFoldersRaw.map(normalizeFolderConversionState)
+        : [];
+    const existingByPath = new Map();
+    existingFolders.forEach((folder) => {
+        const rootPath = String(folder?.rootPath || '').trim();
+        const pathKey = normalizePath(rootPath);
+        if (!rootPath || !pathKey || existingByPath.has(pathKey)) {
+            return;
+        }
+        existingByPath.set(pathKey, folder);
+    });
+
+    const resolvedByPath = new Map();
+    for (const entry of normalized.folders) {
+        const existing = existingByPath.get(entry.pathKey) || null;
+        const payload = {
+            rootPath: entry.rootPath,
+            displayName: entry.displayName || deriveFolderDisplayName(entry.rootPath),
+            enabled: entry.enabled,
+            libraryName: existing?.libraryName ?? null,
+            desiredQuality: entry.desiredQuality,
+            convertEnabled: entry.convertEnabled,
+            convertFormat: entry.convertEnabled ? entry.convertFormat : null,
+            convertBitrate: entry.convertEnabled ? entry.convertBitrate : null
+        };
+        const savedFolder = await fetchJson(existing ? `/api/library/folders/${existing.id}` : '/api/library/folders', {
+            method: existing ? 'PATCH' : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const savedId = Number.parseInt(String(savedFolder?.id ?? existing?.id ?? ''), 10);
+        const savedRootPath = String(savedFolder?.rootPath || payload.rootPath || '').trim();
+        const savedPathKey = normalizePath(savedRootPath);
+        if (Number.isFinite(savedId) && savedId > 0 && savedRootPath && savedPathKey) {
+            resolvedByPath.set(savedPathKey, {
+                id: savedId,
+                rootPath: savedRootPath
+            });
+            if (entry.autoTagProfileId) {
+                await setFolderAutoTagProfile(savedId, entry.autoTagProfileId);
+            }
+        }
+    }
+
+    const currentDefaults = normalizeAutoTagDefaults(libraryState.autotagDefaults);
+    const nextSchedules = currentDefaults.librarySchedules && typeof currentDefaults.librarySchedules === 'object'
+        ? { ...currentDefaults.librarySchedules }
+        : {};
+    normalized.folders.forEach((entry) => {
+        const resolved = resolvedByPath.get(entry.pathKey);
+        if (!resolved) {
+            return;
+        }
+        const idKey = String(resolved.id);
+        if (entry.enhancementSchedule) {
+            nextSchedules[idKey] = entry.enhancementSchedule;
+        } else {
+            delete nextSchedules[idKey];
+        }
+    });
+
+    const nextDefaultsPayload = {
+        defaultFileProfile: normalized.hasDefaultFileProfile
+            ? normalized.defaultFileProfile
+            : currentDefaults.defaultFileProfile,
+        librarySchedules: nextSchedules,
+        recentDownloadWindowHours: normalized.hasRecentDownloadWindowHours
+            ? normalized.recentDownloadWindowHours
+            : currentDefaults.recentDownloadWindowHours,
+        renameSpotifyArtistFolders: currentDefaults.renameSpotifyArtistFolders
+    };
+    const savedDefaults = await fetchJson('/api/autotag/defaults', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nextDefaultsPayload)
+    });
+    libraryState.autotagDefaults = normalizeAutoTagDefaults(savedDefaults);
+
+    const resolvePathBySnapshot = (snapshotPath) => {
+        const normalizedPath = normalizePath(snapshotPath);
+        if (!normalizedPath) {
+            return null;
+        }
+        const resolved = resolvedByPath.get(normalizedPath);
+        if (resolved?.rootPath) {
+            return resolved.rootPath;
+        }
+        const existing = existingByPath.get(normalizedPath);
+        return existing?.rootPath ? String(existing.rootPath).trim() : null;
+    };
+    const resolveIdBySnapshot = (snapshotPath) => {
+        const normalizedPath = normalizePath(snapshotPath);
+        if (!normalizedPath) {
+            return null;
+        }
+        const resolved = resolvedByPath.get(normalizedPath);
+        if (resolved?.id) {
+            return resolved.id;
+        }
+        const existing = existingByPath.get(normalizedPath);
+        const id = Number.parseInt(String(existing?.id ?? ''), 10);
+        return Number.isFinite(id) && id > 0 ? id : null;
+    };
+    const destinationUpdate = {};
+    if (normalized.destinations.hasAtmosRootPath) {
+        destinationUpdate.atmosFolderId = resolveIdBySnapshot(normalized.destinations.atmosRootPath);
+    }
+    if (normalized.destinations.hasVideoRootPath) {
+        destinationUpdate.videoFolderPath = resolvePathBySnapshot(normalized.destinations.videoRootPath) || '';
+    }
+    if (normalized.destinations.hasPodcastRootPath) {
+        destinationUpdate.podcastFolderPath = resolvePathBySnapshot(normalized.destinations.podcastRootPath) || '';
+    }
+    if (Object.keys(destinationUpdate).length > 0) {
+        await updateDownloadDestinations(destinationUpdate);
+    }
+
+    await loadFolders();
+    if (!silent) {
+        showToast('Applied profile library folder settings.');
+    }
+
+    return true;
+}
+
+globalThis.collectAutoTagProfileLibrarySettings = function collectAutoTagProfileLibrarySettings() {
+    return buildAutoTagProfileLibrarySettingsSnapshot();
+};
+
+globalThis.applyAutoTagProfileLibrarySettings = async function applyAutoTagProfileLibrarySettings(snapshot, options) {
+    return applyAutoTagProfileLibrarySettingsSnapshot(snapshot, options);
+};
+
 async function startFolderEnhancement(folder, profileReference) {
     const rootPath = (folder?.rootPath || '').trim();
     if (!rootPath) {
