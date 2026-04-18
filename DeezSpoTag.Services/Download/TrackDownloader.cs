@@ -70,6 +70,24 @@ public class TrackDownloader
         { 0, ".mp3" }     // LOCAL
     };
 
+    private static readonly HashSet<string> KnownAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".flac",
+        ".mp3",
+        ".m4a",
+        ".mp4",
+        ".m4b",
+        ".aac",
+        ".wav",
+        ".aif",
+        ".aiff",
+        ".ogg",
+        ".opus",
+        ".alac",
+        ".wma",
+        ".ape"
+    };
+
     private readonly string _tempDir;
 
     // Static dictionary to track active downloads and prevent duplicates
@@ -2017,7 +2035,7 @@ public class TrackDownloader
             var outputIoPath = DownloadPathResolver.ResolveIoPath(outputPath);
             var filePath = Path.GetDirectoryName(outputIoPath)
                            ?? DownloadPathResolver.ResolveIoPath(pathResult.FilePath);
-            var filename = Path.GetFileNameWithoutExtension(outputIoPath);
+            var filename = ResolveAudioFilenameStem(outputIoPath);
             Directory.CreateDirectory(filePath);
             var extrasPath = DownloadPathResolver.ResolveIoPath(pathResult.ExtrasPath);
             var coverPath = DownloadPathResolver.ResolveIoPath(pathResult.CoverPath ?? string.Empty);
@@ -2223,7 +2241,7 @@ public class TrackDownloader
         }
 
         var directory = Path.GetDirectoryName(ioPath);
-        var baseName = Path.GetFileNameWithoutExtension(ioPath);
+        var baseName = ResolveAudioFilenameStem(ioPath);
         if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(baseName))
         {
             return (false, false, false, false);
@@ -2266,6 +2284,30 @@ public class TrackDownloader
             && (outputFormat is "lrc" or "ttml" or "both");
         var canEmitUnsyncedSidecar = allowsUnsyncedByToggle && allowsUnsyncedType;
         return canEmitSyncedSidecar || canEmitUnsyncedSidecar;
+    }
+
+    private static string ResolveAudioFilenameStem(string pathOrName)
+    {
+        if (string.IsNullOrWhiteSpace(pathOrName))
+        {
+            return string.Empty;
+        }
+
+        var trimmed = pathOrName.Trim();
+        var fileName = Path.GetFileName(trimmed);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return string.Empty;
+        }
+
+        var extension = Path.GetExtension(fileName);
+        if (string.IsNullOrWhiteSpace(extension) || !KnownAudioExtensions.Contains(extension))
+        {
+            return fileName;
+        }
+
+        var stem = Path.GetFileNameWithoutExtension(fileName);
+        return string.IsNullOrWhiteSpace(stem) ? fileName : stem;
     }
 
     private static HashSet<string> ParseLyricsTypeSelection(string? raw)
