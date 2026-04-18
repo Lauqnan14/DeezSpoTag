@@ -12,6 +12,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Collections.Concurrent;
+using System.Text.RegularExpressions;
 using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 
 namespace DeezSpoTag.Services.Download.Shared;
@@ -25,6 +26,9 @@ public static class EngineAudioPostDownloadHelper
     private const string AppleSource = "apple";
     private const string MzStaticHost = "mzstatic.com";
     private const string UnknownArtist = "Unknown Artist";
+    private const string LyricsType = "lyrics";
+    private const string UnsyncedLyricsType = "unsynced-lyrics";
+    private const string SyllableLyricsType = "syllable-lyrics";
     private const string CompletedStatus = "completed";
     private const string FailedStatus = "failed";
     private const string FetchingStatus = "fetching";
@@ -36,6 +40,9 @@ public static class EngineAudioPostDownloadHelper
     private const string PausedStatus = "paused";
     private const string CanceledStatus = "canceled";
     private const string UpdateQueueEvent = "updateQueue";
+    private static readonly Regex LrcTimestampRegex = new(
+        @"^\[(?<m>\d{1,3}):(?<s>\d{2})(?:\.(?<f>\d{1,3}))?\]",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly HashSet<string> KnownAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".flac",
@@ -410,6 +417,7 @@ public static class EngineAudioPostDownloadHelper
     {
         var imageDownloader = request.Scope.GetRequiredService<ImageDownloader>();
         var audioTagger = request.Scope.GetRequiredService<AudioTagger>();
+        var lyricsService = request.Scope.GetRequiredService<LyricsService>();
         var spotifyArtworkResolver = request.Scope.GetService<ISpotifyArtworkResolver>();
         var spotifyIdResolver = request.Scope.GetService<ISpotifyIdResolver>();
         var httpClientFactory = request.Scope.GetService<IHttpClientFactory>();
@@ -443,6 +451,8 @@ public static class EngineAudioPostDownloadHelper
             }
         }
 
+        await EnsureLyricsForTaggingAsync(request, lyricsService, cancellationToken);
+
         await DownloadEngineArtworkHelper.TagAudioWithResolvedCoverAsync(
             new DownloadEngineArtworkHelper.AudioTagWithCoverRequest(
                 request.OutputPath,
@@ -458,6 +468,342 @@ public static class EngineAudioPostDownloadHelper
 
         UpdateAudioPayloadFiles(request.Payload, request.Context.PathResult, request.OutputPath);
         return request.OutputPath;
+    }
+
+    private static async Task EnsureLyricsForTaggingAsync(
+        PostDownloadSettingsRequest request,
+        LyricsService lyricsService,
+        CancellationToken cancellationToken)
+    {
+        var tagSettings = request.Settings.Tags;
+        if (tagSettings == null || (!tagSettings.Lyrics && !tagSettings.SyncedLyrics))
+        {
+            return;
+        }
+
+        var track = request.Context.Track;
+        track.Lyrics ??= new Lyrics(track.LyricsId ?? "0");
+
+        try
+        {
+            HydrateLyricsFromSidecars(track, request.OutputPath, tagSettings);
+
+            if (HasRequiredLyricsAlready(track, tagSettings))
+            {
+                return;
+            }
+
+            var lyricsSettings = BuildLyricsResolveSettings(request.Settings, tagSettings);
+            var lyrics = await lyricsService.ResolveLyricsAsync(track, lyricsSettings, cancellationToken);
+            if (lyrics == null || !string.IsNullOrWhiteSpace(lyrics.ErrorMessage))
+            {
+                return;
+            }
+
+            ApplyResolvedLyricsForTagging(track, tagSettings, lyrics);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (request.Logger.IsEnabled(LogLevel.Debug))
+            {
+                request.Logger.LogDebug(ex, "{Engine} failed lyrics hydration for {Path}", request.Engine, request.OutputPath);
+            }
+        }
+    }
+
+    private static void HydrateLyricsFromSidecars(
+        Track track,
+        string outputPath,
+        TagSettings tagSettings)
+    {
+        var ioOutputPath = DownloadPathResolver.ResolveIoPath(outputPath);
+        if (string.IsNullOrWhiteSpace(ioOutputPath))
+        {
+            return;
+        }
+
+        var directory = Path.GetDirectoryName(ioOutputPath);
+        var baseName = Path.GetFileNameWithoutExtension(ioOutputPath);
+        if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(baseName))
+        {
+            return;
+        }
+
+        var lrcPath = Path.Join(directory, $"{baseName}.lrc");
+        var ttmlPath = Path.Join(directory, $"{baseName}.ttml");
+        var txtPath = Path.Join(directory, $"{baseName}.txt");
+
+        if (tagSettings.SyncedLyrics && !HasSyncedLyrics(track))
+        {
+            var syncedLines = ResolveSyncedLinesFromSidecars(lrcPath, ttmlPath);
+            if (syncedLines.Count > 0)
+            {
+                track.Lyrics!.Sync = string.Join(Environment.NewLine, syncedLines);
+                track.Lyrics.SyncID3 = syncedLines
+                    .Select(ToSyncLyricOrNull)
+                    .Where(line => line != null)
+                    .Select(line => line!)
+                    .ToList();
+            }
+        }
+
+        if (tagSettings.Lyrics && string.IsNullOrWhiteSpace(track.Lyrics!.Unsync))
+        {
+            var unsyncedText = ResolveUnsyncedTextFromSidecars(txtPath, lrcPath, ttmlPath);
+            if (!string.IsNullOrWhiteSpace(unsyncedText))
+            {
+                track.Lyrics.Unsync = unsyncedText;
+            }
+            else if (HasSyncedLyrics(track))
+            {
+                track.Lyrics.Unsync = ConvertSyncedLyricsToUnsynced(track.Lyrics.SyncID3);
+            }
+        }
+    }
+
+    private static List<string> ResolveSyncedLinesFromSidecars(string lrcPath, string ttmlPath)
+    {
+        if (File.Exists(lrcPath))
+        {
+            return NormalizeLrcLines(File.ReadAllLines(lrcPath));
+        }
+
+        if (!File.Exists(ttmlPath))
+        {
+            return new List<string>();
+        }
+
+        try
+        {
+            var ttml = File.ReadAllText(ttmlPath);
+            var lrc = AppleLyricsService.ConvertTtmlToLrcPublic(ttml);
+            if (string.IsNullOrWhiteSpace(lrc))
+            {
+                return new List<string>();
+            }
+
+            return NormalizeLrcLines(lrc.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new List<string>();
+        }
+    }
+
+    private static string ResolveUnsyncedTextFromSidecars(string txtPath, string lrcPath, string ttmlPath)
+    {
+        if (File.Exists(txtPath))
+        {
+            return (File.ReadAllText(txtPath) ?? string.Empty).Trim();
+        }
+
+        var syncedLines = ResolveSyncedLinesFromSidecars(lrcPath, ttmlPath);
+        if (syncedLines.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        return string.Join(
+            Environment.NewLine,
+            syncedLines
+                .Select(static line => TryExtractLrcText(line, out var text) ? text : string.Empty)
+                .Where(text => !string.IsNullOrWhiteSpace(text)));
+    }
+
+    private static List<string> NormalizeLrcLines(IEnumerable<string> lines)
+    {
+        return lines
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Select(line => line.Trim())
+            .Where(line => LrcTimestampRegex.IsMatch(line))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static SyncLyric? ToSyncLyricOrNull(string line)
+    {
+        if (!TryExtractLrcText(line, out var text) || !TryParseLrcTimestamp(line, out var timestampMs))
+        {
+            return null;
+        }
+
+        return new SyncLyric
+        {
+            Timestamp = timestampMs,
+            Text = text
+        };
+    }
+
+    private static bool TryExtractLrcText(string line, out string text)
+    {
+        text = string.Empty;
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return false;
+        }
+
+        var match = LrcTimestampRegex.Match(line.Trim());
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        text = line[(match.Index + match.Length)..].Trim();
+        return true;
+    }
+
+    private static bool TryParseLrcTimestamp(string line, out int milliseconds)
+    {
+        milliseconds = 0;
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return false;
+        }
+
+        var match = LrcTimestampRegex.Match(line.Trim());
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        if (!int.TryParse(match.Groups["m"].Value, out var minutes))
+        {
+            return false;
+        }
+
+        if (!int.TryParse(match.Groups["s"].Value, out var seconds))
+        {
+            return false;
+        }
+
+        var fractionRaw = match.Groups["f"].Success ? match.Groups["f"].Value : "0";
+        if (!int.TryParse(fractionRaw, out var fraction))
+        {
+            return false;
+        }
+
+        var ms = fractionRaw.Length switch
+        {
+            1 => fraction * 100,
+            2 => fraction * 10,
+            _ => fraction
+        };
+        milliseconds = Math.Max(0, (minutes * 60 * 1000) + (seconds * 1000) + ms);
+        return true;
+    }
+
+    private static string ConvertSyncedLyricsToUnsynced(IEnumerable<SyncLyric>? syncLyrics)
+    {
+        if (syncLyrics == null)
+        {
+            return string.Empty;
+        }
+
+        return string.Join(
+            Environment.NewLine,
+            syncLyrics
+                .Select(static line => line.Text?.Trim() ?? string.Empty)
+                .Where(text => !string.IsNullOrWhiteSpace(text)));
+    }
+
+    private static bool HasRequiredLyricsAlready(Track track, TagSettings tagSettings)
+    {
+        var hasUnsynced = !string.IsNullOrWhiteSpace(track.Lyrics?.Unsync);
+        var hasSynced = HasSyncedLyrics(track);
+        return (!tagSettings.Lyrics || hasUnsynced) && (!tagSettings.SyncedLyrics || hasSynced);
+    }
+
+    private static bool HasSyncedLyrics(Track track)
+    {
+        return !string.IsNullOrWhiteSpace(track.Lyrics?.Sync)
+            || (track.Lyrics?.SyncID3?.Count ?? 0) > 0;
+    }
+
+    private static void ApplyResolvedLyricsForTagging(
+        Track track,
+        TagSettings tagSettings,
+        LyricsBase lyrics)
+    {
+        track.Lyrics ??= new Lyrics(track.LyricsId ?? "0");
+
+        if (tagSettings.Lyrics
+            && string.IsNullOrWhiteSpace(track.Lyrics.Unsync)
+            && !string.IsNullOrWhiteSpace(lyrics.UnsyncedLyrics))
+        {
+            track.Lyrics.Unsync = lyrics.UnsyncedLyrics;
+        }
+
+        if (tagSettings.SyncedLyrics && !HasSyncedLyrics(track) && lyrics.IsSynced())
+        {
+            track.Lyrics.Sync = lyrics.GenerateLrcContent(track.Title, track.MainArtist?.Name, track.Album?.Title);
+            var syncedLines = lyrics.SyncedLyrics?
+                .Where(line => line != null && line.IsValid())
+                .Select(line => new SyncLyric
+                {
+                    Timestamp = Math.Max(0, line!.Milliseconds),
+                    Text = line.Text ?? string.Empty
+                })
+                .ToList();
+
+            if (syncedLines is { Count: > 0 })
+            {
+                track.Lyrics.SyncID3 = syncedLines;
+            }
+        }
+
+        if (tagSettings.Lyrics
+            && string.IsNullOrWhiteSpace(track.Lyrics.Unsync)
+            && HasSyncedLyrics(track))
+        {
+            track.Lyrics.Unsync = ConvertSyncedLyricsToUnsynced(track.Lyrics.SyncID3);
+        }
+    }
+
+    private static DeezSpoTagSettings BuildLyricsResolveSettings(DeezSpoTagSettings settings, TagSettings tagSettings)
+    {
+        var allowsSyncedBySettings = settings.SyncedLyrics || settings.Tags?.SyncedLyrics == true;
+        var allowsUnsyncedBySettings = settings.SaveLyrics || settings.Tags?.Lyrics == true;
+
+        return new DeezSpoTagSettings
+        {
+            SyncedLyrics = allowsSyncedBySettings,
+            SaveLyrics = allowsUnsyncedBySettings,
+            LrcType = ResolveLyricsTypesForTags(tagSettings, allowsSyncedBySettings, allowsUnsyncedBySettings),
+            LrcFormat = settings.LrcFormat,
+            LyricsFallbackEnabled = settings.LyricsFallbackEnabled,
+            LyricsFallbackOrder = settings.LyricsFallbackOrder,
+            DeezerCountry = settings.DeezerCountry,
+            Arl = settings.Arl,
+            AppleMusic = settings.AppleMusic,
+            AuthorizationToken = settings.AuthorizationToken,
+            Tags = new TagSettings
+            {
+                Lyrics = tagSettings.Lyrics && allowsUnsyncedBySettings,
+                SyncedLyrics = tagSettings.SyncedLyrics && allowsSyncedBySettings
+            }
+        };
+    }
+
+    private static string ResolveLyricsTypesForTags(TagSettings tagSettings, bool allowsSynced, bool allowsUnsynced)
+    {
+        var types = new List<string>();
+        if (tagSettings.SyncedLyrics && allowsSynced)
+        {
+            types.Add(LyricsType);
+            types.Add(SyllableLyricsType);
+        }
+
+        if (tagSettings.Lyrics && allowsUnsynced)
+        {
+            types.Add(UnsyncedLyricsType);
+        }
+
+        if (types.Count == 0)
+        {
+            types.Add(LyricsType);
+        }
+
+        return string.Join(',', types.Distinct(StringComparer.OrdinalIgnoreCase));
     }
 
     public static async Task QueueParallelPostDownloadPrefetchAsync(

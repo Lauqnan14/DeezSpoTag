@@ -64,6 +64,30 @@ public sealed class DownloadQueueLyricsStatusPersistenceTests
     }
 
     [Fact]
+    public async Task UpdateFinalDestinationsAsync_PersistsLyricsStatus_FromDeclaredSidecarsEvenWhenFilesMoved()
+    {
+        await using var context = await CreateContextAsync();
+        var queueUuid = "lyrics-sidecars-declared-1";
+        var outputPath = Path.Join(context.TempRoot, "Artist", "Album", "01 - Track.m4a");
+        var ttmlPath = Path.ChangeExtension(outputPath, ".ttml");
+        var lrcPath = Path.ChangeExtension(outputPath, ".lrc");
+
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(queueUuid), CancellationToken.None);
+
+        var finalDestinationsJson = JsonSerializer.Serialize(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [outputPath] = outputPath,
+            [ttmlPath] = ttmlPath,
+            [lrcPath] = lrcPath
+        });
+
+        await context.QueueRepository.UpdateFinalDestinationsAsync(queueUuid, finalDestinationsJson, cancellationToken: CancellationToken.None);
+
+        var lyricsStatus = await context.GetLyricsStatusAsync(queueUuid);
+        Assert.Equal("time-synced,synced", lyricsStatus);
+    }
+
+    [Fact]
     public async Task UpdatePayloadAsync_PersistsLyricsStatus_FromPayloadFilesWhenSidecarExists()
     {
         await using var context = await CreateContextAsync();
@@ -95,6 +119,27 @@ public sealed class DownloadQueueLyricsStatusPersistenceTests
 
         var lyricsStatus = await context.GetLyricsStatusAsync(queueUuid);
         Assert.Equal("synced", lyricsStatus);
+    }
+
+    [Fact]
+    public async Task UpdatePayloadAsync_PersistsLyricsStatus_FromPayloadStatusTokenWithoutFiles()
+    {
+        await using var context = await CreateContextAsync();
+        var queueUuid = "lyrics-payload-status-1";
+        var outputPath = Path.Join(context.TempRoot, "Artist", "Album", "01 - Track.m4a");
+
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(queueUuid), CancellationToken.None);
+
+        var payloadJson = JsonSerializer.Serialize(new
+        {
+            FilePath = outputPath,
+            LyricsStatus = "time-synced,synced"
+        });
+
+        await context.QueueRepository.UpdatePayloadAsync(queueUuid, payloadJson, CancellationToken.None);
+
+        var lyricsStatus = await context.GetLyricsStatusAsync(queueUuid);
+        Assert.Equal("time-synced,synced", lyricsStatus);
     }
 
     private static Task<TestContext> CreateContextAsync()
