@@ -5446,11 +5446,12 @@
     display: grid;
     place-items: center;
     background: transparent;
-    color: #fff;
+    color: var(--text-muted);
     cursor: pointer;
     opacity: 0;
+    visibility: hidden;
     pointer-events: none;
-    transition: opacity 0.15s ease, background 0.15s ease;
+    transition: opacity 0.15s ease, visibility 0.15s ease, color 0.15s ease, background 0.15s ease;
     z-index: 1;
 }
 
@@ -5480,9 +5481,10 @@
     display: block;
 }
 
-.artist-page #spotifyTopTracksList .top-song-item__thumb:hover .top-song-item__play,
-.artist-page #spotifyTopTracksList .top-song-item__thumb:focus-within .top-song-item__play {
+.artist-page #spotifyTopTracksList .top-song-item:hover .top-song-item__play,
+.artist-page #spotifyTopTracksList .top-song-item:focus-within .top-song-item__play {
     opacity: 1;
+    visibility: visible;
     pointer-events: auto;
 }
 
@@ -5494,9 +5496,10 @@
 
 .artist-page #spotifyTopTracksList .top-song-item__play.is-starting {
     opacity: 1;
+    visibility: visible;
     pointer-events: auto;
-    background: color-mix(in srgb, var(--primary-color) 10%, transparent);
     color: var(--primary-color);
+    background: color-mix(in srgb, var(--primary-color) 10%, transparent);
     animation: playback-request-pulse 0.9s ease-in-out infinite;
 }
 
