@@ -1059,7 +1059,8 @@ public static class EngineAudioPostDownloadHelper
         var coverPath = DownloadPathResolver.ResolveIoPath(context.PathResult.CoverPath ?? context.PathResult.FilePath);
         var artistPath = DownloadPathResolver.ResolveIoPath(context.PathResult.ArtistPath ?? context.PathResult.CoverPath ?? context.PathResult.FilePath);
         var extrasPath = DownloadPathResolver.ResolveIoPath(context.PathResult.ExtrasPath);
-        var expectedBaseName = Path.GetFileNameWithoutExtension(expectedOutputPath);
+        var expectedOutputName = Path.GetFileName(expectedOutputPath);
+        var expectedBaseName = ResolveFilenameStem(expectedOutputName);
         if (string.IsNullOrWhiteSpace(expectedBaseName))
         {
             expectedBaseName = context.PathResult.Filename;
