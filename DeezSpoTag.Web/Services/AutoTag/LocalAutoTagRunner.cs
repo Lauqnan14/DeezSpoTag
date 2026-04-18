@@ -74,6 +74,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string UnsyncedLyricsTag = "unsyncedLyrics";
     private const string TtmlLyricsTag = "ttmlLyrics";
     private const string ItunesPlatform = "itunes";
+    private const string AppleProvider = "apple";
     private const string SpotifyPlatform = "spotify";
     private const string LyricsTag = "lyrics";
     private const string SyllableLyricsType = "syllable-lyrics";
@@ -507,6 +508,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 context.File,
                 info,
                 context.Plan.Config,
+                context.Plan.Settings,
                 context.Plan.MatchingConfig,
                 context.Plan.ShazamCache,
                 context.Token);
@@ -603,6 +605,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     context.File,
                     info,
                     context.Plan.Config,
+                    context.Plan.Settings,
                     context.Plan.MatchingConfig,
                     context.Plan.ShazamCache,
                     context.Token);
@@ -1062,11 +1065,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         var platformId = platform.Trim().ToLowerInvariant();
-        if (!string.Equals(platformId, SpotifyPlatform, StringComparison.Ordinal))
-        {
-            return;
-        }
-
         if (request.HasAllRequestedLyrics())
         {
             return;
@@ -1079,8 +1077,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        var lookupTrack = BuildSpotifyLyricsLookupTrack(track);
-        var lookupSettings = BuildSpotifyLyricsSettings(settings, request.WantsSynced, request.WantsUnsynced, request.WantsTtml);
+        var lookupTrack = BuildLyricsLookupTrack(track, platformId);
+        var lookupSettings = BuildLyricsLookupSettings(settings, request.WantsSynced, request.WantsUnsynced, request.WantsTtml);
         LyricsBase? lyrics = null;
         try
         {
@@ -1090,7 +1088,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Spotify lyrics resolution failed for {Title}.", track.Title);
+                _logger.LogDebug(ex, "Lyrics resolution failed for platform {Platform} and track {Title}.", platformId, track.Title);
             }
             return;
         }
@@ -1169,12 +1167,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             playlist: null);
     }
 
-    private static Track BuildSpotifyLyricsLookupTrack(AutoTagTrack track)
+    private static Track BuildLyricsLookupTrack(AutoTagTrack track, string platformId)
     {
+        var normalizedPlatform = NormalizeLyricsLookupSource(platformId);
         var lookupTrack = new Track
         {
             Id = track.TrackId ?? string.Empty,
-            Source = SpotifyPlatform,
+            Source = normalizedPlatform,
             SourceId = track.TrackId,
             Title = track.Title ?? string.Empty,
             Album = new Album(track.Album ?? string.Empty),
@@ -1198,18 +1197,85 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (!string.IsNullOrWhiteSpace(track.Url))
         {
-            lookupTrack.Urls[SpotifyPlatform] = track.Url;
+            lookupTrack.Urls[normalizedPlatform] = track.Url;
+        }
+
+        if (string.Equals(normalizedPlatform, DeezerPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            AddLookupUrl(lookupTrack.Urls, "deezer_track_id", track.TrackId);
+        }
+        else if (string.Equals(normalizedPlatform, SpotifyPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            AddLookupUrl(lookupTrack.Urls, "spotify_track_id", track.TrackId);
+        }
+        else if (string.Equals(normalizedPlatform, AppleProvider, StringComparison.OrdinalIgnoreCase))
+        {
+            AddLookupUrl(lookupTrack.Urls, "apple_track_id", track.TrackId);
+        }
+
+        var other = track.Other ?? new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        AddLookupUrl(lookupTrack.Urls, "deezer_track_id", TryGetFirstOtherValue(other, DeezerTrackIdTag, "DEEZERID", "DEEZER_ID"));
+        AddLookupUrl(lookupTrack.Urls, "spotify_track_id", TryGetFirstOtherValue(other, SpotifyTrackIdTag, "SPOTIFY_TRACKID", "SPOTIFYID", "SPOTIFY_ID"));
+        AddLookupUrl(lookupTrack.Urls, "apple_track_id", TryGetFirstOtherValue(other, "APPLE_TRACK_ID", "APPLEID", "ITUNES_TRACK_ID", "ITUNESCATALOGID"));
+
+        AddLookupUrl(lookupTrack.Urls, DeezerPlatform, TryGetFirstOtherValue(other, "DEEZER_URL"));
+        AddLookupUrl(lookupTrack.Urls, SpotifyPlatform, TryGetFirstOtherValue(other, "SPOTIFY_URL"));
+        AddLookupUrl(lookupTrack.Urls, AppleProvider, TryGetFirstOtherValue(other, "APPLE_URL", "ITUNES_URL"));
+
+        if (string.IsNullOrWhiteSpace(lookupTrack.DownloadURL))
+        {
+            lookupTrack.DownloadURL = TryGetFirstOtherValue(other, "source_url", "URL", "WWWAUDIOFILE")
+                ?? TryGetFirstOtherValue(other, "DEEZER_URL", "SPOTIFY_URL", "APPLE_URL", "ITUNES_URL")
+                ?? string.Empty;
         }
 
         return lookupTrack;
     }
 
-    private static DeezSpoTagSettings BuildSpotifyLyricsSettings(
+    private static string NormalizeLyricsLookupSource(string platformId)
+    {
+        return platformId switch
+        {
+            ItunesPlatform => AppleProvider,
+            _ => string.IsNullOrWhiteSpace(platformId) ? string.Empty : platformId
+        };
+    }
+
+    private static string? TryGetFirstOtherValue(IDictionary<string, List<string>> other, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (!other.TryGetValue(key, out var values) || values == null)
+            {
+                continue;
+            }
+
+            var value = values.FirstOrDefault(static raw => !string.IsNullOrWhiteSpace(raw))?.Trim();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    private static void AddLookupUrl(IDictionary<string, string> urls, string key, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(key) && !string.IsNullOrWhiteSpace(value))
+        {
+            urls[key] = value.Trim();
+        }
+    }
+
+    private static DeezSpoTagSettings BuildLyricsLookupSettings(
         DeezSpoTagSettings baseSettings,
         bool wantsSynced,
         bool wantsUnsynced,
         bool wantsTtml)
     {
+        var allowsSyncedBySettings = baseSettings.SyncedLyrics || baseSettings.Tags?.SyncedLyrics == true;
+        var allowsUnsyncedBySettings = baseSettings.SaveLyrics || baseSettings.Tags?.Lyrics == true;
         var shouldFetchUnsyncedPayload = wantsUnsynced || wantsTtml;
         return new DeezSpoTagSettings
         {
@@ -1217,8 +1283,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             DeezerCountry = baseSettings.DeezerCountry,
             AppleMusic = baseSettings.AppleMusic,
             Video = baseSettings.Video,
-            SyncedLyrics = baseSettings.SyncedLyrics && wantsSynced,
-            SaveLyrics = baseSettings.SaveLyrics && shouldFetchUnsyncedPayload,
+            SyncedLyrics = allowsSyncedBySettings && wantsSynced,
+            SaveLyrics = allowsUnsyncedBySettings && shouldFetchUnsyncedPayload,
             LyricsFallbackEnabled = baseSettings.LyricsFallbackEnabled,
             LyricsFallbackOrder = string.IsNullOrWhiteSpace(baseSettings.LyricsFallbackOrder)
                 ? "apple,deezer,spotify,lrclib,musixmatch"
@@ -1229,8 +1295,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 : baseSettings.LrcType,
             Tags = new TagSettings
             {
-                Lyrics = baseSettings.SaveLyrics && shouldFetchUnsyncedPayload,
-                SyncedLyrics = baseSettings.SyncedLyrics && wantsSynced
+                Lyrics = allowsUnsyncedBySettings && shouldFetchUnsyncedPayload,
+                SyncedLyrics = allowsSyncedBySettings && wantsSynced
             }
         };
     }
@@ -1617,6 +1683,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string filePath,
         AutoTagAudioInfo info,
         AutoTagRunnerConfig config,
+        DeezSpoTagSettings settings,
         AutoTagMatchingConfig matchingConfig,
         IDictionary<string, ShazamRecognitionInfo?> shazamCache,
         CancellationToken token)
@@ -1651,13 +1718,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             case SpotifyPlatform:
                 return await _spotifyMatcher.MatchAsync(info, matchingConfig, token);
             case DeezerPlatform:
-                return await _deezerMatcher.MatchAsync(info, matchingConfig, LoadConfig(config.Custom, DeezerPlatform, new DeezerConfig()), token);
+                var deezerConfig = ResolveDeezerMatchConfig(config, settings);
+                deezerConfig.FetchLyrics = enableLyrics && !hasLyricsSidecar;
+                return await _deezerMatcher.MatchAsync(info, matchingConfig, deezerConfig, token);
             case "boomplay":
                 return await _boomplayMatcher.MatchAsync(info, matchingConfig, LoadConfig(config.Custom, "boomplay", new BoomplayConfig()), token);
             case "lastfm":
                 return await _lastFmMatcher.MatchAsync(info, LoadConfig(config.Custom, "lastfm", new LastFmConfig()), token);
             case ShazamPlatform:
-                return await MatchShazamAsync(filePath, info, config, matchingConfig, shazamCache, token);
+                return await MatchShazamAsync(filePath, info, config, settings, matchingConfig, shazamCache, token);
             case "musixmatch":
                 return enableLyrics && !hasLyricsSidecar ? await _musixmatchMatcher.MatchAsync(info, token) : null;
             case "lrclib":
@@ -1671,6 +1740,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string filePath,
         AutoTagAudioInfo info,
         AutoTagRunnerConfig config,
+        DeezSpoTagSettings settings,
         AutoTagMatchingConfig matchingConfig,
         IDictionary<string, ShazamRecognitionInfo?> shazamCache,
         CancellationToken token)
@@ -1678,7 +1748,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var shazamConfig = LoadConfig(config.Custom, ShazamPlatform, new ShazamMatchConfig());
         if (shazamConfig.IdFirst)
         {
-            var idFirstMatch = await TryMatchShazamByIdsAsync(info, config, matchingConfig, token);
+            var idFirstMatch = await TryMatchShazamByIdsAsync(info, config, settings, matchingConfig, token);
             if (idFirstMatch != null)
             {
                 return idFirstMatch;
@@ -1696,6 +1766,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private async Task<AutoTagMatchResult?> TryMatchShazamByIdsAsync(
         AutoTagAudioInfo info,
         AutoTagRunnerConfig config,
+        DeezSpoTagSettings settings,
         AutoTagMatchingConfig matchingConfig,
         CancellationToken token)
     {
@@ -1707,7 +1778,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (hasDeezerId)
         {
-            var deezerConfig = LoadConfig(config.Custom, DeezerPlatform, new DeezerConfig());
+            var deezerConfig = ResolveDeezerMatchConfig(config, settings);
+            deezerConfig.FetchLyrics = false;
             deezerConfig.MatchById = true;
             var byDeezerId = await _deezerMatcher.MatchAsync(effectiveInfo, matchingConfig, deezerConfig, token);
             if (byDeezerId != null)
@@ -1727,7 +1799,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (hasIsrc)
         {
-            var deezerConfig = LoadConfig(config.Custom, DeezerPlatform, new DeezerConfig());
+            var deezerConfig = ResolveDeezerMatchConfig(config, settings);
+            deezerConfig.FetchLyrics = false;
             deezerConfig.MatchById = true;
             var byDeezerIsrc = await _deezerMatcher.MatchAsync(effectiveInfo, matchingConfig, deezerConfig, token);
             if (byDeezerIsrc != null)
@@ -1743,6 +1816,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return null;
+    }
+
+    private static DeezerConfig ResolveDeezerMatchConfig(AutoTagRunnerConfig config, DeezSpoTagSettings settings)
+    {
+        var deezerConfig = LoadConfig(config.Custom, DeezerPlatform, new DeezerConfig());
+        if (string.IsNullOrWhiteSpace(deezerConfig.Arl))
+        {
+            deezerConfig.Arl = settings.Arl;
+        }
+
+        return deezerConfig;
     }
 
     private static AutoTagAudioInfo BuildShazamIdFirstInfo(AutoTagAudioInfo source)
