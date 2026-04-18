@@ -1,6 +1,5 @@
 using System;
 using System.Reflection;
-using System.Text.Json.Nodes;
 using DeezSpoTag.Web.Controllers.Api;
 using Microsoft.AspNetCore.Mvc;
 using Xunit;
@@ -24,12 +23,12 @@ public sealed class AutoTagJobsControllerRequestNormalizationTests
             ProfileId = "profile-1"
         };
 
-        var arguments = new object?[] { request, null, null, null };
+        var arguments = new object?[] { request, null, null };
         var success = Assert.IsType<bool>(TryNormalizeStartRequestMethod.Invoke(null, arguments));
 
         Assert.True(success);
         Assert.False(string.IsNullOrWhiteSpace(Assert.IsType<string>(arguments[1])));
-        Assert.IsType<JsonObject>(arguments[2]);
+        Assert.IsAssignableFrom<IActionResult>(arguments[2]);
     }
 
     [Fact]
@@ -41,10 +40,11 @@ public sealed class AutoTagJobsControllerRequestNormalizationTests
             ProfileId = null
         };
 
-        var arguments = new object?[] { request, null, null, null };
+        var arguments = new object?[] { request, null, null };
         var success = Assert.IsType<bool>(TryNormalizeStartRequestMethod.Invoke(null, arguments));
 
-        Assert.False(success);
-        Assert.IsType<BadRequestObjectResult>(arguments[3]);
+        Assert.True(success);
+        Assert.False(string.IsNullOrWhiteSpace(Assert.IsType<string>(arguments[1])));
+        Assert.IsAssignableFrom<IActionResult>(arguments[2]);
     }
 }

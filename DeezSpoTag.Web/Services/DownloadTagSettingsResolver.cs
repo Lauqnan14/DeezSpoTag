@@ -204,13 +204,14 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
             return true;
         }
 
-        foreach (var entry in data)
+        var matchedValue = data
+            .Where(entry => string.Equals(entry.Key, key, StringComparison.OrdinalIgnoreCase))
+            .Select(entry => (JsonElement?)entry.Value)
+            .FirstOrDefault();
+        if (matchedValue.HasValue)
         {
-            if (string.Equals(entry.Key, key, StringComparison.OrdinalIgnoreCase))
-            {
-                value = entry.Value;
-                return true;
-            }
+            value = matchedValue.Value;
+            return true;
         }
 
         value = default;
