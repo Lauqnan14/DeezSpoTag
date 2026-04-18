@@ -118,6 +118,41 @@ public sealed class AutoTagConfigBuilderTests
         Assert.Equal("engine", root.GetProperty("downloadTagSource").GetString());
     }
 
+    [Fact]
+    public void BuildConfigJson_IncludesProfileTechnicalSettings()
+    {
+        var profile = new TaggingProfile
+        {
+            TagConfig = CreateEmptyTagConfig(),
+            Technical = new TechnicalTagSettings
+            {
+                FeaturedToTitle = "2",
+                MultiArtistSeparator = "default",
+                SingleAlbumArtist = true
+            },
+            AutoTag = new AutoTagSettings
+            {
+                Data = new Dictionary<string, JsonElement>()
+            }
+        };
+
+        profile.TagConfig.Title = TagSource.DownloadSource;
+        profile.TagConfig.Artist = TagSource.AutoTagPlatform;
+
+        var builder = new AutoTagConfigBuilder();
+        var json = builder.BuildConfigJson(profile);
+
+        Assert.False(string.IsNullOrWhiteSpace(json));
+
+        using var document = JsonDocument.Parse(json!);
+        var root = document.RootElement;
+
+        Assert.True(root.TryGetProperty("technical", out var technical));
+        Assert.Equal("2", technical.GetProperty("featuredToTitle").GetString());
+        Assert.Equal("default", technical.GetProperty("multiArtistSeparator").GetString());
+        Assert.True(technical.GetProperty("singleAlbumArtist").GetBoolean());
+    }
+
     private static UnifiedTagConfig CreateEmptyTagConfig()
     {
         var config = new UnifiedTagConfig();

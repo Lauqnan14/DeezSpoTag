@@ -26,6 +26,11 @@ public sealed class AutoTagConfigBuilder
             return null;
         }
 
+        if (profile.Technical != null)
+        {
+            canonicalData["technical"] = JsonSerializer.SerializeToElement(profile.Technical, _serializerOptions);
+        }
+
         return JsonSerializer.Serialize(canonicalData, _serializerOptions);
     }
 }
