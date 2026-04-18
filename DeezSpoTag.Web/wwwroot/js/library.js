@@ -5003,14 +5003,15 @@ function getSpotifySyncSelectionState(artistId) {
     const backgroundImagePath = requestedBackground
         ? resolveManagedArtistVisualPath(artistId, prefs.backgroundPath, serverBackgroundPath)
         : null;
+    const serverAvatarUrl = serverAvatarPath ? buildLibraryImageUrl(serverAvatarPath, 320) : '';
+    const serverBackgroundUrl = serverBackgroundPath ? buildLibraryImageUrl(serverBackgroundPath) : '';
     let avatarVisualUrl = null;
     if (requestedAvatar) {
         const avatarPathUrl = avatarImagePath ? buildLibraryImageUrl(avatarImagePath, 320) : '';
         avatarVisualUrl = normalizeArtistVisualUrl(
             prefs.avatarUrl
             || avatarPathUrl
-            || selectImage(libraryState.currentSpotifyArtist?.images, 'medium')
-            || selectImage(libraryState.currentSpotifyArtist?.images, 'small')
+            || serverAvatarUrl
         );
     }
 
@@ -5020,6 +5021,7 @@ function getSpotifySyncSelectionState(artistId) {
         backgroundVisualUrl = normalizeArtistVisualUrl(
             prefs.backgroundUrl
             || backgroundPathUrl
+            || serverBackgroundUrl
             || libraryState.artistVisuals.headerImageUrl
             || selectImage(libraryState.currentSpotifyArtist?.images, 'large')
         );
