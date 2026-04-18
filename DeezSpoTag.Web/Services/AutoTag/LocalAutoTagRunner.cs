@@ -533,6 +533,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         try
         {
+            PreserveRicherArtistCreditsFromSource(info, match.Track, context.Plan.Settings);
             await EnsureArtworkFallbackAsync(context, info, match.Track);
             await PopulatePlatformLyricsAsync(
                 context.Platform,
@@ -2927,7 +2928,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         UpdateAutoTagCapabilities(platformId, track);
         var separator = ResolveSeparatorForFormat(config, Path.GetExtension(filePath));
-        var effectiveTagSettings = ApplyOverwriteRules(filePath, tagSettings, config, platformId);
+        var effectiveTagSettings = ApplyOverwriteRules(filePath, tagSettings, config, platformId, track, settings);
+        NormalizeTrackArtistsForTagging(track, effectiveTagSettings.SingleAlbumArtist);
         var coreTrack = BuildCoreTrack(track, separator, effectiveTagSettings.SingleAlbumArtist, settings);
         string? tempCoverPath = null;
 
@@ -2994,12 +2996,21 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ReleaseDate = track.ReleaseDate
         };
 
-        album.MainArtist = new DeezSpoTag.Core.Models.Artist(
-            singleAlbumArtist
-                ? artists[0]
-                : albumArtists[0]);
-        album.Artists = albumArtists.ToList();
-        album.Artist["Main"] = albumArtists.ToList();
+        var primaryAlbumArtist = albumArtists
+            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
+            ?.Trim();
+        if (string.IsNullOrWhiteSpace(primaryAlbumArtist))
+        {
+            primaryAlbumArtist = artists[0];
+        }
+
+        var albumMainArtists = singleAlbumArtist
+            ? new List<string> { primaryAlbumArtist }
+            : albumArtists.ToList();
+
+        album.MainArtist = new DeezSpoTag.Core.Models.Artist(primaryAlbumArtist);
+        album.Artists = albumMainArtists.ToList();
+        album.Artist["Main"] = albumMainArtists.ToList();
 
         var coreTrack = new Track
         {
@@ -3040,6 +3051,105 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         coreTrack.ApplySettings(settings);
 
         return coreTrack;
+    }
+
+    private static void PreserveRicherArtistCreditsFromSource(
+        AutoTagAudioInfo sourceInfo,
+        AutoTagTrack track,
+        DeezSpoTagSettings settings)
+    {
+        var sourceArtists = SplitArtistCredits(
+            sourceInfo.Artists.Count > 0
+                ? sourceInfo.Artists
+                : string.IsNullOrWhiteSpace(sourceInfo.Artist)
+                    ? Array.Empty<string>()
+                    : new[] { sourceInfo.Artist });
+        var matchedArtists = SplitArtistCredits(track.Artists);
+
+        if (ShouldPreferSourceArtistCredits(sourceArtists, matchedArtists))
+        {
+            track.Artists = sourceArtists;
+        }
+        else if (matchedArtists.Count > 0)
+        {
+            track.Artists = matchedArtists;
+        }
+
+        var normalizedAlbumArtists = SplitArtistCredits(track.AlbumArtists);
+        if (normalizedAlbumArtists.Count == 0 && track.Artists.Count > 0)
+        {
+            normalizedAlbumArtists = track.Artists.ToList();
+        }
+
+        var singleAlbumArtist = settings.Tags?.SingleAlbumArtist ?? true;
+        if (singleAlbumArtist && normalizedAlbumArtists.Count > 1)
+        {
+            normalizedAlbumArtists = new List<string> { normalizedAlbumArtists[0] };
+        }
+
+        track.AlbumArtists = normalizedAlbumArtists;
+    }
+
+    private static bool ShouldPreferSourceArtistCredits(List<string> sourceArtists, List<string> matchedArtists)
+    {
+        if (sourceArtists.Count == 0)
+        {
+            return false;
+        }
+
+        if (matchedArtists.Count == 0)
+        {
+            return true;
+        }
+
+        if (sourceArtists.Count <= matchedArtists.Count)
+        {
+            return false;
+        }
+
+        var sourcePrimary = sourceArtists[0];
+        var matchedPrimary = matchedArtists[0];
+        if (string.IsNullOrWhiteSpace(sourcePrimary) || string.IsNullOrWhiteSpace(matchedPrimary))
+        {
+            return true;
+        }
+
+        if (string.Equals(sourcePrimary, matchedPrimary, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return sourcePrimary.Contains(matchedPrimary, StringComparison.OrdinalIgnoreCase)
+            || matchedPrimary.Contains(sourcePrimary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void NormalizeTrackArtistsForTagging(AutoTagTrack track, bool singleAlbumArtist)
+    {
+        var normalizedArtists = SplitArtistCredits(track.Artists);
+        var normalizedAlbumArtists = SplitArtistCredits(track.AlbumArtists);
+
+        if (normalizedArtists.Count == 0)
+        {
+            normalizedArtists = normalizedAlbumArtists.ToList();
+        }
+
+        if (normalizedArtists.Count == 0)
+        {
+            normalizedArtists.Add("Unknown Artist");
+        }
+
+        if (normalizedAlbumArtists.Count == 0)
+        {
+            normalizedAlbumArtists = normalizedArtists.ToList();
+        }
+
+        if (singleAlbumArtist && normalizedAlbumArtists.Count > 1)
+        {
+            normalizedAlbumArtists = new List<string> { normalizedAlbumArtists[0] };
+        }
+
+        track.Artists = normalizedArtists;
+        track.AlbumArtists = normalizedAlbumArtists;
     }
 
     private async Task WriteTagsOnetaggerStyleAsync(
@@ -5762,7 +5872,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private static TagSettings ApplyOverwriteRules(string filePath, TagSettings baseSettings, AutoTagRunnerConfig config, string platformId)
+    private static TagSettings ApplyOverwriteRules(
+        string filePath,
+        TagSettings baseSettings,
+        AutoTagRunnerConfig config,
+        string platformId,
+        AutoTagTrack? sourceTrack = null,
+        DeezSpoTagSettings? runtimeSettings = null)
     {
         var copy = CloneTagSettings(baseSettings);
         if (config.Tags.Count == 0)
@@ -5794,6 +5910,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ApplyReleaseDateOverwriteRule(copy, context);
             ApplyTrackNumberOverwriteRule(copy, context);
             ApplyTrackTotalOverwriteRule(copy, context);
+            ApplyPreferenceAwareOverwriteGuards(copy, sourceTrack, runtimeSettings, file);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -5916,6 +6033,177 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             settings.TrackTotal = false;
         }
+    }
+
+    private static void ApplyPreferenceAwareOverwriteGuards(
+        TagSettings effectiveTagSettings,
+        AutoTagTrack? sourceTrack,
+        DeezSpoTagSettings? runtimeSettings,
+        TagLib.File file)
+    {
+        if (sourceTrack == null
+            || runtimeSettings == null
+            || (!effectiveTagSettings.Artist && !effectiveTagSettings.AlbumArtist && !effectiveTagSettings.Title))
+        {
+            return;
+        }
+
+        var existingArtistCredits = file.Tag.Performers?
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToList() ?? new List<string>();
+        if (!string.IsNullOrWhiteSpace(file.Tag.FirstPerformer))
+        {
+            existingArtistCredits.Add(file.Tag.FirstPerformer!);
+        }
+
+        var existingAlbumArtistCredits = file.Tag.AlbumArtists?
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToList() ?? new List<string>();
+
+        ApplyPreferenceAwareArtistGuards(
+            effectiveTagSettings,
+            sourceTrack,
+            runtimeSettings,
+            existingArtistCredits,
+            existingAlbumArtistCredits,
+            file.Tag.Title);
+    }
+
+    private static void ApplyPreferenceAwareArtistGuards(
+        TagSettings effectiveTagSettings,
+        AutoTagTrack sourceTrack,
+        DeezSpoTagSettings runtimeSettings,
+        IReadOnlyList<string> existingArtists,
+        IReadOnlyList<string> existingAlbumArtists,
+        string? existingTitle)
+    {
+        if ((!effectiveTagSettings.Artist && !effectiveTagSettings.AlbumArtist && !effectiveTagSettings.Title)
+            || existingArtists.Count == 0)
+        {
+            return;
+        }
+
+        var normalizedExistingArtists = SplitArtistCredits(existingArtists);
+        if (normalizedExistingArtists.Count == 0)
+        {
+            return;
+        }
+
+        var normalizedIncomingArtists = SplitArtistCredits(sourceTrack.Artists);
+        if (normalizedIncomingArtists.Count == 0)
+        {
+            normalizedIncomingArtists = SplitArtistCredits(sourceTrack.AlbumArtists);
+        }
+
+        if (normalizedIncomingArtists.Count == 0)
+        {
+            return;
+        }
+
+        var multiArtistSeparator = runtimeSettings.Tags?.MultiArtistSeparator ?? "default";
+        var keepSingleArtistOnly = string.Equals(multiArtistSeparator, "nothing", StringComparison.OrdinalIgnoreCase);
+        var artistsMatchOrPreferred = AreArtistCreditsEquivalent(normalizedExistingArtists, normalizedIncomingArtists)
+            || (!keepSingleArtistOnly && ShouldPreferSourceArtistCredits(normalizedExistingArtists, normalizedIncomingArtists));
+        if (!artistsMatchOrPreferred)
+        {
+            return;
+        }
+
+        sourceTrack.Artists = normalizedExistingArtists.ToList();
+        if (effectiveTagSettings.Artist)
+        {
+            effectiveTagSettings.Artist = false;
+        }
+
+        var singleAlbumArtist = runtimeSettings.Tags?.SingleAlbumArtist ?? true;
+        var normalizedExistingAlbumArtists = SplitArtistCredits(existingAlbumArtists);
+        var normalizedIncomingAlbumArtists = SplitArtistCredits(sourceTrack.AlbumArtists);
+        if (singleAlbumArtist)
+        {
+            var preferredAlbumArtist = normalizedExistingAlbumArtists.FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
+                ?? normalizedExistingArtists.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(preferredAlbumArtist))
+            {
+                sourceTrack.AlbumArtists = new List<string> { preferredAlbumArtist };
+                if (effectiveTagSettings.AlbumArtist
+                    && normalizedExistingAlbumArtists.Count > 0
+                    && AreArtistPrimaryCompatible(normalizedExistingAlbumArtists[0], preferredAlbumArtist))
+                {
+                    effectiveTagSettings.AlbumArtist = false;
+                }
+            }
+        }
+        else
+        {
+            var albumArtistsMatchOrPreferred = normalizedExistingAlbumArtists.Count > 0
+                && (AreArtistCreditsEquivalent(normalizedExistingAlbumArtists, normalizedIncomingAlbumArtists)
+                    || (!keepSingleArtistOnly
+                        && ShouldPreferSourceArtistCredits(normalizedExistingAlbumArtists, normalizedIncomingAlbumArtists)));
+            if (albumArtistsMatchOrPreferred)
+            {
+                sourceTrack.AlbumArtists = normalizedExistingAlbumArtists.ToList();
+                if (effectiveTagSettings.AlbumArtist)
+                {
+                    effectiveTagSettings.AlbumArtist = false;
+                }
+            }
+        }
+
+        if (effectiveTagSettings.Title
+            && string.Equals(runtimeSettings.FeaturedToTitle, "2", StringComparison.OrdinalIgnoreCase)
+            && normalizedExistingArtists.Count > 1
+            && !string.IsNullOrWhiteSpace(existingTitle)
+            && HasFeaturedMarker(existingTitle))
+        {
+            sourceTrack.Title = existingTitle.Trim();
+            effectiveTagSettings.Title = false;
+        }
+    }
+
+    private static bool AreArtistCreditsEquivalent(IReadOnlyList<string> left, IReadOnlyList<string> right)
+    {
+        var normalizedLeft = SplitArtistCredits(left);
+        var normalizedRight = SplitArtistCredits(right);
+        if (normalizedLeft.Count != normalizedRight.Count)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < normalizedLeft.Count; i++)
+        {
+            if (!string.Equals(normalizedLeft[i], normalizedRight[i], StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool AreArtistPrimaryCompatible(string? left, string? right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+        {
+            return false;
+        }
+
+        var leftTrimmed = left.Trim();
+        var rightTrimmed = right.Trim();
+        if (string.Equals(leftTrimmed, rightTrimmed, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return leftTrimmed.Contains(rightTrimmed, StringComparison.OrdinalIgnoreCase)
+            || rightTrimmed.Contains(leftTrimmed, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasFeaturedMarker(string title)
+    {
+        return title.Contains("(feat", StringComparison.OrdinalIgnoreCase)
+            || title.Contains(" feat.", StringComparison.OrdinalIgnoreCase)
+            || title.Contains(" ft.", StringComparison.OrdinalIgnoreCase)
+            || title.Contains(" featuring ", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string ResolveArtistSeparator(AutoTagRunnerConfig config, string filePath)

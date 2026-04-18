@@ -573,7 +573,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
                 downloadRootPath,
                 enrichmentConfig,
                 AutoTagLiterals.AutomationTrigger,
-                automationProfile?.Technical,
+                null,
                 automationProfile?.Id,
                 automationProfile?.Name,
                 AutoTagLiterals.RunIntentDownloadEnrichment);
@@ -919,7 +919,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
                 folderRootPath,
                 enhancementConfig,
                 AutoTagLiterals.AutomationTrigger,
-                enhancementProfile.Technical,
+                null,
                 enhancementProfile.Id,
                 enhancementProfile.Name,
                 AutoTagLiterals.RunIntentEnhancementRecentDownloads);
@@ -1520,7 +1520,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
                 target.RootPath,
                 enhancementConfig,
                 AutoTagLiterals.ScheduleTrigger,
-                enhancementProfile?.Technical,
+                null,
                 enhancementProfile?.Id,
                 enhancementProfile?.Name,
                 AutoTagLiterals.RunIntentEnhancementOnly);

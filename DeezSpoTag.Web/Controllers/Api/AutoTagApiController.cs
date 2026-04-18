@@ -14,6 +14,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public class AutoTagJobsController : ControllerBase
 {
     private readonly AutoTagService _autoTagService;
+    private readonly AutoTagConfigBuilder _autoTagConfigBuilder;
     private readonly TaggingProfileService _profileService;
     private readonly DeezSpoTag.Services.Download.Queue.DownloadQueueRepository _queueRepository;
     private readonly DeezSpoTag.Services.Library.LibraryRepository _libraryRepository;
@@ -22,6 +23,7 @@ public class AutoTagJobsController : ControllerBase
 
     public AutoTagJobsController(
         AutoTagService autoTagService,
+        AutoTagConfigBuilder autoTagConfigBuilder,
         TaggingProfileService profileService,
         DeezSpoTag.Services.Download.Queue.DownloadQueueRepository queueRepository,
         DeezSpoTag.Services.Library.LibraryRepository libraryRepository,
@@ -29,6 +31,7 @@ public class AutoTagJobsController : ControllerBase
         DeezSpoTagSettingsService settingsService)
     {
         _autoTagService = autoTagService;
+        _autoTagConfigBuilder = autoTagConfigBuilder;
         _profileService = profileService;
         _queueRepository = queueRepository;
         _libraryRepository = libraryRepository;
@@ -39,7 +42,7 @@ public class AutoTagJobsController : ControllerBase
     [HttpPost("start")]
     public async Task<IActionResult> Start([FromBody] AutoTagStartRequest request, CancellationToken cancellationToken)
     {
-        if (!TryNormalizeStartRequest(request, out var normalizedPath, out var configNode, out var validationError))
+        if (!TryNormalizeStartRequest(request, out var normalizedPath, out var requestConfigNode, out var validationError))
         {
             return validationError;
         }
@@ -48,6 +51,17 @@ public class AutoTagJobsController : ControllerBase
         if (scopeError != null)
         {
             return scopeError;
+        }
+
+        var selectedProfileResult = await ResolveSelectedProfileAsync(request.ProfileId);
+        if (selectedProfileResult.Error != null)
+        {
+            return selectedProfileResult.Error;
+        }
+
+        if (!TryBuildEffectiveConfigNode(requestConfigNode, selectedProfileResult.Profile, out var configNode, out var configError))
+        {
+            return configError!;
         }
 
         if (!TryValidateEnrichmentScope(normalizedPath, configNode, out var enrichmentError))
@@ -59,17 +73,11 @@ public class AutoTagJobsController : ControllerBase
         configNode.Remove("isPlaylist");
         configNode["path"] = normalizedPath;
 
-        var selectedProfileResult = await ResolveSelectedProfileAsync(request.ProfileId);
-        if (selectedProfileResult.Error != null)
-        {
-            return selectedProfileResult.Error;
-        }
-
         var job = await _autoTagService.StartJob(
             normalizedPath,
             SerializeConfig(configNode),
             "manual",
-            selectedProfileResult.Profile?.Technical,
+            null,
             selectedProfileResult.Profile?.Id,
             selectedProfileResult.Profile?.Name);
         if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase)
@@ -97,14 +105,6 @@ public class AutoTagJobsController : ControllerBase
             return false;
         }
 
-        if (!request.Config.HasValue
-            || request.Config.Value.ValueKind == JsonValueKind.Undefined
-            || request.Config.Value.ValueKind == JsonValueKind.Null)
-        {
-            validationError = new BadRequestObjectResult("Config is required.");
-            return false;
-        }
-
         try
         {
             normalizedPath = Path.GetFullPath(request.Path);
@@ -115,14 +115,77 @@ public class AutoTagJobsController : ControllerBase
             return false;
         }
 
+        var hasProfile = !string.IsNullOrWhiteSpace(request.ProfileId);
+        if (!request.Config.HasValue
+            || request.Config.Value.ValueKind == JsonValueKind.Undefined
+            || request.Config.Value.ValueKind == JsonValueKind.Null)
+        {
+            if (!hasProfile)
+            {
+                validationError = new BadRequestObjectResult("Config is required.");
+                return false;
+            }
+
+            return true;
+        }
+
         if (request.Config.Value.ValueKind != JsonValueKind.Object)
         {
-            validationError = new BadRequestObjectResult("Config must be an object.");
+            if (!hasProfile)
+            {
+                validationError = new BadRequestObjectResult("Config must be an object.");
+                return false;
+            }
+
+            return true;
+        }
+
+        try
+        {
+            configNode = JsonNode.Parse(request.Config.Value.GetRawText()) as JsonObject ?? new JsonObject();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (!hasProfile)
+            {
+                validationError = new BadRequestObjectResult("Config must be a valid object.");
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private bool TryBuildEffectiveConfigNode(
+        JsonObject requestConfigNode,
+        DeezSpoTag.Core.Models.Settings.TaggingProfile? selectedProfile,
+        out JsonObject configNode,
+        out IActionResult? validationError)
+    {
+        configNode = requestConfigNode;
+        validationError = null;
+        if (selectedProfile == null)
+        {
+            return true;
+        }
+
+        var profileConfigJson = _autoTagConfigBuilder.BuildConfigJson(selectedProfile);
+        if (string.IsNullOrWhiteSpace(profileConfigJson))
+        {
+            validationError = BadRequest("Selected profile has no AutoTag configuration.");
             return false;
         }
 
-        configNode = JsonNode.Parse(request.Config.Value.GetRawText()) as JsonObject ?? new JsonObject();
-        return true;
+        try
+        {
+            configNode = JsonNode.Parse(profileConfigJson) as JsonObject ?? new JsonObject();
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            validationError = BadRequest("Selected profile configuration is invalid.");
+            return false;
+        }
     }
 
     private async Task<IActionResult?> ValidateStartScopeAsync(string normalizedPath, CancellationToken cancellationToken)
