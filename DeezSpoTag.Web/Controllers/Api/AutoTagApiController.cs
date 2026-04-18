@@ -42,7 +42,7 @@ public class AutoTagJobsController : ControllerBase
     [HttpPost("start")]
     public async Task<IActionResult> Start([FromBody] AutoTagStartRequest request, CancellationToken cancellationToken)
     {
-        if (!TryNormalizeStartRequest(request, out var normalizedPath, out var requestConfigNode, out var validationError))
+        if (!TryNormalizeStartRequest(request, out var normalizedPath, out var validationError))
         {
             return validationError;
         }
@@ -59,7 +59,7 @@ public class AutoTagJobsController : ControllerBase
             return selectedProfileResult.Error;
         }
 
-        if (!TryBuildEffectiveConfigNode(requestConfigNode, selectedProfileResult.Profile, out var configNode, out var configError))
+        if (!TryBuildEffectiveConfigNode(selectedProfileResult.Profile, out var configNode, out var configError))
         {
             return configError!;
         }
@@ -92,11 +92,9 @@ public class AutoTagJobsController : ControllerBase
     private static bool TryNormalizeStartRequest(
         AutoTagStartRequest request,
         out string normalizedPath,
-        out JsonObject configNode,
         out IActionResult validationError)
     {
         normalizedPath = string.Empty;
-        configNode = new JsonObject();
         validationError = new BadRequestObjectResult("Invalid request.");
 
         if (string.IsNullOrWhiteSpace(request.Path))
@@ -115,58 +113,20 @@ public class AutoTagJobsController : ControllerBase
             return false;
         }
 
-        var hasProfile = !string.IsNullOrWhiteSpace(request.ProfileId);
-        if (!request.Config.HasValue
-            || request.Config.Value.ValueKind == JsonValueKind.Undefined
-            || request.Config.Value.ValueKind == JsonValueKind.Null)
-        {
-            if (!hasProfile)
-            {
-                validationError = new BadRequestObjectResult("Config is required.");
-                return false;
-            }
-
-            return true;
-        }
-
-        if (request.Config.Value.ValueKind != JsonValueKind.Object)
-        {
-            if (!hasProfile)
-            {
-                validationError = new BadRequestObjectResult("Config must be an object.");
-                return false;
-            }
-
-            return true;
-        }
-
-        try
-        {
-            configNode = JsonNode.Parse(request.Config.Value.GetRawText()) as JsonObject ?? new JsonObject();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (!hasProfile)
-            {
-                validationError = new BadRequestObjectResult("Config must be a valid object.");
-                return false;
-            }
-        }
-
         return true;
     }
 
     private bool TryBuildEffectiveConfigNode(
-        JsonObject requestConfigNode,
         DeezSpoTag.Core.Models.Settings.TaggingProfile? selectedProfile,
         out JsonObject configNode,
         out IActionResult? validationError)
     {
-        configNode = requestConfigNode;
+        configNode = new JsonObject();
         validationError = null;
         if (selectedProfile == null)
         {
-            return true;
+            validationError = BadRequest("Profile is required.");
+            return false;
         }
 
         var profileConfigJson = _autoTagConfigBuilder.BuildConfigJson(selectedProfile);
@@ -241,7 +201,7 @@ public class AutoTagJobsController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(profileId))
         {
-            return (null, null);
+            return (BadRequest("Profile is required."), null);
         }
 
         var profiles = await _profileService.LoadAsync();
@@ -486,7 +446,6 @@ public class AutoTagJobsController : ControllerBase
 public class AutoTagStartRequest
 {
     public string? Path { get; set; }
-    public JsonElement? Config { get; set; }
     public string? ProfileId { get; set; }
 }
 
