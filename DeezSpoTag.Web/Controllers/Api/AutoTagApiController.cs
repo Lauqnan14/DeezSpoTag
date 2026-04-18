@@ -64,7 +64,7 @@ public class AutoTagJobsController : ControllerBase
             return configError!;
         }
 
-        if (!TryValidateEnrichmentScope(normalizedPath, configNode, out var enrichmentError))
+        if (!TryValidateEnrichmentScope(normalizedPath, configNode, request.RunIntent, out var enrichmentError))
         {
             return enrichmentError;
         }
@@ -79,7 +79,8 @@ public class AutoTagJobsController : ControllerBase
             "manual",
             null,
             selectedProfileResult.Profile?.Id,
-            selectedProfileResult.Profile?.Name);
+            selectedProfileResult.Profile?.Name,
+            request.RunIntent);
         if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase)
             && string.IsNullOrWhiteSpace(job.Id))
         {
@@ -173,9 +174,14 @@ public class AutoTagJobsController : ControllerBase
         return null;
     }
 
-    private bool TryValidateEnrichmentScope(string normalizedPath, JsonObject configNode, out IActionResult validationError)
+    private bool TryValidateEnrichmentScope(string normalizedPath, JsonObject configNode, string? runIntent, out IActionResult validationError)
     {
         validationError = new EmptyResult();
+        if (!ShouldEnforceEnrichmentScope(runIntent))
+        {
+            return true;
+        }
+
         if (!HasRequestedEnrichmentTags(configNode))
         {
             return true;
@@ -194,6 +200,22 @@ public class AutoTagJobsController : ControllerBase
 
         validationError = BadRequest("Enrichment runs are restricted to the configured Download/Staging folder.");
         return false;
+    }
+
+    private static bool ShouldEnforceEnrichmentScope(string? runIntent)
+    {
+        if (string.IsNullOrWhiteSpace(runIntent))
+        {
+            return true;
+        }
+
+        var normalized = runIntent.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            AutoTagLiterals.RunIntentEnhancementOnly => false,
+            AutoTagLiterals.RunIntentEnhancementRecentDownloads => false,
+            _ => true
+        };
     }
 
     private async Task<(IActionResult? Error, DeezSpoTag.Core.Models.Settings.TaggingProfile? Profile)> ResolveSelectedProfileAsync(
@@ -447,6 +469,7 @@ public class AutoTagStartRequest
 {
     public string? Path { get; set; }
     public string? ProfileId { get; set; }
+    public string? RunIntent { get; set; }
 }
 
 public sealed class EnhancementFolderUniformityRequest
