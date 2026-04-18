@@ -130,6 +130,7 @@ public static class DownloadEngineSettingsHelper
                 $"Download profile source resolution failed: downloadTagSource '{configuredSource}' is invalid for engine '{currentEngine ?? settings.Service ?? "unknown"}'.");
         }
         TechnicalLyricsSettingsApplier.Apply(settings, profile.Technical);
+        ApplyRuntimeOverrides(settings, profile.RuntimeOverrides);
 
         var folder = profile.FolderStructure;
         if (folder == null)
@@ -165,6 +166,95 @@ public static class DownloadEngineSettingsHelper
         }
 
         return normalizedSource;
+    }
+
+    private static void ApplyRuntimeOverrides(
+        DeezSpoTagSettings settings,
+        DownloadProfileRuntimeOverrides? overrides)
+    {
+        if (overrides == null)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(overrides.TracknameTemplate))
+        {
+            settings.TracknameTemplate = overrides.TracknameTemplate.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(overrides.AlbumTracknameTemplate))
+        {
+            settings.AlbumTracknameTemplate = overrides.AlbumTracknameTemplate.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(overrides.PlaylistTracknameTemplate))
+        {
+            settings.PlaylistTracknameTemplate = overrides.PlaylistTracknameTemplate.Trim();
+        }
+
+        if (overrides.SaveArtwork.HasValue)
+        {
+            settings.SaveArtwork = overrides.SaveArtwork.Value;
+        }
+
+        if (overrides.DlAlbumcoverForPlaylist.HasValue)
+        {
+            settings.DlAlbumcoverForPlaylist = overrides.DlAlbumcoverForPlaylist.Value;
+        }
+
+        if (overrides.SaveArtworkArtist.HasValue)
+        {
+            settings.SaveArtworkArtist = overrides.SaveArtworkArtist.Value;
+        }
+
+        if (!string.IsNullOrWhiteSpace(overrides.CoverImageTemplate))
+        {
+            settings.CoverImageTemplate = overrides.CoverImageTemplate.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(overrides.ArtistImageTemplate))
+        {
+            settings.ArtistImageTemplate = overrides.ArtistImageTemplate.Trim();
+        }
+
+        var localArtworkFormat = NormalizeLocalArtworkFormat(overrides.LocalArtworkFormat);
+        if (!string.IsNullOrWhiteSpace(localArtworkFormat))
+        {
+            settings.LocalArtworkFormat = localArtworkFormat;
+        }
+
+        if (overrides.EmbedMaxQualityCover.HasValue)
+        {
+            settings.EmbedMaxQualityCover = overrides.EmbedMaxQualityCover.Value;
+        }
+
+        if (overrides.JpegImageQuality.HasValue)
+        {
+            settings.JpegImageQuality = Math.Clamp(overrides.JpegImageQuality.Value, 1, 100);
+        }
+    }
+
+    private static string? NormalizeLocalArtworkFormat(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "jpg",
+            "png"
+        };
+
+        var formats = raw
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(candidate => allowed.Contains(candidate))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(candidate => candidate.ToLowerInvariant())
+            .ToList();
+
+        return formats.Count == 0 ? null : string.Join(",", formats);
     }
 
 }

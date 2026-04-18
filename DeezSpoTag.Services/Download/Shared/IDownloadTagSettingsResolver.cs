@@ -6,7 +6,21 @@ public sealed record DownloadTagProfileSettings(
     TagSettings? TagSettings,
     string? DownloadTagSource,
     FolderStructureSettings? FolderStructure,
-    TechnicalTagSettings? Technical);
+    TechnicalTagSettings? Technical,
+    DownloadProfileRuntimeOverrides? RuntimeOverrides = null);
+
+public sealed record DownloadProfileRuntimeOverrides(
+    string? TracknameTemplate,
+    string? AlbumTracknameTemplate,
+    string? PlaylistTracknameTemplate,
+    bool? SaveArtwork,
+    bool? DlAlbumcoverForPlaylist,
+    bool? SaveArtworkArtist,
+    string? CoverImageTemplate,
+    string? ArtistImageTemplate,
+    string? LocalArtworkFormat,
+    bool? EmbedMaxQualityCover,
+    int? JpegImageQuality);
 
 public interface IDownloadTagSettingsResolver
 {

@@ -325,7 +325,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             Strictness = config.Strictness,
             MultipleMatches = config.MultipleMatches
         };
-        var settings = LoadRuntimeSettings(config.Technical);
+        var settings = LoadRuntimeSettings(config.Technical, config);
         var shazamBehavior = ResolveShazamEnrichmentBehavior(config);
         var plan = new AutoTagRunPlan
         {
@@ -795,12 +795,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return Task.FromResult(false);
     }
 
-    private DeezSpoTagSettings LoadRuntimeSettings(TechnicalTagSettings? technical)
+    private DeezSpoTagSettings LoadRuntimeSettings(TechnicalTagSettings? technical, AutoTagRunnerConfig config)
     {
         try
         {
             var settings = _settingsService.LoadSettings();
             ApplyTechnicalOverrides(settings, technical);
+            ApplyRuntimeConfigOverrides(settings, config);
             return settings;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -808,6 +809,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             _logger.LogWarning(ex, "Failed to load runtime settings for AutoTag.");
             var fallback = DeezSpoTagSettingsService.GetStaticDefaultSettings();
             ApplyTechnicalOverrides(fallback, technical);
+            ApplyRuntimeConfigOverrides(fallback, config);
             return fallback;
         }
     }
@@ -836,6 +838,88 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         settings.Tags.MultiArtistSeparator = technical.MultiArtistSeparator;
         settings.Tags.SingleAlbumArtist = technical.SingleAlbumArtist;
         settings.Tags.CoverDescriptionUTF8 = technical.CoverDescriptionUTF8;
+    }
+
+    private static void ApplyRuntimeConfigOverrides(DeezSpoTagSettings settings, AutoTagRunnerConfig config)
+    {
+        if (!string.IsNullOrWhiteSpace(config.TracknameTemplate))
+        {
+            settings.TracknameTemplate = config.TracknameTemplate.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(config.AlbumTracknameTemplate))
+        {
+            settings.AlbumTracknameTemplate = config.AlbumTracknameTemplate.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(config.PlaylistTracknameTemplate))
+        {
+            settings.PlaylistTracknameTemplate = config.PlaylistTracknameTemplate.Trim();
+        }
+
+        if (config.SaveArtwork.HasValue)
+        {
+            settings.SaveArtwork = config.SaveArtwork.Value;
+        }
+
+        if (config.DlAlbumcoverForPlaylist.HasValue)
+        {
+            settings.DlAlbumcoverForPlaylist = config.DlAlbumcoverForPlaylist.Value;
+        }
+
+        if (config.SaveArtworkArtist.HasValue)
+        {
+            settings.SaveArtworkArtist = config.SaveArtworkArtist.Value;
+        }
+
+        if (!string.IsNullOrWhiteSpace(config.CoverImageTemplate))
+        {
+            settings.CoverImageTemplate = config.CoverImageTemplate.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(config.ArtistImageTemplate))
+        {
+            settings.ArtistImageTemplate = config.ArtistImageTemplate.Trim();
+        }
+
+        var normalizedArtworkFormat = NormalizeLocalArtworkFormat(config.LocalArtworkFormat);
+        if (!string.IsNullOrWhiteSpace(normalizedArtworkFormat))
+        {
+            settings.LocalArtworkFormat = normalizedArtworkFormat;
+        }
+
+        if (config.EmbedMaxQualityCover.HasValue)
+        {
+            settings.EmbedMaxQualityCover = config.EmbedMaxQualityCover.Value;
+        }
+
+        if (config.JpegImageQuality.HasValue)
+        {
+            settings.JpegImageQuality = Math.Clamp(config.JpegImageQuality.Value, 1, 100);
+        }
+    }
+
+    private static string? NormalizeLocalArtworkFormat(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "jpg",
+            "png"
+        };
+
+        var normalized = raw
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(value => allowed.Contains(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(value => value.ToLowerInvariant())
+            .ToList();
+
+        return normalized.Count == 0 ? null : string.Join(",", normalized);
     }
 
     private async Task PopulateAppleExtrasAsync(
@@ -2084,6 +2168,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             Id3CommLang = raw.Id3CommLang,
             WriteLrc = raw.WriteLrc,
             CapitalizeGenres = raw.CapitalizeGenres,
+            TracknameTemplate = raw.TracknameTemplate,
+            AlbumTracknameTemplate = raw.AlbumTracknameTemplate,
+            PlaylistTracknameTemplate = raw.PlaylistTracknameTemplate,
+            SaveArtwork = raw.SaveArtwork,
+            DlAlbumcoverForPlaylist = raw.DlAlbumcoverForPlaylist,
+            SaveArtworkArtist = raw.SaveArtworkArtist,
+            CoverImageTemplate = raw.CoverImageTemplate,
+            ArtistImageTemplate = raw.ArtistImageTemplate,
+            LocalArtworkFormat = raw.LocalArtworkFormat,
+            EmbedMaxQualityCover = raw.EmbedMaxQualityCover,
+            JpegImageQuality = raw.JpegImageQuality,
             Technical = raw.Technical,
             ProfileId = raw.ProfileId,
             ProfileName = raw.ProfileName
@@ -6340,6 +6435,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public string? Id3CommLang { get; set; }
         public bool WriteLrc { get; set; } = true;
         public bool CapitalizeGenres { get; set; }
+        public string? TracknameTemplate { get; set; }
+        public string? AlbumTracknameTemplate { get; set; }
+        public string? PlaylistTracknameTemplate { get; set; }
+        public bool? SaveArtwork { get; set; }
+        public bool? DlAlbumcoverForPlaylist { get; set; }
+        public bool? SaveArtworkArtist { get; set; }
+        public string? CoverImageTemplate { get; set; }
+        public string? ArtistImageTemplate { get; set; }
+        public string? LocalArtworkFormat { get; set; }
+        public bool? EmbedMaxQualityCover { get; set; }
+        public int? JpegImageQuality { get; set; }
         public TechnicalTagSettings? Technical { get; set; }
         public string? ProfileId { get; set; }
         public string? ProfileName { get; set; }

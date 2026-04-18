@@ -661,18 +661,10 @@ public class TrackDownloader
             }
             else
             {
-                var resolvedSource = DownloadTagSourceHelper.ResolveDownloadTagSource(
-                    profile.DownloadTagSource,
-                    DeezerSource,
-                    settings.Service);
-                if (string.IsNullOrWhiteSpace(resolvedSource))
-                {
-                    var configuredSource = profile.DownloadTagSource?.Trim();
-                    throw new InvalidOperationException(
-                        $"Download profile source resolution failed: downloadTagSource '{configuredSource}' is invalid for engine '{settings.Service ?? "unknown"}'.");
-                }
-
-                TechnicalLyricsSettingsApplier.Apply(settings, profile.Technical);
+                _ = DownloadEngineSettingsHelper.ApplyResolvedProfileToSettings(
+                    settings,
+                    profile,
+                    currentEngine: DeezerSource);
 
                 if (profile.TagSettings != null)
                 {
