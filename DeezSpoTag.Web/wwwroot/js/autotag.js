@@ -5534,6 +5534,10 @@
             tracknameTemplate: getInputValue("autotag-trackname-template", getBaseString("tracknameTemplate", "")),
             albumTracknameTemplate: getInputValue("autotag-album-trackname-template", getBaseString("albumTracknameTemplate", "")),
             playlistTracknameTemplate: getInputValue("autotag-playlist-trackname-template", getBaseString("playlistTracknameTemplate", "")),
+            renameSpotifyArtistFolders: getInputChecked(
+                "enhancementRenameSpotifyArtistFolders",
+                getBaseBool("renameSpotifyArtistFolders", state.autoTagDefaults?.renameSpotifyArtistFolders !== false)
+            ),
             saveArtwork: getInputChecked("saveArtwork", getBaseBool("saveArtwork", false)),
             dlAlbumcoverForPlaylist: getInputChecked("dlAlbumcoverForPlaylist", getBaseBool("dlAlbumcoverForPlaylist", true)),
             saveArtworkArtist: getInputChecked("saveArtworkArtist", getBaseBool("saveArtworkArtist", false)),
@@ -5597,6 +5601,7 @@
         applyFieldValueIfPresent("autotag-trackname-template", source.tracknameTemplate);
         applyFieldValueIfPresent("autotag-album-trackname-template", source.albumTracknameTemplate);
         applyFieldValueIfPresent("autotag-playlist-trackname-template", source.playlistTracknameTemplate);
+        applyFieldCheckedWhenBoolean("enhancementRenameSpotifyArtistFolders", source.renameSpotifyArtistFolders);
 
         applyFieldCheckedWhenBoolean("saveArtwork", source.saveArtwork);
         applyFieldCheckedWhenBoolean("dlAlbumcoverForPlaylist", source.dlAlbumcoverForPlaylist);
@@ -6097,10 +6102,6 @@
 
     function applyAutoTagDefaultsToUi() {
         ensureRecentDownloadWindowControls();
-        const renameFoldersCheckbox = el("enhancementRenameSpotifyArtistFolders");
-        if (renameFoldersCheckbox instanceof HTMLInputElement) {
-            renameFoldersCheckbox.checked = state.autoTagDefaults?.renameSpotifyArtistFolders !== false;
-        }
         const field = el("enhancementRecentDownloadWindowDays");
         if (!field) {
             return;
@@ -6126,7 +6127,7 @@
     }
 
     async function saveEnhancementDefaults() {
-        const button = el("saveEnhancementDefaults");
+        const button = el("saveRecentDownloadWindow") || el("saveEnhancementDefaults");
         if (button) {
             button.disabled = true;
         }
@@ -6139,6 +6140,9 @@
             const renameSpotifyArtistFolders = renameFoldersCheckbox instanceof HTMLInputElement
                 ? renameFoldersCheckbox.checked
                 : defaults.renameSpotifyArtistFolders !== false;
+            if (state.activeProfileId) {
+                await upsertProfileFromUi({ silent: true, requireActiveProfile: true, reconcileUi: false });
+            }
             const recentDownloadWindowDays = readRecentDownloadWindowDays();
             const recentDownloadWindowHours = convertRecentWindowDaysToHours(recentDownloadWindowDays);
             const response = await fetch("/api/autotag/defaults", {
@@ -6148,7 +6152,9 @@
                     defaultFileProfile: defaults.defaultFileProfile,
                     librarySchedules: defaults.librarySchedules,
                     recentDownloadWindowHours,
-                    renameSpotifyArtistFolders
+                    // Profile-scoped value is persisted via profile upsert above.
+                    // Keep defaults-store value unchanged for non-profile background flows.
+                    renameSpotifyArtistFolders: defaults.renameSpotifyArtistFolders
                 })
             });
             if (!response.ok) {
@@ -6156,10 +6162,13 @@
             }
             const saved = await response.json().catch(() => null);
             state.autoTagDefaults = normalizeAutoTagDefaults(saved);
+            if (renameFoldersCheckbox instanceof HTMLInputElement) {
+                renameFoldersCheckbox.checked = renameSpotifyArtistFolders;
+            }
             state.autoTagDefaultsDirty = false;
             applyAutoTagDefaultsToUi();
-            setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement defaults saved.");
-            showToast("Enhancement defaults saved.", "success");
+            setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement defaults and profile preferences saved.");
+            showToast("Enhancement defaults and profile preferences saved.", "success");
         } catch (error) {
             setEnhancementStatus(
                 "enhancementRecentDownloadWindowStatus",
@@ -6664,10 +6673,13 @@
     el("runCoverMaintenance")?.addEventListener("click", runCoverMaintenance);
     el("runFolderUniformity")?.addEventListener("click", runFolderUniformity);
     el("runEnhancementQualityChecks")?.addEventListener("click", runEnhancementQualityChecks);
-    el("saveEnhancementDefaults")?.addEventListener("click", saveEnhancementDefaults);
+    ["saveRecentDownloadWindow", "saveEnhancementDefaults"].forEach((id) => {
+        el(id)?.addEventListener("click", saveEnhancementDefaults);
+    });
     el("enhancementRenameSpotifyArtistFolders")?.addEventListener("change", () => {
         state.autoTagDefaultsDirty = true;
         setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement defaults have unsaved changes.");
+        scheduleProfileAutoSave();
     });
     el("enhancementRecentDownloadWindowDays")?.addEventListener("input", () => {
         state.autoTagDefaultsDirty = true;
