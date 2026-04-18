@@ -3259,26 +3259,21 @@ async function startFolderEnhancement(folder, profileReference) {
         throw new Error(`Profile "${resolvedProfileName}" has no AutoTag settings.`);
     }
 
-    const config = structuredClone(baseConfig);
-    const gapFillTags = Array.isArray(config.gapFillTags)
-        ? config.gapFillTags.filter((tag) => typeof tag === 'string' && tag.trim().length > 0)
+    const gapFillTags = Array.isArray(baseConfig.gapFillTags)
+        ? baseConfig.gapFillTags.filter((tag) => typeof tag === 'string' && tag.trim().length > 0)
         : [];
 
     if (!gapFillTags.length) {
         throw new Error(`Profile "${resolvedProfileName}" has no Library Enhancement tags.`);
     }
 
-    config.downloadTags = [];
-    config.tags = [];
-    config.gapFillTags = [...new Set(gapFillTags)];
-
     const response = await fetchJson('/api/autotag/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             path: rootPath,
-            config,
-            profileId: String(profile?.id || resolvedProfileReference || '').trim() || null
+            profileId: String(profile?.id || resolvedProfileReference || '').trim() || null,
+            runIntent: 'enhancement_only'
         })
     });
 
