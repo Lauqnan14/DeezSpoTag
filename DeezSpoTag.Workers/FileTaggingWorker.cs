@@ -1,7 +1,9 @@
 using System.Globalization;
 using System.Text.Json;
 using DeezSpoTag.Core.Models;
+using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Core.Utils;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
@@ -36,6 +38,7 @@ public sealed class FileTaggingWorker : BackgroundService, ITaggingJobQueue
     private readonly int _defaultMaxAttempts;
     private readonly int _baseRetryDelaySeconds;
     private readonly int _maxRetryDelaySeconds;
+    private readonly string _autotagDirectory;
     private bool _genreTagNormalizationEnabled;
 
     public FileTaggingWorker(
@@ -65,6 +68,12 @@ public sealed class FileTaggingWorker : BackgroundService, ITaggingJobQueue
         _maxRetryDelaySeconds = Math.Clamp(configuration.GetValue("Workers:FileTagging:MaxRetryDelaySeconds", 300), 5, 7200);
         _pollInterval = TimeSpan.FromSeconds(Math.Clamp(pollSeconds, 1, 30));
         _staleLockWindow = TimeSpan.FromMinutes(Math.Clamp(staleMinutes, 1, 720));
+
+        var configuredDataDirectory = configuration["DataDirectory"];
+        var dataDirectory = string.IsNullOrWhiteSpace(configuredDataDirectory)
+            ? AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir())
+            : Path.GetFullPath(configuredDataDirectory);
+        _autotagDirectory = Path.Join(dataDirectory, "autotag");
     }
 
     public Task<long> EnqueueAsync(TaggingJobEnqueueRequest request, CancellationToken cancellationToken = default)
@@ -222,9 +231,12 @@ public sealed class FileTaggingWorker : BackgroundService, ITaggingJobQueue
 
         var settings = _settingsService.LoadSettings() ?? new Core.Models.Settings.DeezSpoTagSettings();
         settings.Tags ??= new Core.Models.Settings.TagSettings();
+        settings = await ResolveProfileSettingsForPathAsync(resolvedPath, settings, cancellationToken);
 
         var track = BuildTrack(metadata);
         var effectiveSettings = CreateEffectiveSettings(settings, track);
+        track.GenerateMainFeatStrings();
+        track.ApplySettings(effectiveSettings);
         await _audioTagger.TagTrackAsync(resolvedPath, track, effectiveSettings);
         await UpdateTaggedDateAsync(trackId.Value, cancellationToken);
     }
@@ -526,11 +538,10 @@ WHERE id = @id;";
     {
         var artists = SplitArtists(metadata.TagArtist, metadata.ArtistName);
         var albumArtistCandidates = SplitArtists(metadata.TagAlbumArtist, metadata.ArtistName);
-        var albumArtist = albumArtistCandidates.FirstOrDefault();
-        if (string.IsNullOrWhiteSpace(albumArtist))
-        {
-            albumArtist = metadata.ArtistName;
-        }
+        var roleSplit = ResolveArtistRoles(artists, albumArtistCandidates);
+        var mainArtists = roleSplit.Main;
+        var featuredArtists = roleSplit.Featured;
+        var albumArtist = mainArtists.FirstOrDefault() ?? metadata.ArtistName;
         var title = FirstOrDefault(metadata.TagTitle, metadata.Title);
         var albumTitle = FirstOrDefault(metadata.TagAlbum, metadata.AlbumTitle);
         var sourceName = string.IsNullOrWhiteSpace(metadata.SourceName) ? "deezer" : metadata.SourceName!.Trim().ToLowerInvariant();
@@ -556,12 +567,12 @@ WHERE id = @id;";
             Id = sourceId,
             Title = title,
             Duration = Math.Max(0, (metadata.DurationMs ?? 0) / 1000),
-            MainArtist = new Artist(metadata.ArtistId.ToString(CultureInfo.InvariantCulture), artists[0]),
-            Artist = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["Main"] = artists.ToList()
-            },
-            Artists = artists.ToList(),
+            MainArtist = new Artist(metadata.ArtistId.ToString(CultureInfo.InvariantCulture), albumArtist),
+            Artist = BuildArtistRoleMap(mainArtists, featuredArtists),
+            Artists = mainArtists
+                .Concat(featuredArtists)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList(),
             Album = album,
             TrackNumber = metadata.TagTrackNo ?? metadata.TrackNo ?? 0,
             DiscNumber = metadata.TagDisc ?? metadata.Disc ?? 0,
@@ -584,6 +595,321 @@ WHERE id = @id;";
         track.MainArtistsString = track.ArtistsString;
         track.DateString = track.Date.Format("ymd");
         return track;
+    }
+
+    private async Task<Core.Models.Settings.DeezSpoTagSettings> ResolveProfileSettingsForPathAsync(
+        string resolvedPath,
+        Core.Models.Settings.DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var profile = await ResolveTaggingProfileForPathAsync(resolvedPath, cancellationToken);
+            if (profile == null)
+            {
+                return settings;
+            }
+
+            var profileTagSettings = BuildDownloadTagSettings(profile.TagConfig, profile.Technical);
+            if (IsDownloadTagSelectionEmpty(profileTagSettings))
+            {
+                profileTagSettings = BuildDownloadTagSettings(new UnifiedTagConfig(), profile.Technical);
+            }
+
+            settings.Tags = TagSettingsMerge.UseProfileOnly(profileTagSettings);
+            TechnicalLyricsSettingsApplier.Apply(settings, profile.Technical);
+            return settings;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to apply AutoTag profile settings for path {Path}.", resolvedPath);
+            return settings;
+        }
+    }
+
+    private async Task<TaggingProfile?> ResolveTaggingProfileForPathAsync(string resolvedPath, CancellationToken cancellationToken)
+    {
+        var folders = await _libraryRepository.GetFoldersAsync(cancellationToken);
+        var normalizedPath = NormalizePath(resolvedPath);
+        var folder = folders
+            .Where(folder => folder.Enabled && folder.AutoTagEnabled && IsMusicFolder(folder.DesiredQuality))
+            .Where(folder => IsPathUnderRoot(normalizedPath, folder.RootPath))
+            .OrderByDescending(folder => NormalizePath(folder.RootPath).Length)
+            .FirstOrDefault();
+        if (folder == null)
+        {
+            return null;
+        }
+
+        var profiles = await LoadTaggingProfilesAsync(cancellationToken);
+        if (profiles.Count == 0)
+        {
+            return null;
+        }
+
+        var resolved = FindProfileReference(profiles, folder.AutoTagProfileId);
+        if (resolved != null)
+        {
+            return resolved;
+        }
+
+        var defaults = await LoadAutoTagDefaultsAsync(cancellationToken);
+        resolved = FindProfileReference(profiles, defaults?.DefaultFileProfile);
+        if (resolved != null)
+        {
+            return resolved;
+        }
+
+        return profiles.FirstOrDefault(profile => profile.IsDefault)
+               ?? profiles.FirstOrDefault();
+    }
+
+    private async Task<List<TaggingProfile>> LoadTaggingProfilesAsync(CancellationToken cancellationToken)
+    {
+        var path = Path.Join(_autotagDirectory, "tagging-profiles.json");
+        if (!File.Exists(path))
+        {
+            return new List<TaggingProfile>();
+        }
+
+        await using var stream = File.OpenRead(path);
+        return await JsonSerializer.DeserializeAsync<List<TaggingProfile>>(stream, cancellationToken: cancellationToken)
+               ?? new List<TaggingProfile>();
+    }
+
+    private async Task<AutoTagDefaultsPayload?> LoadAutoTagDefaultsAsync(CancellationToken cancellationToken)
+    {
+        var path = Path.Join(_autotagDirectory, "defaults.json");
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        await using var stream = File.OpenRead(path);
+        return await JsonSerializer.DeserializeAsync<AutoTagDefaultsPayload>(stream, cancellationToken: cancellationToken);
+    }
+
+    private static TaggingProfile? FindProfileReference(IEnumerable<TaggingProfile> profiles, string? reference)
+    {
+        if (string.IsNullOrWhiteSpace(reference))
+        {
+            return null;
+        }
+
+        var normalized = reference.Trim();
+        return profiles.FirstOrDefault(profile =>
+                   string.Equals(profile.Id, normalized, StringComparison.OrdinalIgnoreCase))
+               ?? profiles.FirstOrDefault(profile =>
+                   string.Equals(profile.Name, normalized, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsMusicFolder(string? desiredQuality)
+    {
+        var normalized = desiredQuality?.Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return true;
+        }
+
+        return !string.Equals(normalized, "video", StringComparison.OrdinalIgnoreCase)
+               && !string.Equals(normalized, "podcast", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsPathUnderRoot(string filePath, string? rootPath)
+    {
+        if (string.IsNullOrWhiteSpace(rootPath))
+        {
+            return false;
+        }
+
+        var normalizedRoot = NormalizePath(rootPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var normalizedFile = NormalizePath(filePath);
+        if (string.Equals(normalizedFile, normalizedRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var rootWithSeparator = normalizedRoot + Path.DirectorySeparatorChar;
+        return normalizedFile.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static TagSettings BuildDownloadTagSettings(UnifiedTagConfig config, TechnicalTagSettings? technical)
+    {
+        var embedLyrics = technical?.EmbedLyrics ?? true;
+        var settings = new TagSettings
+        {
+            Title = UsesDownload(config.Title),
+            Artist = UsesDownload(config.Artist),
+            Artists = UsesDownload(config.Artists),
+            Album = UsesDownload(config.Album),
+            AlbumArtist = UsesDownload(config.AlbumArtist),
+            Cover = UsesDownload(config.Cover),
+            TrackNumber = UsesDownload(config.TrackNumber),
+            TrackTotal = UsesDownload(config.TrackTotal),
+            DiscNumber = UsesDownload(config.DiscNumber),
+            DiscTotal = UsesDownload(config.DiscTotal),
+            Genre = UsesDownload(config.Genre),
+            Year = UsesDownload(config.Year),
+            Date = UsesDownload(config.Date),
+            Isrc = UsesDownload(config.Isrc),
+            Barcode = UsesDownload(config.Barcode),
+            Bpm = UsesDownload(config.Bpm),
+            Key = UsesDownload(config.Key),
+            Length = UsesDownload(config.Duration),
+            ReplayGain = UsesDownload(config.ReplayGain),
+            Danceability = UsesDownload(config.Danceability),
+            Energy = UsesDownload(config.Energy),
+            Valence = UsesDownload(config.Valence),
+            Acousticness = UsesDownload(config.Acousticness),
+            Instrumentalness = UsesDownload(config.Instrumentalness),
+            Speechiness = UsesDownload(config.Speechiness),
+            Loudness = UsesDownload(config.Loudness),
+            Tempo = UsesDownload(config.Tempo),
+            TimeSignature = UsesDownload(config.TimeSignature),
+            Liveness = UsesDownload(config.Liveness),
+            Label = UsesDownload(config.Label),
+            Copyright = UsesDownload(config.Copyright),
+            Lyrics = embedLyrics && UsesDownload(config.UnsyncedLyrics),
+            SyncedLyrics = embedLyrics && UsesDownload(config.SyncedLyrics),
+            Composer = UsesDownload(config.Composer),
+            InvolvedPeople = UsesDownload(config.InvolvedPeople),
+            Source = UsesDownload(config.Source),
+            Url = UsesDownload(config.Url),
+            TrackId = UsesDownload(config.TrackId),
+            ReleaseId = UsesDownload(config.ReleaseId),
+            Explicit = UsesDownload(config.Explicit),
+            Rating = UsesDownload(config.Rating)
+        };
+
+        if (technical != null)
+        {
+            settings.SavePlaylistAsCompilation = technical.SavePlaylistAsCompilation;
+            settings.UseNullSeparator = technical.UseNullSeparator;
+            settings.SaveID3v1 = technical.SaveID3v1;
+            settings.MultiArtistSeparator = technical.MultiArtistSeparator;
+            settings.SingleAlbumArtist = technical.SingleAlbumArtist;
+            settings.CoverDescriptionUTF8 = technical.CoverDescriptionUTF8;
+        }
+
+        return settings;
+    }
+
+    private static bool UsesDownload(TagSource source)
+    {
+        return source == TagSource.DownloadSource || source == TagSource.Both;
+    }
+
+    private static bool IsDownloadTagSelectionEmpty(TagSettings settings)
+    {
+        return !settings.Title
+               && !settings.Artist
+               && !settings.Artists
+               && !settings.Album
+               && !settings.AlbumArtist
+               && !settings.Cover
+               && !settings.TrackNumber
+               && !settings.TrackTotal
+               && !settings.DiscNumber
+               && !settings.DiscTotal
+               && !settings.Genre
+               && !settings.Year
+               && !settings.Date
+               && !settings.Isrc
+               && !settings.Barcode
+               && !settings.Bpm
+               && !settings.Length
+               && !settings.ReplayGain
+               && !settings.Danceability
+               && !settings.Energy
+               && !settings.Valence
+               && !settings.Acousticness
+               && !settings.Instrumentalness
+               && !settings.Speechiness
+               && !settings.Loudness
+               && !settings.Tempo
+               && !settings.TimeSignature
+               && !settings.Liveness
+               && !settings.Label
+               && !settings.Copyright
+               && !settings.Lyrics
+               && !settings.SyncedLyrics
+               && !settings.Composer
+               && !settings.InvolvedPeople
+               && !settings.Source
+               && !settings.Url
+               && !settings.TrackId
+               && !settings.ReleaseId
+               && !settings.Explicit
+               && !settings.Rating;
+    }
+
+    private static (List<string> Main, List<string> Featured) ResolveArtistRoles(
+        List<string> artists,
+        List<string> albumArtistCandidates)
+    {
+        var mainArtists = new List<string>();
+        if (albumArtistCandidates.Count > 0)
+        {
+            foreach (var candidate in albumArtistCandidates)
+            {
+                var matched = artists.FirstOrDefault(name => string.Equals(name, candidate, StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrWhiteSpace(matched) && !ContainsArtist(mainArtists, matched))
+                {
+                    mainArtists.Add(matched);
+                }
+            }
+
+            if (mainArtists.Count == 0 && !string.IsNullOrWhiteSpace(albumArtistCandidates[0]))
+            {
+                mainArtists.Add(albumArtistCandidates[0]);
+            }
+        }
+
+        if (mainArtists.Count == 0 && artists.Count > 0)
+        {
+            mainArtists.Add(artists[0]);
+        }
+
+        var featuredArtists = new List<string>();
+        if (albumArtistCandidates.Count > 0)
+        {
+            foreach (var artist in artists)
+            {
+                if (!ContainsArtist(mainArtists, artist) && !ContainsArtist(featuredArtists, artist))
+                {
+                    featuredArtists.Add(artist);
+                }
+            }
+        }
+
+        return (mainArtists, featuredArtists);
+    }
+
+    private static Dictionary<string, List<string>> BuildArtistRoleMap(
+        List<string> mainArtists,
+        List<string> featuredArtists)
+    {
+        var map = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Main"] = mainArtists.Count > 0 ? mainArtists : new List<string>()
+        };
+
+        if (featuredArtists.Count > 0)
+        {
+            map["Featured"] = featuredArtists;
+        }
+
+        return map;
+    }
+
+    private static bool ContainsArtist(IEnumerable<string> artists, string candidate)
+    {
+        return artists.Any(name => string.Equals(name, candidate, StringComparison.OrdinalIgnoreCase));
     }
 
     private static CustomDate BuildDate(string? releaseDate, string? publishDate, int? year)
@@ -764,4 +1090,9 @@ WHERE id = @id;";
         string? SourceName,
         string? SourceId,
         IReadOnlyList<string> Genres);
+
+    private sealed class AutoTagDefaultsPayload
+    {
+        public string? DefaultFileProfile { get; set; }
+    }
 }
