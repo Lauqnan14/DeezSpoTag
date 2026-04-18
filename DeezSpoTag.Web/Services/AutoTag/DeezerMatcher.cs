@@ -141,7 +141,7 @@ public sealed class DeezerMatcher
             track.ArtUrl = DeezerClient.BuildImageUrl(CoverImageType, track.ArtHash, deezerConfig.ArtResolution);
         }
 
-        await ExtendTrackAsync(track, cancellationToken);
+        await ExtendTrackAsync(track, deezerConfig, cancellationToken);
         return new AutoTagMatchResult { Accuracy = accuracy, Track = ToAutoTagTrack(track) };
     }
 
@@ -340,10 +340,13 @@ public sealed class DeezerMatcher
         return string.Join(' ', cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
     }
 
-    private async Task ExtendTrackAsync(DeezerTrackInfo track, CancellationToken cancellationToken)
+    private async Task ExtendTrackAsync(DeezerTrackInfo track, DeezerConfig deezerConfig, CancellationToken cancellationToken)
     {
         await ExtendTrackMetadataAsync(track, cancellationToken);
-        await ExtendLyricsAsync(track, cancellationToken);
+        if (deezerConfig.FetchLyrics)
+        {
+            await ExtendLyricsAsync(track, cancellationToken);
+        }
         await ExtendAlbumMetadataAsync(track, cancellationToken);
     }
 

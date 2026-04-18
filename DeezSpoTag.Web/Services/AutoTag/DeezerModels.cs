@@ -21,6 +21,9 @@ public sealed class DeezerConfig
 
     [JsonPropertyName("match_by_id")]
     public bool MatchById { get; set; }
+
+    [JsonPropertyName("fetch_lyrics")]
+    public bool FetchLyrics { get; set; } = true;
 }
 
 public sealed class DeezerResponse<T>
