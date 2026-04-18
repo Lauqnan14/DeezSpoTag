@@ -8,6 +8,14 @@ namespace DeezSpoTag.Services.Download.Utils;
 
 public sealed class LrclibLyricsService
 {
+    public sealed class LrclibRequestOptions
+    {
+        public int DurationToleranceSeconds { get; init; } = 10;
+        public bool UseDurationHint { get; init; } = true;
+        public bool SearchFallback { get; init; } = true;
+        public bool PreferSynced { get; init; } = true;
+    }
+
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<LrclibLyricsService> _logger;
 
@@ -17,12 +25,20 @@ public sealed class LrclibLyricsService
         _logger = logger;
     }
 
-    public async Task<LyricsBase> ResolveLyricsAsync(Track track, CancellationToken cancellationToken = default)
+    public Task<LyricsBase> ResolveLyricsAsync(Track track, CancellationToken cancellationToken = default)
+        => ResolveLyricsAsync(track, options: null, cancellationToken);
+
+    public async Task<LyricsBase> ResolveLyricsAsync(
+        Track track,
+        LrclibRequestOptions? options,
+        CancellationToken cancellationToken = default)
     {
         if (track == null)
         {
             return CreateError("Track is required for LRCLIB lyrics.");
         }
+
+        var effectiveOptions = NormalizeOptions(options);
 
         var title = track.Title ?? string.Empty;
         var artist = track.MainArtist?.Name ?? string.Empty;
@@ -31,7 +47,7 @@ public sealed class LrclibLyricsService
             return CreateError("Track title and artist are required for LRCLIB lyrics.");
         }
 
-        var duration = track.Duration > 0 ? track.Duration : 0;
+        var duration = effectiveOptions.UseDurationHint && track.Duration > 0 ? track.Duration : 0;
 
         var exact = await FetchLyricsWithMetadataAsync(title, artist, duration, cancellationToken);
         if (exact.IsLoaded())
@@ -39,10 +55,13 @@ public sealed class LrclibLyricsService
             return exact;
         }
 
-        var search = await FetchLyricsFromSearchAsync(title, artist, cancellationToken);
-        if (search.IsLoaded())
+        if (effectiveOptions.SearchFallback)
         {
-            return search;
+            var search = await FetchLyricsFromSearchAsync(title, artist, track.Duration, effectiveOptions, cancellationToken);
+            if (search.IsLoaded())
+            {
+                return search;
+            }
         }
 
         var simplifiedTitle = SimplifyTrackName(title);
@@ -54,10 +73,13 @@ public sealed class LrclibLyricsService
                 return simplifiedExact;
             }
 
-            var simplifiedSearch = await FetchLyricsFromSearchAsync(simplifiedTitle, artist, cancellationToken);
-            if (simplifiedSearch.IsLoaded())
+            if (effectiveOptions.SearchFallback)
             {
-                return simplifiedSearch;
+                var simplifiedSearch = await FetchLyricsFromSearchAsync(simplifiedTitle, artist, track.Duration, effectiveOptions, cancellationToken);
+                if (simplifiedSearch.IsLoaded())
+                {
+                    return simplifiedSearch;
+                }
             }
         }
 
@@ -75,7 +97,12 @@ public sealed class LrclibLyricsService
         return await FetchLyricsAsync(url, cancellationToken);
     }
 
-    private async Task<LyricsBase> FetchLyricsFromSearchAsync(string trackName, string artistName, CancellationToken cancellationToken)
+    private async Task<LyricsBase> FetchLyricsFromSearchAsync(
+        string trackName,
+        string artistName,
+        int durationSeconds,
+        LrclibRequestOptions options,
+        CancellationToken cancellationToken)
     {
         var query = $"{artistName} {trackName}";
         var url = $"https://lrclib.net/api/search?q={Uri.EscapeDataString(query)}";
@@ -96,9 +123,7 @@ public sealed class LrclibLyricsService
                 return CreateError("LRCLIB search returned no results.");
             }
 
-            var best = results.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r.SyncedLyrics))
-                ?? results.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r.PlainLyrics))
-                ?? results[0];
+            var best = SelectBestResult(results, durationSeconds, options);
 
             return ConvertToLyrics(best);
         }
@@ -179,6 +204,73 @@ public sealed class LrclibLyricsService
         }
 
         return lyrics;
+    }
+
+    private static LrclibResponse SelectBestResult(
+        IReadOnlyList<LrclibResponse> results,
+        int durationSeconds,
+        LrclibRequestOptions options)
+    {
+        IEnumerable<LrclibResponse> candidates = results
+            .Where(HasLyricsText);
+        if (!candidates.Any())
+        {
+            candidates = results;
+        }
+
+        if (durationSeconds > 0 && options.DurationToleranceSeconds > 0)
+        {
+            var withinTolerance = candidates
+                .Where(item => IsWithinDurationTolerance(item.Duration, durationSeconds, options.DurationToleranceSeconds))
+                .ToList();
+            if (withinTolerance.Count > 0)
+            {
+                candidates = withinTolerance;
+            }
+        }
+
+        if (options.PreferSynced)
+        {
+            return candidates.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.SyncedLyrics))
+                ?? candidates.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.PlainLyrics))
+                ?? results[0];
+        }
+
+        return candidates.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.PlainLyrics))
+            ?? candidates.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.SyncedLyrics))
+            ?? results[0];
+    }
+
+    private static bool HasLyricsText(LrclibResponse payload)
+    {
+        return !string.IsNullOrWhiteSpace(payload.SyncedLyrics)
+            || !string.IsNullOrWhiteSpace(payload.PlainLyrics);
+    }
+
+    private static bool IsWithinDurationTolerance(double? resultDurationSeconds, int durationSeconds, int toleranceSeconds)
+    {
+        if (!resultDurationSeconds.HasValue || durationSeconds <= 0)
+        {
+            return false;
+        }
+
+        return Math.Abs(resultDurationSeconds.Value - durationSeconds) <= toleranceSeconds;
+    }
+
+    private static LrclibRequestOptions NormalizeOptions(LrclibRequestOptions? options)
+    {
+        if (options == null)
+        {
+            return new LrclibRequestOptions();
+        }
+
+        return new LrclibRequestOptions
+        {
+            DurationToleranceSeconds = Math.Clamp(options.DurationToleranceSeconds, 0, 60),
+            UseDurationHint = options.UseDurationHint,
+            SearchFallback = options.SearchFallback,
+            PreferSynced = options.PreferSynced
+        };
     }
 
     private static bool TryParseTimestampedLine(string line, out string timestamp, out string text)
@@ -263,5 +355,6 @@ public sealed class LrclibLyricsService
 
     private sealed record LrclibResponse(
         [property: JsonPropertyName("plainLyrics")] string? PlainLyrics,
-        [property: JsonPropertyName("syncedLyrics")] string? SyncedLyrics);
+        [property: JsonPropertyName("syncedLyrics")] string? SyncedLyrics,
+        [property: JsonPropertyName("duration")] double? Duration);
 }

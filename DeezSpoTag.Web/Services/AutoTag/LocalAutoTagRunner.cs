@@ -1078,11 +1078,20 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         var lookupTrack = BuildLyricsLookupTrack(track, platformId);
-        var lookupSettings = BuildLyricsLookupSettings(settings, request.WantsSynced, request.WantsUnsynced, request.WantsTtml);
+        var lookupSettings = BuildLyricsLookupSettings(
+            settings,
+            request.WantsSynced,
+            request.WantsUnsynced,
+            request.WantsTtml);
+        var providerOptions = BuildLyricsProviderOptions(config.Custom);
         LyricsBase? lyrics = null;
         try
         {
-            lyrics = await _downloadLyricsService.ResolveLyricsAsync(lookupTrack, lookupSettings, token);
+            lyrics = await _downloadLyricsService.ResolveLyricsAsync(
+                lookupTrack,
+                lookupSettings,
+                providerOptions,
+                token);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1297,6 +1306,28 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             {
                 Lyrics = allowsUnsyncedBySettings && shouldFetchUnsyncedPayload,
                 SyncedLyrics = allowsSyncedBySettings && wantsSynced
+            }
+        };
+    }
+
+    private static LyricsProviderOptions? BuildLyricsProviderOptions(JsonObject? custom)
+    {
+        if (custom == null
+            || !custom.TryGetPropertyValue("lrclib", out var lrclibNode)
+            || lrclibNode is not JsonObject)
+        {
+            return null;
+        }
+
+        var lrclibConfig = LoadConfig(custom, "lrclib", new LrclibConfig());
+        return new LyricsProviderOptions
+        {
+            Lrclib = new LrclibLyricsProviderOptions
+            {
+                DurationToleranceSeconds = lrclibConfig.DurationToleranceSeconds,
+                UseDurationHint = lrclibConfig.UseDurationHint,
+                SearchFallback = lrclibConfig.SearchFallback,
+                PreferSynced = lrclibConfig.PreferSynced
             }
         };
     }
@@ -1746,9 +1777,18 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         CancellationToken token)
     {
         var shazamConfig = LoadConfig(config.Custom, ShazamPlatform, new ShazamMatchConfig());
+        var enableLyrics = HasAnyTags(config, UnsyncedLyricsTag, SyncedLyricsTag, TtmlLyricsTag);
+        var hasLyricsSidecar = enableLyrics && GetLyricsSidecarState(filePath).HasAny;
+        var allowDeezerMatcherLyrics = enableLyrics && !hasLyricsSidecar;
         if (shazamConfig.IdFirst)
         {
-            var idFirstMatch = await TryMatchShazamByIdsAsync(info, config, settings, matchingConfig, token);
+            var idFirstMatch = await TryMatchShazamByIdsAsync(
+                info,
+                config,
+                settings,
+                matchingConfig,
+                allowDeezerMatcherLyrics,
+                token);
             if (idFirstMatch != null)
             {
                 return idFirstMatch;
@@ -1768,6 +1808,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagRunnerConfig config,
         DeezSpoTagSettings settings,
         AutoTagMatchingConfig matchingConfig,
+        bool allowDeezerMatcherLyrics,
         CancellationToken token)
     {
         var effectiveInfo = BuildShazamIdFirstInfo(info);
@@ -1779,7 +1820,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (hasDeezerId)
         {
             var deezerConfig = ResolveDeezerMatchConfig(config, settings);
-            deezerConfig.FetchLyrics = false;
+            deezerConfig.FetchLyrics = allowDeezerMatcherLyrics;
             deezerConfig.MatchById = true;
             var byDeezerId = await _deezerMatcher.MatchAsync(effectiveInfo, matchingConfig, deezerConfig, token);
             if (byDeezerId != null)
@@ -1800,7 +1841,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (hasIsrc)
         {
             var deezerConfig = ResolveDeezerMatchConfig(config, settings);
-            deezerConfig.FetchLyrics = false;
+            deezerConfig.FetchLyrics = allowDeezerMatcherLyrics;
             deezerConfig.MatchById = true;
             var byDeezerIsrc = await _deezerMatcher.MatchAsync(effectiveInfo, matchingConfig, deezerConfig, token);
             if (byDeezerIsrc != null)
@@ -1821,10 +1862,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private static DeezerConfig ResolveDeezerMatchConfig(AutoTagRunnerConfig config, DeezSpoTagSettings settings)
     {
         var deezerConfig = LoadConfig(config.Custom, DeezerPlatform, new DeezerConfig());
-        if (string.IsNullOrWhiteSpace(deezerConfig.Arl))
-        {
-            deezerConfig.Arl = settings.Arl;
-        }
+        deezerConfig.Arl = settings.Arl;
 
         return deezerConfig;
     }

@@ -15,6 +15,19 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace DeezSpoTag.Services.Download.Utils;
 
+public sealed class LyricsProviderOptions
+{
+    public LrclibLyricsProviderOptions? Lrclib { get; init; }
+}
+
+public sealed class LrclibLyricsProviderOptions
+{
+    public int? DurationToleranceSeconds { get; init; }
+    public bool? UseDurationHint { get; init; }
+    public bool? SearchFallback { get; init; }
+    public bool? PreferSynced { get; init; }
+}
+
 /// <summary>
 /// Enhanced lyrics service implementing refreezer's dual API approach
 /// Provides robust lyrics fetching with Pipe API primary and GW API fallback
@@ -112,9 +125,16 @@ public class LyricsService
     /// <summary>
     /// Resolve lyrics for a track using current settings and authentication.
     /// </summary>
+    public Task<LyricsBase?> ResolveLyricsAsync(
+        Track track,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken = default)
+        => ResolveLyricsAsync(track, settings, providerOptions: null, cancellationToken);
+
     public async Task<LyricsBase?> ResolveLyricsAsync(
         Track track,
         DeezSpoTagSettings settings,
+        LyricsProviderOptions? providerOptions,
         CancellationToken cancellationToken = default)
     {
         if (track == null)
@@ -136,7 +156,7 @@ public class LyricsService
 
         foreach (var provider in providers)
         {
-            var providerLyrics = await TryResolveProviderSafelyAsync(provider, track, settings, state, cancellationToken);
+            var providerLyrics = await TryResolveProviderSafelyAsync(provider, track, settings, providerOptions, state, cancellationToken);
             if (providerLyrics == null || !providerLyrics.IsLoaded())
             {
                 continue;
@@ -176,12 +196,13 @@ public class LyricsService
         string provider,
         Track track,
         DeezSpoTagSettings settings,
+        LyricsProviderOptions? providerOptions,
         LyricsResolutionState state,
         CancellationToken cancellationToken)
     {
         try
         {
-            return await TryResolveProviderLyricsAsync(provider, track, settings, state, cancellationToken);
+            return await TryResolveProviderLyricsAsync(provider, track, settings, providerOptions, state, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -212,6 +233,7 @@ public class LyricsService
         string provider,
         Track track,
         DeezSpoTagSettings settings,
+        LyricsProviderOptions? providerOptions,
         LyricsResolutionState state,
         CancellationToken cancellationToken)
     {
@@ -223,7 +245,10 @@ public class LyricsService
             SpotifyProvider => await ResolveLoadedLyricsOrNullAsync(
                 () => ResolveSpotifyLyricsAsync(track, settings, cancellationToken)),
             LrclibProvider => await ResolveLoadedLyricsOrNullAsync(
-                () => _lrclibLyricsService.ResolveLyricsAsync(track, cancellationToken)),
+                () => _lrclibLyricsService.ResolveLyricsAsync(
+                    track,
+                    BuildLrclibRequestOptions(providerOptions?.Lrclib),
+                    cancellationToken)),
             MusixmatchProvider => await ResolveLoadedLyricsOrNullAsync(
                 () => ResolveMusixmatchLyricsAsync(track, cancellationToken)),
             _ => LogUnknownLyricsProvider(provider)
@@ -311,6 +336,23 @@ public class LyricsService
 
         var outputFormat = NormalizeLyricsOutputFormat(settings.LrcFormat);
         return outputFormat is "ttml" or "both";
+    }
+
+    private static LrclibLyricsService.LrclibRequestOptions? BuildLrclibRequestOptions(
+        LrclibLyricsProviderOptions? options)
+    {
+        if (options == null)
+        {
+            return null;
+        }
+
+        return new LrclibLyricsService.LrclibRequestOptions
+        {
+            DurationToleranceSeconds = options.DurationToleranceSeconds ?? 10,
+            UseDurationHint = options.UseDurationHint ?? true,
+            SearchFallback = options.SearchFallback ?? true,
+            PreferSynced = options.PreferSynced ?? true
+        };
     }
 
     private static void MergeLyricsData(LyricsBase target, LyricsBase candidate)
