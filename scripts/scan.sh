@@ -31,6 +31,7 @@ Environment fallbacks:
   SONAR_INCLUDE_COVERAGE
   SONAR_COVERAGE_EXCLUSIONS
   SONAR_KEEP_LOCAL_SCAN_STATE
+  SONAR_ALLOW_HIGH_MEMORY_PRESSURE
 
 Example:
   SONAR_TOKEN=xxxx ./scan.sh
@@ -56,6 +57,7 @@ sonar_include_tests="${SONAR_INCLUDE_TESTS:-false}"
 sonar_include_coverage="${SONAR_INCLUDE_COVERAGE:-true}"
 sonar_coverage_exclusions="${SONAR_COVERAGE_EXCLUSIONS:-**/DeezSpoTag.Tests/**,**/DeezSpoTag.CoverPortTests/**,**/Tools/**,**/References/**,**/bin/**,**/obj/**}"
 sonar_keep_local_scan_state="${SONAR_KEEP_LOCAL_SCAN_STATE:-false}"
+sonar_allow_high_memory_pressure="${SONAR_ALLOW_HIGH_MEMORY_PRESSURE:-false}"
 coverage_dir="${ROOT_DIR}/.sonar-coverage"
 coverage_opencover_reports_path="${coverage_dir}/**/coverage.opencover.xml"
 scan_lock_file="${ROOT_DIR}/.scan.lock"
@@ -413,11 +415,15 @@ check_system_resources() {
   local severe_mem_available_kb=$((2 * 1024 * 1024))
 
   if [[ "$mem_available_kb" -lt "$severe_mem_available_kb" || ( "$swap_used_pct" -ge 95 && "$mem_available_kb" -lt "$min_mem_available_kb" ) ]]; then
-    if [[ "$sonar_lightweight" == "true" ]]; then
+    if [[ "$sonar_lightweight" == "true" || "$sonar_allow_high_memory_pressure" == "true" ]]; then
       echo "Local system is under heavy memory pressure." >&2
       echo "MemAvailable: $((mem_available_kb / 1024)) MiB" >&2
       echo "Swap used   : ${swap_used_pct}%" >&2
-      echo "Proceeding because lightweight mode is enabled." >&2
+      if [[ "$sonar_lightweight" == "true" ]]; then
+        echo "Proceeding because lightweight mode is enabled." >&2
+      else
+        echo "Proceeding because SONAR_ALLOW_HIGH_MEMORY_PRESSURE=true." >&2
+      fi
       return
     fi
 
@@ -461,6 +467,7 @@ echo "Include tests: $sonar_include_tests"
 echo "Include coverage: $sonar_include_coverage"
 echo "Coverage exclusions: $sonar_coverage_exclusions"
 echo "Keep local scan state: $sonar_keep_local_scan_state"
+echo "Allow high memory pressure: $sonar_allow_high_memory_pressure"
 echo "Entry point : ./scan.sh"
 
 check_sonar_server
