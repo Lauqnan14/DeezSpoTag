@@ -1087,14 +1087,11 @@ LIMIT 1;";
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         AddFinalDestinationPaths(finalDestinationsJson, paths);
         AddPayloadPaths(payloadJson, paths);
-        if (paths.Count == 0)
-        {
-            return null;
-        }
 
         var hasTimeSynced = false;
         var hasSynced = false;
         var hasUnsynced = false;
+        ApplyPayloadLyricsStatus(payloadJson, ref hasTimeSynced, ref hasSynced, ref hasUnsynced);
 
         foreach (var path in paths)
         {
@@ -1139,11 +1136,6 @@ LIMIT 1;";
         try
         {
             var ioPath = DownloadPathResolver.ResolveIoPath(path);
-            if (!File.Exists(ioPath))
-            {
-                return;
-            }
-
             switch (Path.GetExtension(ioPath))
             {
                 case ".ttml":
@@ -1163,6 +1155,98 @@ LIMIT 1;";
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Best-effort lyrics status persistence; ignore unreadable paths.
+        }
+    }
+
+    private static void ApplyPayloadLyricsStatus(
+        string? payloadJson,
+        ref bool hasTimeSynced,
+        ref bool hasSynced,
+        ref bool hasUnsynced)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return;
+            }
+
+            ApplyPayloadLyricsStatusProperty(document.RootElement, "LyricsStatus", ref hasTimeSynced, ref hasSynced, ref hasUnsynced);
+            ApplyPayloadLyricsStatusProperty(document.RootElement, "lyricsStatus", ref hasTimeSynced, ref hasSynced, ref hasUnsynced);
+            ApplyPayloadLyricsStatusProperty(document.RootElement, "lyrics_status", ref hasTimeSynced, ref hasSynced, ref hasUnsynced);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Ignore malformed JSON payloads and continue with best effort.
+        }
+    }
+
+    private static void ApplyPayloadLyricsStatusProperty(
+        JsonElement root,
+        string propertyName,
+        ref bool hasTimeSynced,
+        ref bool hasSynced,
+        ref bool hasUnsynced)
+    {
+        if (!root.TryGetProperty(propertyName, out var value))
+        {
+            return;
+        }
+
+        if (value.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var token in value.EnumerateArray())
+            {
+                if (token.ValueKind == JsonValueKind.String)
+                {
+                    MarkLyricsStatusToken(token.GetString(), ref hasTimeSynced, ref hasSynced, ref hasUnsynced);
+                }
+            }
+
+            return;
+        }
+
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            MarkLyricsStatusToken(value.GetString(), ref hasTimeSynced, ref hasSynced, ref hasUnsynced);
+        }
+    }
+
+    private static void MarkLyricsStatusToken(
+        string? rawToken,
+        ref bool hasTimeSynced,
+        ref bool hasSynced,
+        ref bool hasUnsynced)
+    {
+        if (string.IsNullOrWhiteSpace(rawToken))
+        {
+            return;
+        }
+
+        foreach (var token in rawToken.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            switch (token.Trim().ToLowerInvariant())
+            {
+                case "time-synced":
+                case "timesynced":
+                case "ttml":
+                    hasTimeSynced = true;
+                    break;
+                case "synced":
+                case "lrc":
+                    hasSynced = true;
+                    break;
+                case "unsynced":
+                case "txt":
+                    hasUnsynced = true;
+                    break;
+            }
         }
     }
 

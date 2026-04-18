@@ -2092,7 +2092,7 @@ public class TrackDownloader
         TagSettings tagSettings,
         CancellationToken cancellationToken)
     {
-        if (ShouldSkipLyricsTagHydration(track, outputPath, settings, tagSettings))
+        if (ShouldSkipLyricsTagHydration(track, tagSettings))
         {
             return;
         }
@@ -2118,8 +2118,6 @@ public class TrackDownloader
 
     private static bool ShouldSkipLyricsTagHydration(
         Track track,
-        string outputPath,
-        DeezSpoTagSettings settings,
         TagSettings tagSettings)
     {
         if (!tagSettings.Lyrics && !tagSettings.SyncedLyrics)
@@ -2127,20 +2125,7 @@ public class TrackDownloader
             return true;
         }
 
-        if (HasOrPrefersLyricsSidecars(outputPath, settings))
-        {
-            ClearTrackLyricsPayload(track);
-            return true;
-        }
-
         return HasRequiredLyricsAlready(track, tagSettings);
-    }
-
-    private static bool HasOrPrefersLyricsSidecars(string outputPath, DeezSpoTagSettings settings)
-    {
-        var shouldPreferSidecarOutput = ShouldExpectLyricsSidecarOutput(settings);
-        var sidecarState = GetLyricsSidecarState(outputPath);
-        return sidecarState.HasAny || shouldPreferSidecarOutput;
     }
 
     private static bool HasRequiredLyricsAlready(Track track, TagSettings tagSettings)
@@ -2227,65 +2212,6 @@ public class TrackDownloader
         return string.Join(',', types.Distinct(StringComparer.OrdinalIgnoreCase));
     }
 
-    private static (bool HasAny, bool HasLrc, bool HasTtml, bool HasTxt) GetLyricsSidecarState(string outputPath)
-    {
-        if (string.IsNullOrWhiteSpace(outputPath))
-        {
-            return (false, false, false, false);
-        }
-
-        var ioPath = DownloadPathResolver.ResolveIoPath(outputPath);
-        if (string.IsNullOrWhiteSpace(ioPath))
-        {
-            return (false, false, false, false);
-        }
-
-        var directory = Path.GetDirectoryName(ioPath);
-        var baseName = ResolveAudioFilenameStem(ioPath);
-        if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(baseName))
-        {
-            return (false, false, false, false);
-        }
-
-        var hasLrc = File.Exists(Path.Join(directory, $"{baseName}.lrc"));
-        var hasTtml = File.Exists(Path.Join(directory, $"{baseName}.ttml"));
-        var hasTxt = File.Exists(Path.Join(directory, $"{baseName}.txt"));
-        return (hasLrc || hasTtml || hasTxt, hasLrc, hasTtml, hasTxt);
-    }
-
-    private static void ClearTrackLyricsPayload(Track track)
-    {
-        if (track.Lyrics == null)
-        {
-            return;
-        }
-
-        track.Lyrics.Unsync = string.Empty;
-        track.Lyrics.Sync = string.Empty;
-        track.Lyrics.SyncID3?.Clear();
-    }
-
-    private static bool ShouldExpectLyricsSidecarOutput(DeezSpoTagSettings settings)
-    {
-        var allowsSyncedByToggle = settings.SyncedLyrics || settings.Tags?.SyncedLyrics == true;
-        var allowsUnsyncedByToggle = settings.SaveLyrics || settings.Tags?.Lyrics == true;
-        if (!allowsSyncedByToggle && !allowsUnsyncedByToggle)
-        {
-            return false;
-        }
-
-        var selectedTypes = ParseLyricsTypeSelection(settings.LrcType);
-        var allowsSyncedType = selectedTypes.Contains(LyricsType) || selectedTypes.Contains(SyllableLyricsType);
-        var allowsUnsyncedType = selectedTypes.Contains(UnsyncedLyricsType);
-        var outputFormat = NormalizeLyricsFormat(settings.LrcFormat);
-
-        var canEmitSyncedSidecar = allowsSyncedByToggle
-            && allowsSyncedType
-            && (outputFormat is "lrc" or "ttml" or "both");
-        var canEmitUnsyncedSidecar = allowsUnsyncedByToggle && allowsUnsyncedType;
-        return canEmitSyncedSidecar || canEmitUnsyncedSidecar;
-    }
-
     private static string ResolveAudioFilenameStem(string pathOrName)
     {
         if (string.IsNullOrWhiteSpace(pathOrName))
@@ -2308,61 +2234,6 @@ public class TrackDownloader
 
         var stem = Path.GetFileNameWithoutExtension(fileName);
         return string.IsNullOrWhiteSpace(stem) ? fileName : stem;
-    }
-
-    private static HashSet<string> ParseLyricsTypeSelection(string? raw)
-    {
-        var selected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            AddDefaultLyricsTypes(selected);
-            return selected;
-        }
-
-        foreach (var value in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            selected.Add(NormalizeLyricsTypeToken(value));
-        }
-
-        if (selected.Count == 0)
-        {
-            AddDefaultLyricsTypes(selected);
-        }
-
-        return selected;
-    }
-
-    private static string NormalizeLyricsTypeToken(string value)
-    {
-        var normalized = value.Trim().ToLowerInvariant();
-        return normalized switch
-        {
-            "synced-lyrics" => LyricsType,
-            "time-synced-lyrics" => SyllableLyricsType,
-            "timesynced-lyrics" => SyllableLyricsType,
-            "time_synced_lyrics" => SyllableLyricsType,
-            "unsyncedlyrics" => UnsyncedLyricsType,
-            "unsynced" => UnsyncedLyricsType,
-            _ => normalized
-        };
-    }
-
-    private static void AddDefaultLyricsTypes(HashSet<string> selected)
-    {
-        selected.Add(LyricsType);
-        selected.Add(SyllableLyricsType);
-        selected.Add(UnsyncedLyricsType);
-    }
-
-    private static string NormalizeLyricsFormat(string? raw)
-    {
-        var normalized = raw?.Trim().ToLowerInvariant();
-        return normalized switch
-        {
-            "lrc" => "lrc",
-            "ttml" => "ttml",
-            _ => "both"
-        };
     }
 
     /// <summary>

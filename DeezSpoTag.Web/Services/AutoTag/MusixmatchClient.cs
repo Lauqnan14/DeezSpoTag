@@ -35,7 +35,7 @@ public sealed class MusixmatchClient
 
     public async Task<MusixmatchMacroCallsBody<MusixmatchBody>?> FetchLyricsAsync(string title, string artist, CancellationToken cancellationToken, int retryCount = 0)
     {
-        var response = await GetAsync<MusixmatchResponse<MusixmatchMacroCallsBody<MusixmatchBody>>>(
+        using var document = await GetJsonAsync(
             "macro.subtitles.get",
             new Dictionary<string, string>
             {
@@ -48,12 +48,12 @@ public sealed class MusixmatchClient
             },
             cancellationToken);
 
-        if (response == null)
+        if (document == null)
         {
             return null;
         }
 
-        if (response.Message.Header.StatusCode == 401)
+        if (TryGetRootStatusCode(document.RootElement, out var statusCode) && statusCode == 401)
         {
             _logger.LogWarning("Musixmatch captcha on lyrics fetch; retrying after delay.");
             if (retryCount >= 3)
@@ -64,10 +64,10 @@ public sealed class MusixmatchClient
             return await FetchLyricsAsync(title, artist, cancellationToken, retryCount + 1);
         }
 
-        return response.Message.Body;
+        return ParseMacroCallsBody(document.RootElement);
     }
 
-    private async Task<T?> GetAsync<T>(string action, Dictionary<string, string> query, CancellationToken cancellationToken)
+    private async Task<JsonDocument?> GetJsonAsync(string action, Dictionary<string, string> query, CancellationToken cancellationToken)
     {
         await EnsureTokenAsync(action, cancellationToken);
 
@@ -83,11 +83,109 @@ public sealed class MusixmatchClient
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogWarning("Musixmatch request {Action} failed with status {Status}.", action, response.StatusCode);
-            return default;
+            return null;
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        return await JsonSerializer.DeserializeAsync<T>(stream, _jsonOptions, cancellationToken);
+        return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+    }
+
+    private MusixmatchMacroCallsBody<MusixmatchBody>? ParseMacroCallsBody(JsonElement root)
+    {
+        if (!TryGetMacroCallsElement(root, out var macroCallsElement))
+        {
+            return null;
+        }
+
+        var body = new MusixmatchMacroCallsBody<MusixmatchBody>();
+        foreach (var macroCall in macroCallsElement.EnumerateObject())
+        {
+            body.MacroCalls[macroCall.Name] = ParseMacroCallResponse(macroCall.Value, macroCall.Name);
+        }
+
+        return body;
+    }
+
+    private MusixmatchResponse<MusixmatchBody> ParseMacroCallResponse(JsonElement macroCallValue, string macroCallName)
+    {
+        var response = new MusixmatchResponse<MusixmatchBody>();
+        if (!macroCallValue.TryGetProperty("message", out var message))
+        {
+            return response;
+        }
+
+        if (message.TryGetProperty("header", out var header)
+            && header.TryGetProperty("status_code", out var statusCodeElement)
+            && statusCodeElement.ValueKind == JsonValueKind.Number
+            && statusCodeElement.TryGetInt32(out var statusCode))
+        {
+            response.Message.Header.StatusCode = statusCode;
+        }
+
+        if (!message.TryGetProperty("body", out var bodyElement))
+        {
+            return response;
+        }
+
+        if (bodyElement.ValueKind == JsonValueKind.Null)
+        {
+            return response;
+        }
+
+        if (bodyElement.ValueKind != JsonValueKind.Object)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Musixmatch macro body for {MacroCall} returned {BodyKind}; skipping strict body mapping.",
+                    macroCallName,
+                    bodyElement.ValueKind);
+            }
+            return response;
+        }
+
+        try
+        {
+            response.Message.Body = bodyElement.Deserialize<MusixmatchBody>(_jsonOptions);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Musixmatch macro body parsing failed for {MacroCall}; continuing with partial response.",
+                macroCallName);
+        }
+
+        return response;
+    }
+
+    private static bool TryGetRootStatusCode(JsonElement root, out int statusCode)
+    {
+        statusCode = default;
+        if (!root.TryGetProperty("message", out var message)
+            || !message.TryGetProperty("header", out var header)
+            || !header.TryGetProperty("status_code", out var statusCodeElement)
+            || statusCodeElement.ValueKind != JsonValueKind.Number)
+        {
+            return false;
+        }
+
+        return statusCodeElement.TryGetInt32(out statusCode);
+    }
+
+    private static bool TryGetMacroCallsElement(JsonElement root, out JsonElement macroCalls)
+    {
+        macroCalls = default;
+        if (!root.TryGetProperty("message", out var message)
+            || !message.TryGetProperty("body", out var body)
+            || !body.TryGetProperty("macro_calls", out var macroCallsElement)
+            || macroCallsElement.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        macroCalls = macroCallsElement;
+        return true;
     }
 
     private async Task EnsureTokenAsync(string action, CancellationToken cancellationToken)

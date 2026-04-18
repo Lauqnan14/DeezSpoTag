@@ -1622,6 +1622,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         CancellationToken token)
     {
         var enableLyrics = HasAnyTags(config, UnsyncedLyricsTag, SyncedLyricsTag, TtmlLyricsTag);
+        var hasLyricsSidecar = enableLyrics && GetLyricsSidecarState(filePath).HasAny;
         var beatportReleaseMeta = HasAnyTags(config, AlbumArtistTag, TrackTotalTag);
         var traxsourceExtend = HasAnyTags(config, AlbumArtTag, AlbumTag, CatalogNumberTag, ReleaseIdTag, AlbumArtistTag, TrackNumberTag, TrackTotalTag);
         var traxsourceAlbumMeta = HasAnyTags(config, CatalogNumberTag, TrackNumberTag, AlbumArtTag, TrackTotalTag, AlbumArtistTag);
@@ -1658,9 +1659,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             case ShazamPlatform:
                 return await MatchShazamAsync(filePath, info, config, matchingConfig, shazamCache, token);
             case "musixmatch":
-                return enableLyrics ? await _musixmatchMatcher.MatchAsync(info, token) : null;
+                return enableLyrics && !hasLyricsSidecar ? await _musixmatchMatcher.MatchAsync(info, token) : null;
             case "lrclib":
-                return enableLyrics ? await _lrclibMatcher.MatchAsync(info, matchingConfig, LoadConfig(config.Custom, "lrclib", new LrclibConfig()), token) : null;
+                return enableLyrics && !hasLyricsSidecar ? await _lrclibMatcher.MatchAsync(info, matchingConfig, LoadConfig(config.Custom, "lrclib", new LrclibConfig()), token) : null;
             default:
                 return null;
         }
@@ -4515,8 +4516,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.TrackId => tag.GetField($"{platformId.ToUpperInvariant()}_TRACK_ID").Length > 0,
             SupportedTag.ReleaseId => tag.GetField($"{platformId.ToUpperInvariant()}_RELEASE_ID").Length > 0,
             SupportedTag.MetaTags => tag.GetField(TaggedDateTag).Length > 0,
-            SupportedTag.UnsyncedLyrics => tag.GetField("LYRICS").Length > 0,
-            SupportedTag.SyncedLyrics => false,
+            SupportedTag.UnsyncedLyrics => tag.GetField("LYRICS").Any(value => !string.IsNullOrWhiteSpace(value)),
+            SupportedTag.SyncedLyrics =>
+                tag.GetField("LYRICS_SYNCED").Any(value => !string.IsNullOrWhiteSpace(value))
+                || HasTimestampedLyricsPayload(tag.GetField("LYRICS")),
             SupportedTag.AlbumArt => tag.Pictures?.Length > 0,
             SupportedTag.Explicit => tag.GetField(ItunesAdvisoryTag).Length > 0
                 || tag.GetField("COMMENT").Any(v => string.Equals(v, "Explicit", StringComparison.OrdinalIgnoreCase)),
@@ -4563,11 +4566,45 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.ReleaseId => Mp4TagHelper.HasRaw(file, $"{platformId.ToUpperInvariant()}_RELEASE_ID"),
             SupportedTag.MetaTags => Mp4TagHelper.HasRaw(file, TaggedDateTag),
             SupportedTag.UnsyncedLyrics => Mp4TagHelper.HasField(file, supportedTag),
-            SupportedTag.SyncedLyrics => false,
+            SupportedTag.SyncedLyrics =>
+                Mp4TagHelper.HasRaw(file, "LYRICS_SYNCED")
+                || ContainsTimestampedLyrics(file.Tag.Lyrics),
             SupportedTag.AlbumArt => Mp4TagHelper.HasField(file, supportedTag),
             SupportedTag.Explicit => Mp4TagHelper.HasRaw(file, ItunesAdvisoryTag),
             _ => false
         };
+    }
+
+    private static bool HasTimestampedLyricsPayload(IEnumerable<string> values)
+    {
+        foreach (var value in values)
+        {
+            if (ContainsTimestampedLyrics(value))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContainsTimestampedLyrics(string? rawLyrics)
+    {
+        if (string.IsNullOrWhiteSpace(rawLyrics))
+        {
+            return false;
+        }
+
+        foreach (var line in rawLyrics
+                     .Split(LyricsLineSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (TryParseLrcLine(line, out _, out _))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static List<string> ReadExistingGenre(string filePath)
