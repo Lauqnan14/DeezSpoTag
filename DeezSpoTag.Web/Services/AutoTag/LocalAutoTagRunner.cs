@@ -100,7 +100,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string ItunesAdvisoryTag = "ITUNESADVISORY";
     private const string TrackTotalRawTag = "TRACKTOTAL";
     private const string DurationTag = "duration";
+    private const string LengthTag = "length";
     private const string ReleaseDateTag = "releaseDate";
+    private const string YearTag = "year";
+    private const string DateTag = "date";
+    private const string CoverTag = "cover";
     private const string VersionTag = "version";
     private const string DanceabilityTag = "DANCEABILITY";
     private const string EnergyTag = "ENERGY";
@@ -2096,8 +2100,48 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return false;
         }
 
-        var configured = new HashSet<string>(config.Tags, StringComparer.OrdinalIgnoreCase);
+        var configured = BuildConfiguredTagSet(config.Tags);
         return tags.Any(configured.Contains);
+    }
+
+    private static HashSet<string> BuildConfiguredTagSet(IEnumerable<string>? tags)
+    {
+        var configured = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (tags == null)
+        {
+            return configured;
+        }
+
+        foreach (var rawTag in tags)
+        {
+            var trimmed = rawTag?.Trim();
+            if (string.IsNullOrWhiteSpace(trimmed))
+            {
+                continue;
+            }
+
+            configured.Add(trimmed);
+            var normalized = NormalizeConfiguredTagKey(trimmed);
+            if (!string.Equals(normalized, trimmed, StringComparison.OrdinalIgnoreCase))
+            {
+                configured.Add(normalized);
+            }
+        }
+
+        return configured;
+    }
+
+    private static string NormalizeConfiguredTagKey(string tag)
+    {
+        return tag.Trim().ToLowerInvariant() switch
+        {
+            YearTag => ReleaseDateTag,
+            DateTag => ReleaseDateTag,
+            LengthTag => DurationTag,
+            LyricsTag => UnsyncedLyricsTag,
+            CoverTag => AlbumArtTag,
+            _ => tag.Trim()
+        };
     }
 
     private static T LoadConfig<T>(JsonObject? custom, string key, T fallback) where T : class, new()
@@ -3122,19 +3166,24 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     settings.Explicit = true;
                     break;
                 case DurationTag:
+                case LengthTag:
                     settings.Length = true;
                     break;
                 case ReleaseDateTag:
                     settings.Date = true;
                     settings.Year = true;
                     break;
-                case "year":
+                case YearTag:
+                case DateTag:
                     settings.Year = true;
+                    settings.Date = true;
                     break;
                 case AlbumArtTag:
+                case CoverTag:
                     settings.Cover = true;
                     break;
                 case UnsyncedLyricsTag:
+                case LyricsTag:
                     settings.Lyrics = true;
                     break;
                 case SyncedLyricsTag:
@@ -3423,7 +3472,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private static TagWriteExecutionContext BuildTagWriteExecutionContext(TagWriteRequest request)
     {
         var extension = Path.GetExtension(request.FilePath);
-        var enabledTags = new HashSet<string>(request.Config.Tags.Select(t => t.Trim()), StringComparer.OrdinalIgnoreCase);
+        var enabledTags = BuildConfiguredTagSet(request.Config.Tags);
         var normalizeGenreTags = request.Settings.NormalizeGenreTags;
         var genreAliasMap = normalizeGenreTags
             ? GenreTagAliasNormalizer.BuildAliasMap(request.Settings.GenreTagAliasRules)
@@ -4299,7 +4348,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             var extension = Path.GetExtension(filePath);
             var chapterSnapshot = AtlTagHelper.CaptureChapters(filePath, extension, _logger);
             using var file = TagLib.File.Create(filePath);
-            var enabledTags = new HashSet<string>(config.Tags.Select(t => t.Trim()), StringComparer.OrdinalIgnoreCase);
+            var enabledTags = BuildConfiguredTagSet(config.Tags);
             var separator = ResolveArtistSeparator(config, filePath);
             var writes = BuildCustomTagWrites(track, config, platformId, extension, file);
 
@@ -4385,6 +4434,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         map["isrc"] = SupportedTag.ISRC;
         map[PublishDateTag] = SupportedTag.PublishDate;
         map[ReleaseDateTag] = SupportedTag.ReleaseDate;
+        map[YearTag] = SupportedTag.ReleaseDate;
+        map[DateTag] = SupportedTag.ReleaseDate;
+        map[LengthTag] = SupportedTag.Duration;
+        map[CoverTag] = SupportedTag.AlbumArt;
+        map[LyricsTag] = SupportedTag.UnsyncedLyrics;
         map["url"] = SupportedTag.URL;
         map[OtherTagsTag] = SupportedTag.OtherTags;
         map[MetaTagsTag] = SupportedTag.MetaTags;
@@ -6161,7 +6215,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             using var file = TagLib.File.Create(filePath);
             var extension = Path.GetExtension(filePath);
-            var enabled = new HashSet<string>(config.Tags.Select(t => t.Trim()), StringComparer.OrdinalIgnoreCase);
+            var enabled = BuildConfiguredTagSet(config.Tags);
             var context = new OverwriteRuleContext(enabled, config, file, extension, platformId);
 
             ApplyOverwriteRule(copy, context, TitleTag, SupportedTag.Title, static c => c.Title = false);

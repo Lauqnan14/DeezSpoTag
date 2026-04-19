@@ -265,9 +265,11 @@ public class AutoTagService
     {
         ["title"] = "title",
         ["artist"] = "artist",
+        ["artists"] = "artist",
         ["albumArtist"] = "albumArtist",
         ["album"] = "album",
         ["albumArt"] = "albumArt",
+        ["cover"] = "albumArt",
         ["version"] = "version",
         ["remixer"] = "remixer",
         ["genre"] = "genre",
@@ -296,13 +298,19 @@ public class AutoTagService
         ["isrc"] = "isrc",
         ["publishDate"] = "publishDate",
         ["releaseDate"] = "releaseDate",
+        ["year"] = "releaseDate",
+        ["date"] = "releaseDate",
         ["url"] = "url",
         ["otherTags"] = "otherTags",
         ["metaTags"] = "metaTags",
         ["unsyncedLyrics"] = "unsyncedLyrics",
+        ["lyrics"] = "unsyncedLyrics",
         ["syncedLyrics"] = "syncedLyrics",
         ["ttmlLyrics"] = "ttmlLyrics",
-        ["explicit"] = "explicit"
+        ["explicit"] = "explicit",
+        ["length"] = "duration",
+        ["barcode"] = "barcode",
+        ["upc"] = "barcode"
     };
     private static readonly HashSet<string> EnrichmentStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: false, includeConflictResolution: true, includeTargetFiles: false);
     private static readonly HashSet<string> EnhancementStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: true, includeConflictResolution: false, includeTargetFiles: true);
@@ -2990,8 +2998,9 @@ public class AutoTagService
         Dictionary<string, PlatformTagCapabilities> platformCaps)
     {
         var requestSet = requested
+            .Select(NormalizeSupportedTagKey)
             .Where(tag => !string.IsNullOrWhiteSpace(tag))
-            .Select(tag => tag.Trim())
+            .Select(tag => tag!)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (requestSet.Count == 0)
         {
