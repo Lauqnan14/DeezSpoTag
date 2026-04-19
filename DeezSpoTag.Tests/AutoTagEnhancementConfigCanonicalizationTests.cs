@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
+using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Web.Controllers.Api;
 using DeezSpoTag.Web.Services;
 using Xunit;
@@ -16,6 +17,18 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
     private static readonly MethodInfo SanitizeConfigJsonMethod =
         typeof(AutoTagService).GetMethod("SanitizeConfigJson", BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("AutoTagService.SanitizeConfigJson not found.");
+
+    private static readonly Type TaggingProfileDataHelperType =
+        typeof(TaggingProfileService).Assembly.GetType("DeezSpoTag.Web.Services.TaggingProfileDataHelper")
+        ?? throw new InvalidOperationException("TaggingProfileDataHelper type not found.");
+
+    private static readonly MethodInfo CanonicalizeEnhancementConfigMethod =
+        TaggingProfileDataHelperType.GetMethod("CanonicalizeEnhancementConfig", BindingFlags.Public | BindingFlags.Static)
+        ?? throw new InvalidOperationException("CanonicalizeEnhancementConfig method not found.");
+
+    private static readonly MethodInfo SanitizeAutoTagSettingsMethod =
+        TaggingProfileDataHelperType.GetMethod("SanitizeAutoTagSettings", BindingFlags.Public | BindingFlags.Static)
+        ?? throw new InvalidOperationException("SanitizeAutoTagSettings method not found.");
 
     [Fact]
     public void SanitizeConfigJson_MigratesLegacyFolderIdToFolderIds()
@@ -86,11 +99,6 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
     [Fact]
     public void TaggingProfileDataHelper_CanonicalizeEnhancementConfig_MigratesAndPurgesLegacyKeys()
     {
-        var helperType = typeof(TaggingProfileService).Assembly.GetType("DeezSpoTag.Web.Services.TaggingProfileDataHelper")
-                         ?? throw new InvalidOperationException("TaggingProfileDataHelper type not found.");
-        var method = helperType.GetMethod("CanonicalizeEnhancementConfig", BindingFlags.Public | BindingFlags.Static)
-                     ?? throw new InvalidOperationException("CanonicalizeEnhancementConfig method not found.");
-
         var data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
         {
             ["enhancement"] = JsonSerializer.SerializeToElement(new
@@ -113,7 +121,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
             })
         };
 
-        var changed = (bool)method.Invoke(null, [data])!;
+        var changed = (bool)CanonicalizeEnhancementConfigMethod.Invoke(null, [data])!;
         Assert.True(changed);
 
         using var document = JsonDocument.Parse(data["enhancement"].GetRawText());
@@ -132,6 +140,41 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         var quality = enhancement.GetProperty("qualityChecks");
         Assert.False(quality.TryGetProperty("folderId", out _));
         Assert.Equal(new long[] { 9, 10 }, ReadLongArray(quality.GetProperty("folderIds")));
+    }
+
+    [Fact]
+    public void TaggingProfileDataHelper_SanitizeAutoTagSettings_MigratesLegacyAlbumArtFileToSaveArtwork()
+    {
+        var autoTag = new AutoTagSettings
+        {
+            Data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["albumArtFile"] = JsonSerializer.SerializeToElement(true)
+            }
+        };
+
+        var sanitized = (AutoTagSettings)SanitizeAutoTagSettingsMethod.Invoke(null, [autoTag, "deezer"])!;
+        Assert.True(sanitized.Data.TryGetValue("saveArtwork", out var saveArtwork));
+        Assert.True(saveArtwork.ValueKind == JsonValueKind.True);
+        Assert.False(sanitized.Data.ContainsKey("albumArtFile"));
+    }
+
+    [Fact]
+    public void TaggingProfileDataHelper_SanitizeAutoTagSettings_PrefersSaveArtworkWhenBothKeysExist()
+    {
+        var autoTag = new AutoTagSettings
+        {
+            Data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["saveArtwork"] = JsonSerializer.SerializeToElement(false),
+                ["albumArtFile"] = JsonSerializer.SerializeToElement(true)
+            }
+        };
+
+        var sanitized = (AutoTagSettings)SanitizeAutoTagSettingsMethod.Invoke(null, [autoTag, "deezer"])!;
+        Assert.True(sanitized.Data.TryGetValue("saveArtwork", out var saveArtwork));
+        Assert.True(saveArtwork.ValueKind == JsonValueKind.False);
+        Assert.False(sanitized.Data.ContainsKey("albumArtFile"));
     }
 
     [Fact]
