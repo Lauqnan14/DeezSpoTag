@@ -12,6 +12,7 @@ public sealed class AutoTagEnrichmentTagSelectionTests
     {
         "artist",
         "genre",
+        "title",
         "trackId",
         "releaseId",
         "source",
@@ -21,7 +22,11 @@ public sealed class AutoTagEnrichmentTagSelectionTests
     private static readonly string[] ExpectedEnhancementOnlyTags =
     {
         "artist",
-        "genre"
+        "genre",
+        "trackId",
+        "releaseId",
+        "source",
+        "url"
     };
 
     [Fact]
@@ -43,7 +48,7 @@ public sealed class AutoTagEnrichmentTagSelectionTests
     }
 
     [Fact]
-    public void ResolveEnrichmentRequestedTags_NonDownloadEnrichment_DoesNotCarryDownloadOnlyTags()
+    public void ResolveEnrichmentRequestedTags_NonDownloadEnrichment_StillMergesDownloadTagsForConsistency()
     {
         var method = typeof(AutoTagService).GetMethod(
             "ResolveEnrichmentRequestedTags",
@@ -58,5 +63,23 @@ public sealed class AutoTagEnrichmentTagSelectionTests
 
         var actual = Assert.IsType<List<string>>(method!.Invoke(null, new object?[] { root, "enhancement_only" }));
         Assert.Equal(ExpectedEnhancementOnlyTags, actual);
+    }
+
+    [Fact]
+    public void ResolveEnhancementRequestedTags_MergesDownloadTagsForConsistency()
+    {
+        var method = typeof(AutoTagService).GetMethod(
+            "ResolveEnhancementRequestedTags",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var root = new JsonObject
+        {
+            ["gapFillTags"] = new JsonArray("artist", "genre"),
+            ["downloadTags"] = new JsonArray("title", "trackId", "releaseId")
+        };
+
+        var actual = Assert.IsType<List<string>>(method!.Invoke(null, new object?[] { root }));
+        Assert.Equal(new[] { "artist", "genre", "title", "trackId", "releaseId" }, actual);
     }
 }

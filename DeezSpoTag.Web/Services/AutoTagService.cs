@@ -2703,13 +2703,21 @@ public class AutoTagService
 
     private static List<string> ResolveEnrichmentRequestedTags(JsonObject baseRoot, string? runIntent)
     {
-        var requested = ReadStringList(baseRoot, "tags");
-        if (!string.Equals(NormalizeRunIntent(runIntent), AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
-        {
-            return requested;
-        }
+        _ = runIntent;
+        return MergeRequestedAndDownloadTags(
+            requested: ReadStringList(baseRoot, "tags"),
+            downloadTags: ReadStringList(baseRoot, "downloadTags"));
+    }
 
-        var downloadTags = ReadStringList(baseRoot, "downloadTags");
+    private static List<string> ResolveEnhancementRequestedTags(JsonObject baseRoot)
+    {
+        return MergeRequestedAndDownloadTags(
+            requested: ReadStringList(baseRoot, "gapFillTags"),
+            downloadTags: ReadStringList(baseRoot, "downloadTags"));
+    }
+
+    private static List<string> MergeRequestedAndDownloadTags(List<string> requested, List<string> downloadTags)
+    {
         if (downloadTags.Count == 0)
         {
             return requested;
@@ -2717,10 +2725,7 @@ public class AutoTagService
 
         var merged = new List<string>(requested);
         var seen = new HashSet<string>(merged, StringComparer.OrdinalIgnoreCase);
-        var carryOverTags = new[] { "trackId", "releaseId", "source", "url" };
-        foreach (var tag in carryOverTags
-                     .Where(tag => downloadTags.Any(downloadTag => string.Equals(downloadTag, tag, StringComparison.OrdinalIgnoreCase)))
-                     .Where(seen.Add))
+        foreach (var tag in downloadTags.Where(seen.Add))
         {
             merged.Add(tag);
         }
@@ -2741,7 +2746,7 @@ public class AutoTagService
         skipReason = "gap-fill tags not configured";
         strippedKeys = new List<string>();
 
-        var requested = ReadStringList(baseRoot, "gapFillTags");
+        var requested = ResolveEnhancementRequestedTags(baseRoot);
         var platforms = eligiblePlatforms.ToList();
         if (platforms.Count == 0)
         {
