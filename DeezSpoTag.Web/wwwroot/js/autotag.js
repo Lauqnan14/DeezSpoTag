@@ -20,7 +20,6 @@
         threads: 16,
         strictness: 0.7,
         mergeGenres: true,
-        albumArtFile: false,
         camelot: false,
         parseFilename: false,
         filenameTemplate: "%artists% - %title%",
@@ -47,7 +46,6 @@
         moveFailed: false,
         moveFailedPath: null,
         writeLrc: false,
-        enhancedLrc: false,
         capitalizeGenres: false,
         id3CommLang: null,
         spotify: {
@@ -55,11 +53,6 @@
             clientSecret: null
         },
         custom: {},
-        organizer: {
-            onlyMoveWhenTagged: false,
-            moveUntaggedPath: null,
-            dryRun: false
-        },
         enhancement: {
             folderUniformity: {
                 folderIds: [],
@@ -2511,7 +2504,6 @@
         setChecked("autotag-overwrite", state.config.overwrite);
         setChecked("autotag-id3v24", state.config.id3v24);
         setChecked("autotag-short-title", state.config.shortTitle);
-        setChecked("autotag-album-art-file", state.config.albumArtFile);
         setChecked("autotag-merge-genres", state.config.mergeGenres);
         setChecked("autotag-camelot", state.config.camelot);
         if (el("autotag-only-year")) {
@@ -2519,6 +2511,9 @@
         }
         if (el("autotag-multiplatform")) {
             setChecked("autotag-multiplatform", state.config.multiplatform);
+        }
+        if (el("autotag-include-subfolders")) {
+            setChecked("autotag-include-subfolders", state.config.includeSubfolders !== false);
         }
         if (el("autotag-parse-filename")) {
             setChecked("autotag-parse-filename", state.config.parseFilename);
@@ -2575,8 +2570,6 @@
         );
         setChecked("autotag-move-failed", state.config.moveFailed);
         setValue("autotag-move-failed-path", state.config.moveFailedPath || "");
-        setChecked("autotag-organizer-dryrun", state.config.organizer?.dryRun);
-        setValue("autotag-untaggable-path", state.config.organizer?.moveUntaggedPath || "");
         setChecked("enforceFolderStructure", state.config.enhancement.folderUniformity.enforceFolderStructure);
         setChecked("moveMisplacedFiles", state.config.enhancement.folderUniformity.moveMisplacedFiles);
         setChecked("mergeIntoExistingDestinationFolders", state.config.enhancement.folderUniformity.mergeIntoExistingDestinationFolders);
@@ -2618,7 +2611,6 @@
         renderEnhancementTechnicalProfilesCatalog();
         void refreshEnhancementTechnicalProfiles();
         setChecked("autotag-write-lrc", state.config.writeLrc);
-        setChecked("autotag-enhanced-lrc", state.config.enhancedLrc);
         setChecked("autotag-capitalize-genres", state.config.capitalizeGenres);
 
         updateConditionalSections();
@@ -3041,6 +3033,21 @@
     function applyProfileConfig(config) {
         const merged = structuredClone(DEFAULT_CONFIG);
         Object.assign(merged, config || {});
+        // Legacy compatibility: old profiles may still carry albumArtFile.
+        if (typeof merged.saveArtwork !== "boolean" && typeof merged.albumArtFile === "boolean") {
+            merged.saveArtwork = merged.albumArtFile;
+        }
+        const legacyOrganizer = merged.organizer && typeof merged.organizer === "object" ? merged.organizer : null;
+        if ((!merged.moveFailedPath || !String(merged.moveFailedPath).trim()) && legacyOrganizer?.moveUntaggedPath) {
+            merged.moveFailedPath = String(legacyOrganizer.moveUntaggedPath).trim();
+        }
+        if (legacyOrganizer?.moveUntaggedPath && merged.moveFailed !== true) {
+            merged.moveFailed = true;
+        }
+        if (merged.enhancement?.folderUniformity && typeof merged.enhancement.folderUniformity.onlyMoveWhenTagged !== "boolean") {
+            merged.enhancement.folderUniformity.onlyMoveWhenTagged = legacyOrganizer?.onlyMoveWhenTagged === true;
+        }
+        delete merged.organizer;
         if (!merged.separators) {
             merged.separators = structuredClone(DEFAULT_CONFIG.separators);
         }
@@ -3399,7 +3406,13 @@
         state.config.overwrite = getChecked("autotag-overwrite", state.config.overwrite);
         state.config.id3v24 = getChecked("autotag-id3v24", state.config.id3v24);
         state.config.shortTitle = getChecked("autotag-short-title", state.config.shortTitle);
-        state.config.albumArtFile = getChecked("autotag-album-art-file", state.config.albumArtFile);
+        const saveArtworkEnabled = getChecked(
+            "saveArtwork",
+            state.config.saveArtwork ?? state.config.albumArtFile ?? false
+        );
+        state.config.saveArtwork = saveArtworkEnabled;
+        // Keep legacy key synchronized until server-side cleanup fully lands.
+        state.config.albumArtFile = saveArtworkEnabled;
         state.config.mergeGenres = getChecked("autotag-merge-genres", state.config.mergeGenres);
         state.config.camelot = getChecked("autotag-camelot", state.config.camelot);
         state.config.skipTagged = el("autotag-skip-tagged")
@@ -3480,17 +3493,7 @@
         state.config.moveSuccessPath = selectedLibrary?.rootPath || null;
         state.config.moveFailed = getChecked("autotag-move-failed", state.config.moveFailed);
         state.config.moveFailedPath = getValue("autotag-move-failed-path", state.config.moveFailedPath || "").trim() || null;
-        if (!state.config.organizer) {
-            state.config.organizer = {};
-        }
-        state.config.organizer.onlyMoveWhenTagged = el("autotag-only-move-tagged")
-            ? getChecked("autotag-only-move-tagged", state.config.organizer.onlyMoveWhenTagged)
-            : false;
-        state.config.organizer.dryRun = getChecked("autotag-organizer-dryrun", state.config.organizer.dryRun);
-        state.config.organizer.moveUntaggedPath = el("autotag-untaggable-path")
-            ? getValue("autotag-untaggable-path", state.config.organizer.moveUntaggedPath || "").trim() || null
-            : null;
-        delete state.config.organizer.preferredExtensions;
+        delete state.config.organizer;
         const folderUniformity = state.config.enhancement.folderUniformity;
         folderUniformity.folderIds = parseFolderIdList(getValue("enhancementFolderUniformityFolder", (folderUniformity.folderIds ?? []).join(",")));
         folderUniformity.enforceFolderStructure = getChecked("enforceFolderStructure", folderUniformity.enforceFolderStructure);
@@ -3547,7 +3550,6 @@
         qualityChecks.technicalProfiles = normalizeTechnicalProfiles(qualityChecks.technicalProfiles);
         qualityChecks.cooldownMinutes = null;
         state.config.writeLrc = getChecked("autotag-write-lrc", state.config.writeLrc);
-        state.config.enhancedLrc = getChecked("autotag-enhanced-lrc", state.config.enhancedLrc);
         state.config.capitalizeGenres = getChecked("autotag-capitalize-genres", state.config.capitalizeGenres);
         state.config.custom.itunes.art_resolution = Number.parseInt(getValue("autotag-itunes-art-resolution", state.config.custom?.itunes?.art_resolution || 1000), 10) || 1000;
         state.config.custom.itunes.animated_artwork = getAnimatedArtworkValue(
@@ -4540,9 +4542,6 @@
         });
         updateToggleGroupVisibility("autotag-move-failed-group", "autotag-move-failed", {
             inputId: "autotag-move-failed-path"
-        });
-        updateToggleGroupVisibility("autotag-enhanced-lrc-group", "autotag-write-lrc", {
-            enabledDisplay: "flex"
         });
         updateToggleGroupVisibility("autotag-filename-template-group", "autotag-parse-filename");
 
@@ -5580,7 +5579,7 @@
                 "enhancementRenameSpotifyArtistFolders",
                 getBaseBool("renameSpotifyArtistFolders", state.autoTagDefaults?.renameSpotifyArtistFolders !== false)
             ),
-            saveArtwork: getInputChecked("saveArtwork", getBaseBool("saveArtwork", false)),
+            saveArtwork: getInputChecked("saveArtwork", getBaseBool("saveArtwork", getBaseBool("albumArtFile", false))),
             dlAlbumcoverForPlaylist: getInputChecked("dlAlbumcoverForPlaylist", getBaseBool("dlAlbumcoverForPlaylist", true)),
             saveArtworkArtist: getInputChecked("saveArtworkArtist", getBaseBool("saveArtworkArtist", false)),
             coverImageTemplate: getInputValue("coverImageTemplate", getBaseString("coverImageTemplate", "cover")),
@@ -6236,11 +6235,14 @@
 
         const snapshot = structuredClone(rawAutoTag);
         delete snapshot.data;
-        return {
+        const mergedSnapshot = {
             ...snapshot,
             ...currentConfig,
             ...profileScopedExtras
         };
+        // Canonical form uses saveArtwork only.
+        delete mergedSnapshot.albumArtFile;
+        return mergedSnapshot;
     }
 
     function buildProfileUpsertPayload({ existing = null, profileId = null, name, isDefault = false }) {

@@ -140,7 +140,7 @@ public class AutoTagLibraryOrganizer
         MergeNoAudioArtistDirectoriesIntoMatchingDestinations(normalizedRoot, options, report, log);
         MoveExistingNoAudioDirectoriesToQuarantine(normalizedRoot, options, report, log);
         ReconcileOrphanCombinedArtistFolders(normalizedRoot, usePrimaryArtistFolders, options, report, log);
-        if (!options.DryRun && options.RemoveEmptyFolders)
+        if (options.RemoveEmptyFolders)
         {
             CleanupArtistFolders(normalizedRoot, usePrimaryArtistFolders, report, log);
         }
@@ -937,12 +937,6 @@ public class AutoTagLibraryOrganizer
             return false;
         }
 
-        if (options.DryRun)
-        {
-            log?.Invoke($"organizer dry-run: would move folder {sourceDir} -> {destinationDir}");
-            return true;
-        }
-
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(destinationDir) ?? destinationDir);
@@ -1025,12 +1019,6 @@ public class AutoTagLibraryOrganizer
             return;
         }
 
-        if (options.DryRun)
-        {
-            log?.Invoke($"organizer dry-run: would move file {action.SourcePath} -> {action.DestinationPath}");
-            return;
-        }
-
         try
         {
             Directory.CreateDirectory(action.DestinationDir);
@@ -1086,12 +1074,6 @@ public class AutoTagLibraryOrganizer
         {
             if (!TryResolveResidualArtistTransition(rootPath, transition, out var sourceArtistDir, out var destinationArtistDir))
             {
-                continue;
-            }
-
-            if (options.DryRun)
-            {
-                log?.Invoke($"organizer dry-run: would move residual artist sidecars {sourceArtistDir} -> {destinationArtistDir}");
                 continue;
             }
 
@@ -1268,12 +1250,6 @@ public class AutoTagLibraryOrganizer
         var destination = ResolveMatchingArtistDestination(source, destinationsByKey);
         if (string.IsNullOrWhiteSpace(destination))
         {
-            return;
-        }
-
-        if (options.DryRun)
-        {
-            log?.Invoke($"organizer dry-run: would merge no-audio artist folder {source.Path} -> {destination}");
             return;
         }
 
@@ -1477,12 +1453,6 @@ public class AutoTagLibraryOrganizer
             return false;
         }
 
-        if (options.DryRun)
-        {
-            LogDuplicateDryRun(action, preferIncoming, log);
-            return true;
-        }
-
         if (string.Equals(options.DuplicateConflictPolicy, AutoTagOrganizerOptions.DuplicateConflictMoveToDuplicates, StringComparison.OrdinalIgnoreCase))
         {
             return HandleMoveToDuplicatesConflict(rootPath, action, options, report, log, preferIncoming);
@@ -1506,17 +1476,6 @@ public class AutoTagLibraryOrganizer
         }
 
         report?.Entries.Add($"{reportPrefix}: {action.SourcePath} -> {action.DestinationPath}");
-    }
-
-    private static void LogDuplicateDryRun(MovePlanItem action, bool preferIncoming, Action<string>? log)
-    {
-        if (preferIncoming)
-        {
-            log?.Invoke($"organizer dry-run: would replace duplicate destination {action.DestinationPath} using {action.SourcePath}");
-            return;
-        }
-
-        log?.Invoke($"organizer dry-run: would skip duplicate file {action.SourcePath} (already exists at {action.DestinationPath})");
     }
 
     private bool HandleMoveToDuplicatesConflict(
@@ -1726,14 +1685,7 @@ public class AutoTagLibraryOrganizer
         }
 
         var targetDirectory = GetUniqueDirectoryPath(Path.Join(duplicatesRoot, sourceFolderName), sourceDir);
-        var movedFiles = options.DryRun
-            ? 0
-            : Directory.EnumerateFiles(sourceDir, "*.*", SearchOption.AllDirectories).Count();
-        if (options.DryRun)
-        {
-            log?.Invoke($"organizer dry-run: would move duplicate leftovers folder {sourceDir} -> {targetDirectory}");
-            return;
-        }
+        var movedFiles = Directory.EnumerateFiles(sourceDir, "*.*", SearchOption.AllDirectories).Count();
 
         try
         {
@@ -1827,14 +1779,7 @@ public class AutoTagLibraryOrganizer
         }
 
         var targetDirectory = GetUniqueDirectoryPath(Path.Join(duplicatesRoot, sourceFolderName), sourceDir);
-        var movedFiles = options.DryRun
-            ? 0
-            : Directory.EnumerateFiles(sourceDir, "*.*", SearchOption.AllDirectories).Count();
-        if (options.DryRun)
-        {
-            log?.Invoke($"organizer dry-run: would move {reason} folder {sourceDir} -> {targetDirectory}");
-            return;
-        }
+        var movedFiles = Directory.EnumerateFiles(sourceDir, "*.*", SearchOption.AllDirectories).Count();
 
         try
         {
@@ -1874,7 +1819,7 @@ public class AutoTagLibraryOrganizer
         AutoTagOrganizerOptions options,
         Action<string>? log)
     {
-        if (!options.DryRun && options.RemoveEmptyFolders)
+        if (options.RemoveEmptyFolders)
         {
             DeleteEmptyDirectoryTree(sourceDir, rootPath, log);
         }
@@ -2551,7 +2496,7 @@ public class AutoTagLibraryOrganizer
             movedAny |= TryMoveSidecarFile(context, file, destinationBase);
         }
 
-        if (movedAny && !context.Options.DryRun && context.Options.RemoveEmptyFolders)
+        if (movedAny && context.Options.RemoveEmptyFolders)
         {
             DeleteEmptyDirectoryTree(context.SourceDir, context.RootPath, context.Log);
         }
@@ -2564,12 +2509,6 @@ public class AutoTagLibraryOrganizer
         var target = ResolveSidecarTarget(sourcePath, candidate, context.Options, context.Report, context.Log);
         if (string.IsNullOrWhiteSpace(target))
         {
-            return false;
-        }
-
-        if (context.Options.DryRun)
-        {
-            context.Log?.Invoke($"organizer dry-run: would move sidecar {sourcePath} -> {target}");
             return false;
         }
 
@@ -2635,12 +2574,6 @@ public class AutoTagLibraryOrganizer
             foreach (var file in Directory.EnumerateFiles(sourceDir))
             {
                 var target = GetUniquePath(Path.Join(destinationDir, Path.GetFileName(file)), file);
-                if (options.DryRun)
-                {
-                    log?.Invoke($"organizer dry-run: would move leftover {file} -> {target}");
-                    continue;
-                }
-
                 try
                 {
                     MoveFileOverwrite(file, target);
@@ -2668,7 +2601,7 @@ public class AutoTagLibraryOrganizer
                 }
             }
 
-            if (!options.DryRun && options.RemoveEmptyFolders)
+            if (options.RemoveEmptyFolders)
             {
                 DeleteEmptyDirectoryTree(sourceDir, rootPath, log);
             }
@@ -2813,12 +2746,6 @@ public class AutoTagLibraryOrganizer
         }
 
         var targetAlbumDir = Path.Join(targetArtistDir, albumFolderName);
-        if (options.DryRun)
-        {
-            log?.Invoke($"organizer dry-run: would reconcile orphan combined-artist folder {albumDir} -> {targetAlbumDir}");
-            return;
-        }
-
         try
         {
             ReconcileOrphanAlbumDirectoryCore(rootPath, albumDir, targetArtistDir, targetAlbumDir, options, report, log);

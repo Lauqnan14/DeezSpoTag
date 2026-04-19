@@ -724,6 +724,31 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Run Scope -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-layer-group me-2"></i>Run Scope
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-section-title">File Discovery</div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="autotag-include-subfolders" checked />
+                            <label for="autotag-include-subfolders">
+                                Include subfolders during enrichment and enhancement runs
+                                <span class="autotag-tooltip-icon ms-1"
+                                      title="Enabled: scan selected root folder and all nested folders. Disabled: scan only the selected root folder."
+                                      aria-label="Enabled: scan selected root folder and all nested folders. Disabled: scan only the selected root folder.">
+                                    <i class="fas fa-question-circle"></i>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- ==================== TAB 3: DOWNLOAD ==================== -->
@@ -1307,6 +1332,26 @@
                             </div>
                         </div>
                     </div>
+                    <div class="download-section">
+                        <div class="download-section-title">Filename Fallback</div>
+                        <div class="download-grid download-grid-2">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="autotag-parse-filename" />
+                                <label for="autotag-parse-filename">
+                                    Parse missing title/artist from filename
+                                    <span class="autotag-tooltip-icon ms-1"
+                                          title="Used only when embedded title or artist is missing."
+                                          aria-label="Used only when embedded title or artist is missing.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                            </div>
+                            <div class="form-group" id="autotag-filename-template-group">
+                                <label for="autotag-filename-template">Filename parse template</label>
+                                <input type="text" id="autotag-filename-template" placeholder="%artists% - %title%" />
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -1521,7 +1566,7 @@
                 </div>
                 <div class="card-body autotag-card-body">
                     <div class="download-section">
-                        <div class="download-grid download-grid-2">
+                        <div class="download-grid download-grid-3">
                             <div class="checkbox-group">
                                 <input type="checkbox" id="saveLyrics" />
                                 <label for="saveLyrics">Download Lyrics</label>
@@ -1529,6 +1574,10 @@
                             <div class="checkbox-group">
                                 <input type="checkbox" id="embedLyrics" checked />
                                 <label for="embedLyrics">Embed lyrics in audio tags</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="autotag-write-lrc" />
+                                <label for="autotag-write-lrc">Write lyrics sidecar (.lrc)</label>
                             </div>
                         </div>
                     </div>

@@ -20,7 +20,6 @@ public sealed class AutoTagOrganizerOptions
     public bool OnlyMoveWhenTagged { get; set; }
     public string? MoveTaggedPath { get; set; }
     public string? MoveUntaggedPath { get; set; }
-    public bool DryRun { get; set; }
     public bool IncludeSubfolders { get; set; } = true;
     public bool MoveMisplacedFiles { get; set; } = true;
     public bool RenameFilesToTemplate { get; set; } = true;
