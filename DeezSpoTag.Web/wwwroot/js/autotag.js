@@ -2536,6 +2536,15 @@
         // if (el("autotag-playlist-path")) {
         //     setValue("autotag-playlist-path", state.config.playlistPath || "");
         // }
+        if (el("autotag-strictness")) {
+            setValue("autotag-strictness", state.config.strictness ?? DEFAULT_CONFIG.strictness);
+        }
+        if (el("autotag-match-duration")) {
+            setChecked("autotag-match-duration", state.config.matchDuration ?? DEFAULT_CONFIG.matchDuration);
+        }
+        if (el("autotag-max-duration-difference")) {
+            setValue("autotag-max-duration-difference", state.config.maxDurationDifference ?? DEFAULT_CONFIG.maxDurationDifference);
+        }
         if (el("autotag-multiple-matches")) {
             setValue("autotag-multiple-matches", state.config.multipleMatches);
         }
@@ -3421,6 +3430,24 @@
         // if (el("autotag-playlist-path")) {
         //     state.config.playlistPath = getValue("autotag-playlist-path", state.config.playlistPath || "").trim() || null;
         // }
+        if (el("autotag-strictness")) {
+            const parsedStrictness = Number.parseFloat(getValue("autotag-strictness", state.config.strictness));
+            if (Number.isFinite(parsedStrictness)) {
+                state.config.strictness = Math.max(0, Math.min(1, parsedStrictness));
+            }
+        }
+        if (el("autotag-match-duration")) {
+            state.config.matchDuration = getChecked("autotag-match-duration", state.config.matchDuration);
+        }
+        if (el("autotag-max-duration-difference")) {
+            const parsedMaxDurationDifference = Number.parseInt(
+                getValue("autotag-max-duration-difference", state.config.maxDurationDifference),
+                10
+            );
+            if (Number.isFinite(parsedMaxDurationDifference) && parsedMaxDurationDifference >= 0) {
+                state.config.maxDurationDifference = parsedMaxDurationDifference;
+            }
+        }
         if (el("autotag-multiple-matches")) {
             state.config.multipleMatches = getValue("autotag-multiple-matches", state.config.multipleMatches);
         }
@@ -4521,6 +4548,7 @@
 
         syncFallbackSourceControls();
         syncMultiArtistHandlingState();
+        syncMatchingSettingsState();
     }
 
     function syncMultiArtistHandlingState() {
@@ -4539,6 +4567,20 @@
 
         if (dependentGroup) {
             dependentGroup.classList.toggle("autotag-disabled-group", useMainArtistFolders);
+        }
+    }
+
+    function syncMatchingSettingsState() {
+        const matchDuration = el("autotag-match-duration");
+        const maxDurationInput = el("autotag-max-duration-difference");
+        const maxDurationGroup = el("autotag-max-duration-group");
+        const isEnabled = matchDuration ? matchDuration.checked === true : false;
+
+        if (maxDurationInput) {
+            maxDurationInput.disabled = !isEnabled;
+        }
+        if (maxDurationGroup) {
+            maxDurationGroup.classList.toggle("autotag-disabled-group", !isEnabled);
         }
     }
 

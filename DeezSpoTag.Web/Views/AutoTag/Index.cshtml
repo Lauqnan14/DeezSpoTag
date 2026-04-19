@@ -1254,6 +1254,62 @@
                 </div>
             </div>
 
+            <!-- Matching Settings -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-crosshairs me-2"></i>Matching Settings
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section">
+                        <div class="download-section-title">Scoring</div>
+                        <div class="download-grid download-grid-3">
+                            <div class="form-group">
+                                <label for="autotag-strictness">
+                                    Strictness
+                                    <span class="autotag-tooltip-icon ms-1" title="Similarity threshold for title and artist matching. Higher values are stricter." aria-label="Similarity threshold for title and artist matching. Higher values are stricter.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <input type="number" id="autotag-strictness" min="0" max="1" step="0.01" value="0.7" />
+                            </div>
+                            <div class="form-group">
+                                <label for="autotag-multiple-matches">
+                                    Multiple matches
+                                    <span class="autotag-tooltip-icon ms-1" title="When several matches have equal score, prefer oldest or newest release." aria-label="When several matches have equal score, prefer oldest or newest release.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <select id="autotag-multiple-matches">
+                                    <option value="Default">Default</option>
+                                    <option value="Oldest">Oldest</option>
+                                    <option value="Newest">Newest</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="download-section">
+                        <div class="download-section-title">Duration Gate</div>
+                        <div class="download-grid download-grid-3">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="autotag-match-duration" />
+                                <label for="autotag-match-duration">Match Duration</label>
+                            </div>
+                            <div class="form-group" id="autotag-max-duration-group">
+                                <label for="autotag-max-duration-difference">
+                                    Max duration difference (seconds)
+                                    <span class="autotag-tooltip-icon ms-1" title="Maximum allowed duration difference between file and candidate match." aria-label="Maximum allowed duration difference between file and candidate match.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <input type="number" id="autotag-max-duration-difference" min="0" max="300" step="1" value="30" />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Artwork Settings (All Stages) -->
             <div class="card bg-darker border-secondary mb-4">
                 <div class="card-header">
