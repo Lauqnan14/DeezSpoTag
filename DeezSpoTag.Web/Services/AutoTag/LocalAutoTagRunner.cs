@@ -2288,7 +2288,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         raw ??= new AutoTagRunnerConfig();
         var effectiveSaveArtwork = (raw.SaveArtwork ?? false) || raw.AlbumArtFile;
-        var effectiveOnlyYear = ResolveYearOnlyPreference(raw);
         return new AutoTagRunnerConfig
         {
             Platforms = raw.Platforms ?? new List<string>(),
@@ -2322,7 +2321,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             Multiplatform = raw.Multiplatform,
             ParseFilename = raw.ParseFilename,
             FilenameTemplate = raw.FilenameTemplate,
-            OnlyYear = effectiveOnlyYear,
             Id3v24 = raw.Id3v24,
             TrackNumberLeadingZeroes = raw.TrackNumberLeadingZeroes,
             StylesOptions = raw.StylesOptions,
@@ -2355,12 +2353,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ProfileId = raw.ProfileId,
             ProfileName = raw.ProfileName
         };
-    }
-
-    private static bool ResolveYearOnlyPreference(AutoTagRunnerConfig config)
-    {
-        var technicalDateFormat = config.Technical?.DateFormat;
-        return string.Equals(technicalDateFormat?.Trim(), "Y", StringComparison.OrdinalIgnoreCase);
     }
 
     private ShazamRecognitionInfo? RecognizeWithShazam(string filePath, CancellationToken token)
@@ -5169,11 +5161,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagRunnerConfig config,
         bool useNullSeparator)
     {
+        var useYearOnly = IsYearOnlyDateFormat(config.Technical?.DateFormat);
         var payload = new DateWritePayload(
             Date: date,
-            UseYearOnly: config.OnlyYear,
+            UseYearOnly: useYearOnly,
             Year: date.Year.ToString(CultureInfo.InvariantCulture),
-            DateString: config.OnlyYear
+            DateString: useYearOnly
                 ? date.Year.ToString(CultureInfo.InvariantCulture)
                 : date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
 
@@ -5288,6 +5281,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         Mp4TagHelper.SetDate(file, dateString);
     }
+
+    private static bool IsYearOnlyDateFormat(string? dateFormat)
+        => string.Equals(dateFormat?.Trim(), "Y", StringComparison.OrdinalIgnoreCase);
 
     private static void SetTrackNumber(
         TagLib.File file,
@@ -6712,7 +6708,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public bool Multiplatform { get; set; }
         public bool ParseFilename { get; set; }
         public string? FilenameTemplate { get; set; } = "%artists% - %title%";
-        public bool OnlyYear { get; set; }
         public bool Id3v24 { get; set; } = true;
         public int TrackNumberLeadingZeroes { get; set; }
         public string StylesOptions { get; set; } = "default";

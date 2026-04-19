@@ -2862,7 +2862,6 @@ public class AutoTagService
             AutoTagLiterals.MultiPlatformKey,
             "parseFilename",
             "filenameTemplate",
-            "onlyYear",
             "id3v24",
             "trackNumberLeadingZeroes",
             "stylesOptions",
