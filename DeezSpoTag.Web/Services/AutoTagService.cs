@@ -2841,7 +2841,7 @@ public class AutoTagService
             "separators",
             AutoTagLiterals.OverwriteKey,
             "mergeGenres",
-            "albumArtFile",
+            "albumArtFile", // Legacy compatibility; canonical artwork file toggle is saveArtwork.
             "camelot",
             "shortTitle",
             "strictness",
@@ -2864,7 +2864,6 @@ public class AutoTagService
             "stylesCustomTag",
             "id3CommLang",
             "writeLrc",
-            "enhancedLrc",
             "capitalizeGenres",
             AutoTagLiterals.DownloadTagSourceKey,
             "tracknameTemplate",
@@ -3340,37 +3339,27 @@ public class AutoTagService
                 return new AutoTagOrganizerOptions();
             }
 
-            var organizerNode = node["organizer"] as JsonObject;
+            var enhancementNode = node[AutoTagLiterals.EnhancementStage] as JsonObject;
+            var folderUniformityNode = enhancementNode?["folderUniformity"] as JsonObject;
             var tagsNode = node["tags"] as JsonObject;
             var options = new AutoTagOrganizerOptions
             {
-                OnlyMoveWhenTagged = organizerNode?["onlyMoveWhenTagged"]?.GetValue<bool>() ?? false,
-                MoveTaggedPath = organizerNode?["moveTaggedPath"]?.GetValue<string>(),
-                MoveUntaggedPath = organizerNode?["moveUntaggedPath"]?.GetValue<string>(),
-                DryRun = organizerNode?["dryRun"]?.GetValue<bool>() ?? false,
+                OnlyMoveWhenTagged = ReadBool(folderUniformityNode, "onlyMoveWhenTagged") == true,
+                MoveTaggedPath = node["moveSuccess"]?.GetValue<bool>() == true
+                    ? node["moveSuccessPath"]?.GetValue<string>()
+                    : null,
+                MoveUntaggedPath = node["moveFailed"]?.GetValue<bool>() == true
+                    ? node["moveFailedPath"]?.GetValue<string>()
+                    : null,
                 IncludeSubfolders = node[AutoTagLiterals.IncludeSubfoldersKey]?.GetValue<bool>() ?? true,
-                MoveMisplacedFiles = organizerNode?["moveMisplacedFiles"]?.GetValue<bool>() ?? true,
-                RenameFilesToTemplate = organizerNode?["renameFilesToTemplate"]?.GetValue<bool>() ?? true,
-                RemoveEmptyFolders = organizerNode?["removeEmptyFolders"]?.GetValue<bool>() ?? true,
+                MoveMisplacedFiles = ReadBool(folderUniformityNode, "moveMisplacedFiles") ?? true,
+                RenameFilesToTemplate = ReadBool(folderUniformityNode, "renameFilesToTemplate") != false,
+                RemoveEmptyFolders = ReadBool(folderUniformityNode, "removeEmptyFolders") != false,
                 UsePrimaryArtistFoldersOverride =
-                    organizerNode?["usePrimaryArtistFolders"]?.GetValue<bool?>()
-                    ?? tagsNode?["singleAlbumArtist"]?.GetValue<bool?>(),
+                    tagsNode?["singleAlbumArtist"]?.GetValue<bool?>(),
                 MultiArtistSeparatorOverride =
-                    organizerNode?[AutoTagLiterals.MultiArtistSeparatorKey]?.GetValue<string>()
-                    ?? tagsNode?[AutoTagLiterals.MultiArtistSeparatorKey]?.GetValue<string>()
+                    tagsNode?[AutoTagLiterals.MultiArtistSeparatorKey]?.GetValue<string>()
             };
-
-            if ((organizerNode?["moveTaggedPath"] == null || string.IsNullOrWhiteSpace(options.MoveTaggedPath))
-                && node["moveSuccess"]?.GetValue<bool>() == true)
-            {
-                options.MoveTaggedPath = node["moveSuccessPath"]?.GetValue<string>();
-            }
-
-            if ((organizerNode?["moveUntaggedPath"] == null || string.IsNullOrWhiteSpace(options.MoveUntaggedPath))
-                && node["moveFailed"]?.GetValue<bool>() == true)
-            {
-                options.MoveUntaggedPath = node["moveFailedPath"]?.GetValue<string>();
-            }
 
             return options;
         }
@@ -3416,13 +3405,6 @@ public class AutoTagService
             if (autoTagPrefs.ValueKind != JsonValueKind.Object)
             {
                 return null;
-            }
-
-            if (TryGetCaseInsensitiveProperty(autoTagPrefs, "organizer", out var organizerNode)
-                && organizerNode.ValueKind == JsonValueKind.Object
-                && TryGetCaseInsensitiveStringProperty(organizerNode, "moveUntaggedPath", out var organizerPath))
-            {
-                return organizerPath;
             }
 
             return TryGetCaseInsensitiveStringProperty(autoTagPrefs, "moveFailedPath", out var moveFailedPath)
@@ -3707,6 +3689,7 @@ public class AutoTagService
             EnsureEnhancementTagsMergeEnrichmentAndEnhancement(node);
             EnsureEnhancementFolderScopesCanonical(node);
             EnsureLegacyFolderUniformityStructureMirrorsRemoved(node);
+            EnsureLegacyOrganizerConfigRemoved(node);
             EnsureSpotifySecret(node);
             return node.ToJsonString(new JsonSerializerOptions
             {
@@ -3955,6 +3938,16 @@ public class AutoTagService
         folderUniformity.Remove("createPlaylistFolder");
         folderUniformity.Remove("playlistNameTemplate");
         folderUniformity.Remove("illegalCharacterReplacer");
+    }
+
+    private static void EnsureLegacyOrganizerConfigRemoved(JsonNode node)
+    {
+        if (node is not JsonObject root)
+        {
+            return;
+        }
+
+        root.Remove("organizer");
     }
 
     private static string RedactSensitiveConfigJson(string configJson)

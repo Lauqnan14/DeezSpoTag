@@ -1304,7 +1304,6 @@ public class AutoTagEnhancementController : ControllerBase
             OnlyMoveWhenTagged = source.OnlyMoveWhenTagged,
             MoveTaggedPath = source.MoveTaggedPath,
             MoveUntaggedPath = source.MoveUntaggedPath,
-            DryRun = source.DryRun,
             IncludeSubfolders = source.IncludeSubfolders,
             MoveMisplacedFiles = source.MoveMisplacedFiles,
             RenameFilesToTemplate = source.RenameFilesToTemplate,

@@ -259,7 +259,7 @@ public sealed class AutoTagDownloadMoveService
             cancellationToken);
         await PersistFinalDestinationsByPayloadLookupAsync(items, residualTransitions, cancellationToken);
 
-        if (!options.DryRun && options.RemoveEmptyFolders)
+        if (options.RemoveEmptyFolders)
         {
             DeleteEmptyDirectories(normalizedRootPath, BuildProtectedQualityBucketDirectories(normalizedRootPath));
         }
@@ -1191,7 +1191,7 @@ public sealed class AutoTagDownloadMoveService
             }
         }
 
-        if (!runtime.Options.OrganizerOptions.DryRun && runtime.Options.OrganizerOptions.RemoveEmptyFolders)
+        if (runtime.Options.OrganizerOptions.RemoveEmptyFolders)
         {
             DeleteEmptyDirectories(runtime.Paths.RootIo, BuildProtectedQualityBucketDirectories(runtime.Paths.RootIo));
         }
@@ -1248,7 +1248,7 @@ public sealed class AutoTagDownloadMoveService
             .ToList();
         if (files.Count == 0)
         {
-            if (!context.Options.DryRun && context.Options.RemoveEmptyFolders)
+            if (context.Options.RemoveEmptyFolders)
             {
                 DeleteEmptyDirectories(paths.RootIo, BuildProtectedQualityBucketDirectories(paths.RootIo));
             }
@@ -2036,8 +2036,7 @@ public sealed class AutoTagDownloadMoveService
         if (!IOFile.Exists(sourcePath)
             || !IsUnderRoot(rootIo, sourcePath)
             || !TryGetRelativePathUnderRoot(rootIo, sourcePath, out var relative)
-            || IsUnderRoot(destinationRoot, sourcePath)
-            || options.DryRun)
+            || IsUnderRoot(destinationRoot, sourcePath))
         {
             return false;
         }

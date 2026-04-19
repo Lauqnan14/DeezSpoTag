@@ -2243,6 +2243,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private static AutoTagRunnerConfig NormalizeConfig(AutoTagRunnerConfig? raw)
     {
         raw ??= new AutoTagRunnerConfig();
+        var effectiveSaveArtwork = (raw.SaveArtwork ?? false) || raw.AlbumArtFile;
+        var effectiveOnlyYear = ResolveYearOnlyPreference(raw);
         return new AutoTagRunnerConfig
         {
             Platforms = raw.Platforms ?? new List<string>(),
@@ -2261,7 +2263,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 },
             Overwrite = raw.Overwrite,
             MergeGenres = raw.MergeGenres,
-            AlbumArtFile = raw.AlbumArtFile,
+            AlbumArtFile = effectiveSaveArtwork,
             Camelot = raw.Camelot,
             ShortTitle = raw.ShortTitle,
             Strictness = raw.Strictness,
@@ -2276,7 +2278,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             Multiplatform = raw.Multiplatform,
             ParseFilename = raw.ParseFilename,
             FilenameTemplate = raw.FilenameTemplate,
-            OnlyYear = raw.OnlyYear,
+            OnlyYear = effectiveOnlyYear,
             Id3v24 = raw.Id3v24,
             TrackNumberLeadingZeroes = raw.TrackNumberLeadingZeroes,
             StylesOptions = raw.StylesOptions,
@@ -2297,7 +2299,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             TracknameTemplate = raw.TracknameTemplate,
             AlbumTracknameTemplate = raw.AlbumTracknameTemplate,
             PlaylistTracknameTemplate = raw.PlaylistTracknameTemplate,
-            SaveArtwork = raw.SaveArtwork,
+            SaveArtwork = effectiveSaveArtwork,
             DlAlbumcoverForPlaylist = raw.DlAlbumcoverForPlaylist,
             SaveArtworkArtist = raw.SaveArtworkArtist,
             CoverImageTemplate = raw.CoverImageTemplate,
@@ -2309,6 +2311,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ProfileId = raw.ProfileId,
             ProfileName = raw.ProfileName
         };
+    }
+
+    private static bool ResolveYearOnlyPreference(AutoTagRunnerConfig config)
+    {
+        var technicalDateFormat = config.Technical?.DateFormat;
+        return string.Equals(technicalDateFormat?.Trim(), "Y", StringComparison.OrdinalIgnoreCase);
     }
 
     private ShazamRecognitionInfo? RecognizeWithShazam(string filePath, CancellationToken token)
@@ -4071,7 +4079,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ApplyAlbumArt(file, tempCoverPath, context.EffectiveTagSettings.CoverDescriptionUTF8);
         }
 
-        if (!context.Config.AlbumArtFile)
+        if (!ShouldWriteArtworkSidecar(context.Config))
         {
             return;
         }
@@ -4082,6 +4090,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             IOFile.Copy(tempCoverPath, coverPath, overwrite: false);
         }
     }
+
+    private static bool ShouldWriteArtworkSidecar(AutoTagRunnerConfig config)
+        => (config.SaveArtwork ?? false) || config.AlbumArtFile;
 
     private static async Task<LyricsSidecarWriteResult> WriteLyricsSidecarsAsync(
         TagWriteExecutionContext context,
@@ -6631,6 +6642,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public AutoTagSeparators? Separators { get; set; }
         public bool Overwrite { get; set; } = false;
         public bool MergeGenres { get; set; } = true;
+        // Legacy compatibility key; canonical artwork sidecar control is SaveArtwork.
         public bool AlbumArtFile { get; set; }
         public bool Camelot { get; set; }
         public bool ShortTitle { get; set; }
