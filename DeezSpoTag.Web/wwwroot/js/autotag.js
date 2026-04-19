@@ -36,7 +36,6 @@
         forceShazam: false,
         conflictResolution: null,
         skipTagged: false,
-        onlyYear: false,
         includeSubfolders: true,
         multiplatform: false,
         titleRegex: null,
@@ -2506,9 +2505,6 @@
         setChecked("autotag-short-title", state.config.shortTitle);
         setChecked("autotag-merge-genres", state.config.mergeGenres);
         setChecked("autotag-camelot", state.config.camelot);
-        if (el("autotag-only-year")) {
-            setChecked("autotag-only-year", state.config.onlyYear);
-        }
         if (el("autotag-multiplatform")) {
             setChecked("autotag-multiplatform", state.config.multiplatform);
         }
@@ -3418,9 +3414,6 @@
         state.config.skipTagged = el("autotag-skip-tagged")
             ? getChecked("autotag-skip-tagged", state.config.skipTagged)
             : DEFAULT_CONFIG.skipTagged;
-        if (el("autotag-only-year")) {
-            state.config.onlyYear = getChecked("autotag-only-year", state.config.onlyYear);
-        }
         if (el("autotag-multiplatform")) {
             state.config.multiplatform = getChecked("autotag-multiplatform", state.config.multiplatform);
         }
