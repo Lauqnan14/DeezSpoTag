@@ -9,7 +9,10 @@ public sealed class DownloadTagSourceHelperTests
     [InlineData("engine", "engine")]
     [InlineData("spotify", "spotify")]
     [InlineData("deezer", "deezer")]
+    [InlineData("apple", "apple")]
     [InlineData("qobuz", "qobuz")]
+    [InlineData("tidal", "tidal")]
+    [InlineData("amazon", "amazon")]
     [InlineData("unknown", "deezer")]
     public void NormalizeStoredSource_ReturnsExpectedValue(string input, string expected)
     {
@@ -21,8 +24,11 @@ public sealed class DownloadTagSourceHelperTests
     [Theory]
     [InlineData("deezer", "deezer")]
     [InlineData("spotify", "spotify")]
+    [InlineData("apple", "apple")]
+    [InlineData("itunes", "apple")]
     [InlineData("qobuz", "qobuz")]
-    [InlineData("apple", null)]
+    [InlineData("tidal", "tidal")]
+    [InlineData("amazon", "amazon")]
     [InlineData(null, null)]
     public void NormalizeResolvedDownloadTagSource_ReturnsExpectedValue(string? input, string? expected)
     {
@@ -44,13 +50,21 @@ public sealed class DownloadTagSourceHelperTests
     {
         var actual = DownloadTagSourceHelper.ResolveDownloadTagSource("engine", "apple", "qobuz", "deezer");
 
-        Assert.Equal("qobuz", actual);
+        Assert.Equal("apple", actual);
+    }
+
+    [Fact]
+    public void ResolveDownloadTagSource_ResolvesNonSpotifyNonDeezerEngines_WhenConfiguredToFollowEngine()
+    {
+        var actual = DownloadTagSourceHelper.ResolveDownloadTagSource("engine", "apple", "tidal", "amazon");
+
+        Assert.Equal("apple", actual);
     }
 
     [Fact]
     public void ResolveDownloadTagSource_ReturnsNull_WhenNoSupportedEngineCandidateExists()
     {
-        var actual = DownloadTagSourceHelper.ResolveDownloadTagSource("engine", "apple", "tidal", "amazon");
+        var actual = DownloadTagSourceHelper.ResolveDownloadTagSource("engine", "unknown");
 
         Assert.Null(actual);
     }

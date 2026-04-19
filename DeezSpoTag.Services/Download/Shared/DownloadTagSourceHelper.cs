@@ -5,7 +5,10 @@ public static class DownloadTagSourceHelper
     public const string FollowDownloadEngineSource = "engine";
     public const string DeezerSource = "deezer";
     public const string SpotifySource = "spotify";
+    public const string AppleSource = "apple";
     public const string QobuzSource = "qobuz";
+    public const string TidalSource = "tidal";
+    public const string AmazonSource = "amazon";
 
     public static string NormalizeStoredSource(string? source, string defaultSource = DeezerSource)
     {
@@ -14,11 +17,25 @@ public static class DownloadTagSourceHelper
 
     public static string? NormalizeResolvedDownloadTagSource(string? source)
     {
-        return source?.Trim().ToLowerInvariant() switch
+        var normalized = source?.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return null;
+        }
+
+        if (normalized is "itunes" or "applemusic" or "apple-music" or "apple_music")
+        {
+            return AppleSource;
+        }
+
+        return normalized switch
         {
             DeezerSource => DeezerSource,
             SpotifySource => SpotifySource,
+            AppleSource => AppleSource,
             QobuzSource => QobuzSource,
+            TidalSource => TidalSource,
+            AmazonSource => AmazonSource,
             _ => null
         };
     }
@@ -50,12 +67,19 @@ public static class DownloadTagSourceHelper
 
     private static string? NormalizeStoredSourceOrNull(string? source)
     {
-        return source?.Trim().ToLowerInvariant() switch
+        if (string.Equals(source?.Trim(), FollowDownloadEngineSource, StringComparison.OrdinalIgnoreCase))
         {
-            FollowDownloadEngineSource => FollowDownloadEngineSource,
+            return FollowDownloadEngineSource;
+        }
+
+        return NormalizeResolvedDownloadTagSource(source) switch
+        {
             DeezerSource => DeezerSource,
             SpotifySource => SpotifySource,
+            AppleSource => AppleSource,
             QobuzSource => QobuzSource,
+            TidalSource => TidalSource,
+            AmazonSource => AmazonSource,
             _ => null
         };
     }

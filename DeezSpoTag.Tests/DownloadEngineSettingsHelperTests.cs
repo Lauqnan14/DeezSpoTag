@@ -49,7 +49,7 @@ public sealed class DownloadEngineSettingsHelperTests
     }
 
     [Fact]
-    public void ApplyResolvedProfileToSettings_ThrowsClearError_WhenSourceCannotResolve()
+    public void ApplyResolvedProfileToSettings_ResolvesEngineSourceForApple()
     {
         var settings = new DeezSpoTagSettings
         {
@@ -61,9 +61,26 @@ public sealed class DownloadEngineSettingsHelperTests
             FolderStructure: null,
             Technical: null);
 
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => DownloadEngineSettingsHelper.ApplyResolvedProfileToSettings(settings, profile, currentEngine: "apple"));
+        var resolved = DownloadEngineSettingsHelper.ApplyResolvedProfileToSettings(settings, profile, currentEngine: "apple");
 
-        Assert.Contains("Download profile source resolution failed:", ex.Message);
+        Assert.Equal(DownloadTagSourceHelper.AppleSource, resolved);
+    }
+
+    [Fact]
+    public void ApplyResolvedProfileToSettings_PreservesEngineMode_WhenCurrentEngineIsUnknown()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            Service = "auto"
+        };
+        var profile = new DownloadTagProfileSettings(
+            TagSettings: new TagSettings(),
+            DownloadTagSource: DownloadTagSourceHelper.FollowDownloadEngineSource,
+            FolderStructure: null,
+            Technical: null);
+
+        var resolved = DownloadEngineSettingsHelper.ApplyResolvedProfileToSettings(settings, profile, currentEngine: "unknown-engine");
+
+        Assert.Equal(DownloadTagSourceHelper.FollowDownloadEngineSource, resolved);
     }
 }
