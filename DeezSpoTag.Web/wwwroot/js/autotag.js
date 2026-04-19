@@ -178,6 +178,31 @@
         releaseId: "Release ID (source)",
         rating: "Rating"
     };
+    const ENGINE_NATIVE_COMBINED_PLATFORM_ID = "engine-native-combined";
+    const ENGINE_NATIVE_COMBINED_TAGS = Object.freeze([
+        "title",
+        "artist",
+        "artists",
+        "album",
+        "albumArtist",
+        "trackNumber",
+        "trackTotal",
+        "discNumber",
+        "genre",
+        "year",
+        "date",
+        "explicit",
+        "isrc",
+        "length",
+        "bpm",
+        "key",
+        "label",
+        "cover",
+        "source",
+        "url",
+        "trackId",
+        "releaseId"
+    ]);
     const HIDDEN_SPOTIFY_AUDIO_FEATURE_TAGS = [
         "danceability",
         "energy",
@@ -767,14 +792,7 @@
     function getDownloadSourcePlatform(downloadTagSource) {
         const source = normalizeDownloadTagSource(downloadTagSource);
         if (source === "engine") {
-            const engine = getCurrentDownloadEngineId();
-            if (engine === "apple") {
-                return "itunes";
-            }
-            if (engine === "deezer" || engine === "spotify" || engine === "boomplay") {
-                return engine;
-            }
-            return null;
+            return ENGINE_NATIVE_COMBINED_PLATFORM_ID;
         }
         if (source === "deezer") {
             return "deezer";
@@ -785,6 +803,68 @@
         return null;
     }
 
+    function getPlatformDownloadTags(platformId) {
+        const platform = state.platforms.find((item) => item.id === platformId);
+        if (!platform || !Array.isArray(platform.downloadTags)) {
+            return [];
+        }
+
+        return platform.downloadTags
+            .filter((tagId) => !isHiddenSpotifyAudioFeatureTag(tagId))
+            .map((tagId) => String(tagId).trim())
+            .filter((tagId) => tagId.length > 0);
+    }
+
+    function getEngineNativeCombinedDownloadTags() {
+        const merged = [];
+        const seen = new Set();
+        const addTag = (tag) => {
+            const normalized = String(tag || "").trim();
+            if (!normalized) {
+                return;
+            }
+
+            const key = normalized.toLowerCase();
+            if (seen.has(key) || isHiddenSpotifyAudioFeatureTag(normalized)) {
+                return;
+            }
+
+            seen.add(key);
+            merged.push(normalized);
+        };
+
+        ENGINE_NATIVE_COMBINED_TAGS.forEach(addTag);
+        getPlatformDownloadTags("itunes").forEach(addTag);
+        getPlatformDownloadTags("qobuz").forEach(addTag);
+        getPlatformDownloadTags("tidal").forEach(addTag);
+        getPlatformDownloadTags("amazon").forEach(addTag);
+        return merged;
+    }
+
+    function resolveDownloadTagCatalog(downloadTagSource) {
+        const source = normalizeDownloadTagSource(downloadTagSource);
+        if (!source) {
+            return { platformId: null, tags: [] };
+        }
+
+        const platformId = getDownloadSourcePlatform(source);
+        if (!platformId) {
+            return { platformId: null, tags: [] };
+        }
+
+        if (platformId === ENGINE_NATIVE_COMBINED_PLATFORM_ID) {
+            return {
+                platformId,
+                tags: getEngineNativeCombinedDownloadTags()
+            };
+        }
+
+        return {
+            platformId,
+            tags: getPlatformDownloadTags(platformId)
+        };
+    }
+
     function renderDownloadTagSourceContext() {
         const source = getDownloadTagSource();
         const helper = el("download-tag-source-helper");
@@ -793,11 +873,7 @@
         }
 
         if (source === "engine") {
-            const engineLabel = getCurrentDownloadEngineLabel();
-            const platformId = getDownloadSourcePlatform(source);
-            helper.textContent = platformId
-                ? `Follows Settings > Download Source (${engineLabel}). The download engine stays there; this profile now mirrors that engine for download-stage tag metadata.`
-                : `Follows Settings > Download Source (${engineLabel}). The download engine stays there; this profile will use engine-native metadata during download when available.`;
+            helper.textContent = "Engine-native mode: when Apple/Qobuz/TIDAL/Amazon is used for a download, write only the selected basic tags that engine can provide. Select Deezer or Spotify source if you want those metadata systems to override download-stage tags.";
             return;
         }
 
@@ -1346,13 +1422,7 @@
         if (!source) {
             return [];
         }
-        const platformId = getDownloadSourcePlatform(source);
-        const platform = state.platforms.find((item) => item.id === platformId);
-        const platformTags = Array.isArray(platform?.downloadTags) && platform.downloadTags.length > 0
-            ? platform.downloadTags
-            : [];
-        return platformTags
-            .filter((tagId) => !isHiddenSpotifyAudioFeatureTag(tagId))
+        return resolveDownloadTagCatalog(source).tags
             .map((tagId) => ({
             tag: tagId,
             label: DOWNLOAD_TAG_LABELS[tagId] || tagId
@@ -1364,12 +1434,7 @@
         if (!source) {
             return [];
         }
-        const platformId = getDownloadSourcePlatform(source);
-        const platform = state.platforms.find((item) => item.id === platformId);
-        if (!platform || !Array.isArray(platform.downloadTags)) {
-            return [];
-        }
-        return platform.downloadTags.filter((tagId) => !isHiddenSpotifyAudioFeatureTag(tagId));
+        return resolveDownloadTagCatalog(source).tags;
     }
 
     function normalizeDownloadTags(selected) {
@@ -1429,12 +1494,11 @@
         if (!source) {
             return false;
         }
-        const platformId = getDownloadSourcePlatform(source);
-        const platform = state.platforms.find((item) => item.id === platformId);
-        if (!platform || !Array.isArray(platform.downloadTags) || platform.downloadTags.length === 0) {
+        const catalog = resolveDownloadTagCatalog(source);
+        if (!catalog.tags.length) {
             return false;
         }
-        return platform.downloadTags.includes(tagKey);
+        return catalog.tags.some((tag) => String(tag).toLowerCase() === String(tagKey).toLowerCase());
     }
 
     function refreshDownloadTagsForSource() {
@@ -1471,13 +1535,11 @@
             grid.style.display = hasTagCatalog ? "grid" : "none";
         }
         if (helper) {
-            const platformId = getDownloadSourcePlatform(source);
             if (!enabled) {
                 helper.textContent = "Enable a metadata source to choose download tags.";
-            } else if (source === "engine" && !platformId) {
-                helper.textContent = `The active download engine (${getCurrentDownloadEngineLabel()}) does not publish a curated AutoTag download-tag list. Native engine metadata will still be used during download when available.`;
             } else if (source === "engine") {
-                helper.textContent = `These tags follow Settings > Download Source (${getCurrentDownloadEngineLabel()}). Change this profile only if you want a different metadata source than the download engine.`;
+                const engineLabel = getCurrentDownloadEngineLabel();
+                helper.textContent = `Engine-native tag mode is active (current download source: ${engineLabel}). These selected tags are used only when Apple/Qobuz/TIDAL/Amazon metadata is writing download-stage tags.`;
             } else {
                 helper.textContent = "Select which tags to write during the download process. This metadata source only affects tags written during download, not the engine that downloads the file.";
             }

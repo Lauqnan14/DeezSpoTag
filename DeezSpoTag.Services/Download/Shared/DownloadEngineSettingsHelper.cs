@@ -125,6 +125,20 @@ public static class DownloadEngineSettingsHelper
             settings.Service);
         if (string.IsNullOrWhiteSpace(normalizedSource))
         {
+            var storedSource = DownloadTagSourceHelper.NormalizeStoredSource(
+                profile.DownloadTagSource,
+                DownloadTagSourceHelper.DeezerSource);
+            if (string.Equals(
+                    storedSource,
+                    DownloadTagSourceHelper.FollowDownloadEngineSource,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                normalizedSource = DownloadTagSourceHelper.FollowDownloadEngineSource;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(normalizedSource))
+        {
             var configuredSource = profile.DownloadTagSource?.Trim();
             throw new InvalidOperationException(
                 $"Download profile source resolution failed: downloadTagSource '{configuredSource}' is invalid for engine '{currentEngine ?? settings.Service ?? "unknown"}'.");

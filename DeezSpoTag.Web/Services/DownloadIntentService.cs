@@ -1168,7 +1168,16 @@ public sealed class DownloadIntentService
                 settings,
                 profile,
                 currentEngine: engineContext);
-            return (true, null, resolvedSource);
+            var storedDownloadTagSource = DownloadTagSourceHelper.NormalizeStoredSource(
+                profile.DownloadTagSource,
+                DownloadTagSourceHelper.DeezerSource);
+            var metadataTagSource = string.Equals(
+                storedDownloadTagSource,
+                DownloadTagSourceHelper.FollowDownloadEngineSource,
+                StringComparison.OrdinalIgnoreCase)
+                ? null
+                : resolvedSource;
+            return (true, null, metadataTagSource);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
