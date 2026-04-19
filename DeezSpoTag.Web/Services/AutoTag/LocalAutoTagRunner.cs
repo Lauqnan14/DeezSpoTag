@@ -2287,7 +2287,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private static AutoTagRunnerConfig NormalizeConfig(AutoTagRunnerConfig? raw)
     {
         raw ??= new AutoTagRunnerConfig();
-        var effectiveSaveArtwork = (raw.SaveArtwork ?? false) || raw.AlbumArtFile;
+        var effectiveSaveArtwork = raw.SaveArtwork ?? false;
         return new AutoTagRunnerConfig
         {
             Platforms = raw.Platforms ?? new List<string>(),
@@ -2303,10 +2303,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     Id3 = raw.Separators.Id3,
                     Vorbis = raw.Separators.Vorbis,
                     Mp4 = raw.Separators.Mp4
-                },
+            },
             Overwrite = raw.Overwrite,
             MergeGenres = raw.MergeGenres,
-            AlbumArtFile = effectiveSaveArtwork,
             Camelot = raw.Camelot,
             ShortTitle = raw.ShortTitle,
             Strictness = raw.Strictness,
@@ -4133,7 +4132,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     }
 
     private static bool ShouldWriteArtworkSidecar(AutoTagRunnerConfig config)
-        => (config.SaveArtwork ?? false) || config.AlbumArtFile;
+        => config.SaveArtwork ?? false;
 
     private static async Task<LyricsSidecarWriteResult> WriteLyricsSidecarsAsync(
         TagWriteExecutionContext context,
@@ -6692,8 +6691,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public AutoTagSeparators? Separators { get; set; }
         public bool Overwrite { get; set; } = false;
         public bool MergeGenres { get; set; } = true;
-        // Legacy compatibility key; canonical artwork sidecar control is SaveArtwork.
-        public bool AlbumArtFile { get; set; }
         public bool Camelot { get; set; }
         public bool ShortTitle { get; set; }
         public double Strictness { get; set; } = 0.7;

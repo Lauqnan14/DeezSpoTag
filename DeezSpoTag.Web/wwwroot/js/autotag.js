@@ -3029,10 +3029,6 @@
     function applyProfileConfig(config) {
         const merged = structuredClone(DEFAULT_CONFIG);
         Object.assign(merged, config || {});
-        // Legacy compatibility: old profiles may still carry albumArtFile.
-        if (typeof merged.saveArtwork !== "boolean" && typeof merged.albumArtFile === "boolean") {
-            merged.saveArtwork = merged.albumArtFile;
-        }
         const legacyOrganizer = merged.organizer && typeof merged.organizer === "object" ? merged.organizer : null;
         if ((!merged.moveFailedPath || !String(merged.moveFailedPath).trim()) && legacyOrganizer?.moveUntaggedPath) {
             merged.moveFailedPath = String(legacyOrganizer.moveUntaggedPath).trim();
@@ -3404,11 +3400,9 @@
         state.config.shortTitle = getChecked("autotag-short-title", state.config.shortTitle);
         const saveArtworkEnabled = getChecked(
             "saveArtwork",
-            state.config.saveArtwork ?? state.config.albumArtFile ?? false
+            state.config.saveArtwork ?? false
         );
         state.config.saveArtwork = saveArtworkEnabled;
-        // Keep legacy key synchronized until server-side cleanup fully lands.
-        state.config.albumArtFile = saveArtworkEnabled;
         state.config.mergeGenres = getChecked("autotag-merge-genres", state.config.mergeGenres);
         state.config.camelot = getChecked("autotag-camelot", state.config.camelot);
         state.config.skipTagged = el("autotag-skip-tagged")
@@ -5572,7 +5566,7 @@
                 "enhancementRenameSpotifyArtistFolders",
                 getBaseBool("renameSpotifyArtistFolders", state.autoTagDefaults?.renameSpotifyArtistFolders !== false)
             ),
-            saveArtwork: getInputChecked("saveArtwork", getBaseBool("saveArtwork", getBaseBool("albumArtFile", false))),
+            saveArtwork: getInputChecked("saveArtwork", getBaseBool("saveArtwork", false)),
             dlAlbumcoverForPlaylist: getInputChecked("dlAlbumcoverForPlaylist", getBaseBool("dlAlbumcoverForPlaylist", true)),
             saveArtworkArtist: getInputChecked("saveArtworkArtist", getBaseBool("saveArtworkArtist", false)),
             coverImageTemplate: getInputValue("coverImageTemplate", getBaseString("coverImageTemplate", "cover")),

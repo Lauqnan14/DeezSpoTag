@@ -2849,7 +2849,6 @@ public class AutoTagService
             "separators",
             AutoTagLiterals.OverwriteKey,
             "mergeGenres",
-            "albumArtFile", // Legacy compatibility; canonical artwork file toggle is saveArtwork.
             "camelot",
             "shortTitle",
             "strictness",

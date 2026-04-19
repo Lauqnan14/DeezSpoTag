@@ -12,6 +12,8 @@ internal static class TaggingProfileDataHelper
     private const string DownloadTagSourceKey = "downloadTagSource";
     private const string OverwriteKey = "overwrite";
     private const string OverwriteTagsKey = "overwriteTags";
+    private const string SaveArtworkKey = "saveArtwork";
+    private const string LegacyAlbumArtFileKey = "albumArtFile";
 
     private static readonly string[] LegacyFolderUniformityStructureKeys =
     {
@@ -75,6 +77,7 @@ internal static class TaggingProfileDataHelper
         var sanitized = autoTag ?? new AutoTagSettings();
         sanitized.Data ??= new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
         _ = StripAuthSecrets(sanitized.Data);
+        CanonicalizeArtworkSidecarKey(sanitized.Data);
         EnsureBooleanAutoTagDefault(sanitized.Data, OverwriteKey, false);
         EnsureStringArrayAutoTagDefault(sanitized.Data, OverwriteTagsKey);
         EnsureDownloadTagSourceDefault(sanitized.Data, defaultDownloadTagSource);
@@ -309,6 +312,27 @@ internal static class TaggingProfileDataHelper
 
         var normalized = NormalizeDownloadTagSource(value.GetString(), defaultDownloadTagSource);
         data[key] = JsonSerializer.SerializeToElement(normalized);
+    }
+
+    private static void CanonicalizeArtworkSidecarKey(Dictionary<string, JsonElement> data)
+    {
+        var saveArtworkKey = GetCaseInsensitiveKey(data, SaveArtworkKey);
+        var legacyKey = GetCaseInsensitiveKey(data, LegacyAlbumArtFileKey);
+        if (string.IsNullOrWhiteSpace(legacyKey))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(saveArtworkKey))
+        {
+            var legacyValue = data[legacyKey];
+            if (legacyValue.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                data[SaveArtworkKey] = JsonSerializer.SerializeToElement(legacyValue.GetBoolean());
+            }
+        }
+
+        data.Remove(legacyKey);
     }
 
     private static string? GetCaseInsensitiveKey(Dictionary<string, JsonElement> data, string key)
