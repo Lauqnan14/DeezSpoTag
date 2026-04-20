@@ -14,6 +14,17 @@ public sealed class DeezerMatcher
 
     private readonly DeezerClient _client;
     private readonly ILogger<DeezerMatcher> _logger;
+    private static readonly HashSet<string> InvolvedPeopleRoles = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "author",
+        "engineer",
+        "mixer",
+        "producer",
+        "writer",
+        "musicpublisher",
+        "lyricist",
+        "arranger"
+    };
 
     public DeezerMatcher(DeezerClient client, ILogger<DeezerMatcher> logger)
     {
@@ -419,8 +430,18 @@ public sealed class DeezerMatcher
             {
                 track.Bpm = (long)full.Bpm.Value;
             }
+            if (full.Gain.HasValue)
+            {
+                track.ReplayGain = full.Gain.Value.ToString(CultureInfo.InvariantCulture);
+            }
             track.Isrc = full.Isrc;
             track.ReleaseDate = TryParseDate(full.ReleaseDate);
+            track.Copyright ??= Normalize(full.Copyright);
+            ApplyContributorRoles(track, full.Contributors);
+            if (full.Rank.HasValue && full.Rank.Value > 0)
+            {
+                track.Rating = Math.Clamp((int)Math.Round(full.Rank.Value / 10000d), 0, 10).ToString(CultureInfo.InvariantCulture);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -474,6 +495,8 @@ public sealed class DeezerMatcher
             track.TrackTotal = album.NbTracks;
             track.Label = album.Label;
             track.AlbumArtists = album.Contributors.Select(artist => artist.Name).ToList();
+            track.Barcode ??= Normalize(album.Upc);
+            track.Copyright ??= Normalize(album.Copyright);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -524,7 +547,14 @@ public sealed class DeezerMatcher
             ReleaseDate = TryParseDate(track.ReleaseDate),
             TrackNumber = track.TrackPosition,
             DiscNumber = track.DiskNumber,
-            Bpm = track.Bpm.HasValue && track.Bpm.Value > 1.0 ? (long)track.Bpm.Value : null
+            Bpm = track.Bpm.HasValue && track.Bpm.Value > 1.0 ? (long)track.Bpm.Value : null,
+            ReplayGain = track.Gain.HasValue ? track.Gain.Value.ToString(CultureInfo.InvariantCulture) : null,
+            Copyright = Normalize(track.Copyright),
+            Source = "Deezer",
+            SourceId = track.Id.ToString(CultureInfo.InvariantCulture),
+            Rating = track.Rank.HasValue && track.Rank.Value > 0
+                ? Math.Clamp((int)Math.Round(track.Rank.Value / 10000d), 0, 10).ToString(CultureInfo.InvariantCulture)
+                : null
         };
     }
 
@@ -566,6 +596,15 @@ public sealed class DeezerMatcher
             }
         }
 
+        AddOtherIfNotEmpty(other, "barcode", track.Barcode);
+        AddOtherIfNotEmpty(other, "replayGain", track.ReplayGain);
+        AddOtherIfNotEmpty(other, "copyright", track.Copyright);
+        AddOtherIfNotEmpty(other, "source", track.Source);
+        AddOtherIfNotEmpty(other, "sourceId", track.SourceId);
+        AddOtherIfNotEmpty(other, "rating", track.Rating);
+        AddOtherListIfAny(other, "composer", track.Composers);
+        AddOtherListIfAny(other, "involvedPeople", track.InvolvedPeople);
+
         return new AutoTagTrack
         {
             Title = track.Title,
@@ -591,5 +630,67 @@ public sealed class DeezerMatcher
             Other = other
         };
     }
+
+    private static void ApplyContributorRoles(DeezerTrackInfo track, IEnumerable<DeezerArtist> contributors)
+    {
+        foreach (var contributor in contributors)
+        {
+            var name = Normalize(contributor.Name);
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            var role = Normalize(contributor.Role);
+            if (string.Equals(role, "composer", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!track.Composers.Contains(name, StringComparer.OrdinalIgnoreCase))
+                {
+                    track.Composers.Add(name);
+                }
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(role) || !InvolvedPeopleRoles.Contains(role))
+            {
+                continue;
+            }
+
+            var formatted = $"{role}: {name}";
+            if (!track.InvolvedPeople.Contains(formatted, StringComparer.OrdinalIgnoreCase))
+            {
+                track.InvolvedPeople.Add(formatted);
+            }
+        }
+    }
+
+    private static void AddOtherIfNotEmpty(Dictionary<string, List<string>> other, string key, string? value)
+    {
+        var normalized = Normalize(value);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return;
+        }
+
+        other[key] = new List<string> { normalized };
+    }
+
+    private static void AddOtherListIfAny(Dictionary<string, List<string>> other, string key, IEnumerable<string> values)
+    {
+        var normalized = values
+            .Select(Normalize)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (normalized.Count == 0)
+        {
+            return;
+        }
+
+        other[key] = normalized!;
+    }
+
+    private static string? Normalize(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
 }
