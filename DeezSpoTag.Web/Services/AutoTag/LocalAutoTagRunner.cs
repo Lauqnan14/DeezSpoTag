@@ -59,6 +59,22 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         @"\b(?:official|audio|video|lyrics?|visualizer|final|finished|master|unknown)\b|(?:\.mp3|\.wav|\.m4a|\.aac)\s*$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase,
         RegexTimeout);
+    private static readonly Regex TitleQualifierRegex = new(
+        @"\b(?:feat(?:uring)?|ft\.?|remix|mix|edit|version|live|acoustic|demo|radio|extended|dub|instrumental|remaster(?:ed)?)\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase,
+        RegexTimeout);
+    private static readonly Regex BracketedTitleDetailRegex = new(
+        @"[\(\[\{][^\)\]\}]{2,}[\)\]\}]",
+        RegexOptions.Compiled,
+        RegexTimeout);
+    private static readonly Regex LooseTitleNormalizationRegex = new(
+        @"[^a-z0-9]+",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase,
+        RegexTimeout);
+    private static readonly Regex VariantSuffixRegex = new(
+        @"(?:\b(?:pt\.?|part|vol\.?|volume)\s*\d+\b|\b(?:ii|iii|iv|v|vi|vii|viii|ix|x)\b|\b\d{1,2}\b)\s*$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase,
+        RegexTimeout);
     private static readonly TimeSpan MatchCacheTtl = TimeSpan.FromMinutes(15);
     private static readonly JsonSerializerOptions CaseInsensitiveJsonOptions = new() { PropertyNameCaseInsensitive = true };
     private static readonly char[] LyricsLineSeparators = ['\r', '\n'];
@@ -6503,7 +6519,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ApplyReleaseDateOverwriteRule(copy, context);
             ApplyTrackNumberOverwriteRule(copy, context);
             ApplyTrackTotalOverwriteRule(copy, context);
-            ApplyPreferenceAwareOverwriteGuards(copy, sourceTrack, runtimeSettings, file);
+            ApplyPreferenceAwareOverwriteGuards(copy, sourceTrack, runtimeSettings, file, platformId);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -6741,7 +6757,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         TagSettings effectiveTagSettings,
         AutoTagTrack? sourceTrack,
         DeezSpoTagSettings? runtimeSettings,
-        TagLib.File file)
+        TagLib.File file,
+        string platformId)
     {
         if (sourceTrack == null
             || runtimeSettings == null
@@ -6749,6 +6766,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             return;
         }
+
+        ApplyTitleLossyOverwriteGuard(effectiveTagSettings, sourceTrack, file.Tag.Title, platformId);
 
         var existingArtistCredits = file.Tag.Performers?
             .Where(value => !string.IsNullOrWhiteSpace(value))
@@ -6917,6 +6936,92 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         sourceTrack.Title = existingTitle.Trim();
         effectiveTagSettings.Title = false;
+    }
+
+    private static void ApplyTitleLossyOverwriteGuard(
+        TagSettings effectiveTagSettings,
+        AutoTagTrack sourceTrack,
+        string? existingTitle,
+        string platformId)
+    {
+        if (!effectiveTagSettings.Title
+            || !string.Equals(platformId, ShazamPlatform, StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(existingTitle)
+            || string.IsNullOrWhiteSpace(sourceTrack.Title))
+        {
+            return;
+        }
+
+        var existing = existingTitle.Trim();
+        var incoming = sourceTrack.Title.Trim();
+        if (string.Equals(existing, incoming, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (!ShouldKeepExistingTitle(existing, incoming))
+        {
+            return;
+        }
+
+        sourceTrack.Title = existing;
+        effectiveTagSettings.Title = false;
+    }
+
+    private static bool ShouldKeepExistingTitle(string existingTitle, string incomingTitle)
+    {
+        var existingNormalized = NormalizeLooseTitle(existingTitle);
+        var incomingNormalized = NormalizeLooseTitle(incomingTitle);
+        if (string.IsNullOrWhiteSpace(existingNormalized) || string.IsNullOrWhiteSpace(incomingNormalized))
+        {
+            return false;
+        }
+
+        if (string.Equals(existingNormalized, incomingNormalized, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var existingHasDetails = HasDetailedTitleMarkers(existingTitle);
+        if (!existingHasDetails)
+        {
+            return false;
+        }
+
+        if (HasDetailedTitleMarkers(incomingTitle))
+        {
+            return false;
+        }
+
+        if (existingTitle.Length <= incomingTitle.Length + 2)
+        {
+            return false;
+        }
+
+        return existingNormalized.Contains(incomingNormalized, StringComparison.Ordinal);
+    }
+
+    private static bool HasDetailedTitleMarkers(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return false;
+        }
+
+        return HasFeaturedMarker(title)
+            || TitleQualifierRegex.IsMatch(title)
+            || BracketedTitleDetailRegex.IsMatch(title)
+            || VariantSuffixRegex.IsMatch(title.Trim());
+    }
+
+    private static string NormalizeLooseTitle(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        return LooseTitleNormalizationRegex.Replace(value.ToLowerInvariant(), string.Empty);
     }
 
     private static bool AreArtistCreditsEquivalent(IReadOnlyList<string> left, IReadOnlyList<string> right)
