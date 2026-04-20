@@ -1583,12 +1583,10 @@ public class AudioTagger
             Description = CoverDescription
         };
         id3Tag.RemoveFrames("APIC");
-#pragma warning disable CS0618
-        var apic = new TagLib.Id3v2.AttachedPictureFrame(picture)
+        var apic = new TagLib.Id3v2.AttachmentFrame(picture)
         {
             TextEncoding = coverDescriptionUtf8 ? TagLib.StringType.UTF8 : TagLib.StringType.Latin1
         };
-#pragma warning restore CS0618
         id3Tag.AddFrame(apic);
     }
 
