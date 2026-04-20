@@ -295,6 +295,7 @@ public class AutoTagService
         ["discNumber"] = "discNumber",
         ["duration"] = "duration",
         ["trackTotal"] = "trackTotal",
+        ["discTotal"] = "discTotal",
         ["isrc"] = "isrc",
         ["publishDate"] = "publishDate",
         ["releaseDate"] = "releaseDate",
@@ -310,7 +311,14 @@ public class AutoTagService
         ["explicit"] = "explicit",
         ["length"] = "duration",
         ["barcode"] = "barcode",
-        ["upc"] = "barcode"
+        ["upc"] = "barcode",
+        ["replayGain"] = "replayGain",
+        ["copyright"] = "copyright",
+        ["composer"] = "composer",
+        ["involvedPeople"] = "involvedPeople",
+        ["source"] = "source",
+        ["rating"] = "rating",
+        ["language"] = "language"
     };
     private static readonly HashSet<string> EnrichmentStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: false, includeConflictResolution: true, includeTargetFiles: false);
     private static readonly HashSet<string> EnhancementStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: true, includeConflictResolution: false, includeTargetFiles: true);
@@ -2973,6 +2981,11 @@ public class AutoTagService
                 {
                     supportedTags = ReadStringList(platformNode2, "supportedTags");
                 }
+                var downloadTags = ReadStringList(node, "downloadTags");
+                if (downloadTags.Count == 0 && node[AutoTagLiterals.PlatformKey] is JsonObject platformNode4)
+                {
+                    downloadTags = ReadStringList(platformNode4, "downloadTags");
+                }
 
                 var requiresAuth = ReadBool(node, "requiresAuth")
                     ?? (node[AutoTagLiterals.PlatformKey] is JsonObject platformNode3 ? ReadBool(platformNode3, "requiresAuth") : null)
@@ -2983,6 +2996,13 @@ public class AutoTagService
                     .Where(tag => !string.IsNullOrWhiteSpace(tag))
                     .Select(tag => tag!)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                foreach (var tag in downloadTags
+                             .Select(NormalizeSupportedTagKey)
+                             .Where(tag => !string.IsNullOrWhiteSpace(tag))
+                             .Select(tag => tag!))
+                {
+                    normalizedSupported.Add(tag);
+                }
 
                 result[id.Trim()] = new PlatformTagCapabilities(normalizedSupported, requiresAuth);
             }

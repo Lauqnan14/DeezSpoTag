@@ -91,6 +91,7 @@ public sealed class DeezerArtist
 {
     public long Id { get; set; }
     public string Name { get; set; } = "";
+    public string? Role { get; set; }
     public string Picture { get; set; } = "";
     [JsonPropertyName("picture_small")]
     public string PictureSmall { get; set; } = "";
@@ -113,6 +114,7 @@ public sealed class DeezerAlbum
 public sealed class DeezerTrackFull
 {
     public long Id { get; set; }
+    public long? Rank { get; set; }
     public string Title { get; set; } = "";
     [JsonPropertyName("title_short")]
     public string TitleShort { get; set; } = "";
@@ -129,6 +131,7 @@ public sealed class DeezerTrackFull
     public string ReleaseDate { get; set; } = "";
     public double? Bpm { get; set; }
     public double? Gain { get; set; }
+    public string? Copyright { get; set; }
     public List<DeezerArtist> Contributors { get; set; } = new();
     [JsonPropertyName("md5_image")]
     public string Md5Image { get; set; } = "";
@@ -141,6 +144,7 @@ public sealed class DeezerAlbumFull
     public long Id { get; set; }
     public string Title { get; set; } = "";
     public string? Upc { get; set; }
+    public string? Copyright { get; set; }
     public string Link { get; set; } = "";
     public string Share { get; set; } = "";
     [JsonPropertyName("md5_image")]
@@ -192,6 +196,14 @@ public sealed class DeezerTrackInfo
     public int? TrackTotal { get; set; }
     public long? Bpm { get; set; }
     public bool? Explicit { get; set; }
+    public string? Barcode { get; set; }
+    public string? ReplayGain { get; set; }
+    public string? Copyright { get; set; }
+    public List<string> Composers { get; set; } = new();
+    public List<string> InvolvedPeople { get; set; } = new();
+    public string? Source { get; set; }
+    public string? SourceId { get; set; }
+    public string? Rating { get; set; }
     public string? UnsyncedLyrics { get; set; }
     public List<string> SyncedLyrics { get; set; } = new();
 }

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Text.Json.Nodes;
@@ -81,5 +82,60 @@ public sealed class AutoTagEnrichmentTagSelectionTests
 
         var actual = Assert.IsType<List<string>>(method!.Invoke(null, new object?[] { root }));
         Assert.Equal(new[] { "artist", "genre", "title", "trackId", "releaseId" }, actual);
+    }
+
+    [Theory]
+    [InlineData("year", "releaseDate")]
+    [InlineData("date", "releaseDate")]
+    [InlineData("length", "duration")]
+    [InlineData("lyrics", "unsyncedLyrics")]
+    [InlineData("cover", "albumArt")]
+    public void NormalizeSupportedTagKey_MapsAliasesToCanonicalKeys(string input, string expected)
+    {
+        var method = typeof(AutoTagService).GetMethod(
+            "NormalizeSupportedTagKey",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var actual = method!.Invoke(null, new object?[] { input }) as string;
+        Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public void FilterSupportedTags_YearAliasIsAcceptedWhenPlatformSupportsReleaseDate()
+    {
+        var method = typeof(AutoTagService).GetMethod(
+            "FilterSupportedTags",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var capabilityType = typeof(AutoTagService).GetNestedType(
+            "PlatformTagCapabilities",
+            BindingFlags.NonPublic);
+        Assert.NotNull(capabilityType);
+
+        var capability = Activator.CreateInstance(
+            capabilityType!,
+            new object?[] { new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "releaseDate" }, false });
+        Assert.NotNull(capability);
+
+        var capsDictionaryType = typeof(Dictionary<,>).MakeGenericType(typeof(string), capabilityType!);
+        var capsDictionary = Activator.CreateInstance(capsDictionaryType);
+        Assert.NotNull(capsDictionary);
+
+        var addMethod = capsDictionaryType.GetMethod("Add");
+        Assert.NotNull(addMethod);
+        addMethod!.Invoke(capsDictionary, new[] { "itunes", capability });
+
+        var actual = Assert.IsType<List<string>>(method!.Invoke(
+            null,
+            new object?[]
+            {
+                new[] { "year", "artist" },
+                new[] { "itunes" },
+                capsDictionary!
+            }));
+
+        Assert.Equal(new[] { "releaseDate" }, actual);
     }
 }

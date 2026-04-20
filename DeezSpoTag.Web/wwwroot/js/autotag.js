@@ -126,6 +126,9 @@
         { tag: "isrc", label: "ISRC" },
         { tag: "publishDate", label: "Publish Date", tooltip: "Available from Beatport only" },
         { tag: "releaseDate", label: "Release Date" },
+        { tag: "year", label: "Year", tooltip: "Alias of release date. Use Date Format = Y for year-only output." },
+        { tag: "date", label: "Date (full)", tooltip: "Alias of release date. Use Date Format for final write format." },
+        { tag: "explicit", label: "Explicit" },
         { tag: "url", label: "URL" },
         { tag: "otherTags", label: "Other Tags", tooltip: "Specific tags only for some platforms (Beatport, Discogs)" },
         { tag: "metaTags", label: "OneTagger Tags", tooltip: "Adds 1T_TAGGEDDATE tag with timestamp" },
@@ -3174,11 +3177,32 @@
         if (isHiddenSpotifyAudioFeatureTag(tag)) {
             return false;
         }
+        const normalizedTag = normalizeTagSupportKey(tag);
         return state.platforms.some((platform) =>
             state.config.platforms.includes(platform.id) &&
             Array.isArray(platform.supportedTags) &&
-            platform.supportedTags.includes(tag)
+            platform.supportedTags.includes(normalizedTag)
         );
+    }
+
+    function normalizeTagSupportKey(tag) {
+        const normalized = String(tag || "").trim().toLowerCase();
+        if (!normalized) {
+            return normalized;
+        }
+        if (normalized === "year" || normalized === "date") {
+            return "releaseDate";
+        }
+        if (normalized === "cover") {
+            return "albumArt";
+        }
+        if (normalized === "lyrics") {
+            return "unsyncedLyrics";
+        }
+        if (normalized === "length") {
+            return "duration";
+        }
+        return tag;
     }
 
     function isHiddenSpotifyAudioFeatureTag(tag) {
