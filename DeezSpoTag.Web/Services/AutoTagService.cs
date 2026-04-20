@@ -1160,11 +1160,35 @@ public class AutoTagService
             return null;
         }
 
+        var logs = ReadRunLogLines(id);
+        var statusHistory = ReadRunStatusHistory(id);
+        var job = (logs.Count == 0 || statusHistory.Count == 0)
+            ? GetJob(id) ?? LoadJob(id)
+            : null;
+        if (logs.Count == 0 && summary.LogCount > 0 && job?.Logs.Count > 0)
+        {
+            logs = job.Logs
+                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .ToList();
+            if (logs.Count > 0)
+            {
+                _ = TryRepairArchivedLogsFromJob(id, GetRunLogPath(id));
+            }
+        }
+        if (statusHistory.Count == 0 && summary.StatusEntryCount > 0 && job?.StatusHistory.Count > 0)
+        {
+            statusHistory = job.StatusHistory.ToList();
+            if (statusHistory.Count > 0)
+            {
+                _ = TryRepairArchivedStatusFromJob(id, GetRunStatusHistoryPath(id));
+            }
+        }
+
         return new AutoTagRunArchive
         {
             Summary = summary,
-            Logs = ReadRunLogLines(id),
-            StatusHistory = ReadRunStatusHistory(id)
+            Logs = logs,
+            StatusHistory = statusHistory
         };
     }
 
@@ -5538,21 +5562,31 @@ public class AutoTagService
     {
         try
         {
-            var path = ResolveRunFilePath(jobId, "autotag.log");
-            if (string.IsNullOrWhiteSpace(path))
+            var candidatePaths = EnumerateRunFileCandidates(jobId, "autotag.log").ToList();
+            if (candidatePaths.Count == 0)
             {
-                return new List<string>();
+                var fallbackPath = GetRunLogPath(jobId);
+                var repairedMissingArchive = TryRepairArchivedLogsFromJob(jobId, fallbackPath);
+                return repairedMissingArchive.Count > 0 ? repairedMissingArchive : new List<string>();
             }
 
-            var archived = File.ReadAllLines(path, Encoding.UTF8)
-                .Where(line => !string.IsNullOrWhiteSpace(line))
-                .ToList();
+            List<string> archived = new();
+            foreach (var path in candidatePaths)
+            {
+                var lines = File.ReadAllLines(path, Encoding.UTF8)
+                    .Where(line => !string.IsNullOrWhiteSpace(line))
+                    .ToList();
+                if (lines.Count > archived.Count)
+                {
+                    archived = lines;
+                }
+            }
             if (archived.Count > 0)
             {
                 return archived;
             }
 
-            var repaired = TryRepairArchivedLogsFromJob(jobId, path);
+            var repaired = TryRepairArchivedLogsFromJob(jobId, GetRunLogPath(jobId));
             return repaired.Count > 0 ? repaired : archived;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -5569,16 +5603,28 @@ public class AutoTagService
     {
         try
         {
-            var path = ResolveRunFilePath(jobId, "status-history.ndjson");
-            if (string.IsNullOrWhiteSpace(path))
+            var candidatePaths = EnumerateRunFileCandidates(jobId, "status-history.ndjson").ToList();
+            if (candidatePaths.Count == 0)
             {
-                return new List<TaggingStatusSnapshot>();
+                var fallbackPath = GetRunStatusHistoryPath(jobId);
+                var repairedMissingArchive = TryRepairArchivedStatusFromJob(jobId, fallbackPath);
+                return repairedMissingArchive.Count > 0 ? repairedMissingArchive : new List<TaggingStatusSnapshot>();
             }
 
-            var (entries, skippedMalformed) = ParseStatusHistoryEntries(path);
+            List<TaggingStatusSnapshot> entries = new();
+            var skippedMalformed = 0;
+            foreach (var path in candidatePaths)
+            {
+                var (candidateEntries, candidateSkippedMalformed) = ParseStatusHistoryEntries(path);
+                if (candidateEntries.Count > entries.Count)
+                {
+                    entries = candidateEntries;
+                    skippedMalformed = candidateSkippedMalformed;
+                }
+            }
             if (entries.Count == 0)
             {
-                var repaired = TryRepairArchivedStatusFromJob(jobId, path);
+                var repaired = TryRepairArchivedStatusFromJob(jobId, GetRunStatusHistoryPath(jobId));
                 if (repaired.Count > 0)
                 {
                     return repaired;
@@ -5618,6 +5664,11 @@ public class AutoTagService
                 return new List<string>();
             }
 
+            var archiveDirectory = Path.GetDirectoryName(archiveLogPath);
+            if (!string.IsNullOrWhiteSpace(archiveDirectory))
+            {
+                Directory.CreateDirectory(archiveDirectory);
+            }
             File.WriteAllLines(archiveLogPath, logs, new UTF8Encoding(false));
             if (_logger.IsEnabled(LogLevel.Information))
             {
@@ -5649,6 +5700,11 @@ public class AutoTagService
                 return new List<TaggingStatusSnapshot>();
             }
 
+            var archiveDirectory = Path.GetDirectoryName(archiveStatusPath);
+            if (!string.IsNullOrWhiteSpace(archiveDirectory))
+            {
+                Directory.CreateDirectory(archiveDirectory);
+            }
             var statusLines = statusHistory
                 .Select(entry => JsonSerializer.Serialize(entry, _jsonCompactOptions))
                 .ToList();
@@ -5902,6 +5958,30 @@ public class AutoTagService
         }
 
         return null;
+    }
+
+    private IEnumerable<string> EnumerateRunFileCandidates(string jobId, string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(jobId) || string.IsNullOrWhiteSpace(fileName))
+        {
+            yield break;
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var root in EnumerateHistoryRoots())
+        {
+            var candidate = Path.Join(root, jobId, fileName);
+            if (!File.Exists(candidate))
+            {
+                continue;
+            }
+
+            var normalized = Path.GetFullPath(candidate);
+            if (seen.Add(normalized))
+            {
+                yield return normalized;
+            }
+        }
     }
 
     private void BackfillArchivedRuns()
