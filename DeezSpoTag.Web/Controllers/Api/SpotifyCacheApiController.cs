@@ -370,15 +370,43 @@ public class SpotifyCacheApiController : ControllerBase
 
     private async Task PersistArtistVisualPathsAsync(long artistId, MaterializedPushVisuals visuals, CancellationToken cancellationToken)
     {
+        var artistIds = await ResolveLinkedArtistIdsAsync(artistId, cancellationToken);
         if (!string.IsNullOrWhiteSpace(visuals.AvatarVisual?.LocalPath))
         {
-            await _libraryRepository.UpdateArtistImagePathAsync(artistId, visuals.AvatarVisual.LocalPath!, cancellationToken);
+            foreach (var linkedArtistId in artistIds)
+            {
+                await _libraryRepository.UpdateArtistImagePathAsync(linkedArtistId, visuals.AvatarVisual.LocalPath!, cancellationToken);
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(visuals.BackgroundVisual?.LocalPath))
         {
-            await _libraryRepository.UpdateArtistBackgroundPathAsync(artistId, visuals.BackgroundVisual.LocalPath!, cancellationToken);
+            foreach (var linkedArtistId in artistIds)
+            {
+                await _libraryRepository.UpdateArtistBackgroundPathAsync(linkedArtistId, visuals.BackgroundVisual.LocalPath!, cancellationToken);
+            }
         }
+    }
+
+    private async Task<IReadOnlyCollection<long>> ResolveLinkedArtistIdsAsync(long artistId, CancellationToken cancellationToken)
+    {
+        var artistIds = new HashSet<long> { artistId };
+        foreach (var source in new[] { "spotify", "deezer", "apple" })
+        {
+            var sourceId = await _libraryRepository.GetArtistSourceIdAsync(artistId, source, cancellationToken);
+            if (string.IsNullOrWhiteSpace(sourceId))
+            {
+                continue;
+            }
+
+            var linkedIds = await _libraryRepository.GetArtistIdsBySourceIdAsync(source, sourceId, cancellationToken);
+            foreach (var linkedId in linkedIds)
+            {
+                artistIds.Add(linkedId);
+            }
+        }
+
+        return artistIds;
     }
 
     private static PushTarget ResolvePushTarget(string? target)
@@ -410,36 +438,39 @@ public class SpotifyCacheApiController : ControllerBase
 
         try
         {
-            var plexLocation = await PlexClient.FindArtistLocationAsync(plex.Url, plex.Token, context.ArtistName, cancellationToken);
-            if (plexLocation is null)
+            var plexLocations = await PlexClient.FindArtistLocationsAsync(plex.Url, plex.Token, context.ArtistName, cancellationToken);
+            if (plexLocations.Count == 0)
             {
                 warnings.Add("Plex artist not found.");
                 return;
             }
 
-            var avatarUpdated = await PushPlexAvatarAsync(plex, plexLocation, context, cancellationToken);
-            updates.AvatarUpdated = avatarUpdated || updates.AvatarUpdated;
-
-            var backgroundUpdated = await PushPlexBackgroundAsync(plex, plexLocation, context, cancellationToken);
-            updates.BackgroundUpdated = backgroundUpdated || updates.BackgroundUpdated;
-
-            if (avatarUpdated || backgroundUpdated)
+            foreach (var plexLocation in plexLocations)
             {
-                var locked = await PlexClient.LockArtistArtworkAsync(
-                    plex.Url!,
-                    plex.Token!,
-                    plexLocation.SectionKey,
-                    plexLocation.RatingKey,
-                    lockPoster: avatarUpdated,
-                    lockBackground: backgroundUpdated,
-                    cancellationToken);
-                if (!locked)
-                {
-                    warnings.Add("Plex artwork lock failed; Plex may revert avatar/background on refresh.");
-                }
-            }
+                var avatarUpdated = await PushPlexAvatarAsync(plex, plexLocation, context, cancellationToken);
+                updates.AvatarUpdated = avatarUpdated || updates.AvatarUpdated;
 
-            updates.BioUpdated = await PushPlexBiographyAsync(plex, plexLocation, context, cancellationToken) || updates.BioUpdated;
+                var backgroundUpdated = await PushPlexBackgroundAsync(plex, plexLocation, context, cancellationToken);
+                updates.BackgroundUpdated = backgroundUpdated || updates.BackgroundUpdated;
+
+                if (avatarUpdated || backgroundUpdated)
+                {
+                    var locked = await PlexClient.LockArtistArtworkAsync(
+                        plex.Url!,
+                        plex.Token!,
+                        plexLocation.SectionKey,
+                        plexLocation.RatingKey,
+                        lockPoster: avatarUpdated,
+                        lockBackground: backgroundUpdated,
+                        cancellationToken);
+                    if (!locked)
+                    {
+                        warnings.Add("Plex artwork lock failed; Plex may revert avatar/background on refresh.");
+                    }
+                }
+
+                updates.BioUpdated = await PushPlexBiographyAsync(plex, plexLocation, context, cancellationToken) || updates.BioUpdated;
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -539,16 +570,19 @@ public class SpotifyCacheApiController : ControllerBase
 
         try
         {
-            var jellyfinId = await JellyfinClient.FindArtistIdAsync(jellyfin.Url, jellyfin.ApiKey, context.ArtistName, cancellationToken);
-            if (string.IsNullOrWhiteSpace(jellyfinId))
+            var jellyfinIds = await JellyfinClient.FindArtistIdsAsync(jellyfin.Url, jellyfin.ApiKey, context.ArtistName, cancellationToken);
+            if (jellyfinIds.Count == 0)
             {
                 warnings.Add("Jellyfin artist not found.");
                 return;
             }
 
-            updates.AvatarUpdated = await PushJellyfinAvatarAsync(jellyfin, jellyfinId, context, warnings, cancellationToken) || updates.AvatarUpdated;
-            updates.BackgroundUpdated = await PushJellyfinBackgroundAsync(jellyfin, jellyfinId, context, warnings, cancellationToken) || updates.BackgroundUpdated;
-            updates.BioUpdated = await PushJellyfinBiographyAsync(jellyfin, jellyfinId, context, cancellationToken) || updates.BioUpdated;
+            foreach (var jellyfinId in jellyfinIds)
+            {
+                updates.AvatarUpdated = await PushJellyfinAvatarAsync(jellyfin, jellyfinId, context, warnings, cancellationToken) || updates.AvatarUpdated;
+                updates.BackgroundUpdated = await PushJellyfinBackgroundAsync(jellyfin, jellyfinId, context, warnings, cancellationToken) || updates.BackgroundUpdated;
+                updates.BioUpdated = await PushJellyfinBiographyAsync(jellyfin, jellyfinId, context, cancellationToken) || updates.BioUpdated;
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -706,15 +740,10 @@ public class SpotifyCacheApiController : ControllerBase
             warnings.Add(backgroundMaterialized.Warning);
         }
 
-        if (!string.IsNullOrWhiteSpace(avatarVisual?.LocalPath))
-        {
-            await _libraryRepository.UpdateArtistImagePathAsync(artistId, avatarVisual.LocalPath!, cancellationToken);
-        }
-
-        if (!string.IsNullOrWhiteSpace(backgroundVisual?.LocalPath))
-        {
-            await _libraryRepository.UpdateArtistBackgroundPathAsync(artistId, backgroundVisual.LocalPath!, cancellationToken);
-        }
+        await PersistArtistVisualPathsAsync(
+            artistId,
+            new MaterializedPushVisuals(avatarVisual, backgroundVisual),
+            cancellationToken);
 
         return Ok(new
         {
