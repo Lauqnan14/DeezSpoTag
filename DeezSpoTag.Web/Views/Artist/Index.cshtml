@@ -1493,97 +1493,60 @@ async function resolveSpotifyUrlToDeezer(url) {
         return null;
     }
 
-    const metadataKey = JSON.stringify([
-        link,
-        String(request?.title || '').trim(),
-        String(request?.artist || '').trim(),
-        String(request?.album || '').trim(),
-        String(request?.isrc || '').trim(),
-        Number.isFinite(Number(request?.durationMs)) ? Number(request.durationMs) : 0
-    ]);
+    const normalizedRequest = buildArtistResolvePayload(request, link);
+    const cacheKey = buildArtistResolveCacheKey(normalizedRequest);
 
-    if (artistSpotifyResolveCache.has(metadataKey)) {
-        return artistSpotifyResolveCache.get(metadataKey);
+    if (artistSpotifyResolveCache.has(cacheKey)) {
+        return artistSpotifyResolveCache.get(cacheKey);
     }
-    if (artistSpotifyResolveInFlight.has(metadataKey)) {
-        return await artistSpotifyResolveInFlight.get(metadataKey);
+    if (artistSpotifyResolveInFlight.has(cacheKey)) {
+        return await artistSpotifyResolveInFlight.get(cacheKey);
     }
 
-    const resolvePromise = (async () => {
-        const facade = getArtistPlaybackFacade();
-        if (facade && typeof facade.resolveTrackBySpotifyRequest === 'function') {
-            try {
-                const resolved = await facade.resolveTrackBySpotifyRequest({
-                    link,
-                    title: String(request?.title || '').trim(),
-                    artist: String(request?.artist || '').trim(),
-                    album: String(request?.album || '').trim(),
-                    isrc: String(request?.isrc || '').trim(),
-                    durationMs: Number.isFinite(Number(request?.durationMs)) ? Number(request.durationMs) : 0
-                });
-                if (resolved?.type === 'track' && resolved?.deezerId) {
-                    artistSpotifyResolveCache.set(metadataKey, resolved);
-                    return resolved;
-                }
-            } catch {
-                // Fall through to API resolver.
-            }
-        }
-
-        try {
-            const resolved = await fetchJsonOptional(`/api/spotify/resolve-deezer?url=${encodeURIComponent(link)}`);
-            const normalized = resolved?.type === 'track' && resolved?.deezerId ? resolved : null;
-            artistSpotifyResolveCache.set(metadataKey, normalized);
-            return normalized;
-        } catch {
-            artistSpotifyResolveCache.set(metadataKey, null);
-            return null;
-        }
-    })();
-
-    artistSpotifyResolveInFlight.set(metadataKey, resolvePromise);
+    const resolvePromise = resolveArtistSpotifyTrack(normalizedRequest);
+    artistSpotifyResolveInFlight.set(cacheKey, resolvePromise);
     try {
-        return await resolvePromise;
+        const resolved = await resolvePromise;
+        artistSpotifyResolveCache.set(cacheKey, resolved);
+        return resolved;
     } finally {
-        artistSpotifyResolveInFlight.delete(metadataKey);
+        artistSpotifyResolveInFlight.delete(cacheKey);
     }
 }
 
 function buildArtistSpotifyWebUrl(uri) {
-    if (!uri) {
+    const raw = String(uri || '').trim();
+    if (!raw) {
         return '';
     }
-    const value = String(uri).trim();
-    if (!value) {
-        return '';
-    }
-    if (value.startsWith('http://') || value.startsWith('https://')) {
-        return value;
-    }
-    if (value.startsWith('spotify:')) {
-        const parts = value.split(':');
-        if (parts.length >= 3 && parts[1] && parts[2]) {
-            return `https://open.spotify.com/${parts[1]}/${parts[2]}`;
+
+    try {
+        const directUrl = new URL(raw, window.location.origin);
+        const protocol = directUrl.protocol.toLowerCase();
+        if (protocol === 'http:' || protocol === 'https:') {
+            return directUrl.toString();
         }
+    } catch {
+        // Continue with URI handling.
     }
-    return '';
+
+    const spotifyUri = /^spotify:([^:]+):([A-Za-z0-9]+)$/i.exec(raw);
+    if (!spotifyUri) {
+        return '';
+    }
+
+    const type = spotifyUri[1].toLowerCase();
+    const id = spotifyUri[2];
+    return `https://open.spotify.com/${encodeURIComponent(type)}/${encodeURIComponent(id)}`;
 }
 
 function normalizeArtistSpotifyTrackSourceUrl(url, fallbackTrackId = '') {
-    const initial = buildArtistSpotifyWebUrl(url);
+    const parsed = parseSpotifyUrl(url);
+    if (parsed?.type === 'track' && parsed.id) {
+        return `https://open.spotify.com/track/${encodeURIComponent(parsed.id)}`;
+    }
+
     const fallbackId = String(fallbackTrackId || '').trim();
-    if (!initial) {
-        return fallbackId ? `https://open.spotify.com/track/${encodeURIComponent(fallbackId)}` : '';
-    }
-
-    const normalized = String(initial)
-        .replace(/open\.spotify\.com\/intl-[^/]+\//i, 'open.spotify.com/')
-        .trim();
-
-    if (normalized) {
-        return normalized;
-    }
-
     return fallbackId ? `https://open.spotify.com/track/${encodeURIComponent(fallbackId)}` : '';
 }
 
@@ -1616,53 +1579,87 @@ function buildSpotifyTrackResolveRequestFromArtistButton(button) {
 }
 
 async function fetchJsonOptional(url) {
-    const response = await fetch(url);
-    if (response.status === 404) {
-        return null;
-    }
-    if (!response.ok) {
-        return null;
-    }
-    const raw = await response.text();
-    const trimmed = raw.trim();
-    if (!trimmed || trimmed === 'undefined') {
-        return null;
-    }
-    try {
-        return JSON.parse(raw);
-    } catch {
-        return null;
-    }
+    return fetchJsonCore(url, { method: 'GET' }, true);
 }
 
 function parseSpotifyUrl(url) {
-    if (!url) {
+    const raw = String(url || '').trim();
+    if (!raw) {
         return null;
     }
-    const trimmed = String(url).trim();
-    if (trimmed.startsWith('spotify:')) {
-        const uriParts = trimmed.split(':');
-        if (uriParts.length >= 3 && uriParts[1] && uriParts[2]) {
-            return { type: uriParts[1].toLowerCase(), id: uriParts[2] };
-        }
+
+    const uriMatch = /^spotify:(album|playlist|track|show|episode|artist|station):([A-Za-z0-9]+)$/i.exec(raw);
+    if (uriMatch) {
+        return { type: uriMatch[1].toLowerCase(), id: uriMatch[2] };
     }
 
-    const directMatch = /open\.spotify\.com\/(?:intl-[a-z]+\/)?(album|playlist|track|show|episode|artist|station)\/([a-z0-9]+)/i.exec(trimmed);
-    if (directMatch) {
-        return { type: directMatch[1].toLowerCase(), id: directMatch[2] };
+    const webUrl = buildArtistSpotifyWebUrl(raw);
+    if (!webUrl) {
+        return null;
     }
 
     try {
-        const parsed = new URL(trimmed);
+        const parsed = new URL(webUrl);
         const segments = parsed.pathname.split('/').filter(Boolean);
-        const kindIndex = segments.findIndex(seg => /^(album|playlist|track|show|episode|artist|station)$/i.test(seg));
-        if (kindIndex >= 0 && segments[kindIndex + 1]) {
-            return { type: segments[kindIndex].toLowerCase(), id: segments[kindIndex + 1] };
+        const allowedTypes = new Set(['album', 'playlist', 'track', 'show', 'episode', 'artist', 'station']);
+        for (let index = 0; index < segments.length - 1; index++) {
+            const segment = segments[index].toLowerCase();
+            const id = segments[index + 1];
+            if (allowedTypes.has(segment) && /^[A-Za-z0-9]+$/.test(id)) {
+                return { type: segment, id };
+            }
         }
     } catch {
-        return null;
+        // Invalid URL.
     }
+
     return null;
+}
+
+function buildArtistResolvePayload(request, link) {
+    const rawDuration = Number(request?.durationMs);
+    const durationMs = Number.isFinite(rawDuration) && rawDuration > 0 ? Math.round(rawDuration) : 0;
+
+    return {
+        link,
+        title: String(request?.title || '').trim(),
+        artist: String(request?.artist || '').trim(),
+        album: String(request?.album || '').trim(),
+        isrc: String(request?.isrc || '').trim(),
+        durationMs
+    };
+}
+
+function buildArtistResolveCacheKey(payload) {
+    return [
+        payload.link,
+        payload.title,
+        payload.artist,
+        payload.album,
+        payload.isrc,
+        String(payload.durationMs || 0)
+    ].join('\u241f');
+}
+
+function isResolvedArtistTrack(value) {
+    return value?.type === 'track' && Boolean(value?.deezerId);
+}
+
+async function resolveArtistSpotifyTrack(payload) {
+    const facade = getArtistPlaybackFacade();
+    if (facade && typeof facade.resolveTrackBySpotifyRequest === 'function') {
+        try {
+            const fromFacade = await facade.resolveTrackBySpotifyRequest(payload);
+            if (isResolvedArtistTrack(fromFacade)) {
+                return fromFacade;
+            }
+        } catch {
+            // Continue with API fallback.
+        }
+    }
+
+    const fromApi = await fetchJsonOptional(`/api/spotify/resolve-deezer?url=${encodeURIComponent(payload.link)}`);
+    return isResolvedArtistTrack(fromApi) ? fromApi : null;
 }
 
 function parseDeezerArtistUrl(url) {
@@ -1763,18 +1760,28 @@ function showArtistToast(message, isError = false) {
 }
 
 async function fetchJson(url, options = {}) {
+    return fetchJsonCore(url, options, false);
+}
+
+async function fetchJsonCore(url, options = {}, allowNotFound) {
     const response = await fetch(url, options);
     if (!response.ok) {
+        if (allowNotFound && response.status === 404) {
+            return null;
+        }
         const message = await response.text();
         throw new Error(message || `Request failed (${response.status})`);
     }
-    const raw = await response.text();
-    const trimmed = raw.trim();
-    if (!trimmed || trimmed === 'undefined') {
+    return parseJsonBodyOrNull(await response.text());
+}
+
+function parseJsonBodyOrNull(raw) {
+    const text = String(raw || '').trim();
+    if (!text || text === 'undefined') {
         return null;
     }
     try {
-        return JSON.parse(raw);
+        return JSON.parse(text);
     } catch {
         return null;
     }

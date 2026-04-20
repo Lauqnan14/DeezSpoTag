@@ -166,9 +166,9 @@ public sealed class ShazamMatcher
 
     private static double ComputeTitleSimilarity(string? sourceTitle, string? recognizedTitle)
     {
-        var left = NormalizeForSimilarity(OneTaggerMatching.CleanTitleMatching(sourceTitle ?? string.Empty));
-        var right = NormalizeForSimilarity(OneTaggerMatching.CleanTitleMatching(recognizedTitle ?? string.Empty));
-        return ComputeSimilarityScore(left, right);
+        var left = AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(sourceTitle ?? string.Empty));
+        var right = AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(recognizedTitle ?? string.Empty));
+        return AutoTagSimilarity.ComputeScore(left, right);
     }
 
     private static double ComputeArtistSimilarity(AutoTagAudioInfo info, ShazamRecognitionInfo recognized)
@@ -185,9 +185,9 @@ public sealed class ShazamMatcher
             recognizedArtists = OneTaggerMatching.CleanArtists(new[] { recognized.Artist });
         }
 
-        return ComputeSimilarityScore(
-            NormalizeForSimilarity(string.Join(" ", sourceArtists)),
-            NormalizeForSimilarity(string.Join(" ", recognizedArtists)));
+        return AutoTagSimilarity.ComputeScore(
+            AutoTagSimilarity.NormalizeText(string.Join(" ", sourceArtists)),
+            AutoTagSimilarity.NormalizeText(string.Join(" ", recognizedArtists)));
     }
 
     private static int? ComputeDurationDiffSeconds(int? sourceDurationSeconds, long? recognizedDurationMs)
@@ -221,83 +221,6 @@ public sealed class ShazamMatcher
 
         var normalized = durationDiffSeconds.Value / (double)maxDiff;
         return Math.Clamp(1d - (normalized * 0.9d), 0d, 1d);
-    }
-
-    private static string NormalizeForSimilarity(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        var chars = value
-            .ToLowerInvariant()
-            .Select(ch => char.IsLetterOrDigit(ch) ? ch : ' ')
-            .ToArray();
-        return string.Join(" ", new string(chars).Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-    }
-
-    private static double ComputeSimilarityScore(string left, string right)
-    {
-        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
-        {
-            return 0d;
-        }
-
-        if (string.Equals(left, right, StringComparison.Ordinal))
-        {
-            return 1d;
-        }
-
-        var distance = ComputeLevenshteinDistance(left, right);
-        var maxLength = Math.Max(left.Length, right.Length);
-        if (maxLength <= 0)
-        {
-            return 1d;
-        }
-
-        var score = 1d - (distance / (double)maxLength);
-        return Math.Clamp(score, 0d, 1d);
-    }
-
-    private static int ComputeLevenshteinDistance(string left, string right)
-    {
-        if (left.Length == 0)
-        {
-            return right.Length;
-        }
-
-        if (right.Length == 0)
-        {
-            return left.Length;
-        }
-
-        var rows = left.Length + 1;
-        var cols = right.Length + 1;
-        var matrix = new int[rows, cols];
-
-        for (var i = 0; i < rows; i++)
-        {
-            matrix[i, 0] = i;
-        }
-
-        for (var j = 0; j < cols; j++)
-        {
-            matrix[0, j] = j;
-        }
-
-        for (var i = 1; i < rows; i++)
-        {
-            for (var j = 1; j < cols; j++)
-            {
-                var cost = left[i - 1] == right[j - 1] ? 0 : 1;
-                matrix[i, j] = Math.Min(
-                    Math.Min(matrix[i - 1, j] + 1, matrix[i, j - 1] + 1),
-                    matrix[i - 1, j - 1] + cost);
-            }
-        }
-
-        return matrix[rows - 1, cols - 1];
     }
 
     private static bool TryParseDate(string? raw, out DateTime parsed)

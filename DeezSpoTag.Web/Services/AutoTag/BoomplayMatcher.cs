@@ -49,6 +49,15 @@ public sealed class BoomplayMatcher
     private static readonly Regex SplitArtistsRegex = CreateRegex(
         @"\s*(?:,|&|/|;|\band\b|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b|\bx\b)\s*",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly string[] VariantQualifierMarkers =
+    {
+        "instrumental",
+        "acapella",
+        "karaoke",
+        "remix",
+        "edit",
+        "live"
+    };
 
     private readonly BoomplayMetadataService _metadataService;
     private readonly ILogger<BoomplayMatcher> _logger;
@@ -76,7 +85,7 @@ public sealed class BoomplayMatcher
 
         if (boomplayConfig.MatchById)
         {
-            var byId = await TryMatchByIdAsync(info, cancellationToken);
+            var byId = await TryMatchByIdAsync(info, config, cancellationToken);
             if (byId != null)
             {
                 return byId;
@@ -101,7 +110,10 @@ public sealed class BoomplayMatcher
         return await TryMatchByQueryAsync(info, config, queries, searchLimit, cancellationToken);
     }
 
-    private async Task<AutoTagMatchResult?> TryMatchByIdAsync(AutoTagAudioInfo info, CancellationToken cancellationToken)
+    private async Task<AutoTagMatchResult?> TryMatchByIdAsync(
+        AutoTagAudioInfo info,
+        AutoTagMatchingConfig config,
+        CancellationToken cancellationToken)
     {
         foreach (var id in CollectCandidateIds(info))
         {
@@ -110,6 +122,21 @@ public sealed class BoomplayMatcher
                 var track = await _metadataService.GetSongAsync(id, cancellationToken);
                 if (track == null || !IsUsableTrack(track))
                 {
+                    continue;
+                }
+
+                if (!IsIdMatchCandidateConsistent(info, track, config))
+                {
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug(
+                            "Boomplay ID candidate rejected due to metadata mismatch. id={TrackId}, inputTitle={InputTitle}, inputArtist={InputArtist}, candidateTitle={CandidateTitle}, candidateArtist={CandidateArtist}",
+                            id,
+                            info.Title,
+                            info.Artist,
+                            track.Title,
+                            track.Artist);
+                    }
                     continue;
                 }
 
@@ -189,23 +216,148 @@ public sealed class BoomplayMatcher
             .Where(static id => !string.IsNullOrWhiteSpace(id))
             .Select(static id => id!));
 
-        foreach (var value in ReadTagValues(info, UrlTagKeys))
+        foreach (var key in UrlTagKeys)
         {
-            if (BoomplayMetadataService.TryParseBoomplayUrl(value, out var type, out var id)
-                && string.Equals(type, "track", StringComparison.OrdinalIgnoreCase)
-                && !string.IsNullOrWhiteSpace(id))
+            if (!info.Tags.TryGetValue(key, out var values) || values.Count == 0)
             {
-                candidateIds.Add(id);
                 continue;
             }
 
-            if (TryExtractSongId(value, out var parsed))
+            foreach (var value in values)
             {
-                candidateIds.Add(parsed);
+                var normalized = Normalize(value);
+                if (string.IsNullOrWhiteSpace(normalized))
+                {
+                    continue;
+                }
+
+                if (BoomplayMetadataService.TryParseBoomplayUrl(normalized, out var type, out var id)
+                    && string.Equals(type, "track", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(id))
+                {
+                    candidateIds.Add(id);
+                    continue;
+                }
+
+                // Only allow raw numeric fallback for explicit Boomplay URL tags.
+                if (key.Equals("BOOMPLAY_URL", StringComparison.OrdinalIgnoreCase)
+                    && TryExtractSongId(normalized, out var parsed))
+                {
+                    candidateIds.Add(parsed);
+                }
             }
         }
 
         return candidateIds.Distinct(StringComparer.Ordinal).ToList();
+    }
+
+    private static bool IsIdMatchCandidateConsistent(
+        AutoTagAudioInfo info,
+        BoomplayTrackMetadata track,
+        AutoTagMatchingConfig config)
+    {
+        if (HasConflictingIsrc(info.Isrc, track.Isrc))
+        {
+            return false;
+        }
+
+        var sourceArtists = ResolveSourceArtists(info);
+        var hasSourceTitle = !string.IsNullOrWhiteSpace(Normalize(info.Title));
+        var hasSourceArtists = sourceArtists.Count > 0;
+        if (!hasSourceTitle && !hasSourceArtists)
+        {
+            // If source tags are too sparse, keep ID-first behavior as last-resort.
+            return true;
+        }
+
+        if (HasIncompatibleTitleQualifier(info.Title, track.Title))
+        {
+            return false;
+        }
+
+        if (!hasSourceTitle)
+        {
+            return OneTaggerMatching.MatchArtist(
+                sourceArtists,
+                ParseArtists(track.Artist),
+                Math.Max(config.Strictness, 0.92));
+        }
+
+        var validationConfig = new AutoTagMatchingConfig
+        {
+            Strictness = Math.Max(config.Strictness, 0.92),
+            MatchDuration = false,
+            MaxDurationDifferenceSeconds = config.MaxDurationDifferenceSeconds,
+            MultipleMatches = config.MultipleMatches
+        };
+
+        var candidate = new Candidate(track);
+        var match = OneTaggerMatching.MatchTrack(
+            info,
+            new[] { candidate },
+            validationConfig,
+            new OneTaggerMatching.TrackSelectors<Candidate>(
+                c => c.Track.Title,
+                _ => null,
+                c => ParseArtists(c.Track.Artist),
+                c => c.Track.DurationMs > 0 ? TimeSpan.FromMilliseconds(c.Track.DurationMs) : null,
+                c => ParseReleaseDate(c.Track.ReleaseDate)),
+            matchArtist: hasSourceArtists);
+        return match != null;
+    }
+
+    private static bool HasConflictingIsrc(string? sourceIsrc, string? candidateIsrc)
+    {
+        var source = Normalize(sourceIsrc);
+        var candidate = Normalize(candidateIsrc);
+        return !string.IsNullOrWhiteSpace(source)
+               && !string.IsNullOrWhiteSpace(candidate)
+               && !string.Equals(source, candidate, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasIncompatibleTitleQualifier(string? sourceTitle, string? candidateTitle)
+    {
+        var source = Normalize(sourceTitle);
+        var candidate = Normalize(candidateTitle);
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(candidate))
+        {
+            return false;
+        }
+
+        foreach (var marker in VariantQualifierMarkers)
+        {
+            var sourceHasMarker = ContainsWholeWord(source, marker);
+            var candidateHasMarker = ContainsWholeWord(candidate, marker);
+            if (sourceHasMarker != candidateHasMarker)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContainsWholeWord(string value, string marker)
+    {
+        return Regex.IsMatch(
+            value,
+            $@"\b{Regex.Escape(marker)}\b",
+            RegexOptions.IgnoreCase,
+            RegexTimeout);
+    }
+
+    private static List<string> ResolveSourceArtists(AutoTagAudioInfo info)
+    {
+        var sourceArtists = info.Artists
+            .SelectMany(ParseArtists)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (sourceArtists.Count > 0)
+        {
+            return sourceArtists;
+        }
+
+        return ParseArtists(info.Artist);
     }
 
     private static void TryAddTrack(

@@ -674,11 +674,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return null;
         }
 
-        var sourceTitle = NormalizeSimilarityText(OneTaggerMatching.CleanTitleMatching(info.Title));
-        var incomingTitle = NormalizeSimilarityText(
+        var sourceTitle = AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(info.Title));
+        var incomingTitle = AutoTagSimilarity.NormalizeText(
             OneTaggerMatching.CleanTitleMatching(
                 OneTaggerMatching.FullTitle(match.Track.Title, match.Track.Version)));
-        var titleSimilarity = ComputeSimilarity(sourceTitle, incomingTitle);
+        var titleSimilarity = AutoTagSimilarity.ComputeScore(sourceTitle, incomingTitle);
 
         var sourceArtists = info.Artists.Count > 0
             ? info.Artists
@@ -730,82 +730,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         var incomingSeconds = (int)Math.Round(incomingDuration.Value.TotalSeconds);
         return Math.Abs(sourceDurationSeconds.Value - incomingSeconds) > Math.Max(1, maxDifferenceSeconds);
-    }
-
-    private static string NormalizeSimilarityText(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        var chars = value
-            .ToLowerInvariant()
-            .Select(ch => char.IsLetterOrDigit(ch) ? ch : ' ')
-            .ToArray();
-        return string.Join(" ", new string(chars).Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-    }
-
-    private static double ComputeSimilarity(string left, string right)
-    {
-        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
-        {
-            return 0d;
-        }
-
-        if (string.Equals(left, right, StringComparison.Ordinal))
-        {
-            return 1d;
-        }
-
-        var distance = ComputeLevenshteinDistance(left, right);
-        var maxLength = Math.Max(left.Length, right.Length);
-        if (maxLength <= 0)
-        {
-            return 1d;
-        }
-
-        return Math.Clamp(1d - (distance / (double)maxLength), 0d, 1d);
-    }
-
-    private static int ComputeLevenshteinDistance(string left, string right)
-    {
-        if (left.Length == 0)
-        {
-            return right.Length;
-        }
-
-        if (right.Length == 0)
-        {
-            return left.Length;
-        }
-
-        var rows = left.Length + 1;
-        var cols = right.Length + 1;
-        var matrix = new int[rows, cols];
-
-        for (var i = 0; i < rows; i++)
-        {
-            matrix[i, 0] = i;
-        }
-
-        for (var j = 0; j < cols; j++)
-        {
-            matrix[0, j] = j;
-        }
-
-        for (var i = 1; i < rows; i++)
-        {
-            for (var j = 1; j < cols; j++)
-            {
-                var cost = left[i - 1] == right[j - 1] ? 0 : 1;
-                matrix[i, j] = Math.Min(
-                    Math.Min(matrix[i - 1, j] + 1, matrix[i, j - 1] + 1),
-                    matrix[i - 1, j - 1] + cost);
-            }
-        }
-
-        return matrix[rows - 1, cols - 1];
     }
 
     private async Task EnsureArtworkFallbackAsync(
@@ -5557,29 +5481,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             }
         }
 
-        if (context.Extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
-        {
-            var id3 = (TagLib.Id3v2.Tag)context.File.GetTag(TagTypes.Id3v2, true);
-            SetId3Raw(id3, rawName, values, context.Separator, context.UseNullSeparator);
-            return;
-        }
-
-        if (context.Extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
-        {
-            var vorbis = (TagLib.Ogg.XiphComment)context.File.GetTag(TagTypes.Xiph, true);
-            SetVorbisRaw(vorbis, rawName, values, context.Separator);
-            return;
-        }
-
-        if (IsMp4Family(context.Extension))
-        {
-            Mp4TagHelper.SetMp4Raw(
-                context.File,
-                rawName,
-                ApplySeparator(values, context.Separator),
-                context.GenreAliasMap,
-                context.SplitCompositeGenres);
-        }
+        WriteRawTagValues(context, rawName, values);
     }
 
     private static bool HasRawTag(TagLib.File file, string extension, string rawName)
@@ -6758,6 +6660,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
+        WriteRawTagValues(context, rawName, values);
+    }
+
+    private static void WriteRawTagValues(TagWriteContext context, string rawName, List<string> values)
+    {
         if (context.Extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
         {
             var id3 = (TagLib.Id3v2.Tag)context.File.GetTag(TagTypes.Id3v2, true);
@@ -7114,8 +7021,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string? existingTitle,
         string platformId)
     {
+        _ = platformId;
         if (!effectiveTagSettings.Title
-            || !string.Equals(platformId, ShazamPlatform, StringComparison.OrdinalIgnoreCase)
             || string.IsNullOrWhiteSpace(existingTitle)
             || string.IsNullOrWhiteSpace(sourceTrack.Title))
         {

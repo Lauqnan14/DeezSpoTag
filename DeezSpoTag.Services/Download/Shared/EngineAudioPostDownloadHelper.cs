@@ -26,9 +26,6 @@ public static class EngineAudioPostDownloadHelper
     private const string AppleSource = "apple";
     private const string MzStaticHost = "mzstatic.com";
     private const string UnknownArtist = "Unknown Artist";
-    private const string LyricsType = "lyrics";
-    private const string UnsyncedLyricsType = "unsynced-lyrics";
-    private const string SyllableLyricsType = "syllable-lyrics";
     private const string CompletedStatus = "completed";
     private const string FailedStatus = "failed";
     private const string FetchingStatus = "fetching";
@@ -761,49 +758,7 @@ public static class EngineAudioPostDownloadHelper
 
     private static DeezSpoTagSettings BuildLyricsResolveSettings(DeezSpoTagSettings settings, TagSettings tagSettings)
     {
-        var allowsSyncedBySettings = settings.SyncedLyrics || settings.Tags?.SyncedLyrics == true;
-        var allowsUnsyncedBySettings = settings.SaveLyrics || settings.Tags?.Lyrics == true;
-
-        return new DeezSpoTagSettings
-        {
-            SyncedLyrics = allowsSyncedBySettings,
-            SaveLyrics = allowsUnsyncedBySettings,
-            LrcType = ResolveLyricsTypesForTags(tagSettings, allowsSyncedBySettings, allowsUnsyncedBySettings),
-            LrcFormat = settings.LrcFormat,
-            LyricsFallbackEnabled = settings.LyricsFallbackEnabled,
-            LyricsFallbackOrder = settings.LyricsFallbackOrder,
-            DeezerCountry = settings.DeezerCountry,
-            Arl = settings.Arl,
-            AppleMusic = settings.AppleMusic,
-            AuthorizationToken = settings.AuthorizationToken,
-            Tags = new TagSettings
-            {
-                Lyrics = tagSettings.Lyrics && allowsUnsyncedBySettings,
-                SyncedLyrics = tagSettings.SyncedLyrics && allowsSyncedBySettings
-            }
-        };
-    }
-
-    private static string ResolveLyricsTypesForTags(TagSettings tagSettings, bool allowsSynced, bool allowsUnsynced)
-    {
-        var types = new List<string>();
-        if (tagSettings.SyncedLyrics && allowsSynced)
-        {
-            types.Add(LyricsType);
-            types.Add(SyllableLyricsType);
-        }
-
-        if (tagSettings.Lyrics && allowsUnsynced)
-        {
-            types.Add(UnsyncedLyricsType);
-        }
-
-        if (types.Count == 0)
-        {
-            types.Add(LyricsType);
-        }
-
-        return string.Join(',', types.Distinct(StringComparer.OrdinalIgnoreCase));
+        return LyricsResolveSettingsBuilder.Build(settings, tagSettings);
     }
 
     public static async Task QueueParallelPostDownloadPrefetchAsync(

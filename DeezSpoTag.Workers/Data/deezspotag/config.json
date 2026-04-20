@@ -82,11 +82,11 @@
   "queueOrder": "fifo",
   "lyricsFallbackEnabled": true,
   "lyricsFallbackOrder": "apple,deezer,spotify,lrclib",
-  "normalizeGenreTags": false,
+  "normalizeGenreTags": true,
   "genreTagAliasRules": [
     {
       "alias": "Afro-Pop",
-      "canonical": "Afropop"
+      "canonical": "Afro Pop"
     },
     {
       "alias": "Hip-Hop",

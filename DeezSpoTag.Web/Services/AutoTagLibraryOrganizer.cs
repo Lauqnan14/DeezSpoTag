@@ -1678,41 +1678,15 @@ public class AutoTagLibraryOrganizer
             return;
         }
 
-        var sourceFolderName = Path.GetFileName(sourceDir);
-        if (string.IsNullOrWhiteSpace(sourceFolderName))
-        {
-            return;
-        }
-
-        var targetDirectory = GetUniqueDirectoryPath(Path.Join(duplicatesRoot, sourceFolderName), sourceDir);
-        var movedFiles = Directory.EnumerateFiles(sourceDir, "*.*", SearchOption.AllDirectories).Count();
-
-        try
-        {
-            Directory.CreateDirectory(duplicatesRoot);
-            Directory.Move(sourceDir, targetDirectory);
-            if (report != null)
-            {
-                report.MovedLeftovers += movedFiles;
-            }
-
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("AutoTag organizer moved duplicate leftovers folder {SourceDir} -> {DestinationDir}", sourceDir, targetDirectory);
-            }
-            log?.Invoke($"organizer moved duplicate leftovers folder: {sourceDir} -> {targetDirectory}");
-            report?.Entries.Add($"move-duplicate-leftovers-folder: {sourceDir} -> {targetDirectory}");
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            RecordOrganizerFailure(
-                report,
-                log,
-                "move duplicate leftovers folder",
-                sourceDir,
-                targetDirectory,
-                ex);
-        }
+        MoveDirectoryToDuplicatesRoot(
+            rootPath,
+            sourceDir,
+            duplicatesRoot,
+            options,
+            report,
+            log,
+            reason: "duplicate leftovers",
+            removeParentWhenEmpty: false);
     }
 
     private void MoveExistingNoAudioDirectoriesToQuarantine(
@@ -1770,7 +1744,8 @@ public class AutoTagLibraryOrganizer
         AutoTagOrganizerOptions options,
         AutoTagOrganizerReport? report,
         Action<string>? log,
-        string reason)
+        string reason,
+        bool removeParentWhenEmpty = true)
     {
         var sourceFolderName = Path.GetFileName(sourceDir);
         if (string.IsNullOrWhiteSpace(sourceFolderName))
@@ -1796,7 +1771,7 @@ public class AutoTagLibraryOrganizer
             }
             log?.Invoke($"organizer moved {reason} folder: {sourceDir} -> {targetDirectory}");
             report?.Entries.Add($"move-{reason.Replace(' ', '-')}-folder: {sourceDir} -> {targetDirectory}");
-            if (options.RemoveEmptyFolders)
+            if (removeParentWhenEmpty && options.RemoveEmptyFolders)
             {
                 DeleteEmptyDirectoryTree(Path.GetDirectoryName(sourceDir) ?? string.Empty, rootPath, log);
             }
