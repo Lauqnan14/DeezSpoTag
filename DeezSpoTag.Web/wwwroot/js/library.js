@@ -14713,6 +14713,10 @@ function isHighConfidenceUnmatchedSuggestion(suggestion) {
         return false;
     }
 
+    if (!suggestion.verified) {
+        return false;
+    }
+
     if (suggestion.localAlbumOverlap > 0) {
         return true;
     }

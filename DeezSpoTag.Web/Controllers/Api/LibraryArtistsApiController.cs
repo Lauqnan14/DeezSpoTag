@@ -665,8 +665,19 @@ public class LibraryArtistsApiController : ControllerBase
             return BadRequest("Library DB not configured.");
         }
 
+        var artist = await _repository.GetArtistAsync(id, cancellationToken);
+        if (artist is null)
+        {
+            return NotFound();
+        }
+
         var existingSpotifyId = await _repository.GetArtistSourceIdAsync(id, SpotifySource, cancellationToken);
         var spotifyId = request.SpotifyId.Trim();
+        if (!IsValidSpotifyEntityId(spotifyId))
+        {
+            return BadRequest("Spotify ID should be a 22-character alphanumeric value.");
+        }
+
         await _repository.UpsertArtistSourceIdAsync(id, SpotifySource, spotifyId, cancellationToken);
 
         if (!string.Equals(existingSpotifyId, spotifyId, StringComparison.OrdinalIgnoreCase))
@@ -680,6 +691,16 @@ public class LibraryArtistsApiController : ControllerBase
             $"[spotify] manual id set for artist {id}."));
 
         return Ok(new { spotifyId });
+    }
+
+    private static bool IsValidSpotifyEntityId(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length != 22)
+        {
+            return false;
+        }
+
+        return value.All(char.IsLetterOrDigit);
     }
 
     [HttpGet("{id:long}/apple-id")]
