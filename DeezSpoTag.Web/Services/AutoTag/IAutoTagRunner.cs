@@ -5,7 +5,8 @@ public sealed record AutoTagResumeCursor(
     int PlatformIndex,
     int FileIndex,
     int? PlatformCount = null,
-    int? FileCount = null);
+    int? FileCount = null,
+    string? LastPath = null);
 
 public interface IAutoTagRunner
 {

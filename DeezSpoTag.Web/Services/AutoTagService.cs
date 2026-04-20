@@ -4821,7 +4821,8 @@ public class AutoTagService
             Math.Max(0, checkpoint.PlatformIndex),
             Math.Max(0, checkpoint.FileIndex),
             checkpoint.PlatformCount,
-            checkpoint.FileCount);
+            checkpoint.FileCount,
+            checkpoint.LastPath);
     }
 
     private static bool CanApplyResumeCheckpoint(AutoTagResumeCheckpoint? checkpoint, AutoTagStageConfig stage)
