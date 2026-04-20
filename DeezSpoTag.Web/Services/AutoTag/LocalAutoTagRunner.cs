@@ -601,6 +601,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagMatchResult match,
         bool usedShazamForStatus)
     {
+        var mismatchReason = EvaluateGlobalMismatchGuard(info, match, context.Plan.MatchingConfig);
+        if (!string.IsNullOrWhiteSpace(mismatchReason))
+        {
+            EmitSkippedStatus(context, mismatchReason, usedShazamForStatus);
+            return;
+        }
+
         EmitTaggingStatus(context, match.Accuracy, usedShazamForStatus);
 
         try
@@ -636,6 +643,155 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             _logger.LogWarning(ex, "AutoTag failed for {File} on {Platform}", context.File, context.Platform);
             EmitErrorStatus(context, ex.Message, usedShazamForStatus);
         }
+    }
+
+    private static string? EvaluateGlobalMismatchGuard(
+        AutoTagAudioInfo info,
+        AutoTagMatchResult match,
+        AutoTagMatchingConfig matchingConfig)
+    {
+        if (match.Track == null || !info.HasEmbeddedTitle || !info.HasEmbeddedArtist)
+        {
+            return null;
+        }
+
+        if (HasMatchingIsrc(info.Isrc, match.Track.Isrc))
+        {
+            return null;
+        }
+
+        var sourceTitle = NormalizeSimilarityText(OneTaggerMatching.CleanTitleMatching(info.Title));
+        var incomingTitle = NormalizeSimilarityText(
+            OneTaggerMatching.CleanTitleMatching(
+                OneTaggerMatching.FullTitle(match.Track.Title, match.Track.Version)));
+        var titleSimilarity = ComputeSimilarity(sourceTitle, incomingTitle);
+
+        var sourceArtists = info.Artists.Count > 0
+            ? info.Artists
+            : (string.IsNullOrWhiteSpace(info.Artist) ? new List<string>() : new List<string> { info.Artist });
+        var incomingArtists = match.Track.Artists ?? new List<string>();
+
+        var artistStrictness = Math.Clamp(matchingConfig.Strictness - 0.05d, 0.45d, 0.95d);
+        var artistCompatible = sourceArtists.Count == 0
+            || incomingArtists.Count == 0
+            || OneTaggerMatching.MatchArtist(sourceArtists, incomingArtists, artistStrictness);
+
+        var durationMismatch = HasDurationMismatch(info.DurationSeconds, match.Track.Duration, matchingConfig.MaxDurationDifferenceSeconds);
+        var minTitleSimilarity = Math.Clamp(matchingConfig.Strictness - 0.08d, 0.62d, 0.95d);
+
+        if (titleSimilarity < minTitleSimilarity)
+        {
+            return $"match rejected by quality guard (title similarity {titleSimilarity:0.000} < {minTitleSimilarity:0.000})";
+        }
+
+        if (!artistCompatible && titleSimilarity < 0.90d)
+        {
+            return "match rejected by quality guard (artist mismatch)";
+        }
+
+        if (durationMismatch && titleSimilarity < 0.90d)
+        {
+            return "match rejected by quality guard (duration mismatch)";
+        }
+
+        return null;
+    }
+
+    private static bool HasMatchingIsrc(string? sourceIsrc, string? incomingIsrc)
+    {
+        if (string.IsNullOrWhiteSpace(sourceIsrc) || string.IsNullOrWhiteSpace(incomingIsrc))
+        {
+            return false;
+        }
+
+        return string.Equals(sourceIsrc.Trim(), incomingIsrc.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasDurationMismatch(int? sourceDurationSeconds, TimeSpan? incomingDuration, int maxDifferenceSeconds)
+    {
+        if (!sourceDurationSeconds.HasValue || !incomingDuration.HasValue || sourceDurationSeconds.Value <= 0 || incomingDuration.Value <= TimeSpan.Zero)
+        {
+            return false;
+        }
+
+        var incomingSeconds = (int)Math.Round(incomingDuration.Value.TotalSeconds);
+        return Math.Abs(sourceDurationSeconds.Value - incomingSeconds) > Math.Max(1, maxDifferenceSeconds);
+    }
+
+    private static string NormalizeSimilarityText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var chars = value
+            .ToLowerInvariant()
+            .Select(ch => char.IsLetterOrDigit(ch) ? ch : ' ')
+            .ToArray();
+        return string.Join(" ", new string(chars).Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+    }
+
+    private static double ComputeSimilarity(string left, string right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+        {
+            return 0d;
+        }
+
+        if (string.Equals(left, right, StringComparison.Ordinal))
+        {
+            return 1d;
+        }
+
+        var distance = ComputeLevenshteinDistance(left, right);
+        var maxLength = Math.Max(left.Length, right.Length);
+        if (maxLength <= 0)
+        {
+            return 1d;
+        }
+
+        return Math.Clamp(1d - (distance / (double)maxLength), 0d, 1d);
+    }
+
+    private static int ComputeLevenshteinDistance(string left, string right)
+    {
+        if (left.Length == 0)
+        {
+            return right.Length;
+        }
+
+        if (right.Length == 0)
+        {
+            return left.Length;
+        }
+
+        var rows = left.Length + 1;
+        var cols = right.Length + 1;
+        var matrix = new int[rows, cols];
+
+        for (var i = 0; i < rows; i++)
+        {
+            matrix[i, 0] = i;
+        }
+
+        for (var j = 0; j < cols; j++)
+        {
+            matrix[0, j] = j;
+        }
+
+        for (var i = 1; i < rows; i++)
+        {
+            for (var j = 1; j < cols; j++)
+            {
+                var cost = left[i - 1] == right[j - 1] ? 0 : 1;
+                matrix[i, j] = Math.Min(
+                    Math.Min(matrix[i - 1, j] + 1, matrix[i, j - 1] + 1),
+                    matrix[i - 1, j - 1] + cost);
+            }
+        }
+
+        return matrix[rows - 1, cols - 1];
     }
 
     private async Task EnsureArtworkFallbackAsync(
@@ -1867,7 +2023,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return null;
         }
 
-        return await _shazamMatcher.MatchAsync(filePath, info, shazamConfig, shazamCache, token);
+        return await _shazamMatcher.MatchAsync(filePath, info, matchingConfig, shazamConfig, shazamCache, token);
     }
 
     private async Task<AutoTagMatchResult?> TryMatchShazamByIdsAsync(

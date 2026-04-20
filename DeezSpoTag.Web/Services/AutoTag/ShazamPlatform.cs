@@ -92,6 +92,27 @@ public sealed class ShazamPlatform : AutoTagPlatformBase
                         Id = "include_release_date",
                         Label = "Include release date/year from Shazam metadata",
                         Value = new PlatformCustomOptionBoolean { Value = true }
+                    },
+                    new()
+                    {
+                        Id = "min_title_similarity",
+                        Label = "Minimum title similarity",
+                        Value = new PlatformCustomOptionNumber { Min = 40, Max = 100, Step = 1, Value = 72, Slider = true },
+                        Tooltip = "Reject Shazam fingerprint matches when title similarity (%) is below this threshold."
+                    },
+                    new()
+                    {
+                        Id = "min_artist_similarity",
+                        Label = "Minimum artist similarity",
+                        Value = new PlatformCustomOptionNumber { Min = 20, Max = 100, Step = 1, Value = 52, Slider = true },
+                        Tooltip = "Reject Shazam fingerprint matches when artist similarity (%) is too low."
+                    },
+                    new()
+                    {
+                        Id = "max_duration_delta_seconds",
+                        Label = "Max duration delta (seconds)",
+                        Value = new PlatformCustomOptionNumber { Min = 5, Max = 90, Step = 1, Value = 20, Slider = true },
+                        Tooltip = "Reject low-similarity matches when Shazam duration differs beyond this limit."
                     }
                 }
             }
