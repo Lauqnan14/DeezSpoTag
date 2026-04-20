@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Collections.Concurrent;
+using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Library;
 using System.Linq;
 
@@ -55,6 +56,7 @@ public sealed class SpotifyArtistService
     private readonly SpotifyDeezerLinkService _deezerLinkService;
     private readonly ShazamRecognitionService _shazamRecognitionService;
     private readonly AutoTagDefaultsStore _autoTagDefaultsStore;
+    private readonly TaggingProfileService _taggingProfileService;
     private readonly ILogger<SpotifyArtistService> _logger;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private readonly ConcurrentDictionary<long, (DateTimeOffset Stamp, HashSet<string> Titles)> _localAlbumTitleSetCache = new();
@@ -67,6 +69,7 @@ public sealed class SpotifyArtistService
         ArtistPageCacheRepository cacheRepository,
         LibraryConfigStore configStore,
         AutoTagDefaultsStore autoTagDefaultsStore,
+        TaggingProfileService taggingProfileService,
         SpotifyArtistServiceDependencies dependencies,
         ILogger<SpotifyArtistService> logger)
     {
@@ -78,6 +81,7 @@ public sealed class SpotifyArtistService
         _deezerLinkService = dependencies.DeezerLinkService;
         _shazamRecognitionService = dependencies.ShazamRecognitionService;
         _autoTagDefaultsStore = autoTagDefaultsStore;
+        _taggingProfileService = taggingProfileService;
         _logger = logger;
     }
 
@@ -2553,6 +2557,24 @@ public sealed class SpotifyArtistService
     {
         try
         {
+            var profiles = await _taggingProfileService.LoadAsync();
+            var defaultProfile = profiles.FirstOrDefault(profile => profile.IsDefault)
+                ?? profiles.FirstOrDefault();
+            if (TryGetRenameSpotifyArtistFoldersFromProfile(defaultProfile, out var profilePreference))
+            {
+                return profilePreference;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to resolve renameSpotifyArtistFolders from default profile.");
+            }
+        }
+
+        try
+        {
             var defaults = await _autoTagDefaultsStore.LoadAsync();
             return defaults.RenameSpotifyArtistFolders != false;
         }
@@ -2565,6 +2587,64 @@ public sealed class SpotifyArtistService
 
             return true;
         }
+    }
+
+    private static bool TryGetRenameSpotifyArtistFoldersFromProfile(TaggingProfile? profile, out bool value)
+    {
+        value = true;
+        if (profile?.AutoTag?.Data is not { Count: > 0 } data)
+        {
+            return false;
+        }
+
+        var key = data.Keys.FirstOrDefault(entry =>
+            string.Equals(entry, "renameSpotifyArtistFolders", StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return false;
+        }
+
+        return TryReadBoolean(data[key], out value);
+    }
+
+    private static bool TryReadBoolean(JsonElement element, out bool value)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.True:
+                value = true;
+                return true;
+            case JsonValueKind.False:
+                value = false;
+                return true;
+            case JsonValueKind.String:
+            {
+                var raw = element.GetString();
+                if (bool.TryParse(raw, out var parsedBool))
+                {
+                    value = parsedBool;
+                    return true;
+                }
+
+                if (int.TryParse(raw, out var parsedInt))
+                {
+                    value = parsedInt != 0;
+                    return true;
+                }
+
+                break;
+            }
+            case JsonValueKind.Number:
+                if (element.TryGetInt32(out var number))
+                {
+                    value = number != 0;
+                    return true;
+                }
+                break;
+        }
+
+        value = true;
+        return false;
     }
 
     private async Task<string?> TryFetchCanonicalSpotifyArtistNameAsync(string spotifyArtistId, CancellationToken cancellationToken)
