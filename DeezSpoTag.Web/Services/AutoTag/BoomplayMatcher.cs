@@ -125,18 +125,8 @@ public sealed class BoomplayMatcher
                     continue;
                 }
 
-                if (!IsIdMatchCandidateConsistent(info, track, config))
+                if (ShouldRejectIdCandidate(info, track, config, id))
                 {
-                    if (_logger.IsEnabled(LogLevel.Debug))
-                    {
-                        _logger.LogDebug(
-                            "Boomplay ID candidate rejected due to metadata mismatch. id={TrackId}, inputTitle={InputTitle}, inputArtist={InputArtist}, candidateTitle={CandidateTitle}, candidateArtist={CandidateArtist}",
-                            id,
-                            info.Title,
-                            info.Artist,
-                            track.Title,
-                            track.Artist);
-                    }
                     continue;
                 }
 
@@ -160,6 +150,31 @@ public sealed class BoomplayMatcher
         }
 
         return null;
+    }
+
+    private bool ShouldRejectIdCandidate(
+        AutoTagAudioInfo info,
+        BoomplayTrackMetadata track,
+        AutoTagMatchingConfig config,
+        string id)
+    {
+        if (IsIdMatchCandidateConsistent(info, track, config))
+        {
+            return false;
+        }
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Boomplay ID candidate rejected due to metadata mismatch. id={TrackId}, inputTitle={InputTitle}, inputArtist={InputArtist}, candidateTitle={CandidateTitle}, candidateArtist={CandidateArtist}",
+                id,
+                info.Title,
+                info.Artist,
+                track.Title,
+                track.Artist);
+        }
+
+        return true;
     }
 
     private async Task<AutoTagMatchResult?> TryMatchByIsrcAsync(
@@ -215,7 +230,13 @@ public sealed class BoomplayMatcher
             .Select(value => TryExtractSongId(value, out var parsed) ? parsed : null)
             .Where(static id => !string.IsNullOrWhiteSpace(id))
             .Select(static id => id!));
+        AppendIdsFromUrlTags(info, candidateIds);
 
+        return candidateIds.Distinct(StringComparer.Ordinal).ToList();
+    }
+
+    private static void AppendIdsFromUrlTags(AutoTagAudioInfo info, List<string> candidateIds)
+    {
         foreach (var key in UrlTagKeys)
         {
             if (!info.Tags.TryGetValue(key, out var values) || values.Count == 0)
@@ -223,32 +244,47 @@ public sealed class BoomplayMatcher
                 continue;
             }
 
-            foreach (var value in values)
+            AppendIdsFromUrlValues(values, key, candidateIds);
+        }
+    }
+
+    private static void AppendIdsFromUrlValues(IEnumerable<string> values, string key, List<string> candidateIds)
+    {
+        foreach (var value in values)
+        {
+            var normalized = Normalize(value);
+            if (string.IsNullOrWhiteSpace(normalized))
             {
-                var normalized = Normalize(value);
-                if (string.IsNullOrWhiteSpace(normalized))
-                {
-                    continue;
-                }
+                continue;
+            }
 
-                if (BoomplayMetadataService.TryParseBoomplayUrl(normalized, out var type, out var id)
-                    && string.Equals(type, "track", StringComparison.OrdinalIgnoreCase)
-                    && !string.IsNullOrWhiteSpace(id))
-                {
-                    candidateIds.Add(id);
-                    continue;
-                }
+            if (TryExtractTrackIdFromBoomplayUrl(normalized, out var trackId))
+            {
+                candidateIds.Add(trackId);
+                continue;
+            }
 
-                // Only allow raw numeric fallback for explicit Boomplay URL tags.
-                if (key.Equals("BOOMPLAY_URL", StringComparison.OrdinalIgnoreCase)
-                    && TryExtractSongId(normalized, out var parsed))
-                {
-                    candidateIds.Add(parsed);
-                }
+            // Only allow raw numeric fallback for explicit Boomplay URL tags.
+            if (key.Equals("BOOMPLAY_URL", StringComparison.OrdinalIgnoreCase)
+                && TryExtractSongId(normalized, out var parsed))
+            {
+                candidateIds.Add(parsed);
             }
         }
+    }
 
-        return candidateIds.Distinct(StringComparer.Ordinal).ToList();
+    private static bool TryExtractTrackIdFromBoomplayUrl(string normalized, out string trackId)
+    {
+        trackId = string.Empty;
+        if (!BoomplayMetadataService.TryParseBoomplayUrl(normalized, out var type, out var id)
+            || !string.Equals(type, "track", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(id))
+        {
+            return false;
+        }
+
+        trackId = id;
+        return true;
     }
 
     private static bool IsIdMatchCandidateConsistent(

@@ -145,13 +145,6 @@
         }
     }
 
-    function formatDateTime(value) {
-        if (!value) {
-            return "--";
-        }
-        return new Date(value).toLocaleString();
-    }
-
     function formatDate(value) {
         if (!value) {
             return "--";
@@ -578,6 +571,50 @@
         highlightSelectedRun();
     }
 
+    function isStaleRunDetailsRequest(requestId) {
+        return requestId !== state.runDetailsRequestId;
+    }
+
+    function canUseLiveRunSelection(runId) {
+        return Boolean(state.liveJobId && runId === state.liveJobId && hasActiveLiveRun());
+    }
+
+    async function tryLoadLiveRunDetailsForSelection(runId, requestId, warnMessage) {
+        try {
+            await loadLiveRunDetails(runId);
+            return !isStaleRunDetailsRequest(requestId);
+        } catch (error) {
+            console.warn(warnMessage, error);
+            return false;
+        }
+    }
+
+    async function tryLoadArchiveRunDetails(runId, requestId) {
+        const archive = await fetchJson(`/api/autotag/history/runs/${encodeURIComponent(runId)}`);
+        if (isStaleRunDetailsRequest(requestId)) {
+            return false;
+        }
+
+        const archivedStatusHistory = Array.isArray(archive?.statusHistory) ? archive.statusHistory : [];
+        if (archivedStatusHistory.length === 0) {
+            const loadedLiveFallback = await tryLoadLiveRunDetailsForSelection(
+                runId,
+                requestId,
+                "Failed to load live AutoTag run fallback for empty archive history");
+            if (loadedLiveFallback && Array.isArray(state.historyStatus) && state.historyStatus.length > 0) {
+                return true;
+            }
+        }
+
+        state.selectedRunId = archive?.summary?.id || runId;
+        state.historyStatus = archivedStatusHistory.slice().reverse();
+        renderRunSummary(archive?.summary || null, archive || null);
+        updateFilterCountsFromHistory();
+        renderFilteredHistory();
+        highlightSelectedRun();
+        return true;
+    }
+
     function clearRunSelection(message) {
         state.selectedRunId = null;
         state.historyStatus = [];
@@ -594,53 +631,25 @@
         }
         const requestId = ++state.runDetailsRequestId;
 
-        if (state.liveJobId && runId === state.liveJobId && hasActiveLiveRun()) {
-            try {
-                await loadLiveRunDetails(runId);
-                if (requestId !== state.runDetailsRequestId) {
-                    return;
-                }
+        if (canUseLiveRunSelection(runId)) {
+            const loadedLive = await tryLoadLiveRunDetailsForSelection(
+                runId,
+                requestId,
+                "Failed to load selected live AutoTag run");
+            if (loadedLive) {
                 return;
-            } catch (liveError) {
-                console.warn("Failed to load selected live AutoTag run", liveError);
             }
         }
 
         try {
-            const archive = await fetchJson(`/api/autotag/history/runs/${encodeURIComponent(runId)}`);
-            if (requestId !== state.runDetailsRequestId) {
-                return;
-            }
-            const archivedStatusHistory = Array.isArray(archive?.statusHistory) ? archive.statusHistory : [];
-            if (archivedStatusHistory.length === 0) {
-                try {
-                    await loadLiveRunDetails(runId);
-                    if (requestId !== state.runDetailsRequestId) {
-                        return;
-                    }
-                    if (Array.isArray(state.historyStatus) && state.historyStatus.length > 0) {
-                        return;
-                    }
-                } catch (liveFallbackError) {
-                    console.warn("Failed to load live AutoTag run fallback for empty archive history", liveFallbackError);
-                }
-            }
-
-            state.selectedRunId = archive?.summary?.id || runId;
-            state.historyStatus = archivedStatusHistory.slice().reverse();
-            renderRunSummary(archive?.summary || null, archive || null);
-            updateFilterCountsFromHistory();
-            renderFilteredHistory();
-            highlightSelectedRun();
+            await tryLoadArchiveRunDetails(runId, requestId);
         } catch (error) {
-            try {
-                await loadLiveRunDetails(runId);
-                if (requestId !== state.runDetailsRequestId) {
-                    return;
-                }
-            } catch (liveError) {
+            const loadedLive = await tryLoadLiveRunDetailsForSelection(
+                runId,
+                requestId,
+                "Failed to load live AutoTag run fallback");
+            if (!loadedLive) {
                 console.warn("Failed to load archived AutoTag run", error);
-                console.warn("Failed to load live AutoTag run fallback", liveError);
                 clearRunSelection("Failed to load the full AutoTag log.");
             }
         }

@@ -605,7 +605,6 @@ public class TrackDownloader
         {
             await EnsureLyricsForTaggingAsync(
                 context.Track,
-                context.WritePath,
                 context.Settings,
                 context.TagSettings,
                 context.CancellationToken);
@@ -2087,7 +2086,6 @@ public class TrackDownloader
 
     private async Task EnsureLyricsForTaggingAsync(
         Track track,
-        string outputPath,
         DeezSpoTagSettings settings,
         TagSettings tagSettings,
         CancellationToken cancellationToken)

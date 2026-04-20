@@ -5,6 +5,7 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 public sealed class MusixmatchClient
 {
     private const string MusixmatchApiBase = "https://apic-desktop.musixmatch.com/ws/1.1";
+    private const string MessagePropertyName = "message";
     private readonly HttpClient _httpClient;
     private readonly ILogger<MusixmatchClient> _logger;
     private readonly JsonSerializerOptions _jsonOptions = new()
@@ -109,7 +110,7 @@ public sealed class MusixmatchClient
     private MusixmatchResponse<MusixmatchBody> ParseMacroCallResponse(JsonElement macroCallValue, string macroCallName)
     {
         var response = new MusixmatchResponse<MusixmatchBody>();
-        if (!macroCallValue.TryGetProperty("message", out var message))
+        if (!macroCallValue.TryGetProperty(MessagePropertyName, out var message))
         {
             return response;
         }
@@ -162,7 +163,7 @@ public sealed class MusixmatchClient
     private static bool TryGetRootStatusCode(JsonElement root, out int statusCode)
     {
         statusCode = default;
-        if (!root.TryGetProperty("message", out var message)
+        if (!root.TryGetProperty(MessagePropertyName, out var message)
             || !message.TryGetProperty("header", out var header)
             || !header.TryGetProperty("status_code", out var statusCodeElement)
             || statusCodeElement.ValueKind != JsonValueKind.Number)
@@ -176,7 +177,7 @@ public sealed class MusixmatchClient
     private static bool TryGetMacroCallsElement(JsonElement root, out JsonElement macroCalls)
     {
         macroCalls = default;
-        if (!root.TryGetProperty("message", out var message)
+        if (!root.TryGetProperty(MessagePropertyName, out var message)
             || !message.TryGetProperty("body", out var body)
             || !body.TryGetProperty("macro_calls", out var macroCallsElement)
             || macroCallsElement.ValueKind != JsonValueKind.Object)
@@ -221,7 +222,7 @@ public sealed class MusixmatchClient
         _logger.LogDebug("Fetching Musixmatch token.");
         using var document = await GetRawTokenAsync(cancellationToken);
         var statusCode = document.RootElement
-            .GetProperty("message")
+            .GetProperty(MessagePropertyName)
             .GetProperty("header")
             .GetProperty("status_code")
             .GetInt32();
@@ -238,7 +239,7 @@ public sealed class MusixmatchClient
         }
 
         var token = document.RootElement
-            .GetProperty("message")
+            .GetProperty(MessagePropertyName)
             .GetProperty("body")
             .GetProperty("user_token")
             .GetString();

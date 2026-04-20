@@ -254,7 +254,7 @@ public sealed class JunoDownloadClient
         return (trackTitle, trackArtists);
     }
 
-    private static long? ParseBpm(IReadOnlyList<string> textParts)
+    private static long? ParseBpm(List<string> textParts)
     {
         if (textParts.Count >= 2 && textParts[1].Contains("BPM", StringComparison.OrdinalIgnoreCase))
         {

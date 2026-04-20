@@ -65,7 +65,7 @@ public sealed class AutoTagStatusRefreshGuardrailTests
         var source = File.ReadAllText(scriptPath);
         Assert.Contains("const archivedStatusHistory = Array.isArray(archive?.statusHistory) ? archive.statusHistory : [];", source, StringComparison.Ordinal);
         Assert.Contains("if (archivedStatusHistory.length === 0)", source, StringComparison.Ordinal);
-        Assert.Contains("await loadLiveRunDetails(runId);", source, StringComparison.Ordinal);
+        Assert.Contains("tryLoadLiveRunDetailsForSelection", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -77,7 +77,8 @@ public sealed class AutoTagStatusRefreshGuardrailTests
 
         var source = File.ReadAllText(scriptPath);
         Assert.Contains("return isHistoryTabActive() && !state.manualHistorySelection && hasActiveLiveRun();", source, StringComparison.Ordinal);
-        Assert.Contains("if (state.liveJobId && runId === state.liveJobId && hasActiveLiveRun())", source, StringComparison.Ordinal);
+        Assert.Contains("function canUseLiveRunSelection(runId)", source, StringComparison.Ordinal);
+        Assert.Contains("if (canUseLiveRunSelection(runId))", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -93,7 +94,7 @@ public sealed class AutoTagStatusRefreshGuardrailTests
         Assert.Contains("runDetailsRequestId", source, StringComparison.Ordinal);
         Assert.Contains("if (requestId !== state.calendarRequestId)", source, StringComparison.Ordinal);
         Assert.Contains("if (requestId !== state.runsRequestId)", source, StringComparison.Ordinal);
-        Assert.Contains("if (requestId !== state.runDetailsRequestId)", source, StringComparison.Ordinal);
+        Assert.Contains("isStaleRunDetailsRequest(requestId)", source, StringComparison.Ordinal);
     }
 
     [Fact]

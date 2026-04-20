@@ -3070,6 +3070,116 @@ function normalizeAutoTagProfileLibrarySettingsSnapshot(snapshot) {
     };
 }
 
+function buildExistingFoldersByPath(existingFoldersRaw) {
+    const existingFolders = Array.isArray(existingFoldersRaw)
+        ? existingFoldersRaw.map(normalizeFolderConversionState)
+        : [];
+    const existingByPath = new Map();
+    existingFolders.forEach((folder) => {
+        const rootPath = String(folder?.rootPath || '').trim();
+        const pathKey = normalizePath(rootPath);
+        if (!rootPath || !pathKey || existingByPath.has(pathKey)) {
+            return;
+        }
+        existingByPath.set(pathKey, folder);
+    });
+    return existingByPath;
+}
+
+async function upsertFolderFromSnapshotEntry(entry, existingByPath) {
+    const existing = existingByPath.get(entry.pathKey) || null;
+    const payload = {
+        rootPath: entry.rootPath,
+        displayName: entry.displayName || deriveFolderDisplayName(entry.rootPath),
+        enabled: entry.enabled,
+        libraryName: existing?.libraryName ?? null,
+        desiredQuality: entry.desiredQuality,
+        convertEnabled: entry.convertEnabled,
+        convertFormat: entry.convertEnabled ? entry.convertFormat : null,
+        convertBitrate: entry.convertEnabled ? entry.convertBitrate : null
+    };
+    const savedFolder = await fetchJson(existing ? `/api/library/folders/${existing.id}` : '/api/library/folders', {
+        method: existing ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    const savedId = Number.parseInt(String(savedFolder?.id ?? existing?.id ?? ''), 10);
+    const savedRootPath = String(savedFolder?.rootPath || payload.rootPath || '').trim();
+    const savedPathKey = normalizePath(savedRootPath);
+    if (!(Number.isFinite(savedId) && savedId > 0 && savedRootPath && savedPathKey)) {
+        return null;
+    }
+
+    if (entry.hasAutoTagProfileId) {
+        await setFolderAutoTagProfile(savedId, entry.autoTagProfileId || '');
+    }
+    if (entry.hasAutoTagEnabled) {
+        await setFolderAutoTagEnabled(savedId, entry.autoTagEnabled === true);
+    }
+
+    return { id: savedId, rootPath: savedRootPath, pathKey: savedPathKey };
+}
+
+function resolvePathBySnapshot(snapshotPath, resolvedByPath, existingByPath) {
+    const normalizedPath = normalizePath(snapshotPath);
+    if (!normalizedPath) {
+        return null;
+    }
+    const resolved = resolvedByPath.get(normalizedPath);
+    if (resolved?.rootPath) {
+        return resolved.rootPath;
+    }
+    const existing = existingByPath.get(normalizedPath);
+    return existing?.rootPath ? String(existing.rootPath).trim() : null;
+}
+
+function resolveIdBySnapshot(snapshotPath, resolvedByPath, existingByPath) {
+    const normalizedPath = normalizePath(snapshotPath);
+    if (!normalizedPath) {
+        return null;
+    }
+    const resolved = resolvedByPath.get(normalizedPath);
+    if (resolved?.id) {
+        return resolved.id;
+    }
+    const existing = existingByPath.get(normalizedPath);
+    const id = Number.parseInt(String(existing?.id ?? ''), 10);
+    return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function buildLibrarySchedulesUpdate(normalizedFolders, resolvedByPath, currentDefaults) {
+    const nextSchedules = currentDefaults.librarySchedules && typeof currentDefaults.librarySchedules === 'object'
+        ? { ...currentDefaults.librarySchedules }
+        : {};
+    normalizedFolders.forEach((entry) => {
+        const resolved = resolvedByPath.get(entry.pathKey);
+        if (!resolved) {
+            return;
+        }
+        const idKey = String(resolved.id);
+        if (entry.enhancementSchedule) {
+            nextSchedules[idKey] = entry.enhancementSchedule;
+        } else {
+            delete nextSchedules[idKey];
+        }
+    });
+    return nextSchedules;
+}
+
+function buildDestinationUpdate(destinations, resolvedByPath, existingByPath) {
+    const destinationUpdate = {};
+    if (destinations.hasAtmosRootPath) {
+        destinationUpdate.atmosFolderId = resolveIdBySnapshot(destinations.atmosRootPath, resolvedByPath, existingByPath);
+    }
+    if (destinations.hasVideoRootPath) {
+        destinationUpdate.videoFolderPath = resolvePathBySnapshot(destinations.videoRootPath, resolvedByPath, existingByPath) || '';
+    }
+    if (destinations.hasPodcastRootPath) {
+        destinationUpdate.podcastFolderPath = resolvePathBySnapshot(destinations.podcastRootPath, resolvedByPath, existingByPath) || '';
+    }
+    return destinationUpdate;
+}
+
 async function applyAutoTagProfileLibrarySettingsSnapshot(snapshot, options = {}) {
     const normalized = normalizeAutoTagProfileLibrarySettingsSnapshot(snapshot);
     if (!normalized) {
@@ -3081,70 +3191,21 @@ async function applyAutoTagProfileLibrarySettingsSnapshot(snapshot, options = {}
     let applied = false;
     try {
         const existingFoldersRaw = await fetchJson('/api/library/folders?includeDisabled=true');
-        const existingFolders = Array.isArray(existingFoldersRaw)
-            ? existingFoldersRaw.map(normalizeFolderConversionState)
-            : [];
-        const existingByPath = new Map();
-        existingFolders.forEach((folder) => {
-            const rootPath = String(folder?.rootPath || '').trim();
-            const pathKey = normalizePath(rootPath);
-            if (!rootPath || !pathKey || existingByPath.has(pathKey)) {
-                return;
-            }
-            existingByPath.set(pathKey, folder);
-        });
+        const existingByPath = buildExistingFoldersByPath(existingFoldersRaw);
 
         const resolvedByPath = new Map();
         for (const entry of normalized.folders) {
-            const existing = existingByPath.get(entry.pathKey) || null;
-            const payload = {
-                rootPath: entry.rootPath,
-                displayName: entry.displayName || deriveFolderDisplayName(entry.rootPath),
-                enabled: entry.enabled,
-                libraryName: existing?.libraryName ?? null,
-                desiredQuality: entry.desiredQuality,
-                convertEnabled: entry.convertEnabled,
-                convertFormat: entry.convertEnabled ? entry.convertFormat : null,
-                convertBitrate: entry.convertEnabled ? entry.convertBitrate : null
-            };
-            const savedFolder = await fetchJson(existing ? `/api/library/folders/${existing.id}` : '/api/library/folders', {
-                method: existing ? 'PATCH' : 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            const savedId = Number.parseInt(String(savedFolder?.id ?? existing?.id ?? ''), 10);
-            const savedRootPath = String(savedFolder?.rootPath || payload.rootPath || '').trim();
-            const savedPathKey = normalizePath(savedRootPath);
-            if (Number.isFinite(savedId) && savedId > 0 && savedRootPath && savedPathKey) {
-                resolvedByPath.set(savedPathKey, {
-                    id: savedId,
-                    rootPath: savedRootPath
+            const saved = await upsertFolderFromSnapshotEntry(entry, existingByPath);
+            if (saved) {
+                resolvedByPath.set(saved.pathKey, {
+                    id: saved.id,
+                    rootPath: saved.rootPath
                 });
-                if (entry.hasAutoTagProfileId) {
-                    await setFolderAutoTagProfile(savedId, entry.autoTagProfileId || '');
-                }
-                if (entry.hasAutoTagEnabled) {
-                    await setFolderAutoTagEnabled(savedId, entry.autoTagEnabled === true);
-                }
             }
         }
 
         const currentDefaults = normalizeAutoTagDefaults(libraryState.autotagDefaults);
-        const nextSchedules = currentDefaults.librarySchedules && typeof currentDefaults.librarySchedules === 'object'
-            ? { ...currentDefaults.librarySchedules }
-            : {};
-        normalized.folders.forEach((entry) => {
-            const resolved = resolvedByPath.get(entry.pathKey);
-            if (!resolved) {
-                return;
-            }
-            const idKey = String(resolved.id);
-            if (entry.enhancementSchedule) {
-                nextSchedules[idKey] = entry.enhancementSchedule;
-            } else {
-                delete nextSchedules[idKey];
-            }
-        });
+        const nextSchedules = buildLibrarySchedulesUpdate(normalized.folders, resolvedByPath, currentDefaults);
 
         const nextDefaultsPayload = {
             defaultFileProfile: normalized.hasDefaultFileProfile
@@ -3163,41 +3224,7 @@ async function applyAutoTagProfileLibrarySettingsSnapshot(snapshot, options = {}
         });
         libraryState.autotagDefaults = normalizeAutoTagDefaults(savedDefaults);
 
-        const resolvePathBySnapshot = (snapshotPath) => {
-            const normalizedPath = normalizePath(snapshotPath);
-            if (!normalizedPath) {
-                return null;
-            }
-            const resolved = resolvedByPath.get(normalizedPath);
-            if (resolved?.rootPath) {
-                return resolved.rootPath;
-            }
-            const existing = existingByPath.get(normalizedPath);
-            return existing?.rootPath ? String(existing.rootPath).trim() : null;
-        };
-        const resolveIdBySnapshot = (snapshotPath) => {
-            const normalizedPath = normalizePath(snapshotPath);
-            if (!normalizedPath) {
-                return null;
-            }
-            const resolved = resolvedByPath.get(normalizedPath);
-            if (resolved?.id) {
-                return resolved.id;
-            }
-            const existing = existingByPath.get(normalizedPath);
-            const id = Number.parseInt(String(existing?.id ?? ''), 10);
-            return Number.isFinite(id) && id > 0 ? id : null;
-        };
-        const destinationUpdate = {};
-        if (normalized.destinations.hasAtmosRootPath) {
-            destinationUpdate.atmosFolderId = resolveIdBySnapshot(normalized.destinations.atmosRootPath);
-        }
-        if (normalized.destinations.hasVideoRootPath) {
-            destinationUpdate.videoFolderPath = resolvePathBySnapshot(normalized.destinations.videoRootPath) || '';
-        }
-        if (normalized.destinations.hasPodcastRootPath) {
-            destinationUpdate.podcastFolderPath = resolvePathBySnapshot(normalized.destinations.podcastRootPath) || '';
-        }
+        const destinationUpdate = buildDestinationUpdate(normalized.destinations, resolvedByPath, existingByPath);
         if (Object.keys(destinationUpdate).length > 0) {
             await updateDownloadDestinations(destinationUpdate);
         }
@@ -4361,8 +4388,11 @@ function renderSpotifyTopTracks(tracks, _artistProfile = null) {
         const durationMs = Number(track.durationMs || 0) > 0 ? Math.trunc(Number(track.durationMs)) : 0;
         const durationAttr = durationMs > 0 ? ` data-track-duration-ms="${durationMs}"` : '';
         const canPlay = Boolean(deezerId || spotifyUrl || previewUrl);
+        const playButtonSpotifyAttr = safeSpotifyUrl
+            ? ` data-spotify-url="${safeSpotifyUrl}"`
+            : '';
         const playButton = canPlay
-            ? `<button class="top-song-item__play track-action track-play" type="button"${safeSpotifyUrl ? ` data-spotify-url="${safeSpotifyUrl}"` : ''}${deezerAttr}${previewAttr}${titleAttr}${artistAttr}${albumAttr}${isrcAttr}${durationAttr} aria-label="Play ${escapeHtml(track.name || 'track')} preview">
+            ? `<button class="top-song-item__play track-action track-play" type="button"${playButtonSpotifyAttr}${deezerAttr}${previewAttr}${titleAttr}${artistAttr}${albumAttr}${isrcAttr}${durationAttr} aria-label="Play ${escapeHtml(track.name || 'track')} preview">
                     <span class="playback-glyph" aria-hidden="true">
                         <svg class="playback-icon playback-icon--play" viewBox="0 0 24 24" focusable="false">
                             <path d="M8 5v14l11-7z"></path>
@@ -4397,7 +4427,10 @@ function renderSpotifyTopTracks(tracks, _artistProfile = null) {
         </div>
     `;
 
-    void markSpotifyTopTracksInLibrary(safeTracks.slice(0, 9), _artistProfile);
+    markSpotifyTopTracksInLibrary(safeTracks.slice(0, 9), _artistProfile)
+        .catch((error) => {
+            console.warn('Failed to mark Spotify top tracks in library', error);
+        });
     scheduleSpotifyTopTrackPreviewWarmup();
 }
 
@@ -4762,31 +4795,55 @@ function primeSpotifyTopTrackPlaybackContexts(options = {}) {
     }
 
     const targets = buttons.slice(0, limit);
-    void globalThis.DeezerPlaybackContext.primePlaybackTargets(targets, {
+    globalThis.DeezerPlaybackContext.primePlaybackTargets(targets, {
         includeSession: true,
         cache: libraryTopTrackDeezerPlaybackContextCache,
         requests: libraryTopTrackDeezerPlaybackContextRequests
+    }).catch(() => {
+        // Best-effort warmup only.
     });
 }
 
-async function primeSpotifyTrackPreviews(options = {}) {
-    const list = document.getElementById('spotifyTopTracksList');
-    if (!list) {
-        return;
+async function processSpotifyPreviewQueueEntry(current) {
+    try {
+        current.el.dataset.mappingState = 'mapping';
+        const resolved = await resolveSpotifyUrlToDeezer(
+            buildSpotifyTrackResolveRequestFromButton(current.el)
+        );
+        if (resolved?.type === 'track' && resolved?.deezerId) {
+            const deezerId = resolved.deezerId.toString();
+            current.el.dataset.deezerId = deezerId;
+            current.el.dataset.mappingState = 'mapped';
+            const playbackContext = globalThis.DeezerPlaybackContext;
+            if (playbackContext && typeof playbackContext.fetchContext === 'function') {
+                const context = await playbackContext.fetchContext(deezerId, {
+                    cache: libraryTopTrackDeezerPlaybackContextCache,
+                    requests: libraryTopTrackDeezerPlaybackContextRequests
+                });
+                if (context && typeof playbackContext.applyContextToElement === 'function') {
+                    playbackContext.applyContextToElement(current.el, context);
+                    current.el.dataset.mappingState = 'context-ready';
+                }
+            }
+        } else {
+            current.el.dataset.mappingState = 'unmapped';
+        }
+    } catch {
+        current.el.dataset.mappingState = 'unmapped';
+        // Best-effort prefetch; playback will still resolve on demand.
     }
+}
+
+function buildSpotifyPreviewPendingQueue(list, options = {}) {
     const limit = Number(options?.limit || 0);
     const visibleFirst = options?.visibleFirst !== false;
     const visibleFirstOnly = options?.visibleFirstOnly === true;
-    const requestedConcurrency = Number(options?.concurrency || 4);
-    const concurrency = Number.isFinite(requestedConcurrency)
-        ? Math.max(1, Math.min(8, Math.trunc(requestedConcurrency)))
-        : 4;
     const playButtons = Array.from(list.querySelectorAll('button.track-play[data-spotify-url]'));
     const elements = playButtons.length > 0
         ? playButtons
         : Array.from(list.querySelectorAll('[data-spotify-url]'));
     if (elements.length === 0) {
-        return;
+        return [];
     }
 
     const queue = elements
@@ -4796,10 +4853,6 @@ async function primeSpotifyTrackPreviews(options = {}) {
             isVisible: isSpotifyTopTrackButtonVisible(el)
         }))
         .filter(entry => entry.url && !entry.el.dataset.deezerId);
-
-    if (queue.length === 0) {
-        return;
-    }
 
     if (visibleFirst) {
         queue.sort((left, right) => Number(right.isVisible) - Number(left.isVisible));
@@ -4812,6 +4865,19 @@ async function primeSpotifyTrackPreviews(options = {}) {
     if (limit > 0) {
         pendingQueue = pendingQueue.slice(0, limit);
     }
+    return pendingQueue;
+}
+
+async function primeSpotifyTrackPreviews(options = {}) {
+    const list = document.getElementById('spotifyTopTracksList');
+    if (!list) {
+        return;
+    }
+    const requestedConcurrency = Number(options?.concurrency || 4);
+    const concurrency = Number.isFinite(requestedConcurrency)
+        ? Math.max(1, Math.min(8, Math.trunc(requestedConcurrency)))
+        : 4;
+    const pendingQueue = buildSpotifyPreviewPendingQueue(list, options);
     if (pendingQueue.length === 0) {
         return;
     }
@@ -4820,33 +4886,7 @@ async function primeSpotifyTrackPreviews(options = {}) {
     const workers = Array.from({ length: Math.min(concurrency, pendingQueue.length) }, async () => {
         while (cursor < pendingQueue.length) {
             const current = pendingQueue[cursor++];
-            try {
-                current.el.dataset.mappingState = 'mapping';
-                const resolved = await resolveSpotifyUrlToDeezer(
-                    buildSpotifyTrackResolveRequestFromButton(current.el)
-                );
-                if (resolved?.type === 'track' && resolved?.deezerId) {
-                    const deezerId = resolved.deezerId.toString();
-                    current.el.dataset.deezerId = deezerId;
-                    current.el.dataset.mappingState = 'mapped';
-                    const playbackContext = globalThis.DeezerPlaybackContext;
-                    if (playbackContext && typeof playbackContext.fetchContext === 'function') {
-                        const context = await playbackContext.fetchContext(deezerId, {
-                            cache: libraryTopTrackDeezerPlaybackContextCache,
-                            requests: libraryTopTrackDeezerPlaybackContextRequests
-                        });
-                        if (context && typeof playbackContext.applyContextToElement === 'function') {
-                            playbackContext.applyContextToElement(current.el, context);
-                            current.el.dataset.mappingState = 'context-ready';
-                        }
-                    }
-                } else {
-                    current.el.dataset.mappingState = 'unmapped';
-                }
-            } catch {
-                current.el.dataset.mappingState = 'unmapped';
-                // Best-effort prefetch; playback will still resolve on demand.
-            }
+            await processSpotifyPreviewQueueEntry(current);
         }
     });
 
@@ -11638,8 +11678,8 @@ async function openSharedPlaylistArtworkPicker(source, sourceId, playlistName, o
             return;
         }
 
-        const fileName = button.getAttribute('data-playlist-visual-select') || '';
-        const url = button.getAttribute('data-playlist-visual-url') || '';
+        const fileName = button.dataset.playlistVisualSelect || '';
+        const url = button.dataset.playlistVisualUrl || '';
         if (!fileName) {
             return;
         }

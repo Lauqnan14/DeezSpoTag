@@ -20,6 +20,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     private const string DeezSpoTagEngineAlias = "deezspotag";
     private const string FailedStatus = "failed";
     private const string CanceledStatus = "canceled";
+    private const string PausedStatus = "paused";
     private readonly ILogger<DeezSpoTagApp> _logger;
     private readonly DeezSpoTag.Services.Settings.DeezSpoTagSettingsService _settingsService;
     private readonly IServiceProvider _serviceProvider;
@@ -229,7 +230,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         {
             await _queueRepository.UpdateStatusAsync(
                 item.QueueUuid,
-                "paused",
+                PausedStatus,
                 "Paused by user",
                 cancellationToken: CancellationToken.None);
             _retryScheduler.Clear(item.QueueUuid);
@@ -384,8 +385,8 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             Listener?.Send("cancellingCurrentItem", uuid);
         }
 
-        await _queueRepository.UpdateStatusAsync(uuid, "paused");
-        Listener?.Send("updateQueue", new { uuid, status = "paused" });
+        await _queueRepository.UpdateStatusAsync(uuid, PausedStatus);
+        Listener?.Send("updateQueue", new { uuid, status = PausedStatus });
         DeezSpoTagSpeedTracker.Clear(uuid);
     }
 
@@ -654,8 +655,8 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         {
             _cancellationRegistry.MarkUserPaused(currentQueueUuid);
             _cancellationRegistry.Cancel(currentQueueUuid);
-            await _queueRepository.UpdateStatusAsync(currentQueueUuid, "paused");
-            Listener?.Send("updateQueue", new { uuid = currentQueueUuid, status = "paused" });
+            await _queueRepository.UpdateStatusAsync(currentQueueUuid, PausedStatus);
+            Listener?.Send("updateQueue", new { uuid = currentQueueUuid, status = PausedStatus });
             lock (_queueLock)
             {
                 _currentQueueUuid = null;

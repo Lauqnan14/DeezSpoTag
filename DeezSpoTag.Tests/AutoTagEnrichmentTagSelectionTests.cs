@@ -29,6 +29,17 @@ public sealed class AutoTagEnrichmentTagSelectionTests
         "source",
         "url"
     };
+    private static readonly string[] ExpectedMergedEnhancementTags =
+    {
+        "artist",
+        "genre",
+        "title",
+        "trackId",
+        "releaseId"
+    };
+    private static readonly string[] RequestedYearAndArtistTags = ["year", "artist"];
+    private static readonly string[] ItunesPlatformOnly = ["itunes"];
+    private static readonly string[] ExpectedReleaseDateOnly = ["releaseDate"];
 
     [Fact]
     public void ResolveEnrichmentRequestedTags_DownloadEnrichment_CarriesIdAndSourceTagsFromDownloadTags()
@@ -81,7 +92,7 @@ public sealed class AutoTagEnrichmentTagSelectionTests
         };
 
         var actual = Assert.IsType<List<string>>(method!.Invoke(null, new object?[] { root }));
-        Assert.Equal(new[] { "artist", "genre", "title", "trackId", "releaseId" }, actual);
+        Assert.Equal(ExpectedMergedEnhancementTags, actual);
     }
 
     [Theory]
@@ -131,11 +142,11 @@ public sealed class AutoTagEnrichmentTagSelectionTests
             null,
             new object?[]
             {
-                new[] { "year", "artist" },
-                new[] { "itunes" },
+                RequestedYearAndArtistTags,
+                ItunesPlatformOnly,
                 capsDictionary!
             }));
 
-        Assert.Equal(new[] { "releaseDate" }, actual);
+        Assert.Equal(ExpectedReleaseDateOnly, actual);
     }
 }

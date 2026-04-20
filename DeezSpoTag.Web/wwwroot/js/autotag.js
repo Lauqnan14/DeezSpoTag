@@ -3120,26 +3120,8 @@
     function applyProfileConfig(config) {
         const merged = structuredClone(DEFAULT_CONFIG);
         Object.assign(merged, config || {});
-        const legacyOrganizer = merged.organizer && typeof merged.organizer === "object" ? merged.organizer : null;
-        if ((!merged.moveFailedPath || !String(merged.moveFailedPath).trim()) && legacyOrganizer?.moveUntaggedPath) {
-            merged.moveFailedPath = String(legacyOrganizer.moveUntaggedPath).trim();
-        }
-        if (legacyOrganizer?.moveUntaggedPath && merged.moveFailed !== true) {
-            merged.moveFailed = true;
-        }
-        if (merged.enhancement?.folderUniformity && typeof merged.enhancement.folderUniformity.onlyMoveWhenTagged !== "boolean") {
-            merged.enhancement.folderUniformity.onlyMoveWhenTagged = legacyOrganizer?.onlyMoveWhenTagged === true;
-        }
-        delete merged.organizer;
-        if (!merged.separators) {
-            merged.separators = structuredClone(DEFAULT_CONFIG.separators);
-        }
-        if (!merged.stylesCustomTag) {
-            merged.stylesCustomTag = structuredClone(DEFAULT_CONFIG.stylesCustomTag);
-        }
-        if (!merged.custom) {
-            merged.custom = {};
-        }
+        migrateLegacyOrganizerConfig(merged);
+        ensureProfileConfigDefaults(merged);
         delete merged.moveSuccessMode;
         const moveSuccessLibraryId = Number.parseInt(String(merged.moveSuccessLibraryFolderId ?? ""), 10);
         merged.moveSuccessLibraryFolderId = Number.isFinite(moveSuccessLibraryId) ? moveSuccessLibraryId : null;
@@ -3153,6 +3135,34 @@
         ensurePlatformCustomDefaults();
         syncEnhancementTagsWithEnrichment();
         loadConfigToUI();
+    }
+
+    function migrateLegacyOrganizerConfig(config) {
+        const legacyOrganizer = config.organizer && typeof config.organizer === "object"
+            ? config.organizer
+            : null;
+        if ((!config.moveFailedPath || !String(config.moveFailedPath).trim()) && legacyOrganizer?.moveUntaggedPath) {
+            config.moveFailedPath = String(legacyOrganizer.moveUntaggedPath).trim();
+        }
+        if (legacyOrganizer?.moveUntaggedPath && config.moveFailed !== true) {
+            config.moveFailed = true;
+        }
+        if (config.enhancement?.folderUniformity && typeof config.enhancement.folderUniformity.onlyMoveWhenTagged !== "boolean") {
+            config.enhancement.folderUniformity.onlyMoveWhenTagged = legacyOrganizer?.onlyMoveWhenTagged === true;
+        }
+        delete config.organizer;
+    }
+
+    function ensureProfileConfigDefaults(config) {
+        if (!config.separators) {
+            config.separators = structuredClone(DEFAULT_CONFIG.separators);
+        }
+        if (!config.stylesCustomTag) {
+            config.stylesCustomTag = structuredClone(DEFAULT_CONFIG.stylesCustomTag);
+        }
+        if (!config.custom) {
+            config.custom = {};
+        }
     }
 
     function storeSelectedPlatforms() {
@@ -3392,22 +3402,6 @@
         }
     }
 
-    async function applyProjectSpotifyConfig(config) {
-        try {
-            const response = await fetch("/api/spotify-credentials/config", buildAuthFetchOptions());
-            if (!response.ok) {
-                return;
-            }
-            const data = await response.json();
-            config.spotify = {
-                clientId: data.clientId || null,
-                clientSecret: data.clientSecret || null
-            };
-        } catch (error) {
-            console.warn("Failed to load project Spotify credentials", error);
-        }
-    }
-
     async function loadStoredAuth() {
         try {
             const response = await fetch("/api/platform-auth", buildAuthFetchOptions());
@@ -3487,13 +3481,6 @@
         }
     }
 
-    function normalizeSpotifyConfig(config) {
-        const spotify = config.spotify;
-        if (!spotify?.clientId || !spotify?.clientSecret) {
-            config.spotify = null;
-        }
-    }
-
     function readConfigFromUI() {
         ensureCustomDefaults();
         ensurePlatformCustomDefaults();
@@ -3507,6 +3494,17 @@
         const getChecked = (id, fallback = false) => el(id)?.checked ?? fallback;
         const getValue = (id, fallback = "") => el(id)?.value ?? fallback;
 
+        readBaseAutoTagConfig(getChecked, getValue);
+        readMatchingAndTagFormattingConfig(getChecked, getValue);
+        readMoveAndFolderUniformityConfig(getChecked, getValue);
+        readCoverAndQualityEnhancementConfig(getChecked, getValue);
+        readFinalAutoTagConfig(getChecked, getValue);
+        ensureEffectivePlatforms(state.config);
+
+        return state.config;
+    }
+
+    function readBaseAutoTagConfig(getChecked, getValue) {
         state.config.overwrite = getChecked("autotag-overwrite", state.config.overwrite);
         state.config.id3v24 = getChecked("autotag-id3v24", state.config.id3v24);
         state.config.shortTitle = getChecked("autotag-short-title", state.config.shortTitle);
@@ -3542,6 +3540,9 @@
         // if (el("autotag-playlist-path")) {
         //     state.config.playlistPath = getValue("autotag-playlist-path", state.config.playlistPath || "").trim() || null;
         // }
+    }
+
+    function readMatchingAndTagFormattingConfig(getChecked, getValue) {
         if (el("autotag-strictness")) {
             const parsedStrictness = Number.parseFloat(getValue("autotag-strictness", state.config.strictness));
             if (Number.isFinite(parsedStrictness)) {
@@ -3582,6 +3583,9 @@
         )
             ? "shazam"
             : null;
+    }
+
+    function readMoveAndFolderUniformityConfig(getChecked, getValue) {
         state.config.moveSuccess = getChecked("autotag-move-success", state.config.moveSuccess);
         const moveSuccessLibraryRaw = getValue("autotag-move-success-library", state.config.moveSuccessLibraryFolderId ?? "");
         const moveSuccessLibraryIdParsed = Number.parseInt(String(moveSuccessLibraryRaw || "").trim(), 10);
@@ -3618,7 +3622,9 @@
             folderUniformity.duplicatesFolderName || "%duplicates%"
         ).trim() || "%duplicates%";
         delete folderUniformity.preferredExtensions;
+    }
 
+    function readCoverAndQualityEnhancementConfig(getChecked, getValue) {
         const coverMaintenance = state.config.enhancement.coverMaintenance;
         coverMaintenance.folderIds = parseFolderIdList(getValue("enhancementCoverFolder", (coverMaintenance.folderIds ?? []).join(",")));
         coverMaintenance.minResolution = Math.max(100, Math.min(2000, Number.parseInt(String(coverMaintenance.minResolution ?? 500), 10) || 500));
@@ -3648,6 +3654,9 @@
         syncSelectedTechnicalProfilesFromUI();
         qualityChecks.technicalProfiles = normalizeTechnicalProfiles(qualityChecks.technicalProfiles);
         qualityChecks.cooldownMinutes = null;
+    }
+
+    function readFinalAutoTagConfig(getChecked, getValue) {
         state.config.writeLrc = getChecked("autotag-write-lrc", state.config.writeLrc);
         state.config.capitalizeGenres = getChecked("autotag-capitalize-genres", state.config.capitalizeGenres);
         state.config.custom.itunes.art_resolution = Number.parseInt(getValue("autotag-itunes-art-resolution", state.config.custom?.itunes?.art_resolution || 1000), 10) || 1000;
@@ -3655,9 +3664,6 @@
             state.config.custom?.itunes?.animated_artwork ?? state.settingsCache?.saveAnimatedArtwork ?? false
         );
         state.config.downloadTagSource = normalizeDownloadTagSource(getDownloadTagSource() || state.config.downloadTagSource || "engine");
-        ensureEffectivePlatforms(state.config);
-
-        return state.config;
     }
 
     function setEnhancementStatus(elementId, message) {
@@ -5634,11 +5640,15 @@
 
     function readProfileScopedExtrasFromUI(baseData) {
         const base = baseData && typeof baseData === "object" ? baseData : {};
+        const readFormFieldValue = (field, fallback = "") => {
+            if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement || field instanceof HTMLSelectElement) {
+                return String(field.value).trim();
+            }
+            return String(fallback ?? "").trim();
+        };
         const getInputValue = (id, fallback = "") => {
             const field = el(id);
-            return field && "value" in field
-                ? String(field.value ?? "").trim()
-                : String(fallback ?? "").trim();
+            return readFormFieldValue(field, fallback);
         };
         const getInputChecked = (id, fallback = false) => {
             const field = el(id);
@@ -5648,10 +5658,10 @@
         };
         const getInputNumber = (id, fallback = 0, min = 0, max = Number.MAX_SAFE_INTEGER) => {
             const field = el(id);
-            if (!(field && "value" in field)) {
+            if (!(field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement || field instanceof HTMLSelectElement)) {
                 return fallback;
             }
-            const parsed = Number.parseInt(String(field.value ?? "").trim(), 10);
+            const parsed = Number.parseInt(String(field.value).trim(), 10);
             if (!Number.isFinite(parsed)) {
                 return fallback;
             }
@@ -5700,36 +5710,40 @@
         };
 
         const normalizedRecentDownloadWindowHours = convertRecentWindowDaysToHours(profileScoped.recentDownloadWindowDays);
-
-        const fallbackLibrarySettings = base.libraryFolderSettings;
-        const withSyncedRecentWindow = (value) => {
-            if (!value || typeof value !== "object") {
-                return null;
-            }
-            return {
-                ...value,
-                recentDownloadWindowHours: normalizedRecentDownloadWindowHours
-            };
-        };
-        if (typeof globalThis.collectAutoTagProfileLibrarySettings === "function") {
-            try {
-                const libraryFolderSettings = globalThis.collectAutoTagProfileLibrarySettings();
-                if (libraryFolderSettings && typeof libraryFolderSettings === "object") {
-                    profileScoped.libraryFolderSettings = withSyncedRecentWindow(libraryFolderSettings);
-                } else if (fallbackLibrarySettings && typeof fallbackLibrarySettings === "object") {
-                    profileScoped.libraryFolderSettings = withSyncedRecentWindow(fallbackLibrarySettings);
-                }
-            } catch (error) {
-                console.warn("Failed to collect profile-scoped library folder settings.", error);
-                if (fallbackLibrarySettings && typeof fallbackLibrarySettings === "object") {
-                    profileScoped.libraryFolderSettings = withSyncedRecentWindow(fallbackLibrarySettings);
-                }
-            }
-        } else if (fallbackLibrarySettings && typeof fallbackLibrarySettings === "object") {
-            profileScoped.libraryFolderSettings = withSyncedRecentWindow(fallbackLibrarySettings);
+        const libraryFolderSettings = collectProfileScopedLibraryFolderSettings(base, normalizedRecentDownloadWindowHours);
+        if (libraryFolderSettings) {
+            profileScoped.libraryFolderSettings = libraryFolderSettings;
         }
 
         return profileScoped;
+    }
+
+    function withSyncedRecentWindow(value, normalizedRecentDownloadWindowHours) {
+        if (!value || typeof value !== "object") {
+            return null;
+        }
+        return {
+            ...value,
+            recentDownloadWindowHours: normalizedRecentDownloadWindowHours
+        };
+    }
+
+    function collectProfileScopedLibraryFolderSettings(base, normalizedRecentDownloadWindowHours) {
+        const fallbackLibrarySettings = base.libraryFolderSettings;
+        if (typeof globalThis.collectAutoTagProfileLibrarySettings !== "function") {
+            return withSyncedRecentWindow(fallbackLibrarySettings, normalizedRecentDownloadWindowHours);
+        }
+
+        try {
+            const libraryFolderSettings = globalThis.collectAutoTagProfileLibrarySettings();
+            if (libraryFolderSettings && typeof libraryFolderSettings === "object") {
+                return withSyncedRecentWindow(libraryFolderSettings, normalizedRecentDownloadWindowHours);
+            }
+        } catch (error) {
+            console.warn("Failed to collect profile-scoped library folder settings.", error);
+        }
+
+        return withSyncedRecentWindow(fallbackLibrarySettings, normalizedRecentDownloadWindowHours);
     }
 
     function applyProfileScopedExtrasToUI(data) {
@@ -6174,19 +6188,37 @@
         return group;
     }
 
+    function ensureRecentDownloadWindowStatus(section) {
+        if (el("enhancementRecentDownloadWindowStatus")) {
+            return;
+        }
+        const status = document.createElement("span");
+        status.className = "helper";
+        status.id = "enhancementRecentDownloadWindowStatus";
+        section.appendChild(status);
+    }
+
+    function appendRecentDownloadWindowStatusBefore(section, anchor) {
+        if (el("enhancementRecentDownloadWindowStatus")) {
+            return;
+        }
+        const status = document.createElement("span");
+        status.className = "helper";
+        status.id = "enhancementRecentDownloadWindowStatus";
+        section.insertBefore(status, anchor || null);
+    }
+
+    function hasRecentDownloadWindowControls() {
+        return Boolean(el("enhancementRecentDownloadWindowDays") && el("enhancementRenameSpotifyArtistFolders"));
+    }
+
     function ensureRecentDownloadWindowControls() {
         const hasWindowField = Boolean(el("enhancementRecentDownloadWindowDays"));
         const hasRenameToggle = Boolean(el("enhancementRenameSpotifyArtistFolders"));
         if (hasWindowField && hasRenameToggle) {
-            if (!el("enhancementRecentDownloadWindowStatus")) {
-                const qualityChecksButton = el("runEnhancementQualityChecks");
-                const section = qualityChecksButton?.closest(".download-section");
-                if (section) {
-                    const status = document.createElement("span");
-                    status.className = "helper";
-                    status.id = "enhancementRecentDownloadWindowStatus";
-                    section.appendChild(status);
-                }
+            const section = el("runEnhancementQualityChecks")?.closest(".download-section");
+            if (section) {
+                ensureRecentDownloadWindowStatus(section);
             }
             return;
         }
@@ -6205,15 +6237,8 @@
             }
         }
 
-        if (el("enhancementRecentDownloadWindowDays")
-            && el("enhancementRenameSpotifyArtistFolders"))
-        {
-            if (!el("enhancementRecentDownloadWindowStatus")) {
-                const status = document.createElement("span");
-                status.className = "helper";
-                status.id = "enhancementRecentDownloadWindowStatus";
-                section.appendChild(status);
-            }
+        if (hasRecentDownloadWindowControls()) {
+            ensureRecentDownloadWindowStatus(section);
             return;
         }
 
@@ -6247,12 +6272,7 @@
         `;
 
         section.insertBefore(row, insertionAnchor || null);
-        if (!el("enhancementRecentDownloadWindowStatus")) {
-            const status = document.createElement("span");
-            status.className = "helper";
-            status.id = "enhancementRecentDownloadWindowStatus";
-            section.insertBefore(status, insertionAnchor || null);
-        }
+        appendRecentDownloadWindowStatusBefore(section, insertionAnchor);
     }
 
     function convertRecentWindowHoursToDays(hours) {
@@ -6323,40 +6343,13 @@
             button.disabled = true;
         }
         try {
-            if (!state.autoTagDefaultsLoaded) {
-                await loadAutoTagDefaults();
-            }
-            const defaults = normalizeAutoTagDefaults(state.autoTagDefaults);
-            const renameFoldersCheckbox = el("enhancementRenameSpotifyArtistFolders");
-            const renameSpotifyArtistFolders = renameFoldersCheckbox instanceof HTMLInputElement
-                ? renameFoldersCheckbox.checked
-                : defaults.renameSpotifyArtistFolders !== false;
-            if (!skipProfileUpsert && state.activeProfileId) {
-                await upsertProfileFromUi({ silent: true, requireActiveProfile: true, reconcileUi: false });
-            }
-            const recentDownloadWindowDays = readRecentDownloadWindowDays();
-            const recentDownloadWindowHours = convertRecentWindowDaysToHours(recentDownloadWindowDays);
-            const response = await fetch("/api/autotag/defaults", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    defaultFileProfile: defaults.defaultFileProfile,
-                    librarySchedules: defaults.librarySchedules,
-                    recentDownloadWindowHours,
-                    // Keep defaults store in sync with the active checkbox state.
-                    renameSpotifyArtistFolders
-                })
-            });
-            if (!response.ok) {
-                throw new Error(await readApiErrorMessage(response));
-            }
-            const saved = await response.json().catch(() => null);
-            state.autoTagDefaults = normalizeAutoTagDefaults(saved);
+            const { renameFoldersCheckbox, renameSpotifyArtistFolders } =
+                await saveEnhancementDefaultsCore(skipProfileUpsert);
+            state.autoTagDefaultsDirty = false;
+            applyAutoTagDefaultsToUi();
             if (renameFoldersCheckbox instanceof HTMLInputElement) {
                 renameFoldersCheckbox.checked = renameSpotifyArtistFolders;
             }
-            state.autoTagDefaultsDirty = false;
-            applyAutoTagDefaultsToUi();
             if (!suppressStatus) {
                 setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement defaults and profile preferences saved.");
             }
@@ -6380,6 +6373,42 @@
                 button.disabled = false;
             }
         }
+    }
+
+    async function saveEnhancementDefaultsCore(skipProfileUpsert) {
+        if (!state.autoTagDefaultsLoaded) {
+            await loadAutoTagDefaults();
+        }
+
+        const defaults = normalizeAutoTagDefaults(state.autoTagDefaults);
+        const renameFoldersCheckbox = el("enhancementRenameSpotifyArtistFolders");
+        const renameSpotifyArtistFolders = renameFoldersCheckbox instanceof HTMLInputElement
+            ? renameFoldersCheckbox.checked
+            : defaults.renameSpotifyArtistFolders !== false;
+
+        if (!skipProfileUpsert && state.activeProfileId) {
+            await upsertProfileFromUi({ silent: true, requireActiveProfile: true, reconcileUi: false });
+        }
+
+        const recentDownloadWindowDays = readRecentDownloadWindowDays();
+        const recentDownloadWindowHours = convertRecentWindowDaysToHours(recentDownloadWindowDays);
+        const response = await fetch("/api/autotag/defaults", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                defaultFileProfile: defaults.defaultFileProfile,
+                librarySchedules: defaults.librarySchedules,
+                recentDownloadWindowHours,
+                renameSpotifyArtistFolders
+            })
+        });
+        if (!response.ok) {
+            throw new Error(await readApiErrorMessage(response));
+        }
+
+        const saved = await response.json().catch(() => null);
+        state.autoTagDefaults = normalizeAutoTagDefaults(saved);
+        return { renameFoldersCheckbox, renameSpotifyArtistFolders };
     }
 
     function getProfileAutoTagSnapshot(profile) {

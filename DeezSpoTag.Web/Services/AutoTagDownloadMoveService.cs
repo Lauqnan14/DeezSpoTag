@@ -1405,7 +1405,6 @@ public sealed class AutoTagDownloadMoveService
             file,
             runtime.Paths.RootIo,
             target,
-            runtime.Options.OrganizerOptions,
             runtime.Options.OverwritePolicy,
             runtime.Options.PreferredExtensions);
         if (string.IsNullOrWhiteSpace(movedPath))
@@ -1453,7 +1452,6 @@ public sealed class AutoTagDownloadMoveService
             file,
             runtime.Paths.RootIo,
             sidecarTarget,
-            runtime.Options.OrganizerOptions,
             runtime.Options.OverwritePolicy,
             runtime.Options.PreferredExtensions);
         if (!string.IsNullOrWhiteSpace(movedSidecar))
@@ -1993,11 +1991,10 @@ public sealed class AutoTagDownloadMoveService
         string sourcePath,
         string rootIo,
         string destinationRoot,
-        AutoTagOrganizerOptions options,
         string overwritePolicy,
         IReadOnlyList<string> preferredExtensions)
     {
-        if (!TryResolveResidualDestination(sourcePath, rootIo, destinationRoot, options, out var destinationPath, out var destinationDir))
+        if (!TryResolveResidualDestination(sourcePath, rootIo, destinationRoot, out var destinationPath, out var destinationDir))
         {
             return null;
         }
@@ -2027,7 +2024,6 @@ public sealed class AutoTagDownloadMoveService
         string sourcePath,
         string rootIo,
         string destinationRoot,
-        AutoTagOrganizerOptions options,
         out string destinationPath,
         out string? destinationDir)
     {

@@ -106,6 +106,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string DeezerPlatform = "deezer";
     private const string DeezerTrackIdTag = "DEEZER_TRACK_ID";
     private const string SpotifyTrackIdTag = "SPOTIFY_TRACK_ID";
+    private const string SpotifyTrackIdLegacyTag = "SPOTIFY_TRACKID";
+    private const string SpotifyIdLegacyTag = "SPOTIFYID";
+    private const string SpotifyIdUnderscoreLegacyTag = "SPOTIFY_ID";
+    private const string SpotifyUrlTag = "SPOTIFY_URL";
+    private const string LrclibProvider = "lrclib";
+    private const string LyricsUpperTag = "LYRICS";
+    private const string LyricsSyncedTag = "LYRICS_SYNCED";
     private const string WwwAudioFileTag = "WWWAUDIOFILE";
     private const string TaggedDateTag = "1T_TAGGEDDATE";
     private const string TitleTag = "title";
@@ -154,6 +161,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string StyleTag = "style";
     private const string PublishDateTag = "publishDate";
     private const string TrackIdTag = "trackId";
+    private const string ArtistsTag = "artists";
+    private const string BpmTag = "bpm";
+    private const string IsrcTag = "isrc";
+    private const string UrlTag = "url";
     private const string CatalogNumberUpperTag = "CATALOGNUMBER";
     private const string LengthUpperTag = "LENGTH";
     private const string RemixerTag = "remixer";
@@ -162,6 +173,55 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string MetaTagsTag = "metaTags";
     private const string StyleUpperTag = "STYLE";
     private const string VorbisFormat = "vorbis";
+    private static readonly Dictionary<string, Action<TagSettings>> TagSettingsAppliers = new(StringComparer.OrdinalIgnoreCase)
+    {
+        [TitleTag] = settings => settings.Title = true,
+        [ArtistTag] = settings => settings.Artist = true,
+        [ArtistsTag] = settings => settings.Artists = true,
+        [AlbumTag] = settings => settings.Album = true,
+        [AlbumArtistTag] = settings => settings.AlbumArtist = true,
+        [TrackNumberTag] = settings => settings.TrackNumber = true,
+        [TrackTotalTag] = settings => settings.TrackTotal = true,
+        [DiscNumberTag] = settings => settings.DiscNumber = true,
+        [DiscTotalTag] = settings => settings.DiscTotal = true,
+        [GenreTag] = settings => settings.Genre = true,
+        [LabelTag] = settings => settings.Label = true,
+        [BpmTag] = settings => settings.Bpm = true,
+        [IsrcTag] = settings => settings.Isrc = true,
+        [ExplicitTag] = settings => settings.Explicit = true,
+        [DurationTag] = settings => settings.Length = true,
+        [LengthTag] = settings => settings.Length = true,
+        [ReleaseDateTag] = settings =>
+        {
+            settings.Date = true;
+            settings.Year = true;
+        },
+        [YearTag] = settings =>
+        {
+            settings.Date = true;
+            settings.Year = true;
+        },
+        [DateTag] = settings =>
+        {
+            settings.Date = true;
+            settings.Year = true;
+        },
+        [AlbumArtTag] = settings => settings.Cover = true,
+        [CoverTag] = settings => settings.Cover = true,
+        [BarcodeTag] = settings => settings.Barcode = true,
+        [ReplayGainTag] = settings => settings.ReplayGain = true,
+        [CopyrightTag] = settings => settings.Copyright = true,
+        [ComposerTag] = settings => settings.Composer = true,
+        [InvolvedPeopleTag] = settings => settings.InvolvedPeople = true,
+        [SourceTag] = settings => settings.Source = true,
+        [UrlTag] = settings => settings.Url = true,
+        [TrackIdTag] = settings => settings.TrackId = true,
+        [ReleaseIdTag] = settings => settings.ReleaseId = true,
+        [RatingTag] = settings => settings.Rating = true,
+        [UnsyncedLyricsTag] = settings => settings.Lyrics = true,
+        [LyricsTag] = settings => settings.Lyrics = true,
+        [SyncedLyricsTag] = settings => settings.SyncedLyrics = true
+    };
     private static readonly string[] ShazamRawTagHints =
     [
         "SHAZAM_TRACK_ID",
@@ -584,15 +644,18 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagMatchResult? match;
         try
         {
-            match = await MatchPlatformAsync(
-                context.Platform,
-                context.File,
-                info,
-                context.Plan.Config,
-                context.Plan.Settings,
-                context.Plan.MatchingConfig,
-                context.Plan.ShazamCache,
-                context.Token);
+                match = await MatchPlatformAsync(
+                    context.Platform,
+                    info,
+                    new PlatformMatchContext
+                    {
+                        FilePath = context.File,
+                        Config = context.Plan.Config,
+                        Settings = context.Plan.Settings,
+                        MatchingConfig = context.Plan.MatchingConfig,
+                        ShazamCache = context.Plan.ShazamCache
+                    },
+                    context.Token);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -680,9 +743,19 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 OneTaggerMatching.FullTitle(match.Track.Title, match.Track.Version)));
         var titleSimilarity = AutoTagSimilarity.ComputeScore(sourceTitle, incomingTitle);
 
-        var sourceArtists = info.Artists.Count > 0
-            ? info.Artists
-            : (string.IsNullOrWhiteSpace(info.Artist) ? new List<string>() : new List<string> { info.Artist });
+        List<string> sourceArtists;
+        if (info.Artists.Count > 0)
+        {
+            sourceArtists = info.Artists;
+        }
+        else if (string.IsNullOrWhiteSpace(info.Artist))
+        {
+            sourceArtists = [];
+        }
+        else
+        {
+            sourceArtists = [info.Artist];
+        }
         var incomingArtists = match.Track.Artists ?? new List<string>();
 
         var artistStrictness = Math.Clamp(matchingConfig.Strictness - 0.05d, 0.45d, 0.95d);
@@ -763,12 +836,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             {
                 fallbackMatch = await MatchPlatformAsync(
                     platform,
-                    context.File,
                     info,
-                    context.Plan.Config,
-                    context.Plan.Settings,
-                    context.Plan.MatchingConfig,
-                    context.Plan.ShazamCache,
+                    new PlatformMatchContext
+                    {
+                        FilePath = context.File,
+                        Config = context.Plan.Config,
+                        Settings = context.Plan.Settings,
+                        MatchingConfig = context.Plan.MatchingConfig,
+                        ShazamCache = context.Plan.ShazamCache
+                    },
                     context.Token);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1385,17 +1461,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         var other = track.Other ?? new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         AddLookupUrl(lookupTrack.Urls, "deezer_track_id", TryGetFirstOtherValue(other, DeezerTrackIdTag, "DEEZERID", "DEEZER_ID"));
-        AddLookupUrl(lookupTrack.Urls, "spotify_track_id", TryGetFirstOtherValue(other, SpotifyTrackIdTag, "SPOTIFY_TRACKID", "SPOTIFYID", "SPOTIFY_ID"));
+        AddLookupUrl(lookupTrack.Urls, "spotify_track_id", TryGetFirstOtherValue(other, SpotifyTrackIdTag, SpotifyTrackIdLegacyTag, SpotifyIdLegacyTag, SpotifyIdUnderscoreLegacyTag));
         AddLookupUrl(lookupTrack.Urls, "apple_track_id", TryGetFirstOtherValue(other, "APPLE_TRACK_ID", "APPLEID", "ITUNES_TRACK_ID", "ITUNESCATALOGID"));
 
         AddLookupUrl(lookupTrack.Urls, DeezerPlatform, TryGetFirstOtherValue(other, "DEEZER_URL"));
-        AddLookupUrl(lookupTrack.Urls, SpotifyPlatform, TryGetFirstOtherValue(other, "SPOTIFY_URL"));
+        AddLookupUrl(lookupTrack.Urls, SpotifyPlatform, TryGetFirstOtherValue(other, SpotifyUrlTag));
         AddLookupUrl(lookupTrack.Urls, AppleProvider, TryGetFirstOtherValue(other, "APPLE_URL", "ITUNES_URL"));
 
         if (string.IsNullOrWhiteSpace(lookupTrack.DownloadURL))
         {
-            lookupTrack.DownloadURL = TryGetFirstOtherValue(other, "source_url", "URL", "WWWAUDIOFILE")
-                ?? TryGetFirstOtherValue(other, "DEEZER_URL", "SPOTIFY_URL", "APPLE_URL", "ITUNES_URL")
+            lookupTrack.DownloadURL = TryGetFirstOtherValue(other, "source_url", "URL", WwwAudioFileTag)
+                ?? TryGetFirstOtherValue(other, "DEEZER_URL", SpotifyUrlTag, "APPLE_URL", "ITUNES_URL")
                 ?? string.Empty;
         }
 
@@ -1411,7 +1487,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         };
     }
 
-    private static string? TryGetFirstOtherValue(IDictionary<string, List<string>> other, params string[] keys)
+    private static string? TryGetFirstOtherValue(Dictionary<string, List<string>> other, params string[] keys)
     {
         foreach (var key in keys)
         {
@@ -1430,7 +1506,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return null;
     }
 
-    private static void AddLookupUrl(IDictionary<string, string> urls, string key, string? value)
+    private static void AddLookupUrl(Dictionary<string, string> urls, string key, string? value)
     {
         if (!string.IsNullOrWhiteSpace(key) && !string.IsNullOrWhiteSpace(value))
         {
@@ -1457,7 +1533,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SaveLyrics = allowsUnsyncedBySettings && shouldFetchUnsyncedPayload,
             LyricsFallbackEnabled = baseSettings.LyricsFallbackEnabled,
             LyricsFallbackOrder = string.IsNullOrWhiteSpace(baseSettings.LyricsFallbackOrder)
-                ? "apple,deezer,spotify,lrclib,musixmatch"
+                ? $"apple,deezer,spotify,{LrclibProvider},musixmatch"
                 : baseSettings.LyricsFallbackOrder,
             LrcFormat = NormalizeLyricsFormat(baseSettings.LrcFormat),
             LrcType = string.IsNullOrWhiteSpace(baseSettings.LrcType)
@@ -1474,13 +1550,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private static LyricsProviderOptions? BuildLyricsProviderOptions(JsonObject? custom)
     {
         if (custom == null
-            || !custom.TryGetPropertyValue("lrclib", out var lrclibNode)
+            || !custom.TryGetPropertyValue(LrclibProvider, out var lrclibNode)
             || lrclibNode is not JsonObject)
         {
             return null;
         }
 
-        var lrclibConfig = LoadConfig(custom, "lrclib", new LrclibConfig());
+        var lrclibConfig = LoadConfig(custom, LrclibProvider, new LrclibConfig());
         return new LyricsProviderOptions
         {
             Lrclib = new LrclibLyricsProviderOptions
@@ -1870,59 +1946,64 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             .ToList();
     }
 
+    private sealed class PlatformMatchContext
+    {
+        public required string FilePath { get; init; }
+        public required AutoTagRunnerConfig Config { get; init; }
+        public required DeezSpoTagSettings Settings { get; init; }
+        public required AutoTagMatchingConfig MatchingConfig { get; init; }
+        public required IDictionary<string, ShazamRecognitionInfo?> ShazamCache { get; init; }
+    }
+
     private async Task<AutoTagMatchResult?> MatchPlatformAsync(
         string platform,
-        string filePath,
         AutoTagAudioInfo info,
-        AutoTagRunnerConfig config,
-        DeezSpoTagSettings settings,
-        AutoTagMatchingConfig matchingConfig,
-        IDictionary<string, ShazamRecognitionInfo?> shazamCache,
+        PlatformMatchContext context,
         CancellationToken token)
     {
-        var enableLyrics = HasAnyTags(config, UnsyncedLyricsTag, SyncedLyricsTag, TtmlLyricsTag);
-        var hasLyricsSidecar = enableLyrics && GetLyricsSidecarState(filePath).HasAny;
-        var beatportReleaseMeta = HasAnyTags(config, AlbumArtistTag, TrackTotalTag);
-        var traxsourceExtend = HasAnyTags(config, AlbumArtTag, AlbumTag, CatalogNumberTag, ReleaseIdTag, AlbumArtistTag, TrackNumberTag, TrackTotalTag);
-        var traxsourceAlbumMeta = HasAnyTags(config, CatalogNumberTag, TrackNumberTag, AlbumArtTag, TrackTotalTag, AlbumArtistTag);
-        var discogsNeedsLabelCatalog = HasAnyTags(config, LabelTag, CatalogNumberTag);
+        var enableLyrics = HasAnyTags(context.Config, UnsyncedLyricsTag, SyncedLyricsTag, TtmlLyricsTag);
+        var hasLyricsSidecar = enableLyrics && GetLyricsSidecarState(context.FilePath).HasAny;
+        var beatportReleaseMeta = HasAnyTags(context.Config, AlbumArtistTag, TrackTotalTag);
+        var traxsourceExtend = HasAnyTags(context.Config, AlbumArtTag, AlbumTag, CatalogNumberTag, ReleaseIdTag, AlbumArtistTag, TrackNumberTag, TrackTotalTag);
+        var traxsourceAlbumMeta = HasAnyTags(context.Config, CatalogNumberTag, TrackNumberTag, AlbumArtTag, TrackTotalTag, AlbumArtistTag);
+        var discogsNeedsLabelCatalog = HasAnyTags(context.Config, LabelTag, CatalogNumberTag);
 
         switch (platform.Trim().ToLowerInvariant())
         {
             case "musicbrainz":
-                return await _musicBrainzMatcher.MatchAsync(info, matchingConfig, LoadConfig(config.Custom, "musicbrainz", new MusicBrainzMatchConfig()), token);
+                return await _musicBrainzMatcher.MatchAsync(info, context.MatchingConfig, LoadConfig(context.Config.Custom, "musicbrainz", new MusicBrainzMatchConfig()), token);
             case "beatport":
-                return await _beatportMatcher.MatchAsync(info, matchingConfig, LoadConfig(config.Custom, "beatport", new BeatportMatchConfig()), beatportReleaseMeta, config.MatchById, token);
+                return await _beatportMatcher.MatchAsync(info, context.MatchingConfig, LoadConfig(context.Config.Custom, "beatport", new BeatportMatchConfig()), beatportReleaseMeta, context.Config.MatchById, token);
             case "discogs":
-                return await _discogsMatcher.MatchAsync(info, matchingConfig, LoadConfig(config.Custom, "discogs", new DiscogsConfig()), config.MatchById, discogsNeedsLabelCatalog, token);
+                return await _discogsMatcher.MatchAsync(info, context.MatchingConfig, LoadConfig(context.Config.Custom, "discogs", new DiscogsConfig()), context.Config.MatchById, discogsNeedsLabelCatalog, token);
             case "traxsource":
-                return await _traxsourceMatcher.MatchAsync(info, matchingConfig, traxsourceExtend, traxsourceAlbumMeta, token);
+                return await _traxsourceMatcher.MatchAsync(info, context.MatchingConfig, traxsourceExtend, traxsourceAlbumMeta, token);
             case "junodownload":
-                return await _junoDownloadMatcher.MatchAsync(info, matchingConfig, token);
+                return await _junoDownloadMatcher.MatchAsync(info, context.MatchingConfig, token);
             case "bandcamp":
-                return await _bandcampMatcher.MatchAsync(info, matchingConfig, token);
+                return await _bandcampMatcher.MatchAsync(info, context.MatchingConfig, token);
             case "beatsource":
-                return await _beatsourceMatcher.MatchAsync(info, matchingConfig, LoadConfig(config.Custom, "beatsource", new BeatsourceMatchConfig()), token);
+                return await _beatsourceMatcher.MatchAsync(info, context.MatchingConfig, LoadConfig(context.Config.Custom, "beatsource", new BeatsourceMatchConfig()), token);
             case "bpmsupreme":
-                return await _bpmSupremeMatcher.MatchAsync(info, matchingConfig, LoadConfig(config.Custom, "bpmsupreme", new BpmSupremeConfig()), token);
+                return await _bpmSupremeMatcher.MatchAsync(info, context.MatchingConfig, LoadConfig(context.Config.Custom, "bpmsupreme", new BpmSupremeConfig()), token);
             case ItunesPlatform:
-                return await _itunesMatcher.MatchAsync(info, matchingConfig, LoadConfig(config.Custom, ItunesPlatform, new ItunesMatchConfig()), token);
+                return await _itunesMatcher.MatchAsync(info, context.MatchingConfig, LoadConfig(context.Config.Custom, ItunesPlatform, new ItunesMatchConfig()), token);
             case SpotifyPlatform:
-                return await _spotifyMatcher.MatchAsync(info, matchingConfig, token);
+                return await _spotifyMatcher.MatchAsync(info, context.MatchingConfig, token);
             case DeezerPlatform:
-                var deezerConfig = ResolveDeezerMatchConfig(config, settings);
+                var deezerConfig = ResolveDeezerMatchConfig(context.Config, context.Settings);
                 deezerConfig.FetchLyrics = enableLyrics && !hasLyricsSidecar;
-                return await _deezerMatcher.MatchAsync(info, matchingConfig, deezerConfig, token);
+                return await _deezerMatcher.MatchAsync(info, context.MatchingConfig, deezerConfig, token);
             case "boomplay":
-                return await _boomplayMatcher.MatchAsync(info, matchingConfig, LoadConfig(config.Custom, "boomplay", new BoomplayConfig()), token);
+                return await _boomplayMatcher.MatchAsync(info, context.MatchingConfig, LoadConfig(context.Config.Custom, "boomplay", new BoomplayConfig()), token);
             case "lastfm":
-                return await _lastFmMatcher.MatchAsync(info, LoadConfig(config.Custom, "lastfm", new LastFmConfig()), token);
+                return await _lastFmMatcher.MatchAsync(info, LoadConfig(context.Config.Custom, "lastfm", new LastFmConfig()), token);
             case ShazamPlatform:
-                return await MatchShazamAsync(filePath, info, config, settings, matchingConfig, shazamCache, token);
+                return await MatchShazamAsync(context.FilePath, info, context.Config, context.Settings, context.MatchingConfig, context.ShazamCache, token);
             case "musixmatch":
                 return enableLyrics && !hasLyricsSidecar ? await _musixmatchMatcher.MatchAsync(info, token) : null;
             case "lrclib":
-                return enableLyrics && !hasLyricsSidecar ? await _lrclibMatcher.MatchAsync(info, matchingConfig, LoadConfig(config.Custom, "lrclib", new LrclibConfig()), token) : null;
+                return enableLyrics && !hasLyricsSidecar ? await _lrclibMatcher.MatchAsync(info, context.MatchingConfig, LoadConfig(context.Config.Custom, LrclibProvider, new LrclibConfig()), token) : null;
             default:
                 return null;
         }
@@ -1975,7 +2056,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var effectiveInfo = BuildShazamIdFirstInfo(info);
 
         var hasDeezerId = HasTagValue(effectiveInfo, DeezerTrackIdTag, "DEEZERID", "DEEZER_ID");
-        var hasSpotifyId = HasTagValue(effectiveInfo, SpotifyTrackIdTag, "SPOTIFY_TRACKID", "SPOTIFYID", "SPOTIFY_ID");
+        var hasSpotifyId = HasTagValue(effectiveInfo, SpotifyTrackIdTag, SpotifyTrackIdLegacyTag, SpotifyIdLegacyTag, SpotifyIdUnderscoreLegacyTag);
         var hasIsrc = !string.IsNullOrWhiteSpace(effectiveInfo.Isrc);
 
         if (hasDeezerId)
@@ -2117,10 +2198,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var candidates = new[]
         {
             SpotifyTrackIdTag,
-            "SPOTIFY_TRACKID",
-            "SPOTIFYID",
-            "SPOTIFY_ID",
-            "SPOTIFY_URL",
+            SpotifyTrackIdLegacyTag,
+            SpotifyIdLegacyTag,
+            SpotifyIdUnderscoreLegacyTag,
+            SpotifyUrlTag,
             "SHAZAM_SPOTIFY_URL",
             "SPOTIFY_URI",
             "SPOTIFYURI",
@@ -2772,8 +2853,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AddTagIfAny(tags, "ITUNES_ARTIST_ID", ReadRawTagValuesAny(file, extension, "ITUNES_ARTIST_ID", "ITUNESARTISTID"));
         AddTagIfAny(tags, DeezerTrackIdTag, ReadRawTagValuesAny(file, extension, DeezerTrackIdTag, "DEEZERID", "DEEZER_ID"));
         AddTagIfAny(tags, "DEEZER_RELEASE_ID", ReadRawTagValuesAny(file, extension, "DEEZER_RELEASE_ID"));
-        AddTagIfAny(tags, SpotifyTrackIdTag, ReadRawTagValuesAny(file, extension, SpotifyTrackIdTag, "SPOTIFY_TRACKID", "SPOTIFYID", "SPOTIFY_ID"));
-        AddTagIfAny(tags, "SPOTIFY_URL", ReadRawTagValuesAny(file, extension, "SPOTIFY_URL", "SPOTIFYURI", "SPOTIFY_URI", "URL", WwwAudioFileTag));
+        AddTagIfAny(tags, SpotifyTrackIdTag, ReadRawTagValuesAny(file, extension, SpotifyTrackIdTag, SpotifyTrackIdLegacyTag, SpotifyIdLegacyTag, SpotifyIdUnderscoreLegacyTag));
+        AddTagIfAny(tags, SpotifyUrlTag, ReadRawTagValuesAny(file, extension, SpotifyUrlTag, "SPOTIFYURI", "SPOTIFY_URI", "URL", WwwAudioFileTag));
         AddTagIfAny(tags, "MUSICBRAINZ_RECORDING_ID", ReadRawTagValuesAny(file, extension, "MUSICBRAINZ_RECORDING_ID", "MUSICBRAINZ_RECORDINGID", "MUSICBRAINZ_TRACK_ID", "MUSICBRAINZ_TRACKID"));
 
         foreach (var shazamTag in ShazamRawTagHints)
@@ -3301,106 +3382,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         foreach (var tag in config.Tags)
         {
-            switch (tag.Trim())
+            if (TagSettingsAppliers.TryGetValue(tag.Trim(), out var applyTagSetting))
             {
-                case TitleTag:
-                    settings.Title = true;
-                    break;
-                case ArtistTag:
-                    settings.Artist = true;
-                    break;
-                case "artists":
-                    settings.Artists = true;
-                    break;
-                case AlbumTag:
-                    settings.Album = true;
-                    break;
-                case AlbumArtistTag:
-                    settings.AlbumArtist = true;
-                    break;
-                case TrackNumberTag:
-                    settings.TrackNumber = true;
-                    break;
-                case TrackTotalTag:
-                    settings.TrackTotal = true;
-                    break;
-                case DiscNumberTag:
-                    settings.DiscNumber = true;
-                    break;
-                case DiscTotalTag:
-                    settings.DiscTotal = true;
-                    break;
-                case GenreTag:
-                    settings.Genre = true;
-                    break;
-                case LabelTag:
-                    settings.Label = true;
-                    break;
-                case "bpm":
-                    settings.Bpm = true;
-                    break;
-                case "isrc":
-                    settings.Isrc = true;
-                    break;
-                case ExplicitTag:
-                    settings.Explicit = true;
-                    break;
-                case DurationTag:
-                case LengthTag:
-                    settings.Length = true;
-                    break;
-                case ReleaseDateTag:
-                    settings.Date = true;
-                    settings.Year = true;
-                    break;
-                case YearTag:
-                case DateTag:
-                    settings.Year = true;
-                    settings.Date = true;
-                    break;
-                case AlbumArtTag:
-                case CoverTag:
-                    settings.Cover = true;
-                    break;
-                case BarcodeTag:
-                    settings.Barcode = true;
-                    break;
-                case ReplayGainTag:
-                    settings.ReplayGain = true;
-                    break;
-                case CopyrightTag:
-                    settings.Copyright = true;
-                    break;
-                case ComposerTag:
-                    settings.Composer = true;
-                    break;
-                case InvolvedPeopleTag:
-                    settings.InvolvedPeople = true;
-                    break;
-                case SourceTag:
-                    settings.Source = true;
-                    break;
-                case "url":
-                    settings.Url = true;
-                    break;
-                case TrackIdTag:
-                    settings.TrackId = true;
-                    break;
-                case ReleaseIdTag:
-                    settings.ReleaseId = true;
-                    break;
-                case RatingTag:
-                    settings.Rating = true;
-                    break;
-                case LanguageTag:
-                    break;
-                case UnsyncedLyricsTag:
-                case LyricsTag:
-                    settings.Lyrics = true;
-                    break;
-                case SyncedLyricsTag:
-                    settings.SyncedLyrics = true;
-                    break;
+                applyTagSetting(settings);
             }
         }
 
@@ -4872,69 +4856,98 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             tags.Add(tag);
         }
 
-        Add(TitleTag, !string.IsNullOrWhiteSpace(track.Title));
-        Add(ArtistTag, track.Artists.Count > 0);
-        Add(AlbumArtistTag, track.AlbumArtists.Count > 0);
-        Add(AlbumTag, !string.IsNullOrWhiteSpace(track.Album));
-        Add(AlbumArtTag, !string.IsNullOrWhiteSpace(track.Art));
-        Add(VersionTag, !string.IsNullOrWhiteSpace(track.Version));
-        Add(RemixerTag, track.Remixers.Count > 0);
-        Add(GenreTag, track.Genres.Count > 0);
-        Add(StyleTag, track.Styles.Count > 0);
-        Add(LabelTag, !string.IsNullOrWhiteSpace(track.Label));
-        Add(ReleaseIdTag, !string.IsNullOrWhiteSpace(track.ReleaseId));
-        Add(TrackIdTag, !string.IsNullOrWhiteSpace(track.TrackId));
-        Add("bpm", track.Bpm.HasValue && track.Bpm.Value > 0);
-        Add("danceability", track.Danceability.HasValue);
-        Add("energy", track.Energy.HasValue);
-        Add("valence", track.Valence.HasValue);
-        Add("acousticness", track.Acousticness.HasValue);
-        Add("instrumentalness", track.Instrumentalness.HasValue);
-        Add("speechiness", track.Speechiness.HasValue);
-        Add("loudness", track.Loudness.HasValue);
-        Add("tempo", track.Tempo.HasValue);
-        Add("timeSignature", track.TimeSignature.HasValue);
-        Add("liveness", track.Liveness.HasValue);
-        Add("key", !string.IsNullOrWhiteSpace(track.Key));
-        Add("mood", !string.IsNullOrWhiteSpace(track.Mood));
-        Add(CatalogNumberTag, !string.IsNullOrWhiteSpace(track.CatalogNumber));
-        Add(TrackNumberTag, track.TrackNumber.HasValue && track.TrackNumber.Value > 0);
-        Add(TrackTotalTag, track.TrackTotal.HasValue && track.TrackTotal.Value > 0);
-        Add(DiscTotalTag, track.Other.TryGetValue(DiscTotalTag, out var discTotalValues) && discTotalValues.Count > 0);
-        Add(DiscNumberTag, track.DiscNumber.HasValue && track.DiscNumber.Value > 0);
-        Add(DurationTag, track.Duration.HasValue && track.Duration.Value.TotalSeconds > 0);
-        Add("isrc", !string.IsNullOrWhiteSpace(track.Isrc));
-        Add(PublishDateTag, track.PublishDate.HasValue);
-        Add(ReleaseDateTag, track.ReleaseDate.HasValue);
-        Add("url", !string.IsNullOrWhiteSpace(track.Url));
-        Add(ExplicitTag, track.Explicit.HasValue);
-        Add(BarcodeTag, track.Other.TryGetValue(BarcodeTag, out var barcodeValues) && barcodeValues.Count > 0);
-        Add(ReplayGainTag, track.Other.TryGetValue(ReplayGainTag, out var replayGainValues) && replayGainValues.Count > 0);
-        Add(CopyrightTag, track.Other.TryGetValue(CopyrightTag, out var copyrightValues) && copyrightValues.Count > 0);
-        Add(ComposerTag, track.Other.TryGetValue(ComposerTag, out var composerValues) && composerValues.Count > 0);
-        Add(InvolvedPeopleTag, track.Other.TryGetValue(InvolvedPeopleTag, out var involvedPeopleValues) && involvedPeopleValues.Count > 0);
-        Add(SourceTag, track.Other.TryGetValue(SourceTag, out var sourceValues) && sourceValues.Count > 0);
-        Add(RatingTag, track.Other.TryGetValue(RatingTag, out var ratingValues) && ratingValues.Count > 0);
-        Add(LanguageTag, track.Other.TryGetValue(LanguageTag, out var languageValues) && languageValues.Count > 0);
-
-        var otherKeys = track.Other.Keys.ToList();
-        var hasSyncedLyrics = otherKeys.Any(k => k.Equals(SyncedLyricsTag, StringComparison.OrdinalIgnoreCase));
-        var hasUnsyncedLyrics = otherKeys.Any(k => k.Equals(UnsyncedLyricsTag, StringComparison.OrdinalIgnoreCase) ||
-                                                   k.Equals(LyricsTag, StringComparison.OrdinalIgnoreCase));
-        var hasTtmlLyrics = otherKeys.Any(k => k.Equals(TtmlLyricsTag, StringComparison.OrdinalIgnoreCase));
-        Add(SyncedLyricsTag, hasSyncedLyrics);
-        Add(UnsyncedLyricsTag, hasUnsyncedLyrics);
-        Add(TtmlLyricsTag, hasTtmlLyrics);
-
-        var otherTagKeys = otherKeys
-            .Where(k => !k.Equals(SyncedLyricsTag, StringComparison.OrdinalIgnoreCase) &&
-                        !k.Equals(UnsyncedLyricsTag, StringComparison.OrdinalIgnoreCase) &&
-                        !k.Equals(LyricsTag, StringComparison.OrdinalIgnoreCase) &&
-                        !k.Equals(TtmlLyricsTag, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        Add(OtherTagsTag, otherTagKeys.Count > 0);
+        AddAutoTagMetadataTags(track, Add);
+        AddAutoTagFeatureTags(track, Add);
+        AddAutoTagNumericAndDateTags(track, Add);
+        AddAutoTagOtherMappedTags(track, Add);
+        AddAutoTagLyricsAndOtherTags(track, Add);
 
         return tags;
+    }
+
+    private static void AddAutoTagMetadataTags(AutoTagTrack track, Action<string, bool> add)
+    {
+        add(TitleTag, !string.IsNullOrWhiteSpace(track.Title));
+        add(ArtistTag, track.Artists.Count > 0);
+        add(AlbumArtistTag, track.AlbumArtists.Count > 0);
+        add(AlbumTag, !string.IsNullOrWhiteSpace(track.Album));
+        add(AlbumArtTag, !string.IsNullOrWhiteSpace(track.Art));
+        add(VersionTag, !string.IsNullOrWhiteSpace(track.Version));
+        add(RemixerTag, track.Remixers.Count > 0);
+        add(GenreTag, track.Genres.Count > 0);
+        add(StyleTag, track.Styles.Count > 0);
+        add(LabelTag, !string.IsNullOrWhiteSpace(track.Label));
+        add(ReleaseIdTag, !string.IsNullOrWhiteSpace(track.ReleaseId));
+        add(TrackIdTag, !string.IsNullOrWhiteSpace(track.TrackId));
+    }
+
+    private static void AddAutoTagFeatureTags(AutoTagTrack track, Action<string, bool> add)
+    {
+        add(BpmTag, track.Bpm.HasValue && track.Bpm.Value > 0);
+        add("danceability", track.Danceability.HasValue);
+        add("energy", track.Energy.HasValue);
+        add("valence", track.Valence.HasValue);
+        add("acousticness", track.Acousticness.HasValue);
+        add("instrumentalness", track.Instrumentalness.HasValue);
+        add("speechiness", track.Speechiness.HasValue);
+        add("loudness", track.Loudness.HasValue);
+        add("tempo", track.Tempo.HasValue);
+        add("timeSignature", track.TimeSignature.HasValue);
+        add("liveness", track.Liveness.HasValue);
+        add("key", !string.IsNullOrWhiteSpace(track.Key));
+        add("mood", !string.IsNullOrWhiteSpace(track.Mood));
+    }
+
+    private static void AddAutoTagNumericAndDateTags(AutoTagTrack track, Action<string, bool> add)
+    {
+        add(CatalogNumberTag, !string.IsNullOrWhiteSpace(track.CatalogNumber));
+        add(TrackNumberTag, track.TrackNumber.HasValue && track.TrackNumber.Value > 0);
+        add(TrackTotalTag, track.TrackTotal.HasValue && track.TrackTotal.Value > 0);
+        add(DiscTotalTag, HasOtherTagValues(track, DiscTotalTag));
+        add(DiscNumberTag, track.DiscNumber.HasValue && track.DiscNumber.Value > 0);
+        add(DurationTag, track.Duration.HasValue && track.Duration.Value.TotalSeconds > 0);
+        add(IsrcTag, !string.IsNullOrWhiteSpace(track.Isrc));
+        add(PublishDateTag, track.PublishDate.HasValue);
+        add(ReleaseDateTag, track.ReleaseDate.HasValue);
+        add(UrlTag, !string.IsNullOrWhiteSpace(track.Url));
+        add(ExplicitTag, track.Explicit.HasValue);
+    }
+
+    private static void AddAutoTagOtherMappedTags(AutoTagTrack track, Action<string, bool> add)
+    {
+        add(BarcodeTag, HasOtherTagValues(track, BarcodeTag));
+        add(ReplayGainTag, HasOtherTagValues(track, ReplayGainTag));
+        add(CopyrightTag, HasOtherTagValues(track, CopyrightTag));
+        add(ComposerTag, HasOtherTagValues(track, ComposerTag));
+        add(InvolvedPeopleTag, HasOtherTagValues(track, InvolvedPeopleTag));
+        add(SourceTag, HasOtherTagValues(track, SourceTag));
+        add(RatingTag, HasOtherTagValues(track, RatingTag));
+        add(LanguageTag, HasOtherTagValues(track, LanguageTag));
+    }
+
+    private static void AddAutoTagLyricsAndOtherTags(AutoTagTrack track, Action<string, bool> add)
+    {
+        var otherKeys = track.Other.Keys.ToList();
+        var hasSyncedLyrics = otherKeys.Any(key => key.Equals(SyncedLyricsTag, StringComparison.OrdinalIgnoreCase));
+        var hasUnsyncedLyrics = otherKeys.Any(key =>
+            key.Equals(UnsyncedLyricsTag, StringComparison.OrdinalIgnoreCase)
+            || key.Equals(LyricsTag, StringComparison.OrdinalIgnoreCase));
+        var hasTtmlLyrics = otherKeys.Any(key => key.Equals(TtmlLyricsTag, StringComparison.OrdinalIgnoreCase));
+        add(SyncedLyricsTag, hasSyncedLyrics);
+        add(UnsyncedLyricsTag, hasUnsyncedLyrics);
+        add(TtmlLyricsTag, hasTtmlLyrics);
+
+        var hasOtherTags = otherKeys.Any(key =>
+            !key.Equals(SyncedLyricsTag, StringComparison.OrdinalIgnoreCase)
+            && !key.Equals(UnsyncedLyricsTag, StringComparison.OrdinalIgnoreCase)
+            && !key.Equals(LyricsTag, StringComparison.OrdinalIgnoreCase)
+            && !key.Equals(TtmlLyricsTag, StringComparison.OrdinalIgnoreCase));
+        add(OtherTagsTag, hasOtherTags);
+    }
+
+    private static bool HasOtherTagValues(AutoTagTrack track, string key)
+    {
+        return track.Other.TryGetValue(key, out var values) && values.Count > 0;
     }
 
     private static string[] ApplySeparator(List<string> values, string separator, bool useNullSeparator = false)
@@ -5071,10 +5084,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.TrackId => tag.GetField($"{platformId.ToUpperInvariant()}_TRACK_ID").Length > 0,
             SupportedTag.ReleaseId => tag.GetField($"{platformId.ToUpperInvariant()}_RELEASE_ID").Length > 0,
             SupportedTag.MetaTags => tag.GetField(TaggedDateTag).Length > 0,
-            SupportedTag.UnsyncedLyrics => tag.GetField("LYRICS").Any(value => !string.IsNullOrWhiteSpace(value)),
+            SupportedTag.UnsyncedLyrics => tag.GetField(LyricsUpperTag).Any(value => !string.IsNullOrWhiteSpace(value)),
             SupportedTag.SyncedLyrics =>
-                tag.GetField("LYRICS_SYNCED").Any(value => !string.IsNullOrWhiteSpace(value))
-                || HasTimestampedLyricsPayload(tag.GetField("LYRICS")),
+                tag.GetField(LyricsSyncedTag).Any(value => !string.IsNullOrWhiteSpace(value))
+                || HasTimestampedLyricsPayload(tag.GetField(LyricsUpperTag)),
             SupportedTag.AlbumArt => tag.Pictures?.Length > 0,
             SupportedTag.Explicit => tag.GetField(ItunesAdvisoryTag).Length > 0
                 || tag.GetField("COMMENT").Any(v => string.Equals(v, "Explicit", StringComparison.OrdinalIgnoreCase)),
@@ -5122,7 +5135,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.MetaTags => Mp4TagHelper.HasRaw(file, TaggedDateTag),
             SupportedTag.UnsyncedLyrics => Mp4TagHelper.HasField(file, supportedTag),
             SupportedTag.SyncedLyrics =>
-                Mp4TagHelper.HasRaw(file, "LYRICS_SYNCED")
+                Mp4TagHelper.HasRaw(file, LyricsSyncedTag)
                 || ContainsTimestampedLyrics(file.Tag.Lyrics),
             SupportedTag.AlbumArt => Mp4TagHelper.HasField(file, supportedTag),
             SupportedTag.Explicit => Mp4TagHelper.HasRaw(file, ItunesAdvisoryTag),
@@ -5132,15 +5145,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static bool HasTimestampedLyricsPayload(IEnumerable<string> values)
     {
-        foreach (var value in values)
-        {
-            if (ContainsTimestampedLyrics(value))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return values.Any(ContainsTimestampedLyrics);
     }
 
     private static bool ContainsTimestampedLyrics(string? rawLyrics)
@@ -5872,12 +5877,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         var vorbis = (TagLib.Ogg.XiphComment)file.GetTag(TagTypes.Xiph, true);
         var supportedTag = synced ? SupportedTag.SyncedLyrics : SupportedTag.UnsyncedLyrics;
-        if (!ShouldOverwriteTag(config, supportedTag) && TagRawProbe.HasVorbisRaw(vorbis, "LYRICS"))
+        if (!ShouldOverwriteTag(config, supportedTag) && TagRawProbe.HasVorbisRaw(vorbis, LyricsUpperTag))
         {
             return;
         }
 
-        vorbis.SetField("LYRICS", lyricsText);
+        vorbis.SetField(LyricsUpperTag, lyricsText);
     }
 
     private static void WriteGenericLyrics(TagLib.File file, bool synced, AutoTagRunnerConfig config, string lyricsText)
@@ -6715,13 +6720,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 continue;
             }
 
-            foreach (var value in keyValues.Where(value => !string.IsNullOrWhiteSpace(value)))
-            {
-                if (!values.Contains(value, StringComparer.OrdinalIgnoreCase))
-                {
-                    values.Add(value.Trim());
-                }
-            }
+            values = values
+                .Concat(keyValues)
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .Select(static value => value.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
         }
 
         return values;

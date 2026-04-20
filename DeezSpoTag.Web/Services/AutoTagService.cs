@@ -60,6 +60,10 @@ internal static class AutoTagLiterals
     internal const string MultiArtistSeparatorKey = "multiArtistSeparator";
     internal const string TargetFilesKey = "targetFiles";
     internal const string IncludeSubfoldersKey = "includeSubfolders";
+    internal const string ArtistTag = "artist";
+    internal const string ReleaseDateTag = "releaseDate";
+    internal const string LanguageTag = "language";
+    internal const string DownloadTagsKey = "downloadTags";
 }
 
 public abstract class AutoTagRunState
@@ -264,8 +268,8 @@ public class AutoTagService
     private static readonly Dictionary<string, string> SupportedTagKeyMap = new(StringComparer.OrdinalIgnoreCase)
     {
         ["title"] = "title",
-        ["artist"] = "artist",
-        ["artists"] = "artist",
+        [AutoTagLiterals.ArtistTag] = AutoTagLiterals.ArtistTag,
+        ["artists"] = AutoTagLiterals.ArtistTag,
         ["albumArtist"] = "albumArtist",
         ["album"] = "album",
         ["albumArt"] = "albumArt",
@@ -298,9 +302,9 @@ public class AutoTagService
         ["discTotal"] = "discTotal",
         ["isrc"] = "isrc",
         ["publishDate"] = "publishDate",
-        ["releaseDate"] = "releaseDate",
-        ["year"] = "releaseDate",
-        ["date"] = "releaseDate",
+        [AutoTagLiterals.ReleaseDateTag] = AutoTagLiterals.ReleaseDateTag,
+        ["year"] = AutoTagLiterals.ReleaseDateTag,
+        ["date"] = AutoTagLiterals.ReleaseDateTag,
         ["url"] = "url",
         ["otherTags"] = "otherTags",
         ["metaTags"] = "metaTags",
@@ -318,7 +322,7 @@ public class AutoTagService
         ["involvedPeople"] = "involvedPeople",
         ["source"] = "source",
         ["rating"] = "rating",
-        ["language"] = "language"
+        [AutoTagLiterals.LanguageTag] = AutoTagLiterals.LanguageTag
     };
     private static readonly HashSet<string> EnrichmentStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: false, includeConflictResolution: true, includeTargetFiles: false);
     private static readonly HashSet<string> EnhancementStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: true, includeConflictResolution: false, includeTargetFiles: true);
@@ -2738,14 +2742,14 @@ public class AutoTagService
         _ = runIntent;
         return MergeRequestedAndDownloadTags(
             requested: ReadStringList(baseRoot, "tags"),
-            downloadTags: ReadStringList(baseRoot, "downloadTags"));
+            downloadTags: ReadStringList(baseRoot, AutoTagLiterals.DownloadTagsKey));
     }
 
     private static List<string> ResolveEnhancementRequestedTags(JsonObject baseRoot)
     {
         return MergeRequestedAndDownloadTags(
             requested: ReadStringList(baseRoot, "gapFillTags"),
-            downloadTags: ReadStringList(baseRoot, "downloadTags"));
+            downloadTags: ReadStringList(baseRoot, AutoTagLiterals.DownloadTagsKey));
     }
 
     private static List<string> MergeRequestedAndDownloadTags(List<string> requested, List<string> downloadTags)
@@ -2993,27 +2997,15 @@ public class AutoTagService
 
             foreach (var node in array.OfType<JsonObject>())
             {
-                var id = node["id"]?.GetValue<string>()
-                         ?? node[AutoTagLiterals.PlatformKey]?["id"]?.GetValue<string>();
+                var id = GetPlatformId(node);
                 if (string.IsNullOrWhiteSpace(id))
                 {
                     continue;
                 }
 
-                var supportedTags = ReadStringList(node, "supportedTags");
-                if (supportedTags.Count == 0 && node[AutoTagLiterals.PlatformKey] is JsonObject platformNode2)
-                {
-                    supportedTags = ReadStringList(platformNode2, "supportedTags");
-                }
-                var downloadTags = ReadStringList(node, "downloadTags");
-                if (downloadTags.Count == 0 && node[AutoTagLiterals.PlatformKey] is JsonObject platformNode4)
-                {
-                    downloadTags = ReadStringList(platformNode4, "downloadTags");
-                }
-
-                var requiresAuth = ReadBool(node, "requiresAuth")
-                    ?? (node[AutoTagLiterals.PlatformKey] is JsonObject platformNode3 ? ReadBool(platformNode3, "requiresAuth") : null)
-                    ?? false;
+                var supportedTags = ReadPlatformList(node, "supportedTags");
+                var downloadTags = ReadPlatformList(node, AutoTagLiterals.DownloadTagsKey);
+                var requiresAuth = ReadPlatformRequiresAuth(node);
 
                 var normalizedSupported = supportedTags
                     .Select(NormalizeSupportedTagKey)
@@ -3037,6 +3029,30 @@ public class AutoTagService
         }
 
         return result;
+    }
+
+    private static string? GetPlatformId(JsonObject node)
+    {
+        return node["id"]?.GetValue<string>()
+            ?? node[AutoTagLiterals.PlatformKey]?["id"]?.GetValue<string>();
+    }
+
+    private static List<string> ReadPlatformList(JsonObject node, string key)
+    {
+        var values = ReadStringList(node, key);
+        if (values.Count == 0 && node[AutoTagLiterals.PlatformKey] is JsonObject platformNode)
+        {
+            values = ReadStringList(platformNode, key);
+        }
+
+        return values;
+    }
+
+    private static bool ReadPlatformRequiresAuth(JsonObject node)
+    {
+        return ReadBool(node, "requiresAuth")
+            ?? (node[AutoTagLiterals.PlatformKey] is JsonObject platformNode ? ReadBool(platformNode, "requiresAuth") : null)
+            ?? false;
     }
 
     private static List<string> FilterSupportedTags(

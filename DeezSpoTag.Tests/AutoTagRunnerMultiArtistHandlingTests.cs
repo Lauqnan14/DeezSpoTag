@@ -72,6 +72,11 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
             "ApplyTitleLossyOverwriteGuard",
             BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("LocalAutoTagRunner.ApplyTitleLossyOverwriteGuard not found.");
+    private static readonly MethodInfo CollectAutoTagTagsMethod =
+        typeof(LocalAutoTagRunner).GetMethod(
+            "CollectAutoTagTags",
+            BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("LocalAutoTagRunner.CollectAutoTagTags not found.");
 
     [Fact]
     public void BuildCoreTrack_SingleAlbumArtist_UsesAlbumArtistPrimary()
@@ -330,6 +335,145 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
             BuildTagSettingsMethod.Invoke(null, new object?[] { config, runtimeSettings }));
 
         Assert.Equal("default", tagSettings.MultiArtistSeparator);
+    }
+
+    [Fact]
+    public void BuildTagSettings_MapsConfiguredTagsToExpectedFlags()
+    {
+        var configType = typeof(LocalAutoTagRunner).GetNestedType("AutoTagRunnerConfig", BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("LocalAutoTagRunner.AutoTagRunnerConfig not found.");
+        var config = Activator.CreateInstance(configType)
+            ?? throw new InvalidOperationException("Failed to instantiate AutoTagRunnerConfig.");
+        configType.GetProperty("Tags")!.SetValue(
+            config,
+            new List<string>
+            {
+                "title", "artist", "artists", "album", "albumArtist",
+                "trackNumber", "trackTotal", "discNumber", "discTotal",
+                "genre", "label", "bpm", "isrc", "explicit", "duration",
+                "releaseDate", "cover", "barcode", "replayGain", "copyright",
+                "composer", "involvedPeople", "source", "url", "trackId",
+                "releaseId", "rating", "lyrics", "syncedLyrics"
+            });
+
+        var runtimeSettings = new DeezSpoTagSettings
+        {
+            Tags = new TagSettings()
+        };
+
+        var tagSettings = Assert.IsType<TagSettings>(
+            BuildTagSettingsMethod.Invoke(null, new object?[] { config, runtimeSettings }));
+
+        Assert.True(tagSettings.Title);
+        Assert.True(tagSettings.Artist);
+        Assert.True(tagSettings.Artists);
+        Assert.True(tagSettings.Album);
+        Assert.True(tagSettings.AlbumArtist);
+        Assert.True(tagSettings.TrackNumber);
+        Assert.True(tagSettings.TrackTotal);
+        Assert.True(tagSettings.DiscNumber);
+        Assert.True(tagSettings.DiscTotal);
+        Assert.True(tagSettings.Genre);
+        Assert.True(tagSettings.Label);
+        Assert.True(tagSettings.Bpm);
+        Assert.True(tagSettings.Isrc);
+        Assert.True(tagSettings.Explicit);
+        Assert.True(tagSettings.Length);
+        Assert.True(tagSettings.Date);
+        Assert.True(tagSettings.Year);
+        Assert.True(tagSettings.Cover);
+        Assert.True(tagSettings.Barcode);
+        Assert.True(tagSettings.ReplayGain);
+        Assert.True(tagSettings.Copyright);
+        Assert.True(tagSettings.Composer);
+        Assert.True(tagSettings.InvolvedPeople);
+        Assert.True(tagSettings.Source);
+        Assert.True(tagSettings.Url);
+        Assert.True(tagSettings.TrackId);
+        Assert.True(tagSettings.ReleaseId);
+        Assert.True(tagSettings.Rating);
+        Assert.True(tagSettings.Lyrics);
+        Assert.True(tagSettings.SyncedLyrics);
+    }
+
+    [Fact]
+    public void CollectAutoTagTags_IncludesMappedCoreFeatureAndOtherTags()
+    {
+        var track = new AutoTagTrack
+        {
+            Title = "Rise Up",
+            Artists = new List<string> { "2Baba", "Falz" },
+            AlbumArtists = new List<string> { "2Baba" },
+            Album = "Ascension",
+            Art = "https://example.com/cover.jpg",
+            Version = "Extended Mix",
+            Remixers = new List<string> { "DJ Test" },
+            Genres = new List<string> { "Hip-Hop" },
+            Styles = new List<string> { "Rap" },
+            Label = "Top Label",
+            ReleaseId = "rel-1",
+            TrackId = "trk-1",
+            Bpm = 124,
+            Danceability = 0.6,
+            Energy = 0.8,
+            Valence = 0.4,
+            Acousticness = 0.1,
+            Instrumentalness = 0.0,
+            Speechiness = 0.2,
+            Loudness = -7.0,
+            Tempo = 124,
+            TimeSignature = 4,
+            Liveness = 0.15,
+            Key = "C#m",
+            Mood = "Energetic",
+            CatalogNumber = "CAT-1",
+            TrackNumber = 1,
+            TrackTotal = 10,
+            DiscNumber = 1,
+            Duration = TimeSpan.FromMinutes(3),
+            Isrc = "USXXX2400001",
+            PublishDate = new DateTime(2024, 1, 1),
+            ReleaseDate = new DateTime(2024, 1, 2),
+            Url = "https://example.com/track",
+            Explicit = true,
+            Other = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["discTotal"] = new() { "1" },
+                ["barcode"] = new() { "1234567890" },
+                ["replayGain"] = new() { "-8.00 dB" },
+                ["copyright"] = new() { "Copyright" },
+                ["composer"] = new() { "Composer Name" },
+                ["involvedPeople"] = new() { "Producer Name" },
+                ["source"] = new() { "spotify" },
+                ["rating"] = new() { "5" },
+                ["language"] = new() { "en" },
+                ["syncedLyrics"] = new() { "[00:01.00]line" },
+                ["lyrics"] = new() { "plain lyric" },
+                ["ttmlLyrics"] = new() { "<tt></tt>" },
+                ["customMeta"] = new() { "value" }
+            }
+        };
+
+        var tags = Assert.IsType<List<string>>(CollectAutoTagTagsMethod.Invoke(null, new object?[] { track }));
+
+        Assert.Contains(tags, value => value.Equals("title", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("artist", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("albumArtist", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("album", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("albumArt", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("bpm", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("danceability", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("catalogNumber", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("duration", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("isrc", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("releaseDate", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("url", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("explicit", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("barcode", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("syncedLyrics", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("unsyncedLyrics", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("ttmlLyrics", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tags, value => value.Equals("otherTags", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
