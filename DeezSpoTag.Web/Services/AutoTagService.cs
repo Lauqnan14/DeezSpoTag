@@ -6180,6 +6180,13 @@ public class AutoTagService
         job.ExitCode = 1;
         job.FinishedAt ??= DateTimeOffset.UtcNow;
         job.Error ??= "AutoTag job was interrupted and recovered as stale running state.";
+        if (string.Equals(job.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase)
+            && job.ResumeCheckpoint != null)
+        {
+            // Download-enrichment runs depend on the latest discovered file set; stale checkpoints can skip platforms/files.
+            job.ResumeCheckpoint = null;
+            job.Logs.Add("stale recovery: resume checkpoint cleared for download_enrichment");
+        }
         SaveJob(job);
         TryQueueStaleRecoveryCleanup(job);
     }
