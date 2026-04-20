@@ -396,6 +396,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagResumeCursor? resumeCursor,
         CancellationToken token)
     {
+        var resumeMismatchReason = GetResumeCheckpointMismatchReason(plan, resumeCursor);
+        if (!string.IsNullOrWhiteSpace(resumeMismatchReason))
+        {
+            logCallback($"onetagger_autotag: resume checkpoint ignored ({resumeMismatchReason}); restarting from first platform");
+            resumeCursor = null;
+        }
+
         var (startPlatformIndex, startFileIndex) = ResolveResumeStartIndices(plan, resumeCursor);
         for (var platformIndex = startPlatformIndex; platformIndex < plan.PlatformCount; platformIndex++)
         {
@@ -448,6 +455,28 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return (platformIndex, fileIndex);
+    }
+
+    private static string? GetResumeCheckpointMismatchReason(AutoTagRunPlan plan, AutoTagResumeCursor? resumeCursor)
+    {
+        if (resumeCursor == null)
+        {
+            return null;
+        }
+
+        if (resumeCursor.PlatformCount is > 0 and var checkpointPlatformCount
+            && checkpointPlatformCount != plan.PlatformCount)
+        {
+            return $"platform count changed (checkpoint={checkpointPlatformCount}, current={plan.PlatformCount})";
+        }
+
+        if (resumeCursor.FileCount is > 0 and var checkpointFileCount
+            && checkpointFileCount != plan.FileCount)
+        {
+            return $"file count changed (checkpoint={checkpointFileCount}, current={plan.FileCount})";
+        }
+
+        return null;
     }
 
     private async Task ProcessPlatformFileAsync(AutoTagFileRunContext context)
