@@ -245,24 +245,28 @@ public class PlexApiClient
         return location?.RatingKey;
     }
 
-    public async Task<PlexArtistLocation?> FindArtistLocationAsync(string serverUrl, string token, string artistName, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<PlexArtistLocation>> FindArtistLocationsAsync(
+        string serverUrl,
+        string token,
+        string artistName,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(artistName))
         {
-            return null;
+            return Array.Empty<PlexArtistLocation>();
         }
 
         var targetName = NormalizeArtistTitle(artistName);
         if (string.IsNullOrWhiteSpace(targetName))
         {
-            return null;
+            return Array.Empty<PlexArtistLocation>();
         }
         var targetLoose = NormalizeArtistLoose(targetName);
 
         var sections = await GetMusicSectionKeysAsync(serverUrl, token, cancellationToken);
         if (sections.Count == 0)
         {
-            return null;
+            return Array.Empty<PlexArtistLocation>();
         }
 
         var baseUrl = serverUrl.TrimEnd('/');
@@ -275,25 +279,44 @@ public class PlexApiClient
                 "Plex artist match not found for '{ArtistName}' after querying {SectionCount} sections.",
                 artistName,
                 sections.Count);
-            return null;
+            return Array.Empty<PlexArtistLocation>();
         }
 
-        var best = candidates
+        var ranked = candidates
             .OrderByDescending(item => item.Value.score)
             .ThenBy(item => item.Value.lengthDelta)
-            .First();
+            .ToList();
+        var bestScore = ranked[0].Value.score;
+        var bestLoose = NormalizeArtistLoose(ranked[0].Value.title);
+        var bestLengthDelta = ranked[0].Value.lengthDelta;
+
+        var locations = ranked
+            .Where(item => item.Value.score == bestScore
+                           && item.Value.lengthDelta == bestLengthDelta
+                           && string.Equals(
+                               NormalizeArtistLoose(item.Value.title),
+                               bestLoose,
+                               StringComparison.OrdinalIgnoreCase))
+            .Select(item => new PlexArtistLocation(item.Value.sectionKey, item.Key))
+            .Distinct()
+            .ToList();
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug(
-                "Resolved Plex artist '{ArtistName}' to '{MatchedTitle}' (section {SectionKey}, ratingKey {RatingKey}, score {Score})",
+                "Resolved Plex artist '{ArtistName}' to {LocationCount} location(s) at score {Score}.",
                 artistName,
-                best.Value.title,
-                best.Value.sectionKey,
-                best.Key,
-                best.Value.score);        }
+                locations.Count,
+                bestScore);
+        }
 
-        return new PlexArtistLocation(best.Value.sectionKey, best.Key);
+        return locations;
+    }
+
+    public async Task<PlexArtistLocation?> FindArtistLocationAsync(string serverUrl, string token, string artistName, CancellationToken cancellationToken = default)
+    {
+        var matches = await FindArtistLocationsAsync(serverUrl, token, artistName, cancellationToken);
+        return matches.Count > 0 ? matches[0] : null;
     }
 
     /// <summary>

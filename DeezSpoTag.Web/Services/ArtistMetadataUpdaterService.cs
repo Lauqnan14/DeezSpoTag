@@ -529,15 +529,43 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         PreparedVisuals prepared,
         CancellationToken cancellationToken)
     {
+        var linkedArtistIds = await ResolveLinkedArtistIdsAsync(artistId, cancellationToken);
         if (!string.IsNullOrWhiteSpace(prepared.AvatarPath))
         {
-            await _libraryRepository.UpdateArtistImagePathAsync(artistId, prepared.AvatarPath!, cancellationToken);
+            foreach (var linkedArtistId in linkedArtistIds)
+            {
+                await _libraryRepository.UpdateArtistImagePathAsync(linkedArtistId, prepared.AvatarPath!, cancellationToken);
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(prepared.BackgroundPath))
         {
-            await _libraryRepository.UpdateArtistBackgroundPathAsync(artistId, prepared.BackgroundPath!, cancellationToken);
+            foreach (var linkedArtistId in linkedArtistIds)
+            {
+                await _libraryRepository.UpdateArtistBackgroundPathAsync(linkedArtistId, prepared.BackgroundPath!, cancellationToken);
+            }
         }
+    }
+
+    private async Task<IReadOnlyCollection<long>> ResolveLinkedArtistIdsAsync(long artistId, CancellationToken cancellationToken)
+    {
+        var artistIds = new HashSet<long> { artistId };
+        foreach (var source in new[] { SpotifyPlatform, DeezerPlatform, ApplePlatform })
+        {
+            var sourceId = await _libraryRepository.GetArtistSourceIdAsync(artistId, source, cancellationToken);
+            if (string.IsNullOrWhiteSpace(sourceId))
+            {
+                continue;
+            }
+
+            var linkedIds = await _libraryRepository.GetArtistIdsBySourceIdAsync(source, sourceId, cancellationToken);
+            foreach (var linkedId in linkedIds)
+            {
+                artistIds.Add(linkedId);
+            }
+        }
+
+        return artistIds;
     }
 
     private void UpdateProgressStatus(string artistName, MetadataRunCounters counters)
@@ -1022,19 +1050,22 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
 
         try
         {
-            var location = await _plexClient.FindArtistLocationAsync(plexUrl, plexToken, request.ArtistName, cancellationToken);
-            if (location is null)
+            var locations = await _plexClient.FindArtistLocationsAsync(plexUrl, plexToken, request.ArtistName, cancellationToken);
+            if (locations.Count == 0)
             {
                 warnings.Add("Plex artist not found.");
                 return;
             }
 
-            await UpsertPlexSourceIdAsync(request, location, cancellationToken);
-            var artworkUpdates = await UpdatePlexArtworkAsync(request, plexUrl, plexToken, location, cancellationToken);
-            updates.AvatarUpdated = artworkUpdates.AvatarUpdated || updates.AvatarUpdated;
-            updates.BackgroundUpdated = artworkUpdates.BackgroundUpdated || updates.BackgroundUpdated;
-            await TryLockPlexArtworkAsync(plexUrl, plexToken, location, artworkUpdates, warnings, cancellationToken);
-            await UpdatePlexBiographyAsync(request, plexUrl, plexToken, location, updates, cancellationToken);
+            await UpsertPlexSourceIdAsync(request, locations[0], cancellationToken);
+            foreach (var location in locations)
+            {
+                var artworkUpdates = await UpdatePlexArtworkAsync(request, plexUrl, plexToken, location, cancellationToken);
+                updates.AvatarUpdated = artworkUpdates.AvatarUpdated || updates.AvatarUpdated;
+                updates.BackgroundUpdated = artworkUpdates.BackgroundUpdated || updates.BackgroundUpdated;
+                await TryLockPlexArtworkAsync(plexUrl, plexToken, location, artworkUpdates, warnings, cancellationToken);
+                await UpdatePlexBiographyAsync(request, plexUrl, plexToken, location, updates, cancellationToken);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1169,8 +1200,8 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
 
         try
         {
-            var artistId = await _jellyfinClient.FindArtistIdAsync(jellyfin.Url, jellyfin.ApiKey, request.ArtistName, cancellationToken);
-            if (string.IsNullOrWhiteSpace(artistId))
+            var artistIds = await _jellyfinClient.FindArtistIdsAsync(jellyfin.Url, jellyfin.ApiKey, request.ArtistName, cancellationToken);
+            if (artistIds.Count == 0)
             {
                 warnings.Add("Jellyfin artist not found.");
                 return;
@@ -1178,37 +1209,40 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
 
             if (request.LocalArtistId > 0)
             {
-                await _libraryRepository.UpsertArtistSourceIdAsync(request.LocalArtistId, JellyfinTarget, artistId, cancellationToken);
+                await _libraryRepository.UpsertArtistSourceIdAsync(request.LocalArtistId, JellyfinTarget, artistIds[0], cancellationToken);
             }
 
-            if (!string.IsNullOrWhiteSpace(request.AvatarPath) && File.Exists(request.AvatarPath))
+            foreach (var artistId in artistIds)
             {
-                updates.AvatarUpdated = await _jellyfinClient.UpdateArtistImageAsync(
-                    jellyfin.Url,
-                    jellyfin.ApiKey,
-                    artistId,
-                    request.AvatarPath,
-                    cancellationToken) || updates.AvatarUpdated;
-            }
+                if (!string.IsNullOrWhiteSpace(request.AvatarPath) && File.Exists(request.AvatarPath))
+                {
+                    updates.AvatarUpdated = await _jellyfinClient.UpdateArtistImageAsync(
+                        jellyfin.Url,
+                        jellyfin.ApiKey,
+                        artistId,
+                        request.AvatarPath,
+                        cancellationToken) || updates.AvatarUpdated;
+                }
 
-            if (!string.IsNullOrWhiteSpace(request.BackgroundPath) && File.Exists(request.BackgroundPath))
-            {
-                updates.BackgroundUpdated = await _jellyfinClient.UpdateArtistBackdropAsync(
-                    jellyfin.Url,
-                    jellyfin.ApiKey,
-                    artistId,
-                    request.BackgroundPath,
-                    cancellationToken) || updates.BackgroundUpdated;
-            }
+                if (!string.IsNullOrWhiteSpace(request.BackgroundPath) && File.Exists(request.BackgroundPath))
+                {
+                    updates.BackgroundUpdated = await _jellyfinClient.UpdateArtistBackdropAsync(
+                        jellyfin.Url,
+                        jellyfin.ApiKey,
+                        artistId,
+                        request.BackgroundPath,
+                        cancellationToken) || updates.BackgroundUpdated;
+                }
 
-            if (!string.IsNullOrWhiteSpace(request.Biography))
-            {
-                updates.BioUpdated = await _jellyfinClient.UpdateArtistOverviewAsync(
-                    jellyfin.Url,
-                    jellyfin.ApiKey,
-                    artistId,
-                    request.Biography,
-                    cancellationToken) || updates.BioUpdated;
+                if (!string.IsNullOrWhiteSpace(request.Biography))
+                {
+                    updates.BioUpdated = await _jellyfinClient.UpdateArtistOverviewAsync(
+                        jellyfin.Url,
+                        jellyfin.ApiKey,
+                        artistId,
+                        request.Biography,
+                        cancellationToken) || updates.BioUpdated;
+                }
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

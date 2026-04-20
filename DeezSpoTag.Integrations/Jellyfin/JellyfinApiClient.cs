@@ -248,24 +248,48 @@ public class JellyfinApiClient
         return await GetUserChildItemsAsync(serverUrl, apiKey, userId, seasonId, "Episode", cancellationToken);
     }
 
-    public async Task<string?> FindArtistIdAsync(string serverUrl, string apiKey, string artistName, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<string>> FindArtistIdsAsync(string serverUrl, string apiKey, string artistName, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(artistName))
         {
-            return null;
+            return Array.Empty<string>();
         }
 
-        var url = BuildUrl(serverUrl, $"/Artists?SearchTerm={Uri.EscapeDataString(artistName)}&Limit=1");
+        var normalizedArtistName = artistName.Trim();
+        var url = BuildUrl(serverUrl, $"/Artists?SearchTerm={Uri.EscapeDataString(normalizedArtistName)}&Limit=200");
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Add(EmbyTokenHeader, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            return null;
+            return Array.Empty<string>();
         }
 
         var payload = await response.Content.ReadFromJsonAsync<JellyfinArtistsResponse>(cancellationToken: cancellationToken);
-        return payload?.Items?.FirstOrDefault()?.Id;
+        var items = payload?.Items ?? new List<JellyfinArtistItem>();
+        var exactMatches = items
+            .Where(item => !string.IsNullOrWhiteSpace(item.Id)
+                           && !string.IsNullOrWhiteSpace(item.Name)
+                           && string.Equals(item.Name.Trim(), normalizedArtistName, StringComparison.OrdinalIgnoreCase))
+            .Select(item => item.Id!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (exactMatches.Count > 0)
+        {
+            return exactMatches;
+        }
+
+        return items
+            .Where(item => !string.IsNullOrWhiteSpace(item.Id))
+            .Select(item => item.Id!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    public async Task<string?> FindArtistIdAsync(string serverUrl, string apiKey, string artistName, CancellationToken cancellationToken = default)
+    {
+        var matches = await FindArtistIdsAsync(serverUrl, apiKey, artistName, cancellationToken);
+        return matches.Count > 0 ? matches[0] : null;
     }
 
     public async Task<List<JellyfinAudioTrack>> SearchTracksAsync(
@@ -800,6 +824,9 @@ public sealed class JellyfinArtistItem
 {
     [JsonPropertyName("Id")]
     public string? Id { get; set; }
+
+    [JsonPropertyName("Name")]
+    public string? Name { get; set; }
 }
 
 public sealed class JellyfinLibrarySection
