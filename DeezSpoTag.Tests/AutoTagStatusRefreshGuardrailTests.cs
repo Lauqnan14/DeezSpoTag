@@ -69,6 +69,46 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     }
 
     [Fact]
+    public void AutoTagStatusScript_OnlyTreatsActiveRunsAsLiveHistorySource()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var scriptPath = Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
+        Assert.True(File.Exists(scriptPath), $"Missing status script: {scriptPath}");
+
+        var source = File.ReadAllText(scriptPath);
+        Assert.Contains("return isHistoryTabActive() && !state.manualHistorySelection && hasActiveLiveRun();", source, StringComparison.Ordinal);
+        Assert.Contains("if (state.liveJobId && runId === state.liveJobId && hasActiveLiveRun())", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStatusScript_GuardsAgainstOutOfOrderHistoryResponses()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var scriptPath = Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
+        Assert.True(File.Exists(scriptPath), $"Missing status script: {scriptPath}");
+
+        var source = File.ReadAllText(scriptPath);
+        Assert.Contains("calendarRequestId", source, StringComparison.Ordinal);
+        Assert.Contains("runsRequestId", source, StringComparison.Ordinal);
+        Assert.Contains("runDetailsRequestId", source, StringComparison.Ordinal);
+        Assert.Contains("if (requestId !== state.calendarRequestId)", source, StringComparison.Ordinal);
+        Assert.Contains("if (requestId !== state.runsRequestId)", source, StringComparison.Ordinal);
+        Assert.Contains("if (requestId !== state.runDetailsRequestId)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStatusScript_DoesNotOverwriteArchivedHistoryFromCompletedLatestPoll()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var scriptPath = Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
+        Assert.True(File.Exists(scriptPath), $"Missing status script: {scriptPath}");
+
+        var source = File.ReadAllText(scriptPath);
+        Assert.Contains("if (hasActiveLiveRun()) {", source, StringComparison.Ordinal);
+        Assert.Contains("syncSelectedRunWithLiveJob(job, logs);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AutoTagService_ReadsBestAvailableArchivedStatusAndLogsAcrossHistoryRoots()
     {
         var repoRoot = ResolveRepoRoot();

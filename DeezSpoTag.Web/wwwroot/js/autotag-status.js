@@ -23,7 +23,10 @@
         selectedRunId: null,
         runSelectionMessage: null,
         selectedDate: null,
-        calendarMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+        calendarMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+        calendarRequestId: 0,
+        runsRequestId: 0,
+        runDetailsRequestId: 0
     };
 
     const el = (id) => document.getElementById(id);
@@ -251,7 +254,7 @@
     }
 
     function shouldFollowLiveRunInHistory() {
-        return isHistoryTabActive() && !state.manualHistorySelection && !!state.liveJobSummary?.id;
+        return isHistoryTabActive() && !state.manualHistorySelection && hasActiveLiveRun();
     }
 
     function getRunsForDisplay(runs) {
@@ -589,10 +592,14 @@
             clearRunSelection();
             return;
         }
+        const requestId = ++state.runDetailsRequestId;
 
-        if (state.liveJobId && runId === state.liveJobId) {
+        if (state.liveJobId && runId === state.liveJobId && hasActiveLiveRun()) {
             try {
                 await loadLiveRunDetails(runId);
+                if (requestId !== state.runDetailsRequestId) {
+                    return;
+                }
                 return;
             } catch (liveError) {
                 console.warn("Failed to load selected live AutoTag run", liveError);
@@ -601,10 +608,16 @@
 
         try {
             const archive = await fetchJson(`/api/autotag/history/runs/${encodeURIComponent(runId)}`);
+            if (requestId !== state.runDetailsRequestId) {
+                return;
+            }
             const archivedStatusHistory = Array.isArray(archive?.statusHistory) ? archive.statusHistory : [];
             if (archivedStatusHistory.length === 0) {
                 try {
                     await loadLiveRunDetails(runId);
+                    if (requestId !== state.runDetailsRequestId) {
+                        return;
+                    }
                     if (Array.isArray(state.historyStatus) && state.historyStatus.length > 0) {
                         return;
                     }
@@ -622,6 +635,9 @@
         } catch (error) {
             try {
                 await loadLiveRunDetails(runId);
+                if (requestId !== state.runDetailsRequestId) {
+                    return;
+                }
             } catch (liveError) {
                 console.warn("Failed to load archived AutoTag run", error);
                 console.warn("Failed to load live AutoTag run fallback", liveError);
@@ -679,6 +695,7 @@
     }
 
     async function loadRunsForDate(date, options = {}) {
+        const requestId = ++state.runsRequestId;
         state.selectedDate = date;
         if (options.manual === true) {
             state.manualHistorySelection = true;
@@ -686,9 +703,15 @@
         setText("autotag-history-selected-date", formatDate(date));
         try {
             const payload = await fetchJson(`/api/autotag/history/runs?date=${encodeURIComponent(date)}`);
+            if (requestId !== state.runsRequestId) {
+                return;
+            }
             renderRunList(payload?.runs || []);
             highlightSelectedDay();
         } catch (error) {
+            if (requestId !== state.runsRequestId) {
+                return;
+            }
             console.warn("Failed to load AutoTag runs for date", error);
             const list = el("autotag-history-run-list");
             if (list) {
@@ -755,11 +778,15 @@
     }
 
     async function loadCalendar() {
+        const requestId = ++state.calendarRequestId;
         const year = state.calendarMonth.getFullYear();
         const month = state.calendarMonth.getMonth() + 1;
 
         try {
             const payload = await fetchJson(`/api/autotag/history/calendar?year=${year}&month=${month}`);
+            if (requestId !== state.calendarRequestId) {
+                return;
+            }
             const days = payload?.days || [];
             renderCalendar(days);
 
@@ -789,6 +816,9 @@
             }
             await loadRunsForDate(defaultDate);
         } catch (error) {
+            if (requestId !== state.calendarRequestId) {
+                return;
+            }
             console.warn("Failed to load AutoTag calendar", error);
             const container = el("autotag-history-calendar");
             if (container) {
@@ -799,7 +829,7 @@
     }
 
     async function refreshHistoryIfSelectedLiveRun() {
-        if (!state.selectedRunId || state.selectedRunId !== state.liveJobId) {
+        if (!state.selectedRunId || state.selectedRunId !== state.liveJobId || !hasActiveLiveRun()) {
             return;
         }
 
@@ -878,9 +908,6 @@
         updateLogs([]);
         updateLiveMetadata(null);
         updateProgressBar(null);
-        if (isHistoryTabActive() && isTodayDateToken(state.selectedDate)) {
-            renderRunList(state.archivedRuns);
-        }
     }
 
     async function applyPolledJob(job, logs) {
@@ -892,10 +919,12 @@
         updateProgressBar(job);
         if (shouldFollowLiveRunInHistory()) {
             renderLiveRunSelection(job, logs);
-        } else if (isHistoryTabActive() && isTodayDateToken(state.selectedDate)) {
+        } else if (hasActiveLiveRun() && isHistoryTabActive() && isTodayDateToken(state.selectedDate)) {
             renderRunList(state.archivedRuns);
         }
-        syncSelectedRunWithLiveJob(job, logs);
+        if (hasActiveLiveRun()) {
+            syncSelectedRunWithLiveJob(job, logs);
+        }
         if (job.status === STATUS_RUNNING && !shouldFollowLiveRunInHistory()) {
             await refreshHistoryIfSelectedLiveRun();
         }
