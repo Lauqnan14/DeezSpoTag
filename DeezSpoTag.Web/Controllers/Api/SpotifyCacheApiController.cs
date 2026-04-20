@@ -221,12 +221,13 @@ public class SpotifyCacheApiController : ControllerBase
         }
 
         var push = parsed.Push!;
-        var warnings = BuildPushWarnings(push);
         var artist = await _libraryRepository.GetArtistAsync(push.ArtistId, cancellationToken);
         if (artist is null || string.IsNullOrWhiteSpace(artist.Name))
         {
             return NotFound("Artist not found.");
         }
+        push = await ApplyDefaultPushVisualsAsync(push, artist, cancellationToken);
+        var warnings = BuildPushWarnings(push);
 
         if (!HasPushPayload(push))
         {
@@ -263,6 +264,127 @@ public class SpotifyCacheApiController : ControllerBase
             bioUpdated = updates.BioUpdated,
             warnings
         });
+    }
+
+    private async Task<PreparedPushRequest> ApplyDefaultPushVisualsAsync(
+        PreparedPushRequest push,
+        ArtistDetailDto artist,
+        CancellationToken cancellationToken)
+    {
+        var avatarVisual = push.AvatarVisual;
+        if (push.IncludeAvatar && avatarVisual is null)
+        {
+            avatarVisual = await ResolveDefaultPushVisualAsync(
+                artist.Id,
+                "avatar",
+                artist.PreferredImagePath,
+                cancellationToken);
+        }
+
+        var backgroundVisual = push.BackgroundVisual;
+        if (push.IncludeBackground && backgroundVisual is null)
+        {
+            backgroundVisual = await ResolveDefaultPushVisualAsync(
+                artist.Id,
+                "background",
+                artist.PreferredBackgroundPath,
+                cancellationToken);
+        }
+
+        return push with
+        {
+            AvatarVisual = avatarVisual,
+            BackgroundVisual = backgroundVisual
+        };
+    }
+
+    private async Task<ResolvedVisualSelection?> ResolveDefaultPushVisualAsync(
+        long artistId,
+        string slot,
+        string? preferredPath,
+        CancellationToken cancellationToken)
+    {
+        var preferredLocalPath = NormalizeExistingFilePath(preferredPath);
+        if (!string.IsNullOrWhiteSpace(preferredLocalPath))
+        {
+            return new ResolvedVisualSelection(preferredLocalPath, null);
+        }
+
+        var slotPath = ResolveManagedSlotPath(artistId, slot);
+        if (!string.IsNullOrWhiteSpace(slotPath))
+        {
+            return new ResolvedVisualSelection(slotPath, null);
+        }
+
+        var spotifySourceId = await _libraryRepository.GetArtistSourceIdAsync(artistId, SpotifySource, cancellationToken);
+        if (string.IsNullOrWhiteSpace(spotifySourceId))
+        {
+            return null;
+        }
+
+        var cacheRoot = Path.Join(AppDataPaths.GetDataRoot(_environment), LibraryArtistImagesPath, SpotifySource);
+        if (!Directory.Exists(cacheRoot))
+        {
+            return null;
+        }
+
+        try
+        {
+            var cacheMatch = Directory.GetFiles(cacheRoot, $"*{spotifySourceId}.*", SearchOption.TopDirectoryOnly)
+                .Where(System.IO.File.Exists)
+                .OrderByDescending(path => new FileInfo(path).LastWriteTimeUtc)
+                .FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(cacheMatch))
+            {
+                return null;
+            }
+
+            return new ResolvedVisualSelection(Path.GetFullPath(cacheMatch), null);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to resolve default {Slot} visual for artist {ArtistId}", slot, artistId);
+            return null;
+        }
+    }
+
+    private string? ResolveManagedSlotPath(long artistId, string slot)
+    {
+        var visualDir = Path.Join(
+            AppDataPaths.GetDataRoot(_environment),
+            LibraryArtistImagesPath,
+            SpotifySource,
+            "artists",
+            artistId.ToString());
+        if (!Directory.Exists(visualDir))
+        {
+            return null;
+        }
+
+        return Directory.GetFiles(visualDir, $"{slot}.*", SearchOption.TopDirectoryOnly)
+            .Where(System.IO.File.Exists)
+            .OrderByDescending(path => new FileInfo(path).LastWriteTimeUtc)
+            .Select(Path.GetFullPath)
+            .FirstOrDefault();
+    }
+
+    private static string? NormalizeExistingFilePath(string? candidatePath)
+    {
+        var value = (candidatePath ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        try
+        {
+            var fullPath = Path.GetFullPath(value);
+            return System.IO.File.Exists(fullPath) ? fullPath : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
     }
 
     private (PreparedPushRequest? Push, string? Error) ParsePushRequest(SpotifyCachePushRequest? request)
