@@ -601,8 +601,20 @@
 
         try {
             const archive = await fetchJson(`/api/autotag/history/runs/${encodeURIComponent(runId)}`);
+            const archivedStatusHistory = Array.isArray(archive?.statusHistory) ? archive.statusHistory : [];
+            if (archivedStatusHistory.length === 0) {
+                try {
+                    await loadLiveRunDetails(runId);
+                    if (Array.isArray(state.historyStatus) && state.historyStatus.length > 0) {
+                        return;
+                    }
+                } catch (liveFallbackError) {
+                    console.warn("Failed to load live AutoTag run fallback for empty archive history", liveFallbackError);
+                }
+            }
+
             state.selectedRunId = archive?.summary?.id || runId;
-            state.historyStatus = Array.isArray(archive?.statusHistory) ? archive.statusHistory.slice().reverse() : [];
+            state.historyStatus = archivedStatusHistory.slice().reverse();
             renderRunSummary(archive?.summary || null, archive || null);
             updateFilterCountsFromHistory();
             renderFilteredHistory();

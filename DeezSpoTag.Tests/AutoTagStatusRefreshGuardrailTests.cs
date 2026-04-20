@@ -55,6 +55,32 @@ public sealed class AutoTagStatusRefreshGuardrailTests
         Assert.Contains("\"focus\"", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void AutoTagStatusScript_FallsBackToLiveJobWhenArchivedRunHasNoStatusHistory()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var scriptPath = Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
+        Assert.True(File.Exists(scriptPath), $"Missing status script: {scriptPath}");
+
+        var source = File.ReadAllText(scriptPath);
+        Assert.Contains("const archivedStatusHistory = Array.isArray(archive?.statusHistory) ? archive.statusHistory : [];", source, StringComparison.Ordinal);
+        Assert.Contains("if (archivedStatusHistory.length === 0)", source, StringComparison.Ordinal);
+        Assert.Contains("await loadLiveRunDetails(runId);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagService_ReadsBestAvailableArchivedStatusAndLogsAcrossHistoryRoots()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
+
+        var source = File.ReadAllText(servicePath);
+        Assert.Contains("EnumerateRunFileCandidates(jobId, \"autotag.log\")", source, StringComparison.Ordinal);
+        Assert.Contains("EnumerateRunFileCandidates(jobId, \"status-history.ndjson\")", source, StringComparison.Ordinal);
+        Assert.Contains("if (candidateEntries.Count > entries.Count)", source, StringComparison.Ordinal);
+    }
+
     private static string ResolveRepoRoot()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);
