@@ -697,6 +697,21 @@ if (!validSearchTypes.has((currentSearchType || '').toLowerCase())) {
     currentSearchType = soundtrackSearchMode ? 'all' : 'track';
 }
 
+function isRememberLastTabEnabled() {
+    const stored = localStorage.getItem('tabs-preference-enabled');
+    if (stored === null || stored === '') {
+        return true;
+    }
+
+    return stored === 'true';
+}
+
+function getActiveSearchSourceFromTabUi() {
+    const activeTab = document.querySelector('#searchSourceTabs .source-btn.active[data-source]');
+    const activeSource = String(activeTab?.dataset?.source || '').trim().toLowerCase();
+    return searchSources.includes(activeSource) ? activeSource : '';
+}
+
 function isValidURL(value) {
     try {
         const parsed = new URL(value);
@@ -1026,6 +1041,11 @@ document.addEventListener('DOMContentLoaded', function() {
     const sourceParam = (urlParams.get('source') || '').toLowerCase();
     if (searchSources.includes(sourceParam)) {
         currentSearchSource = sourceParam;
+    } else if (isRememberLastTabEnabled()) {
+        const activeSourceFromUi = getActiveSearchSourceFromTabUi();
+        if (activeSourceFromUi) {
+            currentSearchSource = activeSourceFromUi;
+        }
     }
     if (!searchSources.includes((currentSearchSource || '').toLowerCase())) {
         currentSearchSource = 'spotify';

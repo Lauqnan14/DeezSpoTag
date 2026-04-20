@@ -33,69 +33,29 @@ public sealed class ShazamPlatform : AutoTagPlatformBase
                 SupportedTag.Explicit,
                 SupportedTag.OtherTags
             },
-            CustomOptions = new PlatformCustomOptions
-            {
-                Options = new List<PlatformCustomOption>
-                {
-                    new()
-                    {
-                        Id = "id_first",
-                        Label = "Use IDs/ISRC first",
-                        Value = new PlatformCustomOptionBoolean { Value = true }
-                    },
-                    new()
-                    {
-                        Id = "fingerprint_fallback",
-                        Label = "Fallback to fingerprinting",
-                        Value = new PlatformCustomOptionBoolean { Value = true }
-                    },
-                    new()
-                    {
-                        Id = "fallback_missing_core_tags",
-                        Label = "Enable Shazam fallback for missing core tags",
-                        Value = new PlatformCustomOptionBoolean { Value = true },
-                        Tooltip = "When enabled, enrichment uses Shazam to fill missing/noisy title and artist."
-                    },
-                    new()
-                    {
-                        Id = "force_match",
-                        Label = "Force Shazam match (skip file if identify fails)",
-                        Value = new PlatformCustomOptionBoolean { Value = false },
-                        Tooltip = "Requires successful Shazam identification; files that fail recognition are skipped."
-                    },
-                    new()
-                    {
-                        Id = "prefer_hq_artwork",
-                        Label = "Prefer HQ artwork",
-                        Value = new PlatformCustomOptionBoolean { Value = true }
-                    },
-                    new()
-                    {
-                        Id = "include_album",
-                        Label = "Include album from Shazam metadata",
-                        Value = new PlatformCustomOptionBoolean { Value = true }
-                    },
-                    new()
-                    {
-                        Id = "include_genre",
-                        Label = "Include genre from Shazam metadata",
-                        Value = new PlatformCustomOptionBoolean { Value = true }
-                    },
-                    new()
-                    {
-                        Id = "include_label",
-                        Label = "Include label from Shazam metadata",
-                        Value = new PlatformCustomOptionBoolean { Value = true }
-                    },
-                    new()
-                    {
-                        Id = "include_release_date",
-                        Label = "Include release date/year from Shazam metadata",
-                        Value = new PlatformCustomOptionBoolean { Value = true }
-                    },
-                    new()
-                    {
-                        Id = "min_title_similarity",
+	            CustomOptions = new PlatformCustomOptions
+	            {
+	                Options = new List<PlatformCustomOption>
+	                {
+	                    CreateBooleanOption("id_first", "Use IDs/ISRC first"),
+	                    CreateBooleanOption("fingerprint_fallback", "Fallback to fingerprinting"),
+	                    CreateBooleanOption(
+	                        "fallback_missing_core_tags",
+	                        "Enable Shazam fallback for missing core tags",
+	                        tooltip: "When enabled, enrichment uses Shazam to fill missing/noisy title and artist."),
+	                    CreateBooleanOption(
+	                        "force_match",
+	                        "Force Shazam match (skip file if identify fails)",
+	                        defaultValue: false,
+	                        tooltip: "Requires successful Shazam identification; files that fail recognition are skipped."),
+	                    CreateBooleanOption("prefer_hq_artwork", "Prefer HQ artwork"),
+	                    CreateBooleanOption("include_album", "Include album from Shazam metadata"),
+	                    CreateBooleanOption("include_genre", "Include genre from Shazam metadata"),
+	                    CreateBooleanOption("include_label", "Include label from Shazam metadata"),
+	                    CreateBooleanOption("include_release_date", "Include release date/year from Shazam metadata"),
+	                    new()
+	                    {
+	                        Id = "min_title_similarity",
                         Label = "Minimum title similarity",
                         Value = new PlatformCustomOptionNumber { Min = 40, Max = 100, Step = 1, Value = 72, Slider = true },
                         Tooltip = "Reject Shazam fingerprint matches when title similarity (%) is below this threshold."
@@ -116,8 +76,23 @@ public sealed class ShazamPlatform : AutoTagPlatformBase
                     }
                 }
             }
-        };
+	        };
 
-        return CreateDescriptor(info, "shazam.png");
-    }
-}
+	        return CreateDescriptor(info, "shazam.png");
+	    }
+
+	    private static PlatformCustomOption CreateBooleanOption(
+	        string id,
+	        string label,
+	        bool defaultValue = true,
+	        string? tooltip = null)
+	    {
+	        return new PlatformCustomOption
+	        {
+	            Id = id,
+	            Label = label,
+	            Value = new PlatformCustomOptionBoolean { Value = defaultValue },
+	            Tooltip = tooltip
+	        };
+	    }
+	}

@@ -67,6 +67,11 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
             "ApplySingleAlbumArtistGuard",
             BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("LocalAutoTagRunner.ApplySingleAlbumArtistGuard not found.");
+    private static readonly MethodInfo ApplyTitleLossyOverwriteGuardMethod =
+        typeof(LocalAutoTagRunner).GetMethod(
+            "ApplyTitleLossyOverwriteGuard",
+            BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("LocalAutoTagRunner.ApplyTitleLossyOverwriteGuard not found.");
 
     [Fact]
     public void BuildCoreTrack_SingleAlbumArtist_UsesAlbumArtistPrimary()
@@ -680,5 +685,57 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
 
         Assert.True(effective.AlbumArtist);
         Assert.Equal("Incoming Album Artist", Assert.Single(incoming.AlbumArtists));
+    }
+
+    [Fact]
+    public void ApplyTitleLossyOverwriteGuard_Boomplay_PreservesExistingDetailedTitle()
+    {
+        var effective = new TagSettings
+        {
+            Title = true
+        };
+        var incoming = new AutoTagTrack
+        {
+            Title = "All eyes on me"
+        };
+
+        ApplyTitleLossyOverwriteGuardMethod.Invoke(
+            null,
+            new object?[]
+            {
+                effective,
+                incoming,
+                "All eyes on me (feat. Burna Boy)",
+                "boomplay"
+            });
+
+        Assert.False(effective.Title);
+        Assert.Equal("All eyes on me (feat. Burna Boy)", incoming.Title);
+    }
+
+    [Fact]
+    public void ApplyTitleLossyOverwriteGuard_AllPlatforms_PreserveExistingDetailedTitle()
+    {
+        var effective = new TagSettings
+        {
+            Title = true
+        };
+        var incoming = new AutoTagTrack
+        {
+            Title = "All eyes on me"
+        };
+
+        ApplyTitleLossyOverwriteGuardMethod.Invoke(
+            null,
+            new object?[]
+            {
+                effective,
+                incoming,
+                "All eyes on me (feat. Burna Boy)",
+                "itunes"
+            });
+
+        Assert.False(effective.Title);
+        Assert.Equal("All eyes on me (feat. Burna Boy)", incoming.Title);
     }
 }
