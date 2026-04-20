@@ -49,41 +49,52 @@ public sealed class LrclibLyricsService
 
         var duration = effectiveOptions.UseDurationHint && track.Duration > 0 ? track.Duration : 0;
 
-        var exact = await FetchLyricsWithMetadataAsync(title, artist, duration, cancellationToken);
-        if (exact.IsLoaded())
+        var resolved = await TryResolveWithVariantAsync(title, artist, track.Duration, duration, effectiveOptions, cancellationToken);
+        if (resolved != null)
         {
-            return exact;
-        }
-
-        if (effectiveOptions.SearchFallback)
-        {
-            var search = await FetchLyricsFromSearchAsync(title, artist, track.Duration, effectiveOptions, cancellationToken);
-            if (search.IsLoaded())
-            {
-                return search;
-            }
+            return resolved;
         }
 
         var simplifiedTitle = SimplifyTrackName(title);
         if (!string.Equals(simplifiedTitle, title, StringComparison.OrdinalIgnoreCase))
         {
-            var simplifiedExact = await FetchLyricsWithMetadataAsync(simplifiedTitle, artist, duration, cancellationToken);
-            if (simplifiedExact.IsLoaded())
+            var simplifiedResolved = await TryResolveWithVariantAsync(
+                simplifiedTitle,
+                artist,
+                track.Duration,
+                duration,
+                effectiveOptions,
+                cancellationToken);
+            if (simplifiedResolved != null)
             {
-                return simplifiedExact;
-            }
-
-            if (effectiveOptions.SearchFallback)
-            {
-                var simplifiedSearch = await FetchLyricsFromSearchAsync(simplifiedTitle, artist, track.Duration, effectiveOptions, cancellationToken);
-                if (simplifiedSearch.IsLoaded())
-                {
-                    return simplifiedSearch;
-                }
+                return simplifiedResolved;
             }
         }
 
         return CreateError("LRCLIB lyrics not found.");
+    }
+
+    private async Task<LyricsBase?> TryResolveWithVariantAsync(
+        string title,
+        string artist,
+        int durationSeconds,
+        int hintedDuration,
+        LrclibRequestOptions options,
+        CancellationToken cancellationToken)
+    {
+        var exact = await FetchLyricsWithMetadataAsync(title, artist, hintedDuration, cancellationToken);
+        if (exact.IsLoaded())
+        {
+            return exact;
+        }
+
+        if (!options.SearchFallback)
+        {
+            return null;
+        }
+
+        var search = await FetchLyricsFromSearchAsync(title, artist, durationSeconds, options, cancellationToken);
+        return search.IsLoaded() ? search : null;
     }
 
     private async Task<LyricsBase> FetchLyricsWithMetadataAsync(string trackName, string artistName, int duration, CancellationToken cancellationToken)

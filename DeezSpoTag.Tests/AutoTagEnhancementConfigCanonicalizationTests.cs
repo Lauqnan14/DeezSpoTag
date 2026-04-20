@@ -155,7 +155,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
 
         var sanitized = (AutoTagSettings)SanitizeAutoTagSettingsMethod.Invoke(null, [autoTag, "deezer"])!;
         Assert.True(sanitized.Data.TryGetValue("saveArtwork", out var saveArtwork));
-        Assert.True(saveArtwork.ValueKind == JsonValueKind.True);
+        Assert.Equal(JsonValueKind.True, saveArtwork.ValueKind);
         Assert.False(sanitized.Data.ContainsKey("albumArtFile"));
     }
 
@@ -173,7 +173,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
 
         var sanitized = (AutoTagSettings)SanitizeAutoTagSettingsMethod.Invoke(null, [autoTag, "deezer"])!;
         Assert.True(sanitized.Data.TryGetValue("saveArtwork", out var saveArtwork));
-        Assert.True(saveArtwork.ValueKind == JsonValueKind.False);
+        Assert.Equal(JsonValueKind.False, saveArtwork.ValueKind);
         Assert.False(sanitized.Data.ContainsKey("albumArtFile"));
     }
 

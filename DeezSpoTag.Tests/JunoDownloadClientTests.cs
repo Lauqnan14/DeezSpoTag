@@ -11,6 +11,9 @@ namespace DeezSpoTag.Tests;
 
 public sealed class JunoDownloadClientTests
 {
+    private static readonly string[] ExpectedArtists = ["Rick Versace", "feat", "Second Test"];
+    private static readonly string[] ExpectedGenres = ["Dancehall", "Ragga"];
+
     [Fact]
     public async Task SearchAsync_ParsesReferenceReleaseShape()
     {
@@ -58,12 +61,12 @@ public sealed class JunoDownloadClientTests
 
         var track = Assert.Single(results);
         Assert.Equal("Sicky (Afrobeats remix)", track.Title);
-        Assert.Equal(new[] { "Rick Versace", "feat", "Second Test" }, track.Artists);
-        Assert.Equal(new[] { "Rick Versace", "feat", "Second Test" }, track.AlbumArtists);
+        Assert.Equal(ExpectedArtists, track.Artists);
+        Assert.Equal(ExpectedArtists, track.AlbumArtists);
         Assert.Equal("Sicky (Remixes)", track.Album);
         Assert.Equal("Boomwall", track.Label);
         Assert.Equal(new DateTime(2026, 4, 15), track.ReleaseDate);
-        Assert.Equal(new[] { "Dancehall", "Ragga" }, track.Genres);
+        Assert.Equal(ExpectedGenres, track.Genres);
         Assert.Equal("WBDA 1536", track.CatalogNumber);
         Assert.Equal("7526832-02", track.ReleaseId);
         Assert.Equal("https://www.junodownload.com/products/rick-versace-second-test-sicky-remixes/7526832-02/", track.Url);

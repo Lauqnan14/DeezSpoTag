@@ -17,7 +17,7 @@ using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 
 namespace DeezSpoTag.Services.Download.Shared;
 
-public static class EngineAudioPostDownloadHelper
+public static partial class EngineAudioPostDownloadHelper
 {
     private const string PlaylistType = "playlist";
     private const string AlbumType = "album";
@@ -37,9 +37,7 @@ public static class EngineAudioPostDownloadHelper
     private const string PausedStatus = "paused";
     private const string CanceledStatus = "canceled";
     private const string UpdateQueueEvent = "updateQueue";
-    private static readonly Regex LrcTimestampRegex = new(
-        @"^\[(?<m>\d{1,3}):(?<s>\d{2})(?:\.(?<f>\d{1,3}))?\]",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex LrcTimestampRegex = LrcTimestampGeneratedRegex();
     private static readonly HashSet<string> KnownAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".flac",
@@ -1622,4 +1620,6 @@ public static class EngineAudioPostDownloadHelper
             PrefetchGates.TryRemove(queueUuid, out _);
         }
     }
+    [GeneratedRegex(@"^\[(?<m>\d{1,3}):(?<s>\d{2})(?:\.(?<f>\d{1,3}))?\]", RegexOptions.CultureInvariant)]
+    private static partial Regex LrcTimestampGeneratedRegex();
 }

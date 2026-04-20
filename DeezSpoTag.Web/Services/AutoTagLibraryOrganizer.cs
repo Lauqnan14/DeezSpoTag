@@ -1647,6 +1647,12 @@ public class AutoTagLibraryOrganizer
         return target;
     }
 
+    private sealed record DuplicateMoveContext(
+        string RootPath,
+        AutoTagOrganizerOptions Options,
+        AutoTagOrganizerReport? Report,
+        Action<string>? Log);
+
     private void MoveDuplicateSourceFolderToQuarantineIfNoAudio(
         string rootPath,
         string sourceDir,
@@ -1659,10 +1665,7 @@ public class AutoTagLibraryOrganizer
             return;
         }
 
-        var folderName = string.IsNullOrWhiteSpace(options.DuplicatesFolderName)
-            ? DuplicateCleanerService.DuplicatesFolderName
-            : options.DuplicatesFolderName.Trim();
-        var duplicatesRoot = Path.Join(rootPath, folderName);
+        var duplicatesRoot = ResolveDuplicatesRoot(rootPath, options);
         if (IsPathUnderRoot(sourceDir, duplicatesRoot))
         {
             return;
@@ -1679,12 +1682,8 @@ public class AutoTagLibraryOrganizer
         }
 
         MoveDirectoryToDuplicatesRoot(
-            rootPath,
             sourceDir,
-            duplicatesRoot,
-            options,
-            report,
-            log,
+            new DuplicateMoveContext(rootPath, options, report, log),
             reason: "duplicate leftovers",
             removeParentWhenEmpty: false);
     }
@@ -1700,10 +1699,7 @@ public class AutoTagLibraryOrganizer
             return;
         }
 
-        var folderName = string.IsNullOrWhiteSpace(options.DuplicatesFolderName)
-            ? DuplicateCleanerService.DuplicatesFolderName
-            : options.DuplicatesFolderName.Trim();
-        var duplicatesRoot = Path.Join(rootPath, folderName);
+        var duplicatesRoot = ResolveDuplicatesRoot(rootPath, options);
         var candidates = Directory
             .EnumerateDirectories(rootPath, "*", SearchOption.AllDirectories)
             .Select(Path.GetFullPath)
@@ -1733,20 +1729,28 @@ public class AutoTagLibraryOrganizer
                 continue;
             }
 
-            MoveDirectoryToDuplicatesRoot(rootPath, directory, duplicatesRoot, options, report, log, "legacy no-audio leftovers");
+            MoveDirectoryToDuplicatesRoot(
+                directory,
+                new DuplicateMoveContext(rootPath, options, report, log),
+                "legacy no-audio leftovers");
         }
     }
 
+    private static string ResolveDuplicatesRoot(string rootPath, AutoTagOrganizerOptions options)
+    {
+        var folderName = string.IsNullOrWhiteSpace(options.DuplicatesFolderName)
+            ? DuplicateCleanerService.DuplicatesFolderName
+            : options.DuplicatesFolderName.Trim();
+        return Path.Join(rootPath, folderName);
+    }
+
     private void MoveDirectoryToDuplicatesRoot(
-        string rootPath,
         string sourceDir,
-        string duplicatesRoot,
-        AutoTagOrganizerOptions options,
-        AutoTagOrganizerReport? report,
-        Action<string>? log,
+        DuplicateMoveContext moveContext,
         string reason,
         bool removeParentWhenEmpty = true)
     {
+        var duplicatesRoot = ResolveDuplicatesRoot(moveContext.RootPath, moveContext.Options);
         var sourceFolderName = Path.GetFileName(sourceDir);
         if (string.IsNullOrWhiteSpace(sourceFolderName))
         {
@@ -1760,27 +1764,27 @@ public class AutoTagLibraryOrganizer
         {
             Directory.CreateDirectory(duplicatesRoot);
             Directory.Move(sourceDir, targetDirectory);
-            if (report != null)
+            if (moveContext.Report != null)
             {
-                report.MovedLeftovers += movedFiles;
+                moveContext.Report.MovedLeftovers += movedFiles;
             }
 
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("AutoTag organizer moved {Reason} folder {SourceDir} -> {DestinationDir}", reason, sourceDir, targetDirectory);
             }
-            log?.Invoke($"organizer moved {reason} folder: {sourceDir} -> {targetDirectory}");
-            report?.Entries.Add($"move-{reason.Replace(' ', '-')}-folder: {sourceDir} -> {targetDirectory}");
-            if (removeParentWhenEmpty && options.RemoveEmptyFolders)
+            moveContext.Log?.Invoke($"organizer moved {reason} folder: {sourceDir} -> {targetDirectory}");
+            moveContext.Report?.Entries.Add($"move-{reason.Replace(' ', '-')}-folder: {sourceDir} -> {targetDirectory}");
+            if (removeParentWhenEmpty && moveContext.Options.RemoveEmptyFolders)
             {
-                DeleteEmptyDirectoryTree(Path.GetDirectoryName(sourceDir) ?? string.Empty, rootPath, log);
+                DeleteEmptyDirectoryTree(Path.GetDirectoryName(sourceDir) ?? string.Empty, moveContext.RootPath, moveContext.Log);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             RecordOrganizerFailure(
-                report,
-                log,
+                moveContext.Report,
+                moveContext.Log,
                 $"move {reason} folder",
                 sourceDir,
                 targetDirectory,

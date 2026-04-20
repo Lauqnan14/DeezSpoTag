@@ -67,6 +67,7 @@ public class LyricsService
     private const string SyllableLyricsType = "syllable-lyrics";
     private const string DeezerUrlKey = "deezer";
     private const string SpotifyUrlKey = "spotify";
+    private const string MessagePropertyName = "message";
     private const string SpotifyDataDir = "spotify";
     private const string BlobsDir = "blobs";
     private const string HttpsScheme = "https";
@@ -591,7 +592,7 @@ public class LyricsService
         {
             Message = new MusixmatchMacroCallMessage()
         };
-        if (!macroCallValue.TryGetProperty("message", out var message)
+        if (!macroCallValue.TryGetProperty(MessagePropertyName, out var message)
             || !message.TryGetProperty("body", out var bodyElement))
         {
             return response;
@@ -633,7 +634,7 @@ public class LyricsService
     private static bool TryReadMusixmatchRootStatus(JsonElement root, out int statusCode)
     {
         statusCode = default;
-        if (!root.TryGetProperty("message", out var message)
+        if (!root.TryGetProperty(MessagePropertyName, out var message)
             || !message.TryGetProperty("header", out var header)
             || !header.TryGetProperty("status_code", out var statusCodeElement)
             || statusCodeElement.ValueKind != JsonValueKind.Number)
@@ -647,7 +648,7 @@ public class LyricsService
     private static bool TryGetMusixmatchMacroCallsElement(JsonElement root, out JsonElement macroCallsElement)
     {
         macroCallsElement = default;
-        if (!root.TryGetProperty("message", out var message)
+        if (!root.TryGetProperty(MessagePropertyName, out var message)
             || !message.TryGetProperty("body", out var body)
             || !body.TryGetProperty("macro_calls", out var macroCalls)
             || macroCalls.ValueKind != JsonValueKind.Object)
@@ -681,7 +682,7 @@ public class LyricsService
 
             using var tokenDocument = await FetchMusixmatchTokenDocumentAsync(cancellationToken);
             var root = tokenDocument.RootElement;
-            if (!root.TryGetProperty("message", out var message)
+            if (!root.TryGetProperty(MessagePropertyName, out var message)
                 || !message.TryGetProperty("header", out var header)
                 || !header.TryGetProperty("status_code", out var statusCodeElement))
             {
@@ -882,27 +883,6 @@ public class LyricsService
 
         callBody = response.Message.Body;
         return true;
-    }
-
-    private sealed class MusixmatchResponse
-    {
-        [JsonPropertyName("message")]
-        public MusixmatchMessage? Message { get; set; }
-    }
-
-    private sealed class MusixmatchMessage
-    {
-        [JsonPropertyName("header")]
-        public MusixmatchHeader? Header { get; set; }
-
-        [JsonPropertyName("body")]
-        public MusixmatchMacroCallsBody? Body { get; set; }
-    }
-
-    private sealed class MusixmatchHeader
-    {
-        [JsonPropertyName("status_code")]
-        public int StatusCode { get; set; }
     }
 
     private sealed class MusixmatchMacroCallsBody
