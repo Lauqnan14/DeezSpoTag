@@ -731,6 +731,19 @@
     box-shadow: 0 4px 16px color-mix(in srgb, var(--primary-color) 10%, transparent);
 }
 
+/* Spotify-style monitored playlist tiles: no outer boxed background. */
+.watchlist-playlist-card-v2 {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+}
+
+.watchlist-playlist-card-v2:hover {
+    border: none;
+    box-shadow: none;
+}
+
 /* Top zone: square art area */
 .watchlist-card-art {
     position: relative;
@@ -832,10 +845,16 @@
 .watchlist-card-name {
     font-size: 13px;
     font-weight: 600;
-    color: var(--text-primary);
+    color: #15caff;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.watchlist-card-meta {
+    font-size: 12px;
+    color: #15caff;
+    opacity: 0.9;
 }
 
 .watchlist-card-folder-select {
@@ -892,6 +911,45 @@
     position: relative;
 }
 
+.watchlist-action-menu--hover {
+    position: absolute;
+    top: auto;
+    left: auto;
+    right: 10px;
+    bottom: 10px;
+    z-index: 32;
+}
+
+.watchlist-kebab-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 28%, transparent);
+    background: color-mix(in srgb, var(--bg-secondary) 88%, black 12%);
+    color: var(--text-primary);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateY(-2px);
+    transition: opacity 0.16s ease, transform 0.16s ease, visibility 0.16s ease, border-color 0.16s ease;
+    z-index: 3;
+}
+
+.watchlist-kebab-btn:hover {
+    border-color: var(--primary-color);
+}
+
+.watchlist-playlist-card-v2:hover .watchlist-kebab-btn,
+.watchlist-playlist-card-v2:focus-within .watchlist-kebab-btn {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateY(0);
+}
+
 .watchlist-action-dropdown {
     position: absolute;
     right: 0;
@@ -906,6 +964,11 @@
     border: 1px solid color-mix(in srgb, var(--primary-color) 25%, transparent);
     background: color-mix(in srgb, var(--bg-secondary) 92%, black 8%);
     box-shadow: 0 12px 28px rgba(0,0,0,0.28);
+}
+
+.watchlist-action-dropdown--hover {
+    top: 0;
+    right: 0;
 }
 
 .watchlist-action-dropdown .dropdown-item {

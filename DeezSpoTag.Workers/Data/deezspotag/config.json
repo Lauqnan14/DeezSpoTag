@@ -170,7 +170,7 @@
   "deezerLanguage": "en",
   "deezerCountry": "US",
   "apiToken": "KEmFAHWLUvAc-pZYRDekJkTlcfdvMaa_uZO3egw-2Ow",
-  "watchEnabled": true,
+  "watchEnabled": false,
   "watchPollIntervalSeconds": 1,
   "watchMaxItemsPerRun": 50,
   "watchDelayBetweenPlaylistsSeconds": 1,

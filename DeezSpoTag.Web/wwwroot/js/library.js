@@ -11534,6 +11534,146 @@ async function loadPlaylistBlockedRules() {
     }
 }
 
+function renderSharedPlaylistActionButtons({
+    actionAttribute = 'data-playlist-action',
+    source = '',
+    sourceId = '',
+    name = '',
+    includeDataAttributes = true
+} = {}) {
+    const safeSource = escapeHtml(String(source || ''));
+    const safeSourceId = escapeHtml(String(sourceId || ''));
+    const safeName = escapeHtml(String(name || 'Playlist'));
+    const withData = includeDataAttributes
+        ? ` data-playlist-source="${safeSource}" data-playlist-id="${safeSourceId}" data-playlist-name="${safeName}"`
+        : '';
+
+    return `
+        <button class="dropdown-item" type="button" ${actionAttribute}="settings"${withData}>
+            <i class="fa-solid fa-sliders"></i><span>Settings</span>
+        </button>
+        <button class="dropdown-item" type="button" ${actionAttribute}="sync"${withData}>
+            <i class="fa-solid fa-rotate"></i><span>Sync now</span>
+        </button>
+        <button class="dropdown-item" type="button" ${actionAttribute}="choose-artwork"${withData}>
+            <i class="fa-solid fa-images"></i><span>Choose artwork</span>
+        </button>
+        <button class="dropdown-item" type="button" ${actionAttribute}="refresh-artwork"${withData}>
+            <i class="fa-solid fa-image"></i><span>Refresh artwork</span>
+        </button>
+        <button class="dropdown-item danger" type="button" ${actionAttribute}="remove"${withData}>
+            <i class="fa-solid fa-xmark"></i><span>Unmonitor</span>
+        </button>
+    `;
+}
+
+globalThis.renderSharedPlaylistActionButtons = renderSharedPlaylistActionButtons;
+
+async function openSharedPlaylistArtworkPicker(source, sourceId, playlistName, options = {}) {
+    const normalizedSource = String(source || '').trim();
+    const normalizedSourceId = String(sourceId || '').trim();
+    if (!normalizedSource || !normalizedSourceId) {
+        return false;
+    }
+
+    if (!globalThis.DeezSpoTag?.ui?.showModal) {
+        showToast('Artwork picker unavailable.', true);
+        return false;
+    }
+
+    let visuals = [];
+    try {
+        const response = await fetchJson(`/api/library/playlists/${encodeURIComponent(normalizedSource)}/${encodeURIComponent(normalizedSourceId)}/visuals`);
+        visuals = Array.isArray(response) ? response : [];
+    } catch (error) {
+        showToast(`Failed to load artwork options: ${error.message}`, true);
+        return false;
+    }
+
+    if (visuals.length === 0) {
+        showToast('No saved artwork history is available yet. Use Refresh artwork first.', true);
+        return false;
+    }
+
+    const panel = document.createElement('div');
+    panel.className = 'playlist-settings-panel';
+    const section = document.createElement('div');
+    section.className = 'playlist-settings-section';
+    section.innerHTML = '<div class="playlist-settings-section-title">Saved artwork history</div>';
+    const grid = document.createElement('div');
+    grid.className = 'dropdown-visuals-grid';
+    const renderGrid = (activeFileName = null) => {
+        grid.innerHTML = visuals.map(item => {
+            const fileName = String(item?.fileName || '');
+            const url = String(item?.url || '');
+            const isActive = fileName && activeFileName
+                ? fileName === activeFileName
+                : item?.isActive === true;
+            return `
+                <div class="visual-tile" title="Saved artwork">
+                    <img src="${url.replaceAll('"', '&quot;')}" alt="Saved playlist artwork" loading="lazy" decoding="async" />
+                    <div class="visual-tile__actions">
+                        <button class="action-btn action-btn-sm ${isActive ? 'btn-secondary' : ''}" type="button"
+                            data-playlist-visual-select="${fileName.replaceAll('"', '&quot;')}"
+                            data-playlist-visual-url="${url.replaceAll('"', '&quot;')}">
+                            ${isActive ? 'Active' : 'Use this art'}
+                        </button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    };
+
+    renderGrid();
+    section.appendChild(grid);
+    panel.appendChild(section);
+
+    grid.addEventListener('click', async (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+        const button = target.closest('[data-playlist-visual-select]');
+        if (!(button instanceof HTMLElement)) {
+            return;
+        }
+
+        const fileName = button.getAttribute('data-playlist-visual-select') || '';
+        const url = button.getAttribute('data-playlist-visual-url') || '';
+        if (!fileName) {
+            return;
+        }
+
+        try {
+            await fetchJson(`/api/library/playlists/${encodeURIComponent(normalizedSource)}/${encodeURIComponent(normalizedSourceId)}/visuals/select`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fileName })
+            });
+            renderGrid(fileName);
+            if (typeof options.onApplied === 'function' && url) {
+                options.onApplied(url);
+            }
+            if (options.silent !== true) {
+                showToast('Playlist artwork updated.');
+            }
+        } catch (error) {
+            showToast(`Failed to apply artwork: ${error.message}`, true);
+        }
+    });
+
+    await globalThis.DeezSpoTag.ui.showModal({
+        title: `Artwork - ${playlistName || 'Playlist'}`,
+        contentElement: panel,
+        buttons: [
+            { label: 'Close', value: 'close', primary: true }
+        ]
+    });
+    return true;
+}
+
+globalThis.openSharedPlaylistArtworkPicker = openSharedPlaylistArtworkPicker;
+
 async function loadPlaylistWatchlist() {
     const container = document.getElementById('playlistWatchlistContainer');
     if (!container) return;
@@ -11569,11 +11709,11 @@ async function loadPlaylistWatchlist() {
 
         const playlistPrefsPromise = hydratePlaylistPreferences();
 
-        container.innerHTML = items.map(item => {
+        container.innerHTML = items.map((item) => {
             const artContent = item.imageUrl
                 ? `<img src="${item.imageUrl}" alt="${escapeHtml(item.name)}" />`
                 : `<div class="watchlist-card-art-placeholder"><i class="fa-solid fa-list-music"></i></div>`;
-            const trackCountStr = item.trackCount === null || item.trackCount === undefined
+            const trackCount = item.trackCount === null || item.trackCount === undefined
                 ? ''
                 : `${item.trackCount} tracks`;
             return `<div class="watchlist-playlist-card-v2">
@@ -11581,31 +11721,23 @@ async function loadPlaylistWatchlist() {
                     data-playlist-open="${escapeHtml(item.sourceId)}"
                     data-playlist-source="${escapeHtml(item.source)}">
                     ${artContent}
-                    ${trackCountStr ? `<div class="watchlist-card-stats"><span class="watchlist-card-stat">${escapeHtml(trackCountStr)}</span></div>` : ''}
                 </button>
+                <div class="watchlist-action-menu watchlist-action-menu--hover">
+                    <button class="watchlist-kebab-btn" type="button" title="Actions" data-playlist-menu-toggle="${escapeHtml(item.source)}" data-playlist-id="${escapeHtml(item.sourceId)}" aria-expanded="false">
+                        <i class="fa-solid fa-ellipsis-vertical"></i>
+                    </button>
+                    <div class="watchlist-action-dropdown watchlist-action-dropdown--hover" data-playlist-menu="${escapeHtml(item.source)}" data-playlist-id="${escapeHtml(item.sourceId)}" hidden>
+                        ${renderSharedPlaylistActionButtons({
+                            actionAttribute: 'data-playlist-action',
+                            source: item.source,
+                            sourceId: item.sourceId,
+                            name: item.name
+                        })}
+                    </div>
+                </div>
                 <div class="watchlist-card-strip">
                     <div class="watchlist-card-name">${escapeHtml(item.name)}</div>
-                    <div class="watchlist-playlist-action-row">
-                        <div class="watchlist-action-menu">
-                            <button class="btn-icon" type="button" title="Actions" data-playlist-menu-toggle="${escapeHtml(item.source)}" data-playlist-id="${escapeHtml(item.sourceId)}" aria-expanded="false">
-                                <i class="fa-solid fa-gear"></i>
-                            </button>
-                            <div class="watchlist-action-dropdown" data-playlist-menu="${escapeHtml(item.source)}" data-playlist-id="${escapeHtml(item.sourceId)}" hidden>
-                                <button class="dropdown-item" type="button" data-playlist-action="settings" data-playlist-source="${escapeHtml(item.source)}" data-playlist-id="${escapeHtml(item.sourceId)}" data-playlist-name="${escapeHtml(item.name)}">
-                                    <i class="fa-solid fa-sliders"></i><span>Settings</span>
-                                </button>
-                                <button class="dropdown-item" type="button" data-playlist-action="sync" data-playlist-source="${escapeHtml(item.source)}" data-playlist-id="${escapeHtml(item.sourceId)}">
-                                    <i class="fa-solid fa-rotate"></i><span>Sync now</span>
-                                </button>
-                                <button class="dropdown-item" type="button" data-playlist-action="refresh-artwork" data-playlist-source="${escapeHtml(item.source)}" data-playlist-id="${escapeHtml(item.sourceId)}">
-                                    <i class="fa-solid fa-image"></i><span>Refresh artwork</span>
-                                </button>
-                                <button class="dropdown-item danger" type="button" data-playlist-action="remove" data-playlist-source="${escapeHtml(item.source)}" data-playlist-id="${escapeHtml(item.sourceId)}">
-                                    <i class="fa-solid fa-xmark"></i><span>Unmonitor</span>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
+                    ${trackCount ? `<div class="watchlist-card-meta">${escapeHtml(trackCount)}</div>` : ''}
                 </div>
             </div>`;
         }).join('');
@@ -11711,6 +11843,20 @@ async function loadPlaylistWatchlist() {
                     showToast('Playlist artwork refreshed.');
                 } catch (error) {
                     showToast(`Artwork refresh failed: ${error.message}`, true);
+                }
+            });
+        });
+
+        container.querySelectorAll('[data-playlist-action="choose-artwork"]').forEach(button => {
+            button.addEventListener('click', async () => {
+                const source = button.dataset.playlistSource;
+                const sourceId = button.dataset.playlistId;
+                const playlistName = button.dataset.playlistName || 'Playlist';
+                if (!source || !sourceId) return;
+                const opened = await openSharedPlaylistArtworkPicker(source, sourceId, playlistName);
+                if (opened) {
+                    await loadPlaylistWatchlist();
+                    await loadPlaylistBlockedRules();
                 }
             });
         });
