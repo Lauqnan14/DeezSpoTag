@@ -6,6 +6,7 @@
 }
 
 @section Styles {
+<link rel="stylesheet" href="~/css/library.css" asp-append-version="true" />
 <link rel="stylesheet" href="~/css/spotify-card-shared.css" asp-append-version="true" />
 <style>
 .tracklist-header {
@@ -17,7 +18,7 @@
     margin-bottom: 30px;
     border-radius: 12px;
     position: relative;
-    overflow: hidden;
+    overflow: visible;
 }
 
 .tracklist-header::after {
@@ -102,18 +103,18 @@
 
 .tracklist-header-dropdown {
     position: absolute;
-    top: calc(100% + 10px);
     right: 0;
-    min-width: 220px;
-    z-index: 12;
+    top: calc(100% + 6px);
+    z-index: 30;
+    min-width: 180px;
     display: flex;
     flex-direction: column;
     gap: 4px;
     padding: 8px;
-    border-radius: 14px;
-    border: 1px solid rgba(255,255,255,0.12);
-    background: rgba(5, 10, 20, 0.94);
-    box-shadow: 0 18px 34px rgba(0,0,0,0.34);
+    border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 25%, transparent);
+    background: color-mix(in srgb, var(--bg-secondary) 92%, black 8%);
+    box-shadow: 0 12px 28px rgba(0,0,0,0.28);
 }
 
 .tracklist-header-dropdown .dropdown-item {
@@ -121,21 +122,27 @@
     align-items: center;
     gap: 10px;
     border: none;
-    border-radius: 10px;
+    border-radius: 8px;
     background: transparent;
     color: var(--text-primary);
-    padding: 10px 12px;
+    padding: 8px 10px;
     text-align: left;
 }
 
 .tracklist-header-dropdown .dropdown-item:hover {
-    background: color-mix(in srgb, var(--primary-color) 18%, transparent);
+    background: color-mix(in srgb, var(--primary-color) 16%, transparent);
 }
 
 .tracklist-header-dropdown .dropdown-item.danger:hover {
     background: color-mix(in srgb, var(--error-color) 24%, transparent);
     color: #fff;
 }
+
+/* legacy style block intentionally kept minimal to avoid style regressions */
+/* .tracklist-header-dropdown (old) */
+/*
+    right: 0;
+*/
 
 .dropdown-visuals-grid {
     display: grid;
@@ -330,47 +337,6 @@
 .btn-download:hover {
     border-color: var(--primary-color);
     transform: translateY(-1px);
-}
-
-.tracklist-monitor-menu {
-    position: relative;
-}
-
-.tracklist-monitor-menu-dropdown {
-    position: absolute;
-    bottom: calc(100% + 8px);
-    right: 0;
-    min-width: 200px;
-    z-index: 1005;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 8px;
-    border-radius: 12px;
-    border: 1px solid var(--border-secondary);
-    background: color-mix(in srgb, var(--bg-secondary) 92%, black 8%);
-    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
-}
-
-.tracklist-monitor-menu-dropdown .dropdown-item {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    border: none;
-    border-radius: 8px;
-    background: transparent;
-    color: var(--text-primary);
-    padding: 10px 12px;
-    text-align: left;
-}
-
-.tracklist-monitor-menu-dropdown .dropdown-item:hover {
-    background: color-mix(in srgb, var(--primary-color) 16%, transparent);
-}
-
-.tracklist-monitor-menu-dropdown .dropdown-item.danger:hover {
-    background: color-mix(in srgb, var(--error-color) 24%, transparent);
-    color: #fff;
 }
 
 .tracks-table-wrap {
@@ -1314,34 +1280,6 @@
         <span class="material-icons">notifications</span>
         <span class="monitor-label">Monitor Playlist</span>
     </button>
-    <div class="tracklist-monitor-menu" id="tracklist-monitor-menu" style="display: none;">
-        <button class="btn btn-secondary action-btn btn-download" id="monitor-playlist-actions" type="button" aria-expanded="false">
-            <span class="material-icons">settings</span>
-            <span>Manage</span>
-        </button>
-        <div class="tracklist-monitor-menu-dropdown" id="tracklist-monitor-menu-dropdown" hidden>
-            <button type="button" class="dropdown-item" id="monitor-playlist-manage-settings">
-                <span class="material-icons">tune</span>
-                <span>Manage settings</span>
-            </button>
-            <button type="button" class="dropdown-item" id="monitor-playlist-sync">
-                <span class="material-icons">sync</span>
-                <span>Sync now</span>
-            </button>
-            <button type="button" class="dropdown-item" id="monitor-playlist-refresh-artwork">
-                <span class="material-icons">image</span>
-                <span>Refresh artwork</span>
-            </button>
-            <button type="button" class="dropdown-item" id="monitor-playlist-artwork-history">
-                <span class="material-icons">collections</span>
-                <span>Artwork history</span>
-            </button>
-            <button type="button" class="dropdown-item danger" id="monitor-playlist-remove">
-                <span class="material-icons">delete</span>
-                <span>Stop monitoring</span>
-            </button>
-        </div>
-    </div>
     <button class="btn btn-secondary action-btn btn-download" onclick="downloadAll()">
         <span class="material-icons">file_download</span>
         <span id="download-all-text">Download</span>
@@ -1404,14 +1342,6 @@ const atmosDestinationGroup = document.getElementById('downloadDestinationAtmosG
 const atmosDestinationSelect = document.getElementById('downloadDestinationTracklistAtmos');
 const monitorButton = document.getElementById('monitor-playlist');
 const monitorLabel = monitorButton?.querySelector('.monitor-label');
-const monitorMenu = document.getElementById('tracklist-monitor-menu');
-const monitorMenuToggle = document.getElementById('monitor-playlist-actions');
-const monitorMenuDropdown = document.getElementById('tracklist-monitor-menu-dropdown');
-const monitorManageSettingsButton = document.getElementById('monitor-playlist-manage-settings');
-const monitorSyncButton = document.getElementById('monitor-playlist-sync');
-const monitorRefreshArtworkButton = document.getElementById('monitor-playlist-refresh-artwork');
-const monitorArtworkHistoryButton = document.getElementById('monitor-playlist-artwork-history');
-const monitorRemoveButton = document.getElementById('monitor-playlist-remove');
 let currentTracklistMeta = null;
 let ignoredTrackIds = new Set();
 let watchlistIgnoreEnabled = false;
@@ -3211,26 +3141,12 @@ function renderTracklist(data, options = {}) {
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
                             </button>
                             <div class="tracklist-header-dropdown" id="tracklist-header-actions-dropdown" hidden>
-                                <button type="button" class="dropdown-item" data-tracklist-monitor-action="manage-settings">
-                                    <span class="material-icons">tune</span>
-                                    <span>Manage settings</span>
-                                </button>
-                                <button type="button" class="dropdown-item" data-tracklist-monitor-action="sync">
-                                    <span class="material-icons">sync</span>
-                                    <span>Sync now</span>
-                                </button>
-                                <button type="button" class="dropdown-item" data-tracklist-monitor-action="refresh-artwork">
-                                    <span class="material-icons">image</span>
-                                    <span>Refresh artwork</span>
-                                </button>
-                                <button type="button" class="dropdown-item" data-tracklist-monitor-action="artwork-history">
-                                    <span class="material-icons">collections</span>
-                                    <span>Artwork history</span>
-                                </button>
-                                <button type="button" class="dropdown-item danger" data-tracklist-monitor-action="remove">
-                                    <span class="material-icons">delete</span>
-                                    <span>Stop monitoring</span>
-                                </button>
+                                ${typeof globalThis.renderSharedPlaylistActionButtons === 'function'
+                                    ? globalThis.renderSharedPlaylistActionButtons({
+                                        actionAttribute: 'data-playlist-action',
+                                        includeDataAttributes: false
+                                    })
+                                    : ''}
                             </div>
                         </div>
                     </div>
@@ -4592,10 +4508,6 @@ async function updateMonitorButtonState() {
                 : (isPodcastShow ? 'Monitor Podcast' : 'Monitor Playlist')));
     const headerActions = document.getElementById('tracklist-header-actions');
     const hideMonitorAndHeaderActions = () => {
-        if (monitorMenu) {
-            monitorMenu.style.display = 'none';
-            closeMonitorMenu();
-        }
         if (headerActions) {
             headerActions.style.display = 'none';
             closeTracklistHeaderActionsMenu();
@@ -4638,9 +4550,6 @@ async function updateMonitorButtonState() {
                 monitorLabel.textContent = 'Monitored';
             }
             monitorButton.disabled = true;
-            if (monitorMenu) {
-                monitorMenu.style.display = '';
-            }
             if (headerActions) {
                 headerActions.style.display = '';
             }
@@ -4661,15 +4570,6 @@ function setIgnoreVisibility(enabled) {
     document.querySelectorAll('.track-ignore-btn, .track-ignore-toggle').forEach(element => {
         element.classList.toggle('is-hidden', !watchlistIgnoreEnabled);
     });
-}
-
-function closeMonitorMenu() {
-    if (monitorMenuDropdown) {
-        monitorMenuDropdown.hidden = true;
-    }
-    if (monitorMenuToggle) {
-        monitorMenuToggle.setAttribute('aria-expanded', 'false');
-    }
 }
 
 function closeTracklistHeaderActionsMenu() {
@@ -4710,71 +4610,17 @@ async function openPlaylistArtworkHistoryModal() {
         return;
     }
 
-    let visuals = [];
-    try {
-        const response = await fetchJson(`/api/library/playlists/${encodeURIComponent(currentTracklistMeta.source)}/${encodeURIComponent(currentTracklistMeta.sourceId)}/visuals`);
-        visuals = Array.isArray(response) ? response : [];
-    } catch (error) {
-        DeezSpoTag.ui.alert(`Failed to load artwork history: ${error.message}`, { title: 'Playlist Artwork' });
+    if (typeof globalThis.openSharedPlaylistArtworkPicker === 'function') {
+        await globalThis.openSharedPlaylistArtworkPicker(
+            currentTracklistMeta.source,
+            currentTracklistMeta.sourceId,
+            currentTracklistMeta.name || 'Playlist',
+            { onApplied: applyTracklistArtworkSelection, silent: true }
+        );
         return;
     }
 
-    if (visuals.length === 0) {
-        DeezSpoTag.ui.alert('No saved artwork history is available for this playlist yet.', { title: 'Playlist Artwork' });
-        return;
-    }
-
-    const panel = document.createElement('div');
-    panel.className = 'playlist-settings-panel';
-    const section = document.createElement('div');
-    section.className = 'playlist-settings-section';
-    section.innerHTML = '<div class="playlist-settings-section-title">Saved artwork history</div>';
-    const grid = document.createElement('div');
-    grid.className = 'dropdown-visuals-grid';
-    grid.innerHTML = visuals.map(item => `
-        <div class="visual-tile" title="Saved artwork">
-            <img src="${String(item.url || '').replaceAll('"', '&quot;')}" alt="Saved playlist artwork" loading="lazy" decoding="async" />
-            <div class="visual-tile__actions">
-                <button class="action-btn action-btn-sm ${item.isActive ? 'btn-secondary' : ''}" type="button"
-                    data-playlist-visual-select="${String(item.fileName || '').replaceAll('"', '&quot;')}"
-                    data-playlist-visual-url="${String(item.url || '').replaceAll('"', '&quot;')}">
-                    ${item.isActive ? 'Active' : 'Use this art'}
-                </button>
-            </div>
-        </div>
-    `).join('');
-    section.appendChild(grid);
-    panel.appendChild(section);
-
-    grid.querySelectorAll('[data-playlist-visual-select]').forEach(button => {
-        button.addEventListener('click', async () => {
-            const fileName = button.getAttribute('data-playlist-visual-select');
-            const url = button.getAttribute('data-playlist-visual-url') || '';
-            if (!fileName) {
-                return;
-            }
-
-            try {
-                await fetchJson(`/api/library/playlists/${encodeURIComponent(currentTracklistMeta.source)}/${encodeURIComponent(currentTracklistMeta.sourceId)}/visuals/select`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ fileName })
-                });
-                applyTracklistArtworkSelection(url);
-                DeezSpoTag.ui.showToast('Playlist artwork updated.');
-            } catch (error) {
-                DeezSpoTag.ui.alert(`Failed to apply artwork: ${error.message}`, { title: 'Playlist Artwork' });
-            }
-        });
-    });
-
-    await DeezSpoTag.ui.showModal({
-        title: `Artwork — ${currentTracklistMeta.name || 'Playlist'}`,
-        contentElement: panel,
-        buttons: [
-            { label: 'Close', value: 'close', primary: true }
-        ]
-    });
+    DeezSpoTag.ui.alert('Artwork picker unavailable on this page.', { title: 'Playlist Artwork' });
 }
 
 function bindTracklistHeaderActions() {
@@ -4793,11 +4639,11 @@ function bindTracklistHeaderActions() {
         toggle.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
     });
 
-    dropdown.querySelectorAll('[data-tracklist-monitor-action]').forEach(button => {
+    dropdown.querySelectorAll('[data-playlist-action]').forEach(button => {
         button.addEventListener('click', async () => {
-            const action = button.getAttribute('data-tracklist-monitor-action');
+            const action = button.getAttribute('data-playlist-action');
             closeTracklistHeaderActionsMenu();
-            if (action === 'manage-settings') {
+            if (action === 'settings') {
                 await openPlaylistManagementPage();
                 return;
             }
@@ -4819,7 +4665,7 @@ function bindTracklistHeaderActions() {
                     return;
                 }
 
-                if (action === 'artwork-history') {
+                if (action === 'choose-artwork') {
                     await openPlaylistArtworkHistoryModal();
                     return;
                 }
@@ -4852,37 +4698,21 @@ async function openPlaylistManagementPage() {
         return;
     }
 
-    let preference = null;
-    try {
-        const preferenceResponse = await fetchJson(
-            `/api/library/playlists/preferences/${encodeURIComponent(currentTracklistMeta.source)}/${encodeURIComponent(currentTracklistMeta.sourceId)}`
-        );
-        preference = preferenceResponse && typeof preferenceResponse === 'object'
-            ? preferenceResponse
-            : null;
-    } catch (error) {
-        DeezSpoTag.ui.alert(`Failed to load playlist settings: ${error.message}`, { title: 'Playlist Settings' });
-        return;
-    }
-
     const source = String(currentTracklistMeta.source || '').trim();
     const sourceId = String(currentTracklistMeta.sourceId || '').trim();
     if (!source || !sourceId) {
         return;
     }
 
-    const prefKey = `${source}:${sourceId}`;
-    const playlistPrefs = {};
-    if (preference) {
-        playlistPrefs[prefKey] = {
-            folderId: preference.destinationFolderId ? String(preference.destinationFolderId) : '',
-            service: preference.service || 'plex',
-            preferredEngine: preference.preferredEngine || '',
-            downloadVariantMode: preference.downloadVariantMode || 'standard',
-            syncMode: preference.syncMode || 'mirror',
-            updateArtwork: preference.updateArtwork !== false,
-            reuseSavedArtwork: preference.reuseSavedArtwork === true
-        };
+    let playlistPrefs = {};
+    try {
+        if (typeof hydratePlaylistPreferences === 'function') {
+            const hydrated = await hydratePlaylistPreferences();
+            playlistPrefs = hydrated && typeof hydrated === 'object' ? hydrated : {};
+        }
+    } catch (error) {
+        DeezSpoTag.ui.alert(`Failed to load playlist settings: ${error.message}`, { title: 'Playlist Settings' });
+        return;
     }
 
     try {
@@ -4895,117 +4725,6 @@ async function openPlaylistManagementPage() {
     } catch (error) {
         DeezSpoTag.ui.alert(`Failed to open playlist settings: ${error.message}`, { title: 'Playlist Settings' });
     }
-}
-
-if (monitorMenuToggle && monitorMenuDropdown) {
-    monitorMenuToggle.addEventListener('click', (event) => {
-        event.stopPropagation();
-        const shouldOpen = monitorMenuDropdown.hidden;
-        closeMonitorMenu();
-        monitorMenuDropdown.hidden = !shouldOpen;
-        monitorMenuToggle.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
-    });
-
-    document.addEventListener('click', (event) => {
-        if (!monitorMenu?.contains(event.target)) {
-            closeMonitorMenu();
-        }
-    });
-}
-
-if (monitorManageSettingsButton) {
-    monitorManageSettingsButton.addEventListener('click', async () => {
-        closeMonitorMenu();
-        await openPlaylistManagementPage();
-    });
-}
-
-if (monitorSyncButton) {
-    monitorSyncButton.addEventListener('click', async () => {
-        if (!currentTracklistMeta?.source || !currentTracklistMeta?.sourceId) {
-            return;
-        }
-        closeMonitorMenu();
-        try {
-            const result = await fetchJson(`/api/library/playlists/${encodeURIComponent(currentTracklistMeta.source)}/${encodeURIComponent(currentTracklistMeta.sourceId)}/sync`, { method: 'POST' });
-            DeezSpoTag.ui.showToast(result?.message || 'Playlist sync scheduled.');
-        } catch (error) {
-            DeezSpoTag.ui.alert(`Sync failed: ${error.message}`, { title: 'Playlist Sync' });
-        }
-    });
-}
-
-if (monitorRefreshArtworkButton) {
-    monitorRefreshArtworkButton.addEventListener('click', async () => {
-        if (!currentTracklistMeta?.source || !currentTracklistMeta?.sourceId) {
-            return;
-        }
-        closeMonitorMenu();
-        try {
-            await fetchJson(`/api/library/playlists/${encodeURIComponent(currentTracklistMeta.source)}/${encodeURIComponent(currentTracklistMeta.sourceId)}/refresh-artwork`, { method: 'POST' });
-            DeezSpoTag.ui.showToast('Playlist artwork refresh started.');
-        } catch (error) {
-            DeezSpoTag.ui.alert(`Artwork refresh failed: ${error.message}`, { title: 'Playlist Artwork' });
-        }
-    });
-}
-
-if (monitorArtworkHistoryButton) {
-    monitorArtworkHistoryButton.addEventListener('click', async () => {
-        if (!currentTracklistMeta?.source || !currentTracklistMeta?.sourceId) {
-            return;
-        }
-        closeMonitorMenu();
-        await openPlaylistArtworkHistoryModal();
-    });
-}
-
-if (monitorRemoveButton) {
-    monitorRemoveButton.addEventListener('click', async () => {
-        if (!currentTracklistMeta?.source || !currentTracklistMeta?.sourceId) {
-            return;
-        }
-        if (monitorMutationInFlight) {
-            return;
-        }
-        closeMonitorMenu();
-        monitorMutationInFlight = true;
-        monitorStatusRequestSeq++;
-        if (monitorLabel) {
-            monitorLabel.textContent = 'Updating...';
-        }
-        monitorButton.disabled = true;
-        try {
-            await fetchJson(`/api/library/playlists/${encodeURIComponent(currentTracklistMeta.source)}/${encodeURIComponent(currentTracklistMeta.sourceId)}`, { method: 'DELETE' });
-            if (monitorLabel) {
-                const isPodcastShow = String(tracklistType || '').toLowerCase() === 'show';
-                monitorLabel.textContent = isSpotifyArtistTopTracksView()
-                    ? 'Monitor Top Songs'
-                    : (isSpotifyHomeTrendingTracklistView()
-                        ? 'Monitor Trending Songs'
-                        : (String(tracklistType || '').toLowerCase() === 'recommendation'
-                            ? 'Monitor Recommendations'
-                            : (isPodcastShow ? 'Monitor Podcast' : 'Monitor Playlist')));
-            }
-            monitorButton.disabled = false;
-            if (monitorMenu) {
-                monitorMenu.style.display = 'none';
-            }
-            const headerActions = document.getElementById('tracklist-header-actions');
-            if (headerActions) {
-                headerActions.style.display = 'none';
-            }
-            setIgnoreVisibility(false);
-            DeezSpoTag.ui.showToast('Playlist removed from monitoring.');
-        } catch (error) {
-            monitorMutationInFlight = false;
-            await updateMonitorButtonState();
-            DeezSpoTag.ui.alert(`Remove failed: ${error.message}`, { title: 'Monitor Playlist' });
-            return;
-        } finally {
-            monitorMutationInFlight = false;
-        }
-    });
 }
 
 if (monitorButton) {
@@ -5039,9 +4758,6 @@ if (monitorButton) {
                 monitorLabel.textContent = 'Monitored';
             }
             monitorButton.disabled = true;
-            if (monitorMenu) {
-                monitorMenu.style.display = '';
-            }
             const headerActions = document.getElementById('tracklist-header-actions');
             if (headerActions) {
                 headerActions.style.display = '';
