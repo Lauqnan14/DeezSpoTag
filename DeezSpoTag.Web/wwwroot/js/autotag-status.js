@@ -21,7 +21,6 @@
         archivedRuns: [],
         manualHistorySelection: false,
         selectedRunId: null,
-        selectedRunSummary: null,
         runSelectionMessage: null,
         selectedDate: null,
         calendarMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
@@ -416,17 +415,6 @@
         setText("autotag-log", text);
     }
 
-    function updateQuickActions(summary) {
-        const quickActions = el("autotag-quick-actions");
-        if (!quickActions) {
-            return;
-        }
-
-        const hasFolder = !!summary?.rootPath;
-        quickActions.style.display = hasFolder ? "flex" : "none";
-        quickActions.dataset.path = summary?.rootPath || "";
-    }
-
     function updateFilterCountsFromHistory() {
         const statuses = Array.isArray(state.historyStatus) ? state.historyStatus : [];
         let ok = 0;
@@ -518,19 +506,11 @@
     }
 
     function renderRunSummary(summary, archive) {
-        state.selectedRunSummary = summary || null;
         if (summary) {
             state.runSelectionMessage = null;
         }
-        updateQuickActions(summary || null);
 
         setText("autotag-history-selected-date", state.selectedDate ? formatDate(state.selectedDate) : "--");
-        setText("autotag-history-run-status", summary?.status || "--");
-        setText("autotag-history-run-started", formatDateTime(summary?.startedAt));
-        setText("autotag-history-run-finished", formatDateTime(summary?.finishedAt));
-        setText("autotag-history-run-folder", summary?.rootPath || "--");
-        setText("autotag-history-run-log-count", String(summary?.logCount ?? archive?.logs?.length ?? 0));
-        setText("autotag-history-run-entry-count", String(summary?.statusEntryCount ?? archive?.statusHistory?.length ?? 0));
         if (summary && archive) {
             renderStatusPanelForArchive(summary, archive);
         }
@@ -569,8 +549,8 @@
             startedAt: job.startedAt || null,
             finishedAt: job.finishedAt || null,
             exitCode: job.exitCode ?? null,
-            rootPath: job.rootPath || state.selectedRunSummary?.rootPath || null,
-            trigger: job.trigger || state.selectedRunSummary?.trigger || "manual",
+            rootPath: job.rootPath || null,
+            trigger: job.trigger || "manual",
             okCount: job.okCount ?? 0,
             errorCount: job.errorCount ?? 0,
             skippedCount: job.skippedCount ?? 0,
@@ -597,7 +577,6 @@
 
     function clearRunSelection(message) {
         state.selectedRunId = null;
-        state.selectedRunSummary = null;
         state.historyStatus = [];
         state.runSelectionMessage = message || "Select a run to load full AutoTag history.";
         renderRunSummary(null, null);
@@ -979,30 +958,6 @@
     function bindFilterButtons() {
         document.querySelectorAll(".autotag-filter-toolbar button[data-filter]").forEach((btn) => {
             btn.addEventListener("click", () => setFilter(btn.dataset.filter || "all"));
-        });
-    }
-
-    function bindQuickActions() {
-        const openFolderBtn = el("autotag-open-folder");
-        if (!openFolderBtn) {
-            return;
-        }
-
-        openFolderBtn.addEventListener("click", async () => {
-            const path = state.selectedRunSummary?.rootPath || state.liveJobPath;
-            if (!path) {
-                return;
-            }
-
-            try {
-                await fetch("/api/system/open-folder", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ path })
-                });
-            } catch (error) {
-                console.warn("Failed to open folder", error);
-            }
         });
     }
 
@@ -1511,7 +1466,6 @@
         };
 
         bindFilterButtons();
-        bindQuickActions();
         bindDiffActions();
         bindHistoryNavigation();
         bindPageResumeRefresh();
