@@ -49,7 +49,7 @@ public sealed class JunoDownloadClient
             await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
             return await SearchAsync(query, cancellationToken);
         }
-        response.EnsureSuccessStatusCode();
+
         var html = await response.Content.ReadAsStringAsync(cancellationToken);
         var doc = new HtmlDocument();
         doc.LoadHtml(html);
@@ -106,9 +106,8 @@ public sealed class JunoDownloadClient
             return false;
         }
 
-        var artists = artistsNode.InnerText
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(artist => artist != "/")
+        var artists = GetTextParts(artistsNode)
+            .Where(artist => !string.Equals(artist, "/", StringComparison.Ordinal))
             .ToList();
         var url = titleNode.GetAttributeValue("href", string.Empty);
         if (string.IsNullOrWhiteSpace(url))
@@ -117,11 +116,20 @@ public sealed class JunoDownloadClient
         }
 
         var releaseId = url.Split('/').Reverse().Skip(1).FirstOrDefault() ?? string.Empty;
-        var label = release.SelectSingleNode(".//a[contains(@class,'juno-label')]")?.InnerText.Trim();
-        var (catalogNumber, releaseDate, genres) = ParseReleaseInfo(infoNode.InnerText);
+        var labelNode = release.SelectSingleNode(".//a[contains(@class,'juno-label')]");
+        var label = labelNode?.InnerText.Trim();
+        if (string.IsNullOrWhiteSpace(label))
+        {
+            return false;
+        }
+
+        if (!TryParseReleaseInfo(infoNode, out var catalogNumber, out var releaseDate, out var genres))
+        {
+            return false;
+        }
 
         var imageFull = ResolveReleaseImage(release);
-        var trackNodes = release.SelectNodes(".//div[contains(@class,'jd-listing-tracklist')]//div[contains(@class,'col')]")
+        var trackNodes = release.SelectNodes(".//div[contains(@class,'jd-listing-tracklist')]//div[contains(concat(' ', normalize-space(@class), ' '), ' col ')]")
             ?? new HtmlNodeCollection(release);
 
         context = new ReleaseParseContext(
@@ -138,11 +146,18 @@ public sealed class JunoDownloadClient
         return true;
     }
 
-    private static (string? CatalogNumber, DateTime? ReleaseDate, List<string> Genres) ParseReleaseInfo(string rawInfo)
+    private static bool TryParseReleaseInfo(
+        HtmlNode infoNode,
+        out string? catalogNumber,
+        out DateTime? releaseDate,
+        out List<string> genres)
     {
-        var infoParts = rawInfo.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
-        string? catalogNumber = null;
-        if (infoParts.Count >= 3)
+        catalogNumber = null;
+        releaseDate = null;
+        genres = new List<string>();
+
+        var infoParts = GetTextParts(infoNode);
+        if (infoParts.Count == 3)
         {
             catalogNumber = infoParts[0];
             infoParts = infoParts.Skip(1).ToList();
@@ -150,22 +165,24 @@ public sealed class JunoDownloadClient
 
         if (infoParts.Count < 2)
         {
-            return (catalogNumber, null, new List<string>());
+            return false;
         }
 
-        var releaseDate = DateTime.TryParseExact(
-            infoParts[0] + " " + infoParts[1],
+        if (!DateTime.TryParseExact(
+            infoParts[0],
             "dd MMM yy",
             CultureInfo.InvariantCulture,
             DateTimeStyles.None,
-            out var parsedDate)
-            ? parsedDate
-            : (DateTime?)null;
-        var genres = infoParts.Count >= 3
-            ? infoParts[2].Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList()
-            : new List<string>();
+            out var parsedDate))
+        {
+            return false;
+        }
 
-        return (catalogNumber, releaseDate, genres);
+        releaseDate = parsedDate;
+        genres = infoParts[1]
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+        return true;
     }
 
     private static string? ResolveReleaseImage(HtmlNode release)
@@ -185,21 +202,22 @@ public sealed class JunoDownloadClient
 
     private static JunoDownloadTrackInfo? ParseTrackNode(ReleaseParseContext context, HtmlNode trackNode, int index, int trackTotal)
     {
-        var text = HtmlEntity.DeEntitize(trackNode.InnerText).Trim();
-        if (string.IsNullOrWhiteSpace(text))
+        var textParts = GetTextParts(trackNode);
+        if (textParts.Count == 0)
         {
             return null;
         }
 
-        var durationMatch = Regex.Match(text, " - \\((\\d+:\\d\\d)\\) ?$", RegexOptions.None, RegexTimeout);
+        var full = textParts[0].Replace('\u00A0', ' ');
+        var durationMatch = Regex.Match(full, " - \\((\\d+:\\d\\d)\\) ?$", RegexOptions.None, RegexTimeout);
         var duration = durationMatch.Success
             ? DurationParser.ParseMinutesSeconds(durationMatch.Groups[1].Value)
             : TimeSpan.Zero;
         var noDuration = durationMatch.Success
-            ? Regex.Replace(text, " - \\((\\d+:\\d\\d)\\) ?$", string.Empty, RegexOptions.None, RegexTimeout)
-            : text;
+            ? Regex.Replace(full, " - \\((\\d+:\\d\\d)\\) ?$", string.Empty, RegexOptions.None, RegexTimeout)
+            : full;
         var (trackTitle, trackArtists) = ParseTrackArtistAndTitle(noDuration, context.Artists);
-        var bpm = ParseBpm(text);
+        var bpm = ParseBpm(textParts);
 
         return new JunoDownloadTrackInfo
         {
@@ -236,15 +254,36 @@ public sealed class JunoDownloadClient
         return (trackTitle, trackArtists);
     }
 
-    private static long? ParseBpm(string text)
+    private static long? ParseBpm(IReadOnlyList<string> textParts)
     {
-        var bpmMatch = Regex.Match(text, "(\\d+)\\u00A0?BPM", RegexOptions.None, RegexTimeout);
-        if (bpmMatch.Success && long.TryParse(bpmMatch.Groups[1].Value, out var bpmParsed))
+        if (textParts.Count >= 2 && textParts[1].Contains("BPM", StringComparison.OrdinalIgnoreCase))
         {
-            return bpmParsed;
+            var bpmRaw = textParts[1]
+                .Replace("\u00A0BPM", string.Empty, StringComparison.OrdinalIgnoreCase)
+                .Replace(" BPM", string.Empty, StringComparison.OrdinalIgnoreCase)
+                .Trim();
+            if (long.TryParse(bpmRaw, out var bpmParsed))
+            {
+                return bpmParsed;
+            }
         }
 
         return null;
+    }
+
+    private static List<string> GetTextParts(HtmlNode node)
+    {
+        var parts = new List<string>();
+        foreach (var textNode in node.DescendantsAndSelf().Where(n => n.NodeType == HtmlNodeType.Text))
+        {
+            var value = HtmlEntity.DeEntitize(textNode.InnerText).Trim();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                parts.Add(value);
+            }
+        }
+
+        return parts;
     }
 
 }
