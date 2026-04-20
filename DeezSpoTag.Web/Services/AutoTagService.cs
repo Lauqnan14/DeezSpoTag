@@ -3745,6 +3745,17 @@ public class AutoTagService
 
         root[AutoTagLiterals.PlatformsKey] = normalized;
         root[AutoTagLiterals.MultiPlatformKey] = platforms.Count > 1;
+        EnsureShazamFlagsFollowPlatforms(root, platforms);
+    }
+
+    private static void EnsureShazamFlagsFollowPlatforms(JsonObject root, IReadOnlyCollection<string> platforms)
+    {
+        var shazamEnabled = platforms.Any(platform => string.Equals(platform, "shazam", StringComparison.OrdinalIgnoreCase));
+        root["enableShazam"] = shazamEnabled;
+        if (!shazamEnabled)
+        {
+            root["forceShazam"] = false;
+        }
     }
 
     private static void EnsureSupportedDownloadTagSource(JsonNode node)
