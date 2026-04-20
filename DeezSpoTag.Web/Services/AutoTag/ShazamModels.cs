@@ -30,4 +30,13 @@ public sealed class ShazamMatchConfig
 
     [JsonPropertyName("include_release_date")]
     public bool IncludeReleaseDate { get; set; } = true;
+
+    [JsonPropertyName("min_title_similarity")]
+    public double MinTitleSimilarity { get; set; } = 0.72;
+
+    [JsonPropertyName("min_artist_similarity")]
+    public double MinArtistSimilarity { get; set; } = 0.52;
+
+    [JsonPropertyName("max_duration_delta_seconds")]
+    public int MaxDurationDeltaSeconds { get; set; } = 20;
 }

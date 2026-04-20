@@ -177,7 +177,17 @@ internal static class OneTaggerMatching
 
             var trackTitle = FullTitle(selectors.GetTitle(track), selectors.GetVersion(track));
             var clean = CleanTitleMatching(trackTitle);
-            var score = NormalizedLevenshtein(clean, cleanTitle);
+            var titleScore = NormalizedLevenshtein(clean, cleanTitle);
+            var durationScore = ComputeDurationScore(info.DurationSeconds, selectors.GetDuration(track), config, out var hasDurationEvidence);
+            if (hasDurationEvidence && durationScore <= 0d)
+            {
+                // Strong reject when duration is outside configured tolerance.
+                continue;
+            }
+
+            var score = hasDurationEvidence
+                ? ((titleScore * 0.55d) + (durationScore * 0.45d))
+                : titleScore;
             if (score >= config.Strictness)
             {
                 fuzzy.Add((score, track));
@@ -251,6 +261,37 @@ internal static class OneTaggerMatching
         }
 
         return null;
+    }
+
+    private static double ComputeDurationScore(
+        int? infoDurationSeconds,
+        TimeSpan? trackDuration,
+        AutoTagMatchingConfig config,
+        out bool hasDurationEvidence)
+    {
+        hasDurationEvidence = false;
+        if (!infoDurationSeconds.HasValue || infoDurationSeconds.Value <= 0 || trackDuration is null || trackDuration.Value <= TimeSpan.Zero)
+        {
+            return 0d;
+        }
+
+        hasDurationEvidence = true;
+        var candidateSeconds = (int)Math.Round(trackDuration.Value.TotalSeconds);
+        if (candidateSeconds <= 0)
+        {
+            return 0d;
+        }
+
+        var diff = Math.Abs(infoDurationSeconds.Value - candidateSeconds);
+        var maxDiff = Math.Max(1, config.MaxDurationDifferenceSeconds);
+        if (diff > maxDiff)
+        {
+            return 0d;
+        }
+
+        // Keep a high floor for close durations, then degrade toward tolerance edge.
+        var normalized = diff / (double)maxDiff;
+        return Math.Clamp(1d - (normalized * 0.9d), 0d, 1d);
     }
 
     private static void SortTracks<T>(

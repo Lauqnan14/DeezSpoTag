@@ -1,20 +1,24 @@
 using System.Globalization;
 using DeezSpoTag.Web.Services;
+using Microsoft.Extensions.Logging;
 
 namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class ShazamMatcher
 {
     private readonly ShazamRecognitionService _recognitionService;
+    private readonly ILogger<ShazamMatcher> _logger;
 
-    public ShazamMatcher(ShazamRecognitionService recognitionService)
+    public ShazamMatcher(ShazamRecognitionService recognitionService, ILogger<ShazamMatcher> logger)
     {
         _recognitionService = recognitionService;
+        _logger = logger;
     }
 
     public Task<AutoTagMatchResult?> MatchAsync(
         string filePath,
         AutoTagAudioInfo info,
+        AutoTagMatchingConfig matchingConfig,
         ShazamMatchConfig config,
         IDictionary<string, ShazamRecognitionInfo?> cache,
         CancellationToken cancellationToken)
@@ -38,6 +42,37 @@ public sealed class ShazamMatcher
         }
 
         var resolvedConfig = config ?? new ShazamMatchConfig();
+        var strictness = Math.Clamp(matchingConfig.Strictness, 0d, 1d);
+        var minTitleSimilarity = Math.Max(NormalizeThreshold(resolvedConfig.MinTitleSimilarity), strictness * 0.9d);
+        var minArtistSimilarity = Math.Max(NormalizeThreshold(resolvedConfig.MinArtistSimilarity), strictness * 0.65d);
+        var titleSimilarity = ComputeTitleSimilarity(info.Title, recognized.Title);
+        var artistSimilarity = ComputeArtistSimilarity(info, recognized);
+        var durationDiffSeconds = ComputeDurationDiffSeconds(info.DurationSeconds, recognized.DurationMs);
+        var durationSimilarity = ComputeDurationSimilarity(durationDiffSeconds, resolvedConfig.MaxDurationDeltaSeconds);
+        if (!PassesQualityGuards(
+                titleSimilarity,
+                artistSimilarity,
+                durationDiffSeconds,
+                minTitleSimilarity,
+                minArtistSimilarity,
+                resolvedConfig.MaxDurationDeltaSeconds))
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Rejected Shazam fingerprint match for {File}: titleSim={TitleSim:0.000} artistSim={ArtistSim:0.000} durationDiff={DurationDiff}s thresholds(title>={MinTitle:0.000}, artist>={MinArtist:0.000}, maxDurationDiff={MaxDiff}s)",
+                    filePath,
+                    titleSimilarity,
+                    artistSimilarity,
+                    durationDiffSeconds,
+                    minTitleSimilarity,
+                    minArtistSimilarity,
+                    resolvedConfig.MaxDurationDeltaSeconds);
+            }
+
+            return Task.FromResult<AutoTagMatchResult?>(null);
+        }
+
         var artists = ResolveArtists(recognized, info);
         if (artists.Count == 0 && !string.IsNullOrWhiteSpace(info.Artist))
         {
@@ -63,12 +98,206 @@ public sealed class ShazamMatcher
         ApplyConfiguredMetadata(track, recognized, resolvedConfig);
         AddShazamOtherFields(track, recognized);
         MergeAdditionalTags(track, recognized.Tags);
+        AddFingerprintAuditFields(track, titleSimilarity, artistSimilarity, durationDiffSeconds, durationSimilarity);
+
+        var compositeAccuracy = durationSimilarity.HasValue
+            ? Math.Clamp((titleSimilarity * 0.45d) + (artistSimilarity * 0.20d) + (durationSimilarity.Value * 0.35d), 0d, 1d)
+            : Math.Clamp((titleSimilarity * 0.68d) + (artistSimilarity * 0.32d), 0d, 1d);
 
         return Task.FromResult<AutoTagMatchResult?>(new AutoTagMatchResult
         {
-            Accuracy = 1.0,
+            Accuracy = compositeAccuracy,
             Track = track
         });
+    }
+
+    private static void AddFingerprintAuditFields(
+        AutoTagTrack track,
+        double titleSimilarity,
+        double artistSimilarity,
+        int? durationDiffSeconds,
+        double? durationSimilarity)
+    {
+        track.Other["SHAZAM_MATCH_STRATEGY"] = new List<string> { "FINGERPRINT" };
+        track.Other["SHAZAM_TITLE_SIMILARITY"] = new List<string> { titleSimilarity.ToString("0.000", CultureInfo.InvariantCulture) };
+        track.Other["SHAZAM_ARTIST_SIMILARITY"] = new List<string> { artistSimilarity.ToString("0.000", CultureInfo.InvariantCulture) };
+        if (durationDiffSeconds.HasValue)
+        {
+            track.Other["SHAZAM_DURATION_DIFF_SECONDS"] = new List<string> { durationDiffSeconds.Value.ToString(CultureInfo.InvariantCulture) };
+        }
+        if (durationSimilarity.HasValue)
+        {
+            track.Other["SHAZAM_DURATION_SIMILARITY"] = new List<string> { durationSimilarity.Value.ToString("0.000", CultureInfo.InvariantCulture) };
+        }
+    }
+
+    private static bool PassesQualityGuards(
+        double titleSimilarity,
+        double artistSimilarity,
+        int? durationDiffSeconds,
+        double minTitleSimilarity,
+        double minArtistSimilarity,
+        int maxDurationDeltaSeconds)
+    {
+        if (titleSimilarity < minTitleSimilarity)
+        {
+            return false;
+        }
+
+        if (artistSimilarity < minArtistSimilarity)
+        {
+            return false;
+        }
+
+        if (durationDiffSeconds.HasValue
+            && durationDiffSeconds.Value > maxDurationDeltaSeconds)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static double NormalizeThreshold(double raw)
+    {
+        var value = raw > 1d ? raw / 100d : raw;
+        return Math.Clamp(value, 0d, 1d);
+    }
+
+    private static double ComputeTitleSimilarity(string? sourceTitle, string? recognizedTitle)
+    {
+        var left = NormalizeForSimilarity(OneTaggerMatching.CleanTitleMatching(sourceTitle ?? string.Empty));
+        var right = NormalizeForSimilarity(OneTaggerMatching.CleanTitleMatching(recognizedTitle ?? string.Empty));
+        return ComputeSimilarityScore(left, right);
+    }
+
+    private static double ComputeArtistSimilarity(AutoTagAudioInfo info, ShazamRecognitionInfo recognized)
+    {
+        var sourceArtists = OneTaggerMatching.CleanArtists(info.Artists);
+        if (sourceArtists.Count == 0 && !string.IsNullOrWhiteSpace(info.Artist))
+        {
+            sourceArtists = OneTaggerMatching.CleanArtists(new[] { info.Artist });
+        }
+
+        var recognizedArtists = OneTaggerMatching.CleanArtists(recognized.Artists);
+        if (recognizedArtists.Count == 0 && !string.IsNullOrWhiteSpace(recognized.Artist))
+        {
+            recognizedArtists = OneTaggerMatching.CleanArtists(new[] { recognized.Artist });
+        }
+
+        return ComputeSimilarityScore(
+            NormalizeForSimilarity(string.Join(" ", sourceArtists)),
+            NormalizeForSimilarity(string.Join(" ", recognizedArtists)));
+    }
+
+    private static int? ComputeDurationDiffSeconds(int? sourceDurationSeconds, long? recognizedDurationMs)
+    {
+        if (!sourceDurationSeconds.HasValue || !recognizedDurationMs.HasValue || sourceDurationSeconds.Value <= 0 || recognizedDurationMs.Value <= 0)
+        {
+            return null;
+        }
+
+        var recognizedSeconds = (int)Math.Round(recognizedDurationMs.Value / 1000d);
+        if (recognizedSeconds <= 0)
+        {
+            return null;
+        }
+
+        return Math.Abs(sourceDurationSeconds.Value - recognizedSeconds);
+    }
+
+    private static double? ComputeDurationSimilarity(int? durationDiffSeconds, int maxDurationDeltaSeconds)
+    {
+        if (!durationDiffSeconds.HasValue)
+        {
+            return null;
+        }
+
+        var maxDiff = Math.Max(1, maxDurationDeltaSeconds);
+        if (durationDiffSeconds.Value > maxDiff)
+        {
+            return 0d;
+        }
+
+        var normalized = durationDiffSeconds.Value / (double)maxDiff;
+        return Math.Clamp(1d - (normalized * 0.9d), 0d, 1d);
+    }
+
+    private static string NormalizeForSimilarity(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var chars = value
+            .ToLowerInvariant()
+            .Select(ch => char.IsLetterOrDigit(ch) ? ch : ' ')
+            .ToArray();
+        return string.Join(" ", new string(chars).Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+    }
+
+    private static double ComputeSimilarityScore(string left, string right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+        {
+            return 0d;
+        }
+
+        if (string.Equals(left, right, StringComparison.Ordinal))
+        {
+            return 1d;
+        }
+
+        var distance = ComputeLevenshteinDistance(left, right);
+        var maxLength = Math.Max(left.Length, right.Length);
+        if (maxLength <= 0)
+        {
+            return 1d;
+        }
+
+        var score = 1d - (distance / (double)maxLength);
+        return Math.Clamp(score, 0d, 1d);
+    }
+
+    private static int ComputeLevenshteinDistance(string left, string right)
+    {
+        if (left.Length == 0)
+        {
+            return right.Length;
+        }
+
+        if (right.Length == 0)
+        {
+            return left.Length;
+        }
+
+        var rows = left.Length + 1;
+        var cols = right.Length + 1;
+        var matrix = new int[rows, cols];
+
+        for (var i = 0; i < rows; i++)
+        {
+            matrix[i, 0] = i;
+        }
+
+        for (var j = 0; j < cols; j++)
+        {
+            matrix[0, j] = j;
+        }
+
+        for (var i = 1; i < rows; i++)
+        {
+            for (var j = 1; j < cols; j++)
+            {
+                var cost = left[i - 1] == right[j - 1] ? 0 : 1;
+                matrix[i, j] = Math.Min(
+                    Math.Min(matrix[i - 1, j] + 1, matrix[i, j - 1] + 1),
+                    matrix[i - 1, j - 1] + cost);
+            }
+        }
+
+        return matrix[rows - 1, cols - 1];
     }
 
     private static bool TryParseDate(string? raw, out DateTime parsed)
