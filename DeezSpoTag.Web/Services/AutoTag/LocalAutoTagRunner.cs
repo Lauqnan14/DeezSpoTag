@@ -415,11 +415,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var resumeMismatchReason = GetResumeCheckpointMismatchReason(plan, resumeCursor);
         if (!string.IsNullOrWhiteSpace(resumeMismatchReason))
         {
-            logCallback($"onetagger_autotag: resume checkpoint ignored ({resumeMismatchReason}); restarting from first platform");
-            resumeCursor = null;
+            logCallback($"onetagger_autotag: resume checkpoint adjusted ({resumeMismatchReason})");
         }
 
-        var (startPlatformIndex, startFileIndex) = ResolveResumeStartIndices(plan, resumeCursor);
+        var (startPlatformIndex, startFileIndex) = ResolveResumeStartIndices(
+            plan,
+            resumeCursor,
+            preferPathAnchor: !string.IsNullOrWhiteSpace(resumeMismatchReason));
         for (var platformIndex = startPlatformIndex; platformIndex < plan.PlatformCount; platformIndex++)
         {
             token.ThrowIfCancellationRequested();
@@ -450,7 +452,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static (int PlatformIndex, int FileIndex) ResolveResumeStartIndices(
         AutoTagRunPlan plan,
-        AutoTagResumeCursor? resumeCursor)
+        AutoTagResumeCursor? resumeCursor,
+        bool preferPathAnchor = false)
     {
         if (plan.PlatformCount == 0 || plan.FileCount == 0 || resumeCursor == null)
         {
@@ -459,6 +462,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         var platformIndex = Math.Clamp(resumeCursor.PlatformIndex, 0, plan.PlatformCount - 1);
         var fileIndex = Math.Clamp(resumeCursor.FileIndex, 0, plan.FileCount);
+        if (preferPathAnchor
+            && !string.IsNullOrWhiteSpace(resumeCursor.LastPath))
+        {
+            var anchoredFileIndex = plan.Files.FindIndex(file =>
+                string.Equals(file, resumeCursor.LastPath, StringComparison.OrdinalIgnoreCase));
+            if (anchoredFileIndex >= 0)
+            {
+                fileIndex = anchoredFileIndex + 1;
+            }
+        }
+
         if (fileIndex >= plan.FileCount)
         {
             fileIndex = 0;
