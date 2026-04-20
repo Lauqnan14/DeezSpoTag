@@ -2219,15 +2219,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return true;
         }
 
+        if (!enableShazamFallback)
+        {
+            return false;
+        }
+
         // Always attempt Shazam for raw files with no embedded core metadata.
         if (IsRawCoreMetadata(info))
         {
             return true;
-        }
-
-        if (!enableShazamFallback)
-        {
-            return false;
         }
 
         // Shazam fallback is needed when core tags are missing or clearly noisy.
@@ -2264,6 +2264,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static (bool EnableFallback, bool ForceMatch) ResolveShazamEnrichmentBehavior(AutoTagRunnerConfig config)
     {
+        var shazamEnabled = IsShazamPlatformEnabled(config);
+        if (!shazamEnabled)
+        {
+            return (false, false);
+        }
+
         var shazamConfig = LoadConfig(config.Custom, ShazamPlatform, new ShazamMatchConfig());
 
         var hasShazamConfig = config.Custom != null
@@ -2276,12 +2282,25 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         // Legacy fallback for older profiles/configs.
-        return (config.EnableShazam, config.ForceShazam);
+        var legacyEnableFallback = config.EnableShazam || shazamEnabled;
+        var legacyForceMatch = shazamEnabled && config.ForceShazam;
+        return (legacyEnableFallback, legacyForceMatch);
     }
 
     private static bool IsShazamConflictResolution(AutoTagRunnerConfig config)
     {
-        return string.Equals(config.ConflictResolution, ShazamPlatform, StringComparison.OrdinalIgnoreCase);
+        return IsShazamPlatformEnabled(config)
+            && string.Equals(config.ConflictResolution, ShazamPlatform, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsShazamPlatformEnabled(AutoTagRunnerConfig config)
+    {
+        if (config.Platforms.Count == 0)
+        {
+            return false;
+        }
+
+        return config.Platforms.Any(platform => string.Equals(platform?.Trim(), ShazamPlatform, StringComparison.OrdinalIgnoreCase));
     }
 
     private static AutoTagRunnerConfig NormalizeConfig(AutoTagRunnerConfig? raw)

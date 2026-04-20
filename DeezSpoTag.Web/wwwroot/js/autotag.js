@@ -1414,6 +1414,24 @@
 
         config.platforms = platforms;
         config.multiplatform = platforms.length > 1;
+        const shazamEnabled = platforms.some((platformId) => normalizePlatformId(platformId) === "shazam");
+        config.enableShazam = shazamEnabled;
+        if (!config.custom || typeof config.custom !== "object") {
+            config.custom = {};
+        }
+        const shazamCustom = config.custom.shazam;
+        if (shazamCustom && typeof shazamCustom === "object" && !Array.isArray(shazamCustom)) {
+            if (typeof shazamCustom.force_match === "boolean") {
+                config.forceShazam = shazamEnabled && shazamCustom.force_match;
+            } else {
+                config.forceShazam = shazamEnabled && Boolean(config.forceShazam);
+            }
+        } else {
+            config.forceShazam = shazamEnabled && Boolean(config.forceShazam);
+        }
+        if (!shazamEnabled && String(config.conflictResolution || "").trim().toLowerCase() === "shazam") {
+            config.conflictResolution = null;
+        }
         return config;
     }
 
@@ -2149,6 +2167,7 @@
         } else {
             state.config.platforms.splice(index, 1);
         }
+        ensureEffectivePlatforms(state.config);
         storeSelectedPlatforms();
         renderPlatforms();
         syncEnhancementTagsWithEnrichment();
