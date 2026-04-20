@@ -279,8 +279,8 @@ public sealed class SpotifyArtistService
 
         return suggestions
             .OrderByDescending(suggestion => suggestion.NameMatchesAlias)
-            .ThenByDescending(suggestion => suggestion.LocalAlbumOverlap)
             .ThenByDescending(suggestion => suggestion.Verified)
+            .ThenByDescending(suggestion => suggestion.LocalAlbumOverlap)
             .ThenByDescending(suggestion => suggestion.TotalAlbums)
             .ThenByDescending(suggestion => suggestion.Score)
             .Take(safeLimit)
@@ -1645,11 +1645,7 @@ public sealed class SpotifyArtistService
             return new ExactArtistCandidateSelection(best.Candidate, best.LocalAlbumOverlap);
         }
 
-        return requireLocalAlbumOverlap
-            ? null
-            : exactCandidates
-                .Select(candidate => new ExactArtistCandidateSelection(candidate, 0))
-                .FirstOrDefault();
+        return null;
     }
 
     private async Task<ExactArtistCandidateScore?> ScoreExactArtistCandidateAsync(
@@ -1669,6 +1665,12 @@ public sealed class SpotifyArtistService
         }
 
         var info = await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidate.Id, cancellationToken);
+        if (!IsVerifiedArtistCandidate(info))
+        {
+            AddActivity(DebugActivityLevel, $"[spotify] candidate rejected (unverified): {candidate.Name} ({candidate.Id}).");
+            return null;
+        }
+
         var score = ComputeExactCandidateScore(localAlbumOverlap, info);
         return new ExactArtistCandidateScore(candidate, localAlbumOverlap, score);
     }
@@ -1685,6 +1687,11 @@ public sealed class SpotifyArtistService
         }
 
         var info = await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidate.Id, cancellationToken);
+        if (!IsVerifiedArtistCandidate(info))
+        {
+            return null;
+        }
+
         var score = ComputeCanonicalFallbackScore(info, index);
         return new CanonicalFallbackCandidateScore(candidate, score);
     }
@@ -1770,6 +1777,9 @@ public sealed class SpotifyArtistService
         var rankBoost = Math.Max(0, 30 - Math.Max(0, rankIndex));
         return verifiedBoost + albumBoost + rankBoost;
     }
+
+    private static bool IsVerifiedArtistCandidate(SpotifyPathfinderMetadataClient.SpotifyArtistCandidateInfo? info)
+        => info?.Verified == true;
 
     private static List<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> BuildArtistSearchCandidates(
         IReadOnlyList<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> results,
@@ -2018,6 +2028,11 @@ public sealed class SpotifyArtistService
                     localAlbumTitleSet,
                     cancellationToken);
                 var hasStrongVotes = votes >= ShazamStrongVoteThreshold;
+                var info = await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidateId, cancellationToken);
+                if (!IsVerifiedArtistCandidate(info))
+                {
+                    return;
+                }
 
                 var accepted = matchesAlias;
                 if (!accepted && localAlbumOverlap > 0)
