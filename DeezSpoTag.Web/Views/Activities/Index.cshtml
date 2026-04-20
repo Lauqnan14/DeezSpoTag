@@ -2914,6 +2914,37 @@
                         </div>
                         <div class="autotag-history-main">
                             <div class="autotag-run-detail-card">
+                                <div class="d-flex gap-2 mb-3" id="autotag-quick-actions" style="display: none;">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" id="autotag-open-folder">
+                                        <i class="fas fa-folder-open me-1"></i>Open Folder
+                                    </button>
+                                </div>
+                                <div class="autotag-run-summary mb-3">
+                                    <div class="autotag-run-summary-card">
+                                        <span>Status</span>
+                                        <strong id="autotag-history-run-status">--</strong>
+                                    </div>
+                                    <div class="autotag-run-summary-card">
+                                        <span>Started</span>
+                                        <strong id="autotag-history-run-started">--</strong>
+                                    </div>
+                                    <div class="autotag-run-summary-card">
+                                        <span>Finished</span>
+                                        <strong id="autotag-history-run-finished">--</strong>
+                                    </div>
+                                    <div class="autotag-run-summary-card">
+                                        <span>Folder</span>
+                                        <strong id="autotag-history-run-folder">--</strong>
+                                    </div>
+                                    <div class="autotag-run-summary-card">
+                                        <span>Logs</span>
+                                        <strong id="autotag-history-run-log-count">0</strong>
+                                    </div>
+                                    <div class="autotag-run-summary-card">
+                                        <span>Entries</span>
+                                        <strong id="autotag-history-run-entry-count">0</strong>
+                                    </div>
+                                </div>
                                 <div class="autotag-filter-toolbar mb-3">
                                     <span class="me-2 text-muted">Filter:</span>
                                     <div class="btn-group btn-group-sm" aria-label="Filter archived status history">

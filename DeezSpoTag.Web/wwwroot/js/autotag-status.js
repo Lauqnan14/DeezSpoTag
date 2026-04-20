@@ -22,6 +22,7 @@
         manualHistorySelection: false,
         selectedRunId: null,
         selectedRunSummary: null,
+        runSelectionMessage: null,
         selectedDate: null,
         calendarMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
     };
@@ -235,11 +236,19 @@
 
     function getLiveRunDateToken(job) {
         const sourceDate = job?.startedAt || job?.finishedAt || null;
+        if (typeof sourceDate === "string") {
+            const trimmed = sourceDate.trim();
+            const isoPrefix = trimmed.slice(0, 10);
+            if (/^\d{4}-\d{2}-\d{2}$/.test(isoPrefix)) {
+                return isoPrefix;
+            }
+        }
+
         const parsed = sourceDate ? new Date(sourceDate) : null;
         if (parsed && !Number.isNaN(parsed.getTime())) {
-            return toDateToken(parsed);
+            return toDateTokenUtc(parsed);
         }
-        return toDateToken(new Date());
+        return toDateTokenUtc(new Date());
     }
 
     function shouldFollowLiveRunInHistory() {
@@ -274,6 +283,16 @@
         return `${year}-${month}-${day}`;
     }
 
+    function toDateTokenUtc(date) {
+        if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+            return "";
+        }
+        const year = date.getUTCFullYear();
+        const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+        const day = String(date.getUTCDate()).padStart(2, "0");
+        return `${year}-${month}-${day}`;
+    }
+
     async function fetchJson(url) {
         const response = await fetch(url, {
             cache: "no-store",
@@ -283,7 +302,9 @@
             }
         });
         if (!response.ok) {
-            throw new Error(`Request failed: ${response.status}`);
+            const error = new Error(`Request failed: ${response.status}`);
+            error.status = response.status;
+            throw error;
         }
         return response.json();
     }
@@ -446,7 +467,8 @@
         }
 
         if (!state.selectedRunId) {
-            tableBody.innerHTML = '<tr><td colspan="6">Select a run to load full AutoTag history.</td></tr>';
+            const message = state.runSelectionMessage || "Select a run to load full AutoTag history.";
+            tableBody.innerHTML = `<tr><td colspan="6">${escapeHtml(message)}</td></tr>`;
             return;
         }
 
@@ -497,6 +519,9 @@
 
     function renderRunSummary(summary, archive) {
         state.selectedRunSummary = summary || null;
+        if (summary) {
+            state.runSelectionMessage = null;
+        }
         updateQuickActions(summary || null);
 
         setText("autotag-history-selected-date", state.selectedDate ? formatDate(state.selectedDate) : "--");
@@ -574,10 +599,10 @@
         state.selectedRunId = null;
         state.selectedRunSummary = null;
         state.historyStatus = [];
+        state.runSelectionMessage = message || "Select a run to load full AutoTag history.";
         renderRunSummary(null, null);
         renderFilteredHistory();
         updateFilterCountsFromHistory();
-        pollJob();
     }
 
     async function loadRunDetails(runId) {
@@ -805,6 +830,11 @@
                 return;
             }
 
+            if (jobId) {
+                localStorage.removeItem(JOB_KEY);
+                jobId = "";
+            }
+
             if (!jobId) {
                 resetLivePollingState();
                 schedulePoll();
@@ -816,8 +846,13 @@
                 await applyPolledJob({ ...job, id: job?.id || jobId }, normalizeLogLines(job.logs));
             } catch (error) {
                 console.warn("Failed to refresh live AutoTag status.", error);
-                updateStatus(jobId, STATUS_ERROR);
-                updateProgressBar({ status: STATUS_FAILED });
+                if (error?.status === 404) {
+                    localStorage.removeItem(JOB_KEY);
+                    resetLivePollingState();
+                } else {
+                    updateStatus(jobId, STATUS_ERROR);
+                    updateProgressBar({ status: STATUS_FAILED });
+                }
             }
 
             schedulePoll();
