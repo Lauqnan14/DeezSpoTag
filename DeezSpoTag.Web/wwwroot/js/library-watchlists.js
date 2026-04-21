@@ -1,5 +1,23 @@
 // Extracted from library.js: watchlist and playlist feature module
 
+function escapeHtml(text) {
+    const shared = globalThis.DeezSpoTagLibraryPageCommon?.escapeHtml;
+    if (typeof shared === 'function') {
+        return shared(text);
+    }
+
+    if (text === null || text === undefined) {
+        return '';
+    }
+
+    return String(text)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
 async function loadWatchlist() {
     const container = document.getElementById('watchlistContainer');
     if (!container) {
