@@ -650,10 +650,13 @@ globalThis.DeezSpoTag = {
         this.initializeNavigation();
         this.initializeTabs();
         if (this.isLoginRoute()) {
-            // Login route uses lightweight platform probes; run a one-shot refresh.
-            globalThis.setTimeout(() => this.loadConnectedPlatforms(), 700);
+            // Login route should avoid expensive probes unless explicitly requested.
+            globalThis.setTimeout(() => this.loadConnectedPlatforms({ force: true, deep: false, reason: 'login-init' }), 350);
         } else {
-            this.loadConnectedPlatforms({ force: true });
+            this.loadConnectedPlatforms({ force: true, deep: false, reason: 'init-cheap' });
+            globalThis.setTimeout(() => {
+                this.loadConnectedPlatforms({ forceDeep: true, force: true, reason: 'init-deep' });
+            }, 1800);
             this.startConnectedPlatformsAutoRefresh();
         }
         this.initializePwaInstallPrompt();
@@ -1028,12 +1031,16 @@ globalThis.DeezSpoTag = {
 
     platformDisplayOrder: [],
 
-    connectedPlatformsRefreshIntervalMs: 15000,
+    connectedPlatformsRefreshIntervalMs: 300000,
+    connectedPlatformsDeepProbeMinIntervalMs: 300000,
+    connectedPlatformsCheapProbeMinIntervalMs: 30000,
     connectedPlatformsRefreshTimerId: null,
     connectedPlatformsRefreshInFlight: false,
-    connectedPlatformsRefreshPending: false,
+    connectedPlatformsRefreshPending: null,
     connectedPlatformsFocusHandler: null,
     connectedPlatformsVisibilityHandler: null,
+    connectedPlatformsLastDeepProbeAt: 0,
+    connectedPlatformsLastCheapProbeAt: 0,
     connectedPlatformsHasRendered: false,
     connectedPlatformsLastRenderSignature: null,
     platformRegistryLoaded: false,
@@ -1402,18 +1409,61 @@ globalThis.DeezSpoTag = {
         await this.platformRegistryLoadPromise;
     },
 
+    resolveConnectedPlatformsProbePlan(options = {}) {
+        const now = Date.now();
+        const loginRoute = this.isLoginRoute();
+        const forceDeep = options?.forceDeep === true || options?.deep === true;
+        const force = options?.force === true || forceDeep;
+        const explicitCheap = options?.deep === false;
+
+        let runDeepChecks = forceDeep;
+        if (!runDeepChecks && !explicitCheap && !loginRoute) {
+            runDeepChecks = (now - this.connectedPlatformsLastDeepProbeAt) >= this.connectedPlatformsDeepProbeMinIntervalMs;
+        }
+
+        const lastProbeAt = runDeepChecks
+            ? this.connectedPlatformsLastDeepProbeAt
+            : this.connectedPlatformsLastCheapProbeAt;
+        const minInterval = runDeepChecks
+            ? this.connectedPlatformsDeepProbeMinIntervalMs
+            : this.connectedPlatformsCheapProbeMinIntervalMs;
+        const shouldProbe = force || lastProbeAt === 0 || (now - lastProbeAt) >= minInterval;
+
+        return {
+            now,
+            force,
+            forceDeep,
+            runDeepChecks,
+            shouldProbe
+        };
+    },
+
+    markConnectedPlatformsProbe(runDeepChecks, timestamp) {
+        if (!timestamp) {
+            return;
+        }
+
+        if (runDeepChecks) {
+            this.connectedPlatformsLastDeepProbeAt = timestamp;
+            this.connectedPlatformsLastCheapProbeAt = timestamp;
+            return;
+        }
+
+        this.connectedPlatformsLastCheapProbeAt = timestamp;
+    },
+
     startConnectedPlatformsAutoRefresh() {
         if (this.connectedPlatformsRefreshTimerId !== null) {
             return;
         }
 
         this.connectedPlatformsRefreshTimerId = globalThis.setInterval(() => {
-            this.loadConnectedPlatforms();
+            this.loadConnectedPlatforms({ force: true, forceDeep: true, reason: 'timer-deep' });
         }, this.connectedPlatformsRefreshIntervalMs);
 
         if (!this.connectedPlatformsFocusHandler) {
             this.connectedPlatformsFocusHandler = () => {
-                this.loadConnectedPlatforms();
+                this.loadConnectedPlatforms({ deep: false, reason: 'focus-cheap' });
             };
             globalThis.addEventListener('focus', this.connectedPlatformsFocusHandler);
         }
@@ -1421,14 +1471,14 @@ globalThis.DeezSpoTag = {
         if (!this.connectedPlatformsVisibilityHandler) {
             this.connectedPlatformsVisibilityHandler = () => {
                 if (document.visibilityState === 'visible') {
-                    this.loadConnectedPlatforms();
+                    this.loadConnectedPlatforms({ deep: false, reason: 'visibility-cheap' });
                 }
             };
             document.addEventListener('visibilitychange', this.connectedPlatformsVisibilityHandler);
         }
     },
 
-    async loadConnectedPlatforms() {
+    async loadConnectedPlatforms(options = {}) {
         const container = document.getElementById('connectedPlatformsList');
         if (!container) {
             return;
@@ -1441,15 +1491,38 @@ globalThis.DeezSpoTag = {
         const cached = this.getCachedConnectedPlatformsSnapshot();
         this.renderConnectedPlatformsFromSnapshot(cached, selected, initialStates);
 
+        const probePlan = this.resolveConnectedPlatformsProbePlan(options);
+        if (!probePlan.shouldProbe) {
+            return;
+        }
+
         if (this.connectedPlatformsRefreshInFlight) {
-            this.connectedPlatformsRefreshPending = true;
+            if (!this.connectedPlatformsRefreshPending) {
+                this.connectedPlatformsRefreshPending = { ...options };
+            } else {
+                if (options?.force === true) {
+                    this.connectedPlatformsRefreshPending.force = true;
+                }
+                if (options?.forceDeep === true || options?.deep === true) {
+                    this.connectedPlatformsRefreshPending.force = true;
+                    this.connectedPlatformsRefreshPending.forceDeep = true;
+                    this.connectedPlatformsRefreshPending.deep = true;
+                }
+            }
             return;
         }
 
         this.connectedPlatformsRefreshInFlight = true;
 
-        const connected = new Set();
-        const platformStates = this.buildInitialPlatformStates(selected);
+        const platformStates = cached?.statuses
+            ? this.buildCachedPlatformStates(cached.statuses, selected)
+            : cached?.platforms?.length
+                ? this.buildCachedPlatformStates(cached.platforms, selected)
+                : this.buildInitialPlatformStates(selected);
+        const connected = new Set(
+            Object.entries(platformStates)
+                .filter(([, status]) => status?.active === true)
+                .map(([id]) => id));
         const cachedHadSpotify = cached?.statuses?.spotify?.active === true
             || (Array.isArray(cached?.platforms) && cached.platforms.includes('spotify'));
 
@@ -1460,10 +1533,10 @@ globalThis.DeezSpoTag = {
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
         };
-        const skipExpensiveChecks = this.isLoginRoute();
+        const skipExpensiveChecks = !probePlan.runDeepChecks;
 
         try {
-            const settledResponses = await this.fetchConnectedPlatformResponses(fetchOptions, skipExpensiveChecks);
+            const settledResponses = await this.fetchConnectedPlatformResponses(fetchOptions, probePlan.runDeepChecks, probePlan.forceDeep);
             const authData = await this.applyAuthStatus(settledResponses.authResponse, settledResponses.authOk, connected, platformStates);
             const wrapperReady = await this.resolveWrapperReadiness(
                 settledResponses.appleWrapperResponse,
@@ -1479,11 +1552,11 @@ globalThis.DeezSpoTag = {
                 platformStates);
             await this.applyDeezerStatus(settledResponses.deezerResponse, settledResponses.deezerOk, connected, platformStates);
             const resolved = Array.from(connected);
-            const preserveIfEmpty = !(
-                settledResponses.authCompleted
-                && settledResponses.deezerCompleted
+            const requiredChecksCompleted = settledResponses.authCompleted
                 && settledResponses.spotifyCompleted
-                && settledResponses.appleWrapperCompleted);
+                && (!settledResponses.deezerRequested || settledResponses.deezerCompleted)
+                && (!settledResponses.appleWrapperRequested || settledResponses.appleWrapperCompleted);
+            const preserveIfEmpty = !requiredChecksCompleted;
             this.setCachedConnectedPlatforms({
                 platforms: resolved,
                 statuses: platformStates,
@@ -1494,10 +1567,12 @@ globalThis.DeezSpoTag = {
             console.warn('Failed to refresh connected platform status', error);
             this.renderConnectedPlatforms(platformStates);
         } finally {
+            this.markConnectedPlatformsProbe(probePlan.runDeepChecks, probePlan.now);
             this.connectedPlatformsRefreshInFlight = false;
-            if (this.connectedPlatformsRefreshPending) {
-                this.connectedPlatformsRefreshPending = false;
-                globalThis.setTimeout(() => this.loadConnectedPlatforms(), 150);
+            const pendingOptions = this.connectedPlatformsRefreshPending;
+            this.connectedPlatformsRefreshPending = null;
+            if (pendingOptions) {
+                globalThis.setTimeout(() => this.loadConnectedPlatforms(pendingOptions), 150);
             }
         }
     },
@@ -1531,14 +1606,18 @@ globalThis.DeezSpoTag = {
         });
     },
 
-    async fetchConnectedPlatformResponses(fetchOptions, skipExpensiveChecks) {
-        const deezerRequest = fetch('/api/login/status', fetchOptions);
-        const spotifyStatusRequest = skipExpensiveChecks
-            ? fetch('/api/spotify-credentials/accounts', fetchOptions)
-            : fetch('/api/spotify-credentials/status', fetchOptions);
-        const appleWrapperStatusRequest = skipExpensiveChecks
-            ? Promise.resolve(null)
-            : fetch('/api/apple-music/wrapper-ref/status', fetchOptions);
+    async fetchConnectedPlatformResponses(fetchOptions, runDeepChecks, forceDeepRefresh = false) {
+        const deezerRequested = runDeepChecks;
+        const appleWrapperRequested = runDeepChecks;
+        const deezerRequest = deezerRequested
+            ? fetch('/api/login/status', fetchOptions)
+            : Promise.resolve(null);
+        const spotifyStatusRequest = runDeepChecks
+            ? fetch(forceDeepRefresh ? '/api/spotify-credentials/status?force=true' : '/api/spotify-credentials/status', fetchOptions)
+            : fetch('/api/spotify-credentials/accounts', fetchOptions);
+        const appleWrapperStatusRequest = appleWrapperRequested
+            ? fetch('/api/apple-music/wrapper-ref/status', fetchOptions)
+            : Promise.resolve(null);
         const [authResult, deezerResult, spotifyStatusResult, appleWrapperStatusResult] = await Promise.allSettled([
             fetch('/api/platform-auth', fetchOptions),
             deezerRequest,
@@ -1559,6 +1638,8 @@ globalThis.DeezSpoTag = {
             deezerCompleted: deezerResult.status === 'fulfilled',
             spotifyCompleted: spotifyStatusResult.status === 'fulfilled',
             appleWrapperCompleted: appleWrapperStatusResult.status === 'fulfilled',
+            deezerRequested,
+            appleWrapperRequested,
             authOk: Boolean(authResponse?.ok),
             deezerOk: Boolean(deezerResponse?.ok),
             spotifyOk: Boolean(spotifyResponse?.ok),
@@ -1945,11 +2026,11 @@ globalThis.DeezSpoTag = {
 document.addEventListener('DOMContentLoaded', () => {
     DeezSpoTag.init();
     globalThis.addEventListener('autotagPlatformsChanged', () => {
-        DeezSpoTag.loadConnectedPlatforms();
+        DeezSpoTag.loadConnectedPlatforms({ force: true, deep: false, reason: 'autotag-change' });
     });
     globalThis.addEventListener('storage', (event) => {
         if (event.key === 'autotag-selected-platforms') {
-            DeezSpoTag.loadConnectedPlatforms();
+            DeezSpoTag.loadConnectedPlatforms({ force: true, deep: false, reason: 'storage-change' });
         }
     });
 });
