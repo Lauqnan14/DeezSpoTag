@@ -266,7 +266,7 @@
         "timesynced-lyrics": "syllable-lyrics",
         "time_synced_lyrics": "syllable-lyrics",
         "syllablelyrics": "syllable-lyrics",
-        "unsunsynced-lyrics": "unsynced-lyrics",
+        "unsynced-lyrics": "unsynced-lyrics",
         "unsyncedlyrics": "unsynced-lyrics",
         "unsynced": "unsynced-lyrics",
         "unsynchronized-lyrics": "unsynced-lyrics",
