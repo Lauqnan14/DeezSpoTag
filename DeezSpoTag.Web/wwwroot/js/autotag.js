@@ -3228,6 +3228,19 @@
                 throw new Error("Failed to load platforms");
             }
             const data = await response.json();
+            const resolvePlatformFallbackIcon = (platformId) => {
+                const normalized = normalizePlatformId(platformId);
+                if (!normalized) {
+                    return "";
+                }
+
+                const iconNameMap = {
+                    lastfm: "last-fm",
+                    applemusic: "apple-music"
+                };
+                const iconName = iconNameMap[normalized] || normalized;
+                return `/images/icons/${iconName}.png`;
+            };
             state.platforms = (data || []).map((platform) => {
                 const platformInfo = platform.platform || {};
                 const supportedTags = platform.supportedTags || platformInfo.supportedTags || [];
@@ -3245,7 +3258,7 @@
                     downloadTags,
                     customOptions: platformInfo.customOptions || { options: [] },
                     icon: overrideIcon || platform.icon || "",
-                    fallbackIcon: platformId ? `/images/icons/${platformId}.png` : ""
+                    fallbackIcon: resolvePlatformFallbackIcon(platformId)
                 };
             });
             preloadPlatformIcons(state.platforms);
@@ -7043,7 +7056,12 @@
     Promise.all([loadPlatforms(), loadEnrichmentLibraryFolders(), loadLyricsSettings()]).then(async () => {
         const authData = await loadStoredAuth();
         mergeStoredAuth(state.config, authData);
-        await loadSpotifyStatus();
+        const spotifyStatusRefresh = loadSpotifyStatus().finally(() => {
+            // Keep Spotify auth checks off the profile-loading critical path, then
+            // refresh only auth-dependent platform UI when the status call completes.
+            renderPlatforms();
+            updateDownloadSourceAvailability();
+        });
 
         loadConfigToUI();
         enforceSingleDownloadSource();
@@ -7064,5 +7082,6 @@
         if (recoveredJobId && hasStatusUI()) {
             schedulePoll();
         }
+        void spotifyStatusRefresh;
     });
 })();
