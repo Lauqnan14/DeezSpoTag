@@ -1,11 +1,11 @@
 globalThis.DeezSpoTag = globalThis.DeezSpoTag || {};
 
 (() => {
-    const MAX_LOGS_IN_MEMORY = 5000;
-    const MAX_LOGS_PERSISTED = 2000;
+    const MAX_LOGS_IN_MEMORY = 3000;
+    const MAX_LOGS_PERSISTED = 1000;
     const STORAGE_KEY = 'deezspotag.downloadLogs';
     const INSTANCE_KEY = 'deezspotag.appInstanceId';
-    const PERSIST_DEBOUNCE_MS = 500;
+    const PERSIST_DEBOUNCE_MS = 1500;
 
     class DownloadLogger {
         constructor() {

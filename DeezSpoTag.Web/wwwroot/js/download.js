@@ -35,6 +35,7 @@ DeezSpoTag.Download = {
 
     // Initialize download functionality
     init() {
+        this.activitiesPage = this.isActivitiesPage();
         this.bindEvents();
         this.initializeSignalR();
         this.refreshAppleNotificationMode();
@@ -50,9 +51,14 @@ DeezSpoTag.Download = {
             }
         });
         this.resumePendingQueue();
-        this.refreshQueueFromServer().catch((error) => console.warn('Initial queue sync failed', error));
-        this.startQueueSyncLoop();
+        if (!this.activitiesPage) {
+            this.refreshQueueFromServer().catch((error) => console.warn('Initial queue sync failed', error));
+            this.startQueueSyncLoop();
+        }
         console.log('DeezSpoTag Download Engine initialized');
+    },
+    isActivitiesPage() {
+        return /^\/activities(?:\/|$)/i.test(globalThis.location?.pathname || '');
     },
 
     // Bind download-related events
@@ -638,6 +644,7 @@ DeezSpoTag.Download = {
 
     // Initialize SignalR for real-time updates
     initializeSignalR() {
+        const delegateQueueUi = this.activitiesPage === true;
         try {
             this.connection = new signalR.HubConnectionBuilder()
                 .withUrl("/deezerQueueHub")
@@ -648,7 +655,13 @@ DeezSpoTag.Download = {
                 this.isRealtimeConnected = true;
                 console.log('SignalR connected for Deezer download updates');
                 this.logDownloadEvent('info', 'realtime connection established');
-                this.refreshQueueFromServer().catch((error) => console.warn('Queue sync after realtime connect failed', error));
+                if (!delegateQueueUi) {
+                    this.refreshQueueFromServer().catch((error) => console.warn('Queue sync after realtime connect failed', error));
+                }
+
+                if (delegateQueueUi) {
+                    return;
+                }
                 
                 // Deezer queue progress updates
                 this.connection.on("updateQueue", (update) => {
@@ -831,7 +844,9 @@ DeezSpoTag.Download = {
                 this.isRealtimeConnected = true;
                 console.log('SignalR reconnected for Deezer download updates');
                 this.logDownloadEvent('info', 'realtime reconnected');
-                this.refreshQueueFromServer().catch((error) => console.warn('Queue sync after realtime reconnect failed', error));
+                if (!delegateQueueUi) {
+                    this.refreshQueueFromServer().catch((error) => console.warn('Queue sync after realtime reconnect failed', error));
+                }
             });
 
             this.connection.onclose((error) => {
