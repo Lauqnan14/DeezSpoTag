@@ -78,6 +78,26 @@
     color: var(--text-primary);
 }
 
+.statistics-title-with-tooltip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.statistics-info-tooltip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 35%, transparent);
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1;
+    cursor: help;
+}
+
 .statistics-subsection {
     display: flex;
     flex-direction: column;
@@ -350,10 +370,16 @@
 
     <section class="playlist-settings-section statistics-module">
         <div class="playlist-settings-title-row">
-            <h3 class="statistics-module-title">System Statistics</h3>
+            <div class="statistics-title-with-tooltip">
+                <h3 class="statistics-module-title">System Statistics</h3>
+                <span class="statistics-info-tooltip"
+                      title="Current download and runtime health for the running worker stack."
+                      aria-label="Current download and runtime health for the running worker stack.">
+                    <i class="fas fa-question-circle" aria-hidden="true"></i>
+                </span>
+            </div>
             <span class="playlist-settings-rule-count">Refresh 10s</span>
         </div>
-        <div class="playlist-settings-help">Current download and runtime health for the running worker stack.</div>
         <div>
             <div class="stats-grid">
                 <div class="stat-card">
@@ -392,10 +418,16 @@
 
     <section class="playlist-settings-section statistics-module">
         <div class="playlist-settings-title-row">
-            <h3 class="statistics-module-title">Library Statistics</h3>
+            <div class="statistics-title-with-tooltip">
+                <h3 class="statistics-module-title">Library Statistics</h3>
+                <span class="statistics-info-tooltip"
+                      title="Inventory totals and scan quality details across configured libraries."
+                      aria-label="Inventory totals and scan quality details across configured libraries.">
+                    <i class="fas fa-question-circle" aria-hidden="true"></i>
+                </span>
+            </div>
             <span class="playlist-settings-rule-count">Refresh 15s</span>
         </div>
-        <div class="playlist-settings-help">Inventory totals and scan quality details across configured libraries.</div>
         <div class="statistics-subsection">
             <div class="stats-grid">
                 <div class="stat-card">
