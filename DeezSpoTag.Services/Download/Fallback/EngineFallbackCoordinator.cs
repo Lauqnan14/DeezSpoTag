@@ -2,6 +2,7 @@ using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Services.Apple;
 
 namespace DeezSpoTag.Services.Download.Fallback;
 
@@ -9,6 +10,7 @@ public sealed class EngineFallbackCoordinator
 {
     private const string DeezerEngine = "deezer";
     private const string QobuzEngine = "qobuz";
+    private const string AppleEngine = "apple";
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly SongLinkResolver _songLinkResolver;
@@ -21,6 +23,7 @@ public sealed class EngineFallbackCoordinator
         int AutoIndex,
         string SourceUrl,
         string SpotifyId,
+        string AppleId,
         string Isrc,
         string DeezerId,
         string Title,
@@ -37,6 +40,7 @@ public sealed class EngineFallbackCoordinator
         string Engine,
         string SourceUrl,
         string SpotifyId,
+        string AppleId,
         string? Isrc,
         string DeezerId,
         string UserCountry,
@@ -70,6 +74,7 @@ public sealed class EngineFallbackCoordinator
             AutoIndex: payload.AutoIndex,
             SourceUrl: payload.SourceUrl,
             SpotifyId: payload.SpotifyId,
+            AppleId: payload.AppleId,
             Isrc: payload.Isrc,
             DeezerId: payload.DeezerId,
             Title: payload.Title,
@@ -142,6 +147,7 @@ public sealed class EngineFallbackCoordinator
             Engine: string.Empty,
             SourceUrl: request.SourceUrl,
             SpotifyId: request.SpotifyId,
+            AppleId: request.AppleId,
             Isrc: resolvedIsrc,
             DeezerId: request.DeezerId,
             UserCountry: userCountry,
@@ -282,6 +288,12 @@ public sealed class EngineFallbackCoordinator
             return $"https://www.deezer.com/track/{normalizedDeezerId}";
         }
 
+        var appleFallbackUrl = TryBuildAppleFallbackUrl(request);
+        if (!string.IsNullOrWhiteSpace(appleFallbackUrl))
+        {
+            return appleFallbackUrl;
+        }
+
         var songLink = await ResolveSongLinkFromDeezerAsync(normalizedDeezerId, request.UserCountry, cancellationToken);
         var resolvedUrl = GetEngineUrl(songLink, request.Engine);
 
@@ -317,6 +329,29 @@ public sealed class EngineFallbackCoordinator
         }
 
         return resolvedUrl;
+    }
+
+    private static string? TryBuildAppleFallbackUrl(SourceResolutionRequest request)
+    {
+        if (!string.Equals(request.Engine, AppleEngine, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var appleId = request.AppleId;
+        if (string.IsNullOrWhiteSpace(appleId)
+            && IsServiceUrlMatch(request.SourceUrl, AppleEngine))
+        {
+            appleId = AppleIdParser.TryExtractFromUrl(request.SourceUrl);
+        }
+        if (string.IsNullOrWhiteSpace(appleId))
+        {
+            return null;
+        }
+
+        return appleId.StartsWith("ra.", StringComparison.OrdinalIgnoreCase)
+            ? $"https://music.apple.com/us/station/{appleId}"
+            : $"https://music.apple.com/us/song/{appleId}?i={appleId}";
     }
 
     private async Task<SongLinkResult?> ResolveSongLinkFromDeezerAsync(

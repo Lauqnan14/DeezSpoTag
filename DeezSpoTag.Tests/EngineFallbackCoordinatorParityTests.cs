@@ -112,6 +112,38 @@ public sealed class EngineFallbackCoordinatorParityTests
         Assert.Equal(2, index);
     }
 
+    [Fact]
+    public void TryBuildAppleFallbackUrl_UsesAppleId_WhenAppleStepHasNoResolvedUrl()
+    {
+        var url = InvokeTryBuildAppleFallbackUrl(
+            engine: "apple",
+            sourceUrl: "https://www.deezer.com/track/123",
+            spotifyId: "spid",
+            appleId: "1440857781",
+            isrc: null,
+            deezerId: "123",
+            userCountry: "us",
+            fallbackSearchEnabled: true);
+
+        Assert.Equal("https://music.apple.com/us/song/1440857781?i=1440857781", url);
+    }
+
+    [Fact]
+    public void TryBuildAppleFallbackUrl_BuildsStationUrl_ForStationIds()
+    {
+        var url = InvokeTryBuildAppleFallbackUrl(
+            engine: "apple",
+            sourceUrl: string.Empty,
+            spotifyId: string.Empty,
+            appleId: "ra.1234abcd",
+            isrc: null,
+            deezerId: string.Empty,
+            userCountry: "us",
+            fallbackSearchEnabled: false);
+
+        Assert.Equal("https://music.apple.com/us/station/ra.1234abcd", url);
+    }
+
     private static List<string> BuildPlanSteps(
         List<FallbackPlanStep> fallbackPlan,
         List<string> autoSources,
@@ -160,5 +192,44 @@ public sealed class EngineFallbackCoordinatorParityTests
             ?? type.GetProperty("Quality")?.GetValue(step)?.ToString()
             ?? string.Empty;
         return string.IsNullOrWhiteSpace(quality) ? source : $"{source}|{quality}";
+    }
+
+    private static string? InvokeTryBuildAppleFallbackUrl(
+        string engine,
+        string sourceUrl,
+        string spotifyId,
+        string appleId,
+        string? isrc,
+        string deezerId,
+        string userCountry,
+        bool fallbackSearchEnabled)
+    {
+        var coordinatorType = typeof(EngineFallbackCoordinator);
+        var requestType = coordinatorType.GetNestedType("SourceResolutionRequest", BindingFlags.NonPublic);
+        Assert.NotNull(requestType);
+
+        var request = Activator.CreateInstance(
+            requestType!,
+            BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public,
+            binder: null,
+            args:
+            [
+                engine,
+                sourceUrl,
+                spotifyId,
+                appleId,
+                isrc,
+                deezerId,
+                userCountry,
+                fallbackSearchEnabled
+            ],
+            culture: null);
+        Assert.NotNull(request);
+
+        var method = coordinatorType.GetMethod("TryBuildAppleFallbackUrl", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, [request]);
+        return result as string;
     }
 }
