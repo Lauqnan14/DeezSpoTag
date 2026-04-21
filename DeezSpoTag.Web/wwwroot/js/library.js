@@ -14574,8 +14574,10 @@ async function openUnmatchedArtistsModal(elements) {
         return;
     }
 
-    elements.unmatchedModal.hidden = false;
-    document.body.classList.add('modal-open');
+    elements.unmatchedModal.classList.remove('hidden');
+    elements.unmatchedModal.dataset.open = 'true';
+    document.body.classList.add('app-modal-open');
+    document.documentElement.classList.add('app-modal-open');
     await loadUnmatchedArtistsForResolver(elements, false);
 }
 
@@ -14584,8 +14586,10 @@ function closeUnmatchedArtistsModal(elements) {
         return;
     }
 
-    elements.unmatchedModal.hidden = true;
-    document.body.classList.remove('modal-open');
+    elements.unmatchedModal.classList.add('hidden');
+    delete elements.unmatchedModal.dataset.open;
+    document.body.classList.remove('app-modal-open');
+    document.documentElement.classList.remove('app-modal-open');
 }
 
 async function loadUnmatchedArtistsForResolver(elements, forceRefresh) {

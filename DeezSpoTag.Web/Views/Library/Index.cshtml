@@ -90,21 +90,23 @@
     </main>
 </div>
 
-<div id="unmatchedArtistsModal" class="unmatched-artists-modal" hidden>
-    <div class="unmatched-artists-modal__backdrop" data-close-unmatched-modal></div>
-    <dialog class="unmatched-artists-modal__dialog" aria-labelledby="unmatchedArtistsTitle">
-        <header class="unmatched-artists-modal__header">
-            <h3 id="unmatchedArtistsTitle">Resolve Unmatched Spotify Artists</h3>
-            <button type="button" class="unmatched-artists-modal__close" id="closeUnmatchedArtistsModal" aria-label="Close">×</button>
-        </header>
-        <div class="unmatched-artists-modal__toolbar">
-            <input id="unmatchedArtistsSearch" type="search" placeholder="Filter artists..." autocomplete="off" />
-            <button id="refreshUnmatchedArtists" type="button" class="btn-secondary action-btn action-btn-sm">Refresh</button>
-            <button id="applyHighConfidenceUnmatchedArtists" type="button" class="btn-primary action-btn action-btn-sm">Apply High-Confidence</button>
+<div id="unmatchedArtistsModal" class="app-modal hidden">
+    <div class="app-modal-backdrop" data-close-unmatched-modal></div>
+    <div class="app-modal-dialog unmatched-artists-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="unmatchedArtistsTitle">
+        <div class="app-modal-header">
+            <h3 id="unmatchedArtistsTitle" class="app-modal-title">Resolve Unmatched Spotify Artists</h3>
+            <button type="button" class="app-modal-close" id="closeUnmatchedArtistsModal" aria-label="Close">×</button>
         </div>
-        <div id="unmatchedArtistsStatus" class="unmatched-artists-modal__status">Loading unmatched artists...</div>
-        <div id="unmatchedArtistsList" class="unmatched-artists-modal__list"></div>
-    </dialog>
+        <div class="app-modal-body">
+            <div class="unmatched-artists-modal__toolbar">
+                <input id="unmatchedArtistsSearch" class="app-modal-input" type="search" placeholder="Filter artists..." autocomplete="off" />
+                <button id="refreshUnmatchedArtists" type="button" class="btn-secondary action-btn action-btn-sm">Refresh</button>
+                <button id="applyHighConfidenceUnmatchedArtists" type="button" class="btn-primary action-btn action-btn-sm">Apply High-Confidence</button>
+            </div>
+            <div id="unmatchedArtistsStatus" class="unmatched-artists-modal__status">Loading unmatched artists...</div>
+            <div id="unmatchedArtistsList" class="unmatched-artists-modal__list"></div>
+        </div>
+    </div>
 </div>
 
 <script src="~/js/library.js" asp-append-version="true"></script>

@@ -5752,86 +5752,33 @@
     }
 }
 
-.unmatched-artists-modal {
-    position: fixed;
-    inset: 0;
-    z-index: 3000;
-}
-
-.unmatched-artists-modal[hidden] {
-    display: none !important;
-}
-
-.unmatched-artists-modal__backdrop {
-    position: absolute;
-    inset: 0;
-    background: rgba(2, 8, 23, 0.7);
-    backdrop-filter: blur(2px);
-}
-
 .unmatched-artists-modal__dialog {
-    position: relative;
     width: min(980px, calc(100vw - 2rem));
-    max-height: calc(100vh - 2rem);
-    margin: 1rem auto;
-    background: var(--panel, #0f172a);
-    border: 1px solid var(--border, rgba(56, 189, 248, 0.24));
-    border-radius: 14px;
-    box-shadow: 0 18px 48px rgba(2, 8, 23, 0.56);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-}
-
-.unmatched-artists-modal__header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.9rem 1rem;
-    border-bottom: 1px solid var(--border, rgba(56, 189, 248, 0.24));
-}
-
-.unmatched-artists-modal__header h3 {
-    margin: 0;
-    font-size: 1.05rem;
-}
-
-.unmatched-artists-modal__close {
-    border: 1px solid var(--border, rgba(56, 189, 248, 0.24));
-    border-radius: 8px;
-    background: transparent;
-    color: inherit;
-    font-size: 1.1rem;
-    line-height: 1;
-    padding: 0.35rem 0.55rem;
-    cursor: pointer;
+    max-width: 980px;
+    max-height: 92dvh;
 }
 
 .unmatched-artists-modal__toolbar {
     display: flex;
     gap: 0.65rem;
     align-items: center;
-    padding: 0.75rem 1rem;
+    padding: 0;
+    margin-bottom: 0.75rem;
 }
 
 .unmatched-artists-modal__toolbar input {
     flex: 1;
     min-width: 0;
-    border: 1px solid var(--border, rgba(56, 189, 248, 0.24));
-    border-radius: 10px;
-    background: rgba(15, 23, 42, 0.45);
-    color: inherit;
-    padding: 0.56rem 0.75rem;
 }
 
 .unmatched-artists-modal__status {
-    padding: 0 1rem 0.75rem;
+    padding: 0 0 0.75rem;
     color: var(--text-muted, #93c5fd);
     font-size: 0.9rem;
 }
 
 .unmatched-artists-modal__list {
-    padding: 0 1rem 1rem;
+    padding: 0 0 0.25rem;
     overflow: auto;
     display: grid;
     gap: 0.65rem;
@@ -5869,9 +5816,8 @@
 
 @media (max-width: 820px) {
     .unmatched-artists-modal__dialog {
-        width: calc(100vw - 1rem);
-        margin: 0.5rem auto;
-        max-height: calc(100vh - 1rem);
+        width: min(980px, calc(100vw - 1rem));
+        max-height: 95dvh;
     }
 
     .unmatched-artist-row {
