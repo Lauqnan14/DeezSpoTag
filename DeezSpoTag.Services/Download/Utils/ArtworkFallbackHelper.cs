@@ -212,11 +212,38 @@ public static class ArtworkFallbackHelper
 
     private static List<string> ResolveOrderInternal(bool enabled, string? orderSetting)
     {
-        return ProviderOrderResolver.Resolve(
+        var resolved = ProviderOrderResolver.Resolve(
             enabled,
             orderSetting,
             DefaultArtworkOrder,
             NormalizeArtworkProviderToken);
+        return EnforceSpotifyArtworkLastResortOnly(resolved);
+    }
+
+    private static List<string> EnforceSpotifyArtworkLastResortOnly(IReadOnlyList<string> providers)
+    {
+        if (providers == null || providers.Count == 0)
+        {
+            return new List<string>();
+        }
+
+        var hasSpotify = providers.Any(provider =>
+            string.Equals(provider, SpotifyProvider, StringComparison.OrdinalIgnoreCase));
+        if (!hasSpotify)
+        {
+            return providers.ToList();
+        }
+
+        var hasNonSpotify = providers.Any(provider =>
+            !string.Equals(provider, SpotifyProvider, StringComparison.OrdinalIgnoreCase));
+        if (!hasNonSpotify)
+        {
+            return new List<string> { SpotifyProvider };
+        }
+
+        return providers
+            .Where(provider => !string.Equals(provider, SpotifyProvider, StringComparison.OrdinalIgnoreCase))
+            .ToList();
     }
 
     private static string NormalizeArtworkProviderToken(string? value)

@@ -1807,6 +1807,32 @@
         return availableProfiles[0].id;
     }
 
+    function resolveCoverTargetResolutionPlatformFromProviderOrder(providerOrder, profiles) {
+        const availableProfiles = Array.isArray(profiles) ? profiles : [];
+        if (availableProfiles.length === 0) {
+            return null;
+        }
+
+        const matchesPlatformId = (candidateId) => {
+            const normalizedCandidate = normalizePlatformId(candidateId);
+            return availableProfiles.find((profile) => normalizePlatformId(profile.id) === normalizedCandidate) || null;
+        };
+
+        const order = Array.isArray(providerOrder) ? providerOrder : [];
+        for (const provider of order) {
+            const providerKey = canonicalizeProviderKey(provider);
+            const mappedIds = PROVIDER_PLATFORM_IDS[providerKey] || [providerKey];
+            for (const mappedId of mappedIds) {
+                const match = matchesPlatformId(mappedId);
+                if (match) {
+                    return match.id;
+                }
+            }
+        }
+
+        return normalizeCoverTargetResolutionPlatform("deezer", availableProfiles);
+    }
+
     function resolveCoverMaintenanceTargetResolution(artworkSettings = null) {
         const settings = artworkSettings || readArtworkSettingsFromUI(state.settingsCache || {});
         const fallbackEnabled = settings.artworkFallbackEnabled ?? true;
@@ -1819,11 +1845,10 @@
             );
         const profiles = getCoverTargetResolutionPlatformProfiles();
         if (profiles.length > 0) {
-            const preferredProvider = providerOrder.find((provider) =>
-                profiles.some((profile) => normalizePlatformId(profile.id) === normalizePlatformId(provider))
-            );
-            const platformId = normalizeCoverTargetResolutionPlatform(preferredProvider || "deezer", profiles);
-            const profile = profiles.find((candidate) => candidate.id === platformId) || profiles[0];
+            const platformId = resolveCoverTargetResolutionPlatformFromProviderOrder(providerOrder, profiles)
+                || normalizeCoverTargetResolutionPlatform("deezer", profiles);
+            const profile = profiles.find((candidate) => normalizePlatformId(candidate.id) === normalizePlatformId(platformId))
+                || profiles[0];
             const configuredRaw = Number.parseInt(
                 String(state.config?.custom?.[profile.id]?.art_resolution ?? profile.fallback),
                 10
@@ -7105,6 +7130,9 @@
     if (isEnhancementTabActive() && !getActiveFolderUniformityJobId()) {
         showFolderUniformityLastScanBanner();
     }
+    // Start profile restore immediately so the last active profile is not blocked
+    // behind unrelated startup fetches (platform catalog, folders, settings).
+    const initialProfilesLoad = loadProfiles();
 
     Promise.all([loadPlatforms(), loadEnrichmentLibraryFolders(), loadLyricsSettings()]).then(async () => {
         const authData = await loadStoredAuth();
@@ -7120,7 +7148,7 @@
         enforceSingleDownloadSource();
         refreshDownloadTagsForSource();
         ensurePlatformCustomDefaults();
-        await loadProfiles();
+        await initialProfilesLoad;
         if (!Array.isArray(state.profiles) || state.profiles.length === 0) {
             const storedPreferences = loadStoredPreferences();
             if (storedPreferences) {
