@@ -9573,7 +9573,13 @@ function updateLibraryViewOptions() {
     if (!viewSelect) {
         return;
     }
-    const requestedValue = (viewSelect.value || getStoredLibraryViewSelection() || 'main').trim();
+    const currentValue = String(viewSelect.value || '').trim();
+    const storedValue = String(getStoredLibraryViewSelection() || '').trim();
+    const requestedValue = (
+        currentValue && currentValue !== 'main'
+            ? currentValue
+            : (storedValue || currentValue || 'main')
+    ).trim();
     viewSelect.innerHTML = '';
     const mainOption = document.createElement('option');
     mainOption.value = 'main';
