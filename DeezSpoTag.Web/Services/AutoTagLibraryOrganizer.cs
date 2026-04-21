@@ -2488,6 +2488,14 @@ public class AutoTagLibraryOrganizer
         var target = ResolveSidecarTarget(sourcePath, candidate, context.Options, context.Report, context.Log);
         if (string.IsNullOrWhiteSpace(target))
         {
+            if (ShouldDiscardIncomingLyricsSidecar(sourcePath, candidate, context.Options))
+            {
+                TryDeleteFile(sourcePath);
+                context.Log?.Invoke($"organizer discarded incoming lyrics sidecar (preserve existing): {sourcePath}");
+                context.Report?.Entries.Add($"discard-lyrics-sidecar: {sourcePath} (existing {candidate})");
+                return true;
+            }
+
             return false;
         }
 
@@ -2825,8 +2833,19 @@ public class AutoTagLibraryOrganizer
         }
 
         return extension.Equals(".lrc", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".ttml", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".txt", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".srt", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ShouldDiscardIncomingLyricsSidecar(
+        string sourcePath,
+        string candidatePath,
+        AutoTagOrganizerOptions options)
+    {
+        return IOFile.Exists(candidatePath)
+            && IsLyricsExtension(Path.GetExtension(sourcePath))
+            && string.Equals(options.LyricsPolicy, AutoTagOrganizerOptions.LyricsPolicyPreserveExisting, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? ResolveSidecarTarget(
