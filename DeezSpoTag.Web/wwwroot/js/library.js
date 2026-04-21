@@ -15260,6 +15260,18 @@ document.addEventListener('click', event => {
         return;
     }
 
+    const topSongThumb = event.target.closest('#spotifyTopTracksList .top-song-item__thumb');
+    if (topSongThumb) {
+        const thumbPlayButton = topSongThumb.querySelector('.top-song-item__play.track-play');
+        if (thumbPlayButton) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            playSpotifyTrackInApp(thumbPlayButton.dataset.spotifyUrl || '', thumbPlayButton);
+            return;
+        }
+    }
+
     const target = event.target.closest('[data-spotify-url]');
     if (!target) {
         return;
