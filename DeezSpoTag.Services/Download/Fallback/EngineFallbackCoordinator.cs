@@ -143,10 +143,16 @@ public sealed class EngineFallbackCoordinator
             : matchedIndex;
         var nextIndex = currentIndex + 1;
         var userCountry = settings.DeezerCountry;
+        var resolvedSpotifyId = await ResolveSpotifyIdForFallbackAsync(request, userCountry, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(resolvedSpotifyId))
+        {
+            TrySetSpotifyId(payloadForSerialization, resolvedSpotifyId);
+        }
+
         var resolutionRequest = new SourceResolutionRequest(
             Engine: string.Empty,
             SourceUrl: request.SourceUrl,
-            SpotifyId: request.SpotifyId,
+            SpotifyId: resolvedSpotifyId ?? request.SpotifyId,
             AppleId: request.AppleId,
             Isrc: resolvedIsrc,
             DeezerId: request.DeezerId,
@@ -172,7 +178,7 @@ public sealed class EngineFallbackCoordinator
             var resolvedUrl = await ResolveSourceUrlAsync(
                 resolutionRequest with { Engine = step.Source },
                 cancellationToken);
-            var canAdvanceWithoutResolvedUrl = CanAdvanceWithoutResolvedUrl(step.Source, request, resolvedIsrc);
+            var canAdvanceWithoutResolvedUrl = CanAdvanceWithoutResolvedUrl(step.Source, resolvedSpotifyId ?? request.SpotifyId, request, resolvedIsrc);
             if (string.IsNullOrWhiteSpace(resolvedUrl) && !canAdvanceWithoutResolvedUrl)
             {
                 _activityLog.Warn($"Fallback skip: {request.QueueUuid} -> {step.Source} (no resolvable URL)");
@@ -192,6 +198,36 @@ public sealed class EngineFallbackCoordinator
         }
 
         return false;
+    }
+
+    private async Task<string?> ResolveSpotifyIdForFallbackAsync(
+        FallbackAdvanceRequest request,
+        string userCountry,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(request.SpotifyId))
+        {
+            return request.SpotifyId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.SourceUrl))
+        {
+            var sourceSongLink = await _songLinkResolver.ResolveByUrlAsync(request.SourceUrl, userCountry, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(sourceSongLink?.SpotifyId))
+            {
+                return sourceSongLink.SpotifyId;
+            }
+        }
+
+        var normalizedDeezerId = NormalizeDeezerTrackId(request.DeezerId);
+        if (string.IsNullOrWhiteSpace(normalizedDeezerId))
+        {
+            return null;
+        }
+
+        var deezerUrl = $"https://www.deezer.com/track/{normalizedDeezerId}";
+        var deezerSongLink = await _songLinkResolver.ResolveByUrlAsync(deezerUrl, userCountry, cancellationToken);
+        return deezerSongLink?.SpotifyId;
     }
 
     private static List<(string Source, string? Quality)> BuildPlanSteps(
@@ -471,6 +507,7 @@ public sealed class EngineFallbackCoordinator
 
     private static bool CanAdvanceWithoutResolvedUrl(
         string engine,
+        string? spotifyId,
         FallbackAdvanceRequest request,
         string? resolvedIsrc)
     {
@@ -488,13 +525,13 @@ public sealed class EngineFallbackCoordinator
         if (string.Equals(engine, "amazon", StringComparison.OrdinalIgnoreCase))
         {
             // Amazon path can resolve from Spotify ID when URL is missing.
-            return !string.IsNullOrWhiteSpace(request.SpotifyId);
+            return !string.IsNullOrWhiteSpace(spotifyId);
         }
 
         if (string.Equals(engine, "tidal", StringComparison.OrdinalIgnoreCase))
         {
             // Tidal path can resolve from Spotify ID or from metadata in-engine.
-            return !string.IsNullOrWhiteSpace(request.SpotifyId)
+            return !string.IsNullOrWhiteSpace(spotifyId)
                 || !string.IsNullOrWhiteSpace(resolvedIsrc)
                 || (!string.IsNullOrWhiteSpace(request.Title) && !string.IsNullOrWhiteSpace(request.Artist));
         }
@@ -526,6 +563,22 @@ public sealed class EngineFallbackCoordinator
         }
 
         property.SetValue(payload, isrc);
+    }
+
+    private static void TrySetSpotifyId(object payload, string spotifyId)
+    {
+        if (string.IsNullOrWhiteSpace(spotifyId))
+        {
+            return;
+        }
+
+        var property = payload.GetType().GetProperty("SpotifyId");
+        if (property == null || !property.CanWrite)
+        {
+            return;
+        }
+
+        property.SetValue(payload, spotifyId);
     }
 
     private static void TrySetDeezerBitrate(object payload, string source, string? quality)

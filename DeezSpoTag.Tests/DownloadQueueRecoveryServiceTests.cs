@@ -1,10 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net;
 using System.Net.Http;
+using System.Threading.Tasks;
 using System.Text.Json;
 using System.Threading;
-using System.Threading.Tasks;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Qobuz;
@@ -163,6 +164,110 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
         Assert.Equal("running", persisted!.Status);
     }
 
+    [Fact]
+    public async Task TryAdvanceAsync_AdvancesToAmazon_WhenSpotifyIdCanBeHydratedFromSongLink()
+    {
+        const string queueUuid = "recovery-qobuz-to-amazon";
+        var payload = new QobuzQueueItem
+        {
+            Id = queueUuid,
+            Engine = "qobuz",
+            SourceService = "qobuz",
+            SourceUrl = "https://play.qobuz.com/track/301435615",
+            Title = "Nairobi",
+            Artist = "Marioo",
+            Album = "The Godson",
+            Isrc = "ZA56E2420399",
+            DeezerId = "3094483121",
+            SpotifyId = string.Empty,
+            Quality = "27",
+            AutoSources = new List<string> { "qobuz|27", "amazon|FLAC" },
+            AutoIndex = 0,
+            FallbackPlan = new List<FallbackPlanStep>
+            {
+                new("qobuz-27", "qobuz", "27", QobuzSourceUrlInput, "direct_url"),
+                new("amazon-flac", "amazon", "FLAC", DeezerIdInput, "songlink_url")
+            }
+        };
+
+        await EnqueueRunningItemAsync(queueUuid, payload);
+
+        var fallbackCoordinator = new EngineFallbackCoordinator(
+            _queueRepository,
+            _settingsService,
+            new SongLinkResolver(
+                new StubHttpClientFactory(new StubHttpMessageHandler(request =>
+                {
+            var requestUri = request.RequestUri?.ToString() ?? string.Empty;
+            if (!requestUri.Contains("api.song.link", StringComparison.OrdinalIgnoreCase))
+            {
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
+
+            if (!requestUri.Contains("deezer.com%2Ftrack%2F3094483121", StringComparison.OrdinalIgnoreCase))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{}")
+                };
+            }
+
+            const string payloadJson = """
+{
+  "entityUniqueId": "deezer:track:3094483121",
+  "linksByPlatform": {
+    "deezer": {
+      "url": "https://www.deezer.com/track/3094483121",
+      "entityUniqueId": "deezer:track:3094483121"
+    },
+    "spotify": {
+      "url": "https://open.spotify.com/track/2f2ksxHYvYxfL8M4L4sKcA",
+      "entityUniqueId": "spotify:track:2f2ksxHYvYxfL8M4L4sKcA"
+    }
+  },
+  "entitiesByUniqueId": {
+    "deezer:track:3094483121": {
+      "id": "3094483121",
+      "platform": "deezer",
+      "type": "song",
+      "title": "Nairobi",
+      "artistName": "Marioo",
+      "link": "https://www.deezer.com/track/3094483121"
+    },
+    "spotify:track:2f2ksxHYvYxfL8M4L4sKcA": {
+      "id": "2f2ksxHYvYxfL8M4L4sKcA",
+      "platform": "spotify",
+      "type": "song",
+      "title": "Nairobi",
+      "artistName": "Marioo",
+      "link": "https://open.spotify.com/track/2f2ksxHYvYxfL8M4L4sKcA"
+    }
+  }
+}
+""";
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(payloadJson)
+            };
+        })),
+                qobuzMetadataService: null,
+                qobuzTrackResolver: null,
+                qobuzOptions: null,
+                NullLogger<SongLinkResolver>.Instance),
+            new DeezerIsrcResolver(
+                deezerApi: null!,
+                NullLogger<DeezerIsrcResolver>.Instance),
+            new NullActivityLogWriter());
+
+        var advanced = await fallbackCoordinator.TryAdvanceAsync(queueUuid, "qobuz", payload, CancellationToken.None);
+        Assert.True(advanced);
+        Assert.Equal("amazon", payload.Engine);
+        Assert.Equal("amazon", payload.SourceService);
+        Assert.Equal(1, payload.AutoIndex);
+        Assert.Equal("2f2ksxHYvYxfL8M4L4sKcA", payload.SpotifyId);
+    }
+
     public void Dispose()
     {
         _configScope.Dispose();
@@ -226,6 +331,26 @@ WHERE queue_uuid = $queueUuid;";
 
     private sealed class StubHttpClientFactory : IHttpClientFactory
     {
-        public HttpClient CreateClient(string name) => new();
+        private readonly HttpMessageHandler _handler;
+
+        public StubHttpClientFactory(HttpMessageHandler? handler = null)
+        {
+            _handler = handler ?? new StubHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
+
+        public HttpClient CreateClient(string name) => new(_handler, disposeHandler: false);
+    }
+
+    private sealed class StubHttpMessageHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
+
+        public StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler)
+        {
+            _handler = handler;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(_handler(request));
     }
 }
