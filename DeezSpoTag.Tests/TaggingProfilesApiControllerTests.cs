@@ -33,7 +33,8 @@ public sealed class TaggingProfilesApiControllerTests
             },
             Technical: null,
             FolderStructure: null,
-            Verification: null);
+            Verification: null,
+            ApplyToRuntime: null);
 
         var method = typeof(TaggingProfilesApiController)
             .GetMethod("TryBuildTagConfig", BindingFlags.NonPublic | BindingFlags.Static);

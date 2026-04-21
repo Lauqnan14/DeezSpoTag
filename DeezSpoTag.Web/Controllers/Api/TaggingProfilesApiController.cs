@@ -43,7 +43,8 @@ public sealed class TaggingProfilesApiController : ControllerBase
         AutoTagSettings? AutoTag,
         TechnicalTagSettings? Technical,
         FolderStructureSettings? FolderStructure,
-        VerificationSettings? Verification);
+        VerificationSettings? Verification,
+        bool? ApplyToRuntime);
 
     [HttpPost]
     public async Task<IActionResult> Upsert([FromBody] TaggingProfileUpsertRequest request)
@@ -76,7 +77,7 @@ public sealed class TaggingProfilesApiController : ControllerBase
         {
             return BadRequest("Profile name is required.");
         }
-        await SyncRuntimeSettingsFromDefaultProfileAsync(saved);
+        await SyncRuntimeSettingsFromProfileAsync(saved, request.ApplyToRuntime == true);
 
         return Ok(ToResponseModel(saved));
     }
@@ -180,9 +181,9 @@ public sealed class TaggingProfilesApiController : ControllerBase
         => JsonSerializer.Deserialize<TaggingProfile>(JsonSerializer.Serialize(profile))
             ?? new TaggingProfile();
 
-    private Task SyncRuntimeSettingsFromDefaultProfileAsync(TaggingProfile profile)
+    private Task SyncRuntimeSettingsFromProfileAsync(TaggingProfile profile, bool forceApply)
     {
-        if (profile == null || !profile.IsDefault)
+        if (profile == null || (!forceApply && !profile.IsDefault))
         {
             return Task.CompletedTask;
         }

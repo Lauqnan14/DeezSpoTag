@@ -56,6 +56,7 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
     public async Task<IActionResult> Update([FromBody] UpdateDefaultsRequest request, CancellationToken cancellationToken)
     {
         var state = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
+        var previousDefaultProfileId = state.Defaults.DefaultFileProfile;
         var previousSchedules = state.Defaults.LibrarySchedules;
         var profiles = state.Profiles;
 
@@ -124,7 +125,10 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
         await _store.SaveAsync(defaults);
 
         var normalizedState = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
-        await SyncRuntimeSettingsFromDefaultProfileAsync(normalizedState.Profiles);
+        if (!string.Equals(previousDefaultProfileId, normalizedState.Defaults.DefaultFileProfile, StringComparison.OrdinalIgnoreCase))
+        {
+            await SyncRuntimeSettingsFromDefaultProfileAsync(normalizedState.Profiles);
+        }
         if (!AreSchedulesEquivalent(previousSchedules, normalizedState.Defaults.LibrarySchedules))
         {
             await StopRunningEnhancementForScheduleChangeAsync();
