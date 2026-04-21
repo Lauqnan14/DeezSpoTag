@@ -7541,6 +7541,25 @@ function setFavoriteProviderVisibility(sectionId, hasAnyContent) {
     section.hidden = !hasAnyContent;
 }
 
+function isSpotifySourceUrl(url) {
+    if (typeof url !== 'string' || !url.trim()) {
+        return false;
+    }
+
+    try {
+        const parsed = new URL(url, globalThis.location.origin);
+        const host = parsed.hostname.toLowerCase();
+        if (host.includes('spotify.com') || host.includes('scdn.co')) {
+            return true;
+        }
+    } catch {
+        // Fall through to string-based check below.
+    }
+
+    const normalized = url.toLowerCase();
+    return normalized.includes('spotify.com');
+}
+
 function resolveFavoritesLink(item) {
     if (!item?.id || !item.type) {
         return '';
