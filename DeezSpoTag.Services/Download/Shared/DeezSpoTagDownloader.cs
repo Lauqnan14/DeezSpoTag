@@ -1495,8 +1495,7 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
 
     private async Task TryPopulateTrackLyricsAsync(CoreTrack track, PathGenerationResult pathResult, DownloadPathState pathState)
     {
-        var lyricsTagSettings = await ResolveTagSettingsAsync();
-        if (!LyricsSettingsPolicy.CanFetchLyrics(Settings) && !lyricsTagSettings.Lyrics && !lyricsTagSettings.SyncedLyrics)
+        if (!LyricsSettingsPolicy.CanFetchLyrics(Settings))
         {
             return;
         }

@@ -2710,7 +2710,7 @@ public class LyricsService
     {
         return IsLyricsGateEnabled(settings)
             && IsLyricsTypeSelected(settings, UnsyncedLyricsType)
-            && (settings.SaveLyrics || settings.Tags?.Lyrics == true);
+            && settings.SaveLyrics;
     }
 
     private static bool ShouldSaveSyncedLrc(DeezSpoTagSettings settings)

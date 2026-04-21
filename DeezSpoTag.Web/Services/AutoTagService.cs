@@ -1967,10 +1967,11 @@ public class AutoTagService
             return;
         }
 
+        var enhancementLyricsSettings = BuildEnhancementLyricsSettings(root);
         var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
         await RunConfiguredFolderUniformityAsync(job, rootPath, enhancementRoot, enabledFolders, cancellationToken);
         await RunConfiguredCoverMaintenanceAsync(job, rootPath, enhancementRoot, enabledFolders, cancellationToken);
-        await RunConfiguredQualityChecksAsync(job, rootPath, enhancementRoot, enabledFolders, cancellationToken);
+        await RunConfiguredQualityChecksAsync(job, rootPath, enhancementRoot, enhancementLyricsSettings, enabledFolders, cancellationToken);
     }
 
     private async Task TriggerLibraryScanAfterEnhancementAsync(
@@ -2255,6 +2256,7 @@ public class AutoTagService
         AutoTagJob job,
         string rootPath,
         JsonObject enhancementRoot,
+        DeezSpoTagSettings enhancementLyricsSettings,
         IReadOnlyList<FolderDto> enabledFolders,
         CancellationToken cancellationToken)
     {
@@ -2283,7 +2285,7 @@ public class AutoTagService
 
         await StartQualityScannerIfRequestedAsync(job, qualityChecks, options, scopedFolderIds, cancellationToken);
         await RunDuplicateCheckIfRequestedAsync(job, options, scopedFolders, cancellationToken);
-        await RunLyricsRefreshIfRequestedAsync(job, options, scopedFolderIds, cancellationToken);
+        await RunLyricsRefreshIfRequestedAsync(job, options, scopedFolderIds, enhancementLyricsSettings, cancellationToken);
     }
 
     private static QualityCheckOptions BuildQualityCheckOptions(JsonObject qualityChecks)
@@ -2368,6 +2370,7 @@ public class AutoTagService
         AutoTagJob job,
         QualityCheckOptions options,
         List<long> scopedFolderIds,
+        DeezSpoTagSettings lyricsSettings,
         CancellationToken cancellationToken)
     {
         if (!options.QueueLyricsRefresh)
@@ -2375,8 +2378,7 @@ public class AutoTagService
             return;
         }
 
-        var settings = _settingsService.LoadSettings();
-        if (!LyricsSettingsPolicy.CanFetchLyrics(settings))
+        if (!LyricsSettingsPolicy.CanFetchLyrics(lyricsSettings))
         {
             AppendLog(job, "enhancement workflow: lyrics refresh skipped (lyrics fetching disabled by settings).");
             return;
@@ -2397,9 +2399,40 @@ public class AutoTagService
             .Select(track => track.TrackId)
             .Distinct()
             .ToList();
-        var enqueueResult = _lyricsRefreshQueueService.Enqueue(trackIds);
+        var enqueueResult = _lyricsRefreshQueueService.Enqueue(trackIds, lyricsSettings);
         AppendLog(job,
             $"enhancement workflow: lyrics refresh queued (requested={enqueueResult.Requested}, enqueued={enqueueResult.Enqueued}, skipped={enqueueResult.Skipped}).");
+    }
+
+    private DeezSpoTagSettings BuildEnhancementLyricsSettings(JsonObject configRoot)
+    {
+        var settings = _settingsService.LoadSettings();
+        var technical = TryReadTechnicalSettings(configRoot);
+        if (technical != null)
+        {
+            TechnicalLyricsSettingsApplier.Apply(settings, technical);
+        }
+
+        return settings;
+    }
+
+    private TechnicalTagSettings? TryReadTechnicalSettings(JsonObject? configRoot)
+    {
+        if (configRoot == null
+            || configRoot["technical"] is not JsonObject technicalNode)
+        {
+            return null;
+        }
+
+        try
+        {
+            return technicalNode.Deserialize<TechnicalTagSettings>(_jsonOptions);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to parse technical settings from enhancement config root.");
+            return null;
+        }
     }
 
     private static IReadOnlyList<QualityScanTrackDto> FilterTracksByScopedFolders(

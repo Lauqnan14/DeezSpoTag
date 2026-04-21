@@ -470,6 +470,11 @@ public static partial class EngineAudioPostDownloadHelper
         LyricsService lyricsService,
         CancellationToken cancellationToken)
     {
+        if (!LyricsSettingsPolicy.CanFetchLyrics(request.Settings))
+        {
+            return;
+        }
+
         var tagSettings = request.Settings.Tags;
         if (tagSettings == null || (!tagSettings.Lyrics && !tagSettings.SyncedLyrics))
         {

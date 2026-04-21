@@ -640,6 +640,8 @@ SELECT EXISTS(
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        // Queue dedupe must remain track-granular; album/artist IDs are intentionally excluded
+        // so different tracks from the same release can be queued independently.
         const string sql = @"
 SELECT EXISTS(
     SELECT 1
@@ -656,44 +658,14 @@ SELECT EXISTS(
             AND lower(deezer_track_id) = lower(@deezerTrackId)
         )
         OR (
-            @deezerAlbumId IS NOT NULL
-            AND @deezerAlbumId <> ''
-            AND lower(deezer_album_id) = lower(@deezerAlbumId)
-        )
-        OR (
-            @deezerArtistId IS NOT NULL
-            AND @deezerArtistId <> ''
-            AND lower(deezer_artist_id) = lower(@deezerArtistId)
-        )
-        OR (
             @spotifyTrackId IS NOT NULL
             AND @spotifyTrackId <> ''
             AND lower(spotify_track_id) = lower(@spotifyTrackId)
         )
         OR (
-            @spotifyAlbumId IS NOT NULL
-            AND @spotifyAlbumId <> ''
-            AND lower(spotify_album_id) = lower(@spotifyAlbumId)
-        )
-        OR (
-            @spotifyArtistId IS NOT NULL
-            AND @spotifyArtistId <> ''
-            AND lower(spotify_artist_id) = lower(@spotifyArtistId)
-        )
-        OR (
             @appleTrackId IS NOT NULL
             AND @appleTrackId <> ''
             AND lower(apple_track_id) = lower(@appleTrackId)
-        )
-        OR (
-            @appleAlbumId IS NOT NULL
-            AND @appleAlbumId <> ''
-            AND lower(apple_album_id) = lower(@appleAlbumId)
-        )
-        OR (
-            @appleArtistId IS NOT NULL
-            AND @appleArtistId <> ''
-            AND lower(apple_artist_id) = lower(@appleArtistId)
         )
         OR (
             @durationMs IS NOT NULL
@@ -728,14 +700,8 @@ SELECT EXISTS(
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("isrc", NormalizeIsrc(request.Isrc) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("deezerTrackId", NormalizeId(request.DeezerTrackId) ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue("deezerAlbumId", NormalizeId(request.DeezerAlbumId) ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue("deezerArtistId", NormalizeId(request.DeezerArtistId) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("spotifyTrackId", NormalizeId(request.SpotifyTrackId) ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue("spotifyAlbumId", NormalizeId(request.SpotifyAlbumId) ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue("spotifyArtistId", NormalizeId(request.SpotifyArtistId) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("appleTrackId", NormalizeId(request.AppleTrackId) ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue("appleAlbumId", NormalizeId(request.AppleAlbumId) ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue("appleArtistId", NormalizeId(request.AppleArtistId) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("artistName", request.ArtistName);
         command.Parameters.AddWithValue("artistPrimaryName", NormalizeId(request.ArtistPrimaryName) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("trackTitle", request.TrackTitle);

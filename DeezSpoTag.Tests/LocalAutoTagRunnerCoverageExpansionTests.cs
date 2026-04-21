@@ -98,6 +98,28 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     }
 
     [Fact]
+    public void ApplyLyricsPreferenceGate_DoesNotUseTagFlagsAsBypassWhenLyricsTogglesOff()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SaveLyrics = false,
+            SyncedLyrics = false,
+            Tags = new TagSettings
+            {
+                Lyrics = true,
+                SyncedLyrics = true
+            }
+        };
+
+        var args = new object?[] { settings, true, true, true };
+        RunnerMethod("ApplyLyricsPreferenceGate").Invoke(null, args);
+
+        Assert.False((bool)args[1]!);
+        Assert.False((bool)args[2]!);
+        Assert.False((bool)args[3]!);
+    }
+
+    [Fact]
     public void ApplyLyricsPreferenceGate_HonorsLrcOnlyFormatAndSyncedType()
     {
         var settings = new DeezSpoTagSettings

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+using DeezSpoTag.Services.Download.Deezer;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Qobuz;
@@ -140,6 +141,30 @@ public sealed class DownloadQueueEnqueueHelperTests
         Assert.Equal("queue_duplicate", outcome.ReasonCode);
     }
 
+    [Fact]
+    public async Task EnqueueWithDedupAsync_AllowsDifferentTracksWithSharedAlbumAndArtistIds()
+    {
+        await using var context = await CreateContextAsync();
+        var firstPayload = CreateDeezerPayload("deezer-shared-1", "First Track", "dz-track-1");
+        var secondPayload = CreateDeezerPayload("deezer-shared-2", "Second Track", "dz-track-2");
+
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(firstPayload, "queued"), CancellationToken.None);
+
+        var outcome = await DownloadQueueEnqueueHelper.EnqueueWithDedupAsync(
+            secondPayload,
+            redownloadCooldownMinutes: 720,
+            context.QueueRepository,
+            context.Listener,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        Assert.True(outcome.Success);
+        Assert.False(outcome.AlreadyQueued);
+
+        var queuedItems = await context.QueueRepository.GetTasksAsync(firstPayload.Engine, CancellationToken.None);
+        Assert.Equal(2, queuedItems.Count);
+    }
+
     private static Task<TestContext> CreateContextAsync()
     {
         var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-download-queue-tests-" + Path.GetRandomFileName());
@@ -195,6 +220,58 @@ public sealed class DownloadQueueEnqueueHelperTests
             DeezerTrackId: payload.DeezerId,
             DeezerAlbumId: null,
             DeezerArtistId: null,
+            SpotifyTrackId: payload.SpotifyId,
+            SpotifyAlbumId: null,
+            SpotifyArtistId: null,
+            AppleTrackId: payload.AppleId,
+            AppleAlbumId: null,
+            AppleArtistId: null,
+            DurationMs: null,
+            DestinationFolderId: payload.DestinationFolderId,
+            QualityRank: null,
+            QueueOrder: null,
+            ContentType: payload.ContentType,
+            Status: status,
+            PayloadJson: JsonSerializer.Serialize(payload),
+            Progress: 0,
+            Downloaded: 0,
+            Failed: 0,
+            Error: null,
+            CreatedAt: DateTimeOffset.UtcNow,
+            UpdatedAt: DateTimeOffset.UtcNow);
+    }
+
+    private static DeezerQueueItem CreateDeezerPayload(string queueUuid, string title, string deezerTrackId)
+    {
+        return new DeezerQueueItem
+        {
+            Id = queueUuid,
+            Title = title,
+            Artist = "Shared Artist",
+            Album = "Shared Album",
+            AlbumArtist = "Shared Artist",
+            DeezerId = deezerTrackId,
+            DeezerAlbumId = "dz-album-1",
+            DeezerArtistId = "dz-artist-1",
+            SourceUrl = "https://www.deezer.com/track/123",
+            DestinationFolderId = 303,
+            ContentType = "stereo",
+            DurationSeconds = 0
+        };
+    }
+
+    private static DownloadQueueItem CreateQueueItem(DeezerQueueItem payload, string status)
+    {
+        return new DownloadQueueItem(
+            Id: 0,
+            QueueUuid: payload.Id,
+            Engine: payload.Engine,
+            ArtistName: payload.Artist,
+            TrackTitle: payload.Title,
+            Isrc: payload.Isrc,
+            DeezerTrackId: payload.DeezerId,
+            DeezerAlbumId: payload.DeezerAlbumId,
+            DeezerArtistId: payload.DeezerArtistId,
             SpotifyTrackId: payload.SpotifyId,
             SpotifyAlbumId: null,
             SpotifyArtistId: null,

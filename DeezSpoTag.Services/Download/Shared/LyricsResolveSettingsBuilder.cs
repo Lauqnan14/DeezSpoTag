@@ -10,8 +10,8 @@ internal static class LyricsResolveSettingsBuilder
 
     public static DeezSpoTagSettings Build(DeezSpoTagSettings settings, TagSettings tagSettings)
     {
-        var allowsSyncedBySettings = settings.SyncedLyrics || settings.Tags?.SyncedLyrics == true;
-        var allowsUnsyncedBySettings = settings.SaveLyrics || settings.Tags?.Lyrics == true;
+        var allowsSyncedBySettings = settings.SyncedLyrics;
+        var allowsUnsyncedBySettings = settings.SaveLyrics;
 
         return new DeezSpoTagSettings
         {

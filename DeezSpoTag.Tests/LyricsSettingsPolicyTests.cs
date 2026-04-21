@@ -42,6 +42,26 @@ public sealed class LyricsSettingsPolicyTests
     }
 
     [Fact]
+    public void CanFetchLyrics_ReturnsFalse_WhenOnlyTagLyricsFlagsAreEnabled()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SaveLyrics = false,
+            SyncedLyrics = false,
+            LrcType = "lyrics,syllable-lyrics,unsynced-lyrics",
+            Tags = new TagSettings
+            {
+                Lyrics = true,
+                SyncedLyrics = true
+            }
+        };
+
+        var result = LyricsSettingsPolicy.CanFetchLyrics(settings);
+
+        Assert.False(result);
+    }
+
+    [Fact]
     public void CanFetchLyrics_AcceptsLegacyTypeAliases()
     {
         var settings = new DeezSpoTagSettings

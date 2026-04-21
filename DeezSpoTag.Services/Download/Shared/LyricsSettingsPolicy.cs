@@ -11,9 +11,7 @@ public static class LyricsSettingsPolicy
     public static bool IsLyricsGateEnabled(DeezSpoTagSettings settings)
     {
         return settings.SyncedLyrics
-            || settings.SaveLyrics
-            || settings.Tags?.Lyrics == true
-            || settings.Tags?.SyncedLyrics == true;
+            || settings.SaveLyrics;
     }
 
     public static bool CanFetchLyrics(DeezSpoTagSettings settings)
