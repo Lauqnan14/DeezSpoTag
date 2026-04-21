@@ -258,7 +258,12 @@ public class LyricsService
 
     private static async Task<LyricsBase?> ResolveLoadedLyricsOrNullAsync(Func<Task<LyricsBase>> resolver)
     {
-        var lyrics = await resolver();
+        LyricsBase? lyrics = await resolver();
+        if (lyrics is null)
+        {
+            return null;
+        }
+
         return lyrics.IsLoaded() ? lyrics : null;
     }
 
@@ -2209,7 +2214,7 @@ public class LyricsService
 
         var syncedLyrics = lyrics.SyncedLyrics ?? new List<SynchronizedLyric>();
         var validLines = syncedLyrics.Count(l => l.IsValid());
-        if (validLines < 2)
+        if (validLines < 1)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -2857,7 +2862,6 @@ public class LyricsService
             "time_synced_lyrics" => SyllableLyricsType,
             "syllablelyrics" => SyllableLyricsType,
             UnsyncedLyricsType => UnsyncedLyricsType,
-            "unsunsynced-lyrics" => UnsyncedLyricsType,
             "unsyncedlyrics" => UnsyncedLyricsType,
             "unsynced" => UnsyncedLyricsType,
             "unsynchronized-lyrics" => UnsyncedLyricsType,

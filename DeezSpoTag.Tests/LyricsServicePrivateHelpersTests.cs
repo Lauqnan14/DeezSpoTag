@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Threading.Tasks;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Utils;
@@ -210,5 +211,19 @@ public sealed class LyricsServicePrivateHelpersTests
         Assert.DoesNotContain("> </p>", ttml);
         Assert.True(ttml.IndexOf("First &lt;line&gt;", StringComparison.Ordinal)
             < ttml.IndexOf("Second line", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ResolveLoadedLyricsOrNullAsync_ReturnsNull_WhenResolverReturnsNull()
+    {
+        var resolver = (Func<Task<LyricsBase>>)(() => Task.FromResult<LyricsBase>(null!));
+
+        var task = (Task<LyricsBase?>)(GetStaticMethod("ResolveLoadedLyricsOrNullAsync")
+            .Invoke(null, [resolver])
+            ?? throw new InvalidOperationException("LyricsService.ResolveLoadedLyricsOrNullAsync returned null task."));
+
+        var resolved = await task;
+
+        Assert.Null(resolved);
     }
 }

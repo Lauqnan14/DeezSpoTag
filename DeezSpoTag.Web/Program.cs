@@ -931,7 +931,6 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.ISpotifyUserContextAccessor, DeezSpoTag.Web.Services.SpotifyUserContextAccessor>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyUserStateProvider>();
         services.AddSingleton<DeezSpoTag.Services.Apple.AppleMusicCatalogService>();
-        services.AddSingleton<DeezSpoTag.Services.Apple.AppleLyricsService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyBlobService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyAppTokenService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyPathfinderMetadataClient>();

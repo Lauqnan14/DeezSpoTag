@@ -229,6 +229,47 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         Assert.Equal(DeezerSpotifyPlatforms, platforms);
     }
 
+    [Fact]
+    public void BuildMatchCacheKey_ChangesWhenEffectiveLyricsPolicyChanges()
+    {
+        var config = CreateRunnerConfig(tags: new List<string> { "syncedLyrics" }, platforms: new List<string> { "deezer" });
+        var info = new AutoTagAudioInfo
+        {
+            Title = "Title",
+            Artist = "Artist",
+            Artists = new List<string> { "Artist" },
+            Album = "Album",
+            DurationSeconds = 180
+        };
+        var matching = new AutoTagMatchingConfig
+        {
+            MatchDuration = true,
+            MaxDurationDifferenceSeconds = 3,
+            Strictness = 0.75
+        };
+
+        var disabledByType = new DeezSpoTagSettings
+        {
+            SaveLyrics = true,
+            SyncedLyrics = true,
+            LrcType = "unsynced-lyrics",
+            LrcFormat = "lrc"
+        };
+
+        var enabledByType = new DeezSpoTagSettings
+        {
+            SaveLyrics = true,
+            SyncedLyrics = true,
+            LrcType = "lyrics,syllable-lyrics",
+            LrcFormat = "lrc"
+        };
+
+        var disabledKey = InvokeStatic<string>("BuildMatchCacheKey", "deezer", info, config, disabledByType, matching);
+        var enabledKey = InvokeStatic<string>("BuildMatchCacheKey", "deezer", info, config, enabledByType, matching);
+
+        Assert.NotEqual(disabledKey, enabledKey);
+    }
+
     [Theory]
     [InlineData("square_animated_artwork.mp4", true)]
     [InlineData("Artist - tall_animated_artwork.mp4", true)]
