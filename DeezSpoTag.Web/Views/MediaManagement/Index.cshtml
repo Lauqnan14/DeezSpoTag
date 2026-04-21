@@ -3,7 +3,7 @@
     Layout = "~/Views/Shared/_Layout.cshtml";
 }
 
-<link rel="stylesheet" href="~/css/library.css" />
+<link rel="stylesheet" href="~/css/library.css" asp-append-version="true" />
 <link rel="stylesheet" href="~/css/auto-playlists.css" asp-append-version="true" />
 
 <div class="container-fluid">
@@ -18,37 +18,37 @@
     <!-- Main Navigation Tabs -->
     <ul class="nav nav-tabs nav-fill mb-4 ds-mobile-tabs" id="mediaManagementTabs">
         <li class="nav-item">
-            <button class="nav-link active" id="recommendations-tab" data-bs-toggle="tab" data-bs-target="#recommendations-content" type="button" role="tab">
+            <button class="nav-link active" id="recommendations-tab" data-bs-toggle="tab" data-bs-target="#recommendations-content" type="button" role="tab" aria-controls="recommendations-content" aria-selected="true">
                 <i class="fas fa-broadcast-tower me-2"></i>Recommendations
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link" id="watchlist-tab" data-bs-toggle="tab" data-bs-target="#watchlist-content" type="button" role="tab">
+            <button class="nav-link" id="watchlist-tab" data-bs-toggle="tab" data-bs-target="#watchlist-content" type="button" role="tab" aria-controls="watchlist-content" aria-selected="false">
                 <i class="fas fa-eye me-2"></i>Watchlist
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link" id="soundtracks-tab" data-bs-toggle="tab" data-bs-target="#soundtracks-content" type="button" role="tab">
+            <button class="nav-link" id="soundtracks-tab" data-bs-toggle="tab" data-bs-target="#soundtracks-content" type="button" role="tab" aria-controls="soundtracks-content" aria-selected="false">
                 <i class="fas fa-film me-2"></i>Soundtracks
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link" id="auto-playlists-tab" data-bs-toggle="tab" data-bs-target="#auto-playlists-content" type="button" role="tab">
+            <button class="nav-link" id="auto-playlists-tab" data-bs-toggle="tab" data-bs-target="#auto-playlists-content" type="button" role="tab" aria-controls="auto-playlists-content" aria-selected="false">
                 <i class="fas fa-layer-group me-2"></i>Auto Playlists
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link" id="library-playlists-tab" data-bs-toggle="tab" data-bs-target="#library-playlists-content" type="button" role="tab">
+            <button class="nav-link" id="library-playlists-tab" data-bs-toggle="tab" data-bs-target="#library-playlists-content" type="button" role="tab" aria-controls="library-playlists-content" aria-selected="false">
                 <i class="fas fa-list me-2"></i>Library Playlists
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link" id="favorites-tab" data-bs-toggle="tab" data-bs-target="#favorites-content" type="button" role="tab">
+            <button class="nav-link" id="favorites-tab" data-bs-toggle="tab" data-bs-target="#favorites-content" type="button" role="tab" aria-controls="favorites-content" aria-selected="false">
                 <i class="fas fa-heart me-2"></i>Favorites
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings-content" type="button" role="tab">
+            <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings-content" type="button" role="tab" aria-controls="settings-content" aria-selected="false">
                 <i class="fas fa-cog me-2"></i>Settings
             </button>
         </li>
@@ -56,7 +56,7 @@
 
     <div class="tab-content" id="mediaManagementTabsContent">
         <!-- Recommendations Tab -->
-        <div class="tab-pane fade show active" id="recommendations-content" role="tabpanel">
+        <div class="tab-pane fade show active" id="recommendations-content" role="tabpanel" aria-labelledby="recommendations-tab">
             <div class="media-tab-header">
                 <div>
                     <h2>Recommendations</h2>
@@ -72,7 +72,7 @@
         </div>
 
         <!-- Watchlist Tab -->
-        <div class="tab-pane fade" id="watchlist-content" role="tabpanel">
+        <div class="tab-pane fade" id="watchlist-content" role="tabpanel" aria-labelledby="watchlist-tab">
             <ul class="nav nav-tabs nav-fill mb-3 ds-mobile-tabs" id="watchlistSubTabs">
                 <li class="nav-item">
                     <button class="nav-link active" id="watchlist-playlists-tab" data-bs-toggle="tab" data-bs-target="#watchlist-playlists-content" type="button" role="tab" aria-selected="true">
@@ -128,7 +128,7 @@
         </div>
 
         <!-- Soundtracks Tab -->
-        <div class="tab-pane fade" id="soundtracks-content" role="tabpanel">
+        <div class="tab-pane fade" id="soundtracks-content" role="tabpanel" aria-labelledby="soundtracks-tab">
             <ul class="nav nav-tabs nav-fill mb-3 ds-mobile-tabs" id="soundtrackSubTabs">
                 <li class="nav-item">
                     <button class="nav-link active" id="soundtrack-movies-tab" type="button" role="tab" data-soundtrack-category="movie" aria-selected="true">
@@ -182,7 +182,7 @@
         </div>
 
         <!-- Auto Playlists Tab -->
-        <div class="tab-pane fade" id="auto-playlists-content" role="tabpanel">
+        <div class="tab-pane fade" id="auto-playlists-content" role="tabpanel" aria-labelledby="auto-playlists-tab">
             <div class="media-tab-header">
                 <div>
                     <h2>Auto Playlists</h2>
@@ -199,7 +199,7 @@
         </div>
 
         <!-- Library Playlists Tab -->
-        <div class="tab-pane fade" id="library-playlists-content" role="tabpanel">
+        <div class="tab-pane fade" id="library-playlists-content" role="tabpanel" aria-labelledby="library-playlists-tab">
             <div class="media-tab-header">
                 <div>
                     <h2>Library Playlists</h2>
@@ -222,7 +222,7 @@
         </div>
 
         <!-- Favorites Tab -->
-        <div class="tab-pane fade" id="favorites-content" role="tabpanel">
+        <div class="tab-pane fade" id="favorites-content" role="tabpanel" aria-labelledby="favorites-tab">
             <div class="media-tab-header">
                 <div>
                     <h2>Favorites</h2>
@@ -278,7 +278,7 @@
         </div>
 
         <!-- Settings Tab -->
-        <div class="tab-pane fade" id="settings-content" role="tabpanel">
+        <div class="tab-pane fade" id="settings-content" role="tabpanel" aria-labelledby="settings-tab">
             <div class="card bg-darker border-secondary">
                 <div class="card-header">
                     <h5 class="mb-0">
@@ -321,7 +321,7 @@
                                 Meloday, Artist Metadata Updater, Quality Scanner, and Media Server Scan are available in the
                                 <strong>Activities → Media Operations</strong> tab.
                             </p>
-                            <a class="btn btn-primary action-btn" href="/Activities">Open Activities</a>
+                            <a class="btn btn-primary action-btn" asp-controller="Activities" asp-action="Index">Open Activities</a>
                         </div>
                     </div>
                 </div>
@@ -332,12 +332,8 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('Media Management page loaded');
-
     document.querySelectorAll('#mediaManagementTabs button[data-bs-toggle="tab"]').forEach((button) => {
         button.addEventListener('shown.bs.tab', function (e) {
-            const targetTab = e.target?.getAttribute('data-bs-target') || '';
-            console.log('Tab switched to:', targetTab);
             if (window.matchMedia('(max-width: 992px)').matches) {
                 e.target.scrollIntoView({
                     behavior: 'smooth',
@@ -493,223 +489,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
 .mm-form .form-row + .form-row {
     margin-top: 16px;
-}
-
-/* Media operations cards */
-.tools-grid {
-    display: flex;
-    flex-direction: column;
-    gap: 18px;
-    width: 100%;
-}
-
-.tool-card {
-    background: var(--bg-tertiary);
-    border-radius: 16px;
-    border: 1px solid var(--border-secondary);
-    padding: 24px;
-    position: relative;
-    overflow: hidden;
-    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.35);
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    transition: all 0.2s ease;
-}
-
-.tool-card:hover {
-    transform: translateY(-1px);
-    border-color: var(--border-primary);
-    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.45);
-}
-
-.tool-card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 8px;
-    gap: 12px;
-}
-
-.tool-card-title {
-    font-size: 16px;
-    font-weight: 700;
-    color: var(--text-primary);
-    margin: 0;
-}
-
-.tool-help-button {
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    border: 2px solid var(--border-primary);
-    background: transparent;
-    color: var(--text-muted);
-    font-size: 14px;
-    font-weight: bold;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    transition: all 0.2s ease;
-    flex-shrink: 0;
-}
-
-.tool-help-button:hover {
-    background-color: var(--primary-color);
-    border-color: var(--primary-color);
-    color: #ffffff;
-    transform: scale(1.1);
-}
-
-.tool-card-info {
-    font-size: 12px;
-    color: var(--text-muted);
-    min-height: 2em;
-}
-
-.tool-card-controls {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-}
-
-.tool-card-controls select {
-    flex-grow: 1;
-    padding: 10px 16px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-secondary);
-    border-radius: 12px;
-    color: var(--text-primary);
-    font-size: 14px;
-    outline: none;
-    transition: all 0.2s ease;
-}
-
-.tool-card-controls select:hover {
-    border-color: var(--border-primary);
-}
-
-.tool-card-controls select option {
-    background: var(--bg-secondary);
-    color: var(--text-primary);
-}
-
-.tool-card-controls button {
-    padding: 10px 20px;
-    border-radius: 12px;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    min-width: 140px;
-}
-
-.tool-card-controls button:hover:not(:disabled) {
-    transform: translateY(-1px);
-}
-
-.tool-card-controls button:disabled {
-    cursor: not-allowed;
-}
-
-.media-scan-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-    padding: 14px 24px !important;
-    font-size: 15px !important;
-    width: 100%;
-}
-
-.media-scan-btn:hover:not(:disabled) {
-    transform: translateY(-2px);
-}
-
-.media-scan-btn .scan-icon {
-    font-size: 18px;
-    animation: pulse 2s ease-in-out infinite;
-}
-
-.media-scan-btn:disabled .scan-icon {
-    animation: spin 1s linear infinite;
-}
-
-@@keyframes pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.7; transform: scale(1.1); }
-}
-
-@@keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-}
-
-.tool-card-progress-section {
-    padding-top: 10px;
-    border-top: 1px solid var(--border-secondary);
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.progress-phase-label {
-    font-size: 12px;
-    color: var(--text-muted);
-}
-
-.progress-details-label {
-    font-size: 11px;
-    color: var(--text-muted);
-    text-align: center;
-}
-
-.progress-bar-container {
-    height: 8px;
-    background: var(--bg-secondary);
-    border-radius: 4px;
-    overflow: hidden;
-}
-
-.progress-bar-fill {
-    height: 100%;
-    background: var(--primary-color);
-    border-radius: 4px;
-    width: 0%;
-    transition: width 0.3s ease;
-}
-
-.tool-card-stats {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-    padding: 10px;
-    background: var(--bg-secondary);
-    border-radius: 6px;
-    margin-top: 5px;
-    margin-bottom: 5px;
-}
-
-.stat-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 12px;
-    color: var(--text-primary);
-}
-
-.stat-item-label {
-    color: var(--text-muted);
-}
-
-.stat-item-value {
-    color: var(--text-primary);
-    font-weight: 600;
-    background-color: color-mix(in srgb, var(--primary-color) 18%, transparent);
-    border-radius: 4px;
-    padding: 2px 6px;
 }
 
 .soundtrack-toolbar {
@@ -1132,16 +911,6 @@ document.addEventListener('DOMContentLoaded', function() {
         gap: 12px;
     }
 
-}
-
-@@media (max-width: 900px) {
-    .tool-card-stats {
-        grid-template-columns: 1fr;
-    }
-
-    .progress-bar-container {
-        height: 10px;
-    }
 }
 
 @@media (max-width: 768px) {
