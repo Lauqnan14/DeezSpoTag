@@ -2042,6 +2042,7 @@ public class AutoTagService
         }
 
         var settings = _settingsService.LoadSettings();
+        ApplyEnhancementTrackTemplateOverrides(settings, enhancementRoot);
         var profileState = scopedFolders.Count > 0
             ? await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken)
             : null;
@@ -2052,6 +2053,30 @@ public class AutoTagService
         await RunFolderUniformityDedupeAsync(job, folderUniformity!, scopedFolders, rootPaths, enabledFolders, cancellationToken);
 
         AppendLog(job, "enhancement workflow: folder uniformity completed.");
+    }
+
+    private static void ApplyEnhancementTrackTemplateOverrides(DeezSpoTagSettings settings, JsonObject enhancementRoot)
+    {
+        if (settings == null || enhancementRoot == null)
+        {
+            return;
+        }
+
+        ApplyTemplateIfPresent(enhancementRoot, "tracknameTemplate", value => settings.TracknameTemplate = value);
+        ApplyTemplateIfPresent(enhancementRoot, "albumTracknameTemplate", value => settings.AlbumTracknameTemplate = value);
+        ApplyTemplateIfPresent(enhancementRoot, "playlistTracknameTemplate", value => settings.PlaylistTracknameTemplate = value);
+    }
+
+    private static void ApplyTemplateIfPresent(JsonObject source, string key, Action<string> assign)
+    {
+        if (source[key] is not JsonValue node
+            || !node.TryGetValue<string>(out var value)
+            || string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        assign(value.Trim());
     }
 
     private static bool TryGetFolderUniformityConfig(JsonObject enhancementRoot, out JsonObject? folderUniformity)
