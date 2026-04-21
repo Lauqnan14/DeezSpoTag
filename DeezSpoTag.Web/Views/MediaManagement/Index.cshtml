@@ -47,6 +47,11 @@
                 <i class="fas fa-heart me-2"></i>Favorites
             </button>
         </li>
+        <li class="nav-item">
+            <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings-content" type="button" role="tab">
+                <i class="fas fa-cog me-2"></i>Settings
+            </button>
+        </li>
     </ul>
 
     <div class="tab-content" id="mediaManagementTabsContent">
@@ -309,110 +314,14 @@
                     <div class="mm-section">
                         <div class="mm-section-header">
                             <h2>Media Operations</h2>
-                            <p>Database refresh and maintenance tools.</p>
+                            <p>Operational tools are managed in Activities.</p>
                         </div>
-                        <div class="tools-grid">
-                            <div class="tool-card" id="meloday-card">
-                                <div class="tool-card-header">
-                                    <h4 class="tool-card-title">Meloday</h4>
-                                </div>
-                                <p class="tool-card-info">Generate a daypart playlist from Plex listening history.</p>
-                                <div class="tool-card-body">
-                                    <div class="analysis-status" id="melodayStatus">Loading Meloday status...</div>
-                                    <div class="analysis-meta">Last run: <span id="melodayLastRun">Never</span></div>
-                                    <div class="analysis-meta" id="melodayConfig"></div>
-                                    <div class="form-actions">
-                                        <button id="runMeloday" class="btn btn-primary action-btn" type="button">Run Meloday</button>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="tool-card" id="metadata-updater-card">
-                                <div class="tool-card-header">
-                                    <h4 class="tool-card-title">Artist Metadata Updater</h4>
-                                    <button class="tool-help-button" title="Learn more about this tool">?</button>
-                                </div>
-                                <div class="tool-card-controls">
-                                    <partial name="_ArtistMetadataUpdaterControls" />
-                                    <button id="metadata-update-button" class="btn action-btn">Begin Update</button>
-                                </div>
-                                 <div class="tool-card-progress-section">
-                                    <p class="progress-phase-label" id="metadata-phase-label">Current Artist: Not running</p>
-                                    <div class="progress-bar-container">
-                                         <div class="progress-bar-fill" id="metadata-progress-bar" style="width: 0%;"></div>
-                                    </div>
-                                    <p class="progress-details-label" id="metadata-progress-label">0 / 0 artists (0.0%)</p>
-                                </div>
-                            </div>
-
-                            <div class="tool-card" id="quality-scanner-card">
-                                <div class="tool-card-header">
-                                    <h4 class="tool-card-title">Quality Scanner</h4>
-                                    <button class="tool-help-button" title="Learn more about this tool">?</button>
-                                </div>
-                                <p class="tool-card-info">Scan library for tracks below quality preferences</p>
-                                <div class="tool-card-stats">
-                                    <div class="stat-item">
-                                        <span class="stat-item-label">Processed:</span>
-                                        <span class="stat-item-value" id="quality-stat-processed">0</span>
-                                    </div>
-                                    <div class="stat-item">
-                                        <span class="stat-item-label">Quality Met:</span>
-                                        <span class="stat-item-value" id="quality-stat-met">0</span>
-                                    </div>
-                                    <div class="stat-item">
-                                        <span class="stat-item-label">Low Quality:</span>
-                                        <span class="stat-item-value" id="quality-stat-low">0</span>
-                                    </div>
-                                    <div class="stat-item">
-                                        <span class="stat-item-label">Matched:</span>
-                                        <span class="stat-item-value" id="quality-stat-matched">0</span>
-                                    </div>
-                                </div>
-                                <div class="tool-card-controls">
-                                    <select id="quality-scan-scope">
-                                        <option value="watchlist">Watchlist Artists Only</option>
-                                        <option value="all">All Library Tracks</option>
-                                    </select>
-                                    <button id="quality-scan-button" class="btn action-btn">Scan Library</button>
-                                </div>
-                                <div class="tool-card-progress-section">
-                                    <p class="progress-phase-label" id="quality-phase-label">Ready to scan</p>
-                                    <div class="progress-bar-container">
-                                         <div class="progress-bar-fill" id="quality-progress-bar" style="width: 0%;"></div>
-                                    </div>
-                                    <p class="progress-details-label" id="quality-progress-label">0 / 0 tracks scanned (0.0%)</p>
-                                </div>
-                            </div>
-
-                            <div class="tool-card" id="media-scan-card">
-                                <div class="tool-card-header">
-                                    <h4 class="tool-card-title">Media Server Scan</h4>
-                                    <button class="tool-help-button" title="Learn more about this tool">?</button>
-                                </div>
-                                <p class="tool-card-info">Manually trigger Plex media library scan for music</p>
-                                <div class="tool-card-stats">
-                                    <div class="stat-item">
-                                        <span class="stat-item-label">Last Scan:</span>
-                                        <span class="stat-item-value" id="media-scan-last-time">Never</span>
-                                    </div>
-                                    <div class="stat-item">
-                                        <span class="stat-item-label">Status:</span>
-                                        <span class="stat-item-value" id="media-scan-status">Idle</span>
-                                    </div>
-                                </div>
-                                <div class="tool-card-controls">
-                                    <button id="media-scan-button" class="btn action-btn media-scan-btn">
-                                        <span class="scan-text">Scan Library</span>
-                                    </button>
-                                </div>
-                                <div class="tool-card-progress-section">
-                                    <p class="progress-phase-label" id="media-scan-phase-label">Ready to scan</p>
-                                    <div class="progress-bar-container">
-                                         <div class="progress-bar-fill" id="media-scan-progress-bar" style="width: 0%;"></div>
-                                    </div>
-                                    <p class="progress-details-label" id="media-scan-progress-label">Waiting for scan request</p>
-                                </div>
-                            </div>
+                        <div class="mm-card">
+                            <p class="text-muted mb-3">
+                                Meloday, Artist Metadata Updater, Quality Scanner, and Media Server Scan are available in the
+                                <strong>Activities → Media Operations</strong> tab.
+                            </p>
+                            <a class="btn btn-primary action-btn" href="/Activities">Open Activities</a>
                         </div>
                     </div>
                 </div>
@@ -453,7 +362,6 @@ document.addEventListener('DOMContentLoaded', function() {
 <script src="~/js/library-soundtracks.js" asp-append-version="true"></script>
 <script src="~/js/library-watchlists.js" asp-append-version="true"></script>
 <script src="~/js/library-bootstrap.js" asp-append-version="true"></script>
-<script src="~/js/meloday.js"></script>
 <script src="~/js/auto-playlists.js" asp-append-version="true"></script>
 
 <style>
