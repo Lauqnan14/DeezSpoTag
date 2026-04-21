@@ -3906,11 +3906,9 @@ public sealed class DownloadIntentService
             AppendEngineFallbackSources(planSources, autoSources, settings, engine, requestedQuality, strict);
         }
 
-        planSources = FilterAutoSourcesByAvailability(planSources, availability, engine);
-
         if (planSources.Count == 0 && autoSources.Count > 0)
         {
-            planSources.AddRange(FilterAutoSourcesByAvailability(autoSources, availability, engine));
+            planSources.AddRange(autoSources);
         }
 
         return DownloadSourceOrder.CollapseAutoSourcesByService(planSources);
