@@ -20,22 +20,17 @@ namespace DeezSpoTag.Web.Controllers.Api
     [LocalApiAuthorize]
     public class SettingsApiController : ControllerBase
     {
-        private const string NothingCasingValue = "nothing";
-        private const string DefaultArtworkFallbackOrder = "apple,deezer,spotify";
         private readonly ILogger<SettingsApiController> _logger;
         private readonly DeezSpoTagSettingsService _settingsService;
         private readonly UserPreferencesStore _userPreferencesStore;
-        private readonly TaggingProfileService _taggingProfileService;
         public SettingsApiController(
             ILogger<SettingsApiController> logger,
             DeezSpoTagSettingsService settingsService,
-            UserPreferencesStore userPreferencesStore,
-            TaggingProfileService taggingProfileService)
+            UserPreferencesStore userPreferencesStore)
         {
             _logger = logger;
             _settingsService = settingsService;
             _userPreferencesStore = userPreferencesStore;
-            _taggingProfileService = taggingProfileService;
         }
 
         /// <summary>
@@ -43,12 +38,11 @@ namespace DeezSpoTag.Web.Controllers.Api
         /// GET /api/getSettings
         /// </summary>
         [HttpGet("getSettings")]
-        public async Task<IActionResult> GetSettings()
+        public IActionResult GetSettings()
         {
             try
             {
                 var settings = _settingsService.LoadSettings();
-                await OverlayMovedSettingsFromDefaultProfileAsync(settings);
                 var defaultSettings = DeezSpoTagSettingsService.GetStaticDefaultSettings();
                 var redactedSettings = RedactSecrets(settings);
                 var redactedDefaults = RedactSecrets(defaultSettings);
@@ -83,7 +77,7 @@ namespace DeezSpoTag.Web.Controllers.Api
         [HttpGet("settings")]
         public Task<IActionResult> GetSettingsAlternative()
         {
-            return GetSettings();
+            return Task.FromResult(GetSettings());
         }
 
         /// <summary>
@@ -118,7 +112,6 @@ namespace DeezSpoTag.Web.Controllers.Api
                 PreserveSensitiveFieldsIfRedacted(persisted, settings);
                 PreserveCriticalFieldsIfBlank(persisted, settings);
                 _settingsService.SaveSettings(settings);
-                await SyncMovedSettingsToDefaultProfileAsync(settings);
                 await SyncUserPreferencesAsync(settings);
 
                 _logger.LogInformation("Settings saved successfully.");
@@ -151,80 +144,13 @@ namespace DeezSpoTag.Web.Controllers.Api
             await _userPreferencesStore.SaveAsync(userPrefs);
         }
 
-        private async Task OverlayMovedSettingsFromDefaultProfileAsync(DeezSpoTagSettings settings)
-        {
-            var profile = await _taggingProfileService.GetDefaultAsync();
-            if (profile == null)
-            {
-                return;
-            }
-
-            TaggingProfileSettingsMapper.ApplyProfileToSettings(
-                settings,
-                profile,
-                defaultTitleCasing: NothingCasingValue,
-                defaultArtistCasing: NothingCasingValue,
-                defaultArtworkFallbackOrder: DefaultArtworkFallbackOrder);
-        }
-
-        private async Task SyncMovedSettingsToDefaultProfileAsync(DeezSpoTagSettings settings)
-        {
-            var profile = await _taggingProfileService.GetDefaultAsync();
-            if (profile == null)
-            {
-                return;
-            }
-
-            settings.Tags ??= new TagSettings();
-            profile.Technical ??= new TechnicalTagSettings();
-            profile.FolderStructure ??= new FolderStructureSettings();
-
-            profile.Technical.SavePlaylistAsCompilation = settings.Tags.SavePlaylistAsCompilation;
-            profile.Technical.UseNullSeparator = settings.Tags.UseNullSeparator;
-            profile.Technical.SaveID3v1 = settings.Tags.SaveID3v1;
-            profile.Technical.MultiArtistSeparator = settings.Tags.MultiArtistSeparator ?? "default";
-            profile.Technical.SingleAlbumArtist = settings.Tags.SingleAlbumArtist;
-            profile.Technical.CoverDescriptionUTF8 = settings.Tags.CoverDescriptionUTF8;
-            profile.Technical.AlbumVariousArtists = settings.AlbumVariousArtists;
-            profile.Technical.RemoveDuplicateArtists = settings.RemoveDuplicateArtists;
-            profile.Technical.RemoveAlbumVersion = settings.RemoveAlbumVersion;
-            profile.Technical.DateFormat = settings.DateFormat ?? "Y-M-D";
-            profile.Technical.FeaturedToTitle = settings.FeaturedToTitle ?? "0";
-            profile.Technical.TitleCasing = settings.TitleCasing ?? NothingCasingValue;
-            profile.Technical.ArtistCasing = settings.ArtistCasing ?? NothingCasingValue;
-            profile.Technical.SyncedLyrics = settings.SyncedLyrics;
-            profile.Technical.SaveLyrics = settings.SaveLyrics;
-            profile.Technical.EmbedLyrics = settings.Tags.Lyrics || settings.Tags.SyncedLyrics;
-            profile.Technical.LrcType = settings.LrcType ?? "lyrics,syllable-lyrics,unsynced-lyrics";
-            profile.Technical.LrcFormat = settings.LrcFormat ?? "both";
-            profile.Technical.LyricsFallbackEnabled = settings.LyricsFallbackEnabled;
-            profile.Technical.LyricsFallbackOrder = settings.LyricsFallbackOrder ?? "apple,deezer,spotify,lrclib,musixmatch";
-            profile.Technical.ArtworkFallbackEnabled = settings.ArtworkFallbackEnabled;
-            profile.Technical.ArtworkFallbackOrder = settings.ArtworkFallbackOrder ?? DefaultArtworkFallbackOrder;
-            profile.Technical.ArtistArtworkFallbackEnabled = settings.ArtistArtworkFallbackEnabled;
-            profile.Technical.ArtistArtworkFallbackOrder = settings.ArtistArtworkFallbackOrder ?? DefaultArtworkFallbackOrder;
-
-            profile.FolderStructure.CreateArtistFolder = settings.CreateArtistFolder;
-            profile.FolderStructure.ArtistNameTemplate = settings.ArtistNameTemplate ?? "%artist%";
-            profile.FolderStructure.CreateAlbumFolder = settings.CreateAlbumFolder;
-            profile.FolderStructure.AlbumNameTemplate = settings.AlbumNameTemplate ?? "%album%";
-            profile.FolderStructure.CreateCDFolder = settings.CreateCDFolder;
-            profile.FolderStructure.CreateStructurePlaylist = settings.CreateStructurePlaylist;
-            profile.FolderStructure.CreateSingleFolder = settings.CreateSingleFolder;
-            profile.FolderStructure.CreatePlaylistFolder = settings.CreatePlaylistFolder;
-            profile.FolderStructure.PlaylistNameTemplate = settings.PlaylistNameTemplate ?? "%playlist%";
-            profile.FolderStructure.IllegalCharacterReplacer = settings.IllegalCharacterReplacer ?? "_";
-
-            await _taggingProfileService.UpsertAsync(profile);
-        }
-
         /// <summary>
         /// Reset settings to defaults - additional endpoint (not in original deezspotag but useful)
         /// POST /api/resetSettings
         /// </summary>
         [HttpPost("resetSettings")]
         [EnableRateLimiting("SensitiveWrites")]
-        public async Task<IActionResult> ResetSettings()
+        public IActionResult ResetSettings()
         {
             try
             {
@@ -232,7 +158,6 @@ namespace DeezSpoTag.Web.Controllers.Api
 
                 var defaultSettings = DeezSpoTagSettingsService.GetStaticDefaultSettings();
                 _settingsService.SaveSettings(defaultSettings);
-                await SyncMovedSettingsToDefaultProfileAsync(defaultSettings);
 
                 var response = new
                 {
@@ -258,7 +183,7 @@ namespace DeezSpoTag.Web.Controllers.Api
         [EnableRateLimiting("SensitiveWrites")]
         public Task<IActionResult> ResetSettingsAlternative()
         {
-            return ResetSettings();
+            return Task.FromResult(ResetSettings());
         }
 
         [HttpPost("settings/api-token")]

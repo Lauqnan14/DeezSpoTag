@@ -1,9 +1,7 @@
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
-using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Library;
-using DeezSpoTag.Services.Settings;
 using System.Globalization;
 
 namespace DeezSpoTag.Web.Controllers.Api;
@@ -18,7 +16,6 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
     private readonly TaggingProfileService _profileService;
     private readonly LibraryRepository _libraryRepository;
     private readonly AutoTagService _autoTagService;
-    private readonly DeezSpoTagSettingsService _settingsService;
     private readonly ILogger<AutoTagDefaultsApiController> _logger;
 
     public AutoTagDefaultsApiController(
@@ -27,7 +24,6 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
         TaggingProfileService profileService,
         LibraryRepository libraryRepository,
         AutoTagService autoTagService,
-        DeezSpoTagSettingsService settingsService,
         ILogger<AutoTagDefaultsApiController> logger)
     {
         _store = store;
@@ -35,7 +31,6 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
         _profileService = profileService;
         _libraryRepository = libraryRepository;
         _autoTagService = autoTagService;
-        _settingsService = settingsService;
         _logger = logger;
     }
 
@@ -56,7 +51,6 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
     public async Task<IActionResult> Update([FromBody] UpdateDefaultsRequest request, CancellationToken cancellationToken)
     {
         var state = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
-        var previousDefaultProfileId = state.Defaults.DefaultFileProfile;
         var previousSchedules = state.Defaults.LibrarySchedules;
         var profiles = state.Profiles;
 
@@ -125,10 +119,6 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
         await _store.SaveAsync(defaults);
 
         var normalizedState = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
-        if (!string.Equals(previousDefaultProfileId, normalizedState.Defaults.DefaultFileProfile, StringComparison.OrdinalIgnoreCase))
-        {
-            await SyncRuntimeSettingsFromDefaultProfileAsync(normalizedState.Profiles);
-        }
         if (!AreSchedulesEquivalent(previousSchedules, normalizedState.Defaults.LibrarySchedules))
         {
             await StopRunningEnhancementForScheduleChangeAsync();
@@ -200,17 +190,4 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
         return normalized;
     }
 
-    private Task SyncRuntimeSettingsFromDefaultProfileAsync(IReadOnlyList<TaggingProfile> profiles)
-    {
-        var profile = profiles?.FirstOrDefault(item => item.IsDefault);
-        if (profile == null)
-        {
-            return Task.CompletedTask;
-        }
-
-        var settings = _settingsService.LoadSettings();
-        TaggingProfileSettingsMapper.ApplyProfileToSettings(settings, profile);
-        _settingsService.SaveSettings(settings);
-        return Task.CompletedTask;
-    }
 }

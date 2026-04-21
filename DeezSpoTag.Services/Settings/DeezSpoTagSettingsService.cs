@@ -20,6 +20,9 @@ public class DeezSpoTagSettingsService : ISettingsService
 {
     private const string DeezSpoTagFolderName = "deezspotag";
     private const string ConfigFileName = "config.json";
+    private const string AutoTagFolderName = "autotag";
+    private const string ProfilesFileName = "tagging-profiles.json";
+    private const string LegacyProfilesFileName = "profiles.json";
     private const string ContainerDownloadsPath = "/downloads";
     private const string LegacyContainerDownloadsPath = "/data/downloads";
     private const string LegacyAppDataDownloadsPath = "/app/Data/downloads";
@@ -47,6 +50,10 @@ public class DeezSpoTagSettingsService : ISettingsService
     private readonly string _settingsFilePath;
     private readonly string _configFolder;
     private readonly object _settingsSync = new();
+    private readonly object _defaultProfileSync = new();
+    private string? _cachedDefaultProfilePath;
+    private DateTime _cachedDefaultProfileWriteUtc;
+    private TaggingProfile? _cachedDefaultProfile;
     private DateTime? _lastLoggedWriteUtc;
     private string? _lastFixSignature;
     private readonly HashSet<string> _loggedFixFields = new(StringComparer.OrdinalIgnoreCase);
@@ -228,6 +235,7 @@ public class DeezSpoTagSettingsService : ISettingsService
 
         var settings = ReadSettingsFromFile();
         PersistFixedSettings(settings);
+        ApplyDefaultProfileOverlay(settings);
 
         if (logLoad)
         {
@@ -255,6 +263,7 @@ public class DeezSpoTagSettingsService : ISettingsService
         var defaultSettings = GetStaticDefaultSettings();
         CheckAndFixSettings(defaultSettings, out _);
         SaveSettingsLocked(defaultSettings);
+        ApplyDefaultProfileOverlay(defaultSettings);
         return defaultSettings;
     }
 
@@ -271,6 +280,83 @@ public class DeezSpoTagSettingsService : ISettingsService
             var defaultSettings = GetStaticDefaultSettings();
             SaveSettingsLocked(defaultSettings);
             return defaultSettings;
+        }
+    }
+
+    private void ApplyDefaultProfileOverlay(DeezSpoTagSettings settings)
+    {
+        var profile = LoadDefaultTaggingProfile();
+        if (profile == null)
+        {
+            return;
+        }
+
+        TaggingProfileSettingsOverlay.ApplyProfileToSettings(settings, profile);
+    }
+
+    private TaggingProfile? LoadDefaultTaggingProfile()
+    {
+        lock (_defaultProfileSync)
+        {
+            var profilePath = ResolveProfilePath();
+            if (string.IsNullOrWhiteSpace(profilePath) || !File.Exists(profilePath))
+            {
+                _cachedDefaultProfilePath = profilePath;
+                _cachedDefaultProfileWriteUtc = default;
+                _cachedDefaultProfile = null;
+                return null;
+            }
+
+            var writeUtc = File.GetLastWriteTimeUtc(profilePath);
+            if (string.Equals(_cachedDefaultProfilePath, profilePath, StringComparison.OrdinalIgnoreCase)
+                && _cachedDefaultProfileWriteUtc == writeUtc)
+            {
+                return _cachedDefaultProfile;
+            }
+
+            _cachedDefaultProfilePath = profilePath;
+            _cachedDefaultProfileWriteUtc = writeUtc;
+            _cachedDefaultProfile = ReadDefaultProfile(profilePath);
+            return _cachedDefaultProfile;
+        }
+    }
+
+    private string? ResolveProfilePath()
+    {
+        var dataRoot = Directory.GetParent(_configFolder)?.FullName ?? _configFolder;
+        var primary = Path.Join(dataRoot, AutoTagFolderName, ProfilesFileName);
+        if (File.Exists(primary))
+        {
+            return primary;
+        }
+
+        var legacy = Path.Join(dataRoot, AutoTagFolderName, LegacyProfilesFileName);
+        if (File.Exists(legacy))
+        {
+            return legacy;
+        }
+
+        return primary;
+    }
+
+    private TaggingProfile? ReadDefaultProfile(string profilePath)
+    {
+        try
+        {
+            var json = File.ReadAllText(profilePath);
+            var profiles = JsonSerializer.Deserialize<List<TaggingProfile>>(json, SettingsDeserializeOptions);
+            if (profiles == null || profiles.Count == 0)
+            {
+                return null;
+            }
+
+            return profiles.FirstOrDefault(profile => profile?.IsDefault == true)
+                ?? profiles.FirstOrDefault();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed reading tagging profiles from {ProfilePath}", profilePath);
+            return null;
         }
     }
 
@@ -324,6 +410,7 @@ public class DeezSpoTagSettingsService : ISettingsService
     {
         lock (_settingsSync)
         {
+            ApplyDefaultProfileOverlay(settings);
             CheckAndFixSettings(settings, out _);
             SaveSettingsLocked(settings);
         }
