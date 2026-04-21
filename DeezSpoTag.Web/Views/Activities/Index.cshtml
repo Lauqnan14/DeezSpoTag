@@ -4497,23 +4497,7 @@ function updateQueueProgressDom(taskId, progress) {
 }
 
 function orderTasksForAutoScroll(taskList, options) {
-    const list = Array.isArray(taskList) ? [...taskList] : [];
-    const isTerminal = (status) => status === 'complete' || status === 'failed' || status === 'canceled';
-    const terminal = list.filter(task => isTerminal(task.status));
-    const activeAndQueued = list.filter(task => !isTerminal(task.status));
-
-    if (options?.pinActive === false) {
-        return [...terminal, ...activeAndQueued];
-    }
-
-    const running = activeAndQueued.filter(task => task.status === 'running');
-    if (running.length === 0) {
-        return [...terminal, ...activeAndQueued];
-    }
-
-    const runningIds = new Set(running.map(task => task.taskId));
-    const rest = activeAndQueued.filter(task => !runningIds.has(task.taskId));
-    return [...terminal, ...running, ...rest];
+    return Array.isArray(taskList) ? [...taskList] : [];
 }
 
 function updateStats() {
@@ -4747,6 +4731,7 @@ async function loadQueueFromServer(options) {
         const queue = payload.data?.queue || {};
         const queueOrder = payload.data?.queueOrder || [];
         const ordered = [];
+        const orderedIds = new Set();
         const existingById = new Map(tasks.map(task => [task.taskId, task]));
 
         if (requestSequence !== queueLoadRequestSequence) {
@@ -4754,15 +4739,22 @@ async function loadQueueFromServer(options) {
         }
 
         queueOrder.forEach(uuid => {
-            if (queue[uuid]) {
-                ordered.push(mergeQueueTask(existingById.get(uuid), mapQueueItem(queue[uuid])));
+            if (!queue[uuid] || orderedIds.has(uuid)) {
+                return;
             }
+
+            ordered.push(mergeQueueTask(existingById.get(uuid), mapQueueItem(queue[uuid])));
+            orderedIds.add(uuid);
         });
 
         Object.values(queue).forEach(item => {
-            if (!ordered.some(task => task.taskId === item.uuid)) {
-                ordered.push(mergeQueueTask(existingById.get(item.uuid), mapQueueItem(item)));
+            const itemId = String(item?.uuid || '');
+            if (!itemId || orderedIds.has(itemId)) {
+                return;
             }
+
+            ordered.push(mergeQueueTask(existingById.get(itemId), mapQueueItem(item)));
+            orderedIds.add(itemId);
         });
 
         if (requestSequence === queueLoadRequestSequence) {

@@ -483,11 +483,7 @@ public class ActivitiesController : Controller
 
             var payload = BuildQueuePayload(item, settings);
             queue[item.QueueUuid] = payload;
-            var normalizedStatus = (item.Status ?? string.Empty).Trim().ToLowerInvariant();
-            if (normalizedStatus is "queued" or "running" or "inqueue" or DownloadingStatus)
-            {
-                queueOrder.Add(item.QueueUuid);
-            }
+            queueOrder.Add(item.QueueUuid);
         }
 
         return new Dictionary<string, object>
