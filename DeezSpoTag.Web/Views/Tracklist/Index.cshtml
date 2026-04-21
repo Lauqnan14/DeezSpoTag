@@ -3075,7 +3075,7 @@ function renderTracklist(data, options = {}) {
     const trackCountLabel = isPodcastShow ? 'episodes' : 'tracks';
     const backgroundImage = tracklistDiscoverHero
         || (((tracklistType === 'playlist' || tracklistType === 'trending') && coverImage)
-            ? `/api/playlist/cover/background?url=${encodeURIComponent(coverImage)}`
+            ? resolveTracklistBackgroundUrl(coverImage)
             : coverImage);
     
     // Update the download button text
@@ -4583,6 +4583,31 @@ function closeTracklistHeaderActionsMenu() {
     }
 }
 
+function resolveTracklistBackgroundUrl(url) {
+    const normalizedUrl = String(url || '').trim();
+    if (!normalizedUrl) {
+        return '';
+    }
+
+    try {
+        const parsed = new URL(normalizedUrl, globalThis.location.origin);
+        const protocol = parsed.protocol.toLowerCase();
+        if (protocol !== 'http:' && protocol !== 'https:') {
+            return normalizedUrl;
+        }
+
+        // Keep same-origin artwork direct to avoid routing local proxy URLs
+        // through playlist-cover background processing.
+        if (parsed.origin === globalThis.location.origin) {
+            return parsed.toString();
+        }
+
+        return `/api/playlist/cover/background?url=${encodeURIComponent(parsed.toString())}`;
+    } catch {
+        return normalizedUrl;
+    }
+}
+
 function applyTracklistArtworkSelection(url) {
     if (!url) {
         return;
@@ -4596,7 +4621,7 @@ function applyTracklistArtworkSelection(url) {
 
     const header = document.querySelector('.tracklist-header');
     if (header) {
-        const backgroundUrl = `/api/playlist/cover/background?url=${encodeURIComponent(normalizedUrl)}`;
+        const backgroundUrl = resolveTracklistBackgroundUrl(normalizedUrl);
         header.style.backgroundImage = `url('${backgroundUrl}')`;
     }
 
