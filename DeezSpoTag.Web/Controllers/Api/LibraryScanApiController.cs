@@ -54,14 +54,21 @@ public class LibraryScanApiController : ControllerBase
     }
 
     [HttpGet("status")]
-    public async Task<IActionResult> Status(CancellationToken cancellationToken)
+    public async Task<IActionResult> Status(
+        [FromQuery] bool includeFolderCount = false,
+        CancellationToken cancellationToken = default)
     {
         if (!_repository.IsConfigured)
         {
             return StatusCode(503, new { error = "Library DB not configured." });
         }
 
-        var folders = await _repository.GetFoldersAsync(cancellationToken);
+        int? folderCount = null;
+        if (includeFolderCount)
+        {
+            var folders = await _repository.GetFoldersAsync(cancellationToken);
+            folderCount = folders.Count;
+        }
         var lastScan = _configStore.GetLastScanInfo();
         var scanStatus = _scanRunner.GetStatus();
 
@@ -85,7 +92,7 @@ public class LibraryScanApiController : ControllerBase
                 albumsDetected = scanStatus.AlbumsDetected,
                 tracksDetected = scanStatus.TracksDetected
             },
-            folderCount = folders.Count,
+            folderCount,
             dbConfigured = _repository.IsConfigured
         });
     }

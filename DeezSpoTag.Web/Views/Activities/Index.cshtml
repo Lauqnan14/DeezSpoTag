@@ -3664,7 +3664,10 @@ function initDatabaseUpdater() {
             phaseLabel && (phaseLabel.textContent = 'Database update started');
             progressLabel && (progressLabel.textContent = 'Starting...');
             progressBar && (progressBar.style.width = '5%');
-            await activityFetch(url, { method: 'POST', keepalive: true });
+            const response = await activityFetch(url, { method: 'POST', keepalive: true });
+            if (!response.ok) {
+                throw new Error(await response.text());
+            }
             notifyActivity('Database update started.');
             await waitForDatabaseUpdate(Date.now());
         } catch (error) {
@@ -3692,6 +3695,11 @@ function initDatabaseUpdater() {
 }
 
 let libraryScanPollId = null;
+function isMediaOperationsTabActive() {
+    const pane = document.getElementById('media-operations-content');
+    return !!pane?.classList.contains('active');
+}
+
 function startLibraryScanStatusPolling() {
     if (libraryScanPollId) {
         return;
@@ -3707,6 +3715,10 @@ function startLibraryScanStatusPolling() {
     const metadataUpdate = document.getElementById('metadata-update-button');
 
     libraryScanPollId = setInterval(async () => {
+        if (document.hidden || !isMediaOperationsTabActive()) {
+            return;
+        }
+
         try {
             const response = await activityFetch('/api/library/scan/status');
             if (!response.ok) {
@@ -6276,30 +6288,11 @@ function formatList(values) {
 
 async function loadAnalysisActivity() {
     try {
-        const logs = await fetchJson('/api/library/scan/logs?limit=200');
-        const analysisLogs = Array.isArray(logs)
-            ? logs.filter(entry => (entry.message || '').toLowerCase().includes('vibe analysis'))
-            : [];
-        if (!analysisLogs.length) {
-            analysisState.running = false;
-            return;
-        }
-        const started = findLatestLog(analysisLogs, 'started');
-        const completed = findLatestLog(analysisLogs, 'completed');
-        analysisState.running = Boolean(started && (!completed || started.timestampUtc > completed.timestampUtc));
-        if (completed?.timestampUtc) {
-            analysisState.lastRunUtc = completed.timestampUtc;
-        }
-    } catch (error) {
-        console.warn('Analysis activity log fetch failed.', error);
+        await fetchJson('/api/library/analysis/current');
+        analysisState.running = true;
+    } catch {
+        analysisState.running = false;
     }
-}
-
-function findLatestLog(logs, keyword) {
-    const lower = String(keyword || '').toLowerCase();
-    return (Array.isArray(logs) ? logs : [])
-        .filter(entry => String(entry?.message || '').toLowerCase().includes(lower))
-        .sort((a, b) => new Date(b?.timestampUtc || 0) - new Date(a?.timestampUtc || 0))[0];
 }
 
 function applyLatestAnalysis(latest) {
@@ -6412,6 +6405,7 @@ async function loadAnalysisStatus() {
         const analyzed = status?.analyzedTracks ?? 0;
         const total = status?.totalTracks ?? 0;
         analysisState.pendingTracks = pending;
+        analysisState.lastRunUtc = status?.lastRunUtc || analysisState.lastRunUtc;
         statusEl.textContent = `${analyzed.toLocaleString()}/${total.toLocaleString()} analyzed`;
         if (pendingEl) {
             pendingEl.textContent = pending.toLocaleString();
@@ -6508,6 +6502,10 @@ function startAnalysisPolling() {
     analysisPollTimeoutId = setTimeout(async () => {
         analysisPollTimeoutId = null;
         if (document.hidden) {
+            startAnalysisPolling();
+            return;
+        }
+        if (!isMediaOperationsTabActive()) {
             startAnalysisPolling();
             return;
         }

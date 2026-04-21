@@ -62,12 +62,12 @@
                 }
                 return `
 <tr>
-    <td>${escapeHtml(formatTime(entry.createdAt))}</td>
-    <td>${escapeHtml(toTitleCase(entry.source))}</td>
-    <td>${escapeHtml(toTitleCase(watchLabel))}</td>
-    <td>${name}${artistName}</td>
-    <td>${escapeHtml(entry.trackCount ?? "--")}</td>
-    <td>${escapeHtml(toTitleCase(entry.status))}</td>
+    <td data-label="Date">${escapeHtml(formatTime(entry.createdAt))}</td>
+    <td data-label="Source">${escapeHtml(toTitleCase(entry.source))}</td>
+    <td data-label="Type">${escapeHtml(toTitleCase(watchLabel))}</td>
+    <td data-label="Name">${name}${artistName}</td>
+    <td data-label="Tracks">${escapeHtml(entry.trackCount ?? "--")}</td>
+    <td data-label="Status">${escapeHtml(toTitleCase(entry.status))}</td>
 </tr>`;
             }).join("");
         } catch (error) {
