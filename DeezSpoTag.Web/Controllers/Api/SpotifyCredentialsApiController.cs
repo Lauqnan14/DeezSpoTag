@@ -18,6 +18,8 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
         RegexOptions.Compiled,
         TimeSpan.FromMilliseconds(250));
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, CachedSpotifyConnectionStatus> SpotifyConnectionStatusCache = new(StringComparer.Ordinal);
+    private static readonly TimeSpan SpotifyConnectionStatusCacheTtl = TimeSpan.FromMinutes(2);
     private static readonly System.Text.Json.JsonSerializerOptions SpotifyUserAuthSerializerOptions = new()
     {
         PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
@@ -1107,6 +1109,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         public string? LibrespotError { get; set; }
         public bool Ok => WebPlayerOk && LibrespotOk;
     }
+    private sealed record CachedSpotifyConnectionStatus(SpotifyConnectionStatusResponse Response, DateTimeOffset ExpiresAt);
 
     [HttpGet("web-player/status")]
     public async Task<IActionResult> GetWebPlayerStatus(CancellationToken cancellationToken)
@@ -1162,6 +1165,19 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             return Unauthorized();
         }
 
+        var cacheKey = userId.Trim();
+        var forceRefreshRaw = Request.Query["force"].ToString();
+        var forceRefresh = string.Equals(forceRefreshRaw, "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(forceRefreshRaw, "1", StringComparison.OrdinalIgnoreCase);
+        if (forceRefresh)
+        {
+            SpotifyConnectionStatusCache.TryRemove(cacheKey, out _);
+        }
+        else if (TryGetCachedSpotifyConnectionStatus(cacheKey, out var cachedStatus))
+        {
+            return Ok(cachedStatus);
+        }
+
         var state = await LoadUserStateWithFallbackAsync(userId);
         var activeAccount = state.ActiveAccount;
         var webPlayerBlobPath = SpotifyUserAuthStore.ResolveActiveWebPlayerBlobPath(state);
@@ -1169,7 +1185,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         var webPlayerStatus = await ValidateWebPlayerConnectionAsync(webPlayerBlobPath, cancellationToken);
         var librespotStatus = await ValidateLibrespotConnectionAsync(librespotBlobPath, cancellationToken);
 
-        return Ok(new SpotifyConnectionStatusResponse
+        var response = new SpotifyConnectionStatusResponse
         {
             ActiveAccount = activeAccount,
             WebPlayerBlobPath = webPlayerBlobPath,
@@ -1178,7 +1194,49 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             WebPlayerError = webPlayerStatus.Error,
             LibrespotOk = librespotStatus.Ok,
             LibrespotError = librespotStatus.Error
-        });
+        };
+        SetCachedSpotifyConnectionStatus(cacheKey, response);
+
+        return Ok(response);
+    }
+
+    private static bool TryGetCachedSpotifyConnectionStatus(string cacheKey, out SpotifyConnectionStatusResponse? response)
+    {
+        response = null;
+        if (!SpotifyConnectionStatusCache.TryGetValue(cacheKey, out var cached))
+        {
+            return false;
+        }
+
+        if (DateTimeOffset.UtcNow >= cached.ExpiresAt)
+        {
+            SpotifyConnectionStatusCache.TryRemove(cacheKey, out _);
+            return false;
+        }
+
+        response = CloneSpotifyConnectionStatus(cached.Response);
+        return true;
+    }
+
+    private static void SetCachedSpotifyConnectionStatus(string cacheKey, SpotifyConnectionStatusResponse response)
+    {
+        SpotifyConnectionStatusCache[cacheKey] = new CachedSpotifyConnectionStatus(
+            CloneSpotifyConnectionStatus(response),
+            DateTimeOffset.UtcNow.Add(SpotifyConnectionStatusCacheTtl));
+    }
+
+    private static SpotifyConnectionStatusResponse CloneSpotifyConnectionStatus(SpotifyConnectionStatusResponse source)
+    {
+        return new SpotifyConnectionStatusResponse
+        {
+            ActiveAccount = source.ActiveAccount,
+            WebPlayerBlobPath = source.WebPlayerBlobPath,
+            LibrespotBlobPath = source.LibrespotBlobPath,
+            WebPlayerOk = source.WebPlayerOk,
+            WebPlayerError = source.WebPlayerError,
+            LibrespotOk = source.LibrespotOk,
+            LibrespotError = source.LibrespotError
+        };
     }
 
     private async Task<(bool Ok, string? Error)> ValidateWebPlayerConnectionAsync(string? webPlayerBlobPath, CancellationToken cancellationToken)

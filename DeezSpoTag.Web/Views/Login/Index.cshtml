@@ -1063,6 +1063,7 @@ console.log('=== LOGIN PAGE SCRIPT LOADED ===');
 
 let appleMusicSettingsCache = null;
 let connectedPlatformsRefreshTimer = null;
+let connectedPlatformsRefreshOptions = null;
 const LOGIN_TAB_STORAGE_KEY = 'deezspotag-login-active-tab';
 let spotifyConfigRequested = false;
 let spotifyConfigLoadSequence = 0;
@@ -2431,24 +2432,48 @@ function beginAppleMusicPassiveStatusPolling() {
     }, 15000);
 }
 
-function refreshConnectedPlatformsSidebar() {
+function refreshConnectedPlatformsSidebar(options = null) {
     try {
-        queueConnectedPlatformsRefresh();
+        const refreshOptions = (options && typeof options === 'object')
+            ? options
+            : { force: true, forceDeep: true, reason: 'login-auth-change' };
+        queueConnectedPlatformsRefresh(refreshOptions);
     } catch (error) {
         console.warn('Failed to refresh connected platforms sidebar', error);
     }
 }
 
-function queueConnectedPlatformsRefresh() {
+function queueConnectedPlatformsRefresh(options = {}) {
+    const incoming = (options && typeof options === 'object') ? { ...options } : {};
+    if (!connectedPlatformsRefreshOptions) {
+        connectedPlatformsRefreshOptions = incoming;
+    } else {
+        if (incoming.force === true) {
+            connectedPlatformsRefreshOptions.force = true;
+        }
+        if (incoming.forceDeep === true || incoming.deep === true) {
+            connectedPlatformsRefreshOptions.force = true;
+            connectedPlatformsRefreshOptions.forceDeep = true;
+            connectedPlatformsRefreshOptions.deep = true;
+        } else if (incoming.deep === false && connectedPlatformsRefreshOptions.deep !== true) {
+            connectedPlatformsRefreshOptions.deep = false;
+        }
+        if (incoming.reason) {
+            connectedPlatformsRefreshOptions.reason = incoming.reason;
+        }
+    }
+
     if (connectedPlatformsRefreshTimer) {
         clearTimeout(connectedPlatformsRefreshTimer);
     }
 
     connectedPlatformsRefreshTimer = setTimeout(() => {
         connectedPlatformsRefreshTimer = null;
+        const refreshOptions = connectedPlatformsRefreshOptions || {};
+        connectedPlatformsRefreshOptions = null;
         try {
             if (window.DeezSpoTag && typeof window.DeezSpoTag.loadConnectedPlatforms === 'function') {
-                window.DeezSpoTag.loadConnectedPlatforms();
+                window.DeezSpoTag.loadConnectedPlatforms(refreshOptions);
             }
         } catch (error) {
             console.warn('Failed to refresh connected platforms sidebar', error);
@@ -3033,7 +3058,7 @@ async function logoutSpotify() {
         applySpotifyConnectionUiState(null, null, '', false);
         localStorage.removeItem('connected-platforms-cache');
         if (window.DeezSpoTag && typeof window.DeezSpoTag.loadConnectedPlatforms === 'function') {
-            window.DeezSpoTag.loadConnectedPlatforms();
+            window.DeezSpoTag.loadConnectedPlatforms({ force: true, forceDeep: true, reason: 'spotify-logout' });
         }
         showToast('Disconnected', 'success');
     } catch (error) {
