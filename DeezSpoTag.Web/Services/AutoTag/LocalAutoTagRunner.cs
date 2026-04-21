@@ -4928,21 +4928,39 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private static void AddAutoTagLyricsAndOtherTags(AutoTagTrack track, Action<string, bool> add)
     {
         var otherKeys = track.Other.Keys.ToList();
-        var hasSyncedLyrics = otherKeys.Any(key => key.Equals(SyncedLyricsTag, StringComparison.OrdinalIgnoreCase));
-        var hasUnsyncedLyrics = otherKeys.Any(key =>
-            key.Equals(UnsyncedLyricsTag, StringComparison.OrdinalIgnoreCase)
-            || key.Equals(LyricsTag, StringComparison.OrdinalIgnoreCase));
-        var hasTtmlLyrics = otherKeys.Any(key => key.Equals(TtmlLyricsTag, StringComparison.OrdinalIgnoreCase));
+        var hasSyncedLyrics = HasOtherKey(otherKeys, SyncedLyricsTag);
+        var hasUnsyncedLyrics = HasAnyOtherKey(otherKeys, UnsyncedLyricsTag, LyricsTag);
+        var hasTtmlLyrics = HasOtherKey(otherKeys, TtmlLyricsTag);
         add(SyncedLyricsTag, hasSyncedLyrics);
         add(UnsyncedLyricsTag, hasUnsyncedLyrics);
         add(TtmlLyricsTag, hasTtmlLyrics);
 
-        var hasOtherTags = otherKeys.Any(key =>
-            !key.Equals(SyncedLyricsTag, StringComparison.OrdinalIgnoreCase)
-            && !key.Equals(UnsyncedLyricsTag, StringComparison.OrdinalIgnoreCase)
-            && !key.Equals(LyricsTag, StringComparison.OrdinalIgnoreCase)
-            && !key.Equals(TtmlLyricsTag, StringComparison.OrdinalIgnoreCase));
+        var hasOtherTags = HasNonLyricsOtherTag(otherKeys);
         add(OtherTagsTag, hasOtherTags);
+    }
+
+    private static bool HasOtherKey(IEnumerable<string> keys, string target)
+        => keys.Any(key => key.Equals(target, StringComparison.OrdinalIgnoreCase));
+
+    private static bool HasAnyOtherKey(IEnumerable<string> keys, string first, string second)
+        => HasOtherKey(keys, first) || HasOtherKey(keys, second);
+
+    private static bool HasNonLyricsOtherTag(IEnumerable<string> keys)
+    {
+        foreach (var key in keys)
+        {
+            if (key.Equals(SyncedLyricsTag, StringComparison.OrdinalIgnoreCase)
+                || key.Equals(UnsyncedLyricsTag, StringComparison.OrdinalIgnoreCase)
+                || key.Equals(LyricsTag, StringComparison.OrdinalIgnoreCase)
+                || key.Equals(TtmlLyricsTag, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return true;
+        }
+
+        return false;
     }
 
     private static bool HasOtherTagValues(AutoTagTrack track, string key)

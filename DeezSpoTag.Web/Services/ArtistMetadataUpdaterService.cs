@@ -1214,41 +1214,58 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
 
             foreach (var artistId in artistIds)
             {
-                if (!string.IsNullOrWhiteSpace(request.AvatarPath) && File.Exists(request.AvatarPath))
-                {
-                    updates.AvatarUpdated = await _jellyfinClient.UpdateArtistImageAsync(
-                        jellyfin.Url,
-                        jellyfin.ApiKey,
-                        artistId,
-                        request.AvatarPath,
-                        cancellationToken) || updates.AvatarUpdated;
-                }
-
-                if (!string.IsNullOrWhiteSpace(request.BackgroundPath) && File.Exists(request.BackgroundPath))
-                {
-                    updates.BackgroundUpdated = await _jellyfinClient.UpdateArtistBackdropAsync(
-                        jellyfin.Url,
-                        jellyfin.ApiKey,
-                        artistId,
-                        request.BackgroundPath,
-                        cancellationToken) || updates.BackgroundUpdated;
-                }
-
-                if (!string.IsNullOrWhiteSpace(request.Biography))
-                {
-                    updates.BioUpdated = await _jellyfinClient.UpdateArtistOverviewAsync(
-                        jellyfin.Url,
-                        jellyfin.ApiKey,
-                        artistId,
-                        request.Biography,
-                        cancellationToken) || updates.BioUpdated;
-                }
+                await PushSingleJellyfinArtistMetadataAsync(
+                    request,
+                    jellyfin.Url,
+                    jellyfin.ApiKey,
+                    artistId,
+                    updates,
+                    cancellationToken);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Metadata updater Jellyfin push failed for {Artist}", request.ArtistName);
             warnings.Add("Jellyfin update failed.");
+        }
+    }
+
+    private async Task PushSingleJellyfinArtistMetadataAsync(
+        PushMetadataRequest request,
+        string jellyfinUrl,
+        string jellyfinApiKey,
+        string artistId,
+        PushUpdateAccumulator updates,
+        CancellationToken cancellationToken)
+    {
+        if (HasLocalFile(request.AvatarPath))
+        {
+            updates.AvatarUpdated = await _jellyfinClient.UpdateArtistImageAsync(
+                jellyfinUrl,
+                jellyfinApiKey,
+                artistId,
+                request.AvatarPath!,
+                cancellationToken) || updates.AvatarUpdated;
+        }
+
+        if (HasLocalFile(request.BackgroundPath))
+        {
+            updates.BackgroundUpdated = await _jellyfinClient.UpdateArtistBackdropAsync(
+                jellyfinUrl,
+                jellyfinApiKey,
+                artistId,
+                request.BackgroundPath!,
+                cancellationToken) || updates.BackgroundUpdated;
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Biography))
+        {
+            updates.BioUpdated = await _jellyfinClient.UpdateArtistOverviewAsync(
+                jellyfinUrl,
+                jellyfinApiKey,
+                artistId,
+                request.Biography,
+                cancellationToken) || updates.BioUpdated;
         }
     }
 

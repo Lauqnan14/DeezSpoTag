@@ -31,10 +31,14 @@
                 return;
             }
             const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-            const currentIndex = items.findIndex(item => item === activeElement);
-            const nextIndex = currentIndex >= 0
-                ? (currentIndex + offset + items.length) % items.length
-                : (offset >= 0 ? 0 : items.length - 1);
+            const currentIndex = activeElement ? items.indexOf(activeElement) : -1;
+            let nextIndex = items.length - 1;
+            if (offset >= 0) {
+                nextIndex = 0;
+            }
+            if (currentIndex >= 0) {
+                nextIndex = (currentIndex + offset + items.length) % items.length;
+            }
             items[nextIndex]?.focus();
         };
 

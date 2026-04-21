@@ -779,7 +779,7 @@ public sealed class DownloadIntentService
 
         var payloadSources = allowCrossEngineFallback
             ? DownloadSourceOrder.CollapseAutoSourcesByService(
-                BuildFallbackPlanSources(autoSources, settings, engine, quality, request.Availability))
+                BuildFallbackPlanSources(autoSources, settings, engine, quality))
             : DownloadSourceOrder.ResolveEngineQualitySources(
                 engine,
                 quality,
@@ -3889,8 +3889,7 @@ public sealed class DownloadIntentService
         List<string> autoSources,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         string engine,
-        string? requestedQuality,
-        SongLinkResult? availability)
+        string? requestedQuality)
     {
         var planSources = new List<string>();
         var strict = UseStrictQualityFallback(settings, engine, requestedQuality);

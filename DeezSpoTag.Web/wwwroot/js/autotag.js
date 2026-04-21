@@ -3119,20 +3119,24 @@
         const merged = structuredClone(DEFAULT_CONFIG);
         Object.assign(merged, config || {});
         migrateLegacyOrganizerConfig(merged);
-        ensureProfileConfigDefaults(merged);
-        delete merged.moveSuccessMode;
-        const moveSuccessLibraryId = Number.parseInt(String(merged.moveSuccessLibraryFolderId ?? ""), 10);
-        merged.moveSuccessLibraryFolderId = Number.isFinite(moveSuccessLibraryId) ? moveSuccessLibraryId : null;
-        ensureEffectivePlatforms(merged);
-        merged.tags = Array.isArray(merged.tags) ? merged.tags : [];
-        merged.downloadTags = Array.isArray(merged.downloadTags) ? merged.downloadTags : [];
-        merged.gapFillTags = Array.isArray(merged.gapFillTags) ? merged.gapFillTags : [];
-        merged.overwriteTags = Array.isArray(merged.overwriteTags) ? merged.overwriteTags : [];
+        normalizeMergedProfileConfig(merged);
         state.config = merged;
         ensureCustomDefaults();
         ensurePlatformCustomDefaults();
         syncEnhancementTagsWithEnrichment();
         loadConfigToUI();
+    }
+
+    function normalizeMergedProfileConfig(config) {
+        ensureProfileConfigDefaults(config);
+        delete config.moveSuccessMode;
+        const moveSuccessLibraryId = Number.parseInt(String(config.moveSuccessLibraryFolderId ?? ""), 10);
+        config.moveSuccessLibraryFolderId = Number.isFinite(moveSuccessLibraryId) ? moveSuccessLibraryId : null;
+        ensureEffectivePlatforms(config);
+        config.tags = Array.isArray(config.tags) ? config.tags : [];
+        config.downloadTags = Array.isArray(config.downloadTags) ? config.downloadTags : [];
+        config.gapFillTags = Array.isArray(config.gapFillTags) ? config.gapFillTags : [];
+        config.overwriteTags = Array.isArray(config.overwriteTags) ? config.overwriteTags : [];
     }
 
     function migrateLegacyOrganizerConfig(config) {
@@ -3483,23 +3487,31 @@
         ensureCustomDefaults();
         ensurePlatformCustomDefaults();
         ensureEnhancementDefaults();
+        readTagSelectionsFromUi();
+
+        const getChecked = (id, fallback = false) => el(id)?.checked ?? fallback;
+        const getValue = (id, fallback = "") => el(id)?.value ?? fallback;
+
+        readAutoTagConfigSections(getChecked, getValue);
+        ensureEffectivePlatforms(state.config);
+
+        return state.config;
+    }
+
+    function readTagSelectionsFromUi() {
         state.config.tags = getCheckedTags("tags");
         state.config.downloadTags = normalizeDownloadTags(getCheckedTags("downloadTags"));
         state.config.gapFillTags = getCheckedTags("gapFillTags");
         syncEnhancementTagsWithEnrichment();
         state.config.overwriteTags = getCheckedTags("overwriteTags");
+    }
 
-        const getChecked = (id, fallback = false) => el(id)?.checked ?? fallback;
-        const getValue = (id, fallback = "") => el(id)?.value ?? fallback;
-
+    function readAutoTagConfigSections(getChecked, getValue) {
         readBaseAutoTagConfig(getChecked, getValue);
         readMatchingAndTagFormattingConfig(getChecked, getValue);
         readMoveAndFolderUniformityConfig(getChecked, getValue);
         readCoverAndQualityEnhancementConfig(getChecked, getValue);
         readFinalAutoTagConfig(getChecked, getValue);
-        ensureEffectivePlatforms(state.config);
-
-        return state.config;
     }
 
     function readBaseAutoTagConfig(getChecked, getValue) {
@@ -6227,22 +6239,36 @@
             return;
         }
 
-        if (hasWindowField && !hasRenameToggle) {
-            const windowField = el("enhancementRecentDownloadWindowDays");
-            const row = windowField?.closest(".download-grid");
-            if (row) {
-                row.insertBefore(createRenameSpotifyArtistFoldersControl(), row.firstElementChild || null);
-            }
-        }
+        tryInsertRenameSpotifyControl(hasWindowField, hasRenameToggle);
 
         if (hasRecentDownloadWindowControls()) {
             ensureRecentDownloadWindowStatus(section);
             return;
         }
 
-        const insertionAnchor = el("enhancementTechnicalProfilesStatus")
+        const insertionAnchor = resolveRecentDownloadInsertionAnchor(section);
+        section.insertBefore(createRecentDownloadWindowControlsRow(), insertionAnchor || null);
+        appendRecentDownloadWindowStatusBefore(section, insertionAnchor);
+    }
+
+    function tryInsertRenameSpotifyControl(hasWindowField, hasRenameToggle) {
+        if (!hasWindowField || hasRenameToggle) {
+            return;
+        }
+        const windowField = el("enhancementRecentDownloadWindowDays");
+        const row = windowField?.closest(".download-grid");
+        if (row) {
+            row.insertBefore(createRenameSpotifyArtistFoldersControl(), row.firstElementChild || null);
+        }
+    }
+
+    function resolveRecentDownloadInsertionAnchor(section) {
+        return el("enhancementTechnicalProfilesStatus")
             || el("enhancementQualityChecksStatus")
             || section.querySelector(".enhancement-action-row");
+    }
+
+    function createRecentDownloadWindowControlsRow() {
         const row = document.createElement("div");
         row.className = "download-grid download-grid-2 mt-3";
         row.innerHTML = `
@@ -6268,9 +6294,7 @@
                 <span class="helper">Applies to the automation run that enhances recent downloads moved into library folders.</span>
             </div>
         `;
-
-        section.insertBefore(row, insertionAnchor || null);
-        appendRecentDownloadWindowStatusBefore(section, insertionAnchor);
+        return row;
     }
 
     function convertRecentWindowHoursToDays(hours) {
@@ -6343,26 +6367,9 @@
         try {
             const { renameFoldersCheckbox, renameSpotifyArtistFolders } =
                 await saveEnhancementDefaultsCore(skipProfileUpsert);
-            state.autoTagDefaultsDirty = false;
-            applyAutoTagDefaultsToUi();
-            if (renameFoldersCheckbox instanceof HTMLInputElement) {
-                renameFoldersCheckbox.checked = renameSpotifyArtistFolders;
-            }
-            if (!suppressStatus) {
-                setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement defaults and profile preferences saved.");
-            }
-            if (!suppressToast) {
-                showToast("Enhancement defaults and profile preferences saved.", "success");
-            }
+            applyEnhancementDefaultsSaveSuccess(renameFoldersCheckbox, renameSpotifyArtistFolders, suppressStatus, suppressToast);
         } catch (error) {
-            if (!suppressStatus) {
-                setEnhancementStatus(
-                    "enhancementRecentDownloadWindowStatus",
-                    `Failed to save enhancement defaults: ${error?.message || error}`);
-            }
-            if (!suppressToast) {
-                showToast(`Failed to save enhancement defaults: ${error?.message || error}`, "error");
-            }
+            handleEnhancementDefaultsSaveError(error, suppressStatus, suppressToast);
             if (rethrow) {
                 throw error;
             }
@@ -6370,6 +6377,30 @@
             if (button) {
                 button.disabled = false;
             }
+        }
+    }
+
+    function applyEnhancementDefaultsSaveSuccess(renameFoldersCheckbox, renameSpotifyArtistFolders, suppressStatus, suppressToast) {
+        state.autoTagDefaultsDirty = false;
+        applyAutoTagDefaultsToUi();
+        if (renameFoldersCheckbox instanceof HTMLInputElement) {
+            renameFoldersCheckbox.checked = renameSpotifyArtistFolders;
+        }
+        if (!suppressStatus) {
+            setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement defaults and profile preferences saved.");
+        }
+        if (!suppressToast) {
+            showToast("Enhancement defaults and profile preferences saved.", "success");
+        }
+    }
+
+    function handleEnhancementDefaultsSaveError(error, suppressStatus, suppressToast) {
+        const message = `Failed to save enhancement defaults: ${error?.message || error}`;
+        if (!suppressStatus) {
+            setEnhancementStatus("enhancementRecentDownloadWindowStatus", message);
+        }
+        if (!suppressToast) {
+            showToast(message, "error");
         }
     }
 

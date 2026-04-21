@@ -2978,18 +2978,14 @@ public class AutoTagService
 
     private static List<string> ApplyStageSchema(JsonObject root, HashSet<string> allowedKeys)
     {
-        var stripped = new List<string>();
-        foreach (var key in root.Select(pair => pair.Key).ToList())
+        var stripped = root
+            .Select(pair => pair.Key)
+            .Where(key => !allowedKeys.Contains(key))
+            .ToList();
+        foreach (var key in stripped)
         {
-            if (allowedKeys.Contains(key))
-            {
-                continue;
-            }
-
             root.Remove(key);
-            stripped.Add(key);
         }
-
         stripped.Sort(StringComparer.OrdinalIgnoreCase);
         return stripped;
     }

@@ -117,39 +117,49 @@ public sealed class BoomplayMatcher
     {
         foreach (var id in CollectCandidateIds(info))
         {
-            try
+            var matched = await TryMatchSingleIdAsync(info, config, id, cancellationToken);
+            if (matched != null)
             {
-                var track = await _metadataService.GetSongAsync(id, cancellationToken);
-                if (track == null || !IsUsableTrack(track))
-                {
-                    continue;
-                }
-
-                if (ShouldRejectIdCandidate(info, track, config, id))
-                {
-                    continue;
-                }
-
-                return new AutoTagMatchResult
-                {
-                    Accuracy = 1.0,
-                    Track = ToAutoTagTrack(track)
-                };
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(ex, "Boomplay ID match failed for {TrackId}", id);
-                }
+                return matched;
             }
         }
 
         return null;
+    }
+
+    private async Task<AutoTagMatchResult?> TryMatchSingleIdAsync(
+        AutoTagAudioInfo info,
+        AutoTagMatchingConfig config,
+        string id,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var track = await _metadataService.GetSongAsync(id, cancellationToken);
+            if (track == null || !IsUsableTrack(track) || ShouldRejectIdCandidate(info, track, config, id))
+            {
+                return null;
+            }
+
+            return new AutoTagMatchResult
+            {
+                Accuracy = 1.0,
+                Track = ToAutoTagTrack(track)
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Boomplay ID match failed for {TrackId}", id);
+            }
+
+            return null;
+        }
     }
 
     private bool ShouldRejectIdCandidate(
@@ -213,14 +223,24 @@ public sealed class BoomplayMatcher
 
         foreach (var query in queries)
         {
-            var tracks = await _metadataService.SearchSongsAsync(query, searchLimit, cancellationToken);
-            foreach (var track in tracks)
-            {
-                TryAddTrack(track, seen, allTracks);
-            }
+            await AppendQueryTracksAsync(query, searchLimit, seen, allTracks, cancellationToken);
         }
 
         return TrySelectBySimilarityWithFallback(info, config, allTracks);
+    }
+
+    private async Task AppendQueryTracksAsync(
+        string query,
+        int searchLimit,
+        HashSet<string> seen,
+        List<BoomplayTrackMetadata> allTracks,
+        CancellationToken cancellationToken)
+    {
+        var tracks = await _metadataService.SearchSongsAsync(query, searchLimit, cancellationToken);
+        foreach (var track in tracks)
+        {
+            TryAddTrack(track, seen, allTracks);
+        }
     }
 
     private static List<string> CollectCandidateIds(AutoTagAudioInfo info)

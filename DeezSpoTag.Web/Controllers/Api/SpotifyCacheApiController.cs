@@ -343,7 +343,10 @@ public class SpotifyCacheApiController : ControllerBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to resolve default {Slot} visual for artist {ArtistId}", slot, artistId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to resolve default {Slot} visual for artist {ArtistId}", slot, artistId);
+            }
             return null;
         }
     }
