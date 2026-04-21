@@ -2681,13 +2681,11 @@
         setChecked("qualityChecksUseShazamForDedupe", state.config.enhancement.qualityChecks.useShazamForDedupe);
         setValue("qualityChecksDuplicatesFolderName", state.config.enhancement.qualityChecks.duplicatesFolderName || "%duplicates%");
         updateQualityChecksFolderSummary(state.config.enhancement.qualityChecks.folderIds ?? []);
-        state.config.enhancement.qualityChecks.scope = "all";
         state.config.enhancement.qualityChecks.technicalProfiles = normalizeTechnicalProfiles(
             state.config.enhancement.qualityChecks.technicalProfiles
         );
         setChecked("enhancementQueueAtmosAlternatives", state.config.enhancement.qualityChecks.queueAtmosAlternatives);
         setChecked("enhancementQueueLyricsRefresh", state.config.enhancement.qualityChecks.queueLyricsRefresh);
-        state.config.enhancement.qualityChecks.cooldownMinutes = null;
         renderEnhancementTechnicalProfilesCatalog();
         void refreshEnhancementTechnicalProfiles();
         setChecked("autotag-write-lrc", state.config.writeLrc);
@@ -3639,13 +3637,12 @@
 
         const qualityChecks = state.config.enhancement.qualityChecks;
         qualityChecks.folderIds = parseFolderIdList(getValue("enhancementQualityFolder", (qualityChecks.folderIds ?? []).join(",")));
-        qualityChecks.scope = "all";
         qualityChecks.queueAtmosAlternatives = getChecked("enhancementQueueAtmosAlternatives", qualityChecks.queueAtmosAlternatives);
         qualityChecks.queueLyricsRefresh = getChecked("enhancementQueueLyricsRefresh", qualityChecks.queueLyricsRefresh);
         qualityChecks.flagDuplicates = getChecked("flagDuplicates", qualityChecks.flagDuplicates);
         qualityChecks.flagMissingTags = getChecked("flagMissingTags", qualityChecks.flagMissingTags);
         qualityChecks.flagMismatchedMetadata = getChecked("flagMismatchedMetadata", qualityChecks.flagMismatchedMetadata);
-        qualityChecks.useDuplicatesFolder = true;
+        qualityChecks.useDuplicatesFolder = qualityChecks.useDuplicatesFolder !== false;
         qualityChecks.useShazamForDedupe = getChecked("qualityChecksUseShazamForDedupe", qualityChecks.useShazamForDedupe);
         qualityChecks.duplicatesFolderName = getValue(
             "qualityChecksDuplicatesFolderName",
@@ -3653,7 +3650,8 @@
         ).trim() || "%duplicates%";
         syncSelectedTechnicalProfilesFromUI();
         qualityChecks.technicalProfiles = normalizeTechnicalProfiles(qualityChecks.technicalProfiles);
-        qualityChecks.cooldownMinutes = null;
+        qualityChecks.scope = String(qualityChecks.scope || "all").toLowerCase() === "watchlist" ? "watchlist" : "all";
+        qualityChecks.cooldownMinutes = parseOptionalBoundedInt(qualityChecks.cooldownMinutes, 0, 43200);
     }
 
     function readFinalAutoTagConfig(getChecked, getValue) {
@@ -4280,7 +4278,7 @@
                     flagDuplicates: checks.flagDuplicates,
                     flagMissingTags: checks.flagMissingTags,
                     flagMismatchedMetadata: checks.flagMismatchedMetadata,
-                    useDuplicatesFolder: true,
+                    useDuplicatesFolder: checks.useDuplicatesFolder !== false,
                     useShazamForDedupe: checks.useShazamForDedupe,
                     duplicatesFolderName: checks.duplicatesFolderName,
                     queueAtmosAlternatives: checks.queueAtmosAlternatives,
