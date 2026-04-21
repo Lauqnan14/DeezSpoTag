@@ -3007,6 +3007,40 @@ let queueRealtimeLifecycleAttached = false;
 let queueActionInFlight = false;
 let queueHydrationRefreshTimer = null;
 let lastQueueHydrationRefreshAt = 0;
+const activityCsrfUnsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const activityNativeFetch = globalThis.fetch.bind(globalThis);
+
+function readActivityCsrfRequestToken() {
+    const tokenMeta = document.querySelector('meta[name="deezspotag-csrf-token"]');
+    const token = tokenMeta?.getAttribute('content');
+    return typeof token === 'string' ? token.trim() : '';
+}
+
+function buildActivityFetchOptions(options) {
+    const requestOptions = options ? { ...options } : {};
+    const method = String(requestOptions.method || 'GET').toUpperCase();
+    if (!activityCsrfUnsafeMethods.has(method)) {
+        return requestOptions;
+    }
+
+    const headers = new Headers(requestOptions.headers || {});
+    if (!headers.has('X-CSRF-TOKEN')) {
+        const csrfToken = readActivityCsrfRequestToken();
+        if (csrfToken) {
+            headers.set('X-CSRF-TOKEN', csrfToken);
+        }
+    }
+
+    requestOptions.headers = headers;
+    if (!requestOptions.credentials) {
+        requestOptions.credentials = 'same-origin';
+    }
+    return requestOptions;
+}
+
+function activityFetch(resource, options) {
+    return activityNativeFetch(resource, buildActivityFetchOptions(options));
+}
 
 let analysisPollTimeoutId = null;
 let analysisPollInFlight = false;
@@ -3428,7 +3462,7 @@ function initMetadataUpdater() {
         };
 
         try {
-            const response = await fetch('/api/library/spotify-cache/metadata-updater/run', {
+            const response = await activityFetch('/api/library/spotify-cache/metadata-updater/run', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
@@ -3454,7 +3488,7 @@ function initMetadataUpdater() {
     if (refreshCacheButton) {
         refreshCacheButton.addEventListener('click', async () => {
             try {
-                const response = await fetch('/api/library/spotify-cache/refresh', { method: 'POST', keepalive: true });
+                const response = await activityFetch('/api/library/spotify-cache/refresh', { method: 'POST', keepalive: true });
                 if (!response.ok) {
                     throw new Error(await response.text());
                 }
@@ -3509,7 +3543,7 @@ async function loadDatabaseUpdaterFolders() {
 
     const previousValue = folderSelect.value;
     try {
-        const response = await fetch('/api/library/folders');
+        const response = await activityFetch('/api/library/folders');
         if (!response.ok) {
             throw new Error(await response.text());
         }
@@ -3533,7 +3567,7 @@ async function loadDatabaseUpdaterFolders() {
 
 async function loadDatabaseUpdaterStatus() {
     try {
-        const response = await fetch('/api/library/scan/status');
+        const response = await activityFetch('/api/library/scan/status');
         if (!response.ok) {
             throw new Error(await response.text());
         }
@@ -3570,7 +3604,7 @@ async function waitForDatabaseUpdate(startedAtMs) {
 
     while (Date.now() < deadline) {
         try {
-            const response = await fetch('/api/library/scan/status');
+            const response = await activityFetch('/api/library/scan/status');
             if (!response.ok) {
                 throw new Error(await response.text());
             }
@@ -3630,7 +3664,7 @@ function initDatabaseUpdater() {
             phaseLabel && (phaseLabel.textContent = 'Database update started');
             progressLabel && (progressLabel.textContent = 'Starting...');
             progressBar && (progressBar.style.width = '5%');
-            await fetch(url, { method: 'POST', keepalive: true });
+            await activityFetch(url, { method: 'POST', keepalive: true });
             notifyActivity('Database update started.');
             await waitForDatabaseUpdate(Date.now());
         } catch (error) {
@@ -3642,7 +3676,7 @@ function initDatabaseUpdater() {
     if (cancelButton) {
         cancelButton.addEventListener('click', async () => {
             try {
-                const response = await fetch('/api/library/scan/cancel', { method: 'POST' });
+                const response = await activityFetch('/api/library/scan/cancel', { method: 'POST' });
                 if (response.ok) {
                     const payload = await response.json();
                     notifyActivity(payload?.cancelled ? 'Library scan cancelled.' : 'No scan running.', payload?.cancelled ? 'info' : 'warning');
@@ -3674,7 +3708,7 @@ function startLibraryScanStatusPolling() {
 
     libraryScanPollId = setInterval(async () => {
         try {
-            const response = await fetch('/api/library/scan/status');
+            const response = await activityFetch('/api/library/scan/status');
             if (!response.ok) {
                 return;
             }
@@ -3691,7 +3725,7 @@ function startLibraryScanStatusPolling() {
         }
 
         try {
-            const metadataResponse = await fetch('/api/library/spotify-cache/metadata-updater/status');
+            const metadataResponse = await activityFetch('/api/library/spotify-cache/metadata-updater/status');
             if (!metadataResponse.ok) {
                 return;
             }
@@ -3726,7 +3760,7 @@ function initMediaServerScan() {
             progressBar && (progressBar.style.width = '10%');
             notifyActivity('Media server scan started.');
 
-            const response = await fetch('/api/media-server/scan', { method: 'POST', keepalive: true });
+            const response = await activityFetch('/api/media-server/scan', { method: 'POST', keepalive: true });
             if (!response.ok) {
                 throw new Error(await response.text());
             }
@@ -3781,7 +3815,7 @@ function initLibraryMaintenance() {
         try {
             phaseLabel && (phaseLabel.textContent = 'Cleanup running');
             detailsLabel && (detailsLabel.textContent = 'Checking library files...');
-            const response = await fetch('/api/library/maintenance/cleanup-missing', { method: 'POST' });
+            const response = await activityFetch('/api/library/maintenance/cleanup-missing', { method: 'POST' });
             if (!response.ok) {
                 throw new Error(await response.text());
             }
@@ -3811,7 +3845,7 @@ function initLibraryMaintenance() {
         try {
             phaseLabel && (phaseLabel.textContent = 'Clearing library');
             detailsLabel && (detailsLabel.textContent = 'Removing library metadata...');
-            const response = await fetch('/api/library/maintenance/clear', { method: 'POST' });
+            const response = await activityFetch('/api/library/maintenance/clear', { method: 'POST' });
             if (!response.ok) {
                 throw new Error(await response.text());
             }
@@ -4055,73 +4089,93 @@ async function clearCanceledTasks() {
 	    return badges.join('');
 	}
 
-	let renderTasksScheduled = false;
-	function scheduleRenderTasks() {
-	    if (renderTasksScheduled) return;
-	    renderTasksScheduled = true;
-	    requestAnimationFrame(() => {
-	        renderTasksScheduled = false;
-	        renderTasks();
-	    });
-	}
+		let renderTasksScheduled = false;
+		let renderTasksTimer = null;
+		const renderTasksDelayMs = 80;
+		function scheduleRenderTasks(options) {
+		    const immediate = options?.immediate === true;
+		    if (immediate) {
+		        if (renderTasksTimer != null) {
+		            clearTimeout(renderTasksTimer);
+		            renderTasksTimer = null;
+		        }
+		        renderTasksScheduled = false;
+		        requestAnimationFrame(() => {
+		            renderTasks();
+		        });
+		        return;
+		    }
+		    if (renderTasksScheduled) return;
+		    renderTasksScheduled = true;
+		    renderTasksTimer = setTimeout(() => {
+		        renderTasksScheduled = false;
+		        renderTasksTimer = null;
+		        requestAnimationFrame(() => {
+		            renderTasks();
+		        });
+		    }, renderTasksDelayMs);
+		}
 
 function renderTasks() {
     const tasksList = document.getElementById('tasksList');
     if (!tasksList) return;
     const tailVisible = isQueueTailVisible();
     const orderedTasks = orderTasksForAutoScroll(tasks, { pinActive: !tailVisible });
-    const renderTask = (task, index) => {
-        const progressValue = normalizeQueueProgressPercent(task.progress);
-        const activityText = getTaskActivityText(task);
+	    const renderTask = (task, index) => {
+	        const taskId = String(task.taskId || '');
+	        const safeTaskIdArg = escapeJsString(taskId);
+	        const safeTaskIdAttr = escapeHtml(taskId);
+	        const progressValue = normalizeQueueProgressPercent(task.progress);
+	        const activityText = getTaskActivityText(task);
         const activityHtml = activityText
             ? `<div class="task-activity">${escapeHtml(activityText)}</div>`
             : '';
-        const cachedProgress = queueProgressCache[task.taskId];
-        const progressStart = Number.isFinite(cachedProgress)
-            ? clampQueueProgressPercent(cachedProgress)
-            : progressValue;
-        queueProgressCache[task.taskId] = progressStart;
+	        const cachedProgress = queueProgressCache[taskId];
+	        const progressStart = Number.isFinite(cachedProgress)
+	            ? clampQueueProgressPercent(cachedProgress)
+	            : progressValue;
+	        queueProgressCache[taskId] = progressStart;
         const progressHtml = task.status === 'running'
             ? `<div class="progress-text"><span>Downloading...</span><span class="progress-value" data-progress-start="${progressStart}" data-progress-target="${progressValue}">${formatQueueProgressPercent(progressStart)}%</span></div>
                <div class="progress-bar"><div class="progress-fill" style="width: ${progressStart}%" data-progress-start="${progressStart}" data-progress-target="${progressValue}"></div></div>`
             : '';
-        if (task.status !== 'running' && queueProgressTextAnimationByTask[task.taskId] != null) {
-            cancelAnimationFrame(queueProgressTextAnimationByTask[task.taskId]);
-            delete queueProgressTextAnimationByTask[task.taskId];
-        }
+	        if (task.status !== 'running' && queueProgressTextAnimationByTask[taskId] != null) {
+	            cancelAnimationFrame(queueProgressTextAnimationByTask[taskId]);
+	            delete queueProgressTextAnimationByTask[taskId];
+	        }
 
-        const errorHtml = task.error
-            ? `<div class="error-message">⚠ ${escapeHtml(task.error)}</div>`
-            : '';
+	        const errorHtml = task.error
+	            ? `<div class="error-message">⚠ ${escapeHtml(task.error)}</div>`
+	            : '';
 
-        const pauseButton = task.status === 'running'
-            ? `<button class="action-btn action-btn-amber action-btn-sm" onclick="pauseTask('${task.taskId}')">${activityActionIconSvg('pause')}<span>Pause</span></button>`
-            : '';
+	        const pauseButton = task.status === 'running'
+	            ? `<button class="action-btn action-btn-amber action-btn-sm" onclick="pauseTask('${safeTaskIdArg}')">${activityActionIconSvg('pause')}<span>Pause</span></button>`
+	            : '';
 
-        const resumeButton = task.status === 'paused'
-            ? `<button class="action-btn action-btn-sm" onclick="resumeTask('${task.taskId}')">${activityActionIconSvg('play')}<span>Resume</span></button>`
-            : '';
+	        const resumeButton = task.status === 'paused'
+	            ? `<button class="action-btn action-btn-sm" onclick="resumeTask('${safeTaskIdArg}')">${activityActionIconSvg('play')}<span>Resume</span></button>`
+	            : '';
 
         const canRetry = task.status === 'failed'
             || task.status === 'canceled'
             || (task.status === 'complete' && task.failed > 0);
         const isRetrying = task.status === 'retrying' || task._retryInFlight;
-        const retryButton = canRetry
-            ? (isRetrying
-                ? `<button class="action-btn action-btn-sm" disabled aria-disabled="true">${activityActionIconSvg('retry')}<span>Retrying</span></button>`
-                : `<button class="action-btn action-btn-sm" onclick="retryTask('${task.taskId}')">${activityActionIconSvg('retry')}<span>Retry</span></button>`)
-            : '';
+	        const retryButton = canRetry
+	            ? (isRetrying
+	                ? `<button class="action-btn action-btn-sm" disabled aria-disabled="true">${activityActionIconSvg('retry')}<span>Retrying</span></button>`
+	                : `<button class="action-btn action-btn-sm" onclick="retryTask('${safeTaskIdArg}')">${activityActionIconSvg('retry')}<span>Retry</span></button>`)
+	            : '';
 
-        const deleteFailedButton = task.status === 'failed'
-            ? `<button class="btn-danger action-btn action-btn-sm" onclick="deleteFailedTask('${task.taskId}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
-            : '';
-        const deleteCanceledButton = task.status === 'canceled'
-            ? `<button class="btn-danger action-btn action-btn-sm" onclick="deleteFailedTask('${task.taskId}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
-            : '';
+	        const deleteFailedButton = task.status === 'failed'
+	            ? `<button class="btn-danger action-btn action-btn-sm" onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
+	            : '';
+	        const deleteCanceledButton = task.status === 'canceled'
+	            ? `<button class="btn-danger action-btn action-btn-sm" onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
+	            : '';
 
-        const cancelButton = (task.status === 'queued' || task.status === 'running' || task.status === 'paused')
-            ? `<button class="btn-danger action-btn action-btn-sm" onclick="cancelTask('${task.taskId}')">${activityActionIconSvg('cancel')}<span>Cancel</span></button>`
-            : '';
+	        const cancelButton = (task.status === 'queued' || task.status === 'running' || task.status === 'paused')
+	            ? `<button class="btn-danger action-btn action-btn-sm" onclick="cancelTask('${safeTaskIdArg}')">${activityActionIconSvg('cancel')}<span>Cancel</span></button>`
+	            : '';
 
         const taskActions = (pauseButton || resumeButton || retryButton || deleteFailedButton || deleteCanceledButton || cancelButton)
             ? `<div class="task-actions">${pauseButton}${resumeButton}${retryButton}${deleteFailedButton}${deleteCanceledButton}${cancelButton}</div>`
@@ -4150,9 +4204,9 @@ function renderTasks() {
         const lyricsBadges = Array.isArray(task.lyricsBadges) ? task.lyricsBadges : [];
         const videoBadges = Array.isArray(task.videoBadges) ? task.videoBadges : [];
 
-        const displayIndex = index + 1;
-        return `
-            <div class="task-card" data-task-id="${task.taskId}" data-status="${task.status}">
+	        const displayIndex = index + 1;
+	        return `
+	            <div class="task-card" data-task-id="${safeTaskIdAttr}" data-status="${task.status}">
                 <div class="task-header">
                     <div class="task-index">${displayIndex}</div>
                     <div class="task-icon ${task.cover ? 'cover' : ''} ${task.status === 'running' ? 'running' : ''}" ${coverStyle}><span class="task-icon-fallback">${getStatusIcon(task.status)}</span>${runningOverlayHtml}</div>
@@ -4200,7 +4254,10 @@ function renderTasks() {
 
     const activeTask = resolveAutoScrollTask(orderedTasks);
     if (activeTask?.taskId && activeTask.taskId !== lastAutoScrollTaskId) {
-        const card = tasksList.querySelector(`.task-card[data-task-id="${activeTask.taskId}"]`);
+        const selectorTaskId = escapeCssSelectorValue(activeTask.taskId);
+        const card = selectorTaskId
+            ? tasksList.querySelector(`.task-card[data-task-id="${selectorTaskId}"]`)
+            : null;
         scrollQueueCardIntoViewAtTop(card);
         lastAutoScrollTaskId = activeTask.taskId;
     }
@@ -4284,6 +4341,35 @@ function animateQueueProgress(taskId, fillEl, valueEl, start, target) {
     };
 
     queueProgressTextAnimationByTask[taskId] = requestAnimationFrame(step);
+}
+
+function updateQueueProgressDom(taskId, progress) {
+    const selectorTaskId = escapeCssSelectorValue(taskId);
+    if (!selectorTaskId) {
+        return false;
+    }
+
+    const taskCard = document.querySelector(`.task-card[data-task-id="${selectorTaskId}"]`);
+    if (!taskCard) {
+        return false;
+    }
+
+    const fillEl = taskCard.querySelector('.progress-fill[data-progress-target]');
+    const valueEl = taskCard.querySelector('.progress-value');
+    if (!fillEl || !valueEl) {
+        return false;
+    }
+
+    const targetValue = clampQueueProgressPercent(progress);
+    const startValue = Number.isFinite(queueProgressCache[taskId])
+        ? clampQueueProgressPercent(queueProgressCache[taskId])
+        : targetValue;
+    fillEl.dataset.progressTarget = String(targetValue);
+    fillEl.dataset.progressStart = String(startValue);
+    valueEl.dataset.progressTarget = String(targetValue);
+    valueEl.dataset.progressStart = String(startValue);
+    animateQueueProgress(taskId, fillEl, valueEl, startValue, targetValue);
+    return true;
 }
 
 function orderTasksForAutoScroll(taskList, options) {
@@ -4374,7 +4460,7 @@ function retryTask(taskId) {
         updateStats();
     }
 
-    fetch('/Activities/RetryFailed', {
+    activityFetch('/Activities/RetryFailed', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uuid: taskId })
@@ -4473,7 +4559,7 @@ async function loadQueueFromServer(options) {
     queuePollInFlight = true;
     try {
         const cacheBuster = Date.now();
-        const response = await fetch(`/Activities/GetDownloadQueue?_=${cacheBuster}`, {
+        const response = await activityFetch(`/Activities/GetDownloadQueue?_=${cacheBuster}`, {
             cache: 'no-store',
             headers: {
                 'X-Requested-With': 'XMLHttpRequest'
@@ -4534,6 +4620,10 @@ function stopQueuePolling() {
 function startQueuePolling() {
     stopQueuePolling();
     if (document.hidden) {
+        return;
+    }
+    const downloadsPane = document.getElementById('downloads-content');
+    if (!downloadsPane?.classList.contains('active')) {
         return;
     }
     queuePollTimeoutId = setTimeout(async () => {
@@ -4923,6 +5013,28 @@ function escapeHtml(value) {
         .replace(/'/g, '&#39;');
 }
 
+function escapeJsString(value) {
+    return String(value ?? '')
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/"/g, '\\"')
+        .replace(/\r/g, '\\r')
+        .replace(/\n/g, '\\n');
+}
+
+function escapeCssSelectorValue(value) {
+    const raw = String(value ?? '');
+    if (!raw) {
+        return '';
+    }
+
+    if (globalThis.CSS && typeof globalThis.CSS.escape === 'function') {
+        return globalThis.CSS.escape(raw);
+    }
+
+    return raw.replace(/["\\]/g, '\\$&');
+}
+
 function getTaskActivityText(task) {
     if (task.status !== 'running') {
         return '';
@@ -5228,6 +5340,7 @@ function applyQueueRealtimeProgress(payload) {
         return;
     }
 
+    const previousStatus = task.status;
     let changed = false;
     const mergedProgress = normalizeQueueProgressPercent(resolveMergedQueueProgress(
         task.progress,
@@ -5247,7 +5360,9 @@ function applyQueueRealtimeProgress(payload) {
     } else {
         if (hasActivePrefetchStatus(taskId)) {
             if (changed) {
-                updateStats();
+                if (task.status !== previousStatus) {
+                    updateStats();
+                }
                 scheduleRenderTasks();
             }
             return;
@@ -5258,8 +5373,16 @@ function applyQueueRealtimeProgress(payload) {
         scheduleQueueHydrationRefresh();
     }
     if (changed) {
-        updateStats();
-        scheduleRenderTasks();
+        const statusChanged = task.status !== previousStatus;
+        if (statusChanged) {
+            updateStats();
+            scheduleRenderTasks();
+            return;
+        }
+
+        if (!updateQueueProgressDom(taskId, task.progress)) {
+            scheduleRenderTasks();
+        }
     }
 }
 
@@ -5483,7 +5606,7 @@ function initQueueRealtimeEvents() {
 }
 
 async function ensureActionSuccess(url) {
-    const response = await fetch(url, {
+    const response = await activityFetch(url, {
         method: 'POST',
         cache: 'no-store',
         headers: {
@@ -5509,7 +5632,7 @@ async function ensureActionSuccess(url) {
 }
 
 async function ensureJsonActionSuccess(url, body) {
-    const response = await fetch(url, {
+    const response = await activityFetch(url, {
         method: 'POST',
         cache: 'no-store',
         headers: {
@@ -5816,7 +5939,10 @@ function initDownloadPlaceholder() {
     initQueueRealtimeEvents();
     loadQueueFromServer({ force: true });
     stopQueuePolling();
-    startQueuePolling();
+    const downloadsPane = document.getElementById('downloads-content');
+    if (downloadsPane?.classList.contains('active')) {
+        startQueuePolling();
+    }
     if (!queueVisibilityHandlerAttached) {
         queueVisibilityHandlerAttached = true;
         document.addEventListener('visibilitychange', () => {
@@ -5860,9 +5986,7 @@ if (document.readyState === 'loading') {
 	        return;
 	    }
 
-	    const logs = logger.getLogs()
-	        .slice()
-	        .sort((left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime());
+	    const logs = logger.getLogs();
 	    if (!logs.length) {
 	        status.textContent = 'No logs yet.';
 	        logPane.innerHTML = '<div class="logs-summary">No download activity logged yet.</div>';
@@ -6006,7 +6130,7 @@ if (document.readyState === 'loading') {
 
             clearButton.disabled = true;
             try {
-                const response = await fetch('/api/library/scan/logs/clear', { method: 'POST' });
+                const response = await activityFetch('/api/library/scan/logs/clear', { method: 'POST' });
                 if (!response.ok) {
                     throw new Error(await response.text());
                 }
@@ -6119,7 +6243,7 @@ function updateAnalysisStatusPill() {
 }
 
 async function fetchJson(url, options) {
-    const response = await fetch(url, options);
+    const response = await activityFetch(url, options);
     if (!response.ok) {
         const message = await response.text();
         throw new Error(message || `Request failed (${response.status})`);
@@ -6330,7 +6454,7 @@ async function runAnalysis() {
             params.set('batchSize', batchSize);
         }
         const url = params.toString() ? `/api/library/analysis/run?${params.toString()}` : '/api/library/analysis/run';
-        const response = await fetch(url, { method: 'POST' });
+        const response = await activityFetch(url, { method: 'POST' });
         if (!response.ok) {
             throw new Error(await response.text());
         }
@@ -6356,7 +6480,7 @@ async function resetAnalysis() {
     const button = document.getElementById('resetAnalysis');
     if (button) button.disabled = true;
     try {
-        const response = await fetch('/api/library/analysis/reset', { method: 'POST' });
+        const response = await activityFetch('/api/library/analysis/reset', { method: 'POST' });
         if (!response.ok) {
             throw new Error(await response.text());
         }
@@ -6434,7 +6558,7 @@ async function loadAnalysisSettings() {
         return;
     }
     try {
-        const response = await fetch('/api/library/analysis/settings');
+        const response = await activityFetch('/api/library/analysis/settings');
         if (!response.ok) {
             throw new Error(await response.text());
         }
@@ -6477,7 +6601,7 @@ async function saveAnalysisEnabled(enabled) {
     }
     const payload = buildAnalysisPayload(true, enabled);
     try {
-        const response = await fetch('/api/library/analysis/settings', {
+        const response = await activityFetch('/api/library/analysis/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -6507,7 +6631,7 @@ async function saveAnalysisSettings(silentSuccess) {
     }
     const payload = buildAnalysisPayload(false);
     try {
-        const response = await fetch('/api/library/analysis/settings', {
+        const response = await activityFetch('/api/library/analysis/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -6644,7 +6768,7 @@ async function loadLibraryLogs() {
 	        libraryLogsAbortController?.abort();
 	        libraryLogsAbortController = new AbortController();
 
-	        const response = await fetch(`/api/library/scan/logs?limit=${LIBRARY_LOGS_LIMIT}`, {
+	        const response = await activityFetch(`/api/library/scan/logs?limit=${LIBRARY_LOGS_LIMIT}`, {
 	            signal: libraryLogsAbortController.signal
 	        });
 	        if (!response.ok) {
@@ -6683,6 +6807,22 @@ async function loadLibraryLogs() {
 	    }
 	    }
 
+let mediaOperationsInitialized = false;
+function initMediaOperationsSection() {
+    if (mediaOperationsInitialized) {
+        return;
+    }
+
+    mediaOperationsInitialized = true;
+    initMediaOperationsHelp();
+    initMetadataUpdater();
+    initMediaServerScan();
+    initDatabaseUpdater();
+    initAnalysisCard();
+    initLibraryMaintenance();
+    startLibraryScanStatusPolling();
+}
+
 let activitiesTabRefreshBound = false;
 function bindActivitiesTabSwitchRefresh() {
     if (activitiesTabRefreshBound) {
@@ -6705,16 +6845,22 @@ function bindActivitiesTabSwitchRefresh() {
         });
     };
 
-    const refreshByTarget = (targetSelector) => {
-        switch (targetSelector) {
-            case '#downloads-content':
-                void loadQueueFromServer({ force: true });
-                startQueuePolling();
-                scheduleRenderTasks();
-                break;
-            case '#autotag-status-content':
-                void globalThis.DeezSpoTagAutoTagStatus?.refresh?.();
-                break;
+	    const refreshByTarget = (targetSelector) => {
+	        if (targetSelector !== '#downloads-content') {
+	            stopQueuePolling();
+	        }
+	        switch (targetSelector) {
+	            case '#downloads-content':
+	                void loadQueueFromServer({ force: true });
+	                startQueuePolling();
+	                scheduleRenderTasks({ immediate: true });
+	                break;
+	            case '#media-operations-content':
+	                initMediaOperationsSection();
+	                break;
+	            case '#autotag-status-content':
+	                void globalThis.DeezSpoTagAutoTagStatus?.refresh?.();
+	                break;
             case '#history-content':
                 void globalThis.DeezSpoTagAutoTagStatus?.refresh?.({ loadCalendar: true, resetLiveFollow: true });
                 void globalThis.DeezSpoTagWatchlistHistory?.refresh?.();
@@ -6757,25 +6903,11 @@ if (document.readyState === 'loading') {
         bindActivitiesTabSwitchRefresh();
         initDownloadLogs();
         initLibraryLogs();
-        initMediaOperationsHelp();
-        initMetadataUpdater();
-        initMediaServerScan();
-        initDatabaseUpdater();
-        initAnalysisCard();
-        initLibraryMaintenance();
-        startLibraryScanStatusPolling();
     });
 } else {
     bindActivitiesTabSwitchRefresh();
     initDownloadLogs();
     initLibraryLogs();
-    initMediaOperationsHelp();
-    initMetadataUpdater();
-    initMediaServerScan();
-    initDatabaseUpdater();
-    initAnalysisCard();
-    initLibraryMaintenance();
-    startLibraryScanStatusPolling();
 }
 </script>
 }

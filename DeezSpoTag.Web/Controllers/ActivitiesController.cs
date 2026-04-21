@@ -14,6 +14,7 @@ using DeezSpoTag.Core.Security;
 namespace DeezSpoTag.Web.Controllers;
 
 [Authorize]
+[AutoValidateAntiforgeryToken]
 public class ActivitiesController : Controller
 {
     private const string CompletedStatus = "completed";
@@ -34,8 +35,9 @@ public class ActivitiesController : Controller
     private const string LyricsStatusField = "lyrics_status";
     private const string TtmlExtension = ".ttml";
     private static readonly ConcurrentDictionary<string, CachedQueuePayload> QueuePayloadCache = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly TimeSpan QueuePayloadCacheTtl = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan QueuePayloadCacheTtl = TimeSpan.FromMinutes(5);
     private const int QueuePayloadCacheMaxEntries = 1024;
+    private const int ActivitiesTerminalItemLimit = 200;
     private readonly ILogger<ActivitiesController> _logger;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly DownloadQueueRepository _queueRepository;
@@ -414,11 +416,12 @@ public class ActivitiesController : Controller
     {
         var settings = _settingsService.LoadSettings();
         var items = await _queueRepository.GetTasksAsync();
+        var selectedItems = LimitQueueItemsForActivities(items);
 
         var queue = new Dictionary<string, Dictionary<string, object>>();
         var queueOrder = new List<string>();
 
-        foreach (var item in items)
+        foreach (var item in selectedItems)
         {
             if (string.IsNullOrWhiteSpace(item.QueueUuid))
             {
@@ -441,6 +444,62 @@ public class ActivitiesController : Controller
         };
     }
 
+    private static IReadOnlyList<DownloadQueueItem> LimitQueueItemsForActivities(IReadOnlyList<DownloadQueueItem> items)
+    {
+        if (items.Count == 0)
+        {
+            return items;
+        }
+
+        var terminal = new List<DownloadQueueItem>();
+        var activeCount = 0;
+        foreach (var item in items)
+        {
+            if (IsActiveQueueStatus(item.Status))
+            {
+                activeCount++;
+                continue;
+            }
+
+            terminal.Add(item);
+        }
+
+        if (terminal.Count <= ActivitiesTerminalItemLimit)
+        {
+            return items;
+        }
+
+        var keepTerminalIds = terminal
+            .Where(item => !string.IsNullOrWhiteSpace(item.QueueUuid))
+            .OrderByDescending(item => item.UpdatedAt)
+            .Take(ActivitiesTerminalItemLimit)
+            .Select(item => item.QueueUuid)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var limited = new List<DownloadQueueItem>(activeCount + keepTerminalIds.Count);
+        foreach (var item in items)
+        {
+            if (IsActiveQueueStatus(item.Status))
+            {
+                limited.Add(item);
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(item.QueueUuid) && keepTerminalIds.Contains(item.QueueUuid))
+            {
+                limited.Add(item);
+            }
+        }
+
+        return limited;
+    }
+
+    private static bool IsActiveQueueStatus(string? status)
+    {
+        var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized is QueuedStatus or InQueueStatus or RunningStatus or DownloadingStatus or PausedStatus or "retrying";
+    }
+
     private static string[] GetEngines()
     {
         return new[] { "deezer", "qobuz", "amazon", "tidal", "apple" };
@@ -460,7 +519,7 @@ public class ActivitiesController : Controller
         {
             payload["quality"] = ResolveSourceQuality(item.Engine, settings);
         }
-        if (ShouldAttachLyricsFiles(item.Status))
+        if (ShouldAttachLyricsFiles(item.Status) && NeedsLyricsAttachment(payload))
         {
             var cacheKey = BuildQueuePayloadCacheKey(item);
             if (TryGetCachedQueuePayload(cacheKey, out var cachedPayload))
@@ -485,6 +544,50 @@ public class ActivitiesController : Controller
             or CanceledStatus
             or CancelledStatus
             or SkippedStatus;
+    }
+
+    private static bool NeedsLyricsAttachment(Dictionary<string, object> payload)
+    {
+        if (HasKnownLyricsStatus(payload))
+        {
+            return false;
+        }
+
+        return !HasAttachedLyricsFiles(payload);
+    }
+
+    private static bool HasKnownLyricsStatus(Dictionary<string, object> payload)
+    {
+        var value = GetPayloadString(payload, "lyricsStatus", "LyricsStatus", LyricsStatusField);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var normalized = value.Trim().ToLowerInvariant();
+        return normalized is not ("unknown" or "none" or "n/a" or "na");
+    }
+
+    private static bool HasAttachedLyricsFiles(Dictionary<string, object> payload)
+    {
+        foreach (var file in ExtractFiles(payload))
+        {
+            var filePath = GetFilePath(file);
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                continue;
+            }
+
+            var ext = Path.GetExtension(filePath);
+            if (string.Equals(ext, ".lrc", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(ext, TtmlExtension, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(ext, ".txt", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string BuildQueuePayloadCacheKey(DownloadQueueItem item)
