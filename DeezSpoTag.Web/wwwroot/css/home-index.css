@@ -213,7 +213,8 @@
     display: block;
 }
 .home-top-song-item:hover .home-top-song-item__play,
-.home-top-song-item:focus-within .home-top-song-item__play {
+.home-top-song-item:focus-within .home-top-song-item__play,
+.home-top-song-item__play.is-playing {
     opacity: 1;
     visibility: visible;
     pointer-events: auto;
