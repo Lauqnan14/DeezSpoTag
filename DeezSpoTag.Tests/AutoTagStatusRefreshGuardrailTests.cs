@@ -105,7 +105,7 @@ public sealed class AutoTagStatusRefreshGuardrailTests
         Assert.True(File.Exists(scriptPath), $"Missing status script: {scriptPath}");
 
         var source = File.ReadAllText(scriptPath);
-        Assert.Contains("if (hasActiveLiveRun()) {", source, StringComparison.Ordinal);
+        Assert.Contains("if (hasActiveLiveRun() && hasDetails) {", source, StringComparison.Ordinal);
         Assert.Contains("syncSelectedRunWithLiveJob(job, logs);", source, StringComparison.Ordinal);
     }
 

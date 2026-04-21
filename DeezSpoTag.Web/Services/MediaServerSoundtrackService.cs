@@ -2000,21 +2000,7 @@ public sealed partial class MediaServerSoundtrackService
         }
 
         var items = await _plexApiClient.GetLibraryMediaItemsAsync(plex!.Url!, plex.Token!, libraryId, offset, limit, cancellationToken);
-        return items
-            .Select(item => new MediaServerContentItem
-            {
-                ServerType = MediaServerSoundtrackConstants.PlexServer,
-                LibraryId = libraryId,
-                LibraryName = libraryName,
-                Category = MapPlexCategory(item.Type),
-                ItemId = item.Id,
-                Title = NormalizeText(item.Title),
-                Year = item.Year,
-                ImageUrl = item.ImageUrl
-            })
-            .Where(item => !string.IsNullOrWhiteSpace(item.Category))
-            .Where(item => !string.IsNullOrWhiteSpace(item.ItemId) && !string.IsNullOrWhiteSpace(item.Title))
-            .ToList();
+        return MapPlexMediaItems(items, libraryId, libraryName);
     }
 
     private async Task<List<MediaServerContentItem>> FetchJellyfinItemsAsync(
@@ -2030,34 +2016,14 @@ public sealed partial class MediaServerSoundtrackService
             return new List<MediaServerContentItem>();
         }
 
-        var userId = NormalizeText(jellyfin!.UserId);
-        if (string.IsNullOrWhiteSpace(userId))
-        {
-            var currentUser = await _jellyfinApiClient.GetCurrentUserAsync(jellyfin.Url!, jellyfin.ApiKey!, cancellationToken);
-            userId = NormalizeText(currentUser?.Id);
-        }
-
+        var userId = await ResolveJellyfinUserIdAsync(jellyfin!, cancellationToken);
         if (string.IsNullOrWhiteSpace(userId))
         {
             return new List<MediaServerContentItem>();
         }
 
         var items = await _jellyfinApiClient.GetLibraryItemsAsync(jellyfin.Url!, jellyfin.ApiKey!, userId, libraryId, offset, limit, cancellationToken);
-        return items
-            .Select(item => new MediaServerContentItem
-            {
-                ServerType = MediaServerSoundtrackConstants.JellyfinServer,
-                LibraryId = libraryId,
-                LibraryName = libraryName,
-                Category = MapJellyfinItemCategory(item.Type),
-                ItemId = NormalizeText(item.Id),
-                Title = NormalizeText(item.Name),
-                Year = item.ProductionYear,
-                ImageUrl = BuildJellyfinImageUrl(jellyfin.Url!, jellyfin.ApiKey!, item.Id, item.ImageTags, episodePreferred: false)
-            })
-            .Where(item => !string.IsNullOrWhiteSpace(item.Category))
-            .Where(item => !string.IsNullOrWhiteSpace(item.ItemId) && !string.IsNullOrWhiteSpace(item.Title))
-            .ToList();
+        return MapJellyfinMediaItems(items, jellyfin, libraryId, libraryName);
     }
 
     private async Task<List<MediaServerContentItem>> FetchPlexRecentItemsAsync(
@@ -2073,6 +2039,36 @@ public sealed partial class MediaServerSoundtrackService
         }
 
         var items = await _plexApiClient.GetLibraryRecentlyAddedMediaItemsAsync(plex!.Url!, plex.Token!, libraryId, limit, cancellationToken);
+        return MapPlexMediaItems(items, libraryId, libraryName);
+    }
+
+    private async Task<List<MediaServerContentItem>> FetchJellyfinRecentItemsAsync(
+        JellyfinAuth? jellyfin,
+        string libraryId,
+        string libraryName,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (!HasCredentials(jellyfin?.Url, jellyfin?.ApiKey))
+        {
+            return new List<MediaServerContentItem>();
+        }
+
+        var userId = await ResolveJellyfinUserIdAsync(jellyfin!, cancellationToken);
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            return new List<MediaServerContentItem>();
+        }
+
+        var items = await _jellyfinApiClient.GetLibraryRecentlyAddedItemsAsync(jellyfin.Url!, jellyfin.ApiKey!, userId, libraryId, limit, cancellationToken);
+        return MapJellyfinMediaItems(items, jellyfin, libraryId, libraryName);
+    }
+
+    private static List<MediaServerContentItem> MapPlexMediaItems(
+        IEnumerable<PlexMediaItem> items,
+        string libraryId,
+        string libraryName)
+    {
         return items
             .Select(item => new MediaServerContentItem
             {
@@ -2090,31 +2086,12 @@ public sealed partial class MediaServerSoundtrackService
             .ToList();
     }
 
-    private async Task<List<MediaServerContentItem>> FetchJellyfinRecentItemsAsync(
-        JellyfinAuth? jellyfin,
+    private List<MediaServerContentItem> MapJellyfinMediaItems(
+        IEnumerable<JellyfinMediaItem> items,
+        JellyfinAuth jellyfin,
         string libraryId,
-        string libraryName,
-        int limit,
-        CancellationToken cancellationToken)
+        string libraryName)
     {
-        if (!HasCredentials(jellyfin?.Url, jellyfin?.ApiKey))
-        {
-            return new List<MediaServerContentItem>();
-        }
-
-        var userId = NormalizeText(jellyfin!.UserId);
-        if (string.IsNullOrWhiteSpace(userId))
-        {
-            var currentUser = await _jellyfinApiClient.GetCurrentUserAsync(jellyfin.Url!, jellyfin.ApiKey!, cancellationToken);
-            userId = NormalizeText(currentUser?.Id);
-        }
-
-        if (string.IsNullOrWhiteSpace(userId))
-        {
-            return new List<MediaServerContentItem>();
-        }
-
-        var items = await _jellyfinApiClient.GetLibraryRecentlyAddedItemsAsync(jellyfin.Url!, jellyfin.ApiKey!, userId, libraryId, limit, cancellationToken);
         return items
             .Select(item => new MediaServerContentItem
             {
@@ -2130,6 +2107,18 @@ public sealed partial class MediaServerSoundtrackService
             .Where(item => !string.IsNullOrWhiteSpace(item.Category))
             .Where(item => !string.IsNullOrWhiteSpace(item.ItemId) && !string.IsNullOrWhiteSpace(item.Title))
             .ToList();
+    }
+
+    private async Task<string?> ResolveJellyfinUserIdAsync(JellyfinAuth jellyfin, CancellationToken cancellationToken)
+    {
+        var userId = NormalizeText(jellyfin.UserId);
+        if (!string.IsNullOrWhiteSpace(userId))
+        {
+            return userId;
+        }
+
+        var currentUser = await _jellyfinApiClient.GetCurrentUserAsync(jellyfin.Url!, jellyfin.ApiKey!, cancellationToken);
+        return NormalizeText(currentUser?.Id);
     }
 
     private async Task<TvEpisodeFetchResult> FetchPlexEpisodesAsync(
