@@ -5491,6 +5491,30 @@ LIMIT 1;";
         return result is null or DBNull ? null : Convert.ToString(result);
     }
 
+    public async Task<IReadOnlySet<long>> GetArtistIdsWithSourceAsync(string source, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return new HashSet<long>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT DISTINCT artist_id
+FROM artist_source
+WHERE source = @source;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceField, source.Trim());
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var artistIds = new HashSet<long>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            artistIds.Add(reader.GetInt64(0));
+        }
+
+        return artistIds;
+    }
+
     public async Task<long?> GetArtistIdBySourceIdAsync(string source, string sourceId, CancellationToken cancellationToken = default)
     {
         const string sql = @"
