@@ -3,7 +3,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         applyLibraryScopeSelectionFromLocation();
         updateTopSongsTracklistLink(null);
         const elements = getLibraryBootstrapElements();
-        bindBootstrapScanActions(elements);
+        if (typeof bindBootstrapScanActions === 'function') {
+            bindBootstrapScanActions(elements);
+        }
         wireExclusiveFolderDestinationRoles();
         bindFolderModalActions(elements);
         bindFolderPathBrowser(elements);
@@ -22,7 +24,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (targets.shouldLoadArtists) {
             primePendingLibraryReturnState();
         }
-        if (targets.shouldLoadSoundtracks) {
+        if (targets.shouldLoadSoundtracks && typeof primePendingSoundtrackReturnState === 'function') {
             primePendingSoundtrackReturnState();
         }
         bindDeferredSoundtrackInitialization(targets.shouldLoadSoundtracks);
@@ -46,7 +48,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         bindSavedPreferenceButtons();
         await initializeArtistAlbumsPage(targets.shouldLoadArtistAlbums);
 
-        await initWatchlistToggle();
+        if (typeof initWatchlistToggle === 'function') {
+            await initWatchlistToggle();
+        }
         await initSpotifyIdEditor();
         if (targets.shouldLoadArtistAlbums && typeof initArtistActionsDropdown === 'function') {
             initArtistActionsDropdown();
