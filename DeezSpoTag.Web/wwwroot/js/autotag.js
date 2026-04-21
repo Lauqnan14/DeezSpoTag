@@ -2215,8 +2215,9 @@
         "beatport",
         "beatsource",
         "itunes",
-        "shazam",
-        "musicbrainz"
+        "lrclib",
+        "musicbrainz",
+        "shazam"
     ]);
 
     const TECHNICAL_PLATFORM_ORDER_INDEX = Object.freeze(
