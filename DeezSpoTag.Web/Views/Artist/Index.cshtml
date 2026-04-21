@@ -1215,6 +1215,18 @@ function bindArtistTopTracksHandlers() {
             return;
         }
 
+        const thumbTarget = event.target.closest('.top-song-item__thumb');
+        if (thumbTarget && list.contains(thumbTarget)) {
+            const thumbPlayButton = thumbTarget.querySelector('.top-song-item__play.track-play');
+            if (thumbPlayButton) {
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+                playArtistTrackInApp(thumbPlayButton);
+                return;
+            }
+        }
+
         const spotifyTarget = event.target.closest('[data-spotify-url]');
         if (spotifyTarget && list.contains(spotifyTarget)) {
             const url = spotifyTarget.dataset.spotifyUrl;
