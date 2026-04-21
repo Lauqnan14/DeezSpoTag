@@ -14,6 +14,7 @@ internal static class TaggingProfileSettingsMapper
         settings.Tags ??= new TagSettings();
         var technical = profile.Technical ?? new TechnicalTagSettings();
         var folder = profile.FolderStructure ?? new FolderStructureSettings();
+        var tagConfig = profile.TagConfig ?? new UnifiedTagConfig();
 
         settings.Tags.SavePlaylistAsCompilation = technical.SavePlaylistAsCompilation;
         settings.Tags.UseNullSeparator = technical.UseNullSeparator;
@@ -38,6 +39,12 @@ internal static class TaggingProfileSettingsMapper
         settings.ArtworkFallbackOrder = technical.ArtworkFallbackOrder ?? defaultArtworkFallbackOrder;
         settings.ArtistArtworkFallbackEnabled = technical.ArtistArtworkFallbackEnabled;
         settings.ArtistArtworkFallbackOrder = technical.ArtistArtworkFallbackOrder ?? defaultArtworkFallbackOrder;
+        settings.Tags.Lyrics = technical.EmbedLyrics
+            && technical.SaveLyrics
+            && UsesDownloadSource(tagConfig.UnsyncedLyrics);
+        settings.Tags.SyncedLyrics = technical.EmbedLyrics
+            && technical.SyncedLyrics
+            && UsesDownloadSource(tagConfig.SyncedLyrics);
 
         settings.CreateArtistFolder = folder.CreateArtistFolder;
         settings.ArtistNameTemplate = folder.ArtistNameTemplate ?? "%artist%";
@@ -50,4 +57,7 @@ internal static class TaggingProfileSettingsMapper
         settings.PlaylistNameTemplate = folder.PlaylistNameTemplate ?? "%playlist%";
         settings.IllegalCharacterReplacer = folder.IllegalCharacterReplacer ?? "_";
     }
+
+    private static bool UsesDownloadSource(TagSource source)
+        => source is TagSource.DownloadSource or TagSource.Both;
 }

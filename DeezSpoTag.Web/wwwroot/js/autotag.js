@@ -3141,7 +3141,11 @@
                 state.profileSaveTimer = null;
             }
             state.profileSaveDirty = false;
-            await upsertProfileFromUi({ silent: true, requireActiveProfile: true });
+            await upsertProfileFromUi({
+                silent: true,
+                requireActiveProfile: true,
+                applyToRuntime: true
+            });
             await saveEnhancementDefaults({
                 skipProfileUpsert: true,
                 suppressToast: true,
@@ -6523,7 +6527,7 @@
         return mergedSnapshot;
     }
 
-    function buildProfileUpsertPayload({ existing = null, profileId = null, name, isDefault = false }) {
+    function buildProfileUpsertPayload({ existing = null, profileId = null, name, isDefault = false, applyToRuntime = false }) {
         return {
             id: profileId,
             name,
@@ -6532,7 +6536,8 @@
             autoTag: getProfileAutoTagSnapshot(existing),
             folderStructure: readFolderStructureFromUI(),
             technical: readTechnicalSettingsFromUI(existing?.technical || null),
-            verification: structuredClone(existing?.verification || null)
+            verification: structuredClone(existing?.verification || null),
+            applyToRuntime: applyToRuntime === true
         };
     }
 
@@ -6582,7 +6587,7 @@
             || "";
     }
 
-    async function submitProfileUpsertRequest(saveTarget, name) {
+    async function submitProfileUpsertRequest(saveTarget, name, applyToRuntime = false) {
         const response = await fetch("/api/tagging/profiles", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -6590,7 +6595,8 @@
                 existing: saveTarget.existing,
                 profileId: saveTarget.profileId,
                 name,
-                isDefault: saveTarget.isDefault
+                isDefault: saveTarget.isDefault,
+                applyToRuntime
             }))
         });
         if (!response.ok) {
@@ -6649,7 +6655,7 @@
     }
 
     async function upsertProfileFromUi(options = {}) {
-        const { silent = false, requireActiveProfile = false, reconcileUi = true } = options;
+        const { silent = false, requireActiveProfile = false, reconcileUi = true, applyToRuntime = false } = options;
         const nameInput = el("autotag-profile-name");
         const currentActive = getActiveProfile();
         const selected = getSelectedProfile();
@@ -6662,7 +6668,7 @@
         }
 
         const saveTarget = resolveProfileSaveTarget(name, selected, currentActive);
-        const { savedProfile, savedProfileId } = await submitProfileUpsertRequest(saveTarget, name);
+        const { savedProfile, savedProfileId } = await submitProfileUpsertRequest(saveTarget, name, applyToRuntime);
         const resolvedProfile = mergeSavedProfileIntoState(savedProfile, savedProfileId, name);
         reconcileSavedProfileUi(resolvedProfile, savedProfileId, name, nameInput, reconcileUi);
 
