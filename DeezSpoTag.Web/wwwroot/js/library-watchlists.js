@@ -536,6 +536,7 @@ globalThis.openSharedPlaylistArtworkPicker = openSharedPlaylistArtworkPicker;
 async function loadPlaylistWatchlist() {
     const container = document.getElementById('playlistWatchlistContainer');
     if (!container) return;
+    container.dataset.loadState = 'loading';
     container.innerHTML = '<div class="watchlist-empty-state">Loading monitored playlists...</div>';
     const mergeButton = document.getElementById('mergePlaylistWatchlistBtn');
     if (mergeButton) {
@@ -556,6 +557,7 @@ async function loadPlaylistWatchlist() {
         const items = await fetchJson('/api/library/playlists');
         if (!Array.isArray(items) || items.length === 0) {
             container.innerHTML = '<div class="watchlist-empty-state">No monitored playlists yet.</div>';
+            container.dataset.loadState = 'ready';
             return;
         }
 
@@ -737,10 +739,51 @@ async function loadPlaylistWatchlist() {
         }).catch(() => {
             // Ignore preference hydration failures here; settings panel handles missing prefs.
         });
+        container.dataset.loadState = 'ready';
     } catch (error) {
+        container.dataset.loadState = 'error';
         container.innerHTML = `<div class="watchlist-empty-state">Failed to load playlists: ${escapeHtml(error?.message || 'Unknown error')}</div>`;
     }
 }
+
+function bindPlaylistWatchlistTabHydration() {
+    const watchlistTab = document.getElementById('watchlist-tab');
+    const playlistSubTab = document.getElementById('watchlist-playlists-tab');
+    const playlistPane = document.getElementById('watchlist-playlists-content');
+    if (!playlistPane || playlistPane.dataset.playlistHydrationBound === 'true') {
+        return;
+    }
+
+    const ensurePlaylistWatchlistLoaded = () => {
+        const container = document.getElementById('playlistWatchlistContainer');
+        if (!container) {
+            return;
+        }
+        if (container.dataset.loadState === 'loading') {
+            return;
+        }
+        const hasRenderableContent = container.childElementCount > 0 || container.textContent.trim().length > 0;
+        if (container.dataset.loadState !== 'ready' || !hasRenderableContent) {
+            void loadPlaylistWatchlist();
+        }
+    };
+
+    watchlistTab?.addEventListener('shown.bs.tab', ensurePlaylistWatchlistLoaded);
+    playlistSubTab?.addEventListener('shown.bs.tab', ensurePlaylistWatchlistLoaded);
+
+    const watchlistTabActive = watchlistTab?.classList.contains('active') === true;
+    const playlistTabActive = playlistSubTab?.classList.contains('active') === true;
+    const playlistPaneActive = playlistPane.classList.contains('active') || playlistPane.classList.contains('show');
+    if ((watchlistTabActive && playlistTabActive) || playlistPaneActive) {
+        ensurePlaylistWatchlistLoaded();
+    }
+
+    playlistPane.dataset.playlistHydrationBound = 'true';
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    bindPlaylistWatchlistTabHydration();
+});
 
 function tryOpenPendingPlaylistSettings(playlistPrefs) {
     try {
