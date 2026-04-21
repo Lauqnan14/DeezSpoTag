@@ -104,7 +104,7 @@ public class ActivitiesController : Controller
             }
 
             var status = (item.Status ?? string.Empty).Trim().ToLowerInvariant();
-            if (status == RunningStatus)
+            if (status is RunningStatus or DownloadingStatus)
             {
                 await _deezSpoTagApp.PauseDownloadAsync(request.Uuid);
             }

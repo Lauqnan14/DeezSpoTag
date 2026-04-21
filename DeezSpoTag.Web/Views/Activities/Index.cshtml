@@ -3158,13 +3158,28 @@ function beginTaskAction(taskId) {
     return target;
 }
 
-function endTaskAction(target) {
-    if (!target || !target._actionInFlight) {
-        return;
+function endTaskAction(taskOrId) {
+    const taskId = typeof taskOrId === 'string'
+        ? taskOrId
+        : String(taskOrId?.taskId || '').trim();
+    let changed = false;
+
+    if (taskId) {
+        const current = getTaskById(taskId);
+        if (current && current._actionInFlight) {
+            current._actionInFlight = false;
+            changed = true;
+        }
     }
 
-    target._actionInFlight = false;
-    scheduleRenderTasks();
+    if (taskOrId && typeof taskOrId === 'object' && taskOrId._actionInFlight) {
+        taskOrId._actionInFlight = false;
+        changed = true;
+    }
+
+    if (changed) {
+        scheduleRenderTasks();
+    }
 }
 
 function activityActionIconSvg(name) {
@@ -4633,7 +4648,7 @@ async function deleteFailedTask(taskId) {
 
     const confirmed = await confirmAction('Remove this item from the queue? This cannot be undone.', 'Delete Download');
     if (!confirmed) {
-        endTaskAction(target);
+        endTaskAction(taskId);
         return;
     }
 
@@ -4644,7 +4659,7 @@ async function deleteFailedTask(taskId) {
         console.error(`Failed to delete task ${taskId}:`, error);
         showDownloadActionError(error?.message, 'Failed to delete download.');
     } finally {
-        endTaskAction(target);
+        endTaskAction(taskId);
     }
 }
 
@@ -4661,7 +4676,7 @@ async function pauseTask(taskId) {
         console.error(`Failed to pause task ${taskId}:`, error);
         showDownloadActionError(error?.message, 'Failed to pause download.');
     } finally {
-        endTaskAction(target);
+        endTaskAction(taskId);
     }
 }
 
@@ -4678,7 +4693,7 @@ async function resumeTask(taskId) {
         console.error(`Failed to resume task ${taskId}:`, error);
         showDownloadActionError(error?.message, 'Failed to resume download.');
     } finally {
-        endTaskAction(target);
+        endTaskAction(taskId);
     }
 }
 
@@ -4690,7 +4705,7 @@ async function cancelTask(taskId) {
 
     const confirmed = await confirmAction('Cancel this download?', 'Cancel Download');
     if (!confirmed) {
-        endTaskAction(target);
+        endTaskAction(taskId);
         return;
     }
 
@@ -4701,7 +4716,7 @@ async function cancelTask(taskId) {
         console.error(`Failed to cancel task ${taskId}:`, error);
         showDownloadActionError(error?.message, 'Failed to cancel download.');
     } finally {
-        endTaskAction(target);
+        endTaskAction(taskId);
     }
 }
 
