@@ -6065,6 +6065,12 @@ function buildDiscography(localAlbums, spotifyAlbums) {
             seen.add(key);
         }
         const spotifyMatch = key ? spotifyByTitle.get(key) : null;
+        const spotifyCoverUrl = spotifyMatch
+            ? ((spotifyMatch.coverUrl || selectImage(spotifyMatch.images, 'small') || '').toString().trim() || null)
+            : null;
+        const onDiskCoverUrl = album.preferredCoverPath
+            ? appendCacheKey(`/api/library/image?path=${encodeURIComponent(album.preferredCoverPath)}&size=240`)
+            : null;
         const albumGroup = spotifyMatch?.albumGroup || '';
         const releaseType = spotifyMatch?.releaseType || '';
         const totalTracks = album.totalTracks || spotifyMatch?.totalTracks || 0;
@@ -6101,9 +6107,7 @@ function buildDiscography(localAlbums, spotifyAlbums) {
             name: album.title || album.name || '',
             releaseDate: album.releaseDate || spotifyMatch?.releaseDate || '',
             images: album.images || [],
-            coverUrl: album.preferredCoverPath
-                ? appendCacheKey(`/api/library/image?path=${encodeURIComponent(album.preferredCoverPath)}&size=240`)
-                : (album.coverUrl || null),
+            coverUrl: spotifyCoverUrl || (!spotifyMatch ? onDiskCoverUrl : null),
             sourceUrl: sourceUrl,
             deezerId: deezerAlbumId,
             totalTracks,
