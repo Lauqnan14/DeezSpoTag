@@ -78,7 +78,7 @@ public sealed class AutoTagStatusRefreshGuardrailTests
         var source = File.ReadAllText(scriptPath);
         Assert.Contains("return isHistoryTabActive() && !state.manualHistorySelection && hasActiveLiveRun();", source, StringComparison.Ordinal);
         Assert.Contains("function canUseLiveRunSelection(runId)", source, StringComparison.Ordinal);
-        Assert.Contains("if (canUseLiveRunSelection(runId))", source, StringComparison.Ordinal);
+        Assert.Contains("if (!canUseLiveRunSelection(runId))", source, StringComparison.Ordinal);
     }
 
     [Fact]

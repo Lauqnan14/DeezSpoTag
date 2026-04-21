@@ -13,8 +13,10 @@ using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Services.Apple;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -75,6 +77,11 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
             new DeezerIsrcResolver(
                 deezerApi: null!,
                 NullLogger<DeezerIsrcResolver>.Instance),
+            new AppleMusicCatalogService(
+                new StubHttpClientFactory(),
+                _settingsService,
+                NullLogger<AppleMusicCatalogService>.Instance,
+                new MemoryCache(new MemoryCacheOptions())),
             new NullActivityLogWriter());
 
         var runtime = new DownloadQueueRecoveryRuntime(
@@ -258,6 +265,11 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
             new DeezerIsrcResolver(
                 deezerApi: null!,
                 NullLogger<DeezerIsrcResolver>.Instance),
+            new AppleMusicCatalogService(
+                new StubHttpClientFactory(),
+                _settingsService,
+                NullLogger<AppleMusicCatalogService>.Instance,
+                new MemoryCache(new MemoryCacheOptions())),
             new NullActivityLogWriter());
 
         var advanced = await fallbackCoordinator.TryAdvanceAsync(queueUuid, "qobuz", payload, CancellationToken.None);

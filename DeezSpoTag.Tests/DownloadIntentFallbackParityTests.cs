@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Utils;
@@ -18,8 +19,7 @@ public sealed class DownloadIntentFallbackParityTests
             new List<string> { "qobuz|6", "tidal|LOSSLESS", "apple|ALAC", "deezer|3" },
             settings,
             "qobuz",
-            "3",
-            availability: null);
+            "3");
 
         Assert.Equal("deezer|3", resolved[0]);
         Assert.Contains("deezer|3", resolved);
@@ -31,18 +31,11 @@ public sealed class DownloadIntentFallbackParityTests
     public void BuildFallbackPlanSources_PreservesCrossEngineOrder_WhenAvailabilityIsKnown()
     {
         var settings = CreateAutoSettings();
-        var availability = new SongLinkResult
-        {
-            QobuzUrl = "https://play.qobuz.com/track/1",
-            TidalUrl = "https://listen.tidal.com/track/1"
-        };
-
         var resolved = InvokeBuildFallbackPlanSources(
             new List<string> { "qobuz|6", "tidal|LOSSLESS", "apple|ALAC", "deezer|3" },
             settings,
             "qobuz",
-            requestedQuality: null,
-            availability);
+            requestedQuality: null);
 
         Assert.Contains("qobuz|6", resolved);
         Assert.Contains("tidal|LOSSLESS", resolved);
@@ -83,15 +76,14 @@ public sealed class DownloadIntentFallbackParityTests
         IReadOnlyList<string> autoSources,
         DeezSpoTagSettings settings,
         string engine,
-        string? requestedQuality,
-        SongLinkResult? availability)
+        string? requestedQuality)
     {
         var method = typeof(DownloadIntentService).GetMethod(
             "BuildFallbackPlanSources",
             BindingFlags.NonPublic | BindingFlags.Static);
         Assert.NotNull(method);
 
-        var result = method!.Invoke(null, new object?[] { autoSources, settings, engine, requestedQuality, availability });
+        var result = method!.Invoke(null, new object?[] { autoSources.ToList(), settings, engine, requestedQuality });
         Assert.NotNull(result);
         return Assert.IsAssignableFrom<List<string>>(result);
     }
