@@ -185,7 +185,7 @@ public static partial class EngineAudioPostDownloadHelper
         ISpotifyIdResolver? SpotifyIdResolver,
         IHttpClientFactory? HttpClientFactory,
         AppleMusicCatalogService? AppleCatalog,
-        DeezerClient? DeezerClient);
+        DeezerClient? DeezerApiClient);
 
     private static readonly ConcurrentDictionary<string, PrefetchGateState> PrefetchGates =
         new(StringComparer.OrdinalIgnoreCase);
@@ -829,7 +829,7 @@ public static partial class EngineAudioPostDownloadHelper
                     runtime.HttpClientFactory,
                     runtime.SpotifyArtworkResolver,
                     runtime.SpotifyIdResolver,
-                    runtime.DeezerClient,
+                    runtime.DeezerApiClient,
                     execution.Request.AppleCoverLookupIdOverride ?? execution.Request.Payload.AppleId,
                     execution.Request.Payload.Title,
                     execution.Request.Payload.Artist,
@@ -1290,7 +1290,7 @@ public static partial class EngineAudioPostDownloadHelper
                 runtime.AppleCatalog,
                 runtime.HttpClientFactory,
                 settings,
-                runtime.DeezerClient,
+                runtime.DeezerApiClient,
                 runtime.SpotifyArtworkResolver,
                 execution.Request.Payload.AppleId,
                 execution.Request.Payload.DeezerId,

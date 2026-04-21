@@ -818,7 +818,10 @@ public sealed partial class MediaServerSoundtrackService
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Recent soundtrack probe failed for {ServerType}/{LibraryId}.", target.ServerType, target.LibraryId);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Recent soundtrack probe failed for {ServerType}/{LibraryId}.", target.ServerType, target.LibraryId);
+                }
             }
         }
     }
@@ -1912,7 +1915,7 @@ public sealed partial class MediaServerSoundtrackService
         return targets;
     }
 
-    private List<(string ServerType, string LibraryId, string LibraryName, string Category)> ResolveDistinctTargetLibraries(
+    private static List<(string ServerType, string LibraryId, string LibraryName, string Category)> ResolveDistinctTargetLibraries(
         MediaServerSoundtrackSettings settings,
         PlatformAuthState auth)
     {

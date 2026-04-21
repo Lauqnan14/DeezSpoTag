@@ -1,4 +1,5 @@
 // Extracted from library.js: soundtrack feature module
+let pendingSoundtrackReturnState = null;
 
 function persistSoundtrackReturnState() {
     if (!document.getElementById('soundtrackGrid')) {

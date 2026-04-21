@@ -579,6 +579,34 @@
         return Boolean(state.liveJobId && runId === state.liveJobId && hasActiveLiveRun());
     }
 
+    async function tryLoadPreferredLiveRun(runId, requestId) {
+        if (!canUseLiveRunSelection(runId)) {
+            return false;
+        }
+
+        return tryLoadLiveRunDetailsForSelection(
+            runId,
+            requestId,
+            "Failed to load selected live AutoTag run");
+    }
+
+    async function tryLoadArchiveThenLiveFallback(runId, requestId) {
+        try {
+            await tryLoadArchiveRunDetails(runId, requestId);
+            return true;
+        } catch (error) {
+            const loadedLive = await tryLoadLiveRunDetailsForSelection(
+                runId,
+                requestId,
+                "Failed to load live AutoTag run fallback");
+            if (!loadedLive) {
+                console.warn("Failed to load archived AutoTag run", error);
+                clearRunSelection("Failed to load the full AutoTag log.");
+            }
+            return loadedLive;
+        }
+    }
+
     async function tryLoadLiveRunDetailsForSelection(runId, requestId, warnMessage) {
         try {
             await loadLiveRunDetails(runId);
@@ -630,29 +658,10 @@
             return;
         }
         const requestId = ++state.runDetailsRequestId;
-
-        if (canUseLiveRunSelection(runId)) {
-            const loadedLive = await tryLoadLiveRunDetailsForSelection(
-                runId,
-                requestId,
-                "Failed to load selected live AutoTag run");
-            if (loadedLive) {
-                return;
-            }
+        if (await tryLoadPreferredLiveRun(runId, requestId)) {
+            return;
         }
-
-        try {
-            await tryLoadArchiveRunDetails(runId, requestId);
-        } catch (error) {
-            const loadedLive = await tryLoadLiveRunDetailsForSelection(
-                runId,
-                requestId,
-                "Failed to load live AutoTag run fallback");
-            if (!loadedLive) {
-                console.warn("Failed to load archived AutoTag run", error);
-                clearRunSelection("Failed to load the full AutoTag log.");
-            }
-        }
+        await tryLoadArchiveThenLiveFallback(runId, requestId);
     }
 
     function highlightSelectedRun() {

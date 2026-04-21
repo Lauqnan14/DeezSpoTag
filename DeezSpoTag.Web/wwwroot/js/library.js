@@ -745,6 +745,18 @@ function toSafeHttpUrl(rawUrl) {
     }
 }
 
+function escapeHtml(text) {
+    if (text === null || text === undefined) {
+        return '';
+    }
+    return String(text)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
 function buildLibraryImageUrl(path, size) {
     const value = (path || '').toString().trim();
     if (!value) {
@@ -3451,7 +3463,7 @@ function applyLibraryScopeSelectionFromLocation() {
 
 function syncLibraryScopeInLocationBar(selectionValue) {
     try {
-        const path = String(globalThis.location.pathname || '').toLowerCase().replace(/\/+$/, '');
+        const path = trimTrailingSlashes(String(globalThis.location.pathname || '').toLowerCase());
         if (path !== '/library') {
             return;
         }
@@ -3463,11 +3475,20 @@ function syncLibraryScopeInLocationBar(selectionValue) {
             params.set('folderId', normalizedSelection);
         }
         const nextQuery = params.toString();
-        const nextUrl = `${globalThis.location.pathname}${nextQuery ? `?${nextQuery}` : ''}${globalThis.location.hash || ''}`;
+        const queryPrefix = nextQuery ? '?' : '';
+        const nextUrl = `${globalThis.location.pathname}${queryPrefix}${nextQuery}${globalThis.location.hash || ''}`;
         globalThis.history.replaceState(globalThis.history.state, '', nextUrl);
     } catch {
         // Ignore history/location update failures.
     }
+}
+
+function trimTrailingSlashes(value) {
+    let index = value.length;
+    while (index > 1 && value.codePointAt(index - 1) === 47) {
+        index--;
+    }
+    return value.slice(0, index);
 }
 
 function resolveLibraryScopeFolderIdForNavigation() {
@@ -6049,13 +6070,15 @@ function buildDiscography(localAlbums, spotifyAlbums) {
             totalTracks
         );
         const isPopular = Boolean(spotifyMatch?.isPopular) || (spotifyMatch?.discographySection === 'popular');
+        const coverUrl = spotifyCoverUrl || (spotifyMatch ? null : onDiskCoverUrl);
+
         merged.push({
             id: album.id,
             title: album.title || album.name || '',
             name: album.title || album.name || '',
             releaseDate: album.releaseDate || spotifyMatch?.releaseDate || '',
             images: album.images || [],
-            coverUrl: spotifyCoverUrl || (!spotifyMatch ? onDiskCoverUrl : null),
+            coverUrl,
             sourceUrl: sourceUrl,
             deezerId: deezerAlbumId,
             totalTracks,

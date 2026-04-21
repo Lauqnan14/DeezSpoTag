@@ -38,16 +38,13 @@ public sealed class LrclibLyricsService
             return CreateError("Track is required for LRCLIB lyrics.");
         }
 
-        var effectiveOptions = NormalizeOptions(options);
-
-        var title = track.Title ?? string.Empty;
-        var artist = track.MainArtist?.Name ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist))
+        if (!TryResolveTrackIdentity(track, out var title, out var artist))
         {
             return CreateError("Track title and artist are required for LRCLIB lyrics.");
         }
 
-        var duration = effectiveOptions.UseDurationHint && track.Duration > 0 ? track.Duration : 0;
+        var effectiveOptions = NormalizeOptions(options);
+        var duration = ResolveHintedDuration(track, effectiveOptions);
 
         var resolved = await TryResolveWithVariantAsync(title, artist, track.Duration, duration, effectiveOptions, cancellationToken);
         if (resolved != null)
@@ -73,6 +70,16 @@ public sealed class LrclibLyricsService
 
         return CreateError("LRCLIB lyrics not found.");
     }
+
+    private static bool TryResolveTrackIdentity(Track track, out string title, out string artist)
+    {
+        title = track.Title ?? string.Empty;
+        artist = track.MainArtist?.Name ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(title) && !string.IsNullOrWhiteSpace(artist);
+    }
+
+    private static int ResolveHintedDuration(Track track, LrclibRequestOptions options)
+        => options.UseDurationHint && track.Duration > 0 ? track.Duration : 0;
 
     private async Task<LyricsBase?> TryResolveWithVariantAsync(
         string title,

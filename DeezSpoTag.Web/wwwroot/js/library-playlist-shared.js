@@ -1,5 +1,6 @@
 (() => {
-    function escapeHtml(text) {
+    const common = globalThis.DeezSpoTagLibraryPageCommon;
+    const escapeHtml = common?.escapeHtml ?? ((text) => {
         if (text === null || text === undefined) {
             return '';
         }
@@ -9,9 +10,8 @@
             .replaceAll('>', '&gt;')
             .replaceAll('"', '&quot;')
             .replaceAll("'", '&#39;');
-    }
-
-    function toSafeHttpUrl(rawUrl) {
+    });
+    const toSafeHttpUrl = common?.toSafeHttpUrl ?? ((rawUrl) => {
         if (typeof rawUrl !== 'string') {
             return '';
         }
@@ -29,45 +29,54 @@
         } catch {
             return '';
         }
-    }
-
-    function showToast(message, isError = false) {
+    });
+    const showToast = common?.showToast ?? ((message, isError = false) => {
         if (globalThis.DeezSpoTag?.ui?.showToast) {
             globalThis.DeezSpoTag.ui.showToast(message, { type: isError ? 'error' : 'info' });
             return;
         }
         if (isError) {
             console.error(message);
-        } else {
-            console.log(message);
+            return;
         }
-    }
+        console.log(message);
+    });
 
-    async function parseJsonResponse(response, url) {
-        if (!response.ok) {
-            const raw = await response.text();
-            let message = raw.trim();
-            if (message) {
-                try {
-                    const parsed = JSON.parse(message);
-                    message = typeof parsed?.message === 'string'
-                        ? parsed.message
-                        : (typeof parsed?.error === 'string' ? parsed.error : message);
-                } catch {
-                }
+    function resolveParsedErrorMessage(rawMessage) {
+        const message = rawMessage.trim();
+        if (!message) {
+            return '';
+        }
+        try {
+            const parsed = JSON.parse(message);
+            if (typeof parsed?.message === 'string' && parsed.message) {
+                return parsed.message;
             }
-            throw new Error(message || `Request failed (${response.status})`);
+            if (typeof parsed?.error === 'string' && parsed.error) {
+                return parsed.error;
+            }
+        } catch {
+            // Keep original message text.
         }
-        return response.json();
+        return message;
     }
 
-    async function fetchJson(url, options) {
+    async function parseJsonResponse(response) {
+        if (response.ok) {
+            return response.json();
+        }
+        const raw = await response.text();
+        const message = resolveParsedErrorMessage(raw);
+        throw new Error(message || `Request failed (${response.status})`);
+    }
+
+    const fetchJson = common?.fetchJson ?? (async (url, options) => {
         const response = await fetch(url, {
             cache: options?.cache ?? 'no-store',
             ...options
         });
-        return parseJsonResponse(response, url);
-    }
+        return parseJsonResponse(response);
+    });
 
     function renderSharedPlaylistActionButtons({
         actionAttribute = 'data-playlist-action',
