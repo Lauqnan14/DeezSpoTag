@@ -111,6 +111,12 @@
             if (parsedError) {
                 return parsedError;
             }
+            const reasonCodes = Array.isArray(parsed?.reasonCodes)
+                ? parsed.reasonCodes.map((value) => String(value || '').trim()).filter(Boolean)
+                : [];
+            if (reasonCodes.length > 0) {
+                return reasonCodes[0].replaceAll('_', ' ');
+            }
         } catch {
             // Fall through to raw text.
         }
@@ -218,6 +224,18 @@
         }
     }
 
+    function setStoredLibraryViewSelection(value) {
+        try {
+            if (!value || value === 'main') {
+                sessionStorage.removeItem(LIBRARY_VIEW_SESSION_KEY);
+                return;
+            }
+            sessionStorage.setItem(LIBRARY_VIEW_SESSION_KEY, value);
+        } catch {
+            // Ignore session storage failures.
+        }
+    }
+
     function getLibraryScopeFolderIdFromLocation() {
         try {
             const params = new URLSearchParams(globalThis.location.search);
@@ -230,6 +248,31 @@
         } catch {
             return null;
         }
+    }
+
+    function getLibraryScopeSelectionFromLocation() {
+        try {
+            const params = new URLSearchParams(globalThis.location.search);
+            if (!params.has('folderId')) {
+                return '';
+            }
+            const raw = String(params.get('folderId') || '').trim();
+            if (!raw || raw.toLowerCase() === 'main') {
+                return 'main';
+            }
+            const parsed = Number.parseInt(raw, 10);
+            return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : 'main';
+        } catch {
+            return '';
+        }
+    }
+
+    function applyLibraryScopeSelectionFromLocation() {
+        const selection = getLibraryScopeSelectionFromLocation();
+        if (!selection) {
+            return;
+        }
+        setStoredLibraryViewSelection(selection);
     }
 
     function getSelectedLibraryViewFolderId() {
@@ -300,6 +343,8 @@
             onStateChange: buildLibraryPlaybackStateHandler(button, previewKey)
         });
     }
+
+    applyLibraryScopeSelectionFromLocation();
 
     globalThis.DeezSpoTagLibraryPageCommon = {
         appendCacheKey,
