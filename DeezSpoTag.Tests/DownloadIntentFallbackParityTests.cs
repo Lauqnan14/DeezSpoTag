@@ -28,7 +28,7 @@ public sealed class DownloadIntentFallbackParityTests
     }
 
     [Fact]
-    public void BuildFallbackPlanSources_FiltersUnavailableEngines_WhenAvailabilityIsKnown()
+    public void BuildFallbackPlanSources_PreservesCrossEngineOrder_WhenAvailabilityIsKnown()
     {
         var settings = CreateAutoSettings();
         var availability = new SongLinkResult
@@ -44,16 +44,10 @@ public sealed class DownloadIntentFallbackParityTests
             requestedQuality: null,
             availability);
 
-        Assert.DoesNotContain(resolved, source => source.StartsWith("apple|", System.StringComparison.OrdinalIgnoreCase));
-        Assert.DoesNotContain(resolved, source => source.StartsWith("deezer|", System.StringComparison.OrdinalIgnoreCase));
-        Assert.All(resolved, source =>
-        {
-            Assert.True(
-                source.StartsWith("qobuz|", System.StringComparison.OrdinalIgnoreCase)
-                || source.StartsWith("tidal|", System.StringComparison.OrdinalIgnoreCase));
-        });
         Assert.Contains("qobuz|6", resolved);
         Assert.Contains("tidal|LOSSLESS", resolved);
+        Assert.Contains("apple|ALAC", resolved);
+        Assert.Contains("deezer|3", resolved);
     }
 
     [Fact]
