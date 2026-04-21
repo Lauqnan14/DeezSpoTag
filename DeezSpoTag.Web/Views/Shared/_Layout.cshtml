@@ -487,7 +487,7 @@
                 width: 70px;
             }
 
-            .main-content.collapsed {
+            .main-content.sidebar-collapsed {
                 margin-left: 70px;
             }
 
@@ -567,7 +567,7 @@
     var layoutAttr = string.IsNullOrWhiteSpace(layoutParam) ? string.Empty : layoutParam;
 }
 <body data-home-layout="@layoutAttr">
-    <button class="hamburger" onclick="toggleSidebar()">☰</button>
+    <button class="hamburger" onclick="toggleSidebar()" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">☰</button>
     
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
@@ -800,7 +800,25 @@
     
     <script>
         // Sidebar state management
-        let sidebarCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
+        function readSidebarCollapsedPreference() {
+            try {
+                return localStorage.getItem('sidebarCollapsed') === 'true';
+            } catch (error) {
+                console.warn('Failed to read sidebar preference from localStorage.', error);
+                return false;
+            }
+        }
+
+        function persistSidebarCollapsedPreference(collapsed) {
+            try {
+                localStorage.setItem('sidebarCollapsed', collapsed ? 'true' : 'false');
+            } catch (error) {
+                console.warn('Failed to write sidebar preference to localStorage.', error);
+            }
+            if (window.UserPrefs) window.UserPrefs.set('sidebarCollapsed', collapsed === true);
+        }
+
+        let sidebarCollapsed = readSidebarCollapsedPreference();
 
         function isSidebarMobile() {
             return window.matchMedia('(max-width: 900px)').matches;
@@ -811,6 +829,10 @@
             mainContent.classList.toggle('sidebar-collapsed', collapsed);
             hamburger.classList.toggle('sidebar-collapsed', collapsed);
             hamburger.classList.toggle('sidebar-expanded', !collapsed);
+            const expanded = isSidebarMobile()
+                ? sidebar.classList.contains('open')
+                : !collapsed;
+            hamburger.setAttribute('aria-expanded', expanded ? 'true' : 'false');
         }
 
         function closeSidebar(sidebar, mainContent, hamburger, collapsed) {
@@ -861,8 +883,7 @@
                 closeSidebar(sidebar, mainContent, hamburger, sidebarCollapsed);
                 
                 // Save state to localStorage and server
-                localStorage.setItem('sidebarCollapsed', sidebarCollapsed.toString());
-                if (window.UserPrefs) window.UserPrefs.set('sidebarCollapsed', sidebarCollapsed);
+                persistSidebarCollapsedPreference(sidebarCollapsed);
             }
         }
         
@@ -913,8 +934,12 @@
                 document.querySelector('.menu-item.settings')?.classList.add('active');
             } else if (currentPath.startsWith('/activities')) {
                 document.querySelector('.menu-item.activities')?.classList.add('active');
+            } else if (currentPath.startsWith('/statistics')) {
+                document.querySelector('.menu-item.statistics')?.classList.add('active');
             } else if (currentPath.startsWith('/login')) {
                 document.querySelector('.menu-item.login')?.classList.add('active');
+            } else if (currentPath.startsWith('/about')) {
+                document.querySelector('.menu-item.about')?.classList.add('active');
             }
         }
         
@@ -939,24 +964,6 @@
                     // Remove active class from all items
                     document.querySelectorAll('.menu-item').forEach(i => i.classList.remove('active'));
                     this.classList.add('active');
-                    
-                    // Handle navigation based on class
-                    if (this.classList.contains('home')) {
-                        window.location.href = '/';
-                    } else if (this.classList.contains('library')) {
-                        window.location.href = '/Library';
-                    } else if (this.classList.contains('media-management')) {
-                        window.location.href = '/MediaManagement';
-                    } else if (this.classList.contains('autotag')) {
-                        window.location.href = '/AutoTag';
-                    } else if (this.classList.contains('settings')) {
-                        window.location.href = '/Settings';
-                    } else if (this.classList.contains('activities')) {
-                        window.location.href = '/Activities';
-                    } else if (this.classList.contains('login')) {
-                        window.location.href = '/Login';
-                    }
-                    
                 });
             });
         }
