@@ -13,6 +13,7 @@ public sealed class EngineFallbackCoordinator
     private const string AppleEngine = "apple";
     private const string DefaultAppleStorefront = "us";
     private const string DefaultLanguage = "en-US";
+    private static readonly string[] AppleFallbackStorefronts = ["us", "gb", "ca", "au"];
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly SongLinkResolver _songLinkResolver;
@@ -413,22 +414,66 @@ public sealed class EngineFallbackCoordinator
         {
             appleId = AppleIdParser.TryExtractFromUrl(request.SourceUrl);
         }
-        if (string.IsNullOrWhiteSpace(appleId))
+        var resolvedStorefront = await _appleCatalogService.ResolveStorefrontAsync(
+            request.Storefront,
+            request.MediaUserToken,
+            cancellationToken);
+        if (string.IsNullOrWhiteSpace(resolvedStorefront))
         {
-            appleId = await TryResolveAppleIdByIsrcAsync(
-                request.Isrc,
-                request.Storefront,
-                request.Language,
-                request.MediaUserToken,
-                cancellationToken);
+            resolvedStorefront = DefaultAppleStorefront;
         }
 
-        if (string.IsNullOrWhiteSpace(appleId)
-            && request.FallbackSearchEnabled)
+        if (string.IsNullOrWhiteSpace(appleId))
         {
-            appleId = await TryResolveAppleIdBySearchAsync(
-                request,
-                cancellationToken);
+            foreach (var storefront in BuildStorefrontCandidates(resolvedStorefront))
+            {
+                foreach (var language in BuildLanguageCandidates(request.Language))
+                {
+                    appleId = await TryResolveAppleIdByIsrcAsync(
+                        request.Isrc,
+                        storefront,
+                        language,
+                        request.MediaUserToken,
+                        cancellationToken);
+                    if (!string.IsNullOrWhiteSpace(appleId))
+                    {
+                        resolvedStorefront = storefront;
+                        break;
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(appleId))
+                {
+                    break;
+                }
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(appleId))
+        {
+            foreach (var storefront in BuildStorefrontCandidates(resolvedStorefront))
+            {
+                foreach (var language in BuildLanguageCandidates(request.Language))
+                {
+                    appleId = await TryResolveAppleIdBySearchAsync(
+                        request with
+                        {
+                            Storefront = storefront,
+                            Language = language
+                        },
+                        cancellationToken);
+                    if (!string.IsNullOrWhiteSpace(appleId))
+                    {
+                        resolvedStorefront = storefront;
+                        break;
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(appleId))
+                {
+                    break;
+                }
+            }
         }
 
         if (string.IsNullOrWhiteSpace(appleId))
@@ -437,8 +482,8 @@ public sealed class EngineFallbackCoordinator
         }
 
         return appleId.StartsWith("ra.", StringComparison.OrdinalIgnoreCase)
-            ? $"https://music.apple.com/us/station/{appleId}"
-            : $"https://music.apple.com/us/song/{appleId}?i={appleId}";
+            ? $"https://music.apple.com/{resolvedStorefront}/station/{appleId}"
+            : $"https://music.apple.com/{resolvedStorefront}/song/{appleId}?i={appleId}";
     }
 
     private async Task<string?> TryResolveAppleIdByIsrcAsync(
@@ -544,7 +589,21 @@ public sealed class EngineFallbackCoordinator
             }
         }
 
-        return bestId;
+        if (bestScore >= 65)
+        {
+            return bestId;
+        }
+
+        foreach (var item in data.EnumerateArray())
+        {
+            var id = item.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+            if (!string.IsNullOrWhiteSpace(id))
+            {
+                return id;
+            }
+        }
+
+        return null;
     }
 
     private static int ScoreCandidate(System.Text.Json.JsonElement item, SourceResolutionRequest request)
@@ -558,6 +617,7 @@ public sealed class EngineFallbackCoordinator
         var title = TryReadString(attrs, "name");
         var artist = TryReadString(attrs, "artistName");
         var album = TryReadString(attrs, "albumName");
+        var isrc = TryReadString(attrs, "isrc");
         var durationInMillis = attrs.TryGetProperty("durationInMillis", out var durationProp)
             && durationProp.TryGetInt32(out var parsedDuration)
             ? parsedDuration
@@ -567,6 +627,12 @@ public sealed class EngineFallbackCoordinator
         score += ScoreTextMatch(request.Title, title, 60);
         score += ScoreTextMatch(request.Artist, artist, 30);
         score += ScoreTextMatch(request.Album, album, 15);
+        if (!string.IsNullOrWhiteSpace(request.Isrc)
+            && !string.IsNullOrWhiteSpace(isrc)
+            && string.Equals(request.Isrc.Trim(), isrc.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            score += 50;
+        }
 
         if (request.DurationMs.HasValue && request.DurationMs.Value > 0 && durationInMillis > 0)
         {
@@ -594,6 +660,9 @@ public sealed class EngineFallbackCoordinator
         var normalizedTitle = title?.Trim();
         var normalizedArtist = artist?.Trim();
         var normalizedAlbum = album?.Trim();
+        var cleanedTitle = NormalizeForCompare(normalizedTitle ?? string.Empty);
+        var cleanedArtist = NormalizeForCompare(normalizedArtist ?? string.Empty);
+        var cleanedAlbum = NormalizeForCompare(normalizedAlbum ?? string.Empty);
 
         if (!string.IsNullOrWhiteSpace(normalizedTitle) && !string.IsNullOrWhiteSpace(normalizedArtist))
         {
@@ -610,7 +679,58 @@ public sealed class EngineFallbackCoordinator
             terms.Add($"{normalizedTitle} {normalizedAlbum}");
         }
 
+        if (!string.IsNullOrWhiteSpace(cleanedTitle) && !string.IsNullOrWhiteSpace(cleanedArtist))
+        {
+            terms.Add($"{cleanedTitle} {cleanedArtist}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(cleanedTitle))
+        {
+            terms.Add(cleanedTitle);
+        }
+
+        if (!string.IsNullOrWhiteSpace(cleanedTitle) && !string.IsNullOrWhiteSpace(cleanedAlbum))
+        {
+            terms.Add($"{cleanedTitle} {cleanedAlbum}");
+        }
+
         return terms
+            .Select(term => term.Trim())
+            .Where(term => !string.IsNullOrWhiteSpace(term))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static IReadOnlyList<string> BuildStorefrontCandidates(string primary)
+    {
+        var candidates = new List<string>();
+        if (!string.IsNullOrWhiteSpace(primary))
+        {
+            candidates.Add(primary.Trim());
+        }
+
+        candidates.AddRange(AppleFallbackStorefronts);
+        return candidates
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static IReadOnlyList<string> BuildLanguageCandidates(string? language)
+    {
+        var baseLanguage = string.IsNullOrWhiteSpace(language) ? DefaultLanguage : language.Trim();
+        var values = new List<string> { baseLanguage };
+        var dashIndex = baseLanguage.IndexOf('-');
+        if (dashIndex > 0)
+        {
+            values.Add(baseLanguage[..dashIndex]);
+        }
+
+        if (!baseLanguage.Equals(DefaultLanguage, StringComparison.OrdinalIgnoreCase))
+        {
+            values.Add(DefaultLanguage);
+        }
+
+        return values
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
