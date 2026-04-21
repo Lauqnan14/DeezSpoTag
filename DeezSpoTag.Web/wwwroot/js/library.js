@@ -3449,6 +3449,27 @@ function applyLibraryScopeSelectionFromLocation() {
     setStoredLibraryViewSelection(selection);
 }
 
+function syncLibraryScopeInLocationBar(selectionValue) {
+    try {
+        const path = String(globalThis.location.pathname || '').toLowerCase().replace(/\/+$/, '');
+        if (path !== '/library') {
+            return;
+        }
+        const normalizedSelection = String(selectionValue || '').trim().toLowerCase();
+        const params = new URLSearchParams(globalThis.location.search);
+        if (!normalizedSelection || normalizedSelection === 'main') {
+            params.delete('folderId');
+        } else {
+            params.set('folderId', normalizedSelection);
+        }
+        const nextQuery = params.toString();
+        const nextUrl = `${globalThis.location.pathname}${nextQuery ? `?${nextQuery}` : ''}${globalThis.location.hash || ''}`;
+        globalThis.history.replaceState(globalThis.history.state, '', nextUrl);
+    } catch {
+        // Ignore history/location update failures.
+    }
+}
+
 function resolveLibraryScopeFolderIdForNavigation() {
     const selectedFolderId = getSelectedLibraryViewFolderId();
     if (selectedFolderId !== null) {
@@ -9530,6 +9551,7 @@ function updateLibraryViewOptions() {
         || (libraryState.folders || []).some(folder => isFolderEnabledFlag(folder.enabled) && String(folder.id) === requestedValue);
     viewSelect.value = selectedExists ? requestedValue : 'main';
     setStoredLibraryViewSelection(viewSelect.value || 'main');
+    syncLibraryScopeInLocationBar(viewSelect.value || 'main');
 }
 
 function ensureLibraryViewDefaultOption() {
@@ -9924,6 +9946,7 @@ function bindLibraryFilterEvents(viewSelect, searchInput, sortSelect) {
     if (viewSelect) {
         viewSelect.addEventListener('change', async () => {
             setStoredLibraryViewSelection(viewSelect.value || 'main');
+            syncLibraryScopeInLocationBar(viewSelect.value || 'main');
             await loadArtists();
         });
     }

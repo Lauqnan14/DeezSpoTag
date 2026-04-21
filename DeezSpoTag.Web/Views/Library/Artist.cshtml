@@ -1,6 +1,10 @@
 @{
     ViewData["Title"] = "Library Albums";
     Layout = "~/Views/Shared/_Layout.cshtml";
+    var folderId = Context?.Request?.Query["folderId"].ToString();
+    var libraryHref = string.IsNullOrWhiteSpace(folderId)
+        ? "/Library"
+        : $"/Library?folderId={Uri.EscapeDataString(folderId)}";
 }
 
 <link rel="stylesheet" href="~/css/library.css" asp-append-version="true" />
@@ -8,7 +12,7 @@
 
 <div class="library-page artist-page artist-neo" data-artist-id="@ViewData["ArtistId"]">
     <div class="library-breadcrumbs">
-        <a href="/Library">Library</a>
+        <a href="@libraryHref">Library</a>
         <span>/</span>
         <span>Artist</span>
     </div>
