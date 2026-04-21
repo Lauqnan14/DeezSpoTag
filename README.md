@@ -20,6 +20,7 @@ DeezSpoTag automates music workflows end-to-end:
 4. Supports conversion/transcoding flows where configured.
 5. Organizes output into your library structure.
 6. Allows manual tagging and lyrics editing
+7. Sync artist's avatar, background art and background information from Spotify to your preferred media server
 
 ---
 
@@ -52,7 +53,60 @@ DeezSpoTag automates music workflows end-to-end:
 
 - Daily music recommendations based on the music in your library.
 - Automated playlist generation based on listening patterns.
-- Sync artist avatar, background art, and biography with Plex/Jellyfin (still in progress).
+
+---
+
+## Login Requirements
+
+Use the `Login` page to configure platform credentials.
+
+### Deezer
+
+- `ARL Login`: paste your Deezer `arl` cookie value.
+
+### Spotify
+
+- `Web Player Cookies`:
+  - `sp_dc` is required.
+  - `sp_key` is optional.
+  - `sp_t` is required by the login UI flow.
+  - `User Agent` is optional (browser user agent is used if blank).
+- `Spotify Connect / Blob Login`:
+  - `Account Name` is required, and can be anything.
+  - `Region` is optional.
+
+### Apple Music (Active subscription is a must)
+
+- `Wrapper Login`:
+  - Apple email and password are required.
+  - 2FA code is required only when prompted.
+- `Token Settings`:
+  - `Storefront` (for example `us`) can be set.
+  - `media-user-token` cookie value can be set.
+  - `media-user-token` is required for AAC-LC downloads and Apple lyrics workflows.
+
+### Discogs
+
+- `Token` is required.
+
+### Last.fm
+
+- `API Key` is required.
+- `Username` is optional.
+
+### BPM Supreme
+
+- UI collects `Email`, `Password`, and `Library` (`Supreme` or `Latino`).
+
+### Plex
+
+- `Server URL` and `Token` are required.
+
+### Jellyfin
+
+- `Server URL`, `API Key`, and `Username` are required.
+
+Provider-specific features run only when that provider has valid credentials configured.
 
 ---
 
@@ -134,3 +188,19 @@ If any project listed above needs correction or more specific attribution, open 
 
 ---
 
+## Disclaimer
+
+DeezSpoTag is provided for educational, research, and private-use purposes only.
+The author does not condone or encourage copyright infringement or unauthorized distribution of protected content.
+
+DeezSpoTag is an independent third-party project and is not affiliated with, endorsed by, or sponsored by Deezer, Spotify, Apple Music, TIDAL, Qobuz, Amazon Music, or any other platform referenced by this software.
+
+By using this project, you are solely responsible for:
+
+- Ensuring your use complies with applicable local, national, and international laws.
+- Reviewing and following the Terms of Service of all connected platforms.
+- Obtaining any permissions or rights required for the content you access or process.
+- Any legal or account-related consequences resulting from misuse.
+
+This software is provided "as is", without warranties of any kind, express or implied.
+The author assumes no liability for account bans, data loss, damages, or legal claims arising from use of this project.
