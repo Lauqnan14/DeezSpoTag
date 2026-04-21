@@ -282,7 +282,10 @@ public class AutoTagJobsController : ControllerBase
 
     [HttpGet("jobs/{id}")]
     [ResponseCache(Duration = 0, Location = ResponseCacheLocation.None, NoStore = true)]
-    public IActionResult GetJob(string id)
+    public IActionResult GetJob(
+        string id,
+        [FromQuery] bool includeLogs = true,
+        [FromQuery] bool includeStatusHistory = true)
     {
         var job = _autoTagService.GetJob(id);
         if (job == null)
@@ -290,7 +293,7 @@ public class AutoTagJobsController : ControllerBase
             return NotFound();
         }
 
-        return Ok(ToJobResponse(job));
+        return Ok(ToJobResponse(job, includeLogs, includeStatusHistory));
     }
 
     [HttpGet("jobs/{id}/tag-diff")]
@@ -344,7 +347,9 @@ public class AutoTagJobsController : ControllerBase
 
     [HttpGet("jobs/latest")]
     [ResponseCache(Duration = 0, Location = ResponseCacheLocation.None, NoStore = true)]
-    public IActionResult GetLatestJob()
+    public IActionResult GetLatestJob(
+        [FromQuery] bool includeLogs = false,
+        [FromQuery] bool includeStatusHistory = false)
     {
         var job = _autoTagService.GetLatestJob();
         if (job == null)
@@ -352,11 +357,18 @@ public class AutoTagJobsController : ControllerBase
             return Ok(CreateIdleJobResponse());
         }
 
-        return Ok(ToJobResponse(job));
+        return Ok(ToJobResponse(job, includeLogs, includeStatusHistory));
     }
 
-    private static object ToJobResponse(AutoTagJob job)
+    private static object ToJobResponse(
+        AutoTagJob job,
+        bool includeLogs = true,
+        bool includeStatusHistory = true)
     {
+        var logCount = job.Logs?.Count ?? 0;
+        var statusEntryCount = job.StatusHistory?.Count ?? 0;
+        var lastLogLine = logCount > 0 ? job.Logs![logCount - 1] : null;
+
         return new
         {
             job.Id,
@@ -376,8 +388,11 @@ public class AutoTagJobsController : ControllerBase
             job.AutoMoveSummary,
             job.CurrentPlatform,
             job.LastStatus,
-            logs = job.Logs,
-            statusHistory = job.StatusHistory
+            logCount,
+            statusEntryCount,
+            lastLogLine,
+            logs = includeLogs ? job.Logs : null,
+            statusHistory = includeStatusHistory ? job.StatusHistory : null
         };
     }
 
@@ -402,6 +417,9 @@ public class AutoTagJobsController : ControllerBase
             autoMoveSummary = (object?)null,
             currentPlatform = (string?)null,
             lastStatus = (object?)null,
+            logCount = 0,
+            statusEntryCount = 0,
+            lastLogLine = (string?)null,
             logs = Array.Empty<string>(),
             statusHistory = Array.Empty<object>()
         };

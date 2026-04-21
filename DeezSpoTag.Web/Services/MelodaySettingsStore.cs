@@ -90,13 +90,13 @@ public sealed class MelodaySettingsStore
         LibraryName = string.IsNullOrWhiteSpace(stored.LibraryName) ? defaults.LibraryName : stored.LibraryName,
         PlaylistPrefix = string.IsNullOrWhiteSpace(stored.PlaylistPrefix) ? defaults.PlaylistPrefix : stored.PlaylistPrefix,
         BaseUrl = string.IsNullOrWhiteSpace(stored.BaseUrl) ? defaults.BaseUrl : stored.BaseUrl,
-        ExcludePlayedDays = stored.ExcludePlayedDays <= 0 ? defaults.ExcludePlayedDays : stored.ExcludePlayedDays,
-        HistoryLookbackDays = stored.HistoryLookbackDays <= 0 ? defaults.HistoryLookbackDays : stored.HistoryLookbackDays,
-        MaxTracks = stored.MaxTracks <= 0 ? defaults.MaxTracks : stored.MaxTracks,
-        HistoricalRatio = stored.HistoricalRatio <= 0 ? defaults.HistoricalRatio : stored.HistoricalRatio,
-        SonicSimilarLimit = stored.SonicSimilarLimit <= 0 ? defaults.SonicSimilarLimit : stored.SonicSimilarLimit,
-        SonicSimilarityDistance = stored.SonicSimilarityDistance <= 0 ? defaults.SonicSimilarityDistance : stored.SonicSimilarityDistance,
-        UpdateIntervalMinutes = stored.UpdateIntervalMinutes <= 0 ? defaults.UpdateIntervalMinutes : stored.UpdateIntervalMinutes,
+        ExcludePlayedDays = ClampAllowZeroOrDefault(stored.ExcludePlayedDays, defaults.ExcludePlayedDays, 0, 365),
+        HistoryLookbackDays = ClampPositiveOrDefault(stored.HistoryLookbackDays, defaults.HistoryLookbackDays, 1, 365),
+        MaxTracks = ClampPositiveOrDefault(stored.MaxTracks, defaults.MaxTracks, 10, 500),
+        HistoricalRatio = ClampAllowZeroOrDefault(stored.HistoricalRatio, defaults.HistoricalRatio, 0d, 1d),
+        SonicSimilarLimit = ClampPositiveOrDefault(stored.SonicSimilarLimit, defaults.SonicSimilarLimit, 1, 50),
+        SonicSimilarityDistance = ClampPositiveOrDefault(stored.SonicSimilarityDistance, defaults.SonicSimilarityDistance, 0.05d, 1d),
+        UpdateIntervalMinutes = ClampPositiveOrDefault(stored.UpdateIntervalMinutes, defaults.UpdateIntervalMinutes, 5, 1440),
         MoodMapPath = string.IsNullOrWhiteSpace(stored.MoodMapPath) ? defaults.MoodMapPath : stored.MoodMapPath,
         CoversPath = string.IsNullOrWhiteSpace(stored.CoversPath) ? defaults.CoversPath : stored.CoversPath,
         FontsPath = string.IsNullOrWhiteSpace(stored.FontsPath) ? defaults.FontsPath : stored.FontsPath,
@@ -123,4 +123,28 @@ public sealed class MelodaySettingsStore
         MainFontFile = source.MainFontFile,
         BrandFontFile = source.BrandFontFile
     };
+
+    private static int ClampPositiveOrDefault(int value, int fallback, int min, int max)
+    {
+        var effective = value <= 0 ? fallback : value;
+        return Math.Clamp(effective, min, max);
+    }
+
+    private static int ClampAllowZeroOrDefault(int value, int fallback, int min, int max)
+    {
+        var effective = value < 0 ? fallback : value;
+        return Math.Clamp(effective, min, max);
+    }
+
+    private static double ClampPositiveOrDefault(double value, double fallback, double min, double max)
+    {
+        var effective = value <= 0 ? fallback : value;
+        return Math.Clamp(effective, min, max);
+    }
+
+    private static double ClampAllowZeroOrDefault(double value, double fallback, double min, double max)
+    {
+        var effective = value < 0 ? fallback : value;
+        return Math.Clamp(effective, min, max);
+    }
 }

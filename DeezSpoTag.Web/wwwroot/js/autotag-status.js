@@ -8,7 +8,9 @@
     const STATUS_RUNNING = "running";
     const STATUS_COMPLETED = "completed";
     const STATUS_FAILED = "failed";
-    const pollIntervalMs = 2000;
+    const pollIntervalMs = 3000;
+    const runningDetailRefreshMs = 6000;
+    const idleDetailRefreshMs = 20000;
     const weekDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     let pollTimer = null;
 
@@ -26,7 +28,8 @@
         calendarMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
         calendarRequestId: 0,
         runsRequestId: 0,
-        runDetailsRequestId: 0
+        runDetailsRequestId: 0,
+        lastLiveDetailsFetchedAt: 0
     };
 
     const el = (id) => document.getElementById(id);
@@ -217,6 +220,11 @@
         return !!historyPane?.classList.contains("active");
     }
 
+    function isAutoTagStatusTabActive() {
+        const statusPane = el("autotag-status-content");
+        return !!statusPane?.classList.contains("active");
+    }
+
     function canShowLiveRunForSelectedDate() {
         if (!hasActiveLiveRun()) {
             return false;
@@ -306,8 +314,9 @@
 
     function updateLiveMetadata(job) {
         const logLines = normalizeLogLines(job?.logs);
+        const logCount = typeof job?.logCount === "number" ? job.logCount : logLines.length;
         setText("autotag-runtime", formatDuration(job?.startedAt, job?.finishedAt));
-        setText("autotag-log-count", String(logLines.length));
+        setText("autotag-log-count", String(logCount));
         setText("autotag-exit-code", job?.exitCode ?? "--");
         setText("autotag-platform", job?.currentPlatform || "--");
         setText("autotag-last-track", toFileName(job?.lastStatus?.status?.path));
@@ -320,8 +329,13 @@
 
         const lastLogEl = el("autotag-last-log");
         if (lastLogEl) {
-            const lastLine = logLines.length ? logLines.at(-1) : "No recent log lines.";
-            lastLogEl.textContent = stripAnsi(lastLine);
+            if (logLines.length) {
+                lastLogEl.textContent = stripAnsi(logLines.at(-1));
+            } else if (job?.lastLogLine) {
+                lastLogEl.textContent = stripAnsi(job.lastLogLine);
+            } else if (!job) {
+                lastLogEl.textContent = "No recent log lines.";
+            }
         }
 
         if (job?.rootPath) {
@@ -539,6 +553,13 @@
             return null;
         }
 
+        const logCount = typeof job.logCount === "number"
+            ? job.logCount
+            : (Array.isArray(job.logs) ? job.logs.length : 0);
+        const statusEntryCount = typeof job.statusEntryCount === "number"
+            ? job.statusEntryCount
+            : (Array.isArray(job.statusHistory) ? job.statusHistory.length : 0);
+
         return {
             id: job.id,
             status: job.status || STATUS_RUNNING,
@@ -550,17 +571,18 @@
             okCount: job.okCount ?? 0,
             errorCount: job.errorCount ?? 0,
             skippedCount: job.skippedCount ?? 0,
-            logCount: Array.isArray(job.logs) ? job.logs.length : 0,
-            statusEntryCount: Array.isArray(job.statusHistory) ? job.statusHistory.length : 0,
+            logCount,
+            statusEntryCount,
             progress: typeof job.progress === "number" ? job.progress : null
         };
     }
 
     async function loadLiveRunDetails(runId) {
-        const liveJob = await fetchJson(`/api/autotag/jobs/${encodeURIComponent(runId)}`);
+        const liveJob = await fetchJson(`/api/autotag/jobs/${encodeURIComponent(runId)}?includeLogs=true&includeStatusHistory=true`);
         const liveSummary = buildSummaryFromLiveJob(liveJob);
         state.selectedRunId = liveJob?.id || runId;
         state.historyStatus = Array.isArray(liveJob?.statusHistory) ? liveJob.statusHistory.slice().reverse() : [];
+        state.lastLiveDetailsFetchedAt = Date.now();
         renderRunSummary(liveSummary, {
             summary: liveSummary,
             statusHistory: liveJob?.statusHistory || [],
@@ -846,8 +868,26 @@
         }
     }
 
-    async function refreshHistoryIfSelectedLiveRun() {
+    function hasLiveDetailPayload(job) {
+        return Array.isArray(job?.statusHistory)
+            || Array.isArray(job?.logs)
+            || typeof job?.logs === "string";
+    }
+
+    function getLiveDetailRefreshIntervalMs(status) {
+        return String(status || "").toLowerCase() === STATUS_RUNNING
+            ? runningDetailRefreshMs
+            : idleDetailRefreshMs;
+    }
+
+    async function refreshHistoryIfSelectedLiveRun(force = false) {
         if (!state.selectedRunId || state.selectedRunId !== state.liveJobId || !hasActiveLiveRun()) {
+            return;
+        }
+
+        const now = Date.now();
+        const refreshIntervalMs = getLiveDetailRefreshIntervalMs(state.liveJobSummary?.status);
+        if (!force && (now - state.lastLiveDetailsFetchedAt) < refreshIntervalMs) {
             return;
         }
 
@@ -858,38 +898,75 @@
         }
     }
 
+    function shouldHydrateLiveRunDetails(job) {
+        if (!job?.id || !hasActiveLiveRun()) {
+            return false;
+        }
+
+        if (document.hidden) {
+            return false;
+        }
+
+        if (isAutoTagStatusTabActive()) {
+            return true;
+        }
+
+        if (shouldFollowLiveRunInHistory()) {
+            return true;
+        }
+
+        return normalizeRunId(state.selectedRunId) === normalizeRunId(job.id);
+    }
+
+    async function tryHydrateLiveRunDetails(job) {
+        if (!shouldHydrateLiveRunDetails(job)) {
+            return;
+        }
+
+        const refreshIntervalMs = getLiveDetailRefreshIntervalMs(job?.status);
+        if ((Date.now() - state.lastLiveDetailsFetchedAt) < refreshIntervalMs) {
+            return;
+        }
+
+        try {
+            const detailed = await fetchJson(`/api/autotag/jobs/${encodeURIComponent(job.id)}?includeLogs=true&includeStatusHistory=true`);
+            state.lastLiveDetailsFetchedAt = Date.now();
+            await applyPolledJob(detailed, normalizeLogLines(detailed.logs));
+        } catch (error) {
+            console.warn("Failed to hydrate detailed live AutoTag payload", error);
+        }
+    }
+
     async function pollJob() {
         try {
-            let jobId = localStorage.getItem(JOB_KEY);
+            const cachedJobId = localStorage.getItem(JOB_KEY) || "";
             const latestJob = await tryFetchLatestJob();
             if (latestJob?.id) {
-                jobId = syncPolledJobId(jobId, latestJob.id);
+                syncPolledJobId(cachedJobId, latestJob.id);
                 await applyPolledJob(latestJob, normalizeLogLines(latestJob.logs));
+                await tryHydrateLiveRunDetails(latestJob);
                 schedulePoll();
                 return;
             }
 
-            if (jobId) {
-                localStorage.removeItem(JOB_KEY);
-                jobId = "";
-            }
-
-            if (!jobId) {
+            if (!cachedJobId) {
                 resetLivePollingState();
                 schedulePoll();
                 return;
             }
 
             try {
-                const job = await fetchJson(`/api/autotag/jobs/${encodeURIComponent(jobId)}`);
-                await applyPolledJob({ ...job, id: job?.id || jobId }, normalizeLogLines(job.logs));
+                const job = await fetchJson(`/api/autotag/jobs/${encodeURIComponent(cachedJobId)}?includeLogs=false&includeStatusHistory=false`);
+                const hydratedJob = { ...job, id: job?.id || cachedJobId };
+                await applyPolledJob(hydratedJob, normalizeLogLines(job.logs));
+                await tryHydrateLiveRunDetails(hydratedJob);
             } catch (error) {
                 console.warn("Failed to refresh live AutoTag status.", error);
                 if (error?.status === 404) {
                     localStorage.removeItem(JOB_KEY);
                     resetLivePollingState();
                 } else {
-                    updateStatus(jobId, STATUS_ERROR);
+                    updateStatus(cachedJobId, STATUS_ERROR);
                     updateProgressBar({ status: STATUS_FAILED });
                 }
             }
@@ -903,7 +980,7 @@
 
     async function tryFetchLatestJob() {
         try {
-            return await fetchJson("/api/autotag/jobs/latest");
+            return await fetchJson("/api/autotag/jobs/latest?includeLogs=false&includeStatusHistory=false");
         } catch {
             // ignore and fall back to cached job
             return null;
@@ -922,6 +999,7 @@
     function resetLivePollingState() {
         state.liveJobId = null;
         state.liveJobSummary = null;
+        state.lastLiveDetailsFetchedAt = 0;
         updateStatus("Idle", "waiting");
         updateLogs([]);
         updateLiveMetadata(null);
@@ -932,18 +1010,22 @@
         state.liveJobId = job?.id || null;
         state.liveJobSummary = buildSummaryFromLiveJob(job);
         updateStatus(job.id, job.status);
-        updateLogs(logs);
-        updateLiveMetadata({ ...job, logs });
+        const hasLogsPayload = Array.isArray(job?.logs) || typeof job?.logs === "string";
+        if (hasLogsPayload) {
+            updateLogs(logs);
+        }
+        updateLiveMetadata(hasLogsPayload ? { ...job, logs } : job);
         updateProgressBar(job);
-        if (shouldFollowLiveRunInHistory()) {
+        const hasDetails = hasLiveDetailPayload(job);
+        if (shouldFollowLiveRunInHistory() && hasDetails) {
             renderLiveRunSelection(job, logs);
         } else if (hasActiveLiveRun() && isHistoryTabActive() && isTodayDateToken(state.selectedDate)) {
             renderRunList(state.archivedRuns);
         }
-        if (hasActiveLiveRun()) {
+        if (hasActiveLiveRun() && hasDetails) {
             syncSelectedRunWithLiveJob(job, logs);
         }
-        if (job.status === STATUS_RUNNING && !shouldFollowLiveRunInHistory()) {
+        if (job.status === STATUS_RUNNING && !shouldFollowLiveRunInHistory() && hasDetails) {
             await refreshHistoryIfSelectedLiveRun();
         }
     }

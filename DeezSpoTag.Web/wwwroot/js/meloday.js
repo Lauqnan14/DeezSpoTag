@@ -1,5 +1,44 @@
+const melodayUnsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+function melodayReadCsrfToken() {
+    const tokenMeta = document.querySelector('meta[name="deezspotag-csrf-token"]');
+    const token = tokenMeta?.getAttribute('content');
+    return typeof token === 'string' ? token.trim() : '';
+}
+
+function buildMelodayFetchOptions(options) {
+    const requestOptions = options ? { ...options } : {};
+    const method = String(requestOptions.method || 'GET').toUpperCase();
+    if (!melodayUnsafeMethods.has(method)) {
+        return requestOptions;
+    }
+
+    const headers = new Headers(requestOptions.headers || {});
+    if (!headers.has('X-CSRF-TOKEN')) {
+        const csrfToken = melodayReadCsrfToken();
+        if (csrfToken) {
+            headers.set('X-CSRF-TOKEN', csrfToken);
+        }
+    }
+
+    requestOptions.headers = headers;
+    if (!requestOptions.credentials) {
+        requestOptions.credentials = 'same-origin';
+    }
+
+    return requestOptions;
+}
+
+function melodayFetch(url, options) {
+    if (typeof globalThis.activityFetch === 'function') {
+        return globalThis.activityFetch(url, options);
+    }
+
+    return fetch(url, buildMelodayFetchOptions(options));
+}
+
 async function melodayFetchJson(url, options) {
-    const response = await fetch(url, options);
+    const response = await melodayFetch(url, options);
     if (!response.ok) {
         const message = await response.text();
         throw new Error(message || `Request failed: ${response.status}`);
