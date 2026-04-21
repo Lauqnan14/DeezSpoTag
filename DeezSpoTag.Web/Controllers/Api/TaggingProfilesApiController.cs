@@ -1,6 +1,5 @@
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Library;
-using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -15,15 +14,12 @@ public sealed class TaggingProfilesApiController : ControllerBase
 {
     private readonly TaggingProfileService _profiles;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
-    private readonly DeezSpoTagSettingsService _settingsService;
     public TaggingProfilesApiController(
         TaggingProfileService profiles,
-        AutoTagProfileResolutionService profileResolutionService,
-        DeezSpoTagSettingsService settingsService)
+        AutoTagProfileResolutionService profileResolutionService)
     {
         _profiles = profiles;
         _profileResolutionService = profileResolutionService;
-        _settingsService = settingsService;
     }
 
     [HttpGet]
@@ -77,7 +73,6 @@ public sealed class TaggingProfilesApiController : ControllerBase
         {
             return BadRequest("Profile name is required.");
         }
-        await SyncRuntimeSettingsFromProfileAsync(saved, request.ApplyToRuntime == true);
 
         return Ok(ToResponseModel(saved));
     }
@@ -180,19 +175,6 @@ public sealed class TaggingProfilesApiController : ControllerBase
     private static TaggingProfile DeepCloneProfile(TaggingProfile profile)
         => JsonSerializer.Deserialize<TaggingProfile>(JsonSerializer.Serialize(profile))
             ?? new TaggingProfile();
-
-    private Task SyncRuntimeSettingsFromProfileAsync(TaggingProfile profile, bool forceApply)
-    {
-        if (profile == null || (!forceApply && !profile.IsDefault))
-        {
-            return Task.CompletedTask;
-        }
-
-        var settings = _settingsService.LoadSettings();
-        TaggingProfileSettingsMapper.ApplyProfileToSettings(settings, profile);
-        _settingsService.SaveSettings(settings);
-        return Task.CompletedTask;
-    }
 
     private static UnifiedTagConfig ConvertTagConfig(JsonElement? input)
     {
