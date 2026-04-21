@@ -1,13 +1,17 @@
 @{
     ViewData["Title"] = "Library Album";
     Layout = "~/Views/Shared/_Layout.cshtml";
+    var folderId = Context?.Request?.Query["folderId"].ToString();
+    var libraryHref = string.IsNullOrWhiteSpace(folderId)
+        ? "/Library"
+        : $"/Library?folderId={Uri.EscapeDataString(folderId)}";
 }
 
 <link rel="stylesheet" href="~/css/library.css" asp-append-version="true" />
 
 <div class="library-page album-page" data-album-id="@ViewData["AlbumId"]">
     <div class="library-breadcrumbs">
-        <a href="/Library">Library</a>
+        <a href="@libraryHref">Library</a>
         <span>/</span>
         <a href="#" id="albumArtistLink">Artist</a>
         <span>/</span>

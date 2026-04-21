@@ -587,7 +587,14 @@
                 </div>
                 <span class="menu-text">Home</span>
             </a>
-            <a href="/Library" class="menu-item library" data-tooltip="Library">
+            @{
+                var currentLibraryFolderId = Context?.Request?.Query["folderId"].ToString() ?? string.Empty;
+                var libraryMenuHref = Context?.Request?.Path.StartsWithSegments("/Library", StringComparison.OrdinalIgnoreCase) == true
+                    && !string.IsNullOrWhiteSpace(currentLibraryFolderId)
+                    ? $"/Library?folderId={Uri.EscapeDataString(currentLibraryFolderId)}"
+                    : "/Library";
+            }
+            <a href="@libraryMenuHref" class="menu-item library" data-tooltip="Library">
                 <div class="menu-icon">
                     <svg width="24" height="24" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round">
                         <path d="M4 16a4 4 0 0 1 4-4h16l4 6h32a4 4 0 0 1 4 4v28a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4V16Z" fill="none"/>
