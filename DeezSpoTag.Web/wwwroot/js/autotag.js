@@ -7012,6 +7012,10 @@
     }
 
     Promise.all([loadPlatforms(), loadEnrichmentLibraryFolders(), loadLyricsSettings()]).then(async () => {
+        const authData = await loadStoredAuth();
+        mergeStoredAuth(state.config, authData);
+        await loadSpotifyStatus();
+
         loadConfigToUI();
         enforceSingleDownloadSource();
         refreshDownloadTagsForSource();
@@ -7031,17 +7035,5 @@
         if (recoveredJobId && hasStatusUI()) {
             schedulePoll();
         }
-        loadStoredAuth().then((data) => {
-            mergeStoredAuth(state.config, data);
-            loadSpotifyStatus().then(() => {
-                renderPlatforms();
-                updateDownloadSourceAvailability();
-                refreshDownloadTagsForSource();
-                syncEnhancementTagsWithEnrichment();
-                renderTags("autotag-tags", state.config.tags, "tags");
-                renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
-                renderTags("autotag-overwrite-tags", state.config.overwriteTags, "overwriteTags");
-            });
-        });
     });
 })();
