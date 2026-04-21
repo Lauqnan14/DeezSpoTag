@@ -789,6 +789,28 @@ async function fetchJsonOptional(url, options) {
     return parseJsonResponse(response, url);
 }
 
+async function fetchJsonOptionalWithTimeout(url, timeoutMs = 12000, options = null) {
+    const controller = new AbortController();
+    const timer = globalThis.setTimeout(() => {
+        controller.abort();
+    }, Math.max(1, Number.parseInt(String(timeoutMs ?? 0), 10) || 12000));
+
+    try {
+        return await fetchJsonOptional(url, {
+            ...(options || {}),
+            signal: controller.signal
+        });
+    } catch (error) {
+        if (error?.name === 'AbortError') {
+            console.warn(`Request timed out while loading optional JSON: ${url}`);
+            return null;
+        }
+        throw error;
+    } finally {
+        globalThis.clearTimeout(timer);
+    }
+}
+
 async function parseJsonResponse(response, url) {
     if (isAuthHtmlResponse(response)) {
         const error = new Error('Session expired or invalid security token. Refresh the page and sign in again.');
@@ -2822,10 +2844,12 @@ function resolveFolderProfileReference(folder) {
 
 async function loadAutoTagFolderDefaults() {
     try {
-        const [profiles, defaults] = await Promise.all([
-            fetchJsonOptional('/api/tagging/profiles'),
-            fetchJsonOptional('/api/autotag/defaults')
+        const [profilesResult, defaultsResult] = await Promise.allSettled([
+            fetchJsonOptionalWithTimeout('/api/tagging/profiles', 12000),
+            fetchJsonOptionalWithTimeout('/api/autotag/defaults', 12000)
         ]);
+        const profiles = profilesResult.status === 'fulfilled' ? profilesResult.value : null;
+        const defaults = defaultsResult.status === 'fulfilled' ? defaultsResult.value : null;
         libraryState.autotagProfiles = Array.isArray(profiles)
             ? profiles
                 .map((profile) => ({
@@ -3257,8 +3281,10 @@ async function loadFolders() {
     libraryState.aliasesLoaded = false;
     libraryState.aliases.clear();
     if (document.getElementById('foldersContainer')) {
-        await loadAutoTagFolderDefaults();
         renderFolders();
+        void loadAutoTagFolderDefaults().then(() => {
+            renderFolders();
+        });
     }
     await loadViewAliases();
     updateLibraryViewOptions();
@@ -9927,10 +9953,12 @@ function queueFolderAndDownloadLoadTasks(targets, tasks) {
     const shouldLoadFolderData = targets.shouldLoadFolders || targets.shouldLoadViewFolders || targets.shouldLoadAlbumDestination;
     const shouldLoadDownloadData = targets.shouldLoadDownload || targets.shouldLoadAlbumDestination;
     if (shouldLoadFolderData && shouldLoadDownloadData) {
-        tasks.push((async () => {
-            await loadDownloadLocation();
-            await loadFolders();
-        })());
+        tasks.push(loadFolders());
+        tasks.push(loadDownloadLocation().then(() => {
+            if (targets.shouldLoadFolders && document.getElementById('foldersContainer')) {
+                renderFolders();
+            }
+        }));
         return;
     }
     if (shouldLoadFolderData) {
