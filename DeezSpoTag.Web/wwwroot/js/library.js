@@ -3488,6 +3488,63 @@ function getSelectedLibraryViewFolder() {
     return (libraryState.folders || []).find(folder => Number(folder?.id) === selectedFolderId) || null;
 }
 
+function getLibraryScopeFolderIdFromLocation() {
+    try {
+        const params = new URLSearchParams(globalThis.location.search);
+        const raw = String(params.get('folderId') || '').trim();
+        if (!raw || raw.toLowerCase() === 'main') {
+            return null;
+        }
+        const parsed = Number.parseInt(raw, 10);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+function getLibraryScopeSelectionFromLocation() {
+    try {
+        const params = new URLSearchParams(globalThis.location.search);
+        if (!params.has('folderId')) {
+            return '';
+        }
+        const raw = String(params.get('folderId') || '').trim();
+        if (!raw || raw.toLowerCase() === 'main') {
+            return 'main';
+        }
+        const parsed = Number.parseInt(raw, 10);
+        return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : 'main';
+    } catch {
+        return '';
+    }
+}
+
+function applyLibraryScopeSelectionFromLocation() {
+    const selection = getLibraryScopeSelectionFromLocation();
+    if (!selection) {
+        return;
+    }
+    setStoredLibraryViewSelection(selection);
+}
+
+function resolveLibraryScopeFolderIdForNavigation() {
+    const selectedFolderId = getSelectedLibraryViewFolderId();
+    if (selectedFolderId !== null) {
+        return selectedFolderId;
+    }
+
+    return getLibraryScopeFolderIdFromLocation();
+}
+
+function buildLibraryScopedUrl(path, folderId = resolveLibraryScopeFolderIdForNavigation()) {
+    if (!path || folderId === null) {
+        return path;
+    }
+
+    const suffix = path.includes('?') ? '&' : '?';
+    return `${path}${suffix}folderId=${encodeURIComponent(String(folderId))}`;
+}
+
 async function runLocalScan(refreshImages = false, reset = false) {
     try {
         const url = buildLibraryScanUrl(refreshImages, reset);
@@ -3508,6 +3565,10 @@ function buildLibraryScanUrl(refreshImages, reset) {
     }
     if (reset) {
         params.set('reset', 'true');
+    }
+    const scopedFolderId = getSelectedLibraryViewFolderId();
+    if (scopedFolderId !== null) {
+        params.set('folderId', String(scopedFolderId));
     }
 
     const suffix = params.toString();
@@ -3609,7 +3670,7 @@ function createArtistCardElement(artist, anchorId = '') {
     `;
     card.addEventListener('click', () => {
         persistLibraryReturnState();
-        globalThis.location.href = `/Library/Artist/${artist.id}`;
+        globalThis.location.href = buildLibraryScopedUrl(`/Library/Artist/${artist.id}`);
     });
     return card;
 }
@@ -3826,7 +3887,7 @@ async function loadAlbums(artistId) {
     const cachedUnavailable = libraryState.unavailableAlbums.get(artistIdValue);
     const [artist, albums, appleIdData] = await Promise.all([
         fetchJsonOptional(`/api/library/artists/${artistIdValue}`),
-        fetchJson(`/api/library/artists/${artistIdValue}/albums`),
+        fetchJson(buildLibraryScopedUrl(`/api/library/artists/${artistIdValue}/albums`)),
         fetchJsonOptional(`/api/library/artists/${artistIdValue}/apple-id`)
     ]);
 
@@ -4309,7 +4370,7 @@ function renderSpotifyRelatedArtists(artists) {
         if (localId) {
             return `
                 <div class="related-artist-card">
-                    <a href="/Library/Artist/${localId}">
+                    <a href="${buildLibraryScopedUrl(`/Library/Artist/${localId}`)}">
                         <div class="related-artist-card__avatar">${coverMarkup}</div>
                         <div class="related-artist-card__name">${artist.name}</div>
                     </a>
@@ -6225,7 +6286,7 @@ function renderDiscography(filter) {
             if (!albumId) {
                 return;
             }
-            globalThis.location.href = `/Library/Album/${encodeURIComponent(albumId)}`;
+            globalThis.location.href = buildLibraryScopedUrl(`/Library/Album/${encodeURIComponent(albumId)}`);
         });
     });
 
@@ -6602,7 +6663,7 @@ async function populateAlbumArtistLinks(album) {
         return;
     }
 
-    const artistUrl = `/Library/Artist/${album.artistId}`;
+    const artistUrl = buildLibraryScopedUrl(`/Library/Artist/${album.artistId}`);
     const artistLink = document.getElementById('albumArtistLink');
     const artistNameEl = document.getElementById('albumArtistName');
     if (artistLink) {
@@ -9582,7 +9643,7 @@ async function getArtistFolders(artistId) {
         return libraryState.artistFolders.get(artistId);
     }
     try {
-        const albums = await fetchJson(`/api/library/artists/${artistId}/albums`);
+        const albums = await fetchJson(buildLibraryScopedUrl(`/api/library/artists/${artistId}/albums`));
         const folderSet = new Set();
         (albums || []).forEach(album => {
             (album.localFolders || []).forEach(folderName => {
@@ -13725,7 +13786,7 @@ function bindAppleAtmosDelegation() {
         const localAlbumId = (card.dataset.localAlbumId || '').trim();
         const availabilityFilter = (libraryState.discographyAvailabilityFilter || 'all').toLowerCase();
         if (availabilityFilter === 'in-library' && localAlbumId) {
-            globalThis.location.href = `/Library/Album/${encodeURIComponent(localAlbumId)}`;
+            globalThis.location.href = buildLibraryScopedUrl(`/Library/Album/${encodeURIComponent(localAlbumId)}`);
             return;
         }
         const type = card.dataset.kind;
@@ -15186,6 +15247,7 @@ function startLibraryRefreshIntervals(shouldLoadAnalysis, shouldLoadScanStatus) 
 
 document.addEventListener('DOMContentLoaded', async () => {
     try {
+        applyLibraryScopeSelectionFromLocation();
         updateTopSongsTracklistLink(null);
         const elements = getLibraryBootstrapElements();
         bindBootstrapScanActions(elements);

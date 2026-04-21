@@ -4149,7 +4149,13 @@ LIMIT @limit OFFSET @offset;";
         return new ArtistPageDto(artists, totalCount, safePage, safePageSize);
     }
 
-    public async Task<IReadOnlyList<AlbumDto>> GetArtistAlbumsAsync(long artistId, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<AlbumDto>> GetArtistAlbumsAsync(long artistId, CancellationToken cancellationToken = default)
+        => GetArtistAlbumsAsync(artistId, null, cancellationToken);
+
+    public async Task<IReadOnlyList<AlbumDto>> GetArtistAlbumsAsync(
+        long artistId,
+        long? folderId,
+        CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
@@ -4212,6 +4218,7 @@ WITH album_audio_flags AS (
     JOIN audio_file af ON af.id = tl.audio_file_id
     JOIN folder f ON f.id = af.folder_id
     WHERE f.enabled = TRUE
+      AND (@folderId IS NULL OR af.folder_id = @folderId)
 ),
 album_variant_counts AS (
     SELECT
@@ -4236,6 +4243,7 @@ SELECT al.id,
                    JOIN folder f ON f.id = af_local.folder_id
                    WHERE t_local.album_id = al.id
                      AND f.enabled = TRUE
+                     AND (@folderId IS NULL OR af_local.folder_id = @folderId)
                    ORDER BY folder_name
                )
            ),
@@ -4250,6 +4258,7 @@ SELECT al.id,
                JOIN folder f_count ON f_count.id = af_count.folder_id
                WHERE t_count.album_id = al.id
                  AND f_count.enabled = TRUE
+                 AND (@folderId IS NULL OR af_count.folder_id = @folderId)
            ),
            0
        ) AS local_track_count,
@@ -4274,11 +4283,13 @@ WHERE al.artist_id = @artistId
       JOIN folder f_visible ON f_visible.id = af_visible.folder_id
       WHERE t_visible.album_id = al.id
         AND f_visible.enabled = TRUE
+        AND (@folderId IS NULL OR af_visible.folder_id = @folderId)
   )
 GROUP BY al.id, al.artist_id, al.title, al.preferred_cover_path
 ORDER BY al.title;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var albums = new List<AlbumDto>();
         while (await reader.ReadAsync(cancellationToken))

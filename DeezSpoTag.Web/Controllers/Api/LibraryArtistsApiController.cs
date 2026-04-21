@@ -86,7 +86,10 @@ public class LibraryArtistsApiController : ControllerBase
     }
 
     [HttpGet("{id:long}/albums")]
-    public async Task<IActionResult> GetAlbums(long id, CancellationToken cancellationToken)
+    public async Task<IActionResult> GetAlbums(
+        long id,
+        [FromQuery] long? folderId,
+        CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)
         {
@@ -94,7 +97,7 @@ public class LibraryArtistsApiController : ControllerBase
             return Ok(localAlbums);
         }
 
-        var dbAlbums = await _repository.GetArtistAlbumsAsync(id, cancellationToken);
+        var dbAlbums = await _repository.GetArtistAlbumsAsync(id, folderId, cancellationToken);
         return Ok(dbAlbums);
     }
 
