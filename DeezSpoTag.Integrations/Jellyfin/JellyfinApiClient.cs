@@ -254,17 +254,7 @@ public class JellyfinApiClient
         query.Append("&IncludeItemTypes=Movie,Series");
         query.Append($"&Limit={pageSize}");
         query.Append("&StartIndex=0");
-
-        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return new List<JellyfinMediaItem>();
-        }
-
-        var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
-        return payload?.Items ?? new List<JellyfinMediaItem>();
+        return await SendItemsRequestAsync(serverUrl, apiKey, query.ToString(), cancellationToken);
     }
 
     public async Task<List<JellyfinMediaItem>> GetShowSeasonsAsync(
@@ -770,8 +760,16 @@ public class JellyfinApiClient
         query.Append("&SortOrder=Ascending");
         query.Append($"&IncludeItemTypes={Uri.EscapeDataString(itemType)}");
         query.Append("&Fields=IndexNumber,ParentIndexNumber,ProductionYear,ImageTags");
+        return await SendItemsRequestAsync(serverUrl, apiKey, query.ToString(), cancellationToken);
+    }
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
+    private async Task<List<JellyfinMediaItem>> SendItemsRequestAsync(
+        string serverUrl,
+        string apiKey,
+        string queryPath,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, queryPath));
         request.Headers.Add(EmbyTokenHeader, apiKey);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
