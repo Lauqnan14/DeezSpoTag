@@ -186,6 +186,7 @@ public class LibraryArtistsApiController : ControllerBase
         {
             return Ok(Array.Empty<object>());
         }
+        var artistsWithSpotifySource = await _repository.GetArtistIdsWithSourceAsync(SpotifySource, cancellationToken);
 
         var unmatched = new List<UnmatchedSpotifyArtistDto>(safeLimit);
         foreach (var artist in artists)
@@ -202,8 +203,7 @@ public class LibraryArtistsApiController : ControllerBase
                 continue;
             }
 
-            var spotifyId = await _repository.GetArtistSourceIdAsync(artist.Id, SpotifySource, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(spotifyId))
+            if (artistsWithSpotifySource.Contains(artist.Id))
             {
                 continue;
             }

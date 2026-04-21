@@ -2106,7 +2106,12 @@ async function ensureLocalArtistIndex() {
 async function handleSpotifyRedirect(url, metadata = {}) {
     const parsed = parseSpotifyUrl(url);
     if (!parsed?.type || !parsed.id) {
-        globalThis.open(url, '_blank', 'noopener');
+        const safeUrl = toSafeHttpUrl(url);
+        if (!safeUrl) {
+            showToast('Invalid Spotify URL.', true);
+            return;
+        }
+        globalThis.open(safeUrl, '_blank', 'noopener');
         return;
     }
 
@@ -2439,7 +2444,7 @@ async function playLocalLibraryTrackInApp(trackId, button, preferredPath) {
 
 async function logLibraryActivity(message, level = 'info') {
     try {
-        await fetch('/api/library/scan/logs', {
+        await fetchJson('/api/library/scan/logs', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ level, message })
@@ -4361,10 +4366,10 @@ function renderSpotifyRelatedArtists(artists) {
     }
 
     container.innerHTML = safeArtists.map(artist => {
-        const image = selectImage(artist.images, 'medium') || selectImage(artist.images, 'small');
+        const image = toSafeHttpUrl(selectImage(artist.images, 'medium') || selectImage(artist.images, 'small'));
         const coverMarkup = image
-            ? `<img src="${image}" alt="${artist.name}" loading="lazy" decoding="async" />`
-            : `<div class="artist-initials">${getInitials(artist.name)}</div>`;
+            ? `<img src="${escapeHtml(image)}" alt="${escapeHtml(artist.name || '')}" loading="lazy" decoding="async" />`
+            : `<div class="artist-initials">${escapeHtml(getInitials(artist.name))}</div>`;
         const normalized = normalizeArtistName(artist.name);
         const localId = normalized ? libraryState.localArtistIndex.get(normalized) : null;
         if (localId) {
@@ -4372,19 +4377,19 @@ function renderSpotifyRelatedArtists(artists) {
                 <div class="related-artist-card">
                     <a href="${buildLibraryScopedUrl(`/Library/Artist/${localId}`)}">
                         <div class="related-artist-card__avatar">${coverMarkup}</div>
-                        <div class="related-artist-card__name">${artist.name}</div>
+                        <div class="related-artist-card__name">${escapeHtml(artist.name || '')}</div>
                     </a>
                 </div>
             `;
         }
-        const spotifyUrl = artist.sourceUrl || '';
-        const deezerId = artist.deezerId || '';
-        const spotifyId = artist.id || '';
+        const spotifyUrl = toSafeHttpUrl(artist.sourceUrl || '');
+        const deezerId = String(artist.deezerId || '');
+        const spotifyId = String(artist.id || '');
         return `
             <div class="related-artist-card">
-                <button class="related-artist-link" type="button" data-spotify-url="${spotifyUrl}" data-deezer-id="${deezerId}" data-spotify-id="${spotifyId}">
+                <button class="related-artist-link" type="button" data-spotify-url="${escapeHtml(spotifyUrl)}" data-deezer-id="${escapeHtml(deezerId)}" data-spotify-id="${escapeHtml(spotifyId)}">
                     <div class="related-artist-card__avatar">${coverMarkup}</div>
-                    <div class="related-artist-card__name">${artist.name}</div>
+                    <div class="related-artist-card__name">${escapeHtml(artist.name || '')}</div>
                 </button>
             </div>
         `;
@@ -4429,8 +4434,8 @@ function renderSpotifyTopTracks(tracks, _artistProfile = null) {
     list.innerHTML = `
         <div class="top-songs-grid">
             ${safeTracks.slice(0, 9).map((track) => {
-        const image = selectImage(track.albumImages, 'small');
-        const cover = image ? `<img src="${image}" alt="${escapeHtml(track.name || '')}" loading="lazy" decoding="async" />` : '<div class="top-song-item__placeholder"></div>';
+        const image = toSafeHttpUrl(selectImage(track.albumImages, 'small'));
+        const cover = image ? `<img src="${escapeHtml(image)}" alt="${escapeHtml(track.name || '')}" loading="lazy" decoding="async" />` : '<div class="top-song-item__placeholder"></div>';
         const spotifyUrl = normalizeSpotifyTrackSourceUrl(track.sourceUrl || '', track.id || '');
         const safeSpotifyUrl = spotifyUrl ? escapeHtml(spotifyUrl) : '';
         const dataAttrs = safeSpotifyUrl ? `data-spotify-url="${safeSpotifyUrl}"` : '';
@@ -5021,17 +5026,18 @@ function renderSpotifyAlbumPanel(parent, panelId, title, albums) {
     }
 
     grid.innerHTML = safeAlbums.map(album => {
-        const cover = selectImage(album.images, 'small');
+        const cover = toSafeHttpUrl(selectImage(album.images, 'small'));
         const coverMarkup = cover
-            ? `<img src="${cover}" alt="${album.name}" loading="lazy" decoding="async" />`
+            ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(album.name || '')}" loading="lazy" decoding="async" />`
             : '<div class="artist-initials">AL</div>';
-        const titleMarkup = `<div class="album-title"><span class="artist-marquee">${album.name}</span></div>`;
+        const titleMarkup = `<div class="album-title"><span class="artist-marquee">${escapeHtml(album.name || '')}</span></div>`;
         const year = album.releaseDate ? new Date(album.releaseDate).getFullYear() : '';
         const subtitleText = year ? `${year}` : '';
         const subtitleMarkup = subtitleText ? `<div class="album-subtitle">${escapeHtml(subtitleText)}</div>` : '';
-        const safeTitle = (album.name || '').replaceAll('"', '&quot;');
+        const safeTitle = escapeHtml(album.name || '');
+        const safeSpotifyUrl = toSafeHttpUrl(album.sourceUrl || '');
         return `
-            <div class="album-card ds-tile"${album.sourceUrl ? ` data-spotify-url="${album.sourceUrl}" data-spotify-title="${safeTitle}"` : ''}>
+            <div class="album-card ds-tile"${safeSpotifyUrl ? ` data-spotify-url="${escapeHtml(safeSpotifyUrl)}" data-spotify-title="${safeTitle}"` : ''}>
                 ${coverMarkup}
                 ${titleMarkup}
                 ${subtitleMarkup}
@@ -5061,9 +5067,9 @@ function renderSpotifyRecentReleases(albums) {
         ? Math.max(0, Number(latest.totalTracks))
         : 0;
 
-    const cover = selectImage(latest.images, 'medium');
+    const cover = toSafeHttpUrl(selectImage(latest.images, 'medium'));
     const coverMarkup = cover
-        ? `<img src="${cover}" alt="${escapeHtml(latest.name || '')}" loading="lazy" decoding="async" />`
+        ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(latest.name || '')}" loading="lazy" decoding="async" />`
         : '<div class="artist-initials">AL</div>';
 
     const formattedDate = formatSpotifyReleaseDate(latest.releaseDate);
@@ -5073,8 +5079,8 @@ function renderSpotifyRecentReleases(albums) {
     latestContainer.innerHTML = `
         <div class="latest-release__artwork">${coverMarkup}</div>
         <div class="latest-release__meta">
-            ${formattedDate ? `<div class="latest-release__date">${formattedDate}</div>` : ''}
-            <div class="latest-release__type">${typeLabel}</div>
+            ${formattedDate ? `<div class="latest-release__date">${escapeHtml(formattedDate)}</div>` : ''}
+            <div class="latest-release__type">${escapeHtml(typeLabel)}</div>
             <div class="latest-release__title">${escapeHtml(latest.name || '')}</div>
             <div class="latest-release__subtitle">${trackCount} ${trackCount === 1 ? 'song' : 'songs'}</div>
         </div>
@@ -5107,8 +5113,9 @@ function getSpotifyReleaseTypeLabel(albumGroup) {
 }
 
 function applyLatestReleaseInteractivity(container, album) {
-    if (album?.sourceUrl) {
-        container.dataset.spotifyUrl = album.sourceUrl;
+    const safeSpotifyUrl = toSafeHttpUrl(album?.sourceUrl || '');
+    if (safeSpotifyUrl) {
+        container.dataset.spotifyUrl = safeSpotifyUrl;
         container.dataset.spotifyTitle = album.name || '';
         container.classList.add('latest-release--interactive');
         return;
@@ -5823,14 +5830,14 @@ function renderArtistVisualPicker(artistId) {
     }
 
     grid.innerHTML = deduped.map(item => {
-        const src = appendCacheKey(item.url);
-        const safeUrl = item.url.replaceAll('"', '&quot;');
-        const safePath = (item.path || '').toString().replaceAll('"', '&quot;');
-        const safeSource = (item.source || '').toString().replaceAll('"', '&quot;');
+        const src = toSafeHttpUrl(appendCacheKey(item.url));
+        const safeUrl = escapeHtml(item.url || '');
+        const safePath = escapeHtml((item.path || '').toString());
+        const safeSource = escapeHtml((item.source || '').toString());
         const safeLabel = escapeHtml(item.label || 'Artist visual');
         return `
             <div class="visual-tile" title="${safeLabel}">
-                <img src="${src}" alt="${safeLabel}" loading="lazy" decoding="async" />
+                <img src="${escapeHtml(src)}" alt="${safeLabel}" loading="lazy" decoding="async" />
                 <div class="visual-tile__actions">
                     <button class="action-btn action-btn-sm" type="button" data-visual-action="avatar" data-visual-url="${safeUrl}" data-visual-path="${safePath}" data-visual-source="${safeSource}">Set avatar</button>
                     <button class="action-btn action-btn-sm btn-secondary" type="button" data-visual-action="background" data-visual-url="${safeUrl}" data-visual-path="${safePath}" data-visual-source="${safeSource}">Set background</button>
@@ -5900,20 +5907,21 @@ function renderAlbumCards(albums, options = {}) {
         return `<p class="text-muted">${message}</p>`;
     }
     return albums.map(album => {
-        const folderPills = (album.localFolders || []).map(folder => `<span class="folder-pill">${folder}</span>`).join('');
+        const folderPills = (album.localFolders || []).map(folder => `<span class="folder-pill">${escapeHtml(folder)}</span>`).join('');
         const showFolderPills = !document.querySelector('.artist-page');
         const folderMarkup = showFolderPills && folderPills ? `<div class="folder-pill-group">${folderPills}</div>` : '';
         const coverUrl = album.preferredCoverPath
             ? appendCacheKey(`/api/library/image?path=${encodeURIComponent(album.preferredCoverPath)}&size=240`)
             : (album.coverUrl || null);
-        const coverMarkup = coverUrl
-            ? `<img src="${coverUrl}" alt="${album.title}" loading="lazy" decoding="async" />`
+        const safeCoverUrl = toSafeHttpUrl(coverUrl || '');
+        const coverMarkup = safeCoverUrl
+            ? `<img src="${escapeHtml(safeCoverUrl)}" alt="${escapeHtml(album.title || '')}" loading="lazy" decoding="async" />`
             : '<div class="artist-initials">AL</div>';
         let cardAttrs = '';
         if (linkToAlbum) {
-            cardAttrs = ` data-album-id="${album.id}"`;
+            cardAttrs = ` data-album-id="${escapeHtml(String(album.id || ''))}"`;
         } else if (linkToTracklist) {
-            cardAttrs = ` data-tracklist-id="${album.id}"`;
+            cardAttrs = ` data-tracklist-id="${escapeHtml(String(album.id || ''))}"`;
         }
         const folderName = (album.localFolders || [])[0] || '';
         const year = album.releaseDate ? new Date(album.releaseDate).getFullYear() : '';
@@ -5922,7 +5930,7 @@ function renderAlbumCards(albums, options = {}) {
         return `
             <div class="album-card ds-tile"${cardAttrs}>
                 ${coverMarkup}
-                <div class="album-title"><span class="artist-marquee">${album.title}</span></div>
+                <div class="album-title"><span class="artist-marquee">${escapeHtml(album.title || '')}</span></div>
                 ${subtitleMarkup}
                 ${folderMarkup}
             </div>
@@ -6330,21 +6338,22 @@ function buildDiscographyCardDataAttrs(album, availabilityFilter, isPartiallyDow
             || !isPartiallyDownloaded
         );
     if (canNavigateToLocalAlbum) {
-        return ` data-album-id="${album.localId}"`;
+        return ` data-album-id="${escapeHtml(String(album.localId || ''))}"`;
     }
     if (album.deezerId) {
-        return ` data-tracklist-id="${album.deezerId}"`;
+        return ` data-tracklist-id="${escapeHtml(String(album.deezerId || ''))}"`;
     }
-    if (album.sourceUrl) {
-        return ` data-spotify-url="${album.sourceUrl}"`;
+    const safeSpotifyUrl = toSafeHttpUrl(album.sourceUrl || '');
+    if (safeSpotifyUrl) {
+        return ` data-spotify-url="${escapeHtml(safeSpotifyUrl)}"`;
     }
     return '';
 }
 
 function renderDiscographyAlbumCard(album, availabilityFilter) {
-    const cover = album.coverUrl || selectImage(album.images, 'small');
+    const cover = toSafeHttpUrl(album.coverUrl || selectImage(album.images, 'small'));
     const coverMarkup = cover
-        ? `<img src="${cover}" alt="${escapeHtml(album.title)}" loading="lazy" decoding="async" />`
+        ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(album.title)}" loading="lazy" decoding="async" />`
         : '<div class="artist-initials">AL</div>';
     const localTrackCount = Number(album.localStereoTrackCount || album.localTrackCount || 0);
     const totalTrackCount = Number(album.totalTracks || 0);
@@ -6652,8 +6661,11 @@ function populateAlbumArtwork(album) {
     const artworkEl = document.getElementById('albumArtwork');
     if (artworkEl && album.preferredCoverPath) {
         const albumArtworkPath = `/api/library/image?path=${encodeURIComponent(album.preferredCoverPath)}&size=560`;
-        const albumArtworkUrl = appendCacheKey(albumArtworkPath);
-        artworkEl.innerHTML = `<img src="${albumArtworkUrl}" alt="${escapeHtml(album.title || 'Album')}" loading="eager" />`;
+        const albumArtworkUrl = toSafeHttpUrl(appendCacheKey(albumArtworkPath));
+        if (!albumArtworkUrl) {
+            return;
+        }
+        artworkEl.innerHTML = `<img src="${escapeHtml(albumArtworkUrl)}" alt="${escapeHtml(album.title || 'Album')}" loading="eager" />`;
     }
 }
 
@@ -6728,7 +6740,7 @@ function buildAlbumTrackNumberCell(track, trackIndexText, rowFilePath, playLabel
     }
 
     return `<span class="track-number__index">${escapeHtml(trackIndexText)}</span>
-               <button class="library-track-play track-action track-play" type="button" data-library-play-track="${track.id}" data-library-play-path="${escapeHtml(rowFilePath)}" aria-label="Play ${playLabel}">
+               <button class="library-track-play track-action track-play" type="button" data-library-play-track="${escapeHtml(String(track.id || ''))}" data-library-play-path="${escapeHtml(rowFilePath)}" aria-label="Play ${playLabel}">
                     <span class="material-icons preview-controls" aria-hidden="true">play_arrow</span>
                </button>`;
 }
@@ -6766,7 +6778,7 @@ function buildAlbumTrackRow(track) {
         : '—';
 
     return `
-            <div class="track-row${track.availableLocally ? ' track-row--local' : ''}" data-track-id="${track.id}" data-track-variant-key="${escapeHtml(rowKey)}" data-track-primary="${track.isPrimaryVariant ? 'true' : 'false'}">
+            <div class="track-row${track.availableLocally ? ' track-row--local' : ''}" data-track-id="${escapeHtml(String(track.id || ''))}" data-track-variant-key="${escapeHtml(rowKey)}" data-track-primary="${track.isPrimaryVariant ? 'true' : 'false'}">
                 <div class="track-number">
                     ${numberCellContent}
                 </div>
@@ -6796,14 +6808,14 @@ function buildAlbumTrackRow(track) {
                     <details class="track-actions-menu">
                         <summary title="Track actions" aria-label="Track actions">⋯</summary>
                         <div class="track-actions-menu__list">
-                            <a href="${spectrogramUrl}"
-                               data-library-spectrogram-url="${spectrogramUrl}"
+                            <a href="${escapeHtml(spectrogramUrl)}"
+                               data-library-spectrogram-url="${escapeHtml(spectrogramUrl)}"
                                data-library-spectrogram-title="${escapeHtml(track.title || 'Track')}"
-                               data-library-track-id="${track.id}"
+                               data-library-track-id="${escapeHtml(String(track.id || ''))}"
                                data-library-track-file-path="${escapeHtml(rowFilePath)}"
                             >View Spectrogram</a>
-                            <a href="${lrcEditorUrl}">Open LRC Editor</a>
-                            <a href="${tagEditorUrl}">Open Tag Editor</a>
+                            <a href="${escapeHtml(lrcEditorUrl)}">Open LRC Editor</a>
+                            <a href="${escapeHtml(tagEditorUrl)}">Open Tag Editor</a>
                         </div>
                     </details>
                 </div>
@@ -7533,9 +7545,10 @@ function renderFavoritesList(items, listId, emptyId) {
 
         const cover = document.createElement('div');
         cover.className = 'favorites-cover';
-        if (item.imageUrl) {
+        const safeImageUrl = toSafeHttpUrl(item.imageUrl || '');
+        if (safeImageUrl) {
             const img = document.createElement('img');
-            img.src = item.imageUrl;
+            img.src = safeImageUrl;
             img.alt = item.name || '';
             cover.appendChild(img);
         } else {
@@ -8106,6 +8119,7 @@ function getLibraryBootstrapElements() {
         cancelScanButton: document.getElementById('cancelLibraryScan'),
         refreshImagesButton: document.getElementById('refreshImages'),
         cleanupButton: document.getElementById('cleanupLibrary'),
+        clearButton: document.getElementById('clearLibrary'),
         resolveUnmatchedArtistsButton: document.getElementById('resolveUnmatchedArtists'),
         saveButton: document.getElementById('saveSettings'),
         chooseFolderButton: document.getElementById('chooseFolder'),
@@ -8278,8 +8292,8 @@ function renderAliases(folderId, container) {
     const aliases = libraryState.aliases.get(folderId) || [];
     const listItems = aliases.map(alias => `
         <li>
-            <span>${alias.aliasName}</span>
-            <button class="btn-danger action-btn action-btn-sm" data-alias-id="${alias.id}">Remove</button>
+            <span>${escapeHtml(alias.aliasName)}</span>
+            <button class="btn-danger action-btn action-btn-sm" data-alias-id="${escapeHtml(String(alias.id || ''))}">Remove</button>
         </li>
     `).join('');
 
@@ -8694,7 +8708,7 @@ function computeFolderRowViewModel(folder, context) {
         ? ['<option value="">No profile</option>', ...context.profileOptionsSource.map((profile) => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name)}</option>`)].join('')
         : '<option value="">No profiles</option>';
     const scheduleOptions = context.scheduleChoices
-        .map((choice) => `<option value="${choice.value}" ${choice.value === currentSchedule ? 'selected' : ''}>${choice.label}</option>`)
+        .map((choice) => `<option value="${escapeHtml(choice.value)}" ${choice.value === currentSchedule ? 'selected' : ''}>${escapeHtml(choice.label)}</option>`)
         .join('');
     const destinationFlags = context.getFolderDestinationFlags(folder);
     const { isVideoDestination, isPodcastDestination } = destinationFlags;
@@ -8772,10 +8786,10 @@ function buildFolderRowMarkup(folder, viewModel, conversionModeValue) {
     return `
             <div class="table-row">
                 <span class="folder-label">
-                    ${folder.displayName}
+                    ${escapeHtml(folder.displayName)}
                     ${viewModel.currentLibraryEnabled ? '' : '<span class="folder-library-disabled-badge">Hidden</span>'}
                 </span>
-                <span>${folder.rootPath}</span>
+                <span>${escapeHtml(folder.rootPath)}</span>
                 <span class="folder-quality-cell">
                     <div class="folder-quality-dropdown" data-folder-quality-dropdown>
                         <button type="button" class="folder-quality-summary" data-folder-quality-summary aria-haspopup="true" aria-expanded="false"></button>
@@ -11291,7 +11305,7 @@ async function loadWatchlist() {
 
         const enabledFolders = (libraryState.folders || []).filter(isMusicRecommendationEligibleFolder);
         const folderOptions = enabledFolders
-            .map(folder => `<option value="${folder.id}">${folder.displayName || 'Folder'}</option>`)
+            .map(folder => `<option value="${escapeHtml(String(folder.id || ''))}">${escapeHtml(folder.displayName || 'Folder')}</option>`)
             .join('');
         const artistPrefs = getStoredPreferences('artistWatchlist');
 
@@ -11300,7 +11314,7 @@ async function loadWatchlist() {
                 ? appendCacheKey(`/api/library/image?path=${encodeURIComponent(item.artistImagePath)}&size=300`)
                 : '';
             const artContent = cover
-                ? `<img src="${cover}" alt="${escapeHtml(item.artistName)}" />`
+                ? `<img src="${escapeHtml(cover)}" alt="${escapeHtml(item.artistName)}" />`
                 : `<div class="watchlist-card-art-placeholder"><i class="fa-solid fa-music"></i></div>`;
 
             const badges = [
@@ -11317,7 +11331,7 @@ async function loadWatchlist() {
             ].filter(Boolean).join('');
 
             const folderSelect = folderOptions
-                ? `<select class="watchlist-card-folder-select form-select" data-watchlist-folder="${item.artistId}">
+                ? `<select class="watchlist-card-folder-select form-select" data-watchlist-folder="${escapeHtml(String(item.artistId || ''))}">
                        <option value="">No folder</option>
                        ${folderOptions}
                    </select>`
@@ -11328,7 +11342,7 @@ async function loadWatchlist() {
 
             return `<div class="watchlist-artist-card">
                 <button class="watchlist-card-art" type="button"
-                    data-watchlist-open="${item.artistId}"
+                    data-watchlist-open="${escapeHtml(String(item.artistId || ''))}"
                     data-watchlist-deezer="${escapeHtml(deezerId)}"
                     data-watchlist-spotify="${escapeHtml(spotifyId)}">
                     ${artContent}
@@ -11338,7 +11352,7 @@ async function loadWatchlist() {
                 <div class="watchlist-card-strip">
                     <div class="watchlist-card-name">${escapeHtml(item.artistName)}</div>
                     ${folderSelect}
-                    <button class="btn btn-danger action-btn btn-sm watchlist-card-unmonitor" data-watchlist-remove="${item.artistId}" type="button">Unmonitor</button>
+                    <button class="btn btn-danger action-btn btn-sm watchlist-card-unmonitor" data-watchlist-remove="${escapeHtml(String(item.artistId || ''))}" type="button">Unmonitor</button>
                 </div>
             </div>`;
         }).join('');
@@ -11716,17 +11730,17 @@ async function openSharedPlaylistArtworkPicker(source, sourceId, playlistName, o
     const renderGrid = (activeFileName = null) => {
         grid.innerHTML = visuals.map(item => {
             const fileName = String(item?.fileName || '');
-            const url = String(item?.url || '');
+            const url = toSafeHttpUrl(String(item?.url || ''));
             const isActive = fileName && activeFileName
                 ? fileName === activeFileName
                 : item?.isActive === true;
             return `
                 <div class="visual-tile" title="Saved artwork">
-                    <img src="${url.replaceAll('"', '&quot;')}" alt="Saved playlist artwork" loading="lazy" decoding="async" />
+                    <img src="${escapeHtml(url)}" alt="Saved playlist artwork" loading="lazy" decoding="async" />
                     <div class="visual-tile__actions">
                         <button class="action-btn action-btn-sm ${isActive ? 'btn-secondary' : ''}" type="button"
-                            data-playlist-visual-select="${fileName.replaceAll('"', '&quot;')}"
-                            data-playlist-visual-url="${url.replaceAll('"', '&quot;')}">
+                            data-playlist-visual-select="${escapeHtml(fileName)}"
+                            data-playlist-visual-url="${escapeHtml(url)}">
                             ${isActive ? 'Active' : 'Use this art'}
                         </button>
                     </div>
@@ -11821,8 +11835,9 @@ async function loadPlaylistWatchlist() {
         const playlistPrefsPromise = hydratePlaylistPreferences();
 
         container.innerHTML = items.map((item) => {
-            const artContent = item.imageUrl
-                ? `<img src="${item.imageUrl}" alt="${escapeHtml(item.name)}" />`
+            const imageUrl = toSafeHttpUrl(item.imageUrl || '');
+            const artContent = imageUrl
+                ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(item.name)}" />`
                 : `<div class="watchlist-card-art-placeholder"><i class="fa-solid fa-list-music"></i></div>`;
             const trackCount = item.trackCount === null || item.trackCount === undefined
                 ? ''
@@ -12569,7 +12584,7 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         const normalizedField = normalizeField(field);
         const previousOperator = operatorSelect.value;
         const ops = getOps(normalizedField);
-        operatorSelect.innerHTML = ops.map(([value, label]) => `<option value="${value}">${label}</option>`).join('');
+        operatorSelect.innerHTML = ops.map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('');
         operatorSelect.value = ops.some(([value]) => value === previousOperator)
             ? previousOperator
             : ops[0][0];
@@ -12665,13 +12680,13 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
 
         const currentField = normalizeField(rule?.conditionField);
         const conditionFieldOpts = supportedFields
-            .map(f => `<option value="${f}" ${currentField === f ? 'selected' : ''}>${fieldLabels[f] || f}</option>`)
+            .map(f => `<option value="${escapeHtml(f)}" ${currentField === f ? 'selected' : ''}>${escapeHtml(fieldLabels[f] || f)}</option>`)
             .join('');
         const operatorOpts = getOps(currentField)
-            .map(([v, l]) => `<option value="${v}" ${rule?.conditionOperator === v ? 'selected' : ''}>${l}</option>`)
+            .map(([v, l]) => `<option value="${escapeHtml(v)}" ${rule?.conditionOperator === v ? 'selected' : ''}>${escapeHtml(l)}</option>`)
             .join('');
         const folderRuleOpts = enabledFolders
-            .map(f => `<option value="${f.id}" ${rule?.destinationFolderId == f.id ? 'selected' : ''}>${escapeHtml(f.displayName || 'Folder')}</option>`)
+            .map(f => `<option value="${escapeHtml(String(f.id || ''))}" ${rule?.destinationFolderId == f.id ? 'selected' : ''}>${escapeHtml(f.displayName || 'Folder')}</option>`)
             .join('');
         const normalizedValue = String(rule?.conditionValue || '').trim();
         const normalizedOperator = String(rule?.conditionOperator || '').trim().toLowerCase();
@@ -12824,10 +12839,10 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
 
         const currentField = normalizeField(rule?.conditionField);
         const conditionFieldOpts = supportedFields
-            .map(f => `<option value="${f}" ${currentField === f ? 'selected' : ''}>${fieldLabels[f] || f}</option>`)
+            .map(f => `<option value="${escapeHtml(f)}" ${currentField === f ? 'selected' : ''}>${escapeHtml(fieldLabels[f] || f)}</option>`)
             .join('');
         const operatorOpts = getOps(currentField)
-            .map(([v, l]) => `<option value="${v}" ${rule?.conditionOperator === v ? 'selected' : ''}>${l}</option>`)
+            .map(([v, l]) => `<option value="${escapeHtml(v)}" ${rule?.conditionOperator === v ? 'selected' : ''}>${escapeHtml(l)}</option>`)
             .join('');
         const normalizedValue = String(rule?.conditionValue || '').trim();
         const normalizedOperator = String(rule?.conditionOperator || '').trim().toLowerCase();
@@ -14266,10 +14281,15 @@ function openAppleTracklist(type, appleId, appleUrl, audioVariant) {
 }
 
 function escapeHtml(text) {
-    if (text === null || text === undefined) return '';
-    const div = document.createElement('div');
-    div.textContent = String(text);
-    return div.innerHTML;
+    if (text === null || text === undefined) {
+        return '';
+    }
+    return String(text)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
 }
 
 function isSpotifySourceUrl(url) {
@@ -14580,8 +14600,6 @@ function buildClearLibraryAlertMessage(selectedFolder, scopeLabel, counts) {
     return `Removed ${counts.artistsRemoved.toLocaleString()} artists, ${counts.albumsRemoved.toLocaleString()} albums, and ${counts.tracksRemoved.toLocaleString()} tracks.`;
 }
 
-// clearLibraryData is called via inline onclick on the button in Index.cshtml
-
 async function cancelLibraryScan() {
     try {
         const result = await fetchJson('/api/library/scan/cancel', { method: 'POST' });
@@ -14615,6 +14633,7 @@ function bindBootstrapScanActions(elements) {
         await Promise.all([loadLibrarySettings(), loadFolders(), loadArtists(), loadLibraryScanStatus()]);
     });
     bindLibraryAction(elements.cleanupButton, cleanupMissingLibraryFiles);
+    bindLibraryAction(elements.clearButton, clearLibraryData);
     bindUnmatchedArtistResolverActions(elements);
     bindLibraryAction(elements.saveButton, saveLibrarySettings);
 }
@@ -14736,7 +14755,7 @@ function renderUnmatchedArtistsResolverList(elements) {
             : '<option value="">Load suggestions first</option>';
 
         return `
-            <div class="unmatched-artist-row" data-artist-id="${item.artistId}">
+            <div class="unmatched-artist-row" data-artist-id="${escapeHtml(String(item.artistId || ''))}">
                 <div class="unmatched-artist-row__name">${escapeHtml(item.artistName)}</div>
                 <div class="unmatched-artist-row__suggestions">
                     <select data-suggestion-select ${suggestions.length === 0 ? 'disabled' : ''}>${options}</select>
