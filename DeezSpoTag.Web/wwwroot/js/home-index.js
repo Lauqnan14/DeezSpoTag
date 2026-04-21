@@ -170,6 +170,11 @@ function setHomeTrendingPlaybackState(button, state) {
                 if (globalThis.HomeViewHelpers && typeof globalThis.HomeViewHelpers.clearHomeTrendingPlayingMarkers === 'function') {
                     globalThis.HomeViewHelpers.clearHomeTrendingPlayingMarkers(null);
                 }
+            },
+            onTransition: (targetButton, nextState) => {
+                if (nextState === 'requested') {
+                    setHomeTrendingPreviewButtonState(targetButton, true);
+                }
             }
         });
         return;

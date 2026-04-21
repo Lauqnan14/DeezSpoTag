@@ -5545,7 +5545,8 @@
 }
 
 .artist-page #spotifyTopTracksList .top-song-item:hover .top-song-item__play,
-.artist-page #spotifyTopTracksList .top-song-item:focus-within .top-song-item__play {
+.artist-page #spotifyTopTracksList .top-song-item:focus-within .top-song-item__play,
+.artist-page #spotifyTopTracksList .top-song-item__play.is-playing {
     opacity: 1;
     visibility: visible;
     pointer-events: auto;
