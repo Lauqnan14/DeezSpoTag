@@ -274,14 +274,16 @@ public sealed class SpotifyArtistService
                 localAlbumOverlap,
                 nameMatchesAlias,
                 info?.Verified == true,
-                info?.TotalAlbums ?? 0));
+                info?.TotalAlbums ?? 0,
+                info?.TotalTracks ?? 0));
         }
 
         return suggestions
             .OrderByDescending(suggestion => suggestion.NameMatchesAlias)
-            .ThenByDescending(suggestion => suggestion.Verified)
             .ThenByDescending(suggestion => suggestion.LocalAlbumOverlap)
             .ThenByDescending(suggestion => suggestion.TotalAlbums)
+            .ThenByDescending(suggestion => suggestion.TotalTracks)
+            .ThenByDescending(suggestion => suggestion.Verified)
             .ThenByDescending(suggestion => suggestion.Score)
             .Take(safeLimit)
             .ToList();
@@ -1598,11 +1600,17 @@ public sealed class SpotifyArtistService
     private sealed record ExactArtistCandidateScore(
         SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate Candidate,
         int LocalAlbumOverlap,
-        int Score);
+        int Score,
+        int TotalAlbums,
+        int TotalTracks,
+        bool Verified);
 
     private sealed record CanonicalFallbackCandidateScore(
         SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate Candidate,
-        int Score);
+        int Score,
+        int TotalAlbums,
+        int TotalTracks,
+        bool Verified);
 
     private async Task<ExactArtistCandidateSelection?> SelectBestExactArtistCandidateAsync(
         IReadOnlyList<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> exactCandidates,
@@ -1637,7 +1645,11 @@ public sealed class SpotifyArtistService
         await Task.WhenAll(tasks);
 
         var best = scoredCandidates
-            .OrderByDescending(item => item.Score)
+            .OrderByDescending(item => item.LocalAlbumOverlap)
+            .ThenByDescending(item => item.TotalAlbums)
+            .ThenByDescending(item => item.TotalTracks)
+            .ThenByDescending(item => item.Verified)
+            .ThenByDescending(item => item.Score)
             .FirstOrDefault();
 
         if (best is not null)
@@ -1665,14 +1677,14 @@ public sealed class SpotifyArtistService
         }
 
         var info = await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidate.Id, cancellationToken);
-        if (!IsVerifiedArtistCandidate(info))
-        {
-            AddActivity(DebugActivityLevel, $"[spotify] candidate rejected (unverified): {candidate.Name} ({candidate.Id}).");
-            return null;
-        }
-
         var score = ComputeExactCandidateScore(localAlbumOverlap, info);
-        return new ExactArtistCandidateScore(candidate, localAlbumOverlap, score);
+        return new ExactArtistCandidateScore(
+            candidate,
+            localAlbumOverlap,
+            score,
+            Math.Max(0, info?.TotalAlbums ?? 0),
+            Math.Max(0, info?.TotalTracks ?? 0),
+            info?.Verified == true);
     }
 
     private async Task<CanonicalFallbackCandidateScore?> ScoreCanonicalFallbackCandidateAsync(
@@ -1687,13 +1699,13 @@ public sealed class SpotifyArtistService
         }
 
         var info = await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidate.Id, cancellationToken);
-        if (!IsVerifiedArtistCandidate(info))
-        {
-            return null;
-        }
-
         var score = ComputeCanonicalFallbackScore(info, index);
-        return new CanonicalFallbackCandidateScore(candidate, score);
+        return new CanonicalFallbackCandidateScore(
+            candidate,
+            score,
+            Math.Max(0, info?.TotalAlbums ?? 0),
+            Math.Max(0, info?.TotalTracks ?? 0),
+            info?.Verified == true);
     }
 
     private async Task<CanonicalFallbackCandidateScore?> TrySelectCanonicalFallbackExactCandidateAsync(
@@ -1723,7 +1735,10 @@ public sealed class SpotifyArtistService
         }
 
         var ordered = scored
-            .OrderByDescending(item => item.Score)
+            .OrderByDescending(item => item.TotalAlbums)
+            .ThenByDescending(item => item.TotalTracks)
+            .ThenByDescending(item => item.Verified)
+            .ThenByDescending(item => item.Score)
             .ToList();
         var best = ordered[0];
         if (best.Score < CanonicalFallbackMinScore)
@@ -1765,21 +1780,22 @@ public sealed class SpotifyArtistService
             return baseScore;
         }
 
-        return baseScore + (info.Verified ? 1000 : 0) + Math.Max(0, info.TotalAlbums);
+        var albumWeight = Math.Max(0, info.TotalAlbums) * 200;
+        var trackWeight = Math.Max(0, info.TotalTracks);
+        var verificationTiebreaker = info.Verified ? 25 : 0;
+        return baseScore + albumWeight + trackWeight + verificationTiebreaker;
     }
 
     private static int ComputeCanonicalFallbackScore(
         SpotifyPathfinderMetadataClient.SpotifyArtistCandidateInfo? info,
         int rankIndex)
     {
-        var verifiedBoost = info?.Verified == true ? 2_000 : 0;
-        var albumBoost = Math.Max(0, info?.TotalAlbums ?? 0) * 2;
+        var verifiedBoost = info?.Verified == true ? 25 : 0;
+        var albumBoost = Math.Max(0, info?.TotalAlbums ?? 0) * 200;
+        var trackBoost = Math.Max(0, info?.TotalTracks ?? 0);
         var rankBoost = Math.Max(0, 30 - Math.Max(0, rankIndex));
-        return verifiedBoost + albumBoost + rankBoost;
+        return verifiedBoost + albumBoost + trackBoost + rankBoost;
     }
-
-    private static bool IsVerifiedArtistCandidate(SpotifyPathfinderMetadataClient.SpotifyArtistCandidateInfo? info)
-        => info?.Verified == true;
 
     private static List<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> BuildArtistSearchCandidates(
         IReadOnlyList<SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate> results,
@@ -2005,7 +2021,7 @@ public sealed class SpotifyArtistService
         CancellationToken cancellationToken)
     {
         var requireLocalAlbumOverlap = ShouldRequireLocalAlbumOverlap(localAlbumTitleSet);
-        var candidates = new ConcurrentBag<(string Id, int Score)>();
+        var candidates = new ConcurrentBag<(string Id, int Score, int TotalAlbums, int TotalTracks, bool Verified)>();
         using var gate = new SemaphoreSlim(ShazamCandidateScoreParallelism);
 
         var tasks = candidateVotes
@@ -2029,10 +2045,6 @@ public sealed class SpotifyArtistService
                     cancellationToken);
                 var hasStrongVotes = votes >= ShazamStrongVoteThreshold;
                 var info = await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidateId, cancellationToken);
-                if (!IsVerifiedArtistCandidate(info))
-                {
-                    return;
-                }
 
                 var accepted = matchesAlias;
                 if (!accepted && localAlbumOverlap > 0)
@@ -2050,8 +2062,17 @@ public sealed class SpotifyArtistService
                     return;
                 }
 
-                var score = (votes * 100) + (localAlbumOverlap * 25);
-                candidates.Add((candidateId, score));
+                var score = (votes * 100)
+                    + (localAlbumOverlap * 25)
+                    + (Math.Max(0, info?.TotalAlbums ?? 0) * 20)
+                    + Math.Max(0, info?.TotalTracks ?? 0)
+                    + (info?.Verified == true ? 5 : 0);
+                candidates.Add((
+                    candidateId,
+                    score,
+                    Math.Max(0, info?.TotalAlbums ?? 0),
+                    Math.Max(0, info?.TotalTracks ?? 0),
+                    info?.Verified == true));
             }
             finally
             {
@@ -2063,6 +2084,9 @@ public sealed class SpotifyArtistService
 
         return candidates
             .OrderByDescending(item => item.Score)
+            .ThenByDescending(item => item.TotalAlbums)
+            .ThenByDescending(item => item.TotalTracks)
+            .ThenByDescending(item => item.Verified)
             .Select(item => item.Id)
             .FirstOrDefault();
     }
@@ -3018,4 +3042,5 @@ public sealed record SpotifyArtistMatchSuggestion(
     int LocalAlbumOverlap,
     bool NameMatchesAlias,
     bool Verified,
-    int TotalAlbums);
+    int TotalAlbums,
+    int TotalTracks);

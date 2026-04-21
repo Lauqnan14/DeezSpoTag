@@ -14717,8 +14717,11 @@ function renderUnmatchedArtistsResolverList(elements) {
                 const overlapText = Number(suggestion.localAlbumOverlap || 0) > 0
                     ? ` • overlap ${suggestion.localAlbumOverlap}`
                     : '';
+                const catalogText = Number(suggestion.totalAlbums || 0) > 0
+                    ? ` • ${Number(suggestion.totalAlbums || 0)} albums / ${Number(suggestion.totalTracks || 0)} tracks`
+                    : '';
                 const verifiedText = suggestion.verified ? ' • verified' : '';
-                return `<option value="${escapeHtml(suggestion.spotifyId)}">${escapeHtml(suggestion.name)}${overlapText}${verifiedText}</option>`;
+                return `<option value="${escapeHtml(suggestion.spotifyId)}">${escapeHtml(suggestion.name)}${overlapText}${catalogText}${verifiedText}</option>`;
             }).join('')
             : '<option value="">Load suggestions first</option>';
 
@@ -14798,6 +14801,7 @@ async function fetchUnmatchedArtistSuggestions(artistId) {
         verified: item.verified === true,
         localAlbumOverlap: Number(item.localAlbumOverlap || 0),
         totalAlbums: Number(item.totalAlbums || 0),
+        totalTracks: Number(item.totalTracks || 0),
         score: Number(item.score || 0),
         nameMatchesAlias: item.nameMatchesAlias === true
     })).filter(item => item.spotifyId && item.name);
@@ -14818,15 +14822,19 @@ function isHighConfidenceUnmatchedSuggestion(suggestion) {
         return false;
     }
 
-    if (!suggestion.verified) {
-        return false;
-    }
-
     if (suggestion.localAlbumOverlap > 0) {
         return true;
     }
+    const totalAlbums = Number(suggestion.totalAlbums || 0);
+    const totalTracks = Number(suggestion.totalTracks || 0);
+    if (totalAlbums >= 3 && totalTracks >= 25 && suggestion.score >= 100_000) {
+        return true;
+    }
 
-    return suggestion.verified && suggestion.totalAlbums >= 3 && suggestion.score >= 100_000;
+    return suggestion.verified === true
+        && totalAlbums >= 2
+        && totalTracks >= 15
+        && suggestion.score >= 100_000;
 }
 
 async function ensureUnmatchedSuggestionsForItem(state, artistId) {
