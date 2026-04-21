@@ -2,8 +2,8 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class MediaServerSoundtrackMonitorService : BackgroundService
 {
-    private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(20);
-    private static readonly TimeSpan RefreshInterval = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan InitialDelay = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromHours(6);
     private readonly MediaServerSoundtrackService _service;
     private readonly ILogger<MediaServerSoundtrackMonitorService> _logger;
 
@@ -45,8 +45,7 @@ public sealed class MediaServerSoundtrackMonitorService : BackgroundService
     {
         try
         {
-            await _service.RefreshDiscoveredLibrariesAsync(cancellationToken);
-            await _service.SyncPersistentMediaCacheAsync(fullRefresh: false, cancellationToken);
+            await _service.RunScheduledBackgroundSyncAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -54,11 +53,11 @@ public sealed class MediaServerSoundtrackMonitorService : BackgroundService
         }
         catch (OperationCanceledException ex)
         {
-            _logger.LogWarning(ex, "Soundtrack monitor refresh timed out.");
+            _logger.LogWarning(ex, "Soundtrack monitor run timed out.");
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Soundtrack monitor refresh failed.");
+            _logger.LogWarning(ex, "Soundtrack monitor run failed.");
         }
     }
 }
