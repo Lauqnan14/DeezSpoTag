@@ -28,7 +28,7 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private sealed record PersistedQueryOverride(int Version, string Sha256Hash, string? VariablesJson);
 
-    public sealed record SpotifyArtistCandidateInfo(string ArtistId, bool Verified, int TotalAlbums);
+    public sealed record SpotifyArtistCandidateInfo(string ArtistId, bool Verified, int TotalAlbums, int TotalTracks);
 
     public sealed record SpotifyArtistSearchCandidate(string Id, string Name, string? ImageUrl);
 
@@ -770,8 +770,10 @@ public sealed class SpotifyPathfinderMetadataClient
         }
         JsonElement artist = artistUnion.Value;
         bool verified = TryGetBool(artist, ProfileKey, "verified") == true;
-        int totalAlbums = (await FetchArtistDiscographyAsync(context, artistId, cancellationToken)).Count;
-        return new SpotifyArtistCandidateInfo(artistId, verified, totalAlbums);
+        var discography = await FetchArtistDiscographyAsync(context, artistId, cancellationToken);
+        int totalAlbums = discography.Count;
+        int totalTracks = discography.Sum(album => Math.Max(0, album.TotalTracks ?? 0));
+        return new SpotifyArtistCandidateInfo(artistId, verified, totalAlbums, totalTracks);
     }
 
     public async Task<SpotifyArtistOverview?> FetchArtistOverviewAsync(string artistId, CancellationToken cancellationToken)
