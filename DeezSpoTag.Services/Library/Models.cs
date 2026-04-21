@@ -405,6 +405,14 @@ public sealed record TrackSourceLinksDto(
     string? SpotifyUrl,
     string? AppleUrl);
 
+public sealed record ArtistSpotifyMatchSignalDto(
+    long TrackId,
+    string Title,
+    string? SpotifyTrackId,
+    string? Isrc,
+    string? TagArtist,
+    string? TagAlbumArtist);
+
 public sealed record ArtistDetailDto(long Id, string Name, string? PreferredImagePath, string? PreferredBackgroundPath);
 
 public sealed record TrackSearchResultDto(
