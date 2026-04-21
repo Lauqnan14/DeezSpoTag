@@ -180,14 +180,31 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
                 var resolvedSpotifyId = await _repository.GetArtistSourceIdAsync(item.ArtistId, SpotifySource, cancellationToken);
                 if (string.IsNullOrWhiteSpace(resolvedSpotifyId))
                 {
+                    var hasLocalSignals = (await _repository.GetArtistSpotifyMatchSignalsAsync(
+                        item.ArtistId,
+                        limit: 1,
+                        cancellationToken)).Count > 0;
+                    if (!hasLocalSignals)
+                    {
+                        _logger.LogWarning(
+                            "Spotify artist fetch gave up for {ArtistName}: deterministic no-match (spotify artist id unresolved, no local signals).",
+                            item.ArtistName);
+                        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                            DateTimeOffset.UtcNow,
+                            "warn",
+                            $"Spotify fetch gave up for {item.ArtistName}: unresolved Spotify artist id and no local match signals (non-retryable)."));
+                        CompleteItem(item);
+                        return;
+                    }
+
                     _logger.LogWarning(
-                        "Spotify artist fetch gave up for {ArtistName}: deterministic no-match (spotify artist id unresolved).",
+                        "Spotify artist fetch unresolved for {ArtistName}: local match signals exist, scheduling retry.",
                         item.ArtistName);
                     _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                         DateTimeOffset.UtcNow,
                         "warn",
-                        $"Spotify fetch gave up for {item.ArtistName}: unresolved Spotify artist id (non-retryable)."));
-                    CompleteItem(item);
+                        $"Spotify fetch unresolved for {item.ArtistName}; local match signals exist, retry scheduled."));
+                    ScheduleRetry(item, "spotify artist id unresolved");
                     return;
                 }
 

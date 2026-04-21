@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Collections.Concurrent;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Library;
@@ -33,9 +34,16 @@ public sealed class SpotifyArtistService
     private const int LocalEvidenceTrackCandidateLimit = 10;
     private const int LocalEvidenceTrackIdProbeLimit = 10;
     private const int LocalEvidenceIsrcProbeLimit = 10;
+    private const int LocalEvidenceTrackMetadataProbeLimit = 10;
+    private const int LocalEvidenceTracksPerMetadataQuery = 5;
+    private const string SpotifyEmbedTrackUrlTemplate = "https://open.spotify.com/embed/track/{0}";
     private const string DebugActivityLevel = "debug";
     private static readonly TimeSpan LocalAlbumCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan SampleTrackPathCacheTtl = TimeSpan.FromMinutes(2);
+    private static readonly Regex SpotifyEmbedArtistUriRegex = new(
+        @"spotify:artist:(?<id>[A-Za-z0-9]{22})",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled,
+        RegexTimeout);
     private static readonly string[] AliasSuffixes =
     {
         " tell em",
@@ -1693,6 +1701,7 @@ public sealed class SpotifyArtistService
         {
             await CollectCandidateVotesFromKnownSpotifyTracksAsync(candidateVotes, localSignals, cancellationToken);
             await CollectCandidateVotesFromIsrcSignalsAsync(candidateVotes, localSignals, cancellationToken);
+            await CollectCandidateVotesFromTrackMetadataSignalsAsync(candidateVotes, localSignals, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -1803,7 +1812,90 @@ public sealed class SpotifyArtistService
 
             foreach (var track in tracks)
             {
-                AddArtistVotesFromTrackSummary(candidateVotes, track, primaryWeight: 3, secondaryWeight: 1);
+                await AddArtistVotesFromTrackSummaryWithFallbackAsync(
+                    candidateVotes,
+                    track,
+                    primaryWeight: 3,
+                    secondaryWeight: 1,
+                    cancellationToken);
+            }
+        }
+    }
+
+    private async Task CollectCandidateVotesFromTrackMetadataSignalsAsync(
+        Dictionary<string, int> candidateVotes,
+        IReadOnlyList<ArtistSpotifyMatchSignalDto> localSignals,
+        CancellationToken cancellationToken)
+    {
+        var queries = localSignals
+            .SelectMany(BuildLocalTrackSignalQueries)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(LocalEvidenceTrackMetadataProbeLimit)
+            .ToList();
+        if (queries.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var query in queries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            List<SpotifyTrackSummary> tracks;
+            try
+            {
+                tracks = await _pathfinderMetadataClient.SearchTracksAsync(query, LocalEvidenceTrackCandidateLimit, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Failed searching Spotify by metadata while resolving local artist evidence. query={Query}", query);
+                }
+
+                continue;
+            }
+
+            foreach (var track in tracks.Take(LocalEvidenceTracksPerMetadataQuery))
+            {
+                await AddArtistVotesFromTrackSummaryWithFallbackAsync(
+                    candidateVotes,
+                    track,
+                    primaryWeight: 2,
+                    secondaryWeight: 1,
+                    cancellationToken);
+            }
+        }
+    }
+
+    private static IEnumerable<string> BuildLocalTrackSignalQueries(ArtistSpotifyMatchSignalDto signal)
+    {
+        if (string.IsNullOrWhiteSpace(signal.Title))
+        {
+            yield break;
+        }
+
+        var normalizedTitle = signal.Title.Trim();
+        if (!string.IsNullOrWhiteSpace(signal.TagArtist))
+        {
+            var artist = signal.TagArtist.Trim();
+            if (!string.IsNullOrWhiteSpace(artist))
+            {
+                yield return $"{artist} {normalizedTitle}";
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(signal.TagAlbumArtist))
+        {
+            var albumArtist = signal.TagAlbumArtist.Trim();
+            if (!string.IsNullOrWhiteSpace(albumArtist)
+                && !string.Equals(albumArtist, signal.TagArtist, StringComparison.OrdinalIgnoreCase))
+            {
+                yield return $"{albumArtist} {normalizedTitle}";
             }
         }
     }
@@ -1835,6 +1927,33 @@ public sealed class SpotifyArtistService
         }
     }
 
+    private async Task AddArtistVotesFromTrackSummaryWithFallbackAsync(
+        Dictionary<string, int> candidateVotes,
+        SpotifyTrackSummary track,
+        int primaryWeight,
+        int secondaryWeight,
+        CancellationToken cancellationToken)
+    {
+        if (track.ArtistIds is { Count: > 0 })
+        {
+            AddArtistVotesFromTrackSummary(candidateVotes, track, primaryWeight, secondaryWeight);
+            return;
+        }
+
+        if (!LooksLikeSpotifyEntityId(track.Id))
+        {
+            return;
+        }
+
+        var resolved = await TryFetchTrackSummaryBySpotifyTrackIdAsync(track.Id, cancellationToken);
+        if (resolved is null)
+        {
+            return;
+        }
+
+        AddArtistVotesFromTrackSummary(candidateVotes, resolved, primaryWeight, secondaryWeight);
+    }
+
     private async Task<SpotifyTrackSummary?> TryFetchTrackSummaryBySpotifyTrackIdAsync(string spotifyTrackId, CancellationToken cancellationToken)
     {
         if (!LooksLikeSpotifyEntityId(spotifyTrackId))
@@ -1847,9 +1966,37 @@ public sealed class SpotifyArtistService
             var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(
                 $"https://open.spotify.com/track/{spotifyTrackId}",
                 cancellationToken);
-            return metadata?.TrackList?.FirstOrDefault(track =>
+            var resolved = metadata?.TrackList?.FirstOrDefault(track =>
                 string.Equals(track.Id, spotifyTrackId, StringComparison.OrdinalIgnoreCase))
                    ?? metadata?.TrackList?.FirstOrDefault();
+            if (resolved?.ArtistIds is { Count: > 0 })
+            {
+                return resolved;
+            }
+
+            var embedArtistIds = await TryResolveArtistIdsFromPublicEmbedAsync(spotifyTrackId, cancellationToken);
+            if (embedArtistIds.Count == 0)
+            {
+                return resolved;
+            }
+
+            if (resolved is not null)
+            {
+                return resolved with { ArtistIds = embedArtistIds };
+            }
+
+            return new SpotifyTrackSummary(
+                spotifyTrackId,
+                string.Empty,
+                null,
+                null,
+                null,
+                $"https://open.spotify.com/track/{spotifyTrackId}",
+                null,
+                null)
+            {
+                ArtistIds = embedArtistIds
+            };
         }
         catch (OperationCanceledException)
         {
@@ -1863,6 +2010,52 @@ public sealed class SpotifyArtistService
             }
 
             return null;
+        }
+    }
+
+    private async Task<IReadOnlyList<string>> TryResolveArtistIdsFromPublicEmbedAsync(
+        string spotifyTrackId,
+        CancellationToken cancellationToken)
+    {
+        if (!LooksLikeSpotifyEntityId(spotifyTrackId))
+        {
+            return Array.Empty<string>();
+        }
+
+        try
+        {
+            using var client = new HttpClient
+            {
+                Timeout = TimeSpan.FromSeconds(10)
+            };
+            var embedUrl = string.Format(CultureInfo.InvariantCulture, SpotifyEmbedTrackUrlTemplate, spotifyTrackId);
+            var html = await client.GetStringAsync(embedUrl, cancellationToken);
+            if (string.IsNullOrWhiteSpace(html))
+            {
+                return Array.Empty<string>();
+            }
+
+            var artistIds = SpotifyEmbedArtistUriRegex
+                .Matches(html)
+                .Select(match => match.Groups["id"].Value)
+                .Where(LooksLikeSpotifyEntityId)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            return artistIds;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed resolving Spotify artist ids from public embed for track {TrackId}.", spotifyTrackId);
+            }
+
+            return Array.Empty<string>();
         }
     }
 
@@ -2342,7 +2535,22 @@ public sealed class SpotifyArtistService
                     localAlbumTitleSet,
                     cancellationToken);
                 var hasStrongVotes = votes >= ShazamStrongVoteThreshold;
-                var info = await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidateId, cancellationToken);
+                SpotifyPathfinderMetadataClient.SpotifyArtistCandidateInfo? info = null;
+                try
+                {
+                    info = await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidateId, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug(ex, "Failed fetching Spotify candidate info while selecting fallback artist id. candidate={CandidateId}", candidateId);
+                    }
+                }
 
                 var accepted = matchesAlias;
                 if (!accepted && localAlbumOverlap > 0)
@@ -2371,6 +2579,17 @@ public sealed class SpotifyArtistService
                     Math.Max(0, info?.TotalAlbums ?? 0),
                     Math.Max(0, info?.TotalTracks ?? 0),
                     info?.Verified == true));
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Skipping Spotify fallback candidate due to scoring failure. candidate={CandidateId}", entry.Key);
+                }
             }
             finally
             {
