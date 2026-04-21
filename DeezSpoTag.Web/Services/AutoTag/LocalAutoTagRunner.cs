@@ -634,7 +634,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         var useMatchCache = CanUseMatchCache(info);
         var matchCacheKey = useMatchCache
-            ? BuildMatchCacheKey(context.Platform, info, context.Plan.Config, context.Plan.MatchingConfig)
+            ? BuildMatchCacheKey(context.Platform, info, context.Plan.Config, context.Plan.Settings, context.Plan.MatchingConfig)
             : string.Empty;
         if (useMatchCache && TryGetCachedMatch(context.JobMatchCache, matchCacheKey, out var cachedMatch))
         {
@@ -1961,7 +1961,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         PlatformMatchContext context,
         CancellationToken token)
     {
-        var enableLyrics = HasAnyTags(context.Config, UnsyncedLyricsTag, SyncedLyricsTag, TtmlLyricsTag);
+        var enableLyrics = ShouldRequestAnyLyrics(context.Config, context.Settings);
         var hasLyricsSidecar = enableLyrics && GetLyricsSidecarState(context.FilePath).HasAny;
         var beatportReleaseMeta = HasAnyTags(context.Config, AlbumArtistTag, TrackTotalTag);
         var traxsourceExtend = HasAnyTags(context.Config, AlbumArtTag, AlbumTag, CatalogNumberTag, ReleaseIdTag, AlbumArtistTag, TrackNumberTag, TrackTotalTag);
@@ -1995,7 +1995,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 deezerConfig.FetchLyrics = enableLyrics && !hasLyricsSidecar;
                 return await _deezerMatcher.MatchAsync(info, context.MatchingConfig, deezerConfig, token);
             case "boomplay":
-                return await _boomplayMatcher.MatchAsync(info, context.MatchingConfig, LoadConfig(context.Config.Custom, "boomplay", new BoomplayConfig()), token);
+                return await _boomplayMatcher.MatchAsync(
+                    info,
+                    context.MatchingConfig,
+                    LoadConfig(context.Config.Custom, "boomplay", new BoomplayConfig()),
+                    token);
             case "lastfm":
                 return await _lastFmMatcher.MatchAsync(info, LoadConfig(context.Config.Custom, "lastfm", new LastFmConfig()), token);
             case ShazamPlatform:
@@ -2019,7 +2023,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         CancellationToken token)
     {
         var shazamConfig = LoadConfig(config.Custom, ShazamPlatform, new ShazamMatchConfig());
-        var enableLyrics = HasAnyTags(config, UnsyncedLyricsTag, SyncedLyricsTag, TtmlLyricsTag);
+        var enableLyrics = ShouldRequestAnyLyrics(config, settings);
         var hasLyricsSidecar = enableLyrics && GetLyricsSidecarState(filePath).HasAny;
         var allowDeezerMatcherLyrics = enableLyrics && !hasLyricsSidecar;
         if (shazamConfig.IdFirst)
@@ -2272,6 +2276,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string platform,
         AutoTagAudioInfo info,
         AutoTagRunnerConfig config,
+        DeezSpoTagSettings settings,
         AutoTagMatchingConfig matchingConfig)
     {
         var platformKey = NormalizeCacheToken(platform);
@@ -2306,7 +2311,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         builder.Append("strictness=").Append(matchingConfig.Strictness.ToString("0.###", CultureInfo.InvariantCulture)).Append(';');
         builder.Append("multiple=").Append(matchingConfig.MultipleMatches).Append(';');
         builder.Append("matchById=").Append(config.MatchById).Append(';');
-        builder.Append("enableLyrics=").Append(normalizedTags.Any(tag => tag is "unsyncedlyrics" or "syncedlyrics" or "ttmllyrics")).Append(';');
+        builder.Append("enableLyrics=").Append(ShouldRequestAnyLyrics(config, settings)).Append(';');
+        builder.Append("lyricsSyncedToggle=").Append(settings.SyncedLyrics || settings.Tags?.SyncedLyrics == true).Append(';');
+        builder.Append("lyricsUnsyncedToggle=").Append(settings.SaveLyrics || settings.Tags?.Lyrics == true).Append(';');
+        builder.Append("lyricsType=").Append(NormalizeCacheToken(settings.LrcType)).Append(';');
+        builder.Append("lyricsFormat=").Append(NormalizeCacheToken(settings.LrcFormat)).Append(';');
         builder.Append("beatportReleaseMeta=").Append(normalizedTags.Any(tag => tag is "albumartist" or "tracktotal")).Append(';');
         builder.Append("traxsourceExtend=").Append(normalizedTags.Any(tag => tag is "albumart" or AlbumTag or "catalognumber" or "releaseid" or "albumartist" or "tracknumber" or "tracktotal")).Append(';');
         builder.Append("traxsourceAlbumMeta=").Append(normalizedTags.Any(tag => tag is "catalognumber" or "tracknumber" or "albumart" or "tracktotal" or "albumartist")).Append(';');

@@ -601,7 +601,6 @@ public sealed class AppleLyricsService
             "time_synced_lyrics" => SyllableLyricsType,
             "syllablelyrics" => SyllableLyricsType,
             UnsyncedLyricsType => UnsyncedLyricsType,
-            "unsunsynced-lyrics" => UnsyncedLyricsType,
             "unsyncedlyrics" => UnsyncedLyricsType,
             "unsynced" => UnsyncedLyricsType,
             "unsynchronized-lyrics" => UnsyncedLyricsType,

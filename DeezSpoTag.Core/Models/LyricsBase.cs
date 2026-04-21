@@ -76,7 +76,7 @@ public abstract class LyricsBase
     /// </summary>
     public virtual bool IsSynced()
     {
-        return SyncedLyrics?.Count > 1;
+        return SyncedLyrics?.Count > 0;
     }
 
     /// <summary>

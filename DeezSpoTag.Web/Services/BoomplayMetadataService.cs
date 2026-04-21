@@ -230,7 +230,9 @@ public sealed class BoomplayMetadataService
                || normalizedHost.EndsWith("." + BoomplayRootHost, StringComparison.OrdinalIgnoreCase);
     }
 
-    public Task<BoomplayTrackMetadata?> GetSongAsync(string songId, CancellationToken cancellationToken)
+    public Task<BoomplayTrackMetadata?> GetSongAsync(
+        string songId,
+        CancellationToken cancellationToken)
     {
         return GetSongWithPolicyAsync(
             songId,
@@ -630,7 +632,6 @@ public sealed class BoomplayMetadataService
 
         var url = $"{BoomplayBaseUrl}/songs/{songId}";
         BoomplayTrackMetadata? best = null;
-        var probedLyricsGenre = false;
         maxAttempts = Math.Max(1, maxAttempts);
         streamTagAttempts = Math.Max(1, streamTagAttempts);
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
@@ -638,15 +639,13 @@ public sealed class BoomplayMetadataService
             var attemptContext = new SongAttemptContext(
                 Attempt: attempt,
                 MaxAttempts: maxAttempts,
-                StreamTagAttempts: streamTagAttempts,
-                AllowLyricsGenreProbe: !probedLyricsGenre);
+                StreamTagAttempts: streamTagAttempts);
             var attemptOutcome = await EvaluateSongAttemptAsync(
                 songId,
                 url,
                 best,
                 attemptContext,
                 cancellationToken);
-            probedLyricsGenre |= attemptOutcome.LyricsGenreProbed;
 
             if (attemptOutcome.Completed)
             {
@@ -705,18 +704,11 @@ public sealed class BoomplayMetadataService
         string url,
         string html,
         int streamTagAttempts,
-        bool allowLyricsGenreProbe,
         CancellationToken cancellationToken)
     {
         var parsed = ParseSongHtml(songId, html, url);
         await ApplyStreamTagsAsync(songId, parsed, streamTagAttempts, cancellationToken);
-        if (parsed.Genres.Count > 0 || !allowLyricsGenreProbe)
-        {
-            return new SongAttemptParseResult(parsed, LyricsGenreProbed: false);
-        }
-
-        await TryEnrichGenreFromLyricsPageAsync(songId, parsed, cancellationToken);
-        return new SongAttemptParseResult(parsed, LyricsGenreProbed: true);
+        return new SongAttemptParseResult(parsed);
     }
 
     private async Task<SongAttemptOutcome> EvaluateSongAttemptAsync(
@@ -733,8 +725,7 @@ public sealed class BoomplayMetadataService
                 Completed: !emptyResolution.Delay,
                 Value: emptyResolution.Value,
                 Delay: emptyResolution.Delay,
-                Best: best,
-                LyricsGenreProbed: false);
+                Best: best);
         }
 
         if (LooksLikeNotFoundSongPage(html))
@@ -748,8 +739,7 @@ public sealed class BoomplayMetadataService
                 Completed: true,
                 Value: null,
                 Delay: false,
-                Best: best,
-                LyricsGenreProbed: false);
+                Best: best);
         }
 
         var parseResult = await ParseSongAttemptAsync(
@@ -757,7 +747,6 @@ public sealed class BoomplayMetadataService
             url,
             html!,
             context.StreamTagAttempts,
-            context.AllowLyricsGenreProbe,
             cancellationToken);
         var parsed = parseResult.Metadata;
         if (IsSongMetadataEmpty(parsed))
@@ -766,8 +755,7 @@ public sealed class BoomplayMetadataService
                 Completed: false,
                 Value: null,
                 Delay: context.Attempt < context.MaxAttempts,
-                Best: best,
-                LyricsGenreProbed: parseResult.LyricsGenreProbed);
+                Best: best);
         }
 
         if (TryCacheAndReturnHighConfidenceSong(songId, parsed, out var resolvedTrack))
@@ -776,16 +764,14 @@ public sealed class BoomplayMetadataService
                 Completed: true,
                 Value: resolvedTrack,
                 Delay: false,
-                Best: best,
-                LyricsGenreProbed: parseResult.LyricsGenreProbed);
+                Best: best);
         }
 
         return new SongAttemptOutcome(
             Completed: false,
             Value: null,
             Delay: context.Attempt < context.MaxAttempts,
-            Best: PickBetterMetadata(best, parsed),
-            LyricsGenreProbed: parseResult.LyricsGenreProbed);
+            Best: PickBetterMetadata(best, parsed));
     }
 
     private static bool IsSongMetadataEmpty(BoomplayTrackMetadata metadata)
@@ -799,14 +785,12 @@ public sealed class BoomplayMetadataService
         bool Completed,
         BoomplayTrackMetadata? Value,
         bool Delay,
-        BoomplayTrackMetadata? Best,
-        bool LyricsGenreProbed);
+        BoomplayTrackMetadata? Best);
 
     private readonly record struct SongAttemptContext(
         int Attempt,
         int MaxAttempts,
-        int StreamTagAttempts,
-        bool AllowLyricsGenreProbe);
+        int StreamTagAttempts);
 
     private static async Task DelayIfRetryAvailableAsync(int attempt, int maxAttempts, CancellationToken cancellationToken)
     {
@@ -3140,29 +3124,6 @@ public sealed class BoomplayMetadataService
         return true;
     }
 
-    private async Task TryEnrichGenreFromLyricsPageAsync(
-        string songId,
-        BoomplayTrackMetadata target,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(songId))
-        {
-            return;
-        }
-
-        var lyricsUrl = $"{BoomplayBaseUrl}/lyrics/{songId}";
-        var lyricsHtml = await GetHtmlAsync(lyricsUrl, cancellationToken);
-        if (string.IsNullOrWhiteSpace(lyricsHtml))
-        {
-            return;
-        }
-
-        var doc = new HtmlDocument();
-        doc.LoadHtml(lyricsHtml);
-        ApplySongDetailMetadata(doc, target);
-        ApplyEmbeddedGenreMetadata(lyricsHtml, songId, target);
-    }
-
     private static void ApplyEmbeddedGenreMetadata(string html, string songId, BoomplayTrackMetadata target)
     {
         if (string.IsNullOrWhiteSpace(html))
@@ -3239,7 +3200,7 @@ public sealed class BoomplayMetadataService
         return target.Genres.Count > before;
     }
 
-    private readonly record struct SongAttemptParseResult(BoomplayTrackMetadata Metadata, bool LyricsGenreProbed);
+    private readonly record struct SongAttemptParseResult(BoomplayTrackMetadata Metadata);
     private readonly record struct Id3Frame(string FrameId, int FrameOffset, int FrameSize);
 
     private HttpClient CreateClient()

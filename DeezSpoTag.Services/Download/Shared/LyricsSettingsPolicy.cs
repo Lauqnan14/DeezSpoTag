@@ -62,7 +62,6 @@ public static class LyricsSettingsPolicy
             "timesynced-lyrics" => SyllableLyricsType,
             "time_synced_lyrics" => SyllableLyricsType,
             UnsyncedLyricsType => UnsyncedLyricsType,
-            "unsunsynced-lyrics" => UnsyncedLyricsType,
             "unsyncedlyrics" => UnsyncedLyricsType,
             "unsynced" => UnsyncedLyricsType,
             "unsynchronized-lyrics" => UnsyncedLyricsType,
