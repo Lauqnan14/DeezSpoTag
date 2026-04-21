@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using System.Collections.Concurrent;
+using System.ComponentModel.DataAnnotations;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Shared.Models;
@@ -82,7 +83,7 @@ public class ActivitiesController : Controller
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error getting download queue");
-            return Json(new { success = false, error = ex.Message });
+            return ErrorJson("Failed to load download queue.");
         }
     }
 
@@ -121,7 +122,7 @@ public class ActivitiesController : Controller
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error pausing download {Uuid}", LogSanitizer.OneLine(request.Uuid));
-            return Json(new { success = false, error = ex.Message });
+            return ErrorJson("Failed to pause download.");
         }
     }
 
@@ -157,7 +158,7 @@ public class ActivitiesController : Controller
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error resuming download {Uuid}", LogSanitizer.OneLine(request.Uuid));
-            return Json(new { success = false, error = ex.Message });
+            return ErrorJson("Failed to resume download.");
         }
     }
 
@@ -171,6 +172,12 @@ public class ActivitiesController : Controller
 
         try
         {
+            var item = await _queueRepository.GetByUuidAsync(request.Uuid, HttpContext.RequestAborted);
+            if (item == null)
+            {
+                return NotFound(DownloadNotFoundMessage);
+            }
+
             await _deezSpoTagApp.CancelDownloadAsync(request.Uuid);
             if (_logger.IsEnabled(LogLevel.Information))
             {
@@ -181,7 +188,7 @@ public class ActivitiesController : Controller
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error cancelling download {Uuid}", LogSanitizer.OneLine(request.Uuid));
-            return Json(new { success = false, error = ex.Message });
+            return ErrorJson("Failed to cancel download.");
         }
     }
 
@@ -190,20 +197,27 @@ public class ActivitiesController : Controller
     {
         try
         {
-            foreach (var engine in GetEngines())
+            var deleted = 0;
+            deleted += await _queueRepository.DeleteByStatusAsync(CompletedStatus, HttpContext.RequestAborted);
+            deleted += await _queueRepository.DeleteByStatusAsync(CompleteStatus, HttpContext.RequestAborted);
+            deleted += await _queueRepository.DeleteByStatusAsync(SkippedStatus, HttpContext.RequestAborted);
+            if (deleted > 0)
             {
-                await _queueRepository.DeleteByStatusAsync(engine, CompletedStatus);
-                await _queueRepository.DeleteByStatusAsync(engine, CompleteStatus);
-                await _queueRepository.DeleteByStatusAsync(engine, SkippedStatus);
+                _deezspotagListener.SendRemovedFinishedDownloads();
             }
-            _deezspotagListener.SendRemovedFinishedDownloads();
-            _logger.LogInformation("Cleared completed downloads");
-            return Json(new { success = true, message = "Completed downloads cleared" });
+
+            _logger.LogInformation("Cleared completed downloads (removed={Deleted})", deleted);
+            return Json(new
+            {
+                success = true,
+                message = deleted > 0 ? "Completed downloads cleared" : "No completed downloads to clear",
+                deleted
+            });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error clearing completed downloads");
-            return Json(new { success = false, error = ex.Message });
+            return ErrorJson("Failed to clear completed downloads.");
         }
     }
 
@@ -212,20 +226,26 @@ public class ActivitiesController : Controller
     {
         try
         {
-            foreach (var engine in GetEngines())
+            var deleted = 0;
+            deleted += await _queueRepository.DeleteByStatusAsync(CanceledStatus, HttpContext.RequestAborted);
+            deleted += await _queueRepository.DeleteByStatusAsync(CancelledStatus, HttpContext.RequestAborted);
+            if (deleted > 0)
             {
-                await _queueRepository.DeleteByStatusAsync(engine, CanceledStatus);
-                await _queueRepository.DeleteByStatusAsync(engine, CancelledStatus);
-                await _queueRepository.DeleteByStatusAsync(engine, SkippedStatus);
+                _deezspotagListener.SendRemovedFinishedDownloads();
             }
-            _deezspotagListener.SendRemovedFinishedDownloads();
-            _logger.LogInformation("Cleared canceled downloads");
-            return Json(new { success = true, message = "Canceled downloads cleared" });
+
+            _logger.LogInformation("Cleared canceled downloads (removed={Deleted})", deleted);
+            return Json(new
+            {
+                success = true,
+                message = deleted > 0 ? "Canceled downloads cleared" : "No canceled downloads to clear",
+                deleted
+            });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error clearing canceled downloads");
-            return Json(new { success = false, error = ex.Message });
+            return ErrorJson("Failed to clear canceled downloads.");
         }
     }
 
@@ -242,7 +262,7 @@ public class ActivitiesController : Controller
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error pausing all downloads");
-            return Json(new { success = false, error = ex.Message });
+            return ErrorJson("Failed to pause all downloads.");
         }
     }
 
@@ -259,7 +279,7 @@ public class ActivitiesController : Controller
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error resuming all downloads");
-            return Json(new { success = false, error = ex.Message });
+            return ErrorJson("Failed to resume all downloads.");
         }
     }
 
@@ -269,6 +289,8 @@ public class ActivitiesController : Controller
         try
         {
             var tasks = await _queueRepository.GetTasksAsync();
+            var canceled = 0;
+            var failed = 0;
             foreach (var task in tasks)
             {
                 if (string.IsNullOrWhiteSpace(task.QueueUuid))
@@ -282,16 +304,41 @@ public class ActivitiesController : Controller
                     continue;
                 }
 
-                await _deezSpoTagApp.CancelDownloadAsync(task.QueueUuid);
+                try
+                {
+                    await _deezSpoTagApp.CancelDownloadAsync(task.QueueUuid);
+                    canceled++;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    failed++;
+                    _logger.LogWarning(ex, "Failed to cancel download during CancelAll {Uuid}", LogSanitizer.OneLine(task.QueueUuid));
+                }
             }
 
-            _logger.LogInformation("Cancelled all downloads");
-            return Json(new { success = true, message = "All downloads cancelled" });
+            if (failed > 0)
+            {
+                _logger.LogWarning("CancelAll completed with partial failures (canceled={Canceled}, failed={Failed})", canceled, failed);
+            }
+            else
+            {
+                _logger.LogInformation("Cancelled all downloads (canceled={Canceled})", canceled);
+            }
+
+            return Json(new
+            {
+                success = true,
+                message = failed > 0
+                    ? $"Canceled {canceled} download(s). {failed} item(s) could not be canceled."
+                    : "All downloads cancelled",
+                canceled,
+                failed
+            });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error cancelling all downloads");
-            return Json(new { success = false, error = ex.Message });
+            return ErrorJson("Failed to cancel all downloads.");
         }
     }
 
@@ -327,7 +374,7 @@ public class ActivitiesController : Controller
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error removing failed download {Uuid}", LogSanitizer.OneLine(request.Uuid));
-            return Json(new { success = false, error = ex.Message });
+            return ErrorJson("Failed to remove download from queue.");
         }
     }
 
@@ -382,7 +429,7 @@ public class ActivitiesController : Controller
         {
             _logger.LogError(ex, "Error retrying download {Uuid}", LogSanitizer.OneLine(request.Uuid));
             _activityLog.Error($"Retry failed: {request.Uuid} {ex.Message}");
-            return Json(new { success = false, error = ex.Message });
+            return ErrorJson("Failed to retry download.");
         }
     }
 
@@ -391,18 +438,24 @@ public class ActivitiesController : Controller
     {
         try
         {
-            foreach (var engine in GetEngines())
+            var deleted = await _queueRepository.DeleteAllAsync(HttpContext.RequestAborted);
+            if (deleted > 0)
             {
-                await _queueRepository.DeleteByEngineAsync(engine);
+                _deezspotagListener.SendRemovedAllDownloads(null);
             }
-            _deezspotagListener.SendRemovedAllDownloads(null);
-            _logger.LogInformation("Cleared all downloads from queue");
-            return Json(new { success = true, message = "All downloads cleared" });
+
+            _logger.LogInformation("Cleared all downloads from queue (removed={Deleted})", deleted);
+            return Json(new
+            {
+                success = true,
+                message = deleted > 0 ? "All downloads cleared" : "Queue is already empty",
+                deleted
+            });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error clearing all downloads");
-            return Json(new { success = false, error = ex.Message });
+            return ErrorJson("Failed to clear all downloads.");
         }
     }
 
@@ -500,11 +553,6 @@ public class ActivitiesController : Controller
         return normalized is QueuedStatus or InQueueStatus or RunningStatus or DownloadingStatus or PausedStatus or "retrying";
     }
 
-    private static string[] GetEngines()
-    {
-        return new[] { "deezer", "qobuz", "amazon", "tidal", "apple" };
-    }
-
     private static Dictionary<string, object> BuildQueuePayload(DownloadQueueItem item, DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
     {
         var payload = ParsePayload(item.PayloadJson);
@@ -515,6 +563,10 @@ public class ActivitiesController : Controller
         payload["failed"] = item.Failed ?? 0;
         payload["engine"] = item.Engine;
         payload["uuid"] = item.QueueUuid;
+        if (!string.IsNullOrWhiteSpace(item.Error))
+        {
+            payload["error"] = item.Error;
+        }
         if (!payload.TryGetValue("quality", out var quality) || quality is null || string.IsNullOrWhiteSpace(quality.ToString()))
         {
             payload["quality"] = ResolveSourceQuality(item.Engine, settings);
@@ -812,7 +864,7 @@ public class ActivitiesController : Controller
             DownloadFinishedStatus => CompletedStatus,
             CanceledStatus => CancelledStatus,
             CancelledStatus => CancelledStatus,
-            SkippedStatus => SkippedStatus,
+            SkippedStatus => CompletedStatus,
             _ => normalized
         };
     }
@@ -1225,11 +1277,16 @@ public class ActivitiesController : Controller
         return null;
     }
 
+    private JsonResult ErrorJson(string message)
+    {
+        return Json(new { success = false, error = message });
+    }
 }
 
 internal sealed record CachedQueuePayload(DateTimeOffset CachedAtUtc, Dictionary<string, object> Payload);
 
 public sealed class CancelDownloadRequest
 {
+    [Required(AllowEmptyStrings = false)]
     public string Uuid { get; set; } = "";
 }

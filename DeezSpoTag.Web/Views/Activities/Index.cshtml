@@ -2397,19 +2397,19 @@
                             <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z"/></svg>
                             Resume
                         </button>
-                        <button class="btn-danger action-btn action-btn-sm" onclick="cancelAllTasks()">
+                        <button class="btn-danger action-btn action-btn-sm" id="cancelAllBtn" onclick="cancelAllTasks()">
                             <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm3.59 13.17-1.42 1.42L12 13.41l-2.17 2.18-1.42-1.42L10.59 12 8.41 9.83l1.42-1.42L12 10.59l2.17-2.18 1.42 1.42L13.41 12l2.18 2.17z"/></svg>
                             Cancel
                         </button>
-                        <button class="action-btn action-btn-sm" onclick="clearAllTasks()">
+                        <button class="action-btn action-btn-sm" id="clearAllBtn" onclick="clearAllTasks()">
                             <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M16 9v10H8V9h8zm-1.5-6h-5l-1 1H5v2h14V4h-3.5l-1-1z"/></svg>
                             Clear
                         </button>
-                        <button class="action-btn action-btn-sm" onclick="clearCompletedTasks()">
+                        <button class="action-btn action-btn-sm" id="clearCompletedBtn" onclick="clearCompletedTasks()">
                             <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 7L9.97 15.03l-3.5-3.5-1.41 1.41 4.91 4.91L19.41 8.41zM13.41 8.41 12 7l-5.59 5.59L7.83 14z"/></svg>
                             Clear Completed
                         </button>
-                        <button class="action-btn action-btn-sm" onclick="clearCanceledTasks()">
+                        <button class="action-btn action-btn-sm" id="clearCanceledBtn" onclick="clearCanceledTasks()">
                             <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm5 13H7v-2h10v2z"/></svg>
                             Clear Canceled
                         </button>
@@ -3120,11 +3120,51 @@ function resolveAutoScrollTask(taskList) {
 function updateQueueButtons() {
     const pauseBtn = document.getElementById('pauseBtn');
     const resumeBtn = document.getElementById('resumeBtn');
+    const cancelAllBtn = document.getElementById('cancelAllBtn');
+    const clearAllBtn = document.getElementById('clearAllBtn');
+    const clearCompletedBtn = document.getElementById('clearCompletedBtn');
+    const clearCanceledBtn = document.getElementById('clearCanceledBtn');
     if (!pauseBtn || !resumeBtn) return;
     const pauseDisabled = queueActionInFlight || queueState === 'paused';
     const resumeDisabled = queueActionInFlight || queueState === 'running';
     pauseBtn.disabled = pauseDisabled;
     resumeBtn.disabled = resumeDisabled;
+    if (cancelAllBtn) cancelAllBtn.disabled = queueActionInFlight;
+    if (clearAllBtn) clearAllBtn.disabled = queueActionInFlight;
+    if (clearCompletedBtn) clearCompletedBtn.disabled = queueActionInFlight;
+    if (clearCanceledBtn) clearCanceledBtn.disabled = queueActionInFlight;
+}
+
+function showDownloadActionError(message, fallbackMessage = 'Request failed.') {
+    const notifier = window.DeezSpoTag?.Download?.showNotification
+        || window.DeezSpoTag?.showNotification;
+    if (notifier) {
+        notifier(message || fallbackMessage, 'error');
+    }
+}
+
+function getTaskById(taskId) {
+    return tasks.find(task => task.taskId === taskId) || null;
+}
+
+function beginTaskAction(taskId) {
+    const target = getTaskById(taskId);
+    if (!target || target._actionInFlight || target._retryInFlight) {
+        return null;
+    }
+
+    target._actionInFlight = true;
+    scheduleRenderTasks();
+    return target;
+}
+
+function endTaskAction(target) {
+    if (!target || !target._actionInFlight) {
+        return;
+    }
+
+    target._actionInFlight = false;
+    scheduleRenderTasks();
 }
 
 function activityActionIconSvg(name) {
@@ -3932,29 +3972,61 @@ async function resumeQueue() {
 }
 
 async function cancelAllTasks() {
+    if (queueActionInFlight) {
+        return;
+    }
+
+    const confirmed = await confirmAction('Cancel all active downloads?', 'Cancel All Downloads');
+    if (!confirmed) {
+        return;
+    }
+
+    queueActionInFlight = true;
+    updateQueueButtons();
     try {
-        await ensureActionSuccess('/Activities/CancelAll');
+        const payload = await ensureActionSuccess('/Activities/CancelAll');
+        const failedCount = Number(payload?.failed || 0);
         if (window.DeezSpoTag?.showNotification) {
-            window.DeezSpoTag.showNotification('All Downloads Cancelled', 'info');
+            window.DeezSpoTag.showNotification(
+                payload?.message || 'All Downloads Cancelled',
+                failedCount > 0 ? 'warning' : 'info');
         }
-        await loadQueueFromServer();
+        await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error('Failed to cancel all downloads:', error);
-        if (window.DeezSpoTag?.showNotification) {
-            window.DeezSpoTag.showNotification(error?.message || 'Failed to cancel downloads.', 'error');
-        }
+        showDownloadActionError(error?.message, 'Failed to cancel downloads.');
+    } finally {
+        queueActionInFlight = false;
+        updateQueueButtons();
     }
 }
 
 async function clearAllTasks() {
+    if (queueActionInFlight) {
+        return;
+    }
+
+    const confirmed = await confirmAction(
+        'Clear all downloads from the queue? This cannot be undone.',
+        'Clear Queue');
+    if (!confirmed) {
+        return;
+    }
+
+    queueActionInFlight = true;
+    updateQueueButtons();
     try {
-        await ensureActionSuccess('/Activities/ClearAll');
-        await loadQueueFromServer();
+        const payload = await ensureActionSuccess('/Activities/ClearAll');
+        if (window.DeezSpoTag?.showNotification) {
+            window.DeezSpoTag.showNotification(payload?.message || 'Queue cleared.', 'info');
+        }
+        await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error('Failed to clear all downloads:', error);
-        if (window.DeezSpoTag?.showNotification) {
-            window.DeezSpoTag.showNotification(error?.message || 'Failed to clear downloads.', 'error');
-        }
+        showDownloadActionError(error?.message, 'Failed to clear downloads.');
+    } finally {
+        queueActionInFlight = false;
+        updateQueueButtons();
     }
 }
 
@@ -3971,26 +4043,60 @@ function getStatusIcon(status) {
     return icons[status] || '○';
 }
 async function clearCompletedTasks() {
+    if (queueActionInFlight) {
+        return;
+    }
+
+    const confirmed = await confirmAction(
+        'Clear completed downloads from the queue?',
+        'Clear Completed');
+    if (!confirmed) {
+        return;
+    }
+
+    queueActionInFlight = true;
+    updateQueueButtons();
     try {
-        await ensureActionSuccess('/Activities/ClearCompleted');
-        await loadQueueFromServer();
+        const payload = await ensureActionSuccess('/Activities/ClearCompleted');
+        if (window.DeezSpoTag?.showNotification) {
+            window.DeezSpoTag.showNotification(payload?.message || 'Completed downloads cleared.', 'info');
+        }
+        await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error('Failed to clear completed downloads:', error);
-        if (window.DeezSpoTag?.showNotification) {
-            window.DeezSpoTag.showNotification(error?.message || 'Failed to clear completed downloads.', 'error');
-        }
+        showDownloadActionError(error?.message, 'Failed to clear completed downloads.');
+    } finally {
+        queueActionInFlight = false;
+        updateQueueButtons();
     }
 }
 
 async function clearCanceledTasks() {
+    if (queueActionInFlight) {
+        return;
+    }
+
+    const confirmed = await confirmAction(
+        'Clear canceled downloads from the queue?',
+        'Clear Canceled');
+    if (!confirmed) {
+        return;
+    }
+
+    queueActionInFlight = true;
+    updateQueueButtons();
     try {
-        await ensureActionSuccess('/Activities/ClearCanceled');
-        await loadQueueFromServer();
+        const payload = await ensureActionSuccess('/Activities/ClearCanceled');
+        if (window.DeezSpoTag?.showNotification) {
+            window.DeezSpoTag.showNotification(payload?.message || 'Canceled downloads cleared.', 'info');
+        }
+        await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error('Failed to clear canceled downloads:', error);
-        if (window.DeezSpoTag?.showNotification) {
-            window.DeezSpoTag.showNotification(error?.message || 'Failed to clear canceled downloads.', 'error');
-        }
+        showDownloadActionError(error?.message, 'Failed to clear canceled downloads.');
+    } finally {
+        queueActionInFlight = false;
+        updateQueueButtons();
     }
 }
 
@@ -4128,66 +4234,72 @@ async function clearCanceledTasks() {
 		    }, renderTasksDelayMs);
 		}
 
-function renderTasks() {
-    const tasksList = document.getElementById('tasksList');
-    if (!tasksList) return;
-    const tailVisible = isQueueTailVisible();
-    const orderedTasks = orderTasksForAutoScroll(tasks, { pinActive: !tailVisible });
-	    const renderTask = (task, index) => {
-	        const taskId = String(task.taskId || '');
-	        const safeTaskIdArg = escapeJsString(taskId);
-	        const safeTaskIdAttr = escapeHtml(taskId);
-	        const progressValue = normalizeQueueProgressPercent(task.progress);
-	        const activityText = getTaskActivityText(task);
-        const activityHtml = activityText
-            ? `<div class="task-activity">${escapeHtml(activityText)}</div>`
-            : '';
+		function renderTasks() {
+	    const tasksList = document.getElementById('tasksList');
+	    if (!tasksList) return;
+	    const tailVisible = isQueueTailVisible();
+	    const orderedTasks = orderTasksForAutoScroll(tasks, { pinActive: !tailVisible });
+		    const renderTask = (task, index) => {
+		        const taskId = String(task.taskId || '');
+		        const safeTaskIdArg = escapeJsString(taskId);
+		        const safeTaskIdAttr = escapeHtml(taskId);
+		        const statusForUi = mapStatus(task.status);
+		        const safeStatus = escapeHtml(statusForUi);
+		        const progressValue = normalizeQueueProgressPercent(task.progress);
+		        const activityText = getTaskActivityText(task);
+	        const activityHtml = activityText
+	            ? `<div class="task-activity">${escapeHtml(activityText)}</div>`
+	            : '';
 	        const cachedProgress = queueProgressCache[taskId];
 	        const progressStart = Number.isFinite(cachedProgress)
 	            ? clampQueueProgressPercent(cachedProgress)
 	            : progressValue;
 	        queueProgressCache[taskId] = progressStart;
-        const progressHtml = task.status === 'running'
-            ? `<div class="progress-text"><span>Downloading...</span><span class="progress-value" data-progress-start="${progressStart}" data-progress-target="${progressValue}">${formatQueueProgressPercent(progressStart)}%</span></div>
-               <div class="progress-bar"><div class="progress-fill" style="width: ${progressStart}%" data-progress-start="${progressStart}" data-progress-target="${progressValue}"></div></div>`
-            : '';
-	        if (task.status !== 'running' && queueProgressTextAnimationByTask[taskId] != null) {
-	            cancelAnimationFrame(queueProgressTextAnimationByTask[taskId]);
-	            delete queueProgressTextAnimationByTask[taskId];
-	        }
+		        const progressHtml = statusForUi === 'running'
+		            ? `<div class="progress-text"><span>Downloading...</span><span class="progress-value" data-progress-start="${progressStart}" data-progress-target="${progressValue}">${formatQueueProgressPercent(progressStart)}%</span></div>
+		               <div class="progress-bar"><div class="progress-fill" style="width: ${progressStart}%" data-progress-start="${progressStart}" data-progress-target="${progressValue}"></div></div>`
+		            : '';
+		        if (statusForUi !== 'running' && queueProgressTextAnimationByTask[taskId] != null) {
+		            cancelAnimationFrame(queueProgressTextAnimationByTask[taskId]);
+		            delete queueProgressTextAnimationByTask[taskId];
+		        }
 
 	        const errorHtml = task.error
 	            ? `<div class="error-message">⚠ ${escapeHtml(task.error)}</div>`
 	            : '';
+	        const taskActionInFlight = Boolean(task._actionInFlight);
+	        const taskActionAttrs = taskActionInFlight ? ' disabled aria-disabled="true"' : '';
 
-	        const pauseButton = task.status === 'running'
-	            ? `<button class="action-btn action-btn-amber action-btn-sm" onclick="pauseTask('${safeTaskIdArg}')">${activityActionIconSvg('pause')}<span>Pause</span></button>`
-	            : '';
+		        const pauseButton = statusForUi === 'running'
+		            ? `<button class="action-btn action-btn-amber action-btn-sm"${taskActionAttrs} onclick="pauseTask('${safeTaskIdArg}')">${activityActionIconSvg('pause')}<span>Pause</span></button>`
+		            : '';
 
-	        const resumeButton = task.status === 'paused'
-	            ? `<button class="action-btn action-btn-sm" onclick="resumeTask('${safeTaskIdArg}')">${activityActionIconSvg('play')}<span>Resume</span></button>`
-	            : '';
+		        const resumeButton = statusForUi === 'paused'
+		            ? `<button class="action-btn action-btn-sm"${taskActionAttrs} onclick="resumeTask('${safeTaskIdArg}')">${activityActionIconSvg('play')}<span>Resume</span></button>`
+		            : '';
 
-        const canRetry = task.status === 'failed'
-            || task.status === 'canceled'
-            || (task.status === 'complete' && task.failed > 0);
-        const isRetrying = task.status === 'retrying' || task._retryInFlight;
-	        const retryButton = canRetry
-	            ? (isRetrying
-	                ? `<button class="action-btn action-btn-sm" disabled aria-disabled="true">${activityActionIconSvg('retry')}<span>Retrying</span></button>`
-	                : `<button class="action-btn action-btn-sm" onclick="retryTask('${safeTaskIdArg}')">${activityActionIconSvg('retry')}<span>Retry</span></button>`)
-	            : '';
+	        const canRetry = statusForUi === 'failed'
+	            || statusForUi === 'canceled'
+	            || (statusForUi === 'complete' && task.failed > 0);
+	        const isRetrying = statusForUi === 'retrying' || task._retryInFlight;
+		        const retryButton = canRetry
+		            ? (isRetrying
+		                ? `<button class="action-btn action-btn-sm" disabled aria-disabled="true">${activityActionIconSvg('retry')}<span>Retrying</span></button>`
+		                : taskActionInFlight
+		                    ? `<button class="action-btn action-btn-sm" disabled aria-disabled="true">${activityActionIconSvg('retry')}<span>Retry</span></button>`
+		                    : `<button class="action-btn action-btn-sm" onclick="retryTask('${safeTaskIdArg}')">${activityActionIconSvg('retry')}<span>Retry</span></button>`)
+		            : '';
 
-	        const deleteFailedButton = task.status === 'failed'
-	            ? `<button class="btn-danger action-btn action-btn-sm" onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
-	            : '';
-	        const deleteCanceledButton = task.status === 'canceled'
-	            ? `<button class="btn-danger action-btn action-btn-sm" onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
-	            : '';
+		        const deleteFailedButton = statusForUi === 'failed'
+		            ? `<button class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
+		            : '';
+		        const deleteCanceledButton = statusForUi === 'canceled'
+		            ? `<button class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
+		            : '';
 
-	        const cancelButton = (task.status === 'queued' || task.status === 'running' || task.status === 'paused')
-	            ? `<button class="btn-danger action-btn action-btn-sm" onclick="cancelTask('${safeTaskIdArg}')">${activityActionIconSvg('cancel')}<span>Cancel</span></button>`
-	            : '';
+		        const cancelButton = (statusForUi === 'queued' || statusForUi === 'running' || statusForUi === 'paused')
+		            ? `<button class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="cancelTask('${safeTaskIdArg}')">${activityActionIconSvg('cancel')}<span>Cancel</span></button>`
+		            : '';
 
         const taskActions = (pauseButton || resumeButton || retryButton || deleteFailedButton || deleteCanceledButton || cancelButton)
             ? `<div class="task-actions">${pauseButton}${resumeButton}${retryButton}${deleteFailedButton}${deleteCanceledButton}${cancelButton}</div>`
@@ -4197,16 +4309,16 @@ function renderTasks() {
         const safeTitle = escapeHtml(task.title || 'Unknown');
         const safeArtist = escapeHtml(task.artist || 'Unknown');
         const safeQuality = escapeHtml(displayQuality);
-        const safeEngine = escapeHtml(task.engine || '');
-        const coverStyle = task.cover
-            ? `style="--task-cover-url: url('${escapeCssUrl(task.cover)}')"`
-            : '';
-        const runningOverlayHtml = task.status === 'running'
-            ? `<span class="download-flow" aria-hidden="true">
-                   <span class="flow-packet p1"></span>
-                   <span class="flow-packet p2"></span>
-                   <span class="flow-packet p3"></span>
-                   <span class="server-rack">
+	        const safeEngine = escapeHtml(task.engine || '');
+	        const coverStyle = task.cover
+	            ? `style="--task-cover-url: url('${escapeCssUrl(task.cover)}')"`
+	            : '';
+	        const runningOverlayHtml = statusForUi === 'running'
+	            ? `<span class="download-flow" aria-hidden="true">
+	                   <span class="flow-packet p1"></span>
+	                   <span class="flow-packet p2"></span>
+	                   <span class="flow-packet p3"></span>
+	                   <span class="server-rack">
                        <span class="rack-line l1"></span>
                        <span class="rack-line l2"></span>
                        <span class="rack-line l3"></span>
@@ -4216,23 +4328,23 @@ function renderTasks() {
         const lyricsBadges = Array.isArray(task.lyricsBadges) ? task.lyricsBadges : [];
         const videoBadges = Array.isArray(task.videoBadges) ? task.videoBadges : [];
 
-	        const displayIndex = index + 1;
-	        return `
-	            <div class="task-card" data-task-id="${safeTaskIdAttr}" data-status="${task.status}">
-                <div class="task-header">
-                    <div class="task-index">${displayIndex}</div>
-                    <div class="task-icon ${task.cover ? 'cover' : ''} ${task.status === 'running' ? 'running' : ''}" ${coverStyle}><span class="task-icon-fallback">${getStatusIcon(task.status)}</span>${runningOverlayHtml}</div>
-                    <div class="task-info">
-                        <div class="task-title">${safeTitle}</div>
-                        <div class="task-artist">${safeArtist}</div>
-                        ${activityHtml}
-                    </div>
-                    <div class="task-badges">
-                        <span class="badge ${getStatusBadgeClass(task.status)}">${task.status}</span>
-                        <span class="badge badge-quality">${safeQuality}</span>
-                        ${videoBadges.map(videoBadge => `<span class="badge ${videoBadge.className}">${videoBadge.label}</span>`).join('')}
-                        <span class="badge badge-engine">${safeEngine}</span>
-                        ${renderFallbackPlanBadges(task)}
+		        const displayIndex = index + 1;
+		        return `
+		            <div class="task-card" data-task-id="${safeTaskIdAttr}" data-status="${safeStatus}">
+	                <div class="task-header">
+	                    <div class="task-index">${displayIndex}</div>
+	                    <div class="task-icon ${task.cover ? 'cover' : ''} ${statusForUi === 'running' ? 'running' : ''}" ${coverStyle}><span class="task-icon-fallback">${getStatusIcon(statusForUi)}</span>${runningOverlayHtml}</div>
+	                    <div class="task-info">
+	                        <div class="task-title">${safeTitle}</div>
+	                        <div class="task-artist">${safeArtist}</div>
+	                        ${activityHtml}
+	                    </div>
+	                    <div class="task-badges">
+	                        <span class="badge ${getStatusBadgeClass(statusForUi)}">${safeStatus}</span>
+	                        <span class="badge badge-quality">${safeQuality}</span>
+	                        ${videoBadges.map(videoBadge => `<span class="badge ${videoBadge.className}">${videoBadge.label}</span>`).join('')}
+	                        <span class="badge badge-engine">${safeEngine}</span>
+	                        ${renderFallbackPlanBadges(task)}
                         ${lyricsBadges.length
                             ? lyricsBadges.map(label => {
                                 const kind = label.toLowerCase();
@@ -4460,12 +4572,13 @@ function updateToggleQueueUi(state) {
 function retryTask(taskId) {
     const target = tasks.find(task => task.taskId === taskId);
     if (target) {
-        if (target._retryInFlight) {
+        if (target._retryInFlight || target._actionInFlight) {
             return;
         }
         target._retryPreviousStatus = target.status;
         target._retryPreviousError = target.error;
         target._retryInFlight = true;
+        target._actionInFlight = true;
         target.status = 'retrying';
         target.error = null;
         scheduleRenderTasks();
@@ -4497,6 +4610,7 @@ function retryTask(taskId) {
                 target.failed = 0;
                 target.error = null;
                 target._retryInFlight = false;
+                target._actionInFlight = false;
                 delete target._retryPreviousError;
                 delete target._retryPreviousStatus;
                 if (data?.engine) {
@@ -4512,6 +4626,7 @@ function retryTask(taskId) {
                 target.status = target._retryPreviousStatus || 'failed';
                 target.error = target._retryPreviousError || target.error || null;
                 target._retryInFlight = false;
+                target._actionInFlight = false;
                 delete target._retryPreviousError;
                 delete target._retryPreviousStatus;
                 scheduleRenderTasks();
@@ -4527,38 +4642,82 @@ function retryTask(taskId) {
 }
 
 async function deleteFailedTask(taskId) {
+    const target = beginTaskAction(taskId);
+    if (!target) {
+        return;
+    }
+
+    const confirmed = await confirmAction('Remove this item from the queue? This cannot be undone.', 'Delete Download');
+    if (!confirmed) {
+        endTaskAction(target);
+        return;
+    }
+
     try {
         await ensureJsonActionSuccess('/Activities/DeleteFailed', { uuid: taskId });
-        await loadQueueFromServer();
+        await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error(`Failed to delete task ${taskId}:`, error);
+        showDownloadActionError(error?.message, 'Failed to delete download.');
+    } finally {
+        endTaskAction(target);
     }
 }
 
 async function pauseTask(taskId) {
+    const target = beginTaskAction(taskId);
+    if (!target) {
+        return;
+    }
+
     try {
         await ensureJsonActionSuccess('/Activities/PauseTask', { uuid: taskId });
-        await loadQueueFromServer();
+        await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error(`Failed to pause task ${taskId}:`, error);
+        showDownloadActionError(error?.message, 'Failed to pause download.');
+    } finally {
+        endTaskAction(target);
     }
 }
 
 async function resumeTask(taskId) {
+    const target = beginTaskAction(taskId);
+    if (!target) {
+        return;
+    }
+
     try {
         await ensureJsonActionSuccess('/Activities/ResumeTask', { uuid: taskId });
         await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error(`Failed to resume task ${taskId}:`, error);
+        showDownloadActionError(error?.message, 'Failed to resume download.');
+    } finally {
+        endTaskAction(target);
     }
 }
 
 async function cancelTask(taskId) {
+    const target = beginTaskAction(taskId);
+    if (!target) {
+        return;
+    }
+
+    const confirmed = await confirmAction('Cancel this download?', 'Cancel Download');
+    if (!confirmed) {
+        endTaskAction(target);
+        return;
+    }
+
     try {
         await ensureJsonActionSuccess('/Activities/CancelTask', { uuid: taskId });
         await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error(`Failed to cancel task ${taskId}:`, error);
+        showDownloadActionError(error?.message, 'Failed to cancel download.');
+    } finally {
+        endTaskAction(target);
     }
 }
 
@@ -4980,10 +5139,10 @@ function mapStatus(status) {
         return 'queued';
     }
 
-    const map = {
-        inqueue: 'queued',
-        queued: 'queued',
-        downloading: 'running',
+	    const map = {
+	        inqueue: 'queued',
+	        queued: 'queued',
+	        downloading: 'running',
         running: 'running',
         completed: 'complete',
         complete: 'complete',
@@ -4995,12 +5154,12 @@ function mapStatus(status) {
         error: 'failed',
         cancelled: 'canceled',
         canceled: 'canceled',
-        skipped: 'canceled',
-        paused: 'paused',
-        retrying: 'retrying'
-    };
-    return map[normalized] || normalized;
-}
+        skipped: 'complete',
+	        paused: 'paused',
+	        retrying: 'retrying'
+	    };
+	    return map[normalized] || 'queued';
+	}
 
 function escapeCssUrl(value) {
     const raw = String(value ?? '').trim();
@@ -5641,6 +5800,8 @@ async function ensureActionSuccess(url) {
     if (payload && payload.success === false) {
         throw new Error(payload.error || payload.message || 'Request failed.');
     }
+
+    return payload;
 }
 
 async function ensureJsonActionSuccess(url, body) {
