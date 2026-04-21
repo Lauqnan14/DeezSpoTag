@@ -6005,6 +6005,50 @@ LIMIT 1;";
             await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetString(6));
     }
 
+    public async Task<IReadOnlyList<ArtistSpotifyMatchSignalDto>> GetArtistSpotifyMatchSignalsAsync(
+        long artistId,
+        int limit = 40,
+        CancellationToken cancellationToken = default)
+    {
+        if (artistId <= 0 || limit <= 0)
+        {
+            return Array.Empty<ArtistSpotifyMatchSignalDto>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT t.id,
+       t.title,
+       MAX(CASE WHEN ts.source = 'spotify' THEN ts.source_id END) AS spotify_track_id,
+       COALESCE(MAX(CASE WHEN ts.source = 'isrc' THEN ts.source_id END), t.tag_isrc) AS isrc,
+       t.tag_artist,
+       t.tag_album_artist
+FROM track t
+JOIN album al ON al.id = t.album_id
+LEFT JOIN track_source ts ON ts.track_id = t.id
+WHERE al.artist_id = @artistId
+GROUP BY t.id, t.title, t.tag_isrc, t.tag_artist, t.tag_album_artist
+ORDER BY t.id DESC
+LIMIT @limit;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("limit", limit);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var results = new List<ArtistSpotifyMatchSignalDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            results.Add(new ArtistSpotifyMatchSignalDto(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
+                await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3),
+                await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
+                await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5)));
+        }
+
+        return results;
+    }
+
     public async Task<IReadOnlyList<OfflineTrackSearchDto>> SearchTracksAsync(string likeQuery, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);

@@ -7,6 +7,7 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class LibrarySpotifyArtistQueueService : BackgroundService
 {
+    private const string SpotifySource = "spotify";
     private const int DefaultBatchSize = 25;
     private const int MinBatchSize = 1;
     private const int MaxBatchSize = 500;
@@ -176,6 +177,20 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
 
             if (result == null && !await ShouldSkipAsync(item.ArtistId, cancellationToken))
             {
+                var resolvedSpotifyId = await _repository.GetArtistSourceIdAsync(item.ArtistId, SpotifySource, cancellationToken);
+                if (string.IsNullOrWhiteSpace(resolvedSpotifyId))
+                {
+                    _logger.LogWarning(
+                        "Spotify artist fetch gave up for {ArtistName}: deterministic no-match (spotify artist id unresolved).",
+                        item.ArtistName);
+                    _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                        DateTimeOffset.UtcNow,
+                        "warn",
+                        $"Spotify fetch gave up for {item.ArtistName}: unresolved Spotify artist id (non-retryable)."));
+                    CompleteItem(item);
+                    return;
+                }
+
                 ScheduleRetry(item, "returned no data");
             }
             else

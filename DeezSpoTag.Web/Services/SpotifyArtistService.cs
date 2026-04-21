@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Globalization;
+using System.Text;
 using System.Collections.Concurrent;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Library;
@@ -27,6 +29,10 @@ public sealed class SpotifyArtistService
     private const int CanonicalFallbackMinLead = 250;
     private const int ExactCandidateScoreParallelism = 4;
     private const int ShazamCandidateScoreParallelism = 4;
+    private const int LocalEvidenceSignalLimit = 40;
+    private const int LocalEvidenceTrackCandidateLimit = 10;
+    private const int LocalEvidenceTrackIdProbeLimit = 10;
+    private const int LocalEvidenceIsrcProbeLimit = 10;
     private const string DebugActivityLevel = "debug";
     private static readonly TimeSpan LocalAlbumCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan SampleTrackPathCacheTtl = TimeSpan.FromMinutes(2);
@@ -1450,6 +1456,21 @@ public sealed class SpotifyArtistService
             var localAlbumTitleSet = FilterResolvableAlbumTitles(
                 await TryGetLocalAlbumTitleSetAsync(localArtistId, cancellationToken));
             var aliasTargets = BuildArtistAliasTargets(artistName);
+            var localSignals = await TryGetLocalArtistSpotifyMatchSignalsAsync(localArtistId, cancellationToken);
+            MergeAliasTargetsFromLocalSignals(aliasTargets, localSignals);
+
+            var localEvidenceResolved = await TryResolveArtistIdViaLocalTrackEvidenceAsync(
+                artistName,
+                localAlbumTitleSet,
+                aliasTargets,
+                localSignals,
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(localEvidenceResolved))
+            {
+                AddActivity("info", $"[spotify] artist id resolved via local track evidence: {artistName} -> {localEvidenceResolved}.");
+                return localEvidenceResolved;
+            }
+
             var results = await SearchArtistCandidatesWithFallbackQueryAsync(artistName, cancellationToken);
             if (results.Count == 0)
             {
@@ -1572,6 +1593,20 @@ public sealed class SpotifyArtistService
             var localAlbumTitleSet = FilterResolvableAlbumTitles(
                 await TryGetLocalAlbumTitleSetAsync(localArtistId, cancellationToken));
             var aliasTargets = BuildArtistAliasTargets(artistName);
+            var localSignals = await TryGetLocalArtistSpotifyMatchSignalsAsync(localArtistId, cancellationToken);
+            MergeAliasTargetsFromLocalSignals(aliasTargets, localSignals);
+            var localEvidenceResolved = await TryResolveArtistIdViaLocalTrackEvidenceAsync(
+                artistName,
+                localAlbumTitleSet,
+                aliasTargets,
+                localSignals,
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(localEvidenceResolved))
+            {
+                AddActivity("info", $"[spotify] artist id resolved via local evidence after pathfinder error: {artistName} -> {localEvidenceResolved}.");
+                return localEvidenceResolved;
+            }
+
             return await ResolveArtistIdWithShazamFallbackAsync(
                 artistName,
                 localArtistId,
@@ -1591,6 +1626,257 @@ public sealed class SpotifyArtistService
 
         AddActivity("warn", $"[spotify] artist ID resolve failed: pathfinder search error for {artistName}.");
         return null;
+    }
+
+    private async Task<IReadOnlyList<ArtistSpotifyMatchSignalDto>> TryGetLocalArtistSpotifyMatchSignalsAsync(
+        long? localArtistId,
+        CancellationToken cancellationToken)
+    {
+        if (!localArtistId.HasValue || localArtistId.Value <= 0)
+        {
+            return Array.Empty<ArtistSpotifyMatchSignalDto>();
+        }
+
+        try
+        {
+            var signals = await _libraryRepository.GetArtistSpotifyMatchSignalsAsync(
+                localArtistId.Value,
+                LocalEvidenceSignalLimit,
+                cancellationToken);
+            return signals.Count == 0
+                ? Array.Empty<ArtistSpotifyMatchSignalDto>()
+                : signals;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed reading local Spotify match signals for artist {ArtistId}.", localArtistId.Value);
+            }
+
+            return Array.Empty<ArtistSpotifyMatchSignalDto>();
+        }
+    }
+
+    private static void MergeAliasTargetsFromLocalSignals(
+        HashSet<string> aliasTargets,
+        IReadOnlyList<ArtistSpotifyMatchSignalDto> localSignals)
+    {
+        if (aliasTargets.Count == 0 || localSignals.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var alias in localSignals
+                     .SelectMany(ExtractAliasValuesFromSignal)
+                     .Where(static value => !string.IsNullOrWhiteSpace(value)))
+        {
+            aliasTargets.UnionWith(BuildArtistAliasTargets(alias));
+        }
+    }
+
+    private async Task<string?> TryResolveArtistIdViaLocalTrackEvidenceAsync(
+        string artistName,
+        HashSet<string> localAlbumTitleSet,
+        IReadOnlyCollection<string> aliasTargets,
+        IReadOnlyList<ArtistSpotifyMatchSignalDto> localSignals,
+        CancellationToken cancellationToken)
+    {
+        if (localSignals.Count == 0)
+        {
+            return null;
+        }
+
+        var candidateVotes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            await CollectCandidateVotesFromKnownSpotifyTracksAsync(candidateVotes, localSignals, cancellationToken);
+            await CollectCandidateVotesFromIsrcSignalsAsync(candidateVotes, localSignals, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed collecting local Spotify match evidence candidates for {ArtistName}.", artistName);
+            }
+        }
+
+        if (candidateVotes.Count == 0)
+        {
+            return null;
+        }
+
+        var resolved = await SelectBestShazamEvidenceCandidateAsync(
+            candidateVotes,
+            localAlbumTitleSet,
+            aliasTargets,
+            cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(resolved))
+        {
+            AddActivity(DebugActivityLevel,
+                $"[spotify] local track evidence accepted candidate for {artistName}: {resolved} (votes={candidateVotes.GetValueOrDefault(resolved, 0)}).");
+        }
+        else
+        {
+            AddActivity(DebugActivityLevel,
+                $"[spotify] local track evidence produced no accepted candidate for {artistName} (candidates={candidateVotes.Count}).");
+        }
+
+        return resolved;
+    }
+
+    private async Task CollectCandidateVotesFromKnownSpotifyTracksAsync(
+        Dictionary<string, int> candidateVotes,
+        IReadOnlyList<ArtistSpotifyMatchSignalDto> localSignals,
+        CancellationToken cancellationToken)
+    {
+        var spotifyTrackIds = localSignals
+            .Select(signal => signal.SpotifyTrackId)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .Where(LooksLikeSpotifyEntityId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(LocalEvidenceTrackIdProbeLimit)
+            .ToList();
+        if (spotifyTrackIds.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var spotifyTrackId in spotifyTrackIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var track = await TryFetchTrackSummaryBySpotifyTrackIdAsync(spotifyTrackId, cancellationToken);
+            if (track is null)
+            {
+                continue;
+            }
+
+            AddArtistVotesFromTrackSummary(candidateVotes, track, primaryWeight: 6, secondaryWeight: 1);
+        }
+    }
+
+    private async Task CollectCandidateVotesFromIsrcSignalsAsync(
+        Dictionary<string, int> candidateVotes,
+        IReadOnlyList<ArtistSpotifyMatchSignalDto> localSignals,
+        CancellationToken cancellationToken)
+    {
+        var isrcValues = localSignals
+            .Select(signal => signal.Isrc)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(LocalEvidenceIsrcProbeLimit)
+            .ToList();
+        if (isrcValues.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var isrc in isrcValues)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            List<SpotifyTrackSummary> tracks;
+            try
+            {
+                tracks = await _pathfinderMetadataClient.SearchTracksAsync($"isrc:{isrc}", LocalEvidenceTrackCandidateLimit, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Failed searching Spotify by ISRC while resolving local artist evidence. isrc={Isrc}", isrc);
+                }
+
+                continue;
+            }
+
+            foreach (var track in tracks)
+            {
+                AddArtistVotesFromTrackSummary(candidateVotes, track, primaryWeight: 3, secondaryWeight: 1);
+            }
+        }
+    }
+
+    private static void AddArtistVotesFromTrackSummary(
+        Dictionary<string, int> candidateVotes,
+        SpotifyTrackSummary track,
+        int primaryWeight,
+        int secondaryWeight)
+    {
+        if (track.ArtistIds is not { Count: > 0 } artistIds)
+        {
+            return;
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < artistIds.Count; index++)
+        {
+            var artistId = artistIds[index];
+            if (string.IsNullOrWhiteSpace(artistId) || !seen.Add(artistId))
+            {
+                continue;
+            }
+
+            AddSpotifyArtistVotesWeighted(
+                candidateVotes,
+                [artistId],
+                index == 0 ? primaryWeight : secondaryWeight);
+        }
+    }
+
+    private async Task<SpotifyTrackSummary?> TryFetchTrackSummaryBySpotifyTrackIdAsync(string spotifyTrackId, CancellationToken cancellationToken)
+    {
+        if (!LooksLikeSpotifyEntityId(spotifyTrackId))
+        {
+            return null;
+        }
+
+        try
+        {
+            var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(
+                $"https://open.spotify.com/track/{spotifyTrackId}",
+                cancellationToken);
+            return metadata?.TrackList?.FirstOrDefault(track =>
+                string.Equals(track.Id, spotifyTrackId, StringComparison.OrdinalIgnoreCase))
+                   ?? metadata?.TrackList?.FirstOrDefault();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to resolve Spotify artist ids from local spotify track id {TrackId}.", spotifyTrackId);
+            }
+
+            return null;
+        }
+    }
+
+    private static IEnumerable<string> ExtractAliasValuesFromSignal(ArtistSpotifyMatchSignalDto signal)
+    {
+        if (!string.IsNullOrWhiteSpace(signal.TagArtist))
+        {
+            yield return signal.TagArtist.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(signal.TagAlbumArtist))
+        {
+            yield return signal.TagAlbumArtist.Trim();
+        }
     }
 
     private sealed record ExactArtistCandidateSelection(
@@ -2000,16 +2286,28 @@ public sealed class SpotifyArtistService
     private static void AddSpotifyArtistVotes(
         Dictionary<string, int> candidateVotes,
         IEnumerable<string> spotifyArtistIds)
+        => AddSpotifyArtistVotesWeighted(candidateVotes, spotifyArtistIds, weight: 1);
+
+    private static void AddSpotifyArtistVotesWeighted(
+        Dictionary<string, int> candidateVotes,
+        IEnumerable<string> spotifyArtistIds,
+        int weight)
     {
+        var voteWeight = Math.Max(1, weight);
         foreach (var spotifyArtistId in spotifyArtistIds)
         {
+            if (!LooksLikeSpotifyEntityId(spotifyArtistId))
+            {
+                continue;
+            }
+
             if (candidateVotes.TryGetValue(spotifyArtistId, out var current))
             {
-                candidateVotes[spotifyArtistId] = current + 1;
+                candidateVotes[spotifyArtistId] = current + voteWeight;
             }
             else
             {
-                candidateVotes[spotifyArtistId] = 1;
+                candidateVotes[spotifyArtistId] = voteWeight;
             }
         }
     }
@@ -2460,19 +2758,42 @@ public sealed class SpotifyArtistService
             return string.Empty;
         }
 
-        var buffer = new char[value.Length];
-        var index = 0;
-        foreach (var ch in value)
+        var normalized = value.Normalize(NormalizationForm.FormKD);
+        var buffer = new StringBuilder(normalized.Length);
+        foreach (var rawChar in normalized)
         {
-            if (!char.IsLetterOrDigit(ch))
+            if (CharUnicodeInfo.GetUnicodeCategory(rawChar) == UnicodeCategory.NonSpacingMark)
             {
                 continue;
             }
 
-            buffer[index++] = char.ToLowerInvariant(ch);
+            foreach (var mapped in MapArtistCanonicalCharacters(rawChar))
+            {
+                if (!char.IsLetterOrDigit(mapped))
+                {
+                    continue;
+                }
+
+                buffer.Append(char.ToLowerInvariant(mapped));
+            }
         }
 
-        return index == 0 ? string.Empty : new string(buffer, 0, index);
+        return buffer.Length == 0 ? string.Empty : buffer.ToString();
+    }
+
+    private static IEnumerable<char> MapArtistCanonicalCharacters(char value)
+    {
+        return value switch
+        {
+            'ø' or 'Ø' => ['o'],
+            'đ' or 'Đ' => ['d'],
+            'ł' or 'Ł' => ['l'],
+            'þ' or 'Þ' => ['t', 'h'],
+            'ß' => ['s', 's'],
+            'æ' or 'Æ' => ['a', 'e'],
+            'œ' or 'Œ' => ['o', 'e'],
+            _ => [value]
+        };
     }
 
     private static string BuildPrimaryArtistQuery(string artistName)

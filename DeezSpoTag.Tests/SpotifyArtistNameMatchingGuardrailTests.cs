@@ -18,6 +18,7 @@ public sealed class SpotifyArtistNameMatchingGuardrailTests
     [InlineData("Jay-Z", "Jay Z")]
     [InlineData("Soulja Boy Tell 'Em", "Soulja Boy")]
     [InlineData("Marvin Gaye", "marvin gaye")]
+    [InlineData("ROMANS", "RØMANS")]
     public void EquivalentArtistNames_AreRecognized(string left, string right)
     {
         var equivalent = InvokeEquivalent(left, right);
