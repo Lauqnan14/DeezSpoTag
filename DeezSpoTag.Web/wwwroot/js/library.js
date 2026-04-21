@@ -1306,8 +1306,11 @@ function primePendingLibraryReturnState() {
     }
 
     pendingLibraryReturnState = payload;
+    const locationScopedSelection = getLibraryScopeSelectionFromLocation();
+    const hasExplicitLocationScope = locationScopedSelection !== '';
     const viewSelection = String(payload.viewSelection || '').trim();
-    if (viewSelection) {
+    // URL scope is explicit user intent and must not be overridden by stale return-state.
+    if (viewSelection && !hasExplicitLocationScope) {
         setStoredLibraryViewSelection(viewSelection);
     }
 
