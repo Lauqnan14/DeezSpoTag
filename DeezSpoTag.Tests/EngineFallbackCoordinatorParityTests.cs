@@ -1,9 +1,19 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using System.Reflection;
+using System.Threading;
+using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Apple;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Fallback;
+using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Settings;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -219,17 +229,50 @@ public sealed class EngineFallbackCoordinatorParityTests
                 spotifyId,
                 appleId,
                 isrc,
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                null,
                 deezerId,
+                "us",
+                "en-US",
+                null,
                 userCountry,
                 fallbackSearchEnabled
             ],
             culture: null);
         Assert.NotNull(request);
 
-        var method = coordinatorType.GetMethod("TryBuildAppleFallbackUrl", BindingFlags.NonPublic | BindingFlags.Static);
+        var method = coordinatorType.GetMethod("TryBuildAppleFallbackUrlAsync", BindingFlags.NonPublic | BindingFlags.Instance);
         Assert.NotNull(method);
 
-        var result = method!.Invoke(null, [request]);
-        return result as string;
+        var settingsService = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
+        var coordinator = new EngineFallbackCoordinator(
+            queueRepository: null!,
+            settingsService,
+            new SongLinkResolver(
+                new StubHttpClientFactory(),
+                qobuzMetadataService: null,
+                qobuzTrackResolver: null,
+                qobuzOptions: null,
+                NullLogger<SongLinkResolver>.Instance),
+            new DeezerIsrcResolver(
+                deezerApi: null!,
+                NullLogger<DeezerIsrcResolver>.Instance),
+            new AppleMusicCatalogService(
+                new StubHttpClientFactory(),
+                settingsService,
+                NullLogger<AppleMusicCatalogService>.Instance,
+                new MemoryCache(new MemoryCacheOptions())),
+            new NullActivityLogWriter());
+
+        var task = method!.Invoke(coordinator, [request, CancellationToken.None]) as Task<string?>;
+        Assert.NotNull(task);
+        return task!.GetAwaiter().GetResult();
+    }
+
+    private sealed class StubHttpClientFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new();
     }
 }

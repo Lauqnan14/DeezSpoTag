@@ -11,10 +11,13 @@ public sealed class EngineFallbackCoordinator
     private const string DeezerEngine = "deezer";
     private const string QobuzEngine = "qobuz";
     private const string AppleEngine = "apple";
+    private const string DefaultAppleStorefront = "us";
+    private const string DefaultLanguage = "en-US";
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly SongLinkResolver _songLinkResolver;
     private readonly DeezerIsrcResolver _deezerIsrcResolver;
+    private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly IActivityLogWriter _activityLog;
     private sealed record FallbackAdvanceRequest(
         string QueueUuid,
@@ -42,7 +45,14 @@ public sealed class EngineFallbackCoordinator
         string SpotifyId,
         string AppleId,
         string? Isrc,
+        string Title,
+        string Artist,
+        string Album,
+        int? DurationMs,
         string DeezerId,
+        string Storefront,
+        string Language,
+        string? MediaUserToken,
         string UserCountry,
         bool FallbackSearchEnabled);
 
@@ -51,12 +61,14 @@ public sealed class EngineFallbackCoordinator
         DeezSpoTagSettingsService settingsService,
         SongLinkResolver songLinkResolver,
         DeezerIsrcResolver deezerIsrcResolver,
+        AppleMusicCatalogService appleCatalogService,
         IActivityLogWriter activityLog)
     {
         _queueRepository = queueRepository;
         _settingsService = settingsService;
         _songLinkResolver = songLinkResolver;
         _deezerIsrcResolver = deezerIsrcResolver;
+        _appleCatalogService = appleCatalogService;
         _activityLog = activityLog;
     }
 
@@ -155,7 +167,18 @@ public sealed class EngineFallbackCoordinator
             SpotifyId: resolvedSpotifyId ?? request.SpotifyId,
             AppleId: request.AppleId,
             Isrc: resolvedIsrc,
+            Title: request.Title,
+            Artist: request.Artist,
+            Album: request.Album,
+            DurationMs: request.DurationMs,
             DeezerId: request.DeezerId,
+            Storefront: string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront)
+                ? DefaultAppleStorefront
+                : settings.AppleMusic.Storefront,
+            Language: string.IsNullOrWhiteSpace(settings.DeezerLanguage)
+                ? DefaultLanguage
+                : settings.DeezerLanguage,
+            MediaUserToken: settings.AppleMusic?.MediaUserToken,
             UserCountry: userCountry,
             FallbackSearchEnabled: settings.FallbackSearch);
 
@@ -187,6 +210,14 @@ public sealed class EngineFallbackCoordinator
             }
 
             mutators.SetSourceUrl(resolvedUrl ?? string.Empty);
+            if (string.Equals(step.Source, AppleEngine, StringComparison.OrdinalIgnoreCase))
+            {
+                var resolvedAppleId = AppleIdParser.TryExtractFromUrl(resolvedUrl);
+                if (!string.IsNullOrWhiteSpace(resolvedAppleId))
+                {
+                    TrySetAppleId(payloadForSerialization, resolvedAppleId);
+                }
+            }
 
             mutators.ApplyStep((step.Source, step.Quality, nextIndex));
             var json = System.Text.Json.JsonSerializer.Serialize(payloadForSerialization);
@@ -324,7 +355,7 @@ public sealed class EngineFallbackCoordinator
             return $"https://www.deezer.com/track/{normalizedDeezerId}";
         }
 
-        var appleFallbackUrl = TryBuildAppleFallbackUrl(request);
+        var appleFallbackUrl = await TryBuildAppleFallbackUrlAsync(request, cancellationToken);
         if (!string.IsNullOrWhiteSpace(appleFallbackUrl))
         {
             return appleFallbackUrl;
@@ -367,7 +398,9 @@ public sealed class EngineFallbackCoordinator
         return resolvedUrl;
     }
 
-    private static string? TryBuildAppleFallbackUrl(SourceResolutionRequest request)
+    private async Task<string?> TryBuildAppleFallbackUrlAsync(
+        SourceResolutionRequest request,
+        CancellationToken cancellationToken)
     {
         if (!string.Equals(request.Engine, AppleEngine, StringComparison.OrdinalIgnoreCase))
         {
@@ -382,12 +415,256 @@ public sealed class EngineFallbackCoordinator
         }
         if (string.IsNullOrWhiteSpace(appleId))
         {
+            appleId = await TryResolveAppleIdByIsrcAsync(
+                request.Isrc,
+                request.Storefront,
+                request.Language,
+                request.MediaUserToken,
+                cancellationToken);
+        }
+
+        if (string.IsNullOrWhiteSpace(appleId)
+            && request.FallbackSearchEnabled)
+        {
+            appleId = await TryResolveAppleIdBySearchAsync(
+                request,
+                cancellationToken);
+        }
+
+        if (string.IsNullOrWhiteSpace(appleId))
+        {
             return null;
         }
 
         return appleId.StartsWith("ra.", StringComparison.OrdinalIgnoreCase)
             ? $"https://music.apple.com/us/station/{appleId}"
             : $"https://music.apple.com/us/song/{appleId}?i={appleId}";
+    }
+
+    private async Task<string?> TryResolveAppleIdByIsrcAsync(
+        string? isrc,
+        string storefront,
+        string language,
+        string? mediaUserToken,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(isrc))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = await _appleCatalogService.GetSongByIsrcAsync(
+                isrc,
+                storefront,
+                language,
+                cancellationToken,
+                mediaUserToken);
+            return TryExtractAppleIdFromCatalog(doc.RootElement);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task<string?> TryResolveAppleIdBySearchAsync(
+        SourceResolutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        foreach (var term in BuildAppleSearchTerms(request.Title, request.Artist, request.Album))
+        {
+            try
+            {
+                using var doc = await _appleCatalogService.SearchAsync(
+                    term,
+                    limit: 10,
+                    storefront: request.Storefront,
+                    language: request.Language,
+                    cancellationToken,
+                    new AppleMusicCatalogService.AppleSearchOptions(
+                        TypesOverride: "songs",
+                        IncludeRelationshipsTracks: false));
+                var id = TryExtractAppleSongIdFromSearch(doc.RootElement, request);
+                if (!string.IsNullOrWhiteSpace(id))
+                {
+                    return id;
+                }
+            }
+            catch
+            {
+                // Ignore and continue with other terms.
+            }
+        }
+
+        return null;
+    }
+
+    private static string? TryExtractAppleIdFromCatalog(System.Text.Json.JsonElement root)
+    {
+        if (!root.TryGetProperty("data", out var data)
+            || data.ValueKind != System.Text.Json.JsonValueKind.Array
+            || data.GetArrayLength() == 0)
+        {
+            return null;
+        }
+
+        var first = data[0];
+        return first.TryGetProperty("id", out var id) ? id.GetString() : null;
+    }
+
+    private static string? TryExtractAppleSongIdFromSearch(System.Text.Json.JsonElement root, SourceResolutionRequest request)
+    {
+        if (!root.TryGetProperty("results", out var results)
+            || results.ValueKind != System.Text.Json.JsonValueKind.Object
+            || !results.TryGetProperty("songs", out var songs)
+            || songs.ValueKind != System.Text.Json.JsonValueKind.Object
+            || !songs.TryGetProperty("data", out var data)
+            || data.ValueKind != System.Text.Json.JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var bestScore = int.MinValue;
+        string? bestId = null;
+        foreach (var item in data.EnumerateArray())
+        {
+            var id = item.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                continue;
+            }
+
+            var score = ScoreCandidate(item, request);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestId = id;
+            }
+        }
+
+        return bestId;
+    }
+
+    private static int ScoreCandidate(System.Text.Json.JsonElement item, SourceResolutionRequest request)
+    {
+        if (!item.TryGetProperty("attributes", out var attrs)
+            || attrs.ValueKind != System.Text.Json.JsonValueKind.Object)
+        {
+            return 0;
+        }
+
+        var title = TryReadString(attrs, "name");
+        var artist = TryReadString(attrs, "artistName");
+        var album = TryReadString(attrs, "albumName");
+        var durationInMillis = attrs.TryGetProperty("durationInMillis", out var durationProp)
+            && durationProp.TryGetInt32(out var parsedDuration)
+            ? parsedDuration
+            : 0;
+
+        var score = 0;
+        score += ScoreTextMatch(request.Title, title, 60);
+        score += ScoreTextMatch(request.Artist, artist, 30);
+        score += ScoreTextMatch(request.Album, album, 15);
+
+        if (request.DurationMs.HasValue && request.DurationMs.Value > 0 && durationInMillis > 0)
+        {
+            var diff = Math.Abs(request.DurationMs.Value - durationInMillis);
+            if (diff <= 2000)
+            {
+                score += 10;
+            }
+            else if (diff <= 5000)
+            {
+                score += 6;
+            }
+            else if (diff <= 10000)
+            {
+                score += 3;
+            }
+        }
+
+        return score;
+    }
+
+    private static List<string> BuildAppleSearchTerms(string? title, string? artist, string? album)
+    {
+        var terms = new List<string>();
+        var normalizedTitle = title?.Trim();
+        var normalizedArtist = artist?.Trim();
+        var normalizedAlbum = album?.Trim();
+
+        if (!string.IsNullOrWhiteSpace(normalizedTitle) && !string.IsNullOrWhiteSpace(normalizedArtist))
+        {
+            terms.Add($"{normalizedTitle} {normalizedArtist}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(normalizedTitle))
+        {
+            terms.Add(normalizedTitle);
+        }
+
+        if (!string.IsNullOrWhiteSpace(normalizedTitle) && !string.IsNullOrWhiteSpace(normalizedAlbum))
+        {
+            terms.Add($"{normalizedTitle} {normalizedAlbum}");
+        }
+
+        return terms
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static int ScoreTextMatch(string? expected, string? actual, int maxScore)
+    {
+        if (string.IsNullOrWhiteSpace(expected) || string.IsNullOrWhiteSpace(actual))
+        {
+            return 0;
+        }
+
+        var normalizedExpected = NormalizeForCompare(expected);
+        var normalizedActual = NormalizeForCompare(actual);
+        if (string.IsNullOrWhiteSpace(normalizedExpected) || string.IsNullOrWhiteSpace(normalizedActual))
+        {
+            return 0;
+        }
+
+        if (string.Equals(normalizedExpected, normalizedActual, StringComparison.OrdinalIgnoreCase))
+        {
+            return maxScore;
+        }
+
+        var expectedTokens = normalizedExpected.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var actualTokens = normalizedActual.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (expectedTokens.Length == 0 || actualTokens.Length == 0)
+        {
+            return 0;
+        }
+
+        var overlap = expectedTokens.Intersect(actualTokens, StringComparer.OrdinalIgnoreCase).Count();
+        var denominator = Math.Max(expectedTokens.Length, actualTokens.Length);
+        if (denominator <= 0 || overlap <= 0)
+        {
+            return 0;
+        }
+
+        return (int)Math.Round((double)overlap / denominator * maxScore);
+    }
+
+    private static string NormalizeForCompare(string value)
+    {
+        return new string(value
+            .ToLowerInvariant()
+            .Select(ch => char.IsLetterOrDigit(ch) || char.IsWhiteSpace(ch) ? ch : ' ')
+            .ToArray())
+            .Trim();
+    }
+
+    private static string? TryReadString(System.Text.Json.JsonElement node, string propertyName)
+    {
+        return node.TryGetProperty(propertyName, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.String
+            ? value.GetString()
+            : null;
     }
 
     private async Task<SongLinkResult?> ResolveSongLinkFromDeezerAsync(
@@ -579,6 +856,22 @@ public sealed class EngineFallbackCoordinator
         }
 
         property.SetValue(payload, spotifyId);
+    }
+
+    private static void TrySetAppleId(object payload, string appleId)
+    {
+        if (string.IsNullOrWhiteSpace(appleId))
+        {
+            return;
+        }
+
+        var property = payload.GetType().GetProperty("AppleId");
+        if (property == null || !property.CanWrite)
+        {
+            return;
+        }
+
+        property.SetValue(payload, appleId);
     }
 
     private static void TrySetDeezerBitrate(object payload, string source, string? quality)

@@ -7,29 +7,33 @@ namespace DeezSpoTag.Tests;
 
 public sealed class SpotifyArtistVerificationGuardrailTests
 {
-    private static readonly MethodInfo VerifiedCandidateMethod =
+    private static readonly MethodInfo ExactCandidateScoreMethod =
         typeof(SpotifyArtistService).GetMethod(
-            "IsVerifiedArtistCandidate",
+            "ComputeExactCandidateScore",
             BindingFlags.NonPublic | BindingFlags.Static)
-        ?? throw new InvalidOperationException("Could not resolve SpotifyArtistService.IsVerifiedArtistCandidate.");
+        ?? throw new InvalidOperationException("Could not resolve SpotifyArtistService.ComputeExactCandidateScore.");
 
     [Fact]
-    public void VerifiedCandidate_OnlyTrueForVerifiedProfiles()
+    public void VerifiedCandidate_AppliesVerificationTiebreakerOnlyForVerifiedProfiles()
     {
         var unverified = new SpotifyPathfinderMetadataClient.SpotifyArtistCandidateInfo(
             ArtistId: "0du5cEVh5yTK9QJze8zA0C",
             Verified: false,
-            TotalAlbums: 10);
+            TotalAlbums: 10,
+            TotalTracks: 120);
         var verified = unverified with { Verified = true };
 
-        Assert.False(InvokeIsVerifiedCandidate(null));
-        Assert.False(InvokeIsVerifiedCandidate(unverified));
-        Assert.True(InvokeIsVerifiedCandidate(verified));
+        var unverifiedScore = InvokeExactCandidateScore(localAlbumOverlap: 0, unverified);
+        var verifiedScore = InvokeExactCandidateScore(localAlbumOverlap: 0, verified);
+        var nullInfoScore = InvokeExactCandidateScore(localAlbumOverlap: 0, info: null);
+
+        Assert.Equal(0, nullInfoScore);
+        Assert.Equal(25, verifiedScore - unverifiedScore);
     }
 
-    private static bool InvokeIsVerifiedCandidate(SpotifyPathfinderMetadataClient.SpotifyArtistCandidateInfo? info)
+    private static int InvokeExactCandidateScore(int localAlbumOverlap, SpotifyPathfinderMetadataClient.SpotifyArtistCandidateInfo? info)
     {
-        var value = VerifiedCandidateMethod.Invoke(null, [info]);
-        return value is true;
+        var value = ExactCandidateScoreMethod.Invoke(null, [localAlbumOverlap, info]);
+        return value is int score ? score : 0;
     }
 }
