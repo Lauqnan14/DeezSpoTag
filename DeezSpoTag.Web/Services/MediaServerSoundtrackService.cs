@@ -52,8 +52,11 @@ public sealed partial class MediaServerSoundtrackService
     private const string SpotifyUriPattern = @"^spotify:(?<type>album|playlist|track):(?<id>[A-Za-z0-9]{22})$";
     private const string DeezerWebLinkPattern = @"deezer\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?(?<type>album|playlist|track)\/(?<id>\d+)";
     private static readonly TimeSpan SoundtrackCacheTtl = TimeSpan.FromHours(12);
+    private static readonly TimeSpan MonthlySyncInterval = TimeSpan.FromDays(30);
+    private static readonly TimeSpan LibraryDiscoveryRefreshInterval = TimeSpan.FromHours(24);
     private static readonly TimeSpan LibraryConnectedFreshWindow = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan RegexDynamicTimeout = TimeSpan.FromMilliseconds(RegexTimeoutMilliseconds);
+    private const int RecentAddedProbeLimit = 100;
     private static readonly string[] SoundtrackNoiseTokens =
     {
         "2160p", "1080p", "720p", "4k", "uhd", "hdr", "dv",
@@ -93,6 +96,7 @@ public sealed partial class MediaServerSoundtrackService
     private volatile bool _syncRunning;
     private DateTimeOffset? _lastSyncStartedUtc;
     private DateTimeOffset? _lastSyncCompletedUtc;
+    private DateTimeOffset? _lastDiscoveryRefreshUtc;
 
     private sealed class TvEpisodeFetchResult
     {
@@ -771,6 +775,54 @@ public sealed partial class MediaServerSoundtrackService
         };
     }
 
+    public async Task RunScheduledBackgroundSyncAsync(CancellationToken cancellationToken)
+    {
+        var auth = await _platformAuthService.LoadAsync();
+        var settings = await _store.LoadAsync(cancellationToken);
+        var targets = ResolveDistinctTargetLibraries(settings, auth);
+        if (targets.Count == 0)
+        {
+            return;
+        }
+
+        if (ShouldRefreshDiscovery())
+        {
+            await RefreshDiscoveredLibrariesAsync(cancellationToken);
+            _lastDiscoveryRefreshUtc = DateTimeOffset.UtcNow;
+
+            auth = await _platformAuthService.LoadAsync();
+            settings = await _store.LoadAsync(cancellationToken);
+            targets = ResolveDistinctTargetLibraries(settings, auth);
+            if (targets.Count == 0)
+            {
+                return;
+            }
+        }
+
+        if (await IsMonthlySyncDueAsync(targets, cancellationToken))
+        {
+            await SyncPersistentMediaCacheAsync(fullRefresh: true, cancellationToken);
+            return;
+        }
+
+        foreach (var target in targets)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                await SyncRecentlyAddedItemsForLibraryAsync(auth, target, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Recent soundtrack probe failed for {ServerType}/{LibraryId}.", target.ServerType, target.LibraryId);
+            }
+        }
+    }
+
     private static string BuildSoundtrackItemCacheKey(string? serverType, string? libraryId, string? itemId)
     {
         var normalizedServer = string.IsNullOrWhiteSpace(serverType) ? string.Empty : serverType.Trim().ToLowerInvariant();
@@ -914,6 +966,88 @@ public sealed partial class MediaServerSoundtrackService
             }, cancellationToken);
             throw;
         }
+    }
+
+    private bool ShouldRefreshDiscovery()
+    {
+        if (_lastDiscoveryRefreshUtc is not DateTimeOffset lastRefreshUtc)
+        {
+            return true;
+        }
+
+        return DateTimeOffset.UtcNow - lastRefreshUtc >= LibraryDiscoveryRefreshInterval;
+    }
+
+    private async Task<bool> IsMonthlySyncDueAsync(
+        List<(string ServerType, string LibraryId, string LibraryName, string Category)> targets,
+        CancellationToken cancellationToken)
+    {
+        foreach (var target in targets)
+        {
+            var state = await _cacheRepository.GetLibrarySyncStateAsync(target.ServerType, target.LibraryId, cancellationToken);
+            if (state?.LastSuccessUtc is not DateTimeOffset lastSuccessUtc)
+            {
+                return true;
+            }
+
+            if (DateTimeOffset.UtcNow - lastSuccessUtc >= MonthlySyncInterval)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private async Task SyncRecentlyAddedItemsForLibraryAsync(
+        PlatformAuthState auth,
+        (string ServerType, string LibraryId, string LibraryName, string Category) target,
+        CancellationToken cancellationToken)
+    {
+        var recentItems = await FetchRecentlyAddedLibraryItemsAsync(auth, target, RecentAddedProbeLimit, cancellationToken);
+        if (recentItems.Count == 0)
+        {
+            return;
+        }
+
+        var existingByItemId = await _cacheRepository.GetItemsByIdsAsync(
+            target.ServerType,
+            target.LibraryId,
+            recentItems.Select(item => item.ItemId).ToArray(),
+            cancellationToken);
+
+        var rowsToPersist = recentItems
+            .Select(item =>
+            {
+                existingByItemId.TryGetValue(NormalizeText(item.ItemId), out var persistedRow);
+                return BuildSoundtrackItemDto(item, persistedRow);
+            })
+            .Where(row =>
+            {
+                if (!existingByItemId.TryGetValue(NormalizeText(row.ItemId), out var persistedRow))
+                {
+                    return true;
+                }
+
+                return !string.Equals(
+                    NormalizeText(persistedRow.ContentHash),
+                    NormalizeText(row.ContentHash),
+                    StringComparison.Ordinal);
+            })
+            .ToList();
+
+        if (rowsToPersist.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var row in rowsToPersist)
+        {
+            NormalizeMatchMetadata(row.Soundtrack);
+        }
+
+        await _cacheRepository.UpsertItemsAsync(rowsToPersist, cancellationToken);
+        QueueBackgroundSoundtrackResolution(rowsToPersist);
     }
 
     private void QueueBackgroundSoundtrackResolution(List<MediaServerSoundtrackItemDto> rows)
@@ -1778,6 +1912,19 @@ public sealed partial class MediaServerSoundtrackService
         return targets;
     }
 
+    private List<(string ServerType, string LibraryId, string LibraryName, string Category)> ResolveDistinctTargetLibraries(
+        MediaServerSoundtrackSettings settings,
+        PlatformAuthState auth)
+    {
+        return ResolveTargetLibraries(settings, auth, MediaServerSoundtrackConstants.MovieCategory, null, null)
+            .Concat(ResolveTargetLibraries(settings, auth, MediaServerSoundtrackConstants.TvShowCategory, null, null))
+            .GroupBy(
+                target => $"{NormalizeServerType(target.ServerType)}::{NormalizeText(target.LibraryId)}",
+                StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToList();
+    }
+
     private async Task<List<MediaServerContentItem>> FetchLibraryItemsAsync(
         PlatformAuthState auth,
         (string ServerType, string LibraryId, string LibraryName, string Category) target,
@@ -1793,6 +1940,25 @@ public sealed partial class MediaServerSoundtrackService
         if (string.Equals(target.ServerType, MediaServerSoundtrackConstants.JellyfinServer, StringComparison.OrdinalIgnoreCase))
         {
             return await FetchJellyfinItemsAsync(auth.Jellyfin, target.LibraryId, target.LibraryName, offset, limit, cancellationToken);
+        }
+
+        return new List<MediaServerContentItem>();
+    }
+
+    private async Task<List<MediaServerContentItem>> FetchRecentlyAddedLibraryItemsAsync(
+        PlatformAuthState auth,
+        (string ServerType, string LibraryId, string LibraryName, string Category) target,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(target.ServerType, MediaServerSoundtrackConstants.PlexServer, StringComparison.OrdinalIgnoreCase))
+        {
+            return await FetchPlexRecentItemsAsync(auth.Plex, target.LibraryId, target.LibraryName, limit, cancellationToken);
+        }
+
+        if (string.Equals(target.ServerType, MediaServerSoundtrackConstants.JellyfinServer, StringComparison.OrdinalIgnoreCase))
+        {
+            return await FetchJellyfinRecentItemsAsync(auth.Jellyfin, target.LibraryId, target.LibraryName, limit, cancellationToken);
         }
 
         return new List<MediaServerContentItem>();
@@ -1874,6 +2040,78 @@ public sealed partial class MediaServerSoundtrackService
         }
 
         var items = await _jellyfinApiClient.GetLibraryItemsAsync(jellyfin.Url!, jellyfin.ApiKey!, userId, libraryId, offset, limit, cancellationToken);
+        return items
+            .Select(item => new MediaServerContentItem
+            {
+                ServerType = MediaServerSoundtrackConstants.JellyfinServer,
+                LibraryId = libraryId,
+                LibraryName = libraryName,
+                Category = MapJellyfinItemCategory(item.Type),
+                ItemId = NormalizeText(item.Id),
+                Title = NormalizeText(item.Name),
+                Year = item.ProductionYear,
+                ImageUrl = BuildJellyfinImageUrl(jellyfin.Url!, jellyfin.ApiKey!, item.Id, item.ImageTags, episodePreferred: false)
+            })
+            .Where(item => !string.IsNullOrWhiteSpace(item.Category))
+            .Where(item => !string.IsNullOrWhiteSpace(item.ItemId) && !string.IsNullOrWhiteSpace(item.Title))
+            .ToList();
+    }
+
+    private async Task<List<MediaServerContentItem>> FetchPlexRecentItemsAsync(
+        PlexAuth? plex,
+        string libraryId,
+        string libraryName,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (!HasCredentials(plex?.Url, plex?.Token))
+        {
+            return new List<MediaServerContentItem>();
+        }
+
+        var items = await _plexApiClient.GetLibraryRecentlyAddedMediaItemsAsync(plex!.Url!, plex.Token!, libraryId, limit, cancellationToken);
+        return items
+            .Select(item => new MediaServerContentItem
+            {
+                ServerType = MediaServerSoundtrackConstants.PlexServer,
+                LibraryId = libraryId,
+                LibraryName = libraryName,
+                Category = MapPlexCategory(item.Type),
+                ItemId = item.Id,
+                Title = NormalizeText(item.Title),
+                Year = item.Year,
+                ImageUrl = item.ImageUrl
+            })
+            .Where(item => !string.IsNullOrWhiteSpace(item.Category))
+            .Where(item => !string.IsNullOrWhiteSpace(item.ItemId) && !string.IsNullOrWhiteSpace(item.Title))
+            .ToList();
+    }
+
+    private async Task<List<MediaServerContentItem>> FetchJellyfinRecentItemsAsync(
+        JellyfinAuth? jellyfin,
+        string libraryId,
+        string libraryName,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (!HasCredentials(jellyfin?.Url, jellyfin?.ApiKey))
+        {
+            return new List<MediaServerContentItem>();
+        }
+
+        var userId = NormalizeText(jellyfin!.UserId);
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            var currentUser = await _jellyfinApiClient.GetCurrentUserAsync(jellyfin.Url!, jellyfin.ApiKey!, cancellationToken);
+            userId = NormalizeText(currentUser?.Id);
+        }
+
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            return new List<MediaServerContentItem>();
+        }
+
+        var items = await _jellyfinApiClient.GetLibraryRecentlyAddedItemsAsync(jellyfin.Url!, jellyfin.ApiKey!, userId, libraryId, limit, cancellationToken);
         return items
             .Select(item => new MediaServerContentItem
             {

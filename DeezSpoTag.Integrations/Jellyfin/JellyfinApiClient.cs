@@ -228,6 +228,45 @@ public class JellyfinApiClient
         return items;
     }
 
+    public async Task<List<JellyfinMediaItem>> GetLibraryRecentlyAddedItemsAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string libraryId,
+        int? maxItems = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(userId)
+            || string.IsNullOrWhiteSpace(libraryId))
+        {
+            return new List<JellyfinMediaItem>();
+        }
+
+        var pageSize = Math.Clamp(maxItems.GetValueOrDefault(100), 1, 200);
+        var query = new StringBuilder();
+        query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
+        query.Append($"?ParentId={Uri.EscapeDataString(libraryId)}");
+        query.Append("&Recursive=true");
+        query.Append("&SortBy=DateCreated");
+        query.Append("&SortOrder=Descending");
+        query.Append("&IncludeItemTypes=Movie,Series");
+        query.Append($"&Limit={pageSize}");
+        query.Append("&StartIndex=0");
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new List<JellyfinMediaItem>();
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
+        return payload?.Items ?? new List<JellyfinMediaItem>();
+    }
+
     public async Task<List<JellyfinMediaItem>> GetShowSeasonsAsync(
         string serverUrl,
         string apiKey,
