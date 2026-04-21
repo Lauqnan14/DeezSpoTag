@@ -8,7 +8,7 @@
         playlistPath: null,
         tags: ["genre", "style", "bpm", "releaseDate", "label"],
         downloadTags: ["genre", "bpm", "releaseDate", "label"],
-        gapFillTags: ["genre", "style", "bpm", "key", "releaseDate", "label", "syncedLyrics", "unsyncedLyrics"],
+        gapFillTags: ["genre", "style", "bpm", "key", "releaseDate", "label"],
         overwriteTags: [],
         separators: {
             id3: ", ",
@@ -272,6 +272,14 @@
         "unsynchronized-lyrics": "unsynced-lyrics",
         "unsynchronised-lyrics": "unsynced-lyrics"
     };
+    const LYRICS_SELECTION_TAG_KEYS = new Set([
+        "lyrics",
+        "syncedlyrics",
+        "unsyncedlyrics",
+        "ttmllyrics",
+        "syllablelyrics",
+        "timesyncedlyrics"
+    ]);
 
 
     const AUTOTAG_SELECTED_PLATFORMS_KEY = "autotag-selected-platforms";
@@ -645,10 +653,40 @@
         });
     }
 
+    function normalizeTagSelectionToken(tag) {
+        const raw = String(tag || "").trim();
+        if (!raw) {
+            return "";
+        }
+        return normalizeCapabilityToken(normalizeTagSupportKey(raw));
+    }
+
+    function isLyricsSelectionTag(tag) {
+        const token = normalizeTagSelectionToken(tag);
+        return token ? LYRICS_SELECTION_TAG_KEYS.has(token) : false;
+    }
+
+    function removeLyricsSelectionTags(tags) {
+        if (!Array.isArray(tags) || tags.length === 0) {
+            return [];
+        }
+        return tags.filter((tag) => !isLyricsSelectionTag(tag));
+    }
+
+    function getTagListForTarget(name) {
+        if (name === "downloadTags") {
+            return getDownloadTagsList();
+        }
+        if (name === "tags" || name === "gapFillTags") {
+            return TAGS.filter((tag) => !isLyricsSelectionTag(tag.tag));
+        }
+        return TAGS;
+    }
+
     function renderTags(containerId, selected, name) {
         const container = el(containerId);
         container.innerHTML = "";
-        const list = name === "downloadTags" ? getDownloadTagsList() : TAGS;
+        const list = getTagListForTarget(name);
         list.forEach((tag) => {
             const label = document.createElement("label");
             const input = document.createElement("input");
@@ -1444,6 +1482,7 @@
             return [];
         }
         return resolveDownloadTagCatalog(source).tags
+            .filter((tagId) => !isLyricsSelectionTag(tagId))
             .map((tagId) => ({
             tag: tagId,
             label: DOWNLOAD_TAG_LABELS[tagId] || tagId
@@ -1455,11 +1494,12 @@
         if (!source) {
             return [];
         }
-        return resolveDownloadTagCatalog(source).tags;
+        return resolveDownloadTagCatalog(source).tags
+            .filter((tagId) => !isLyricsSelectionTag(tagId));
     }
 
     function normalizeDownloadTags(selected) {
-        const selectedTags = Array.isArray(selected) ? selected : [];
+        const selectedTags = removeLyricsSelectionTags(Array.isArray(selected) ? selected : []);
         const allowed = getDownloadTagIds();
         if (!allowed.length) {
             return selectedTags;
@@ -1496,14 +1536,20 @@
     }
 
     function syncEnhancementTagsWithEnrichment() {
-        const enrichmentTags = Array.isArray(state.config.tags) ? state.config.tags : [];
-        const enhancementTags = Array.isArray(state.config.gapFillTags) ? state.config.gapFillTags : [];
+        const enrichmentTags = removeLyricsSelectionTags(
+            Array.isArray(state.config.tags) ? state.config.tags : []
+        );
+        const enhancementTags = removeLyricsSelectionTags(
+            Array.isArray(state.config.gapFillTags) ? state.config.gapFillTags : []
+        );
         const normalizedDownloadTags = normalizeDownloadTags(
             Array.isArray(state.config.downloadTags) ? state.config.downloadTags : []
         );
         state.config.tags = enrichmentTags;
         state.config.downloadTags = normalizedDownloadTags;
-        state.config.gapFillTags = buildMergedTagSelection(enrichmentTags, enhancementTags);
+        state.config.gapFillTags = removeLyricsSelectionTags(
+            buildMergedTagSelection(enrichmentTags, enhancementTags)
+        );
     }
 
     function isDownloadTagSupported(tagKey) {
@@ -3134,9 +3180,9 @@
         const moveSuccessLibraryId = Number.parseInt(String(config.moveSuccessLibraryFolderId ?? ""), 10);
         config.moveSuccessLibraryFolderId = Number.isFinite(moveSuccessLibraryId) ? moveSuccessLibraryId : null;
         ensureEffectivePlatforms(config);
-        config.tags = Array.isArray(config.tags) ? config.tags : [];
-        config.downloadTags = Array.isArray(config.downloadTags) ? config.downloadTags : [];
-        config.gapFillTags = Array.isArray(config.gapFillTags) ? config.gapFillTags : [];
+        config.tags = removeLyricsSelectionTags(Array.isArray(config.tags) ? config.tags : []);
+        config.downloadTags = removeLyricsSelectionTags(Array.isArray(config.downloadTags) ? config.downloadTags : []);
+        config.gapFillTags = removeLyricsSelectionTags(Array.isArray(config.gapFillTags) ? config.gapFillTags : []);
         config.overwriteTags = Array.isArray(config.overwriteTags) ? config.overwriteTags : [];
     }
 
@@ -3513,9 +3559,9 @@
     }
 
     function readTagSelectionsFromUi() {
-        state.config.tags = getCheckedTags("tags");
+        state.config.tags = removeLyricsSelectionTags(getCheckedTags("tags"));
         state.config.downloadTags = normalizeDownloadTags(getCheckedTags("downloadTags"));
-        state.config.gapFillTags = getCheckedTags("gapFillTags");
+        state.config.gapFillTags = removeLyricsSelectionTags(getCheckedTags("gapFillTags"));
         syncEnhancementTagsWithEnrichment();
         state.config.overwriteTags = getCheckedTags("overwriteTags");
     }
@@ -6842,7 +6888,7 @@
 
     function tryApplyTagAction(action, targetName) {
         const current = Array.isArray(state.config[targetName]) ? state.config[targetName] : [];
-        const list = targetName === "downloadTags" ? getDownloadTagsList() : TAGS;
+        const list = getTagListForTarget(targetName);
         if (action === "enable") {
             state.config[targetName] = list.map((t) => t.tag);
             return true;
@@ -6882,9 +6928,9 @@
             if (target instanceof HTMLInputElement
                 && target.type === "checkbox"
                 && ["tags", "downloadTags", "gapFillTags"].includes(target.name)) {
-                state.config.tags = getCheckedTags("tags");
+                state.config.tags = removeLyricsSelectionTags(getCheckedTags("tags"));
                 state.config.downloadTags = normalizeDownloadTags(getCheckedTags("downloadTags"));
-                state.config.gapFillTags = getCheckedTags("gapFillTags");
+                state.config.gapFillTags = removeLyricsSelectionTags(getCheckedTags("gapFillTags"));
                 syncEnhancementTagsWithEnrichment();
                 renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
             }
