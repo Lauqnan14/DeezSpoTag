@@ -1000,66 +1000,18 @@ public class PlexApiClient
             return new List<PlexMediaItem>();
         }
 
-        try
-        {
-            var encodedSection = Uri.EscapeDataString(sectionKey.Trim());
-            var normalizedOffset = Math.Max(offset, 0);
-            var normalizedLimit = Math.Clamp(limit.GetValueOrDefault(200), 1, 500);
-            var url = $"{serverUrl.TrimEnd('/')}/library/sections/{encodedSection}/all?X-Plex-Token={Uri.EscapeDataString(token)}&X-Plex-Container-Start={normalizedOffset}&X-Plex-Container-Size={normalizedLimit}";
-            var response = await _httpClient.GetAsync(url, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogWarning(
-                    "Failed to load Plex media items for section {SectionKey}: {StatusCode}",
-                    sectionKey,
-                    response.StatusCode);
-                return new List<PlexMediaItem>();
-            }
-
-            var content = await response.Content.ReadAsStringAsync(cancellationToken);
-            var doc = XDocument.Parse(content);
-            var mediaById = new Dictionary<string, PlexMediaItem>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var node in doc.Descendants("Video"))
-            {
-                var type = node.Attribute("type")?.Value ?? string.Empty;
-                if (!string.Equals(type, "movie", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                var mapped = MapPlexMediaItem(node, type, serverUrl, token);
-                if (!string.IsNullOrWhiteSpace(mapped.Id))
-                {
-                    mediaById[mapped.Id] = mapped;
-                }
-            }
-
-            foreach (var node in doc.Descendants(DirectoryElementName))
-            {
-                var type = node.Attribute("type")?.Value ?? string.Empty;
-                if (!string.Equals(type, "show", StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(type, "series", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                var mapped = MapPlexMediaItem(node, "show", serverUrl, token);
-                if (!string.IsNullOrWhiteSpace(mapped.Id))
-                {
-                    mediaById[mapped.Id] = mapped;
-                }
-            }
-
-            return mediaById.Values
-                .OrderBy(item => item.Title, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed reading Plex media items for section {SectionKey}", sectionKey);
-            return new List<PlexMediaItem>();
-        }
+        var normalizedOffset = Math.Max(offset, 0);
+        var normalizedLimit = Math.Clamp(limit.GetValueOrDefault(200), 1, 500);
+        return await FetchSectionMediaItemsAsync(
+            serverUrl,
+            token,
+            sectionKey,
+            pathSegment: "all",
+            offset: normalizedOffset,
+            limit: normalizedLimit,
+            operationLabel: "media items",
+            sortByTitle: true,
+            cancellationToken);
     }
 
     public async Task<List<PlexMediaItem>> GetLibraryRecentlyAddedMediaItemsAsync(
@@ -1076,16 +1028,39 @@ public class PlexApiClient
             return new List<PlexMediaItem>();
         }
 
+        var normalizedLimit = Math.Clamp(limit.GetValueOrDefault(100), 1, 500);
+        return await FetchSectionMediaItemsAsync(
+            serverUrl,
+            token,
+            sectionKey,
+            pathSegment: "recentlyAdded",
+            offset: 0,
+            limit: normalizedLimit,
+            operationLabel: "recently-added media items",
+            sortByTitle: false,
+            cancellationToken);
+    }
+
+    private async Task<List<PlexMediaItem>> FetchSectionMediaItemsAsync(
+        string serverUrl,
+        string token,
+        string sectionKey,
+        string pathSegment,
+        int offset,
+        int limit,
+        string operationLabel,
+        bool sortByTitle,
+        CancellationToken cancellationToken)
+    {
         try
         {
-            var encodedSection = Uri.EscapeDataString(sectionKey.Trim());
-            var normalizedLimit = Math.Clamp(limit.GetValueOrDefault(100), 1, 500);
-            var url = $"{serverUrl.TrimEnd('/')}/library/sections/{encodedSection}/recentlyAdded?X-Plex-Token={Uri.EscapeDataString(token)}&X-Plex-Container-Start=0&X-Plex-Container-Size={normalizedLimit}";
+            var url = BuildSectionItemsUrl(serverUrl, token, sectionKey, pathSegment, offset, limit);
             var response = await _httpClient.GetAsync(url, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning(
-                    "Failed to load Plex recently-added media items for section {SectionKey}: {StatusCode}",
+                    "Failed to load Plex {OperationLabel} for section {SectionKey}: {StatusCode}",
+                    operationLabel,
                     sectionKey,
                     response.StatusCode);
                 return new List<PlexMediaItem>();
@@ -1093,46 +1068,71 @@ public class PlexApiClient
 
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
             var doc = XDocument.Parse(content);
-            var mediaById = new Dictionary<string, PlexMediaItem>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var node in doc.Descendants("Video"))
+            var items = ParsePlexMediaItems(doc, serverUrl, token);
+            if (sortByTitle)
             {
-                var type = node.Attribute("type")?.Value ?? string.Empty;
-                if (!string.Equals(type, "movie", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                var mapped = MapPlexMediaItem(node, type, serverUrl, token);
-                if (!string.IsNullOrWhiteSpace(mapped.Id))
-                {
-                    mediaById[mapped.Id] = mapped;
-                }
+                return items
+                    .OrderBy(item => item.Title, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
             }
 
-            foreach (var node in doc.Descendants(DirectoryElementName))
-            {
-                var type = node.Attribute("type")?.Value ?? string.Empty;
-                if (!string.Equals(type, "show", StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(type, "series", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                var mapped = MapPlexMediaItem(node, "show", serverUrl, token);
-                if (!string.IsNullOrWhiteSpace(mapped.Id))
-                {
-                    mediaById[mapped.Id] = mapped;
-                }
-            }
-
-            return mediaById.Values.ToList();
+            return items;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed reading Plex recently-added media items for section {SectionKey}", sectionKey);
+            _logger.LogWarning(ex, "Failed reading Plex {OperationLabel} for section {SectionKey}", operationLabel, sectionKey);
             return new List<PlexMediaItem>();
         }
+    }
+
+    private static string BuildSectionItemsUrl(
+        string serverUrl,
+        string token,
+        string sectionKey,
+        string pathSegment,
+        int offset,
+        int limit)
+    {
+        var encodedSection = Uri.EscapeDataString(sectionKey.Trim());
+        return $"{serverUrl.TrimEnd('/')}/library/sections/{encodedSection}/{pathSegment}?X-Plex-Token={Uri.EscapeDataString(token)}&X-Plex-Container-Start={offset}&X-Plex-Container-Size={limit}";
+    }
+
+    private List<PlexMediaItem> ParsePlexMediaItems(XDocument doc, string serverUrl, string token)
+    {
+        var mediaById = new Dictionary<string, PlexMediaItem>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var node in doc.Descendants("Video"))
+        {
+            var type = node.Attribute("type")?.Value ?? string.Empty;
+            if (!string.Equals(type, "movie", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var mapped = MapPlexMediaItem(node, type, serverUrl, token);
+            if (!string.IsNullOrWhiteSpace(mapped.Id))
+            {
+                mediaById[mapped.Id] = mapped;
+            }
+        }
+
+        foreach (var node in doc.Descendants(DirectoryElementName))
+        {
+            var type = node.Attribute("type")?.Value ?? string.Empty;
+            if (!string.Equals(type, "show", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(type, "series", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var mapped = MapPlexMediaItem(node, "show", serverUrl, token);
+            if (!string.IsNullOrWhiteSpace(mapped.Id))
+            {
+                mediaById[mapped.Id] = mapped;
+            }
+        }
+
+        return mediaById.Values.ToList();
     }
 
     public async Task<List<PlexSeasonItem>> GetShowSeasonsAsync(
