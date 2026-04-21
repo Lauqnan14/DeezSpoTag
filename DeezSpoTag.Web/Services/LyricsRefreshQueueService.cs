@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Threading.Channels;
 using DeezSpoTag.Core.Models;
+using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
@@ -56,6 +57,11 @@ public sealed class LyricsRefreshQueueService : BackgroundService
     }
 
     public LyricsRefreshEnqueueResult Enqueue(IReadOnlyCollection<long> trackIds)
+        => Enqueue(trackIds, null);
+
+    public LyricsRefreshEnqueueResult Enqueue(
+        IReadOnlyCollection<long> trackIds,
+        DeezSpoTagSettings? settingsOverride)
     {
         var requested = (trackIds ?? Array.Empty<long>())
             .Where(id => id > 0)
@@ -68,9 +74,12 @@ public sealed class LyricsRefreshQueueService : BackgroundService
 
         var enqueued = 0;
         var skipped = 0;
+        var settingsJson = settingsOverride == null
+            ? null
+            : JsonSerializer.Serialize(settingsOverride);
         foreach (var trackId in requested)
         {
-            if (TryEnqueue(new QueueItem(JobTypeLyricsRefresh, trackId)))
+            if (TryEnqueue(new QueueItem(JobTypeLyricsRefresh, trackId, settingsJson)))
             {
                 enqueued++;
             }
@@ -104,7 +113,7 @@ public sealed class LyricsRefreshQueueService : BackgroundService
 
             try
             {
-                await ProcessTrackLyricsRefreshAsync(item.TrackId, stoppingToken);
+                await ProcessTrackLyricsRefreshAsync(item.TrackId, item.SettingsJson, stoppingToken);
                 lock (_queueLock)
                 {
                     _processedCount++;
@@ -130,7 +139,10 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         }
     }
 
-    private async Task ProcessTrackLyricsRefreshAsync(long trackId, CancellationToken cancellationToken)
+    private async Task ProcessTrackLyricsRefreshAsync(
+        long trackId,
+        string? settingsJson,
+        CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)
         {
@@ -145,7 +157,7 @@ public sealed class LyricsRefreshQueueService : BackgroundService
 
         var sourceLinks = await _repository.GetTrackSourceLinksAsync(trackId, cancellationToken);
         var track = BuildTrack(info, sourceLinks);
-        var settings = _settingsService.LoadSettings();
+        var settings = ResolveEffectiveSettings(settingsJson);
         if (!LyricsSettingsPolicy.CanFetchLyrics(settings))
         {
             return;
@@ -166,6 +178,27 @@ public sealed class LyricsRefreshQueueService : BackgroundService
             ArtistPath: string.Empty);
 
         await _lyricsService.SaveLyricsAsync(track, paths, settings, cancellationToken);
+    }
+
+    private DeezSpoTagSettings ResolveEffectiveSettings(string? settingsJson)
+    {
+        if (!string.IsNullOrWhiteSpace(settingsJson))
+        {
+            try
+            {
+                var parsed = JsonSerializer.Deserialize<DeezSpoTagSettings>(settingsJson);
+                if (parsed != null)
+                {
+                    return parsed;
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Failed to deserialize queued lyrics refresh settings snapshot.");
+            }
+        }
+
+        return _settingsService.LoadSettings();
     }
 
     private static Track BuildTrack(TrackAudioInfoDto info, TrackSourceLinksDto? links)
@@ -299,7 +332,7 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         File.WriteAllText(QueuePath, json);
     }
 
-    private sealed record QueueItem(string JobType, long TrackId);
+    private sealed record QueueItem(string JobType, long TrackId, string? SettingsJson = null);
 }
 
 public sealed record LyricsRefreshEnqueueResult(string JobType, int Requested, int Enqueued, int Skipped);

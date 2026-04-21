@@ -2087,6 +2087,11 @@ public class TrackDownloader
         TagSettings tagSettings,
         CancellationToken cancellationToken)
     {
+        if (!LyricsSettingsPolicy.CanFetchLyrics(settings))
+        {
+            return;
+        }
+
         if (ShouldSkipLyricsTagHydration(track, tagSettings))
         {
             return;

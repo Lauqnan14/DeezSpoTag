@@ -190,6 +190,25 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Fact]
+    public void ShouldSavePlainLyrics_DoesNotUseTagFlagsWhenSaveLyricsIsDisabled()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = false,
+            SaveLyrics = false,
+            LrcType = "unsynced-lyrics",
+            Tags = new TagSettings
+            {
+                Lyrics = true
+            }
+        };
+
+        var result = InvokeStatic<bool>("ShouldSavePlainLyrics", settings);
+
+        Assert.False(result);
+    }
+
+    [Fact]
     public void TryBuildTtmlFromSyncedLyrics_BuildsOrderedEncodedParagraphs()
     {
         var lyrics = new LyricsSource

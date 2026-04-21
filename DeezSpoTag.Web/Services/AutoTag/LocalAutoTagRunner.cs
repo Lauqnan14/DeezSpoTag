@@ -1520,8 +1520,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         bool wantsUnsynced,
         bool wantsTtml)
     {
-        var allowsSyncedBySettings = baseSettings.SyncedLyrics || baseSettings.Tags?.SyncedLyrics == true;
-        var allowsUnsyncedBySettings = baseSettings.SaveLyrics || baseSettings.Tags?.Lyrics == true;
+        var allowsSyncedBySettings = baseSettings.SyncedLyrics;
+        var allowsUnsyncedBySettings = baseSettings.SaveLyrics;
         var shouldFetchUnsyncedPayload = wantsUnsynced || wantsTtml;
         return new DeezSpoTagSettings
         {
@@ -1760,8 +1760,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         ref bool wantsUnsynced,
         ref bool wantsTtml)
     {
-        var allowsSyncedByToggle = settings.SyncedLyrics || settings.Tags?.SyncedLyrics == true;
-        var allowsUnsyncedByToggle = settings.SaveLyrics || settings.Tags?.Lyrics == true;
+        var allowsSyncedByToggle = settings.SyncedLyrics;
+        var allowsUnsyncedByToggle = settings.SaveLyrics;
         if (!allowsSyncedByToggle && !allowsUnsyncedByToggle)
         {
             wantsSynced = false;
@@ -2312,8 +2312,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         builder.Append("multiple=").Append(matchingConfig.MultipleMatches).Append(';');
         builder.Append("matchById=").Append(config.MatchById).Append(';');
         builder.Append("enableLyrics=").Append(ShouldRequestAnyLyrics(config, settings)).Append(';');
-        builder.Append("lyricsSyncedToggle=").Append(settings.SyncedLyrics || settings.Tags?.SyncedLyrics == true).Append(';');
-        builder.Append("lyricsUnsyncedToggle=").Append(settings.SaveLyrics || settings.Tags?.Lyrics == true).Append(';');
+        builder.Append("lyricsSyncedToggle=").Append(settings.SyncedLyrics).Append(';');
+        builder.Append("lyricsUnsyncedToggle=").Append(settings.SaveLyrics).Append(';');
         builder.Append("lyricsType=").Append(NormalizeCacheToken(settings.LrcType)).Append(';');
         builder.Append("lyricsFormat=").Append(NormalizeCacheToken(settings.LrcFormat)).Append(';');
         builder.Append("beatportReleaseMeta=").Append(normalizedTags.Any(tag => tag is "albumartist" or "tracktotal")).Append(';');
@@ -3682,8 +3682,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var genreAliasMap = normalizeGenreTags
             ? GenreTagAliasNormalizer.BuildAliasMap(request.Settings.GenreTagAliasRules)
             : new Dictionary<string, string>(StringComparer.Ordinal);
-        var allowsSyncedByToggle = request.Settings.SyncedLyrics || request.Settings.Tags?.SyncedLyrics == true;
-        var allowsUnsyncedByToggle = request.Settings.SaveLyrics || request.Settings.Tags?.Lyrics == true;
+        var allowsSyncedByToggle = request.Settings.SyncedLyrics;
+        var allowsUnsyncedByToggle = request.Settings.SaveLyrics;
         var allowsLyricsBySettings = allowsSyncedByToggle || allowsUnsyncedByToggle;
         var selectedLyricsTypes = ParseLyricsTypeSelection(request.Settings.LrcType);
         var allowsSyncedType = allowsSyncedByToggle
