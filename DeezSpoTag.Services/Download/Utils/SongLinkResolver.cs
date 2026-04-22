@@ -60,6 +60,7 @@ public sealed class SongLinkResolver
     private readonly DeezSpoTag.Services.Metadata.Qobuz.IQobuzMetadataService? _qobuzMetadataService;
     private readonly QobuzTrackResolver? _qobuzTrackResolver;
     private readonly QobuzApiConfig _qobuzConfig;
+    private readonly SongLinkPersistentCacheStore? _persistentCacheStore;
     private readonly ILogger<SongLinkResolver> _logger;
     private readonly SemaphoreSlim _rateGate = new(1, 1);
     private readonly ConcurrentDictionary<string, CacheEntry> _cache = new(StringComparer.OrdinalIgnoreCase);
@@ -72,13 +73,15 @@ public sealed class SongLinkResolver
         DeezSpoTag.Services.Metadata.Qobuz.IQobuzMetadataService? qobuzMetadataService,
         QobuzTrackResolver? qobuzTrackResolver,
         IOptions<QobuzApiConfig>? qobuzOptions,
-        ILogger<SongLinkResolver> logger)
+        ILogger<SongLinkResolver> logger,
+        SongLinkPersistentCacheStore? persistentCacheStore = null)
     {
         _httpClientFactory = httpClientFactory;
         _qobuzMetadataService = qobuzMetadataService;
         _qobuzTrackResolver = qobuzTrackResolver;
         _qobuzConfig = qobuzOptions?.Value ?? new QobuzApiConfig();
         _logger = logger;
+        _persistentCacheStore = persistentCacheStore;
     }
 
     /// <summary>
@@ -131,25 +134,33 @@ public sealed class SongLinkResolver
             return null;
         }
 
-        var deezerTrackIdFromUrl = ExtractId(DeezerPlatform, null, url);
+        var normalizedUrl = NormalizeCacheUrl(url);
+        var deezerTrackIdFromUrl = ExtractId(DeezerPlatform, null, normalizedUrl);
 
-        if (TryGetFromCache(url, userCountry, out var cached))
+        if (TryGetFromCache(normalizedUrl, userCountry, out var cached))
         {
             return cached;
+        }
+
+        var persistentCached = await TryGetFromPersistentCacheAsync(normalizedUrl, userCountry, cancellationToken);
+        if (persistentCached != null)
+        {
+            CacheResult(normalizedUrl, userCountry, persistentCached);
+            return persistentCached;
         }
 
         await EnforceRateLimitAsync(cancellationToken);
         using var client = _httpClientFactory.CreateClient("SongLink");
         var requestOutcome = await FetchSongLinkPayloadAsync(
             client,
-            BuildSongLinkApiUrl(url, userCountry),
+            BuildSongLinkApiUrl(normalizedUrl, userCountry),
             cancellationToken);
 
         var payload = requestOutcome.Payload;
         if (payload?.LinksByPlatform == null || payload.EntitiesByUniqueId == null)
         {
             return await HandleMissingPayloadAsync(
-                url,
+                normalizedUrl,
                 userCountry,
                 deezerTrackIdFromUrl,
                 requestOutcome.SkipNegativeCache,
@@ -157,7 +168,8 @@ public sealed class SongLinkResolver
         }
 
         var result = await BuildSongLinkResultAsync(payload, cancellationToken);
-        CacheResult(url, userCountry, result);
+        CacheResult(normalizedUrl, userCountry, result);
+        await CacheResultInPersistentStoreAsync(normalizedUrl, userCountry, result, cancellationToken);
         return result;
     }
 
@@ -246,6 +258,7 @@ public sealed class SongLinkResolver
         {
             var deezerOnly = await BuildDeezerOnlyResultAsync(deezerTrackIdFromUrl, cancellationToken);
             CacheResult(url, userCountry, deezerOnly);
+            await CacheResultInPersistentStoreAsync(url, userCountry, deezerOnly, cancellationToken);
             return deezerOnly;
         }
 
@@ -255,6 +268,56 @@ public sealed class SongLinkResolver
         }
 
         return null;
+    }
+
+    private async Task<SongLinkResult?> TryGetFromPersistentCacheAsync(
+        string normalizedUrl,
+        string? userCountry,
+        CancellationToken cancellationToken)
+    {
+        if (_persistentCacheStore == null)
+        {
+            return null;
+        }
+
+        var cacheKey = BuildCacheKey(normalizedUrl, userCountry);
+        try
+        {
+            return await _persistentCacheStore.TryGetAsync(cacheKey, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Persistent song-link cache lookup failed for key {CacheKey}", cacheKey);
+            }
+            return null;
+        }
+    }
+
+    private async Task CacheResultInPersistentStoreAsync(
+        string normalizedUrl,
+        string? userCountry,
+        SongLinkResult? result,
+        CancellationToken cancellationToken)
+    {
+        if (_persistentCacheStore == null || result == null)
+        {
+            return;
+        }
+
+        var cacheKey = BuildCacheKey(normalizedUrl, userCountry);
+        try
+        {
+            await _persistentCacheStore.UpsertAsync(cacheKey, normalizedUrl, userCountry, result, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Persistent song-link cache upsert failed for key {CacheKey}", cacheKey);
+            }
+        }
     }
 
     private async Task HandleSongLinkRateLimitAsync(
@@ -1497,6 +1560,41 @@ public sealed class SongLinkResolver
     {
         var country = userCountry?.Trim().ToUpperInvariant() ?? string.Empty;
         return $"{country}|{url.Trim()}";
+    }
+
+    private static string NormalizeCacheUrl(string url)
+    {
+        var trimmed = url.Trim();
+        if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+        {
+            return trimmed;
+        }
+
+        if (!uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase)
+            && !uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
+        {
+            return trimmed;
+        }
+
+        var builder = new UriBuilder(uri)
+        {
+            Scheme = uri.Scheme.ToLowerInvariant(),
+            Host = uri.Host.ToLowerInvariant(),
+            Fragment = string.Empty
+        };
+        if ((builder.Scheme == "http" && builder.Port == 80)
+            || (builder.Scheme == "https" && builder.Port == 443))
+        {
+            builder.Port = -1;
+        }
+
+        var path = builder.Path;
+        if (!string.IsNullOrEmpty(path) && path.Length > 1)
+        {
+            builder.Path = path.TrimEnd('/');
+        }
+
+        return builder.Uri.AbsoluteUri;
     }
 
     private sealed record SongLinkRequestOutcome(SongLinkEnvelope? Payload, bool SkipNegativeCache);

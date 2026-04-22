@@ -306,6 +306,19 @@ CREATE TABLE IF NOT EXISTS spotify_metadata_cache (
 
 CREATE INDEX IF NOT EXISTS idx_spotify_metadata_cache_fetched ON spotify_metadata_cache (fetched_utc);
 
+CREATE TABLE IF NOT EXISTS song_link_cache (
+    cache_key TEXT NOT NULL PRIMARY KEY,
+    normalized_url TEXT NOT NULL,
+    user_country TEXT,
+    result_json TEXT NOT NULL,
+    last_used_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_song_link_cache_last_used ON song_link_cache (last_used_at);
+CREATE INDEX IF NOT EXISTS idx_song_link_cache_url_country ON song_link_cache (normalized_url, user_country);
+
 CREATE TABLE IF NOT EXISTS artist_watchlist (
     artist_id BIGINT NOT NULL UNIQUE,
     artist_name TEXT NOT NULL,
