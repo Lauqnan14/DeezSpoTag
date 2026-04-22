@@ -77,8 +77,34 @@ public sealed class FfmpegConversionService
         await process.WaitForExitAsync(cancellationToken);
         var stderr = await process.StandardError.ReadToEndAsync(cancellationToken);
 
-        if (process.ExitCode != 0 || !File.Exists(outputPath))
+        var outputExists = File.Exists(outputPath);
+        var outputHasContent = false;
+        if (outputExists)
         {
+            try
+            {
+                outputHasContent = new FileInfo(outputPath).Length > 0;
+            }
+            catch (Exception)
+            {
+                outputHasContent = false;
+            }
+        }
+
+        if (process.ExitCode != 0 || !outputHasContent)
+        {
+            if (outputExists)
+            {
+                try
+                {
+                    File.Delete(outputPath);
+                }
+                catch (Exception)
+                {
+                    // best effort cleanup
+                }
+            }
+
             _logger.LogWarning("FFmpeg conversion failed: {Input} -> {Output}. Error: {Error}", inputPath, outputPath, stderr);
             return ConversionResult.Failed(stderr);
         }
@@ -193,10 +219,18 @@ public sealed class FfmpegConversionService
             "-y",
             "-i", Quote(inputPath),
             "-map", "0:a",
-            "-map", "0:v?",
-            "-map_metadata", "0",
-            "-c:v", "copy"
+            "-map_metadata", "0"
         };
+
+        var preserveAttachedArtwork = format is "mp3" or M4aAacFormat or M4aAlacFormat;
+        if (preserveAttachedArtwork)
+        {
+            args.AddRange(new[]
+            {
+                "-map", "0:v?",
+                "-c:v", "copy"
+            });
+        }
 
         switch (format)
         {

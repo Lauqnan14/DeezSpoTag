@@ -2401,10 +2401,12 @@ public sealed class AutoTagDownloadMoveService
             }
         }
 
-        // Payloads always maintain final destination/source maps after completion.
-        // Use the map keys as an additional source list so move pass stays robust
-        // even when legacy payloads miss filePath/files arrays.
-        CollectFinalDestinationSourcePaths(rootPath, root, files, roots);
+        // Use final destination/source maps only as a legacy fallback when explicit
+        // payload paths are absent. This avoids stale path contamination from old rows.
+        if (files.Count == 0 && roots.Count == 0)
+        {
+            CollectFinalDestinationSourcePaths(rootPath, root, files, roots);
+        }
     }
 
     private static void CollectFinalDestinationSourcePaths(
@@ -3035,15 +3037,9 @@ public sealed class AutoTagDownloadMoveService
                 continue;
             }
 
-            var trackedNames = trackedPaths
-                .Select(Path.GetFileName)
-                .Where(name => !string.IsNullOrWhiteSpace(name))
-                .Select(name => name!)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
             foreach (var transition in transitions)
             {
-                if (!IsTrackedTransitionMatch(trackedPaths, trackedNames, transition))
+                if (!IsTrackedTransitionMatch(trackedPaths, transition))
                 {
                     continue;
                 }
@@ -3058,17 +3054,12 @@ public sealed class AutoTagDownloadMoveService
 
     private static bool IsTrackedTransitionMatch(
         HashSet<string> trackedPaths,
-        HashSet<string> trackedNames,
         KeyValuePair<string, string> transition)
     {
         var sourcePath = DownloadPathResolver.NormalizeDisplayPath(transition.Key);
         var destinationPath = DownloadPathResolver.NormalizeDisplayPath(transition.Value);
-        var sourceName = Path.GetFileName(sourcePath);
-        var destinationName = Path.GetFileName(destinationPath);
         return trackedPaths.Contains(sourcePath)
-            || trackedPaths.Contains(destinationPath)
-            || (!string.IsNullOrWhiteSpace(sourceName) && trackedNames.Contains(sourceName))
-            || (!string.IsNullOrWhiteSpace(destinationName) && trackedNames.Contains(destinationName));
+            || trackedPaths.Contains(destinationPath);
     }
 
     private static Dictionary<string, string> GetOrCreateQueueTransitions(
