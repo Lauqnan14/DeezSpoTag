@@ -1358,6 +1358,9 @@ let spotifyMatchState = null;
 let spotifyMatchCompletion = null;
 let spotifyMatchFailureToastShown = false;
 let externalMatchState = null;
+const tracklistNoticeAutoHideMs = 15000;
+let tracklistNoticeAutoHideTimer = null;
+let tracklistNoticeAutoHideKey = '';
 const spotifyMatchCache = new Map();
 let spotifyMatchTimer = null;
 let spotifyLazyTimer = null;
@@ -1976,6 +1979,7 @@ function resetSpotifyState() {
     spotifyMatchCompletion = null;
     spotifyMatchFailureToastShown = false;
     externalMatchState = null;
+    clearTracklistNoticeAutoHide();
     spotifyMatchCache.clear();
     spotifyRecommendationState = null;
     boomplayRecommendationState = null;
@@ -1988,6 +1992,50 @@ function resetSpotifyState() {
     externalResolverScheduler.queueHigh.length = 0;
     externalResolverScheduler.queueLow.length = 0;
     updateSpotifyNotice();
+}
+
+function clearTracklistNoticeAutoHide() {
+    if (tracklistNoticeAutoHideTimer) {
+        clearTimeout(tracklistNoticeAutoHideTimer);
+        tracklistNoticeAutoHideTimer = null;
+    }
+    tracklistNoticeAutoHideKey = '';
+}
+
+function scheduleTracklistNoticeAutoHide(messageKey) {
+    const key = String(messageKey || '').trim();
+    if (!key) {
+        clearTracklistNoticeAutoHide();
+        return;
+    }
+
+    if (tracklistNoticeAutoHideTimer && tracklistNoticeAutoHideKey === key) {
+        return;
+    }
+
+    if (tracklistNoticeAutoHideTimer) {
+        clearTimeout(tracklistNoticeAutoHideTimer);
+    }
+
+    tracklistNoticeAutoHideKey = key;
+    tracklistNoticeAutoHideTimer = setTimeout(() => {
+        tracklistNoticeAutoHideTimer = null;
+        tracklistNoticeAutoHideKey = '';
+
+        const hasActiveSpotifyLoad = !!(spotifyLazyState && (spotifyLazyState.isLoading || spotifyLazyState.hasMore));
+        const hasActiveBoomplayLoad = !!(boomplayLazyState && (boomplayLazyState.isLoading || boomplayLazyState.hasMore));
+        const hasActiveSpotifyMatch = !!spotifyMatchState;
+        const hasActiveExternalMatch = !!(externalMatchState && !externalMatchState.done && (externalMatchState.pending || 0) > 0);
+        if (hasActiveSpotifyLoad || hasActiveBoomplayLoad || hasActiveSpotifyMatch || hasActiveExternalMatch) {
+            return;
+        }
+
+        spotifyMatchCompletion = null;
+        if (externalMatchState?.done) {
+            externalMatchState = null;
+        }
+        showTracklistNotice('');
+    }, tracklistNoticeAutoHideMs);
 }
 
 async function loadTracklist() {
@@ -2216,7 +2264,7 @@ function finalizeBoomplayExternalMatchState() {
                 externalMatchState = null;
                 updateSpotifyNotice();
             }
-        }, 3000);
+        }, tracklistNoticeAutoHideMs);
     }
 }
 
@@ -3449,7 +3497,10 @@ function normalizeSpotifyMatchNoticeState(state) {
 
 function updateSpotifyNotice() {
     const parts = [];
+    let hasActiveWork = false;
+    let hasCompletionOnlyState = false;
     if (spotifyLazyState && (spotifyLazyState.isLoading || spotifyLazyState.hasMore)) {
+        hasActiveWork = true;
         const total = spotifyLazyState.total || 0;
         const loaded = spotifyLazyState.loaded || 0;
         const progress = total > 0
@@ -3459,6 +3510,7 @@ function updateSpotifyNotice() {
     }
 
     if (boomplayLazyState && (boomplayLazyState.isLoading || boomplayLazyState.hasMore)) {
+        hasActiveWork = true;
         const total = boomplayLazyState.total || 0;
         const loaded = boomplayLazyState.loaded || 0;
         const progress = total > 0
@@ -3468,6 +3520,7 @@ function updateSpotifyNotice() {
     }
 
     if (spotifyMatchState) {
+        hasActiveWork = true;
         const normalizedMatchState = normalizeSpotifyMatchNoticeState(spotifyMatchState);
         const remaining = typeof normalizedMatchState?.pending === 'number' ? normalizedMatchState.pending : null;
         const matched = typeof normalizedMatchState?.matched === 'number' ? normalizedMatchState.matched : null;
@@ -3484,6 +3537,7 @@ function updateSpotifyNotice() {
             }
         }
     } else if (spotifyMatchCompletion) {
+        hasCompletionOnlyState = true;
         parts.push(spotifyMatchCompletion);
     }
 
@@ -3493,18 +3547,28 @@ function updateSpotifyNotice() {
         const failed = externalMatchState.failed || 0;
         const source = externalMatchState.source || 'External';
         if (remaining > 0) {
+            hasActiveWork = true;
             parts.push(`Matching Deezer tracks… ${remaining} remaining (${matched} matched, ${failed} failed).`);
         } else if (externalMatchState.done) {
+            hasCompletionOnlyState = true;
             parts.push(`Matching complete: ${matched} matched, ${failed} failed.`);
         }
     }
 
     if (parts.length === 0) {
+        clearTracklistNoticeAutoHide();
         showTracklistNotice('');
         return;
     }
 
-    showTracklistNotice(parts.join(' • '));
+    const message = parts.join(' • ');
+    showTracklistNotice(message);
+    if (hasActiveWork || !hasCompletionOnlyState) {
+        clearTracklistNoticeAutoHide();
+        return;
+    }
+
+    scheduleTracklistNoticeAutoHide(message);
 }
 
 function setTracksEmptyMessage(message) {
