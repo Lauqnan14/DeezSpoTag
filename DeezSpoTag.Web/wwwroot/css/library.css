@@ -5544,9 +5544,7 @@
     display: block;
 }
 
-.artist-page #spotifyTopTracksList .top-song-item:hover .top-song-item__play,
-.artist-page #spotifyTopTracksList .top-song-item:focus-within .top-song-item__play,
-.artist-page #spotifyTopTracksList .top-song-item__play.is-playing {
+.artist-page #spotifyTopTracksList .top-song-item:hover .top-song-item__play {
     opacity: 1;
     visibility: visible;
     pointer-events: auto;
@@ -5559,9 +5557,6 @@
 }
 
 .artist-page #spotifyTopTracksList .top-song-item__play.is-starting {
-    opacity: 1;
-    visibility: visible;
-    pointer-events: auto;
     color: var(--primary-color);
     background: color-mix(in srgb, var(--primary-color) 10%, transparent);
     animation: playback-request-pulse 0.9s ease-in-out infinite;

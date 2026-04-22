@@ -20,7 +20,7 @@
     }
 
     async function bootstrapAlbumPage() {
-        const page = document.querySelector('.library-album-page[data-album-id]');
+        const page = document.querySelector('.album-page[data-album-id], .library-album-page[data-album-id]');
         if (!page) {
             return;
         }
