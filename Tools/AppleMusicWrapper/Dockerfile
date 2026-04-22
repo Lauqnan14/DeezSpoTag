@@ -20,8 +20,8 @@ ENV WRAPPER_ARGS="-H 0.0.0.0 -D 10020 -M 20020 -A 30020" \
 COPY Tools/AppleMusicWrapper/runtime/app /opt/apple-wrapper
 
 WORKDIR /opt/apple-wrapper
-ARG WRAPPER_BUNDLE_URL_X86_64=https://github.com/WorldObservationLog/wrapper/releases/download/Wrapper.x86_64.1dac7bb/Wrapper.x86_64.1dac7bb.zip
-ARG WRAPPER_BUNDLE_URL_ARM64=https://github.com/WorldObservationLog/wrapper/releases/download/Wrapper.arm64.latest/Wrapper.arm64.e338fa6.zip
+ARG WRAPPER_BUNDLE_URL_X86_64=https://github.com/WorldObservationLog/wrapper/releases/download/wrapper.x86_64.latest/Wrapper.x86_64.latest.zip
+ARG WRAPPER_BUNDLE_URL_ARM64=https://github.com/WorldObservationLog/wrapper/releases/download/wrapper.arm64.latest/Wrapper.arm64.latest.zip
 ARG ANDROID_TZDATA_URL=https://android.googlesource.com/platform/bionic/+/e5cabca516252addb5e305c8e1e0f35cafbcafbe/libc/zoneinfo/tzdata?format=TEXT
 ARG TARGETARCH
 
@@ -32,12 +32,35 @@ RUN set -eux; \
       cp -a /opt/apple-wrapper/rootfs/rootfs/* /opt/apple-wrapper/rootfs/; \
     fi; \
     case "$TARGETARCH" in \
-      amd64) bundle_url="$WRAPPER_BUNDLE_URL_X86_64" ;; \
-      arm64) bundle_url="$WRAPPER_BUNDLE_URL_ARM64" ;; \
+      amd64) \
+        bundle_candidates="$WRAPPER_BUNDLE_URL_X86_64 https://github.com/WorldObservationLog/wrapper/releases/download/wrapper.x86_64.latest/Wrapper.x86_64.latest.zip" ;; \
+      arm64) \
+        bundle_candidates="$WRAPPER_BUNDLE_URL_ARM64 https://github.com/WorldObservationLog/wrapper/releases/download/wrapper.arm64.latest/Wrapper.arm64.latest.zip" ;; \
       *) echo "Unsupported TARGETARCH for wrapper bundle: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
     tmpdir="$(mktemp -d)"; \
-    curl -fL -o "$tmpdir/wrapper.zip" "$bundle_url"; \
+    bundle_url=""; \
+    seen_candidates=""; \
+    for candidate in $bundle_candidates; do \
+      [ -n "$candidate" ] || continue; \
+      case " $seen_candidates " in \
+        *" $candidate "*) continue ;; \
+      esac; \
+      seen_candidates="$seen_candidates $candidate"; \
+      if [ "$candidate" = "$bundle_url" ]; then \
+        continue; \
+      fi; \
+      echo "Attempting wrapper bundle download: $candidate"; \
+      if curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 300 -o "$tmpdir/wrapper.zip" "$candidate"; then \
+        bundle_url="$candidate"; \
+        break; \
+      fi; \
+    done; \
+    if [ -z "$bundle_url" ]; then \
+      echo "Failed to download wrapper bundle for TARGETARCH=$TARGETARCH" >&2; \
+      echo "Candidates: $bundle_candidates" >&2; \
+      exit 1; \
+    fi; \
     unzip -q "$tmpdir/wrapper.zip" -d "$tmpdir/unpack"; \
     main_path="$(find "$tmpdir/unpack" -type f -path '*/rootfs/system/bin/main' -print -quit)"; \
     if [ -z "$main_path" ]; then \
@@ -80,7 +103,7 @@ RUN set -eux; \
     mknod -m 666 /opt/apple-wrapper/rootfs/dev/ptmx c 5 2; \
     cp -a /usr/share/zoneinfo/. /opt/apple-wrapper/rootfs/usr/share/zoneinfo/; \
     cp -a /usr/share/zoneinfo/. /opt/apple-wrapper/rootfs/system/usr/share/zoneinfo/; \
-    curl -fsSL "$ANDROID_TZDATA_URL" | base64 -d > /opt/apple-wrapper/rootfs/system/usr/share/zoneinfo/tzdata; \
+    curl -fSL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 120 "$ANDROID_TZDATA_URL" | base64 -d > /opt/apple-wrapper/rootfs/system/usr/share/zoneinfo/tzdata; \
     cp -f /opt/apple-wrapper/rootfs/system/usr/share/zoneinfo/tzdata /opt/apple-wrapper/rootfs/usr/share/zoneinfo/tzdata; \
     cp -f /opt/apple-wrapper/rootfs/system/usr/share/zoneinfo/tzdata /opt/apple-wrapper/rootfs/apex/com.android.tzdata/etc/tz/tzdata; \
     cp -f /usr/share/zoneinfo/UTC /opt/apple-wrapper/rootfs/etc/localtime; \
