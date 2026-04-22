@@ -1286,6 +1286,11 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             return (false, "missing_librespot_blob");
         }
 
+        if (!await _blobService.IsLibrespotBlobAsync(librespotBlobPath, cancellationToken))
+        {
+            return (false, "invalid_librespot_blob");
+        }
+
         try
         {
             var librespotToken = await _blobService.GetWebApiAccessTokenAsync(

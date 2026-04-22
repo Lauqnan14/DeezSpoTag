@@ -376,14 +376,14 @@ public sealed class SpotifySearchService
 
     private async Task<SearchContext?> BuildLibrespotContextAsync(CancellationToken cancellationToken)
     {
-        var blobPath = await TryResolveActiveWebPlayerBlobPathAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(blobPath))
+        var webPlayerBlobPath = await TryResolveActiveWebPlayerBlobPathAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(webPlayerBlobPath))
         {
             return null;
         }
 
         // Try web player token first (uses blob cookies directly, no Librespot)
-        var webPlayerToken = await _blobService.GetWebPlayerTokenInfoAsync(blobPath, cancellationToken);
+        var webPlayerToken = await _blobService.GetWebPlayerTokenInfoAsync(webPlayerBlobPath, cancellationToken);
         if (!string.IsNullOrWhiteSpace(webPlayerToken?.AccessToken))
         {
             var market = await ResolveMarketAsync();
@@ -394,11 +394,17 @@ public sealed class SpotifySearchService
                     webPlayerToken.AccessToken.Length,
                     market);
             }
-            return new SearchContext(webPlayerToken.AccessToken, market, "webplayer", blobPath, null, null, null);
+            return new SearchContext(webPlayerToken.AccessToken, market, "webplayer", webPlayerBlobPath, null, null, null);
+        }
+
+        var librespotBlobPath = await TryResolveActiveLibrespotBlobPathAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(librespotBlobPath))
+        {
+            return null;
         }
 
         // Fallback to Librespot if web player token fails
-        var tokenResult = await _blobService.GetWebApiAccessTokenAsync(blobPath, cancellationToken: cancellationToken);
+        var tokenResult = await _blobService.GetWebApiAccessTokenAsync(librespotBlobPath, cancellationToken: cancellationToken);
         if (string.IsNullOrWhiteSpace(tokenResult.AccessToken))
         {
             return null;
@@ -412,7 +418,7 @@ public sealed class SpotifySearchService
                 tokenResult.AccessToken.Length,
                 fallbackMarket);
         }
-        return new SearchContext(tokenResult.AccessToken, fallbackMarket, "librespot", blobPath, null, null, null);
+        return new SearchContext(tokenResult.AccessToken, fallbackMarket, "librespot", librespotBlobPath, null, null, null);
     }
 
     private async Task<string> ResolveMarketAsync()
@@ -486,6 +492,47 @@ public sealed class SpotifySearchService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Failed to resolve Spotify blob path.");
+        }
+
+        return null;
+    }
+
+    private async Task<string?> TryResolveActiveLibrespotBlobPathAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var userState = await TryLoadUserSpotifyStateAsync();
+            if (!string.IsNullOrWhiteSpace(userState?.ActiveAccount))
+            {
+                var account = userState.Accounts.FirstOrDefault(a =>
+                    a.Name.Equals(userState.ActiveAccount, StringComparison.OrdinalIgnoreCase));
+                var userCandidate = account?.LibrespotBlobPath ?? account?.BlobPath;
+                if (!string.IsNullOrWhiteSpace(userCandidate)
+                    && _blobService.BlobExists(userCandidate)
+                    && await _blobService.IsLibrespotBlobAsync(userCandidate, cancellationToken))
+                {
+                    return userCandidate;
+                }
+            }
+
+            var platformState = await _platformAuthService.LoadAsync();
+            var active = platformState.Spotify?.ActiveAccount;
+            if (!string.IsNullOrWhiteSpace(active))
+            {
+                var account = platformState.Spotify!.Accounts.FirstOrDefault(a =>
+                    a.Name.Equals(active, StringComparison.OrdinalIgnoreCase));
+                var platformCandidate = account?.LibrespotBlobPath ?? account?.BlobPath;
+                if (!string.IsNullOrWhiteSpace(platformCandidate)
+                    && _blobService.BlobExists(platformCandidate)
+                    && await _blobService.IsLibrespotBlobAsync(platformCandidate, cancellationToken))
+                {
+                    return platformCandidate;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to resolve Spotify librespot credentials.");
         }
 
         return null;

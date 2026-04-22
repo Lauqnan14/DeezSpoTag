@@ -4676,13 +4676,14 @@ public class AutoTagService
 
             var active = spotify.Accounts.FirstOrDefault(a =>
                 a.Name.Equals(spotify.ActiveAccount, StringComparison.OrdinalIgnoreCase));
-            if (active == null || string.IsNullOrWhiteSpace(active.BlobPath))
+            var blobPath = active?.LibrespotBlobPath ?? active?.BlobPath;
+            if (string.IsNullOrWhiteSpace(blobPath))
             {
                 return;
             }
 
-            var blobPath = active.BlobPath;
-            if (!_spotifyBlobService.BlobExists(blobPath))
+            if (!_spotifyBlobService.BlobExists(blobPath)
+                || !await _spotifyBlobService.IsLibrespotBlobAsync(blobPath))
             {
                 return;
             }
