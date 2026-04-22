@@ -73,6 +73,7 @@ public static class DownloadServiceExtensions
         services.AddSingleton<DownloadMoveService>();
         services.AddScoped<Download.Utils.TrackEnrichmentService>();
         services.AddScoped<SearchFallbackService>();
+        services.AddSingleton<SongLinkPersistentCacheStore>();
         services.AddSingleton<SongLinkResolver>();
         services.AddSingleton<EngineFallbackCoordinator>();
         services.AddSingleton<DeezerIsrcResolver>();

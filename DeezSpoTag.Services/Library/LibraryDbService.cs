@@ -28,6 +28,7 @@ public sealed class LibraryDbService
     private const string LibraryTable = "library";
     private const string DownloadBlocklistTable = "download_blocklist";
     private const string TrackShazamCacheTable = "track_shazam_cache";
+    private const string SongLinkCacheTable = "song_link_cache";
     private const string TextType = "TEXT";
     private const string IntegerType = "INTEGER";
     private const string BigIntType = "BIGINT";
@@ -59,6 +60,8 @@ public sealed class LibraryDbService
             ["idx_download_blocklist_normalized"] = (DownloadBlocklistTable, "normalized_value, is_enabled", false),
             ["idx_track_shazam_cache_status"] = (TrackShazamCacheTable, "status", false),
             ["idx_track_shazam_cache_scanned"] = (TrackShazamCacheTable, "scanned_at_utc", false),
+            ["idx_song_link_cache_last_used"] = (SongLinkCacheTable, "last_used_at", false),
+            ["idx_song_link_cache_url_country"] = (SongLinkCacheTable, "normalized_url, user_country", false),
             ["idx_album_artist_id"] = (AlbumTable, ArtistIdColumn, false),
             ["idx_track_album_id"] = (TrackTable, AlbumIdColumn, false),
             ["idx_track_local_audio_file_id"] = (TrackLocalTable, "audio_file_id", false),
@@ -239,6 +242,18 @@ CREATE TABLE IF NOT EXISTS playlist_track_candidate_cache (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source, source_id)
 );", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS song_link_cache (
+    cache_key TEXT NOT NULL PRIMARY KEY,
+    normalized_url TEXT NOT NULL,
+    user_country TEXT,
+    result_json TEXT NOT NULL,
+    last_used_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);", cancellationToken);
+        await EnsureIndexAsync(connection, "idx_song_link_cache_last_used", SongLinkCacheTable, "last_used_at", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_song_link_cache_url_country", SongLinkCacheTable, "normalized_url, user_country", unique: false, cancellationToken);
         await BackfillColumnFromLegacyAsync(connection, PlaylistWatchlistTable, SourceIdColumn, ExternalIdColumn, cancellationToken);
         await BackfillColumnFromLegacyAsync(connection, PlaylistWatchPreferencesTable, SourceIdColumn, ExternalIdColumn, cancellationToken);
         await BackfillColumnFromLegacyAsync(connection, PlaylistWatchStateTable, SourceIdColumn, ExternalIdColumn, cancellationToken);
