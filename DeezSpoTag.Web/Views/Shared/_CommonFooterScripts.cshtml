@@ -23,33 +23,16 @@
     window.DeezSpoTagAppInstanceId = '@AppInstanceIdProvider.InstanceId';
 </script>
 <script>
-    const isLocalHost = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
     if ("serviceWorker" in navigator) {
         window.addEventListener("load", function () {
-            if (isLocalHost) {
-                navigator.serviceWorker.getRegistrations()
-                    .then(function (registrations) {
-                        return Promise.all((registrations || []).map(function (registration) {
-                            return registration.unregister();
-                        }));
-                    })
-                    .catch(function () {
-                    });
-                if (window.caches && typeof window.caches.keys === "function") {
-                    window.caches.keys()
-                        .then(function (keys) {
-                            return Promise.all((keys || []).map(function (key) {
-                                return window.caches.delete(key);
-                            }));
-                        })
-                        .catch(function () {
-                        });
-                }
-                return;
-            }
-
-            navigator.serviceWorker.register("/sw.js").catch(function () {
-            });
+            navigator.serviceWorker.register("/sw.js")
+                .then(function (registration) {
+                    if (registration && typeof registration.update === "function") {
+                        registration.update();
+                    }
+                })
+                .catch(function () {
+                });
         });
     }
 </script>

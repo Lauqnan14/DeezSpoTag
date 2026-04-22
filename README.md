@@ -21,6 +21,7 @@ DeezSpoTag automates music workflows end-to-end:
 5. Organizes output into your library structure.
 6. Allows manual tagging and lyrics editing
 7. Sync artist's avatar, background art and background information from Spotify to your preferred media server
+8. Recognize music using the intergrated Shazam by tapping on the logo 
 
 ---
 

@@ -16,6 +16,13 @@ public sealed class ShazamRecognitionService
     private static readonly TimeSpan RuntimeProbeSuccessCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan RuntimeProbeFailureRetryTtl = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan RuntimeBootstrapCooldown = TimeSpan.FromMinutes(3);
+    private const string ToolsDirectory = "Tools";
+    private const string ShazamPortDirectory = "shazam_port";
+    private static readonly string[] BashExecutableCandidates =
+    {
+        "/usr/bin/bash",
+        "/bin/bash"
+    };
     private const int ProbeProcessTimeoutMs = 10000;
     private const int BootstrapTimeoutMs = 300000;
     private static readonly Regex TrackIdRegex = new(@"/track/(?<id>\d+)", RegexOptions.IgnoreCase | RegexOptions.Compiled, RegexTimeout);
@@ -311,7 +318,7 @@ public sealed class ShazamRecognitionService
 
     private string GetRecognizerScriptPath()
     {
-        return Path.Combine(_environment.ContentRootPath, "Tools", "shazam_port", "recognize.py");
+        return Path.Combine(_environment.ContentRootPath, ToolsDirectory, ShazamPortDirectory, "recognize.py");
     }
 
     private string ResolvePythonExecutable()
@@ -322,13 +329,12 @@ public sealed class ShazamRecognitionService
             return explicitPython;
         }
 
-        var shazamRuntimeRoot = Path.Combine(_environment.ContentRootPath, "Tools", "shazam_port", ".venv");
-        foreach (var candidate in EnumeratePythonCandidates(shazamRuntimeRoot))
+        var shazamRuntimeRoot = Path.Combine(_environment.ContentRootPath, ToolsDirectory, ShazamPortDirectory, ".venv");
+        var runtimeCandidate = EnumeratePythonCandidates(shazamRuntimeRoot)
+            .FirstOrDefault(File.Exists);
+        if (!string.IsNullOrWhiteSpace(runtimeCandidate))
         {
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
+            return runtimeCandidate;
         }
 
         var vibePython = Environment.GetEnvironmentVariable("VIBE_ANALYZER_PYTHON");
@@ -337,13 +343,12 @@ public sealed class ShazamRecognitionService
             return vibePython;
         }
 
-        var localVenvRoot = Path.Combine(_environment.ContentRootPath, "Tools", "venv");
-        foreach (var candidate in EnumeratePythonCandidates(localVenvRoot))
+        var localVenvRoot = Path.Combine(_environment.ContentRootPath, ToolsDirectory, "venv");
+        var localCandidate = EnumeratePythonCandidates(localVenvRoot)
+            .FirstOrDefault(File.Exists);
+        if (!string.IsNullOrWhiteSpace(localCandidate))
         {
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
+            return localCandidate;
         }
 
         return "python3";
@@ -554,9 +559,15 @@ public sealed class ShazamRecognitionService
         }
 
         var bootstrapPython = ResolveBootstrapPythonExecutable();
+        var bashExecutable = ResolveBashExecutable();
+        if (string.IsNullOrWhiteSpace(bashExecutable))
+        {
+            error = "Unable to locate bash executable in expected system paths.";
+            return false;
+        }
         var startInfo = new ProcessStartInfo
         {
-            FileName = "bash",
+            FileName = bashExecutable,
             WorkingDirectory = Path.GetDirectoryName(setupScriptPath) ?? _environment.ContentRootPath,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -618,7 +629,13 @@ public sealed class ShazamRecognitionService
 
     private string GetRuntimeSetupScriptPath()
     {
-        return Path.Combine(_environment.ContentRootPath, "Tools", "shazam_port", "setup_runtime.sh");
+        return Path.Combine(_environment.ContentRootPath, ToolsDirectory, ShazamPortDirectory, "setup_runtime.sh");
+    }
+
+    private static string? ResolveBashExecutable()
+    {
+        return BashExecutableCandidates
+            .FirstOrDefault(File.Exists);
     }
 
     private string ResolveBootstrapPythonExecutable()
