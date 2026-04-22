@@ -47,11 +47,6 @@
                 <i class="fas fa-heart me-2"></i>Favorites
             </button>
         </li>
-        <li class="nav-item">
-            <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings-content" type="button" role="tab" aria-controls="settings-content" aria-selected="false">
-                <i class="fas fa-cog me-2"></i>Settings
-            </button>
-        </li>
     </ul>
 
     <div class="tab-content" id="mediaManagementTabsContent">
@@ -277,56 +272,6 @@
             </div>
         </div>
 
-        <!-- Settings Tab -->
-        <div class="tab-pane fade" id="settings-content" role="tabpanel" aria-labelledby="settings-tab">
-            <div class="card bg-darker border-secondary">
-                <div class="card-header">
-                    <h5 class="mb-0">
-                        <i class="fas fa-cog me-2"></i>Settings
-                    </h5>
-                </div>
-                <div class="card-body">
-                    <p class="text-muted mb-4">Configure your DeezSpoTag preferences</p>
-
-                    <div class="mm-section">
-                        <div class="mm-section-header">
-                            <h2>Library Settings</h2>
-                            <p>Control fuzzy matching and folder scope.</p>
-                        </div>
-                        <div class="mm-card">
-                            <div class="mm-form">
-                                <div class="form-row">
-                                    <label for="fuzzyThreshold">Fuzzy threshold</label>
-                                    <input id="fuzzyThreshold" type="number" min="0" max="1" step="0.01" />
-                                    <small>Lower values match more aggressively. Recommended 0.80–0.90.</small>
-                                </div>
-                                <div class="form-row inline">
-                                    <label for="includeAllFolders">Include all folders</label>
-                                    <input id="includeAllFolders" type="checkbox" />
-                                </div>
-                                <div class="form-actions">
-                                    <button id="saveSettings" class="btn btn-primary action-btn">Save Settings</button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="mm-section">
-                        <div class="mm-section-header">
-                            <h2>Media Operations</h2>
-                            <p>Operational tools are managed in Activities.</p>
-                        </div>
-                        <div class="mm-card">
-                            <p class="text-muted mb-3">
-                                Meloday, Artist Metadata Updater, Quality Scanner, and Media Server Scan are available in the
-                                <strong>Activities → Media Operations</strong> tab.
-                            </p>
-                            <a class="btn btn-primary action-btn" asp-controller="Activities" asp-action="Index">Open Activities</a>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
     </div>
 </div>
 

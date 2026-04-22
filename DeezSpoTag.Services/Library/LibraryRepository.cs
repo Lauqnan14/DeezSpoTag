@@ -998,19 +998,17 @@ WHERE id IN (SELECT id FROM missing_audio_file);";
     {
         await EnsureSettingsRowAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = "SELECT fuzzy_threshold, include_all_folders, live_preview_ingest, enable_signal_analysis FROM library_settings WHERE id = 1;";
+        const string sql = "SELECT live_preview_ingest, enable_signal_analysis FROM library_settings WHERE id = 1;";
         await using var command = new SqliteCommand(sql, connection);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (await reader.ReadAsync(cancellationToken))
         {
-            var threshold = await reader.IsDBNullAsync(0, cancellationToken) ? 0.85m : Convert.ToDecimal(reader.GetDouble(0));
-            var includeAll = !await reader.IsDBNullAsync(1, cancellationToken) && reader.GetBoolean(1);
-            var livePreviewIngest = !await reader.IsDBNullAsync(2, cancellationToken) && reader.GetBoolean(2);
-            var enableSignalAnalysis = !await reader.IsDBNullAsync(3, cancellationToken) && reader.GetBoolean(3);
-            return new LibrarySettingsDto(threshold, includeAll, livePreviewIngest, enableSignalAnalysis);
+            var livePreviewIngest = !await reader.IsDBNullAsync(0, cancellationToken) && reader.GetBoolean(0);
+            var enableSignalAnalysis = !await reader.IsDBNullAsync(1, cancellationToken) && reader.GetBoolean(1);
+            return new LibrarySettingsDto(livePreviewIngest, enableSignalAnalysis);
         }
 
-        return new LibrarySettingsDto(0.85m, true, false, false);
+        return new LibrarySettingsDto(false, false);
     }
 
     public async Task<LibrarySettingsDto> UpdateSettingsAsync(LibrarySettingsDto settings, CancellationToken cancellationToken = default)
@@ -1019,15 +1017,11 @@ WHERE id IN (SELECT id FROM missing_audio_file);";
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 UPDATE library_settings
-SET fuzzy_threshold = @threshold,
-    include_all_folders = @includeAll,
-    live_preview_ingest = @livePreviewIngest,
+SET live_preview_ingest = @livePreviewIngest,
     enable_signal_analysis = @enableSignalAnalysis,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = 1;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("threshold", (double)settings.FuzzyThreshold);
-        command.Parameters.AddWithValue("includeAll", settings.IncludeAllFolders);
         command.Parameters.AddWithValue("livePreviewIngest", settings.LivePreviewIngest);
         command.Parameters.AddWithValue("enableSignalAnalysis", settings.EnableSignalAnalysis);
         await command.ExecuteNonQueryAsync(cancellationToken);

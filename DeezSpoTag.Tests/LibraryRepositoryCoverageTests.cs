@@ -88,15 +88,12 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.Equal(220, scanRead.TrackCount);
 
         var defaultSettings = await _repository.GetSettingsAsync();
-        Assert.True(defaultSettings.IncludeAllFolders);
+        Assert.False(defaultSettings.LivePreviewIngest);
+        Assert.False(defaultSettings.EnableSignalAnalysis);
 
         var updatedSettings = await _repository.UpdateSettingsAsync(new LibrarySettingsDto(
-            FuzzyThreshold: 0.92m,
-            IncludeAllFolders: false,
             LivePreviewIngest: true,
             EnableSignalAnalysis: true));
-        Assert.Equal(0.92m, updatedSettings.FuzzyThreshold);
-        Assert.False(updatedSettings.IncludeAllFolders);
         Assert.True(updatedSettings.LivePreviewIngest);
         Assert.True(updatedSettings.EnableSignalAnalysis);
 
