@@ -359,6 +359,53 @@
     border-color: transparent;
     transform: translateY(-2px);
 }
+.spotify-home-skeleton-card {
+    cursor: default;
+    pointer-events: none;
+    transform: none !important;
+}
+.home-section--spotify-skeleton .home-section-title {
+    color: color-mix(in srgb, var(--text-secondary) 90%, var(--text-primary));
+}
+.spotify-home-skeleton-card__image,
+.spotify-home-skeleton-card__line {
+    position: relative;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--bg-tertiary) 82%, var(--border-primary));
+}
+.spotify-home-skeleton-card__image::after,
+.spotify-home-skeleton-card__line::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+        90deg,
+        transparent,
+        color-mix(in srgb, var(--text-muted) 18%, transparent),
+        transparent
+    );
+    animation: spotify-home-skeleton-shimmer 1.3s ease-in-out infinite;
+}
+.spotify-home-skeleton-card__image {
+    border-radius: 12px;
+}
+.spotify-home-skeleton-card__line {
+    border-radius: 8px;
+    height: 12px;
+    margin-top: 8px;
+}
+.spotify-home-skeleton-card__line--title {
+    width: 78%;
+}
+.spotify-home-skeleton-card__line--meta {
+    width: 52%;
+}
+@keyframes spotify-home-skeleton-shimmer {
+    100% {
+        transform: translateX(100%);
+    }
+}
 .playlist-image {
     width: 100%;
     aspect-ratio: 1 / 1;

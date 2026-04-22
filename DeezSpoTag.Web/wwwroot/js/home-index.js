@@ -38,6 +38,12 @@ let spotifyHomeItemSeq = 0;
 let homeTrendingWatchSeq = 0;
 let spotifyBrowseCategoriesCache = null;
 let spotifyBrowseCategoriesLoading = false;
+let homeLoadRequestSeq = 0;
+const SPOTIFY_HOME_SECTIONS_CACHE_KEY = 'deezspotag:home:spotify-sections:v1';
+const SPOTIFY_HOME_SECTIONS_CACHE_TTL_MS = 1000 * 60 * 20;
+const SPOTIFY_HOME_SKELETON_SECTION_TITLES = ['Spotify Picks', 'Spotify New Releases'];
+const SPOTIFY_HOME_SKELETON_CARD_COUNT = 6;
+const SPOTIFY_HOME_SKELETON_MAX_WAIT_MS = 5000;
 const homeTrendingPreviewState = {
     trackKey: null,
     button: null,
@@ -950,8 +956,101 @@ async function performUnifiedSearch() {
 }
 
 // Load popular content
+function mergeSpotifySectionsIntoHomeSections(baseSections, spotifySections) {
+    if (!Array.isArray(baseSections) || baseSections.length === 0) {
+        return Array.isArray(spotifySections) ? [...spotifySections] : [];
+    }
+    if (!Array.isArray(spotifySections) || spotifySections.length === 0) {
+        return [...baseSections];
+    }
+
+    const insertAfter = 'discover';
+    const insertIndex = baseSections.findIndex((section) => {
+        const title = (section?.title || '').toString().trim().toLowerCase();
+        return title === insertAfter;
+    });
+    if (insertIndex >= 0) {
+        return [
+            ...baseSections.slice(0, insertIndex + 1),
+            ...spotifySections,
+            ...baseSections.slice(insertIndex + 1)
+        ];
+    }
+
+    return [...baseSections, ...spotifySections];
+}
+
+function normalizeSpotifyHomeSections(sections) {
+    if (!Array.isArray(sections)) {
+        return [];
+    }
+    return sections
+        .filter(section => section && typeof section === 'object')
+        .map(section => ({ ...section, source: 'spotify' }));
+}
+
+function readSpotifyHomeSectionsCache() {
+    try {
+        if (!globalThis.localStorage) {
+            return [];
+        }
+        const raw = globalThis.localStorage.getItem(SPOTIFY_HOME_SECTIONS_CACHE_KEY);
+        if (!raw) {
+            return [];
+        }
+        const payload = JSON.parse(raw);
+        if (!payload || typeof payload !== 'object') {
+            return [];
+        }
+        const cachedAt = Number(payload.cachedAt || 0);
+        if (!Number.isFinite(cachedAt) || cachedAt <= 0) {
+            return [];
+        }
+        if ((Date.now() - cachedAt) > SPOTIFY_HOME_SECTIONS_CACHE_TTL_MS) {
+            globalThis.localStorage.removeItem(SPOTIFY_HOME_SECTIONS_CACHE_KEY);
+            return [];
+        }
+        return normalizeSpotifyHomeSections(payload.sections);
+    } catch (error) {
+        console.warn('Failed to read Spotify home cache:', error);
+        return [];
+    }
+}
+
+function writeSpotifyHomeSectionsCache(sections) {
+    try {
+        if (!globalThis.localStorage || !Array.isArray(sections) || sections.length === 0) {
+            return;
+        }
+        const payload = {
+            cachedAt: Date.now(),
+            sections
+        };
+        globalThis.localStorage.setItem(SPOTIFY_HOME_SECTIONS_CACHE_KEY, JSON.stringify(payload));
+    } catch (error) {
+        console.warn('Failed to write Spotify home cache:', error);
+    }
+}
+
+function buildSpotifyHomeSkeletonSections() {
+    return SPOTIFY_HOME_SKELETON_SECTION_TITLES.map((title, sectionIndex) => ({
+        title,
+        source: 'spotify',
+        layout: 'grid',
+        __spotifySkeleton: true,
+        items: Array.from({ length: SPOTIFY_HOME_SKELETON_CARD_COUNT }, (_, itemIndex) => ({
+            type: 'playlist',
+            source: 'spotify',
+            title: `${title} loading ${itemIndex + 1}`,
+            __homeAction: 'spotify-skeleton-card',
+            id: `spotify-skeleton-${sectionIndex + 1}-${itemIndex + 1}`
+        }))
+    }));
+}
+
 async function loadHomeData() {
     try {
+        const requestId = ++homeLoadRequestSeq;
         const urlParams = new URLSearchParams(globalThis.location.search);
         const channel = urlParams.get('channel');
         const refresh = urlParams.get('refresh');
@@ -959,7 +1058,13 @@ async function loadHomeData() {
 
         console.log('Loading home data...');
         let spotifySectionsPromise = null;
+        let cachedSpotifySections = [];
+        let fallbackSpotifySkeletonSections = [];
         if (!channel) {
+            cachedSpotifySections = readSpotifyHomeSectionsCache();
+            if (cachedSpotifySections.length === 0) {
+                fallbackSpotifySkeletonSections = buildSpotifyHomeSkeletonSections();
+            }
             const tz = encodeURIComponent(getBrowserTimeZone());
             spotifySectionsPromise = fetch(`/api/spotify/home-feed/sections?timeZone=${tz}`)
                 .then(async (response) => {
@@ -985,38 +1090,66 @@ async function loadHomeData() {
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
-        
+
         const data = await response.json();
+        if (requestId !== homeLoadRequestSeq) {
+            return;
+        }
         console.log('Home data received:', data);
 
-        let sections = data.sections || [];
-        if (spotifySectionsPromise !== null) {
-            const spotifySections = (await spotifySectionsPromise)
-                .map(section => ({ ...section, source: 'spotify' }));
-            if (spotifySections.length > 0) {
-                const insertAfter = 'discover';
-                const insertIndex = sections.findIndex(sec => {
-                    const title = (sec?.title || '').toString().trim().toLowerCase();
-                    return title === insertAfter;
-                });
-                if (insertIndex >= 0) {
-                    sections = [
-                        ...sections.slice(0, insertIndex + 1),
-                        ...spotifySections,
-                        ...sections.slice(insertIndex + 1)
-                    ];
-                } else {
-                    sections = [...sections, ...spotifySections];
-                }
+        const sections = Array.isArray(data?.sections) ? data.sections : [];
+        let firstPassSections = [...sections];
+        if (!channel) {
+            const initialSpotifySections = cachedSpotifySections.length > 0
+                ? cachedSpotifySections
+                : fallbackSpotifySkeletonSections;
+            if (initialSpotifySections.length > 0) {
+                firstPassSections = mergeSpotifySectionsIntoHomeSections(firstPassSections, initialSpotifySections);
             }
         }
 
-        renderHomeSections(sections);
+        renderHomeSections(firstPassSections);
         observeLazyImages(document.getElementById('home-sections'));
 
+        let skeletonFallbackTimer = 0;
+        if (fallbackSpotifySkeletonSections.length > 0) {
+            skeletonFallbackTimer = globalThis.setTimeout(() => {
+                if (requestId !== homeLoadRequestSeq) {
+                    return;
+                }
+                const container = document.getElementById('home-sections');
+                if (!container || !container.querySelector('.home-section--spotify-skeleton')) {
+                    return;
+                }
+                renderHomeSections(sections);
+                observeLazyImages(container);
+            }, SPOTIFY_HOME_SKELETON_MAX_WAIT_MS);
+        }
+
+        if (spotifySectionsPromise !== null) {
+            const spotifySections = normalizeSpotifyHomeSections(await spotifySectionsPromise);
+            if (skeletonFallbackTimer) {
+                globalThis.clearTimeout(skeletonFallbackTimer);
+            }
+            if (requestId !== homeLoadRequestSeq) {
+                return;
+            }
+            if (spotifySections.length > 0) {
+                writeSpotifyHomeSectionsCache(spotifySections);
+                const mergedSections = mergeSpotifySectionsIntoHomeSections(sections, spotifySections);
+                renderHomeSections(mergedSections);
+                observeLazyImages(document.getElementById('home-sections'));
+            } else if (fallbackSpotifySkeletonSections.length > 0) {
+                renderHomeSections(sections);
+                observeLazyImages(document.getElementById('home-sections'));
+            }
+        }
     } catch (error) {
         console.error('Error loading home data:', error);
-        document.getElementById('home-sections').innerHTML = '<div class="empty-section">Failed to load home sections</div>';
+        const container = document.getElementById('home-sections');
+        if (container && !container.querySelector('.home-section')) {
+            container.innerHTML = '<div class="empty-section">Failed to load home sections</div>';
+        }
     }
 }
 
@@ -1189,6 +1322,9 @@ function renderHomeSectionCardItem(item, meta) {
     if (item?.__homeAction === 'popular-radio-see-more') {
         return renderPopularRadioSeeMoreCard();
     }
+    if (item?.__homeAction === 'spotify-skeleton-card') {
+        return renderSpotifyHomeSkeletonCard();
+    }
     if (!meta.hasFilter) {
         if (meta.isDiscover) {
             return renderDiscoveryItem(item);
@@ -1266,8 +1402,12 @@ function renderHomeSectionEntry(entry, index, isChannelPage) {
         : '';
     const deezerItemsAttr = topGenres ? topGenres.deezerItemsAttr : '';
 
+    const sectionClassName = section?.__spotifySkeleton === true
+        ? 'home-section home-section--spotify-skeleton'
+        : 'home-section';
+
     return `
-        <div class="home-section"${sectionIdAttr}>
+        <div class="${sectionClassName}"${sectionIdAttr}>
             ${titleHtml}
             ${filtersHtml}
             <div class="${rowClass}" ${rowStyle} ${deezerItemsAttr}>
@@ -1808,6 +1948,16 @@ function renderPopularRadioSeeMoreCard() {
             <div class="playlist-title"><span class="home-marquee">Popular Radio</span></div>
             <div class="playlist-meta"><span class="home-marquee">Open full list</span></div>
         </a>
+    `;
+}
+
+function renderSpotifyHomeSkeletonCard() {
+    return `
+        <div class="playlist-card playlist-card--playlist spotify-home-skeleton-card" aria-hidden="true">
+            <div class="playlist-image spotify-home-skeleton-card__image"></div>
+            <div class="spotify-home-skeleton-card__line spotify-home-skeleton-card__line--title"></div>
+            <div class="spotify-home-skeleton-card__line spotify-home-skeleton-card__line--meta"></div>
+        </div>
     `;
 }
 
@@ -2806,11 +2956,13 @@ async function checkAutoLogin() {
         // EXACT PORT: Handle auto-login like deezspotag main.ts
         if (data.autologin && data.singleUser?.hasStoredCredentials) {
             console.log('Auto-login required, attempting server-side auto-login...');
-            await attemptAutoLogin();
+            const result = await attemptAutoLogin();
+            return result?.status === 1 || result?.status === 2 || result?.status === 3;
         }
-        
+        return false;
     } catch (error) {
         console.error('Error checking auto-login:', error);
+        return false;
     }
 }
 
@@ -2845,9 +2997,10 @@ async function attemptAutoLogin() {
             // Unknown status
             console.log('Auto-login failed with unknown status:', result);
         }
-        
+        return result;
     } catch (error) {
         console.error('Error during auto-login:', error);
+        return null;
     }
 }
 
@@ -2855,15 +3008,19 @@ async function attemptAutoLogin() {
 document.addEventListener('DOMContentLoaded', async function() {
     const urlParams = new URLSearchParams(globalThis.location.search);
     const isChannelPage = !!urlParams.get('channel');
-    // EXACT PORT: Check auto-login first like deezspotag
-    await checkAutoLogin();
     setHomeGreeting();
-    // Then load home data
+    // Start home render immediately; avoid blocking first paint on connect/auth checks.
     try {
         await loadHomeData();
     } catch (error) {
         console.error('Home data load failed:', error);
     }
+    // Run auto-login in background and refresh home once if credentials were hydrated.
+    void checkAutoLogin().then((wasAuthenticated) => {
+        if (wasAuthenticated) {
+            void loadHomeData();
+        }
+    });
     if (!isChannelPage) {
         // Load Spotify home feed and browse categories in parallel for faster rendering
         loadSpotifyCategoriesForMerge().catch(err => console.warn('Spotify content load error:', err));

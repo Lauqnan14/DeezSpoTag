@@ -10,6 +10,10 @@
     });
     var _csrfRequestToken = _antiforgery.GetAndStoreTokens(Context).RequestToken ?? string.Empty;
     var _isLoginPage = Context.Request.Path.StartsWithSegments("/Login", StringComparison.OrdinalIgnoreCase);
+    var _controllerName = ViewContext.RouteData.Values["controller"]?.ToString() ?? string.Empty;
+    var _actionName = ViewContext.RouteData.Values["action"]?.ToString() ?? string.Empty;
+    var _isHomeIndexPage = string.Equals(_controllerName, "Home", StringComparison.OrdinalIgnoreCase)
+        && string.Equals(_actionName, "Index", StringComparison.OrdinalIgnoreCase);
 }
 <!DOCTYPE html>
 <html lang="en">
@@ -792,7 +796,7 @@
         ViewData["IncludeSignalR"] = !_isLoginPage;
     }
     <partial name="_CommonFooterScripts" />
-    @if (!_isLoginPage)
+    @if (!_isLoginPage && !_isHomeIndexPage)
     {
         <script src="~/js/download-logger.js" asp-append-version="true"></script>
         <script src="~/js/download.js" asp-append-version="true"></script>
