@@ -2268,12 +2268,12 @@ async function ensureLibrarySpotifyButtonReadyForPlayback(button, url, options =
 
     const notifyOnUnmatched = options?.notifyOnUnmatched !== false;
     const existingDeezerId = String(button.dataset.deezerId || '').trim();
-    if (existingDeezerId) {
-        if (!/^\d+$/.test(existingDeezerId)) {
-            button.dataset.deezerId = '';
-        } else {
-            return true;
-        }
+    const hasValidExistingDeezerId = /^\d+$/.test(existingDeezerId);
+    if (existingDeezerId && hasValidExistingDeezerId) {
+        return true;
+    }
+    if (existingDeezerId && !hasValidExistingDeezerId) {
+        button.dataset.deezerId = '';
     }
 
     const spotifyUrl = normalizeSpotifyTrackSourceUrl(String(url || button.dataset.spotifyUrl || '').trim());
@@ -3402,9 +3402,12 @@ function normalizePagedArtistsResponse(payload, baseParams, page, pageSize) {
         };
     }
 
-    const rawItems = Array.isArray(payload?.items)
-        ? payload.items
-        : (Array.isArray(payload?.Items) ? payload.Items : []);
+    let rawItems = [];
+    if (Array.isArray(payload?.items)) {
+        rawItems = payload.items;
+    } else if (Array.isArray(payload?.Items)) {
+        rawItems = payload.Items;
+    }
     const totalCountValue = payload?.totalCount ?? payload?.TotalCount;
     const totalCount = Number.isFinite(Number(totalCountValue))
         ? Number(totalCountValue)
@@ -4695,7 +4698,7 @@ function scheduleSpotifyTopTrackPreviewWarmup() {
 
 function extractSpotifyTopTrackIdFromUrl(url) {
     const parsed = spotifyUrlHelpers.parseSpotifyUrl(url);
-    if (!parsed || parsed.type !== 'track') {
+    if (parsed?.type !== 'track') {
         return '';
     }
     return String(parsed.id || '').trim();
@@ -5142,9 +5145,12 @@ function buildSpotifyPreviewPendingQueue(list, options = {}) {
     }
     const visibleCount = pendingQueue.reduce((count, entry) => count + (entry.isVisible ? 1 : 0), 0);
     const adaptiveVisibleLimit = Math.max(16, Math.min(24, visibleCount + 4));
-    const effectiveLimit = visibleFirstOnly
-        ? (limit > 0 ? Math.max(Math.trunc(limit), adaptiveVisibleLimit) : adaptiveVisibleLimit)
-        : (limit > 0 ? Math.max(1, Math.trunc(limit)) : 0);
+    let effectiveLimit = 0;
+    if (visibleFirstOnly) {
+        effectiveLimit = limit > 0 ? Math.max(Math.trunc(limit), adaptiveVisibleLimit) : adaptiveVisibleLimit;
+    } else {
+        effectiveLimit = limit > 0 ? Math.max(1, Math.trunc(limit)) : 0;
+    }
     if (effectiveLimit > 0) {
         pendingQueue = pendingQueue.slice(0, effectiveLimit);
     }
@@ -5156,10 +5162,6 @@ async function primeSpotifyTrackPreviews(options = {}) {
     if (!list) {
         return;
     }
-    const requestedConcurrency = Number(options?.concurrency || 4);
-    const concurrency = Number.isFinite(requestedConcurrency)
-        ? Math.max(1, Math.min(10, Math.trunc(requestedConcurrency)))
-        : 4;
     const pendingQueue = buildSpotifyPreviewPendingQueue(list, options);
     if (pendingQueue.length === 0) {
         return;

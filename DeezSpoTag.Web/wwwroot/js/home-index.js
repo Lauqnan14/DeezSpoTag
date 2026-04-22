@@ -456,7 +456,7 @@ function computeWarmupVisibleLimit(queue, requestedLimit, defaults = {}) {
 
 function extractHomeTrendingSpotifyTrackId(url) {
     const parsed = spotifyUrlHelpers.parseSpotifyUrl(url);
-    if (!parsed || parsed.type !== 'track') {
+    if (parsed?.type !== 'track') {
         return '';
     }
     return String(parsed.id || '').trim();
@@ -505,6 +505,13 @@ function applyHomeTrendingPlaylistMatches(matches) {
             }
         }
     });
+}
+
+function computeHomeTrendingEffectiveLimit(visibleFirstOnly, limit, pending) {
+    if (!visibleFirstOnly) {
+        return limit > 0 ? Math.max(1, Math.trunc(limit)) : 0;
+    }
+    return computeWarmupVisibleLimit(pending, limit, { minBase: 16, maxCap: 24, headroom: 4 });
 }
 
 async function pollHomeTrendingPlaylistMatches(token) {
@@ -632,10 +639,6 @@ async function primeHomeTrendingTrackMappings(options = {}) {
     const limit = Number(options?.limit || 0);
     const visibleFirst = options?.visibleFirst !== false;
     const visibleFirstOnly = options?.visibleFirstOnly === true;
-    const requestedConcurrency = Number(options?.concurrency || 4);
-    const concurrency = Number.isFinite(requestedConcurrency)
-        ? Math.max(1, Math.min(10, Math.trunc(requestedConcurrency)))
-        : 4;
 
     const buttons = getHomeTrendingMappingButtons();
     if (buttons.length === 0) {
@@ -667,9 +670,7 @@ async function primeHomeTrendingTrackMappings(options = {}) {
     if (visibleFirstOnly) {
         pending = pending.filter((entry) => entry.isVisible);
     }
-    const effectiveLimit = visibleFirstOnly
-        ? computeWarmupVisibleLimit(pending, limit, { minBase: 16, maxCap: 24, headroom: 4 })
-        : (limit > 0 ? Math.max(1, Math.trunc(limit)) : 0);
+    const effectiveLimit = computeHomeTrendingEffectiveLimit(visibleFirstOnly, limit, pending);
     if (effectiveLimit > 0) {
         pending = pending.slice(0, effectiveLimit);
     }
@@ -760,12 +761,12 @@ async function ensureHomeTrendingButtonReadyForPlayback(playButton, options = {}
     const spotifyUrl = String(playButton.dataset.spotifyUrl || '').trim();
     const previewUrl = String(playButton.dataset.previewUrl || '').trim();
     const existingDeezerId = String(playButton.dataset.deezerId || '').trim();
-    if (existingDeezerId) {
-        if (!/^\d+$/.test(existingDeezerId)) {
-            playButton.dataset.deezerId = '';
-        } else {
-            return true;
-        }
+    const hasValidExistingDeezerId = /^\d+$/.test(existingDeezerId);
+    if (existingDeezerId && hasValidExistingDeezerId) {
+        return true;
+    }
+    if (existingDeezerId && !hasValidExistingDeezerId) {
+        playButton.dataset.deezerId = '';
     }
 
     if (!spotifyUrl) {
@@ -1296,6 +1297,127 @@ function buildSpotifyHomeSkeletonSections() {
     }));
 }
 
+function createSpotifyHomeBootstrapState(channel) {
+    if (channel) {
+        return {
+            spotifySectionsPromise: null,
+            cachedSpotifySections: [],
+            fallbackSpotifySkeletonSections: []
+        };
+    }
+
+    const cachedSpotifySections = readSpotifyHomeSectionsCache();
+    const fallbackSpotifySkeletonSections = cachedSpotifySections.length === 0
+        ? buildSpotifyHomeSkeletonSections()
+        : [];
+    return {
+        spotifySectionsPromise: fetchSpotifyHomeSections(),
+        cachedSpotifySections,
+        fallbackSpotifySkeletonSections
+    };
+}
+
+function fetchSpotifyHomeSections() {
+    const tz = encodeURIComponent(getBrowserTimeZone());
+    return fetch(`/api/spotify/home-feed/sections?timeZone=${tz}`)
+        .then(async (response) => {
+            if (!response.ok) {
+                return [];
+            }
+            const payload = await response.json();
+            return Array.isArray(payload?.sections) ? payload.sections : [];
+        })
+        .catch((error) => {
+            console.warn('Spotify home sections merge failed:', error);
+            return [];
+        });
+}
+
+function buildHomeRequestUrl(channel, refreshEnabled) {
+    const baseUrl = channel ? `/api/home?channel=${encodeURIComponent(channel)}` : '/api/home';
+    const requestUrl = new URL(baseUrl, globalThis.location.origin);
+    if (refreshEnabled) {
+        requestUrl.searchParams.set('refresh', '1');
+    }
+    return requestUrl.toString();
+}
+
+async function fetchHomeSections(channel, refreshEnabled) {
+    const requestUrl = buildHomeRequestUrl(channel, refreshEnabled);
+    const response = await fetch(requestUrl, { cache: 'no-store' });
+    if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const data = await response.json();
+    return Array.isArray(data?.sections) ? data.sections : [];
+}
+
+function mergeInitialHomeSections(baseSections, channel, cachedSpotifySections, fallbackSpotifySkeletonSections) {
+    if (channel) {
+        return [...baseSections];
+    }
+    const initialSpotifySections = cachedSpotifySections.length > 0
+        ? cachedSpotifySections
+        : fallbackSpotifySkeletonSections;
+    if (initialSpotifySections.length === 0) {
+        return [...baseSections];
+    }
+    return mergeSpotifySectionsIntoHomeSections(baseSections, initialSpotifySections);
+}
+
+function renderHomeSectionsWithLazyImages(sections) {
+    renderHomeSections(sections);
+    observeLazyImages(document.getElementById('home-sections'));
+}
+
+function scheduleHomeSpotifySkeletonFallback(requestId, sections, fallbackSpotifySkeletonSections) {
+    if (fallbackSpotifySkeletonSections.length === 0) {
+        return 0;
+    }
+
+    return globalThis.setTimeout(() => {
+        if (requestId !== homeLoadRequestSeq) {
+            return;
+        }
+        const container = document.getElementById('home-sections');
+        if (!container?.querySelector('.home-section--spotify-skeleton')) {
+            return;
+        }
+        renderHomeSections(sections);
+        observeLazyImages(container);
+    }, SPOTIFY_HOME_SKELETON_MAX_WAIT_MS);
+}
+
+async function applySpotifyHomeSectionsSecondPass(
+    requestId,
+    sections,
+    spotifySectionsPromise,
+    fallbackSpotifySkeletonSections,
+    skeletonFallbackTimer) {
+    if (spotifySectionsPromise === null) {
+        return;
+    }
+
+    const spotifySections = normalizeSpotifyHomeSections(await spotifySectionsPromise);
+    if (skeletonFallbackTimer) {
+        globalThis.clearTimeout(skeletonFallbackTimer);
+    }
+    if (requestId !== homeLoadRequestSeq) {
+        return;
+    }
+
+    if (spotifySections.length > 0) {
+        writeSpotifyHomeSectionsCache(spotifySections);
+        const mergedSections = mergeSpotifySectionsIntoHomeSections(sections, spotifySections);
+        renderHomeSectionsWithLazyImages(mergedSections);
+        return;
+    }
+
+    if (fallbackSpotifySkeletonSections.length > 0) {
+        renderHomeSectionsWithLazyImages(sections);
+    }
+}
+
 async function loadHomeData() {
     try {
         const requestId = ++homeLoadRequestSeq;
@@ -1305,93 +1427,31 @@ async function loadHomeData() {
         const refreshEnabled = refresh === '1' || refresh === 'true' || refresh === 'yes';
 
         console.log('Loading home data...');
-        let spotifySectionsPromise = null;
-        let cachedSpotifySections = [];
-        let fallbackSpotifySkeletonSections = [];
-        if (!channel) {
-            cachedSpotifySections = readSpotifyHomeSectionsCache();
-            if (cachedSpotifySections.length === 0) {
-                fallbackSpotifySkeletonSections = buildSpotifyHomeSkeletonSections();
-            }
-            const tz = encodeURIComponent(getBrowserTimeZone());
-            spotifySectionsPromise = fetch(`/api/spotify/home-feed/sections?timeZone=${tz}`)
-                .then(async (response) => {
-                    if (!response.ok) {
-                        return [];
-                    }
-                    const payload = await response.json();
-                    return Array.isArray(payload?.sections) ? payload.sections : [];
-                })
-                .catch((error) => {
-                    console.warn('Spotify home sections merge failed:', error);
-                    return [];
-                });
-        }
-
-        const baseUrl = channel ? `/api/home?channel=${encodeURIComponent(channel)}` : '/api/home';
-        const requestUrl = new URL(baseUrl, globalThis.location.origin);
-        if (refreshEnabled) {
-            requestUrl.searchParams.set('refresh', '1');
-        }
-        const response = await fetch(requestUrl.toString(), { cache: 'no-store' });
-        
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const data = await response.json();
+        const { spotifySectionsPromise, cachedSpotifySections, fallbackSpotifySkeletonSections } =
+            createSpotifyHomeBootstrapState(channel);
+        const sections = await fetchHomeSections(channel, refreshEnabled);
         if (requestId !== homeLoadRequestSeq) {
             return;
         }
-        console.log('Home data received:', data);
+        console.log('Home data received:', { sectionsCount: sections.length });
 
-        const sections = Array.isArray(data?.sections) ? data.sections : [];
-        let firstPassSections = [...sections];
-        if (!channel) {
-            const initialSpotifySections = cachedSpotifySections.length > 0
-                ? cachedSpotifySections
-                : fallbackSpotifySkeletonSections;
-            if (initialSpotifySections.length > 0) {
-                firstPassSections = mergeSpotifySectionsIntoHomeSections(firstPassSections, initialSpotifySections);
-            }
-        }
+        const firstPassSections = mergeInitialHomeSections(
+            sections,
+            channel,
+            cachedSpotifySections,
+            fallbackSpotifySkeletonSections);
+        renderHomeSectionsWithLazyImages(firstPassSections);
 
-        renderHomeSections(firstPassSections);
-        observeLazyImages(document.getElementById('home-sections'));
-
-        let skeletonFallbackTimer = 0;
-        if (fallbackSpotifySkeletonSections.length > 0) {
-            skeletonFallbackTimer = globalThis.setTimeout(() => {
-                if (requestId !== homeLoadRequestSeq) {
-                    return;
-                }
-                const container = document.getElementById('home-sections');
-                if (!container || !container.querySelector('.home-section--spotify-skeleton')) {
-                    return;
-                }
-                renderHomeSections(sections);
-                observeLazyImages(container);
-            }, SPOTIFY_HOME_SKELETON_MAX_WAIT_MS);
-        }
-
-        if (spotifySectionsPromise !== null) {
-            const spotifySections = normalizeSpotifyHomeSections(await spotifySectionsPromise);
-            if (skeletonFallbackTimer) {
-                globalThis.clearTimeout(skeletonFallbackTimer);
-            }
-            if (requestId !== homeLoadRequestSeq) {
-                return;
-            }
-            if (spotifySections.length > 0) {
-                writeSpotifyHomeSectionsCache(spotifySections);
-                const mergedSections = mergeSpotifySectionsIntoHomeSections(sections, spotifySections);
-                renderHomeSections(mergedSections);
-                observeLazyImages(document.getElementById('home-sections'));
-            } else if (fallbackSpotifySkeletonSections.length > 0) {
-                renderHomeSections(sections);
-                observeLazyImages(document.getElementById('home-sections'));
-            }
-        }
+        const skeletonFallbackTimer = scheduleHomeSpotifySkeletonFallback(
+            requestId,
+            sections,
+            fallbackSpotifySkeletonSections);
+        await applySpotifyHomeSectionsSecondPass(
+            requestId,
+            sections,
+            spotifySectionsPromise,
+            fallbackSpotifySkeletonSections,
+            skeletonFallbackTimer);
     } catch (error) {
         console.error('Error loading home data:', error);
         const container = document.getElementById('home-sections');

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Globalization;
 using DeezSpoTag.Services.Utils;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
@@ -8,7 +9,8 @@ namespace DeezSpoTag.Services.Download.Utils;
 
 public sealed class SongLinkPersistentCacheStore
 {
-    private const string TableName = "song_link_cache";
+    private const string CacheKeyParameter = "$cache_key";
+    private const string LastUsedAtFormat = "O";
     private static readonly TimeSpan StaleAfter = TimeSpan.FromDays(30);
     private static readonly TimeSpan CleanupInterval = TimeSpan.FromHours(6);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -49,7 +51,7 @@ SELECT result_json, last_used_at
 FROM song_link_cache
 WHERE cache_key = $cache_key
 LIMIT 1;", connection);
-            command.Parameters.AddWithValue("$cache_key", cacheKey);
+            command.Parameters.AddWithValue(CacheKeyParameter, cacheKey);
 
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             if (!await reader.ReadAsync(cancellationToken))
@@ -57,10 +59,10 @@ LIMIT 1;", connection);
                 return null;
             }
 
-            var resultJson = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
-            var lastUsedRaw = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+            var resultJson = await reader.IsDBNullAsync(0, cancellationToken) ? string.Empty : reader.GetString(0);
+            var lastUsedRaw = await reader.IsDBNullAsync(1, cancellationToken) ? string.Empty : reader.GetString(1);
             if (string.IsNullOrWhiteSpace(resultJson)
-                || !DateTimeOffset.TryParse(lastUsedRaw, out var lastUsedUtc)
+                || !DateTimeOffset.TryParse(lastUsedRaw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var lastUsedUtc)
                 || DateTimeOffset.UtcNow - lastUsedUtc > StaleAfter)
             {
                 await DeleteByKeyAsync(connection, cacheKey, cancellationToken);
@@ -114,7 +116,7 @@ LIMIT 1;", connection);
         await CleanupStaleEntriesIfDueAsync(cancellationToken);
 
         var payload = JsonSerializer.Serialize(result, JsonOptions);
-        var now = DateTimeOffset.UtcNow.ToString("O");
+        var now = DateTimeOffset.UtcNow.ToString(LastUsedAtFormat, CultureInfo.InvariantCulture);
 
         try
         {
@@ -145,7 +147,7 @@ ON CONFLICT(cache_key) DO UPDATE SET
     result_json = excluded.result_json,
     last_used_at = excluded.last_used_at,
     updated_at = CURRENT_TIMESTAMP;", connection);
-            command.Parameters.AddWithValue("$cache_key", cacheKey);
+            command.Parameters.AddWithValue(CacheKeyParameter, cacheKey);
             command.Parameters.AddWithValue("$normalized_url", normalizedUrl);
             command.Parameters.AddWithValue("$user_country", NormalizeCountry(userCountry));
             command.Parameters.AddWithValue("$result_json", payload);
@@ -259,8 +261,8 @@ UPDATE song_link_cache
 SET last_used_at = $last_used_at,
     updated_at = CURRENT_TIMESTAMP
 WHERE cache_key = $cache_key;", connection);
-        command.Parameters.AddWithValue("$cache_key", cacheKey);
-        command.Parameters.AddWithValue("$last_used_at", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue(CacheKeyParameter, cacheKey);
+        command.Parameters.AddWithValue("$last_used_at", DateTimeOffset.UtcNow.ToString(LastUsedAtFormat, CultureInfo.InvariantCulture));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -269,7 +271,7 @@ WHERE cache_key = $cache_key;", connection);
         await using var command = new SqliteCommand(@"
 DELETE FROM song_link_cache
 WHERE cache_key = $cache_key;", connection);
-        command.Parameters.AddWithValue("$cache_key", cacheKey);
+        command.Parameters.AddWithValue(CacheKeyParameter, cacheKey);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

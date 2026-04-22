@@ -68,6 +68,7 @@ namespace DeezSpoTag.Web.Controllers
         private const string TargetField = "target";
         private const string PicturesField = "pictures";
         private const string ApplicationJsonContentType = "application/json";
+        private const bool HomeCacheEnabled = true;
         private static readonly object HomeCacheLock = new();
         private static readonly Dictionary<string, (DateTimeOffset Stamp, object Result)> HomeCache = new(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan HomeCacheTtl = TimeSpan.FromMinutes(2);
@@ -338,7 +339,7 @@ namespace DeezSpoTag.Web.Controllers
                 channel = NormalizeHomeChannel(channel);
                 var cacheScope = ResolveHomeCacheScope();
                 var cacheKey = GetHomeCacheKey(channel, cacheScope);
-                var allowCache = AllowHomeCache();
+                var allowCache = HomeCacheEnabled;
 
                 var cachedResult = ResolveHomeCacheResult(cacheKey, allowCache, rawEnabled, refreshEnabled);
                 if (cachedResult != null)
@@ -399,8 +400,6 @@ namespace DeezSpoTag.Web.Controllers
                 ? $"home:{scope}:default"
                 : $"home:{scope}:{channel}";
         }
-
-        private static bool AllowHomeCache() => true;
 
         private string ResolveHomeCacheScope()
         {

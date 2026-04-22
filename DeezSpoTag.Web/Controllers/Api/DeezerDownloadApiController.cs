@@ -298,12 +298,9 @@ namespace DeezSpoTag.Web.Controllers.Api
 
                     lock (queueSync)
                     {
-                        foreach (var queuedUuid in result.Queued)
+                        foreach (var queuedUuid in result.Queued.Where(uniqueQueued.Add))
                         {
-                            if (uniqueQueued.Add(queuedUuid))
-                            {
-                                accumulator.Queued.Add(queuedUuid);
-                            }
+                            accumulator.Queued.Add(queuedUuid);
                         }
 
                         if (!result.Success && !string.IsNullOrWhiteSpace(result.Message))
