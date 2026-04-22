@@ -2677,8 +2677,15 @@ async function loadSpotifyTracklist() {
     if (!payload.available || !payload.tracklist) {
         throw new Error('Spotify tracklist unavailable.');
     }
-    await loadIgnoredTracks();
     renderTracklist(payload.tracklist);
+    void loadIgnoredTracks()
+        .catch(() => {
+            ignoredTrackIds = new Set();
+        })
+        .finally(() => {
+            applyIgnoredTrackState();
+            bindIgnoreButtons();
+        });
     if (payload.matching?.pending > 0 && payload.matching?.token) {
         startSpotifyMatchPolling(payload.matching.token, payload.matching.pending);
     } else {
@@ -2703,8 +2710,15 @@ async function loadSpotifyTrendingTracklist() {
         throw new Error('Spotify trending tracklist unavailable.');
     }
 
-    await loadIgnoredTracks();
     renderTracklist(payload.tracklist);
+    void loadIgnoredTracks()
+        .catch(() => {
+            ignoredTrackIds = new Set();
+        })
+        .finally(() => {
+            applyIgnoredTrackState();
+            bindIgnoreButtons();
+        });
     if (payload.matching?.pending > 0 && payload.matching?.token) {
         startSpotifyMatchPolling(payload.matching.token, payload.matching.pending);
     }
