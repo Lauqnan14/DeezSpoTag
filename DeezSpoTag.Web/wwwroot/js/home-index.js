@@ -173,66 +173,69 @@ function getHomePlaybackSession() {
     return player.getSession();
 }
 
+function getHomeTrendingPlaybackButtons() {
+    return Array.from(
+        document.querySelectorAll('#home-sections .home-top-song-item__play[data-home-trending-track="true"]')
+    );
+}
+
+function isConnectedHomeTrendingPlaybackButton(button) {
+    return button instanceof HTMLElement
+        && button.isConnected
+        && button.matches('.home-top-song-item__play[data-home-trending-track="true"]');
+}
+
+function findHomeTrendingButtonByDatasetValue(buttons, key, value) {
+    const expected = String(value || '').trim();
+    if (!expected) {
+        return null;
+    }
+
+    return buttons.find((button) => String(button.dataset?.[key] || '').trim() === expected) || null;
+}
+
+function findHomeTrendingButtonBySourceKey(buttons, sourceKey) {
+    const key = String(sourceKey || '').trim();
+    if (!key) {
+        return null;
+    }
+
+    const lowerKey = key.toLowerCase();
+    if (lowerKey.startsWith('preview:')) {
+        return findHomeTrendingButtonByDatasetValue(buttons, 'previewUrl', key.slice('preview:'.length));
+    }
+
+    if (lowerKey.startsWith('source:')) {
+        return findHomeTrendingButtonByDatasetValue(buttons, 'spotifyUrl', key.slice('source:'.length));
+    }
+
+    return buttons.find((button) =>
+        String(button.dataset?.spotifyUrl || '').trim() === key
+        || String(button.dataset?.previewUrl || '').trim() === key
+        || String(button.dataset?.deezerId || '').trim() === key) || null;
+}
+
 function findHomeTrendingPlaybackButtonFromSession(session) {
     if (!session) {
         return null;
     }
 
     const sessionButton = session.button;
-    if (sessionButton instanceof HTMLElement
-        && sessionButton.isConnected
-        && sessionButton.matches('.home-top-song-item__play[data-home-trending-track="true"]')) {
+    if (isConnectedHomeTrendingPlaybackButton(sessionButton)) {
         return sessionButton;
     }
 
-    const buttons = Array.from(
-        document.querySelectorAll('#home-sections .home-top-song-item__play[data-home-trending-track="true"]')
-    );
+    const buttons = getHomeTrendingPlaybackButtons();
     if (!buttons.length) {
         return null;
     }
 
-    const deezerId = String(session.deezerId || '').trim();
-    if (deezerId) {
-        const deezerButton = buttons.find((button) => String(button.dataset?.deezerId || '').trim() === deezerId);
-        if (deezerButton) {
-            return deezerButton;
-        }
+    const deezerButton = findHomeTrendingButtonByDatasetValue(buttons, 'deezerId', session.deezerId);
+    if (deezerButton) {
+        return deezerButton;
     }
 
-    const sourceKey = String(session.sourceKey || '').trim();
-    const sourceKeyLower = sourceKey.toLowerCase();
-    if (sourceKeyLower.startsWith('preview:')) {
-        const previewUrl = sourceKey.slice('preview:'.length).trim();
-        if (previewUrl) {
-            const previewButton = buttons.find((button) => String(button.dataset?.previewUrl || '').trim() === previewUrl);
-            if (previewButton) {
-                return previewButton;
-            }
-        }
-    }
-
-    if (sourceKeyLower.startsWith('source:')) {
-        const spotifyUrl = sourceKey.slice('source:'.length).trim();
-        if (spotifyUrl) {
-            const spotifyButton = buttons.find((button) => String(button.dataset?.spotifyUrl || '').trim() === spotifyUrl);
-            if (spotifyButton) {
-                return spotifyButton;
-            }
-        }
-    }
-
-    if (sourceKey) {
-        const sourceButton = buttons.find((button) =>
-            String(button.dataset?.spotifyUrl || '').trim() === sourceKey
-            || String(button.dataset?.previewUrl || '').trim() === sourceKey
-            || String(button.dataset?.deezerId || '').trim() === sourceKey);
-        if (sourceButton) {
-            return sourceButton;
-        }
-    }
-
-    return null;
+    return findHomeTrendingButtonBySourceKey(buttons, session.sourceKey);
 }
 
 function syncHomeTrendingPlaybackFromSession() {

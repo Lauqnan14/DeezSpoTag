@@ -23,97 +23,13 @@ public sealed class FfmpegConversionService
         ConversionOptions? options,
         CancellationToken cancellationToken)
     {
-        var conversionOptions = options ?? ConversionOptions.Default;
-        if (string.IsNullOrWhiteSpace(inputPath) || !File.Exists(inputPath))
+        var setup = TryBuildConversionSetup(inputPath, convertTo, bitrate, options);
+        if (setup.Result is not null)
         {
-            return ConversionResult.Skipped("Input file not found.");
+            return setup.Result;
         }
 
-        var format = NormalizeFormat(convertTo);
-        if (string.IsNullOrWhiteSpace(format))
-        {
-            return ConversionResult.NoConversion(inputPath);
-        }
-
-        var inputFormat = GetInputFormat(inputPath);
-        if (conversionOptions.SkipIfSourceMatches && string.Equals(inputFormat, format, StringComparison.OrdinalIgnoreCase))
-        {
-            return ConversionResult.NoConversion(inputPath);
-        }
-
-        if (TryApplyLossyToLosslessPolicy(conversionOptions, inputFormat, format, inputPath, out var policyResult))
-        {
-            return policyResult;
-        }
-
-        var outputPath = BuildOutputPath(inputPath, format);
-        if (string.Equals(inputPath, outputPath, StringComparison.OrdinalIgnoreCase))
-        {
-            return ConversionResult.NoConversion(inputPath);
-        }
-
-        var ffmpegPath = ExternalToolResolver.ResolveFfmpegPath();
-        if (string.IsNullOrWhiteSpace(ffmpegPath))
-        {
-            return ConversionResult.Skipped("ffmpeg not available.");
-        }
-
-        var effectiveBitrate = ResolveBitrate(format, bitrate);
-        var args = BuildArguments(inputPath, outputPath, format, effectiveBitrate, conversionOptions.ExtraArgs);
-
-        var startInfo = BuildProcessStartInfo(ffmpegPath, args);
-
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation("FFmpeg conversion started: {Input} -> {Output} ({Format})", inputPath, outputPath, format);
-        }
-
-        using var process = Process.Start(startInfo);
-        if (process == null)
-        {
-            return ConversionResult.Skipped("Failed to start ffmpeg.");
-        }
-
-        await process.WaitForExitAsync(cancellationToken);
-        var stderr = await process.StandardError.ReadToEndAsync(cancellationToken);
-
-        var outputExists = File.Exists(outputPath);
-        var outputHasContent = false;
-        if (outputExists)
-        {
-            try
-            {
-                outputHasContent = new FileInfo(outputPath).Length > 0;
-            }
-            catch (Exception)
-            {
-                outputHasContent = false;
-            }
-        }
-
-        if (process.ExitCode != 0 || !outputHasContent)
-        {
-            if (outputExists)
-            {
-                try
-                {
-                    File.Delete(outputPath);
-                }
-                catch (Exception)
-                {
-                    // best effort cleanup
-                }
-            }
-
-            _logger.LogWarning("FFmpeg conversion failed: {Input} -> {Output}. Error: {Error}", inputPath, outputPath, stderr);
-            return ConversionResult.Failed(stderr);
-        }
-
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation("FFmpeg conversion completed: {Output}", outputPath);
-        }
-        return ConversionResult.ConvertedTo(outputPath);
+        return await ExecuteConversionAsync(setup.Context!, cancellationToken);
     }
 
     private bool TryApplyLossyToLosslessPolicy(
@@ -212,6 +128,129 @@ public sealed class FfmpegConversionService
         return format is "mp3" or M4aAacFormat or "ogg" or "opus";
     }
 
+    private ConversionSetup TryBuildConversionSetup(
+        string inputPath,
+        string? convertTo,
+        string? bitrate,
+        ConversionOptions? options)
+    {
+        var conversionOptions = options ?? ConversionOptions.Default;
+        if (string.IsNullOrWhiteSpace(inputPath) || !File.Exists(inputPath))
+        {
+            return ConversionSetup.WithResult(ConversionResult.Skipped("Input file not found."));
+        }
+
+        var format = NormalizeFormat(convertTo);
+        if (string.IsNullOrWhiteSpace(format))
+        {
+            return ConversionSetup.WithResult(ConversionResult.NoConversion(inputPath));
+        }
+
+        var inputFormat = GetInputFormat(inputPath);
+        if (conversionOptions.SkipIfSourceMatches && string.Equals(inputFormat, format, StringComparison.OrdinalIgnoreCase))
+        {
+            return ConversionSetup.WithResult(ConversionResult.NoConversion(inputPath));
+        }
+
+        if (TryApplyLossyToLosslessPolicy(conversionOptions, inputFormat, format, inputPath, out var policyResult))
+        {
+            return ConversionSetup.WithResult(policyResult);
+        }
+
+        var outputPath = BuildOutputPath(inputPath, format);
+        if (string.Equals(inputPath, outputPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return ConversionSetup.WithResult(ConversionResult.NoConversion(inputPath));
+        }
+
+        var ffmpegPath = ExternalToolResolver.ResolveFfmpegPath();
+        if (string.IsNullOrWhiteSpace(ffmpegPath))
+        {
+            return ConversionSetup.WithResult(ConversionResult.Skipped("ffmpeg not available."));
+        }
+
+        var effectiveBitrate = ResolveBitrate(format, bitrate);
+        var args = BuildArguments(inputPath, outputPath, format, effectiveBitrate, conversionOptions.ExtraArgs);
+        var context = new ConversionExecutionContext(inputPath, outputPath, format, ffmpegPath, args);
+        return ConversionSetup.WithContext(context);
+    }
+
+    private async Task<ConversionResult> ExecuteConversionAsync(
+        ConversionExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        var startInfo = BuildProcessStartInfo(context.FfmpegPath, context.Arguments);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "FFmpeg conversion started: {Input} -> {Output} ({Format})",
+                context.InputPath,
+                context.OutputPath,
+                context.Format);
+        }
+
+        using var process = Process.Start(startInfo);
+        if (process == null)
+        {
+            return ConversionResult.Skipped("Failed to start ffmpeg.");
+        }
+
+        await process.WaitForExitAsync(cancellationToken);
+        var stderr = await process.StandardError.ReadToEndAsync(cancellationToken);
+        var outputHasContent = OutputHasContent(context.OutputPath);
+        if (process.ExitCode != 0 || !outputHasContent)
+        {
+            DeleteOutputIfExists(context.OutputPath);
+            _logger.LogWarning(
+                "FFmpeg conversion failed: {Input} -> {Output}. Error: {Error}",
+                context.InputPath,
+                context.OutputPath,
+                stderr);
+            return ConversionResult.Failed(stderr);
+        }
+
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("FFmpeg conversion completed: {Output}", context.OutputPath);
+        }
+
+        return ConversionResult.ConvertedTo(context.OutputPath);
+    }
+
+    private static bool OutputHasContent(string outputPath)
+    {
+        if (!File.Exists(outputPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            return new FileInfo(outputPath).Length > 0;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static void DeleteOutputIfExists(string outputPath)
+    {
+        if (!File.Exists(outputPath))
+        {
+            return;
+        }
+
+        try
+        {
+            File.Delete(outputPath);
+        }
+        catch (Exception)
+        {
+            // best effort cleanup
+        }
+    }
+
     private static string BuildArguments(string inputPath, string outputPath, string format, string bitrate, string? extraArgs)
     {
         var args = new List<string>
@@ -225,57 +264,55 @@ public sealed class FfmpegConversionService
         var preserveAttachedArtwork = format is "mp3" or M4aAacFormat or M4aAlacFormat;
         if (preserveAttachedArtwork)
         {
-            args.AddRange(new[]
-            {
-                "-map", "0:v?",
-                "-c:v", "copy"
-            });
+            args.Add("-map");
+            args.Add("0:v?");
+            args.Add("-c:v");
+            args.Add("copy");
         }
 
         switch (format)
         {
             case "mp3":
-                args.AddRange(new[]
-                {
-                    AudioCodecArg, "libmp3lame",
-                    "-b:a", bitrate,
-                    "-id3v2_version", "3"
-                });
+                args.Add(AudioCodecArg);
+                args.Add("libmp3lame");
+                args.Add("-b:a");
+                args.Add(bitrate);
+                args.Add("-id3v2_version");
+                args.Add("3");
                 break;
             case M4aAacFormat:
-                args.AddRange(new[]
-                {
-                    AudioCodecArg, "aac",
-                    "-b:a", bitrate,
-                    "-disposition:v:0", "attached_pic"
-                });
+                args.Add(AudioCodecArg);
+                args.Add("aac");
+                args.Add("-b:a");
+                args.Add(bitrate);
+                args.Add("-disposition:v:0");
+                args.Add("attached_pic");
                 break;
             case M4aAlacFormat:
-                args.AddRange(new[]
-                {
-                    AudioCodecArg, "alac",
-                    "-disposition:v:0", "attached_pic"
-                });
+                args.Add(AudioCodecArg);
+                args.Add("alac");
+                args.Add("-disposition:v:0");
+                args.Add("attached_pic");
                 break;
             case "flac":
-                args.AddRange(new[] { AudioCodecArg, "flac" });
+                args.Add(AudioCodecArg);
+                args.Add("flac");
                 break;
             case "ogg":
-                args.AddRange(new[]
-                {
-                    AudioCodecArg, "libvorbis",
-                    "-b:a", bitrate
-                });
+                args.Add(AudioCodecArg);
+                args.Add("libvorbis");
+                args.Add("-b:a");
+                args.Add(bitrate);
                 break;
             case "opus":
-                args.AddRange(new[]
-                {
-                    AudioCodecArg, "libopus",
-                    "-b:a", bitrate
-                });
+                args.Add(AudioCodecArg);
+                args.Add("libopus");
+                args.Add("-b:a");
+                args.Add(bitrate);
                 break;
             case "wav":
-                args.AddRange(new[] { AudioCodecArg, "pcm_s16le" });
+                args.Add(AudioCodecArg);
+                args.Add("pcm_s16le");
                 break;
         }
 
@@ -309,6 +346,19 @@ public sealed class FfmpegConversionService
     }
 
     private static string Quote(string value) => $"\"{value}\"";
+
+    private sealed record ConversionExecutionContext(
+        string InputPath,
+        string OutputPath,
+        string Format,
+        string FfmpegPath,
+        string Arguments);
+
+    private sealed record ConversionSetup(ConversionExecutionContext? Context, ConversionResult? Result)
+    {
+        public static ConversionSetup WithContext(ConversionExecutionContext context) => new(context, null);
+        public static ConversionSetup WithResult(ConversionResult result) => new(null, result);
+    }
 }
 
 public sealed record ConversionResult(bool WasConverted, string OutputPath, string? Error)
