@@ -40,6 +40,7 @@ public sealed class LibraryDbService
     private const string ArtistIdColumn = "artist_id";
     private const string AlbumIdColumn = "album_id";
     private const string DeezerIdColumn = "deezer_id";
+    private const string CreatedAtColumn = "created_at";
     private const string UpdatedAtColumn = "updated_at";
     private static readonly Dictionary<string, (string Table, string Column, bool Unique)> KnownIndexDefinitions =
         new Dictionary<string, (string Table, string Column, bool Unique)>(StringComparer.Ordinal)
@@ -72,7 +73,7 @@ public sealed class LibraryDbService
             ,
             ["idx_artist_watchlist_deezer_id"] = (ArtistWatchlistTable, DeezerIdColumn, false)
             ,
-            ["idx_playlist_watchlist_created"] = (PlaylistWatchlistTable, "created_at", false)
+            ["idx_playlist_watchlist_created"] = (PlaylistWatchlistTable, CreatedAtColumn, false)
             ,
             ["idx_playlist_watch_preferences_updated"] = (PlaylistWatchPreferencesTable, UpdatedAtColumn, false)
             ,
@@ -264,7 +265,7 @@ CREATE TABLE IF NOT EXISTS song_link_cache (
         await NormalizeWatchlistKeysAsync(connection, cancellationToken);
         await EnsureIndexAsync(connection, "idx_artist_watchlist_spotify_id", ArtistWatchlistTable, "spotify_id", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_artist_watchlist_deezer_id", ArtistWatchlistTable, DeezerIdColumn, unique: false, cancellationToken);
-        await EnsureIndexAsync(connection, "idx_playlist_watchlist_created", PlaylistWatchlistTable, "created_at", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_playlist_watchlist_created", PlaylistWatchlistTable, CreatedAtColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_preferences_updated", PlaylistWatchPreferencesTable, UpdatedAtColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_state_updated", PlaylistWatchStateTable, UpdatedAtColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_track_source_status", PlaylistWatchTrackTable, "source, source_id, status", unique: false, cancellationToken);
@@ -534,7 +535,7 @@ WHERE library_id IS NULL;";
             return;
         }
 
-        var createdAtExpression = columns.Contains("created_at") ? "created_at" : "CURRENT_TIMESTAMP";
+        var createdAtExpression = columns.Contains(CreatedAtColumn) ? CreatedAtColumn : "CURRENT_TIMESTAMP";
         var updatedAtExpression = columns.Contains("updated_at") ? "updated_at" : "CURRENT_TIMESTAMP";
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
 
