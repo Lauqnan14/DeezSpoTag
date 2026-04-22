@@ -71,6 +71,15 @@
 }
 .spotify-card-art {
     background: var(--bg-secondary);
+    overflow: hidden;
+}
+.spotify-card-art-image {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: center;
+    display: block;
+    border-radius: inherit;
 }
 .empty-section {
     text-align: center;
@@ -214,12 +223,15 @@ function renderSpotifyItem(item) {
     const title = escapeHtml(item.name || '');
     const subtitle = escapeHtml(item.artists || item.description || '');
     const cover = item.coverUrl || item.imageUrl || item.image_url || '';
+    const coverEscaped = escapeHtml(cover);
     const type = escapeHtml(item.type || '');
     const meta = type ? `${type}` : '';
-    const artStyle = cover ? `style="background-image: url('${cover}');"` : '';
+    const artMarkup = cover
+        ? `<img class="spotify-card-art-image" src="${coverEscaped}" alt="${title || 'Spotify cover'}" loading="lazy" referrerpolicy="no-referrer" />`
+        : '🎵';
     return `
         <div class="spotify-card" data-spotify-uri="${escapeHtml(item.uri || '')}">
-            <div class="spotify-card-art" ${artStyle}>${cover ? '' : '🎵'}</div>
+            <div class="spotify-card-art">${artMarkup}</div>
             <div class="spotify-card-title">${title}</div>
             ${subtitle ? `<div class="spotify-card-subtitle">${subtitle}</div>` : ''}
             ${meta ? `<div class="spotify-card-meta"><span>${meta}</span></div>` : ''}

@@ -455,7 +455,7 @@ function computeWarmupVisibleLimit(queue, requestedLimit, defaults = {}) {
 }
 
 function extractHomeTrendingSpotifyTrackId(url) {
-    const parsed = parseSpotifyUrl(url);
+    const parsed = spotifyUrlHelpers.parseSpotifyUrl(url);
     if (!parsed || parsed.type !== 'track') {
         return '';
     }
@@ -1124,7 +1124,7 @@ async function handleUnifiedSearchUrlInput(input, parsedUrl) {
     const source = classifyExternalSource(parsedUrl);
 
     if (source === 'spotify') {
-        const parsedSpotify = parseSpotifyUrl(input) || parseSpotifyUrl(parsedUrl.toString());
+        const parsedSpotify = spotifyUrlHelpers.parseSpotifyUrl(input) || spotifyUrlHelpers.parseSpotifyUrl(parsedUrl.toString());
         if (!parsedSpotify?.type || !parsedSpotify?.id) {
             throw new Error('Invalid Spotify link.');
         }
@@ -2788,7 +2788,7 @@ function resolveHomeTrendingSpotifyTrackUrl(item, itemSource, itemType) {
         return '';
     }
 
-    const existing = buildSpotifyWebUrl(item.uri || item.url || item.sourceUrl || '');
+    const existing = spotifyUrlHelpers.buildSpotifyWebUrl(item.uri || item.url || item.sourceUrl || '');
     if (existing) {
         return existing;
     }

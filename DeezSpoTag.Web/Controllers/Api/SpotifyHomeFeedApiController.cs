@@ -160,6 +160,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         IReadOnlyList<object> Items,
         int Total,
         bool Cached,
+        bool ContainsFullList = false,
         string? Error = null);
 
     private sealed record TrendingBrowseCandidate(string? Id, string? Uri, string Name);
@@ -510,7 +511,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
                 return Ok(new { success = false, error = "Spotify browse category unavailable." });
             }
 
-            var playlistDoc = await FetchFirstPlaylistSectionAsync(pageDoc, 0, 1, cancellationToken);
+            var (playlistDoc, _) = await FetchFirstPlaylistSectionAsync(pageDoc, 0, 1, cancellationToken);
             if (playlistDoc is null)
             {
                 return Ok(new { success = false, error = ErrorCategoryPlaylistsUnavailable });
@@ -587,7 +588,9 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             return Ok(new
             {
                 success = true,
-                items = result.Items,
+                items = result.ContainsFullList
+                    ? result.Items.Skip(offset).Take(limit).ToList()
+                    : result.Items,
                 offset,
                 limit,
                 total = result.Total,
@@ -873,25 +876,32 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         var pageUri = BuildBrowsePageUri(categoryId, uri);
         if (string.IsNullOrWhiteSpace(pageUri))
         {
-            return new BrowseCategoryPlaylistsResult(false, Array.Empty<object>(), 0, false, ErrorCategoryPlaylistsUnavailable);
+            return new BrowseCategoryPlaylistsResult(false, Array.Empty<object>(), 0, false, false, ErrorCategoryPlaylistsUnavailable);
         }
 
         var pageDoc = await _pathfinderClient.FetchBrowsePageWithBlobAsync(pageUri, 0, 20, 0, 20, cancellationToken);
         if (pageDoc is null)
         {
-            return new BrowseCategoryPlaylistsResult(false, Array.Empty<object>(), 0, false, ErrorCategoryPlaylistsUnavailable);
+            return new BrowseCategoryPlaylistsResult(false, Array.Empty<object>(), 0, false, false, ErrorCategoryPlaylistsUnavailable);
         }
 
-        var playlistDoc = await FetchFirstPlaylistSectionAsync(pageDoc, offset, limit, cancellationToken);
+        var (playlistDoc, containsFullList) = await FetchFirstPlaylistSectionAsync(pageDoc, offset, limit, cancellationToken);
         if (playlistDoc is null)
         {
-            return new BrowseCategoryPlaylistsResult(false, Array.Empty<object>(), 0, false, ErrorCategoryPlaylistsUnavailable);
+            return new BrowseCategoryPlaylistsResult(false, Array.Empty<object>(), 0, false, false, ErrorCategoryPlaylistsUnavailable);
         }
 
-        var items = ParseBrowsePlaylistItems(playlistDoc);
-        var total = TryGetBrowseTotal(playlistDoc.RootElement) ?? items.Count;
-        BrowseCategoryPlaylistsCache[categoryId] = (DateTimeOffset.UtcNow, items, total);
-        return new BrowseCategoryPlaylistsResult(true, items, total, false);
+        var items = DeduplicateBrowseItems(ParseBrowsePlaylistItems(playlistDoc));
+        var total = containsFullList
+            ? items.Count
+            : (TryGetBrowseTotal(playlistDoc.RootElement) ?? items.Count);
+
+        if (containsFullList)
+        {
+            BrowseCategoryPlaylistsCache[categoryId] = (DateTimeOffset.UtcNow, items, total);
+        }
+
+        return new BrowseCategoryPlaylistsResult(true, items, total, false, containsFullList);
     }
 
     private async Task<object> ResolveBrowseBatchCategoryAsync(
@@ -2357,7 +2367,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         return results.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 
-    private async Task<JsonDocument?> FetchFirstPlaylistSectionAsync(
+    private async Task<(JsonDocument? Document, bool ContainsFullList)> FetchFirstPlaylistSectionAsync(
         JsonDocument pageDoc,
         int offset,
         int limit,
@@ -2366,7 +2376,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         var directItems = ParseBrowsePlaylistItems(pageDoc);
         if (directItems.Count > 0)
         {
-            return pageDoc;
+            return (pageDoc, true);
         }
 
         var sectionUris = FindUrisByPrefix(pageDoc.RootElement, "spotify:section:");
@@ -2381,11 +2391,37 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             var items = ParseBrowsePlaylistItems(sectionDoc);
             if (items.Count > 0)
             {
-                return sectionDoc;
+                return (sectionDoc, false);
             }
         }
 
-        return null;
+        return (null, false);
+    }
+
+    private static List<object> DeduplicateBrowseItems(List<object> items)
+    {
+        var deduplicated = new List<object>(items.Count);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items)
+        {
+            if (item is null)
+            {
+                continue;
+            }
+
+            var uri = TryGetAnonymousString(item, UriKey);
+            var key = !string.IsNullOrWhiteSpace(uri)
+                ? uri
+                : $"{TryGetAnonymousString(item, TypeKey)}:{TryGetAnonymousString(item, IdKey)}:{TryGetAnonymousString(item, NameKey)}";
+            if (!seen.Add(key))
+            {
+                continue;
+            }
+
+            deduplicated.Add(item);
+        }
+
+        return deduplicated;
     }
 
     private async Task<object?> TryFetchTrendingSongsSectionAsync(CancellationToken cancellationToken)
