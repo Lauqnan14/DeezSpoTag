@@ -464,7 +464,6 @@ public static class AppleQueueHelpers
     private static string? TryResolveAppleArtistArtwork(JsonElement data, string artist, int size)
     {
         var normalizedArtist = NormalizeLookupToken(artist);
-        string? fallback = null;
 
         foreach (var entry in data.EnumerateArray())
         {
@@ -478,8 +477,6 @@ public static class AppleQueueHelpers
             {
                 continue;
             }
-
-            fallback ??= artwork;
 
             var candidateName = TryReadItunesString(attrs, "name")
                 ?? TryReadItunesString(attrs, ArtistNameKey);
@@ -516,18 +513,6 @@ public static class AppleQueueHelpers
         try
         {
             var client = httpClientFactory.CreateClient();
-            var albumArtwork = await TryResolveItunesArtistAlbumArtworkAsync(
-                client,
-                artist,
-                normalizedArtist,
-                size,
-                cancellationToken);
-            if (!string.IsNullOrWhiteSpace(albumArtwork))
-            {
-                CacheArtistArtwork(cacheKey, albumArtwork);
-                return albumArtwork;
-            }
-
             var pageArtwork = await TryResolveItunesArtistSearchPageArtworkAsync(
                 client,
                 url,
@@ -618,51 +603,6 @@ public static class AppleQueueHelpers
         return !string.IsNullOrWhiteSpace(artistLinkUrl);
     }
 
-    private static async Task<string?> TryResolveItunesArtistAlbumArtworkAsync(
-        HttpClient client,
-        string artist,
-        string normalizedArtist,
-        int size,
-        CancellationToken cancellationToken)
-    {
-        var url = $"https://itunes.apple.com/search?term={Uri.EscapeDataString(artist)}&entity=album&attribute=artistTerm&limit=25";
-        using var response = await client.GetAsync(url, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return null;
-        }
-
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        if (!doc.RootElement.TryGetProperty(ResultsKey, out var results) || results.ValueKind != JsonValueKind.Array)
-        {
-            return null;
-        }
-
-        string? fallbackRaw = null;
-        foreach (var entry in results.EnumerateArray().Where(HasItunesArtwork))
-        {
-            var raw = entry.GetProperty("artworkUrl100").GetString();
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                continue;
-            }
-
-            fallbackRaw ??= raw;
-            var candidateArtist = TryReadItunesString(entry, ArtistNameKey)
-                ?? TryReadItunesString(entry, "collectionArtistName");
-            if (string.IsNullOrWhiteSpace(candidateArtist)
-                || !IsLikelySameArtist(normalizedArtist, NormalizeLookupToken(candidateArtist)))
-            {
-                continue;
-            }
-
-            return NormalizeArtworkUrl(raw, size);
-        }
-
-        return string.IsNullOrWhiteSpace(fallbackRaw) ? null : NormalizeArtworkUrl(fallbackRaw, size);
-    }
-
     private static async Task<string?> TryResolveItunesArtistPageArtworkAsync(
         HttpClient client,
         string artistLinkUrl,
@@ -696,6 +636,11 @@ public static class AppleQueueHelpers
             return null;
         }
 
+        if (!IsLikelyUsableItunesArtistPageArtwork(raw))
+        {
+            return null;
+        }
+
         if (raw.Contains("mzstatic.com", StringComparison.OrdinalIgnoreCase)
             || raw.Contains("{w}", StringComparison.OrdinalIgnoreCase)
             || raw.Contains("{h}", StringComparison.OrdinalIgnoreCase))
@@ -704,6 +649,41 @@ public static class AppleQueueHelpers
         }
 
         return raw;
+    }
+
+    private static bool IsLikelyUsableItunesArtistPageArtwork(string rawUrl)
+    {
+        if (string.IsNullOrWhiteSpace(rawUrl))
+        {
+            return false;
+        }
+
+        var match = MatchWithTimeout(
+            rawUrl,
+            @"/(?<width>\d{2,5})x(?<height>\d{2,5})(?<suffix>[a-z]{0,8})\.[a-z0-9]+(?:$|\?)",
+            RegexOptions.IgnoreCase);
+        if (!match.Success)
+        {
+            return true;
+        }
+
+        if (!int.TryParse(match.Groups["width"].Value, out var width)
+            || !int.TryParse(match.Groups["height"].Value, out var height)
+            || width <= 0
+            || height <= 0)
+        {
+            return true;
+        }
+
+        var longer = Math.Max(width, height);
+        var shorter = Math.Min(width, height);
+        if (shorter == 0 || (longer / (double)shorter) > 1.1d)
+        {
+            return false;
+        }
+
+        var suffix = match.Groups["suffix"].Value;
+        return !suffix.Contains("cw", StringComparison.OrdinalIgnoreCase);
     }
 
     public static async Task<string?> ResolveAppleArtistImageFromSongAsync(
