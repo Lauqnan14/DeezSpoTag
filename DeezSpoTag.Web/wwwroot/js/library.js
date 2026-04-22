@@ -2154,6 +2154,89 @@ function setLibraryPlaybackState(button, state) {
     setPreviewButtonState(button, isPlaying);
 }
 
+function getLibraryPlaybackSession() {
+    const player = globalThis.DeezerUnifiedPlayback;
+    if (!player || typeof player.getSession !== 'function') {
+        return null;
+    }
+    return player.getSession();
+}
+
+function findLibraryTopSongButtonFromSession(session) {
+    if (!session) {
+        return null;
+    }
+
+    const list = document.getElementById('spotifyTopTracksList');
+    if (!list) {
+        return null;
+    }
+
+    const sessionButton = session.button;
+    if (sessionButton instanceof HTMLElement
+        && sessionButton.isConnected
+        && isLibraryTopSongPlayButton(sessionButton)) {
+        return sessionButton;
+    }
+
+    const buttons = Array.from(list.querySelectorAll('.top-song-item__play.track-play'));
+    if (!buttons.length) {
+        return null;
+    }
+
+    const deezerId = String(session.deezerId || '').trim();
+    if (deezerId) {
+        const deezerButton = buttons.find((button) => String(button.dataset?.deezerId || '').trim() === deezerId);
+        if (deezerButton) {
+            return deezerButton;
+        }
+    }
+
+    const sourceKey = String(session.sourceKey || '').trim();
+    if (sourceKey) {
+        const sourceButton = buttons.find((button) =>
+            String(button.dataset?.spotifyUrl || '').trim() === sourceKey
+            || String(button.dataset?.previewUrl || '').trim() === sourceKey
+            || String(button.dataset?.deezerId || '').trim() === sourceKey);
+        if (sourceButton) {
+            return sourceButton;
+        }
+    }
+
+    return null;
+}
+
+function syncLibraryTopSongsPlaybackFromSession() {
+    const session = getLibraryPlaybackSession();
+    const isLibrarySession = String(session?.page || '').trim().toLowerCase() === 'library';
+    if (!isLibrarySession) {
+        clearSpotifyTopSongPlayingMarkers(null);
+        resetSpotifyTopTrackQueue();
+        if (isLibraryTopSongPlayButton(libraryState.previewButton)) {
+            libraryState.previewButton = null;
+            libraryState.previewTrackId = null;
+        }
+        return;
+    }
+
+    const targetButton = findLibraryTopSongButtonFromSession(session);
+    if (!targetButton) {
+        clearSpotifyTopSongPlayingMarkers(null);
+        resetSpotifyTopTrackQueue();
+        if (isLibraryTopSongPlayButton(libraryState.previewButton)) {
+            libraryState.previewButton = null;
+            libraryState.previewTrackId = null;
+        }
+        return;
+    }
+
+    const state = session?.playing ? 'playing' : 'requested';
+    setLibraryPlaybackState(targetButton, state);
+    libraryState.previewButton = targetButton;
+    libraryState.previewTrackId = String(session?.key || session?.sourceKey || '').trim() || null;
+    seedSpotifyTopTrackQueue(targetButton);
+}
+
 async function playDirectPreviewInApp(previewUrl, button) {
     const normalizedPreviewUrl = String(previewUrl || '').trim();
     if (!normalizedPreviewUrl) {
@@ -2255,7 +2338,10 @@ function buildLibraryPlaybackStateHandler(button, fallbackKey) {
         if (libraryState.previewButton === button) {
             libraryState.previewButton = null;
         }
-        if (libraryState.previewTrackId === (context?.session?.key || libraryState.previewTrackId)) {
+        const contextSessionKey = String(context?.session?.key || '').trim();
+        if (contextSessionKey
+            ? libraryState.previewTrackId === contextSessionKey
+            : libraryState.previewButton === null) {
             libraryState.previewTrackId = null;
         }
     };
@@ -4545,6 +4631,7 @@ function renderSpotifyTopTracks(tracks, _artistProfile = null) {
             console.warn('Failed to mark Spotify top tracks in library', error);
         });
     scheduleSpotifyTopTrackPreviewWarmup();
+    syncLibraryTopSongsPlaybackFromSession();
 }
 
 async function markSpotifyTopTracksInLibrary(tracks, artistProfile = null) {

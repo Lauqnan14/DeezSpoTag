@@ -165,6 +165,99 @@ function clearHomeTrendingPreviewButton() {
     homeTrendingPreviewState.button = null;
 }
 
+function getHomePlaybackSession() {
+    const player = globalThis.DeezerUnifiedPlayback;
+    if (!player || typeof player.getSession !== 'function') {
+        return null;
+    }
+    return player.getSession();
+}
+
+function findHomeTrendingPlaybackButtonFromSession(session) {
+    if (!session) {
+        return null;
+    }
+
+    const sessionButton = session.button;
+    if (sessionButton instanceof HTMLElement
+        && sessionButton.isConnected
+        && sessionButton.matches('.home-top-song-item__play[data-home-trending-track="true"]')) {
+        return sessionButton;
+    }
+
+    const buttons = Array.from(
+        document.querySelectorAll('#home-sections .home-top-song-item__play[data-home-trending-track="true"]')
+    );
+    if (!buttons.length) {
+        return null;
+    }
+
+    const deezerId = String(session.deezerId || '').trim();
+    if (deezerId) {
+        const deezerButton = buttons.find((button) => String(button.dataset?.deezerId || '').trim() === deezerId);
+        if (deezerButton) {
+            return deezerButton;
+        }
+    }
+
+    const sourceKey = String(session.sourceKey || '').trim();
+    const sourceKeyLower = sourceKey.toLowerCase();
+    if (sourceKeyLower.startsWith('preview:')) {
+        const previewUrl = sourceKey.slice('preview:'.length).trim();
+        if (previewUrl) {
+            const previewButton = buttons.find((button) => String(button.dataset?.previewUrl || '').trim() === previewUrl);
+            if (previewButton) {
+                return previewButton;
+            }
+        }
+    }
+
+    if (sourceKeyLower.startsWith('source:')) {
+        const spotifyUrl = sourceKey.slice('source:'.length).trim();
+        if (spotifyUrl) {
+            const spotifyButton = buttons.find((button) => String(button.dataset?.spotifyUrl || '').trim() === spotifyUrl);
+            if (spotifyButton) {
+                return spotifyButton;
+            }
+        }
+    }
+
+    if (sourceKey) {
+        const sourceButton = buttons.find((button) =>
+            String(button.dataset?.spotifyUrl || '').trim() === sourceKey
+            || String(button.dataset?.previewUrl || '').trim() === sourceKey
+            || String(button.dataset?.deezerId || '').trim() === sourceKey);
+        if (sourceButton) {
+            return sourceButton;
+        }
+    }
+
+    return null;
+}
+
+function syncHomeTrendingPlaybackFromSession() {
+    const session = getHomePlaybackSession();
+    const isHomeSession = String(session?.page || '').trim().toLowerCase() === 'home';
+    if (!isHomeSession) {
+        clearHomeTrendingPreviewButton();
+        resetHomeTrendingQueue();
+        return;
+    }
+
+    const playButton = findHomeTrendingPlaybackButtonFromSession(session);
+    if (!playButton) {
+        clearHomeTrendingPreviewButton();
+        resetHomeTrendingQueue();
+        return;
+    }
+
+    const nextState = session?.playing ? 'playing' : 'requested';
+    setHomeTrendingPlaybackState(playButton, nextState);
+    homeTrendingPreviewState.button = playButton;
+    homeTrendingPreviewState.trackKey = String(session?.key || '').trim() || null;
+    seedHomeTrendingQueue(playButton);
+}
+
 function resolveHomeTrendingPlayButton(target) {
     if (!target) {
         return null;
@@ -726,7 +819,10 @@ function buildHomeTrendingPlaybackRequest(playButton) {
             if (homeTrendingPreviewState.button === playButton) {
                 homeTrendingPreviewState.button = null;
             }
-            if (homeTrendingPreviewState.trackKey === (context?.session?.key || homeTrendingPreviewState.trackKey)) {
+            const contextSessionKey = String(context?.session?.key || '').trim();
+            if (contextSessionKey
+                ? homeTrendingPreviewState.trackKey === contextSessionKey
+                : homeTrendingPreviewState.button === null) {
                 homeTrendingPreviewState.trackKey = null;
             }
         },
@@ -1368,6 +1464,7 @@ function mergeInitialHomeSections(baseSections, channel, cachedSpotifySections, 
 function renderHomeSectionsWithLazyImages(sections) {
     renderHomeSections(sections);
     observeLazyImages(document.getElementById('home-sections'));
+    syncHomeTrendingPlaybackFromSession();
 }
 
 function scheduleHomeSpotifySkeletonFallback(requestId, sections, fallbackSpotifySkeletonSections) {
