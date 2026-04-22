@@ -336,8 +336,9 @@ namespace DeezSpoTag.Web.Controllers
                 var rawEnabled = IsTruthyQueryFlag(raw);
                 var refreshEnabled = IsTruthyQueryFlag(refresh);
                 channel = NormalizeHomeChannel(channel);
-                var cacheKey = GetHomeCacheKey(channel);
-                var allowCache = AllowHomeCache(channel);
+                var cacheScope = ResolveHomeCacheScope();
+                var cacheKey = GetHomeCacheKey(channel, cacheScope);
+                var allowCache = AllowHomeCache();
 
                 var cachedResult = ResolveHomeCacheResult(cacheKey, allowCache, rawEnabled, refreshEnabled);
                 if (cachedResult != null)
@@ -391,10 +392,30 @@ namespace DeezSpoTag.Web.Controllers
             return normalized;
         }
 
-        private static string GetHomeCacheKey(string? channel) =>
-            string.IsNullOrWhiteSpace(channel) ? "home:default" : $"home:{channel}";
+        private static string GetHomeCacheKey(string? channel, string cacheScope)
+        {
+            var scope = string.IsNullOrWhiteSpace(cacheScope) ? "default" : cacheScope;
+            return string.IsNullOrWhiteSpace(channel)
+                ? $"home:{scope}:default"
+                : $"home:{scope}:{channel}";
+        }
 
-        private static bool AllowHomeCache(string? channel) => !string.IsNullOrWhiteSpace(channel);
+        private static bool AllowHomeCache() => true;
+
+        private string ResolveHomeCacheScope()
+        {
+            if (User?.Identity?.IsAuthenticated == true)
+            {
+                var username = User.Identity?.Name;
+                if (!string.IsNullOrWhiteSpace(username))
+                {
+                    return $"user:{username.Trim().ToLowerInvariant()}";
+                }
+            }
+
+            var remoteIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+            return string.IsNullOrWhiteSpace(remoteIp) ? "anonymous" : $"ip:{remoteIp}";
+        }
 
         private static object? ResolveHomeCacheResult(string cacheKey, bool allowCache, bool rawEnabled, bool refreshEnabled)
         {

@@ -33,6 +33,8 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.WebUtilities;
 using System.Threading.RateLimiting;
 using System.Reflection;
+using Microsoft.AspNetCore.ResponseCompression;
+using System.IO.Compression;
 
 namespace DeezSpoTag.Web;
 
@@ -226,6 +228,27 @@ public partial class Program
 
     static void ConfigureCoreServices(IServiceCollection services)
     {
+        services.AddResponseCompression(options =>
+        {
+            options.EnableForHttps = true;
+            options.Providers.Add<BrotliCompressionProvider>();
+            options.Providers.Add<GzipCompressionProvider>();
+            options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(new[]
+            {
+                "application/json",
+                "application/javascript",
+                "text/javascript",
+                "application/manifest+json"
+            }).Distinct();
+        });
+        services.Configure<BrotliCompressionProviderOptions>(options =>
+        {
+            options.Level = CompressionLevel.Fastest;
+        });
+        services.Configure<GzipCompressionProviderOptions>(options =>
+        {
+            options.Level = CompressionLevel.Fastest;
+        });
         services.AddControllersWithViews();
         services.AddRazorPages();
         services.AddHttpClient();
@@ -504,6 +527,7 @@ public partial class Program
             app.UseHttpsRedirection();
         }
 
+        app.UseResponseCompression();
         ConfigureSecurityHeadersMiddleware(app);
         ConfigureStaticFiles(app);
         app.UseRouting();
