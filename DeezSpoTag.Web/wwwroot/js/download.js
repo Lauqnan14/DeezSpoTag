@@ -2633,49 +2633,23 @@ DeezSpoTag.Download = {
         requestAnimationFrame(() => {
             fills.forEach((fill) => {
                 const target = this.normalizeProgressPercent(fill.dataset.progressTarget);
-                const start = this.normalizeProgressPercent(fill.style.width.replace('%', ''));
                 const downloadId = fill.dataset.downloadId || '';
                 if (!downloadId) {
                     return;
                 }
-                this.animateQueueProgressBar(downloadId, fill, start, target);
+                this.animateQueueProgressBar(downloadId, fill, target);
             });
         });
     },
-    animateQueueProgressBar(downloadId, fill, start, target) {
+    animateQueueProgressBar(downloadId, fill, target) {
         if (this.progressAnimationFrameById[downloadId] != null) {
             cancelAnimationFrame(this.progressAnimationFrameById[downloadId]);
             delete this.progressAnimationFrameById[downloadId];
         }
 
-        if (start === target) {
-            fill.style.width = `${target}%`;
-            this.progressCacheById[downloadId] = target;
-            return;
-        }
-
-        const startTime = performance.now();
-        const delta = target - start;
-        const step = (now) => {
-            if (!document.body.contains(fill)) {
-                delete this.progressAnimationFrameById[downloadId];
-                return;
-            }
-
-            const t = Math.min(1, (now - startTime) / this.progressAnimationDurationMs);
-            const current = this.normalizeProgressPercent(start + (delta * t));
-            fill.style.width = `${current}%`;
-            this.progressCacheById[downloadId] = current;
-
-            if (t < 1) {
-                this.progressAnimationFrameById[downloadId] = requestAnimationFrame(step);
-            } else {
-                this.progressCacheById[downloadId] = target;
-                delete this.progressAnimationFrameById[downloadId];
-            }
-        };
-
-        this.progressAnimationFrameById[downloadId] = requestAnimationFrame(step);
+        const normalizedTarget = this.normalizeProgressPercent(target);
+        fill.style.width = `${normalizedTarget}%`;
+        this.progressCacheById[downloadId] = normalizedTarget;
     },
 
     // Utility functions

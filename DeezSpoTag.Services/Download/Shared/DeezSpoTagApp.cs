@@ -131,8 +131,8 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     private bool _isProcessingQueue = false;
     private bool _stopRequested = false;
     private bool _startRequested = false;
-    private string? _currentQueueUuid;
-    private string? _pausedByUserUuid;
+    private readonly HashSet<string> _activeQueueUuids = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _pausedByUserUuids = new(StringComparer.OrdinalIgnoreCase);
 
     public static string Engine => DeezerEngine;
 
@@ -163,36 +163,17 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
         try
         {
-            while (true)
+            Settings = _settingsService.LoadSettings();
+            var workerConcurrency = ResolveQueueWorkerConcurrency(Settings);
+            if (_logger.IsEnabled(LogLevel.Information))
             {
-                if (_stopRequested)
-                {
-                    _logger.LogInformation("Queue processing stopped by request.");
-                    break;
-                }
-
-                // Reload queue settings every dequeue cycle so user preference changes apply immediately.
-                Settings = _settingsService.LoadSettings();
-                var newestFirst = string.Equals(Settings.QueueOrder, "recent", StringComparison.OrdinalIgnoreCase);
-                var nextItem = await _queueRepository.DequeueNextAnyAsync(newestFirst);
-                if (nextItem == null || string.IsNullOrWhiteSpace(nextItem.QueueUuid))
-                {
-                    break;
-                }
-
-                try
-                {
-                    await ProcessQueueItemAsync(nextItem, CancellationToken.None);
-                }
-                catch (OperationCanceledException ex)
-                {
-                    await HandleUnhandledProcessorCancellationAsync(nextItem, ex);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    await HandleUnhandledProcessorFailureAsync(nextItem, ex);
-                }
+                _logger.LogInformation("Queue processing started with {WorkerConcurrency} worker(s).", workerConcurrency);
             }
+
+            var workers = Enumerable.Range(0, workerConcurrency)
+                .Select(_ => RunQueueWorkerAsync())
+                .ToArray();
+            await Task.WhenAll(workers);
 
             _logger.LogInformation("Queue processing completed.");
         }
@@ -212,6 +193,53 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                 _ = Task.Run(StartQueueAsync);
             }
         }
+    }
+
+    private async Task RunQueueWorkerAsync()
+    {
+        while (true)
+        {
+            if (IsStopRequested())
+            {
+                _logger.LogInformation("Queue processing stopped by request.");
+                return;
+            }
+
+            // Reload queue settings every dequeue cycle so user preference changes apply immediately.
+            Settings = _settingsService.LoadSettings();
+            var newestFirst = string.Equals(Settings.QueueOrder, "recent", StringComparison.OrdinalIgnoreCase);
+            var nextItem = await _queueRepository.DequeueNextAnyAsync(newestFirst);
+            if (nextItem == null || string.IsNullOrWhiteSpace(nextItem.QueueUuid))
+            {
+                return;
+            }
+
+            try
+            {
+                await ProcessQueueItemAsync(nextItem, CancellationToken.None);
+            }
+            catch (OperationCanceledException ex)
+            {
+                await HandleUnhandledProcessorCancellationAsync(nextItem, ex);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                await HandleUnhandledProcessorFailureAsync(nextItem, ex);
+            }
+        }
+    }
+
+    private bool IsStopRequested()
+    {
+        lock (_queueLock)
+        {
+            return _stopRequested;
+        }
+    }
+
+    private static int ResolveQueueWorkerConcurrency(DeezSpoTagSettings settings)
+    {
+        return Math.Clamp(settings.MaxConcurrentDownloads, 1, 8);
     }
 
     private async Task HandleUnhandledProcessorCancellationAsync(DownloadQueueItem item, OperationCanceledException ex)
@@ -279,8 +307,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
     public async Task ProcessQueueItemAsync(DownloadQueueItem nextItem, CancellationToken cancellationToken = default)
     {
-        CurrentJob = nextItem.QueueUuid;
-        _currentQueueUuid = nextItem.QueueUuid;
+        MarkQueueItemStarted(nextItem.QueueUuid);
 
         try
         {
@@ -316,8 +343,25 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         }
         finally
         {
-            CurrentJob = null;
-            _currentQueueUuid = null;
+            MarkQueueItemFinished(nextItem.QueueUuid);
+        }
+    }
+
+    private void MarkQueueItemStarted(string queueUuid)
+    {
+        lock (_queueLock)
+        {
+            _activeQueueUuids.Add(queueUuid);
+            CurrentJob = queueUuid;
+        }
+    }
+
+    private void MarkQueueItemFinished(string queueUuid)
+    {
+        lock (_queueLock)
+        {
+            _activeQueueUuids.Remove(queueUuid);
+            CurrentJob = _activeQueueUuids.FirstOrDefault();
         }
     }
 
@@ -639,29 +683,34 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
     public async Task PauseQueueAsync()
     {
-        string? currentQueueUuid;
+        List<string> activeQueueUuids;
         lock (_queueLock)
         {
             _stopRequested = true;
             _startRequested = false;
-            currentQueueUuid = _currentQueueUuid;
-            if (!string.IsNullOrWhiteSpace(currentQueueUuid))
+            activeQueueUuids = _activeQueueUuids.ToList();
+            foreach (var activeUuid in activeQueueUuids)
             {
-                _pausedByUserUuid = currentQueueUuid;
+                _pausedByUserUuids.Add(activeUuid);
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(currentQueueUuid))
+        foreach (var activeQueueUuid in activeQueueUuids)
         {
-            _cancellationRegistry.MarkUserPaused(currentQueueUuid);
-            _cancellationRegistry.Cancel(currentQueueUuid);
-            await _queueRepository.UpdateStatusAsync(currentQueueUuid, PausedStatus);
-            Listener?.Send("updateQueue", new { uuid = currentQueueUuid, status = PausedStatus });
-            lock (_queueLock)
+            _cancellationRegistry.MarkUserPaused(activeQueueUuid);
+            if (_cancellationRegistry.Cancel(activeQueueUuid))
             {
-                _currentQueueUuid = null;
+                Listener?.Send("cancellingCurrentItem", activeQueueUuid);
             }
-            CurrentJob = null;
+
+            await _queueRepository.UpdateStatusAsync(activeQueueUuid, PausedStatus);
+            Listener?.Send("updateQueue", new { uuid = activeQueueUuid, status = PausedStatus });
+            DeezSpoTagSpeedTracker.Clear(activeQueueUuid);
+        }
+
+        lock (_queueLock)
+        {
+            CurrentJob = _activeQueueUuids.FirstOrDefault();
         }
     }
 
@@ -684,12 +733,12 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     {
         lock (_queueLock)
         {
-            if (!string.Equals(_pausedByUserUuid, uuid, StringComparison.Ordinal))
+            if (!_pausedByUserUuids.Contains(uuid))
             {
                 return false;
             }
 
-            _pausedByUserUuid = null;
+            _pausedByUserUuids.Remove(uuid);
             return true;
         }
     }

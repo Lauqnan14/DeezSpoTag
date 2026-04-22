@@ -4410,7 +4410,6 @@ function smoothQueueProgressBars() {
     requestAnimationFrame(() => {
         fills.forEach((fill) => {
             const target = clampQueueProgressPercent(fill.dataset.progressTarget);
-            const start = clampQueueProgressPercent(fill.dataset.progressStart);
             if (Number.isFinite(target)) {
                 fill.style.width = `${target}%`;
             }
@@ -4420,7 +4419,7 @@ function smoothQueueProgressBars() {
             if (!valueEl || !taskId) {
                 return;
             }
-            animateQueueProgress(taskId, fill, valueEl, start, target);
+            animateQueueProgress(taskId, fill, valueEl, target);
         });
     });
 }
@@ -4442,44 +4441,16 @@ function formatQueueProgressPercent(value) {
     return Math.round(clampQueueProgressPercent(value));
 }
 
-function animateQueueProgress(taskId, fillEl, valueEl, start, target) {
-    const startValue = clampQueueProgressPercent(start);
+function animateQueueProgress(taskId, fillEl, valueEl, target) {
     const targetValue = clampQueueProgressPercent(target);
     if (queueProgressTextAnimationByTask[taskId] != null) {
         cancelAnimationFrame(queueProgressTextAnimationByTask[taskId]);
         delete queueProgressTextAnimationByTask[taskId];
     }
 
-    if (startValue === targetValue) {
-        fillEl.style.width = `${targetValue}%`;
-        valueEl.textContent = `${formatQueueProgressPercent(targetValue)}%`;
-        queueProgressCache[taskId] = targetValue;
-        return;
-    }
-
-    const startTime = performance.now();
-    const delta = targetValue - startValue;
-    const step = (now) => {
-        if (!document.body.contains(valueEl) || !document.body.contains(fillEl)) {
-            delete queueProgressTextAnimationByTask[taskId];
-            return;
-        }
-
-        const t = Math.min(1, (now - startTime) / queueProgressAnimationDurationMs);
-        const current = clampQueueProgressPercent(startValue + (delta * t));
-        queueProgressCache[taskId] = current;
-        fillEl.style.width = `${current}%`;
-        valueEl.textContent = `${formatQueueProgressPercent(current)}%`;
-
-        if (t < 1) {
-            queueProgressTextAnimationByTask[taskId] = requestAnimationFrame(step);
-        } else {
-            queueProgressCache[taskId] = targetValue;
-            delete queueProgressTextAnimationByTask[taskId];
-        }
-    };
-
-    queueProgressTextAnimationByTask[taskId] = requestAnimationFrame(step);
+    fillEl.style.width = `${targetValue}%`;
+    valueEl.textContent = `${formatQueueProgressPercent(targetValue)}%`;
+    queueProgressCache[taskId] = targetValue;
 }
 
 function updateQueueProgressDom(taskId, progress) {
@@ -4507,7 +4478,7 @@ function updateQueueProgressDom(taskId, progress) {
     fillEl.dataset.progressStart = String(startValue);
     valueEl.dataset.progressTarget = String(targetValue);
     valueEl.dataset.progressStart = String(startValue);
-    animateQueueProgress(taskId, fillEl, valueEl, startValue, targetValue);
+    animateQueueProgress(taskId, fillEl, valueEl, targetValue);
     return true;
 }
 

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using DeezSpoTag.Services.Download.Shared.Models;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
 using Microsoft.Extensions.Logging;
 
@@ -143,6 +144,9 @@ internal static class QueueHelperUtils
 
         return async (progress, speedMbps) =>
         {
+            var safeSpeedMbps = Math.Max(0, speedMbps);
+            DeezSpoTagSpeedTracker.ReportSpeed(queueUuid, safeSpeedMbps * 1024d * 1024d / 8d);
+
             var normalized = Math.Clamp(progress, 0, 100);
             var now = DateTimeOffset.UtcNow;
             var shouldSend = false;
@@ -180,7 +184,8 @@ internal static class QueueHelperUtils
                 listener.Send("updateQueue", new
                 {
                     uuid = queueUuid,
-                    progress = progressToSend
+                    progress = progressToSend,
+                    speedMbps = safeSpeedMbps
                 });
             }
             catch (Exception ex) when (ex is not OperationCanceledException)

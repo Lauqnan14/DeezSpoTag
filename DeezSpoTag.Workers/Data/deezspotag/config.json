@@ -208,13 +208,13 @@
     "titleTemplate": "%title%"
   },
   "podcast": {
-    "downloadLocation": ""
+    "downloadLocation": "/home/edzoh/Music/Test/MixTapes"
   },
   "multiQuality": {
     "enabled": true,
     "secondaryEnabled": true,
     "primaryDestinationFolderId": null,
-    "secondaryDestinationFolderId": 2,
+    "secondaryDestinationFolderId": null,
     "secondaryService": "auto",
     "secondaryQuality": "",
     "secondaryExcludeApple": true

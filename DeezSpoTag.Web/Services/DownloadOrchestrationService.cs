@@ -75,6 +75,10 @@ public sealed class DownloadOrchestrationService : BackgroundService
     };
     private static readonly TimeSpan StagingGateLogThrottle = TimeSpan.FromMinutes(1);
     private const string WarningLogLevel = "warning";
+    private const string FolderContentVideo = "video";
+    private const string FolderContentPodcast = "podcast";
+    private const string FolderContentAtmos = "atmos";
+    private const string FolderContentOther = "other";
     private static readonly JsonSerializerOptions ScheduleJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -492,7 +496,13 @@ public sealed class DownloadOrchestrationService : BackgroundService
         }
 
         var profileContext = await BuildAutomationProfileContextAsync(cancellationToken);
-        var pendingItems = await GetPendingPostDownloadItemsAsync(cancellationToken);
+        var pendingItems = await GetPendingPostDownloadItemsAsync(cancellationToken, profileContext.FoldersById);
+        if (pendingItems.Count == 0)
+        {
+            _logger.LogInformation("Orchestration skipped: no AutoTag-eligible completed downloads found.");
+            return null;
+        }
+
         var automationProfile = ResolveAutomationProfileForPendingDownloads(profileContext, pendingItems);
         if (automationProfile == null)
         {
@@ -2168,7 +2178,9 @@ public sealed class DownloadOrchestrationService : BackgroundService
         return null;
     }
 
-    private async Task<List<DownloadQueueItem>> GetPendingPostDownloadItemsAsync(CancellationToken cancellationToken)
+    private async Task<List<DownloadQueueItem>> GetPendingPostDownloadItemsAsync(
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<long, FolderDto>? foldersById = null)
     {
         var queueItems = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
         var completedItems = queueItems
@@ -2184,7 +2196,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
             .ToList();
         if (freshItems.Count > 0)
         {
-            return freshItems;
+            return await FilterAutoTagEligiblePendingItemsAsync(freshItems, foldersById, cancellationToken);
         }
 
         if (!TryResolveDownloadEnrichmentRoot(out var downloadRootPath, out _))
@@ -2192,8 +2204,34 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return freshItems;
         }
 
-        return completedItems
+        var recoveredItems = completedItems
             .Where(item => PayloadHasExistingSourceUnderRoot(item.PayloadJson, downloadRootPath))
+            .ToList();
+        return await FilterAutoTagEligiblePendingItemsAsync(recoveredItems, foldersById, cancellationToken);
+    }
+
+    private async Task<List<DownloadQueueItem>> FilterAutoTagEligiblePendingItemsAsync(
+        List<DownloadQueueItem> pendingItems,
+        IReadOnlyDictionary<long, FolderDto>? foldersById,
+        CancellationToken cancellationToken)
+    {
+        if (pendingItems.Count == 0 || !_libraryRepository.IsConfigured)
+        {
+            return pendingItems;
+        }
+
+        var effectiveFoldersById = foldersById;
+        if (effectiveFoldersById is null || effectiveFoldersById.Count == 0)
+        {
+            var folders = await _libraryRepository.GetFoldersAsync(cancellationToken);
+            effectiveFoldersById = folders.ToDictionary(folder => folder.Id);
+        }
+
+        return pendingItems
+            .Where(item =>
+                !item.DestinationFolderId.HasValue
+                || !effectiveFoldersById.TryGetValue(item.DestinationFolderId.Value, out var folder)
+                || RequiresAutoTagProfile(folder))
             .ToList();
     }
 
@@ -2537,6 +2575,49 @@ public sealed class DownloadOrchestrationService : BackgroundService
         return folder.Enabled
                && folder.AutoTagEnabled
                && !string.IsNullOrWhiteSpace(folder.RootPath);
+    }
+
+    private static bool RequiresAutoTagProfile(FolderDto folder) =>
+        ResolveFolderContentType(folder) is not FolderContentVideo and not FolderContentPodcast;
+
+    private static string ResolveFolderContentType(FolderDto folder)
+    {
+        var normalizedDesiredQuality = (folder.DesiredQuality ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalizedDesiredQuality))
+        {
+            return FolderContentOther;
+        }
+
+        if (normalizedDesiredQuality.Contains(FolderContentAtmos, StringComparison.Ordinal))
+        {
+            return FolderContentAtmos;
+        }
+
+        if (normalizedDesiredQuality.Contains(FolderContentVideo, StringComparison.Ordinal))
+        {
+            return FolderContentVideo;
+        }
+
+        if (normalizedDesiredQuality.Contains(FolderContentPodcast, StringComparison.Ordinal))
+        {
+            return FolderContentPodcast;
+        }
+
+        if (normalizedDesiredQuality == "0")
+        {
+            var fallback = $"{folder.DisplayName} {folder.RootPath}".ToLowerInvariant();
+            if (fallback.Contains(FolderContentVideo, StringComparison.Ordinal))
+            {
+                return FolderContentVideo;
+            }
+
+            if (fallback.Contains(FolderContentPodcast, StringComparison.Ordinal))
+            {
+                return FolderContentPodcast;
+            }
+        }
+
+        return FolderContentOther;
     }
 
     private static bool RemoveInactiveScheduleEntries<TValue>(

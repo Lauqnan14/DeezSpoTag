@@ -212,9 +212,7 @@
 .home-top-song-item__play.is-playing .playback-icon--pause {
     display: block;
 }
-.home-top-song-item:hover .home-top-song-item__play,
-.home-top-song-item:focus-within .home-top-song-item__play,
-.home-top-song-item__play.is-playing {
+.home-top-song-item:hover .home-top-song-item__play {
     opacity: 1;
     visibility: visible;
     pointer-events: auto;
@@ -226,9 +224,6 @@
 }
 
 .home-top-song-item__play.is-starting {
-    opacity: 1;
-    visibility: visible;
-    pointer-events: auto;
     color: var(--primary-color);
     background: color-mix(in srgb, var(--primary-color) 10%, transparent);
     animation: playback-request-pulse 0.9s ease-in-out infinite;
