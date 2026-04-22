@@ -252,9 +252,6 @@ What it does:
 - explains the project background
 - shows credits and outside tools/projects it builds on
 
-Simple meaning:
-
-- this is the "where this project came from" page
 
 ## 11. Smaller Support Pages
 

@@ -44,8 +44,9 @@ public sealed class MediaServerSoundtrackCacheRepositoryTests : IAsyncLifetime
     public async Task TvShowEpisodes_RoundTripThroughPersistentCache()
     {
         var logger = new CaptureLogger<MediaServerSoundtrackCacheRepository>();
+        var environment = new StubWebHostEnvironment(_tempRoot);
         var repository = new MediaServerSoundtrackCacheRepository(
-            new StubWebHostEnvironment(_tempRoot),
+            environment,
             logger);
 
         var cachedBefore = await repository.GetTvShowEpisodesAsync("plex", "tv-lib", "show-1", CancellationToken.None);
@@ -111,7 +112,8 @@ public sealed class MediaServerSoundtrackCacheRepositoryTests : IAsyncLifetime
         await repository.UpsertTvShowEpisodesAsync(response, CancellationToken.None);
         Assert.True(logger.Warnings.Count == 0, string.Join(Environment.NewLine, logger.Warnings));
 
-        await using (var connection = new SqliteConnection($"Data Source={Path.Join(_tempRoot, "Data", "media-server", "soundtrack-cache.db")}"))
+        var effectiveDataRoot = AppDataPaths.GetDataRoot(environment);
+        await using (var connection = new SqliteConnection($"Data Source={Path.Join(effectiveDataRoot, "media-server", "soundtrack-cache.db")}"))
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();

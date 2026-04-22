@@ -2,7 +2,7 @@
 
 This project is basically a music downloading and library-organizing machine.
 
-In plain English, it does 4 big jobs:
+It does 4 big jobs:
 
 1. It lets you choose what to download and how you want it saved.
 2. It downloads the audio from a music service.
@@ -23,7 +23,7 @@ Think of the app like a smart warehouse for music files.
 
 ## Step 1: You set your preferences
 
-Before downloading, you tell the app what kind of behavior you want.
+Before downloading, you configure the app to behave the way you want.
 
 Examples:
 
@@ -45,7 +45,7 @@ So:
 
 ## Step 2: You add something to download
 
-You usually give the app a link, search result, track, album, playlist, or artist item.
+You can paste a link, search result, track, album, playlist, or artist item.
 
 The app then figures out:
 
