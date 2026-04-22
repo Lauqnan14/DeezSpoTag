@@ -2011,18 +2011,22 @@ public sealed partial class MediaServerSoundtrackService
         int limit,
         CancellationToken cancellationToken)
     {
-        if (!HasCredentials(jellyfin?.Url, jellyfin?.ApiKey))
+        if (jellyfin is null
+            || string.IsNullOrWhiteSpace(jellyfin.Url)
+            || string.IsNullOrWhiteSpace(jellyfin.ApiKey))
         {
             return new List<MediaServerContentItem>();
         }
 
-        var userId = await ResolveJellyfinUserIdAsync(jellyfin!, cancellationToken);
+        var url = jellyfin.Url;
+        var apiKey = jellyfin.ApiKey;
+        var userId = await ResolveJellyfinUserIdAsync(jellyfin, cancellationToken);
         if (string.IsNullOrWhiteSpace(userId))
         {
             return new List<MediaServerContentItem>();
         }
 
-        var items = await _jellyfinApiClient.GetLibraryItemsAsync(jellyfin.Url!, jellyfin.ApiKey!, userId, libraryId, offset, limit, cancellationToken);
+        var items = await _jellyfinApiClient.GetLibraryItemsAsync(url, apiKey, userId, libraryId, offset, limit, cancellationToken);
         return MapJellyfinMediaItems(items, jellyfin, libraryId, libraryName);
     }
 
@@ -2049,18 +2053,22 @@ public sealed partial class MediaServerSoundtrackService
         int limit,
         CancellationToken cancellationToken)
     {
-        if (!HasCredentials(jellyfin?.Url, jellyfin?.ApiKey))
+        if (jellyfin is null
+            || string.IsNullOrWhiteSpace(jellyfin.Url)
+            || string.IsNullOrWhiteSpace(jellyfin.ApiKey))
         {
             return new List<MediaServerContentItem>();
         }
 
-        var userId = await ResolveJellyfinUserIdAsync(jellyfin!, cancellationToken);
+        var url = jellyfin.Url;
+        var apiKey = jellyfin.ApiKey;
+        var userId = await ResolveJellyfinUserIdAsync(jellyfin, cancellationToken);
         if (string.IsNullOrWhiteSpace(userId))
         {
             return new List<MediaServerContentItem>();
         }
 
-        var items = await _jellyfinApiClient.GetLibraryRecentlyAddedItemsAsync(jellyfin.Url!, jellyfin.ApiKey!, userId, libraryId, limit, cancellationToken);
+        var items = await _jellyfinApiClient.GetLibraryRecentlyAddedItemsAsync(url, apiKey, userId, libraryId, limit, cancellationToken);
         return MapJellyfinMediaItems(items, jellyfin, libraryId, libraryName);
     }
 
@@ -2086,7 +2094,7 @@ public sealed partial class MediaServerSoundtrackService
             .ToList();
     }
 
-    private List<MediaServerContentItem> MapJellyfinMediaItems(
+    private static List<MediaServerContentItem> MapJellyfinMediaItems(
         IEnumerable<JellyfinMediaItem> items,
         JellyfinAuth jellyfin,
         string libraryId,

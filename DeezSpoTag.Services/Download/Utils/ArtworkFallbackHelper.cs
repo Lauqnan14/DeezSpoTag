@@ -220,7 +220,7 @@ public static class ArtworkFallbackHelper
         return EnforceSpotifyArtworkLastResortOnly(resolved);
     }
 
-    private static List<string> EnforceSpotifyArtworkLastResortOnly(IReadOnlyList<string> providers)
+    private static List<string> EnforceSpotifyArtworkLastResortOnly(List<string> providers)
     {
         if (providers == null || providers.Count == 0)
         {

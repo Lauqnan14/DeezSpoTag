@@ -114,7 +114,6 @@ const ALPHA_JUMP_LETTERS = Object.freeze([
     'V', 'W', 'X', 'Y', 'Z'
 ]);
 let pendingLibraryReturnState = null;
-let pendingSoundtrackReturnState = null;
 const libraryTopSongsPreviewState = {
     queueButtons: [],
     queueIndex: -1
@@ -796,10 +795,10 @@ async function fetchJsonOptionalWithTimeout(url, timeoutMs = 12000, options = nu
     }, Math.max(1, Number.parseInt(String(timeoutMs ?? 0), 10) || 12000));
 
     try {
-        return await fetchJsonOptional(url, {
-            ...(options || {}),
-            signal: controller.signal
-        });
+        const requestOptions = options
+            ? { ...options, signal: controller.signal }
+            : { signal: controller.signal };
+        return await fetchJsonOptional(url, requestOptions);
     } catch (error) {
         if (error?.name === 'AbortError') {
             console.warn(`Request timed out while loading optional JSON: ${url}`);
@@ -9953,12 +9952,13 @@ function queueFolderAndDownloadLoadTasks(targets, tasks) {
     const shouldLoadFolderData = targets.shouldLoadFolders || targets.shouldLoadViewFolders || targets.shouldLoadAlbumDestination;
     const shouldLoadDownloadData = targets.shouldLoadDownload || targets.shouldLoadAlbumDestination;
     if (shouldLoadFolderData && shouldLoadDownloadData) {
-        tasks.push(loadFolders());
-        tasks.push(loadDownloadLocation().then(() => {
-            if (targets.shouldLoadFolders && document.getElementById('foldersContainer')) {
-                renderFolders();
-            }
-        }));
+        tasks.push(
+            loadFolders(),
+            loadDownloadLocation().then(() => {
+                if (targets.shouldLoadFolders && document.getElementById('foldersContainer')) {
+                    renderFolders();
+                }
+            }));
         return;
     }
     if (shouldLoadFolderData) {

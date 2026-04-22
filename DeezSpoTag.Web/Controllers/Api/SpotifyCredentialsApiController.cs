@@ -1157,7 +1157,9 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
     }
 
     [HttpGet("status")]
-    public async Task<IActionResult> GetSpotifyConnectionStatus(CancellationToken cancellationToken)
+    public async Task<IActionResult> GetSpotifyConnectionStatus(
+        [FromQuery(Name = "force")] string? force,
+        CancellationToken cancellationToken)
     {
         var userId = GetUserId();
         if (string.IsNullOrWhiteSpace(userId))
@@ -1166,9 +1168,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
 
         var cacheKey = userId.Trim();
-        var forceRefreshRaw = Request.Query["force"].ToString();
-        var forceRefresh = string.Equals(forceRefreshRaw, "true", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(forceRefreshRaw, "1", StringComparison.OrdinalIgnoreCase);
+        var forceRefresh = IsTruthyQueryValue(force);
         if (forceRefresh)
         {
             SpotifyConnectionStatusCache.TryRemove(cacheKey, out _);
@@ -1199,6 +1199,10 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
 
         return Ok(response);
     }
+
+    private static bool IsTruthyQueryValue(string? value)
+        => string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "1", StringComparison.OrdinalIgnoreCase);
 
     private static bool TryGetCachedSpotifyConnectionStatus(string cacheKey, out SpotifyConnectionStatusResponse? response)
     {

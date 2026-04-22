@@ -40,6 +40,12 @@ public sealed class EngineFallbackCoordinator
         Action<(string Source, string? Quality, int Index)> ApplyStep,
         Action<List<string>> ApplyAutoSources,
         Action<string> SetSourceUrl);
+    private sealed record FallbackStepExecutionContext(
+        FallbackPayloadMutators Mutators,
+        object PayloadForSerialization,
+        SourceResolutionRequest ResolutionRequest,
+        string? SpotifyId,
+        string? ResolvedIsrc);
     private sealed record SourceResolutionRequest(
         string Engine,
         string SourceUrl,
@@ -124,37 +130,15 @@ public sealed class EngineFallbackCoordinator
     {
         var settings = _settingsService.LoadSettings();
         var planSteps = BuildPlanSteps(request.FallbackPlan, request.AutoSources, settings);
-        mutators.ApplyAutoSources(planSteps.Select(step => DownloadSourceOrder.EncodeAutoSource(step.Source, step.Quality)).ToList());
+        mutators.ApplyAutoSources(EncodePlanSteps(planSteps));
 
-        var resolvedIsrc = request.Isrc;
-        if (string.IsNullOrWhiteSpace(resolvedIsrc))
-        {
-            resolvedIsrc = await _deezerIsrcResolver.ResolveByTrackIdAsync(request.DeezerId, cancellationToken);
-        }
-
-        if (string.IsNullOrWhiteSpace(resolvedIsrc))
-        {
-            resolvedIsrc = await _deezerIsrcResolver.ResolveByMetadataAsync(
-                request.Title,
-                request.Artist,
-                request.Album,
-                request.DurationMs,
-                cancellationToken);
-        }
-
+        var resolvedIsrc = await ResolveIsrcForFallbackAsync(request, cancellationToken);
         if (!string.IsNullOrWhiteSpace(resolvedIsrc))
         {
             TrySetIsrc(payloadForSerialization, resolvedIsrc);
         }
 
-        var matchedIndex = FindStepIndex(planSteps, request.CurrentEngine, request.Quality);
-        // Reconcile persisted auto-index with current engine/quality:
-        // some engines can internally step down quality before bubbling a failure.
-        // If that happened, prefer the furthest progressed index so fallback does not revisit already-attempted steps.
-        var currentIndex = request.AutoIndex >= 0
-            ? Math.Max(request.AutoIndex, matchedIndex)
-            : matchedIndex;
-        var nextIndex = currentIndex + 1;
+        var nextIndex = ResolveNextPlanIndex(planSteps, request);
         var userCountry = settings.DeezerCountry;
         var resolvedSpotifyId = await ResolveSpotifyIdForFallbackAsync(request, userCountry, cancellationToken);
         if (!string.IsNullOrWhiteSpace(resolvedSpotifyId))
@@ -162,7 +146,90 @@ public sealed class EngineFallbackCoordinator
             TrySetSpotifyId(payloadForSerialization, resolvedSpotifyId);
         }
 
-        var resolutionRequest = new SourceResolutionRequest(
+        var resolutionRequest = BuildSourceResolutionRequest(
+            request,
+            settings,
+            userCountry,
+            resolvedSpotifyId,
+            resolvedIsrc);
+        var stepContext = new FallbackStepExecutionContext(
+            mutators,
+            payloadForSerialization,
+            resolutionRequest,
+            resolvedSpotifyId ?? request.SpotifyId,
+            resolvedIsrc);
+
+        for (var stepIndex = nextIndex; stepIndex < planSteps.Count; stepIndex++)
+        {
+            var step = planSteps[stepIndex];
+            if (ShouldSkipStep(step, request.CurrentEngine, settings.FallbackBitrate))
+            {
+                continue;
+            }
+
+            var advanced = await TryAdvanceToStepAsync(
+                request,
+                step,
+                stepIndex,
+                stepContext,
+                cancellationToken);
+            if (advanced)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static List<string> EncodePlanSteps(List<(string Source, string? Quality)> planSteps)
+        => planSteps
+            .Select(step => DownloadSourceOrder.EncodeAutoSource(step.Source, step.Quality))
+            .ToList();
+
+    private async Task<string?> ResolveIsrcForFallbackAsync(
+        FallbackAdvanceRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(request.Isrc))
+        {
+            return request.Isrc;
+        }
+
+        var resolvedIsrc = await _deezerIsrcResolver.ResolveByTrackIdAsync(request.DeezerId, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(resolvedIsrc))
+        {
+            return resolvedIsrc;
+        }
+
+        return await _deezerIsrcResolver.ResolveByMetadataAsync(
+            request.Title,
+            request.Artist,
+            request.Album,
+            request.DurationMs,
+            cancellationToken);
+    }
+
+    private static int ResolveNextPlanIndex(List<(string Source, string? Quality)> planSteps, FallbackAdvanceRequest request)
+    {
+        var matchedIndex = FindStepIndex(planSteps, request.CurrentEngine, request.Quality);
+        // Reconcile persisted auto-index with current engine/quality:
+        // some engines can internally step down quality before bubbling a failure.
+        // If that happened, prefer the furthest progressed index so fallback does not revisit already-attempted steps.
+        var currentIndex = request.AutoIndex >= 0
+            ? Math.Max(request.AutoIndex, matchedIndex)
+            : matchedIndex;
+        return currentIndex + 1;
+    }
+
+    private static SourceResolutionRequest BuildSourceResolutionRequest(
+        FallbackAdvanceRequest request,
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        string userCountry,
+        string? resolvedSpotifyId,
+        string? resolvedIsrc)
+    {
+        return new SourceResolutionRequest(
             Engine: string.Empty,
             SourceUrl: request.SourceUrl,
             SpotifyId: resolvedSpotifyId ?? request.SpotifyId,
@@ -182,54 +249,71 @@ public sealed class EngineFallbackCoordinator
             MediaUserToken: settings.AppleMusic?.MediaUserToken,
             UserCountry: userCountry,
             FallbackSearchEnabled: settings.FallbackSearch);
+    }
 
-        while (nextIndex < planSteps.Count)
+    private static bool ShouldSkipStep(
+        (string Source, string? Quality) step,
+        string currentEngine,
+        bool fallbackBitrateEnabled)
+    {
+        if (string.IsNullOrWhiteSpace(step.Source))
         {
-            var step = planSteps[nextIndex];
-            if (string.IsNullOrWhiteSpace(step.Source))
-            {
-                nextIndex++;
-                continue;
-            }
-
-            if (!settings.FallbackBitrate
-                && string.Equals(step.Source, request.CurrentEngine, StringComparison.OrdinalIgnoreCase))
-            {
-                nextIndex++;
-                continue;
-            }
-
-            var resolvedUrl = await ResolveSourceUrlAsync(
-                resolutionRequest with { Engine = step.Source },
-                cancellationToken);
-            var canAdvanceWithoutResolvedUrl = CanAdvanceWithoutResolvedUrl(step.Source, resolvedSpotifyId ?? request.SpotifyId, request, resolvedIsrc);
-            if (string.IsNullOrWhiteSpace(resolvedUrl) && !canAdvanceWithoutResolvedUrl)
-            {
-                _activityLog.Warn($"Fallback skip: {request.QueueUuid} -> {step.Source} (no resolvable URL)");
-                nextIndex++;
-                continue;
-            }
-
-            mutators.SetSourceUrl(resolvedUrl ?? string.Empty);
-            if (string.Equals(step.Source, AppleEngine, StringComparison.OrdinalIgnoreCase))
-            {
-                var resolvedAppleId = AppleIdParser.TryExtractFromUrl(resolvedUrl);
-                if (!string.IsNullOrWhiteSpace(resolvedAppleId))
-                {
-                    TrySetAppleId(payloadForSerialization, resolvedAppleId);
-                }
-            }
-
-            mutators.ApplyStep((step.Source, step.Quality, nextIndex));
-            var json = System.Text.Json.JsonSerializer.Serialize(payloadForSerialization);
-            await _queueRepository.UpdatePayloadAsync(request.QueueUuid, json, cancellationToken);
-            await _queueRepository.UpdateEngineAsync(request.QueueUuid, step.Source, cancellationToken);
-            await _queueRepository.UpdateStatusAsync(request.QueueUuid, "queued", error: null, downloaded: 0, failed: 0, progress: 0, cancellationToken: cancellationToken);
-            _activityLog.Info($"Fallback advanced: {request.QueueUuid} -> {step.Source} (auto_index={nextIndex})");
             return true;
         }
 
-        return false;
+        return !fallbackBitrateEnabled
+            && string.Equals(step.Source, currentEngine, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<bool> TryAdvanceToStepAsync(
+        FallbackAdvanceRequest request,
+        (string Source, string? Quality) step,
+        int stepIndex,
+        FallbackStepExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        var resolvedUrl = await ResolveSourceUrlAsync(
+            context.ResolutionRequest with { Engine = step.Source },
+            cancellationToken);
+        var canAdvanceWithoutResolvedUrl = CanAdvanceWithoutResolvedUrl(step.Source, context.SpotifyId, request, context.ResolvedIsrc);
+        if (string.IsNullOrWhiteSpace(resolvedUrl) && !canAdvanceWithoutResolvedUrl)
+        {
+            _activityLog.Warn($"Fallback skip: {request.QueueUuid} -> {step.Source} (no resolvable URL)");
+            return false;
+        }
+
+        context.Mutators.SetSourceUrl(resolvedUrl ?? string.Empty);
+        TrySetResolvedAppleId(context.PayloadForSerialization, step.Source, resolvedUrl);
+        context.Mutators.ApplyStep((step.Source, step.Quality, stepIndex));
+        await PersistAdvancedFallbackStateAsync(request.QueueUuid, step.Source, context.PayloadForSerialization, cancellationToken);
+        _activityLog.Info($"Fallback advanced: {request.QueueUuid} -> {step.Source} (auto_index={stepIndex})");
+        return true;
+    }
+
+    private static void TrySetResolvedAppleId(object payloadForSerialization, string source, string? resolvedUrl)
+    {
+        if (!string.Equals(source, AppleEngine, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var resolvedAppleId = AppleIdParser.TryExtractFromUrl(resolvedUrl);
+        if (!string.IsNullOrWhiteSpace(resolvedAppleId))
+        {
+            TrySetAppleId(payloadForSerialization, resolvedAppleId);
+        }
+    }
+
+    private async Task PersistAdvancedFallbackStateAsync(
+        string queueUuid,
+        string stepSource,
+        object payloadForSerialization,
+        CancellationToken cancellationToken)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(payloadForSerialization);
+        await _queueRepository.UpdatePayloadAsync(queueUuid, json, cancellationToken);
+        await _queueRepository.UpdateEngineAsync(queueUuid, stepSource, cancellationToken);
+        await _queueRepository.UpdateStatusAsync(queueUuid, "queued", error: null, downloaded: 0, failed: 0, progress: 0, cancellationToken: cancellationToken);
     }
 
     private async Task<string?> ResolveSpotifyIdForFallbackAsync(
@@ -408,82 +492,104 @@ public sealed class EngineFallbackCoordinator
             return null;
         }
 
-        var appleId = request.AppleId;
-        if (string.IsNullOrWhiteSpace(appleId)
-            && IsServiceUrlMatch(request.SourceUrl, AppleEngine))
-        {
-            appleId = AppleIdParser.TryExtractFromUrl(request.SourceUrl);
-        }
-        var resolvedStorefront = await _appleCatalogService.ResolveStorefrontAsync(
+        var appleId = ResolveSeedAppleId(request);
+        var resolvedStorefront = await ResolveStorefrontOrDefaultAsync(
             request.Storefront,
             request.MediaUserToken,
             cancellationToken);
-        if (string.IsNullOrWhiteSpace(resolvedStorefront))
+
+        if (string.IsNullOrWhiteSpace(appleId))
         {
-            resolvedStorefront = DefaultAppleStorefront;
+            (appleId, resolvedStorefront) = await ResolveAppleIdAcrossCandidatesAsync(
+                resolvedStorefront,
+                request.Language,
+                (_, storefront, language, token) => TryResolveAppleIdByIsrcAsync(
+                    request.Isrc,
+                    storefront,
+                    language,
+                    request.MediaUserToken,
+                    token),
+                request,
+                cancellationToken);
         }
 
         if (string.IsNullOrWhiteSpace(appleId))
         {
-            foreach (var storefront in BuildStorefrontCandidates(resolvedStorefront))
-            {
-                foreach (var language in BuildLanguageCandidates(request.Language))
-                {
-                    appleId = await TryResolveAppleIdByIsrcAsync(
-                        request.Isrc,
-                        storefront,
-                        language,
-                        request.MediaUserToken,
-                        cancellationToken);
-                    if (!string.IsNullOrWhiteSpace(appleId))
+            (appleId, resolvedStorefront) = await ResolveAppleIdAcrossCandidatesAsync(
+                resolvedStorefront,
+                request.Language,
+                (sourceRequest, storefront, language, token) => TryResolveAppleIdBySearchAsync(
+                    sourceRequest with
                     {
-                        resolvedStorefront = storefront;
-                        break;
-                    }
-                }
-
-                if (!string.IsNullOrWhiteSpace(appleId))
-                {
-                    break;
-                }
-            }
+                        Storefront = storefront,
+                        Language = language
+                    },
+                    token),
+                request,
+                cancellationToken);
         }
 
-        if (string.IsNullOrWhiteSpace(appleId))
+        return BuildAppleMediaUrl(appleId, resolvedStorefront);
+    }
+
+    private static string? ResolveSeedAppleId(SourceResolutionRequest request)
+    {
+        if (!string.IsNullOrWhiteSpace(request.AppleId))
         {
-            foreach (var storefront in BuildStorefrontCandidates(resolvedStorefront))
-            {
-                foreach (var language in BuildLanguageCandidates(request.Language))
-                {
-                    appleId = await TryResolveAppleIdBySearchAsync(
-                        request with
-                        {
-                            Storefront = storefront,
-                            Language = language
-                        },
-                        cancellationToken);
-                    if (!string.IsNullOrWhiteSpace(appleId))
-                    {
-                        resolvedStorefront = storefront;
-                        break;
-                    }
-                }
+            return request.AppleId;
+        }
 
-                if (!string.IsNullOrWhiteSpace(appleId))
+        return IsServiceUrlMatch(request.SourceUrl, AppleEngine)
+            ? AppleIdParser.TryExtractFromUrl(request.SourceUrl)
+            : null;
+    }
+
+    private async Task<string> ResolveStorefrontOrDefaultAsync(
+        string storefront,
+        string? mediaUserToken,
+        CancellationToken cancellationToken)
+    {
+        var resolvedStorefront = await _appleCatalogService.ResolveStorefrontAsync(
+            storefront,
+            mediaUserToken,
+            cancellationToken);
+        return string.IsNullOrWhiteSpace(resolvedStorefront)
+            ? DefaultAppleStorefront
+            : resolvedStorefront;
+    }
+
+    private static async Task<(string? AppleId, string Storefront)> ResolveAppleIdAcrossCandidatesAsync(
+        string primaryStorefront,
+        string language,
+        Func<SourceResolutionRequest, string, string, CancellationToken, Task<string?>> resolver,
+        SourceResolutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        foreach (var storefrontCandidate in BuildStorefrontCandidates(primaryStorefront))
+        {
+            foreach (var languageCandidate in BuildLanguageCandidates(language))
+            {
+                var resolvedAppleId = await resolver(request, storefrontCandidate, languageCandidate, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(resolvedAppleId))
                 {
-                    break;
+                    return (resolvedAppleId, storefrontCandidate);
                 }
             }
         }
 
+        return (null, primaryStorefront);
+    }
+
+    private static string? BuildAppleMediaUrl(string? appleId, string storefront)
+    {
         if (string.IsNullOrWhiteSpace(appleId))
         {
             return null;
         }
 
         return appleId.StartsWith("ra.", StringComparison.OrdinalIgnoreCase)
-            ? $"https://music.apple.com/{resolvedStorefront}/station/{appleId}"
-            : $"https://music.apple.com/{resolvedStorefront}/song/{appleId}?i={appleId}";
+            ? $"https://music.apple.com/{storefront}/station/{appleId}"
+            : $"https://music.apple.com/{storefront}/song/{appleId}?i={appleId}";
     }
 
     private async Task<string?> TryResolveAppleIdByIsrcAsync(
@@ -701,7 +807,7 @@ public sealed class EngineFallbackCoordinator
             .ToList();
     }
 
-    private static IReadOnlyList<string> BuildStorefrontCandidates(string primary)
+    private static List<string> BuildStorefrontCandidates(string primary)
     {
         var candidates = new List<string>();
         if (!string.IsNullOrWhiteSpace(primary))
@@ -715,7 +821,7 @@ public sealed class EngineFallbackCoordinator
             .ToList();
     }
 
-    private static IReadOnlyList<string> BuildLanguageCandidates(string? language)
+    private static List<string> BuildLanguageCandidates(string? language)
     {
         var baseLanguage = string.IsNullOrWhiteSpace(language) ? DefaultLanguage : language.Trim();
         var values = new List<string> { baseLanguage };

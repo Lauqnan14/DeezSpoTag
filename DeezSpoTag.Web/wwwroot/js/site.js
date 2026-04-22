@@ -1497,28 +1497,13 @@ globalThis.DeezSpoTag = {
         }
 
         if (this.connectedPlatformsRefreshInFlight) {
-            if (!this.connectedPlatformsRefreshPending) {
-                this.connectedPlatformsRefreshPending = { ...options };
-            } else {
-                if (options?.force === true) {
-                    this.connectedPlatformsRefreshPending.force = true;
-                }
-                if (options?.forceDeep === true || options?.deep === true) {
-                    this.connectedPlatformsRefreshPending.force = true;
-                    this.connectedPlatformsRefreshPending.forceDeep = true;
-                    this.connectedPlatformsRefreshPending.deep = true;
-                }
-            }
+            this.queuePendingConnectedPlatformsRefresh(options);
             return;
         }
 
         this.connectedPlatformsRefreshInFlight = true;
 
-        const platformStates = cached?.statuses
-            ? this.buildCachedPlatformStates(cached.statuses, selected)
-            : cached?.platforms?.length
-                ? this.buildCachedPlatformStates(cached.platforms, selected)
-                : this.buildInitialPlatformStates(selected);
+        const platformStates = this.resolveConnectedPlatformStates(cached, selected);
         const connected = new Set(
             Object.entries(platformStates)
                 .filter(([, status]) => status?.active === true)
@@ -1577,6 +1562,32 @@ globalThis.DeezSpoTag = {
         }
     },
 
+    queuePendingConnectedPlatformsRefresh(options) {
+        if (this.connectedPlatformsRefreshPending) {
+            if (options?.force === true) {
+                this.connectedPlatformsRefreshPending.force = true;
+            }
+            if (options?.forceDeep === true || options?.deep === true) {
+                this.connectedPlatformsRefreshPending.force = true;
+                this.connectedPlatformsRefreshPending.forceDeep = true;
+                this.connectedPlatformsRefreshPending.deep = true;
+            }
+            return;
+        }
+
+        this.connectedPlatformsRefreshPending = { ...options };
+    },
+
+    resolveConnectedPlatformStates(cached, selected) {
+        if (cached?.statuses) {
+            return this.buildCachedPlatformStates(cached.statuses, selected);
+        }
+        if (cached?.platforms?.length) {
+            return this.buildCachedPlatformStates(cached.platforms, selected);
+        }
+        return this.buildInitialPlatformStates(selected);
+    },
+
     renderConnectedPlatformsFromSnapshot(cached, selected, initialStates) {
         if (this.connectedPlatformsHasRendered) {
             return;
@@ -1612,9 +1623,7 @@ globalThis.DeezSpoTag = {
         const deezerRequest = deezerRequested
             ? fetch('/api/login/status', fetchOptions)
             : Promise.resolve(null);
-        const spotifyStatusRequest = runDeepChecks
-            ? fetch(forceDeepRefresh ? '/api/spotify-credentials/status?force=true' : '/api/spotify-credentials/status', fetchOptions)
-            : fetch('/api/spotify-credentials/accounts', fetchOptions);
+        const spotifyStatusRequest = this.buildSpotifyStatusRequest(fetchOptions, runDeepChecks, forceDeepRefresh);
         const appleWrapperStatusRequest = appleWrapperRequested
             ? fetch('/api/apple-music/wrapper-ref/status', fetchOptions)
             : Promise.resolve(null);
@@ -1645,6 +1654,17 @@ globalThis.DeezSpoTag = {
             spotifyOk: Boolean(spotifyResponse?.ok),
             appleWrapperOk: Boolean(appleWrapperResponse?.ok)
         };
+    },
+
+    buildSpotifyStatusRequest(fetchOptions, runDeepChecks, forceDeepRefresh) {
+        if (!runDeepChecks) {
+            return fetch('/api/spotify-credentials/accounts', fetchOptions);
+        }
+
+        const spotifyStatusUrl = forceDeepRefresh
+            ? '/api/spotify-credentials/status?force=true'
+            : '/api/spotify-credentials/status';
+        return fetch(spotifyStatusUrl, fetchOptions);
     },
 
     async applyAuthStatus(authResponse, authOk, connected, platformStates) {
