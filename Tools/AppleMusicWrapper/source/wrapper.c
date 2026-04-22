@@ -81,8 +81,12 @@ int main(int argc, char *argv[], char *envp[]) {
 
     if (has_cap_sys_admin()) {
         if (unshare(CLONE_NEWPID)) {
-            perror("unshare");
-            return 1;
+            if (errno == EPERM || errno == EACCES || errno == ENOSYS) {
+                fprintf(stderr, "warning: unshare(CLONE_NEWPID) unavailable (%s); continuing without PID namespace isolation\n", strerror(errno));
+            } else {
+                perror("unshare");
+                return 1;
+            }
         }
     }
 

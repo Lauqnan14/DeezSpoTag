@@ -1,3 +1,20 @@
+FROM debian:stable-slim AS wrapper-builder
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY Tools/AppleMusicWrapper/source/wrapper.c /build/wrapper.c
+COPY Tools/AppleMusicWrapper/source/cmdline.c /build/cmdline.c
+COPY Tools/AppleMusicWrapper/source/cmdline.h /build/cmdline.h
+
+RUN mkdir -p /out \
+    && gcc -O2 -Wall -Wextra -o /out/wrapper wrapper.c cmdline.c
+
 FROM debian:stable-slim
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -18,6 +35,7 @@ ENV WRAPPER_ARGS="-H 0.0.0.0 -D 10020 -M 20020 -A 30020" \
     TZ=UTC
 
 COPY Tools/AppleMusicWrapper/runtime/app /opt/apple-wrapper
+COPY --from=wrapper-builder /out/wrapper /opt/apple-wrapper/wrapper
 
 WORKDIR /opt/apple-wrapper
 ARG WRAPPER_BUNDLE_URL_X86_64=https://github.com/WorldObservationLog/wrapper/releases/download/wrapper.x86_64.latest/Wrapper.x86_64.latest.zip
@@ -70,12 +88,6 @@ RUN set -eux; \
     bundle_rootfs="$(dirname "$(dirname "$(dirname "$main_path")")")"; \
     rm -rf /opt/apple-wrapper/rootfs; \
     cp -a "$bundle_rootfs" /opt/apple-wrapper/rootfs; \
-    bundle_wrapper="$(find "$tmpdir/unpack" -type f -name wrapper -perm -111 -print -quit)"; \
-    if [ -z "$bundle_wrapper" ]; then \
-      echo "Downloaded wrapper bundle does not contain executable wrapper binary" >&2; \
-      exit 1; \
-    fi; \
-    cp -f "$bundle_wrapper" /opt/apple-wrapper/wrapper; \
     rm -rf "$tmpdir"; \
     set -eux; \
     mkdir -p \

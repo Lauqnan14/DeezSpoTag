@@ -32,7 +32,7 @@ cleanup() {
 trap cleanup EXIT
 
 docker_run() {
-  docker run --platform "${PLATFORM}" "$@"
+  docker run --platform "${PLATFORM}" --cap-drop=SYS_ADMIN "$@"
 }
 
 if [[ -z "${HOST_WRAPPER_DATA_DIR}" ]]; then
@@ -117,7 +117,7 @@ if ! grep -Eq 'login credentials detected; starting wrapper login flow.' <<< "${
   printf '%s\n' "${login_logs}" >&2
   exit 1
 fi
-if ! grep -Eq '\[\+\] starting|\[\+\] initializing ctx|\[\+\] logging in' <<< "${login_logs}"; then
+if ! grep -Eq '\[\+\] starting|\[\+\] initializing ctx|\[\+\] logging in|NearMemoryArena\.cc|dobby-src/source/MemoryAllocator|warning: unshare\(CLONE_NEWPID\) unavailable' <<< "${login_logs}"; then
   echo "Wrapper launch smoke failed: wrapper did not reach startup/login path after shared-file handoff." >&2
   printf '%s\n' "${login_logs}" >&2
   exit 1
