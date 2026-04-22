@@ -154,7 +154,10 @@ public sealed class SpotifyMetadataService
         _userAgent = SpotifyUserAgentGenerator.BuildRandom(_userAgentRandom, _userAgentLock);
     }
 
-    public async Task<SpotifyUrlMetadata?> FetchByUrlAsync(string url, CancellationToken cancellationToken)
+    public async Task<SpotifyUrlMetadata?> FetchByUrlAsync(
+        string url,
+        CancellationToken cancellationToken,
+        bool hydrateTracks = true)
     {
         var parsed = ParseSpotifyUrl(url);
         if (parsed == null)
@@ -185,7 +188,7 @@ public sealed class SpotifyMetadataService
             return null;
         }
 
-        if (parsed.Type == TrackType && pathfinderMetadata.TrackList.Count > 0)
+        if (hydrateTracks && parsed.Type == TrackType && pathfinderMetadata.TrackList.Count > 0)
         {
             pathfinderMetadata = await HydrateTrackMetadataAsync(pathfinderMetadata, cancellationToken);
         }

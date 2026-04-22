@@ -82,7 +82,10 @@ public sealed class SpotifyTracklistService
 
     public async Task<SpotifyTracklistPayload?> GetTracklistAsync(string url, CancellationToken cancellationToken)
     {
-        var metadata = await _metadataService.FetchByUrlAsync(url, cancellationToken);
+        var metadata = await _metadataService.FetchByUrlAsync(
+            url,
+            cancellationToken,
+            hydrateTracks: false);
         if (metadata == null)
         {
             return null;
@@ -147,7 +150,7 @@ public sealed class SpotifyTracklistService
                 new List<SpotifyTracklistTrack>());
         }
 
-        var conversion = await ConvertTracksAsync(tracks, allowFallbackSearch, cancellationToken);
+        var conversion = await ConvertTracksAsync(tracks, allowFallbackSearch, cancellationToken: cancellationToken);
         conversion = ApplyStoredMatches(token, conversion);
 
         if (conversion.Pending.Count > 0)
@@ -377,7 +380,12 @@ public sealed class SpotifyTracklistService
             return new SpotifyTracklistConversion(mapped, new List<SpotifyTracklistPending>());
         }
 
-        var conversion = await ConvertTracksAsync(tracks, allowFallbackSearch, cancellationToken);
+        var immediateResolveLimit = ResolveImmediateResolveLimit(contentType, tracks.Count);
+        var conversion = await ConvertTracksAsync(
+            tracks,
+            allowFallbackSearch,
+            immediateResolveLimit,
+            cancellationToken);
         if (contentType == SpotifyContentType.Playlist && !string.IsNullOrWhiteSpace(signature))
         {
             conversion = ApplyStoredSnapshot(signature, conversion);
@@ -942,10 +950,27 @@ public sealed class SpotifyTracklistService
         return artistIds[0] ?? string.Empty;
     }
 
+    private static int ResolveImmediateResolveLimit(SpotifyContentType contentType, int trackCount)
+    {
+        if (trackCount <= 0)
+        {
+            return 0;
+        }
+
+        return contentType switch
+        {
+            SpotifyContentType.Playlist => Math.Min(ImmediateResolveLimit, trackCount),
+            SpotifyContentType.Track => 0,
+            SpotifyContentType.Album => 0,
+            _ => Math.Min(ImmediateResolveLimit, trackCount)
+        };
+    }
+
     private async Task<SpotifyTracklistConversion> ConvertTracksAsync(
         List<SpotifyTrackSummary> tracks,
         bool allowFallbackSearch,
-        CancellationToken cancellationToken)
+        int immediateResolveLimit = ImmediateResolveLimit,
+        CancellationToken cancellationToken = default)
     {
         if (tracks.Count == 0)
         {
@@ -971,7 +996,7 @@ public sealed class SpotifyTracklistService
             gate);
 
         // Resolve the first chunk immediately to avoid empty Deezer IDs in the UI/downloads.
-        var resolveNowLimit = Math.Min(ImmediateResolveLimit, tracks.Count);
+        var resolveNowLimit = Math.Min(Math.Max(0, immediateResolveLimit), tracks.Count);
         for (var index = 0; index < tracks.Count; index++)
         {
             var trackIndex = index;
