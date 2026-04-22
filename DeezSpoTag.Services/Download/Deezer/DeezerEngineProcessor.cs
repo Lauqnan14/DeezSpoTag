@@ -957,11 +957,11 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         }
 
         var outputPath = await DownloadEpisodeFileAsync(
-            BuildEpisodeTrackFromApi(trackApi, payload),
+            BuildEpisodeTrackFromApi(trackApi, payload, settings),
             episodeId,
             streamUrl,
             destinationRoot,
-            settings.IllegalCharacterReplacer,
+            settings,
             queueUuid,
             cancellationToken);
         if (string.IsNullOrWhiteSpace(outputPath))
@@ -1027,7 +1027,7 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         string? episodeId,
         string streamUrl,
         string destinationRoot,
-        string? illegalCharacterReplacer,
+        DeezSpoTagSettings settings,
         string queueUuid,
         CancellationToken cancellationToken)
     {
@@ -1038,8 +1038,13 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
 
         var finalStreamUrl = response.RequestMessage?.RequestUri?.ToString() ?? streamUrl;
         var extension = GetEpisodeExtension(response.Content.Headers.ContentType?.MediaType, streamUrl, finalStreamUrl);
-        var filename = BuildEpisodeFilename(track, episodeId, illegalCharacterReplacer, extension);
-        var outputPath = Path.Join(destinationRoot, filename);
+        var outputPath = await ResolveEpisodeOutputPathAsync(
+            track,
+            episodeId,
+            destinationRoot,
+            extension,
+            settings,
+            cancellationToken);
 
         var progressReporter = QueueHelperUtils.CreateProgressReporter(
             _queueRepository,
@@ -1089,6 +1094,39 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
 
         await FailQueueAsync(queueUuid, "Episode download failed", notify: true, cancellationToken);
         return null;
+    }
+
+    private async Task<string> ResolveEpisodeOutputPathAsync(
+        CoreTrack track,
+        string? episodeId,
+        string destinationRoot,
+        string extension,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var originalDownloadLocation = settings.DownloadLocation;
+        settings.DownloadLocation = destinationRoot;
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var pathProcessor = scope.ServiceProvider.GetRequiredService<EnhancedPathTemplateProcessor>();
+            var pathResult = pathProcessor.GeneratePaths(track, EpisodeCollectionType, settings);
+            var outputDirectory = Path.GetFullPath(pathResult.FilePath);
+            Directory.CreateDirectory(outputDirectory);
+            return Path.Join(outputDirectory, EnsureEpisodeFilenameExtension(pathResult.Filename, extension));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to generate templated podcast path; falling back to flat output for episode {EpisodeId}", episodeId);
+            Directory.CreateDirectory(destinationRoot);
+            var fallbackFilename = BuildEpisodeFilename(track, episodeId, settings.IllegalCharacterReplacer, extension);
+            return Path.Join(destinationRoot, fallbackFilename);
+        }
+        finally
+        {
+            settings.DownloadLocation = originalDownloadLocation;
+        }
     }
 
     private async Task FinalizeEpisodePayloadAsync(
@@ -1260,30 +1298,79 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             .FirstOrDefault(static candidate => !string.IsNullOrWhiteSpace(candidate) && long.TryParse(candidate, out _));
     }
 
-    private static CoreTrack BuildEpisodeTrackFromApi(Dictionary<string, object> trackApi, DeezerQueueItem payload)
+    private static CoreTrack BuildEpisodeTrackFromApi(
+        Dictionary<string, object> trackApi,
+        DeezerQueueItem payload,
+        DeezSpoTagSettings settings)
     {
-        var title = GetDictString(trackApi, "title") ?? payload.Title;
+        var title = ResolveFirstNonEmpty(
+            GetDictString(trackApi, "title"),
+            GetDictString(trackApi, "EPISODE_TITLE"),
+            payload.Title,
+            "Unknown Episode")!;
         var duration = GetDictInt(trackApi, "duration");
-        var trackNumber = GetDictInt(trackApi, "track_position", 1);
+        if (duration <= 0)
+        {
+            duration = GetDictInt(trackApi, "DURATION");
+        }
+
+        var trackNumber = GetDictInt(trackApi, "episode_number", 1);
+        if (trackNumber <= 0)
+        {
+            trackNumber = GetDictInt(trackApi, "EPISODE_NUMBER", 1);
+        }
 
         var artistDict = GetDictObject(trackApi, "artist");
-        var artistId = GetDictString(artistDict, "id") ?? payload.DeezerArtistId;
-        var artistName = GetDictString(artistDict, "name") ?? payload.Artist;
-        var artist = new CoreArtist(artistId, artistName, "Main");
+        var showDict = GetDictObject(trackApi, "show");
+        var showDictUpper = GetDictObject(trackApi, "SHOW");
+        var showId = ResolveFirstNonEmpty(
+            GetDictString(trackApi, "show_id"),
+            GetDictString(trackApi, "SHOW_ID"),
+            GetDictString(showDict, "id"),
+            GetDictString(showDictUpper, "id"),
+            GetDictString(artistDict, "id"),
+            payload.DeezerAlbumId,
+            payload.DeezerArtistId,
+            "0")!;
+        var showTitle = ResolveFirstNonEmpty(
+            GetDictString(trackApi, "show_title"),
+            GetDictString(trackApi, "SHOW_TITLE"),
+            GetDictString(trackApi, "SHOW_NAME"),
+            GetDictString(showDict, "title"),
+            GetDictString(showDictUpper, "title"),
+            GetDictString(showDict, "name"),
+            GetDictString(showDictUpper, "name"),
+            GetDictString(artistDict, "name"),
+            payload.Album,
+            payload.Artist,
+            "Unknown Show")!;
+        var showArtMd5 = ResolveFirstNonEmpty(
+            GetDictString(trackApi, "show_art_md5"),
+            GetDictString(trackApi, "SHOW_ART_MD5"),
+            GetDictString(showDict, "md5_image"),
+            GetDictString(showDictUpper, "md5_image"));
+        if (string.IsNullOrWhiteSpace(showArtMd5))
+        {
+            var showImageUrl = ResolveFirstNonEmpty(
+                GetDictString(trackApi, "SHOW_PICTURE"),
+                GetDictString(showDict, "picture"),
+                GetDictString(showDict, "picture_big"),
+                GetDictString(showDictUpper, "picture"),
+                GetDictString(showDictUpper, "picture_big"));
+            showArtMd5 = ExtractImageMd5(showImageUrl, "talk");
+        }
 
-        var albumDict = GetDictObject(trackApi, "album");
-        var albumId = GetDictString(albumDict, "id") ?? artistId;
-        var albumTitle = GetDictString(albumDict, "title") ?? payload.Album;
-        var albumMd5 = GetDictString(albumDict, "md5_image");
-        var album = new CoreAlbum(albumId, albumTitle)
+        var artist = new CoreArtist(showId, showTitle, "Main");
+        var album = new CoreAlbum(showId, showTitle)
         {
             MainArtist = artist,
+            RootArtist = artist,
             TrackTotal = 1,
             DiscTotal = 1,
-            Pic = string.IsNullOrWhiteSpace(albumMd5) ? new Picture("", "talk") : new Picture(albumMd5, "talk")
+            Pic = string.IsNullOrWhiteSpace(showArtMd5) ? new Picture("", "talk") : new Picture(showArtMd5, "talk")
         };
-        album.Artist["Main"] = new List<string> { artistName };
-        album.Artists = new List<string> { artistName };
+        album.Artist["Main"] = new List<string> { showTitle };
+        album.Artists = new List<string> { showTitle };
 
         var track = new CoreTrack
         {
@@ -1297,9 +1384,50 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             DiskNumber = 1
         };
 
-        track.Artist["Main"] = new List<string> { artistName };
-        track.Artists = new List<string> { artistName };
+        track.Artist["Main"] = new List<string> { showTitle };
+        track.Artists = new List<string> { showTitle };
+        ApplyEpisodeReleaseDate(track, trackApi);
+        track.ApplySettings(settings);
         return track;
+    }
+
+    private static void ApplyEpisodeReleaseDate(CoreTrack track, Dictionary<string, object> trackApi)
+    {
+        var releaseValue = ResolveFirstNonEmpty(
+            GetDictString(trackApi, "release_date"),
+            GetDictString(trackApi, "EPISODE_PUBLISHED_TIMESTAMP"));
+        if (string.IsNullOrWhiteSpace(releaseValue))
+        {
+            return;
+        }
+
+        if (long.TryParse(releaseValue, out var unixRaw) && unixRaw > 0)
+        {
+            var unixSeconds = unixRaw > 9_999_999_999 ? unixRaw / 1000 : unixRaw;
+            try
+            {
+                var parsedUnix = DateTimeOffset.FromUnixTimeSeconds(unixSeconds).UtcDateTime;
+                track.Date.Day = parsedUnix.Day.ToString("D2");
+                track.Date.Month = parsedUnix.Month.ToString("D2");
+                track.Date.Year = parsedUnix.Year.ToString();
+                track.Date.FixDayMonth();
+                return;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                // Fall through to regular date parsing.
+            }
+        }
+
+        if (!DateTime.TryParse(releaseValue, out var parsed))
+        {
+            return;
+        }
+
+        track.Date.Day = parsed.Day.ToString("D2");
+        track.Date.Month = parsed.Month.ToString("D2");
+        track.Date.Year = parsed.Year.ToString();
+        track.Date.FixDayMonth();
     }
 
     private static int GetDictInt(Dictionary<string, object> dict, string key, int fallback = 0)
@@ -1451,6 +1579,55 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         return sanitized.EndsWith(extension, StringComparison.OrdinalIgnoreCase)
             ? sanitized
             : $"{sanitized}{extension}";
+    }
+
+    private static string EnsureEpisodeFilenameExtension(string filename, string extension)
+    {
+        if (string.IsNullOrWhiteSpace(filename))
+        {
+            return $"episode{extension}";
+        }
+
+        return filename.EndsWith(extension, StringComparison.OrdinalIgnoreCase)
+            ? filename
+            : $"{filename}{extension}";
+    }
+
+    private static string? ResolveFirstNonEmpty(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ExtractImageMd5(string? imageUrl, string imageType)
+    {
+        if (string.IsNullOrWhiteSpace(imageUrl))
+        {
+            return null;
+        }
+
+        var marker = $"/images/{imageType}/";
+        var start = imageUrl.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (start < 0)
+        {
+            return null;
+        }
+
+        start += marker.Length;
+        var end = imageUrl.IndexOf('/', start);
+        if (end <= start)
+        {
+            return null;
+        }
+
+        return imageUrl.Substring(start, end - start);
     }
 
     private async Task SyncEffectiveQualityAsync(

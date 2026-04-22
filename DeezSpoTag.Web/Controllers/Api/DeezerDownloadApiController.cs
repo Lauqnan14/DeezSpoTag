@@ -24,6 +24,7 @@ namespace DeezSpoTag.Web.Controllers.Api
         private const string DeezerSource = "deezer";
         private const string TrackType = "track";
         private const string DeezerDomain = "deezer.com";
+        private const int DirectPodcastQueueConcurrency = 8;
         private const string UuidRequiredError = "UUID is required.";
         private readonly ILogger<DeezerDownloadApiController> _logger;
         private readonly DownloadIntentService _intentService;
@@ -277,22 +278,49 @@ namespace DeezSpoTag.Web.Controllers.Api
             AddWithSettingsAccumulator accumulator)
         {
             var resolvedBitrate = DownloadSourceOrder.ResolveDeezerBitrate(request.Settings, 0);
-            foreach (var url in urls)
+
+            var abortToken = HttpContext.RequestAborted;
+            var normalizedConcurrency = Math.Max(1, Math.Min(DirectPodcastQueueConcurrency, urls.Count));
+            using var gate = new SemaphoreSlim(normalizedConcurrency, normalizedConcurrency);
+            var queueSync = new object();
+            var uniqueQueued = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var tasks = urls.Select(async url =>
             {
-                var intent = BuildFallbackIntent(url, request, DeezerSource);
-                intent.SourceService = DeezerSource;
-                intent.PreferredEngine = DeezerSource;
-                intent.Quality = resolvedBitrate.ToString();
-                intent.DestinationFolderId = request.DestinationFolderId;
-                var result = await _intentService.EnqueueAsync(intent, HttpContext.RequestAborted);
-                accumulator.Queued.AddRange(result.Queued);
-                if (!result.Success && !string.IsNullOrWhiteSpace(result.Message))
+                await gate.WaitAsync(abortToken);
+                try
                 {
-                    accumulator.SetLastErrorIfEmpty(result.Message);
+                    var intent = BuildFallbackIntent(url, request, DeezerSource);
+                    intent.SourceService = DeezerSource;
+                    intent.PreferredEngine = DeezerSource;
+                    intent.Quality = resolvedBitrate.ToString();
+                    intent.DestinationFolderId = request.DestinationFolderId;
+                    var result = await _intentService.EnqueueAsync(intent, abortToken);
+
+                    lock (queueSync)
+                    {
+                        foreach (var queuedUuid in result.Queued)
+                        {
+                            if (uniqueQueued.Add(queuedUuid))
+                            {
+                                accumulator.Queued.Add(queuedUuid);
+                            }
+                        }
+
+                        if (!result.Success && !string.IsNullOrWhiteSpace(result.Message))
+                        {
+                            accumulator.SetLastErrorIfEmpty(result.Message);
+                        }
+                    }
                 }
-            }
+                finally
+                {
+                    gate.Release();
+                }
+            });
+
+            await Task.WhenAll(tasks);
             accumulator.Engine = DeezerSource;
-            return accumulator.Queued.Count;
+            return uniqueQueued.Count;
         }
 
         private async Task<ResolvedIntents> ResolveIntentsForUrlAsync(

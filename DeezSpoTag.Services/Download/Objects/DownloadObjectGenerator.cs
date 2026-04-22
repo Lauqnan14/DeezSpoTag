@@ -41,6 +41,7 @@ public class DownloadObjectGenerator
     private const string ResultsField = "results";
     private const string FeaturedArtistGroup = "Featured";
     private const string DeezerClientNotAuthenticatedMessage = "Deezer client not authenticated";
+    private const int ShowEpisodeGenerationMaxConcurrency = 6;
     private readonly ILogger<DownloadObjectGenerator> _logger;
     private readonly AuthenticatedDeezerService _authenticatedDeezerService;
     private readonly IServiceProvider _serviceProvider;
@@ -758,7 +759,7 @@ public class DownloadObjectGenerator
         }
 
         var uniqueEpisodeIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var downloadObjects = new List<DownloadObject>();
+        var orderedEpisodeIds = new List<string>();
 
         foreach (var episodeToken in episodesData)
         {
@@ -776,15 +777,41 @@ public class DownloadObjectGenerator
                 continue;
             }
 
+            orderedEpisodeIds.Add(episodeId);
+        }
+
+        if (orderedEpisodeIds.Count == 0)
+        {
+            throw new InvalidOperationException($"No downloadable episodes found for show: {showId}");
+        }
+
+        var generated = new DownloadObject?[orderedEpisodeIds.Count];
+        var concurrency = Math.Min(ShowEpisodeGenerationMaxConcurrency, orderedEpisodeIds.Count);
+        using var gate = new SemaphoreSlim(concurrency, concurrency);
+        var generationTasks = orderedEpisodeIds.Select(async (episodeId, index) =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await gate.WaitAsync(cancellationToken);
             try
             {
-                downloadObjects.Add(await GenerateEpisodeItemAsync(episodeId, bitrate, cancellationToken));
+                generated[index] = await GenerateEpisodeItemAsync(episodeId, bitrate, cancellationToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogWarning(ex, "Failed to generate episode item {EpisodeId} for show {ShowId}", episodeId, showId);
             }
-        }
+            finally
+            {
+                gate.Release();
+            }
+        });
+
+        await Task.WhenAll(generationTasks);
+
+        var downloadObjects = generated
+            .Where(item => item != null)
+            .Cast<DownloadObject>()
+            .ToList();
 
         if (downloadObjects.Count == 0)
         {
