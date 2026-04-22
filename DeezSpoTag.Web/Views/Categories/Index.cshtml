@@ -222,13 +222,17 @@ function renderCategoryCard(item) {
         : buildHomeClick(item);
     const artStyle = image ? `style="background-image: url('${image}');"` : '';
     const platformIcon = source === 'spotify' ? 'spotify' : 'deezer';
-    const subtitleValue = item.subtitle
+    const subtitleCandidate = (item.subtitle
         || item.artist
         || item.artists
         || item.owner
         || item.ownerName
-        || (source === 'spotify' ? 'Spotify' : source === 'deezer' ? 'Deezer' : '');
-    const subtitle = escapeHtml((subtitleValue || '').toString());
+        || '')
+        .toString()
+        .trim();
+    const subtitle = /^(spotify|deezer)$/i.test(subtitleCandidate)
+        ? ''
+        : escapeHtml(subtitleCandidate);
     return `
         <div class="top-genres-card top-genres-card--thumb" onclick="${click}" style="position: relative;">
             <div class="top-genres-platform" style="--platform-icon: url('/images/availability/${platformIcon}.svg');"></div>
