@@ -194,6 +194,7 @@
         const retryOptions = {
             attempts: options.attempts,
             baseDelayMs: options.baseDelayMs,
+            timeoutMs: options.timeoutMs,
             fetchOptions: options.fetchOptions
         };
 
