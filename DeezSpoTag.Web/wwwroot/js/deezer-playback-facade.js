@@ -122,24 +122,31 @@
         const request = (async function () {
             try {
                 let resolved = null;
+                let usedUnifiedResolver = false;
+                let unifiedResolverFailed = false;
                 if (global.DeezerResolver && typeof global.DeezerResolver.resolveTrack === 'function') {
-                    resolved = await global.DeezerResolver.resolveTrack(
-                        {
-                            source: 'spotify',
-                            url: normalizedUrl,
-                            title: metadata?.title || '',
-                            artist: metadata?.artist || '',
-                            album: metadata?.album || '',
-                            isrc: metadata?.isrc || '',
-                            durationMs: metadata?.durationMs || 0
-                        },
-                        {
-                            attempts: 2,
-                            baseDelayMs: 250,
-                            timeoutMs: 3000,
-                            spotifyResolverFirst: true
-                        }
-                    );
+                    usedUnifiedResolver = true;
+                    try {
+                        resolved = await global.DeezerResolver.resolveTrack(
+                            {
+                                source: 'spotify',
+                                url: normalizedUrl,
+                                title: metadata?.title || '',
+                                artist: metadata?.artist || '',
+                                album: metadata?.album || '',
+                                isrc: metadata?.isrc || '',
+                                durationMs: metadata?.durationMs || 0
+                            },
+                            {
+                                attempts: 2,
+                                baseDelayMs: 250,
+                                timeoutMs: 3000,
+                                spotifyResolverFirst: true
+                            }
+                        );
+                    } catch {
+                        unifiedResolverFailed = true;
+                    }
                 } else {
                     const response = await fetch('/api/spotify/resolve-deezer?url=' + encodeURIComponent(normalizedUrl));
                     if (response.ok) {
@@ -154,12 +161,16 @@
                     return resolved;
                 }
 
-                const fallbackResolved = await fetchResolveDeezerByMetadata(normalizedUrl, metadata);
-                if (fallbackResolved?.deezerId) {
-                    if (key) {
-                        resolveCache.set(key, fallbackResolved);
+                // DeezerResolver.resolveTrack already performs metadata fallback internally.
+                // Avoid duplicate fallback calls unless the unified resolver is unavailable/failed.
+                if (!usedUnifiedResolver || unifiedResolverFailed) {
+                    const fallbackResolved = await fetchResolveDeezerByMetadata(normalizedUrl, metadata);
+                    if (fallbackResolved?.deezerId) {
+                        if (key) {
+                            resolveCache.set(key, fallbackResolved);
+                        }
+                        return fallbackResolved;
                     }
-                    return fallbackResolved;
                 }
 
                 return null;
