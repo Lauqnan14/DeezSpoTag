@@ -31,9 +31,11 @@ public sealed class ShazamRecognitionApiController : ControllerBase
     [HttpGet("available")]
     public IActionResult Available()
     {
+        var available = _recognitionService.IsAvailable;
         return Ok(new
         {
-            available = _recognitionService.IsAvailable
+            available,
+            error = available ? null : _recognitionService.AvailabilityError
         });
     }
 
@@ -175,9 +177,15 @@ public sealed class ShazamRecognitionApiController : ControllerBase
 
         if (!_recognitionService.IsAvailable)
         {
+            var availabilityError = _recognitionService.AvailabilityError;
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                new { error = "Shazam recognition is unavailable." });
+                new
+                {
+                    error = string.IsNullOrWhiteSpace(availabilityError)
+                        ? "Shazam recognition is unavailable."
+                        : availabilityError
+                });
         }
 
         return null;
