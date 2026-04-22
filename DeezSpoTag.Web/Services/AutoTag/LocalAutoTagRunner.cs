@@ -2425,9 +2425,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (!_shazamRecognitionAvailable)
         {
-            return forceShazamMatch
-                ? new ShazamEnrichmentResult(false, "shazam unavailable", true)
-                : new ShazamEnrichmentResult(false, "shazam unavailable", false);
+            // Degrade gracefully when Shazam is unavailable so other platforms can still tag.
+            return new ShazamEnrichmentResult(false, "shazam unavailable", false);
         }
 
         token.ThrowIfCancellationRequested();
