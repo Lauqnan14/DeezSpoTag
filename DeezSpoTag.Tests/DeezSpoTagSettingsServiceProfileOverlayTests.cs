@@ -13,6 +13,12 @@ namespace DeezSpoTag.Tests;
 [Collection("Settings Config Isolation")]
 public sealed class DeezSpoTagSettingsServiceProfileOverlayTests : IDisposable
 {
+    private static readonly JsonSerializerOptions ProfileJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() }
+    };
     private readonly string _tempRoot;
     private readonly TestConfigRootScope _configScope;
     private readonly DeezSpoTagSettingsService _settingsService;
@@ -77,14 +83,7 @@ public sealed class DeezSpoTagSettingsServiceProfileOverlayTests : IDisposable
         var autoTagDir = Path.Join(_tempRoot, "autotag");
         Directory.CreateDirectory(autoTagDir);
         var path = Path.Join(autoTagDir, fileName);
-        var options = new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            WriteIndented = true,
-            Converters = { new JsonStringEnumConverter() }
-        };
-
-        File.WriteAllText(path, JsonSerializer.Serialize(profiles, options));
+        File.WriteAllText(path, JsonSerializer.Serialize(profiles, ProfileJsonOptions));
     }
 
     private static TaggingProfile BuildDefaultProfile()

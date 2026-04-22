@@ -206,7 +206,10 @@ public class ActivitiesController : Controller
                 _deezspotagListener.SendRemovedFinishedDownloads();
             }
 
-            _logger.LogInformation("Cleared completed downloads (removed={Deleted})", deleted);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Cleared completed downloads (removed={Deleted})", deleted);
+            }
             return Json(new
             {
                 success = true,
@@ -234,7 +237,10 @@ public class ActivitiesController : Controller
                 _deezspotagListener.SendRemovedFinishedDownloads();
             }
 
-            _logger.LogInformation("Cleared canceled downloads (removed={Deleted})", deleted);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Cleared canceled downloads (removed={Deleted})", deleted);
+            }
             return Json(new
             {
                 success = true,
@@ -322,7 +328,10 @@ public class ActivitiesController : Controller
             }
             else
             {
-                _logger.LogInformation("Cancelled all downloads (canceled={Canceled})", canceled);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Cancelled all downloads (canceled={Canceled})", canceled);
+                }
             }
 
             return Json(new
@@ -444,7 +453,10 @@ public class ActivitiesController : Controller
                 _deezspotagListener.SendRemovedAllDownloads(null);
             }
 
-            _logger.LogInformation("Cleared all downloads from queue (removed={Deleted})", deleted);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Cleared all downloads from queue (removed={Deleted})", deleted);
+            }
             return Json(new
             {
                 success = true,

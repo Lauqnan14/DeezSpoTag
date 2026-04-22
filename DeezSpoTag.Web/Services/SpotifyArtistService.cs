@@ -36,7 +36,10 @@ public sealed class SpotifyArtistService
     private const int LocalEvidenceIsrcProbeLimit = 10;
     private const int LocalEvidenceTrackMetadataProbeLimit = 10;
     private const int LocalEvidenceTracksPerMetadataQuery = 5;
-    private const string SpotifyEmbedTrackUrlTemplate = "https://open.spotify.com/embed/track/{0}";
+    private const string SpotifyWebHost = "open.spotify.com";
+    private const string SpotifyArtistPathPrefix = "/artist/";
+    private const string SpotifyTrackPathPrefix = "/track/";
+    private const string SpotifyEmbedTrackPathPrefix = "/embed/track/";
     private const string DebugActivityLevel = "debug";
     private static readonly TimeSpan LocalAlbumCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan SampleTrackPathCacheTtl = TimeSpan.FromMinutes(2);
@@ -77,6 +80,20 @@ public sealed class SpotifyArtistService
     private readonly ConcurrentDictionary<long, (DateTimeOffset Stamp, IReadOnlyList<string> Paths)> _sampleTrackPathsCache = new();
     private static string ReplaceWithTimeout(string input, string pattern, string replacement, System.Text.RegularExpressions.RegexOptions options = System.Text.RegularExpressions.RegexOptions.None)
         => System.Text.RegularExpressions.Regex.Replace(input, pattern, replacement, options, RegexTimeout);
+    private static string BuildSpotifyArtistUrl(string spotifyArtistId)
+        => BuildSpotifyWebUrl($"{SpotifyArtistPathPrefix}{spotifyArtistId}");
+    private static string BuildSpotifyTrackUrl(string spotifyTrackId)
+        => BuildSpotifyWebUrl($"{SpotifyTrackPathPrefix}{spotifyTrackId}");
+    private static string BuildSpotifyEmbedTrackUrl(string spotifyTrackId)
+        => BuildSpotifyWebUrl($"{SpotifyEmbedTrackPathPrefix}{spotifyTrackId}");
+    private static string BuildSpotifyWebUrl(string path)
+    {
+        var builder = new UriBuilder(Uri.UriSchemeHttps, SpotifyWebHost)
+        {
+            Path = path
+        };
+        return builder.Uri.ToString();
+    }
 
     public SpotifyArtistService(
         LibraryRepository libraryRepository,
@@ -138,7 +155,7 @@ public sealed class SpotifyArtistService
             return null;
         }
 
-        var url = $"https://open.spotify.com/artist/{spotifyId}";
+        var url = BuildSpotifyArtistUrl(spotifyId);
         var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(url, cancellationToken);
         if (metadata is null || metadata.AlbumList.Count == 0)
         {
@@ -1964,7 +1981,7 @@ public sealed class SpotifyArtistService
         try
         {
             var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(
-                $"https://open.spotify.com/track/{spotifyTrackId}",
+                BuildSpotifyTrackUrl(spotifyTrackId),
                 cancellationToken);
             var resolved = metadata?.TrackList?.FirstOrDefault(track =>
                 string.Equals(track.Id, spotifyTrackId, StringComparison.OrdinalIgnoreCase))
@@ -1991,7 +2008,7 @@ public sealed class SpotifyArtistService
                 null,
                 null,
                 null,
-                $"https://open.spotify.com/track/{spotifyTrackId}",
+                BuildSpotifyTrackUrl(spotifyTrackId),
                 null,
                 null)
             {
@@ -2028,7 +2045,7 @@ public sealed class SpotifyArtistService
             {
                 Timeout = TimeSpan.FromSeconds(10)
             };
-            var embedUrl = string.Format(CultureInfo.InvariantCulture, SpotifyEmbedTrackUrlTemplate, spotifyTrackId);
+            var embedUrl = BuildSpotifyEmbedTrackUrl(spotifyTrackId);
             var html = await client.GetStringAsync(embedUrl, cancellationToken);
             if (string.IsNullOrWhiteSpace(html))
             {
@@ -2290,7 +2307,7 @@ public sealed class SpotifyArtistService
     private async Task<List<string>> FetchCandidateAlbumTitlesAsync(string candidateId, CancellationToken cancellationToken)
     {
         var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(
-            $"https://open.spotify.com/artist/{candidateId}",
+            BuildSpotifyArtistUrl(candidateId),
             cancellationToken);
         return metadata?.AlbumList
             .Select(album => album.Name)
@@ -2505,6 +2522,13 @@ public sealed class SpotifyArtistService
         }
     }
 
+    private sealed record ShazamCandidateScore(
+        string Id,
+        int Score,
+        int TotalAlbums,
+        int TotalTracks,
+        bool Verified);
+
     private async Task<string?> SelectBestShazamEvidenceCandidateAsync(
         IReadOnlyDictionary<string, int> candidateVotes,
         HashSet<string> localAlbumTitleSet,
@@ -2512,90 +2536,19 @@ public sealed class SpotifyArtistService
         CancellationToken cancellationToken)
     {
         var requireLocalAlbumOverlap = ShouldRequireLocalAlbumOverlap(localAlbumTitleSet);
-        var candidates = new ConcurrentBag<(string Id, int Score, int TotalAlbums, int TotalTracks, bool Verified)>();
+        var candidates = new ConcurrentBag<ShazamCandidateScore>();
         using var gate = new SemaphoreSlim(ShazamCandidateScoreParallelism);
 
         var tasks = candidateVotes
             .OrderByDescending(entry => entry.Value)
-            .Select(async entry =>
-        {
-            await gate.WaitAsync(cancellationToken);
-            try
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var candidateId = entry.Key;
-                var votes = entry.Value;
-
-                var candidateName = await TryFetchSpotifyArtistNameAsync(candidateId, cancellationToken);
-                var matchesAlias = !string.IsNullOrWhiteSpace(candidateName)
-                    && aliasTargets.Any(alias => IsEquivalentArtistName(candidateName, alias));
-                var localAlbumOverlap = await ResolveLocalAlbumOverlapAsync(
-                    candidateId,
-                    requireLocalAlbumOverlap,
-                    localAlbumTitleSet,
-                    cancellationToken);
-                var hasStrongVotes = votes >= ShazamStrongVoteThreshold;
-                SpotifyPathfinderMetadataClient.SpotifyArtistCandidateInfo? info = null;
-                try
-                {
-                    info = await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidateId, cancellationToken);
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    if (_logger.IsEnabled(LogLevel.Debug))
-                    {
-                        _logger.LogDebug(ex, "Failed fetching Spotify candidate info while selecting fallback artist id. candidate={CandidateId}", candidateId);
-                    }
-                }
-
-                var accepted = matchesAlias;
-                if (!accepted && localAlbumOverlap > 0)
-                {
-                    accepted = true;
-                }
-
-                if (!accepted && hasStrongVotes)
-                {
-                    accepted = true;
-                }
-
-                if (!accepted)
-                {
-                    return;
-                }
-
-                var score = (votes * 100)
-                    + (localAlbumOverlap * 25)
-                    + (Math.Max(0, info?.TotalAlbums ?? 0) * 20)
-                    + Math.Max(0, info?.TotalTracks ?? 0)
-                    + (info?.Verified == true ? 5 : 0);
-                candidates.Add((
-                    candidateId,
-                    score,
-                    Math.Max(0, info?.TotalAlbums ?? 0),
-                    Math.Max(0, info?.TotalTracks ?? 0),
-                    info?.Verified == true));
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(ex, "Skipping Spotify fallback candidate due to scoring failure. candidate={CandidateId}", entry.Key);
-                }
-            }
-            finally
-            {
-                gate.Release();
-            }
-        });
+            .Select(entry => ScoreAndCollectShazamCandidateAsync(
+                entry,
+                requireLocalAlbumOverlap,
+                localAlbumTitleSet,
+                aliasTargets,
+                gate,
+                candidates,
+                cancellationToken));
 
         await Task.WhenAll(tasks);
 
@@ -2608,6 +2561,126 @@ public sealed class SpotifyArtistService
             .FirstOrDefault();
     }
 
+    private async Task ScoreAndCollectShazamCandidateAsync(
+        KeyValuePair<string, int> voteEntry,
+        bool requireLocalAlbumOverlap,
+        HashSet<string> localAlbumTitleSet,
+        IReadOnlyCollection<string> aliasTargets,
+        SemaphoreSlim gate,
+        ConcurrentBag<ShazamCandidateScore> candidates,
+        CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            var score = await TryScoreShazamCandidateAsync(
+                voteEntry.Key,
+                voteEntry.Value,
+                requireLocalAlbumOverlap,
+                localAlbumTitleSet,
+                aliasTargets,
+                cancellationToken);
+            if (score is not null)
+            {
+                candidates.Add(score);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Skipping Spotify fallback candidate due to scoring failure. candidate={CandidateId}", voteEntry.Key);
+            }
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task<ShazamCandidateScore?> TryScoreShazamCandidateAsync(
+        string candidateId,
+        int votes,
+        bool requireLocalAlbumOverlap,
+        HashSet<string> localAlbumTitleSet,
+        IReadOnlyCollection<string> aliasTargets,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var candidateName = await TryFetchSpotifyArtistNameAsync(candidateId, cancellationToken);
+        var matchesAlias = MatchesAnyAlias(candidateName, aliasTargets);
+        var localAlbumOverlap = await ResolveLocalAlbumOverlapAsync(
+            candidateId,
+            requireLocalAlbumOverlap,
+            localAlbumTitleSet,
+            cancellationToken);
+        var hasStrongVotes = votes >= ShazamStrongVoteThreshold;
+        if (!ShouldAcceptShazamCandidate(matchesAlias, localAlbumOverlap, hasStrongVotes))
+        {
+            return null;
+        }
+
+        var info = await TryFetchArtistCandidateInfoAsync(candidateId, cancellationToken);
+        var totalAlbums = Math.Max(0, info?.TotalAlbums ?? 0);
+        var totalTracks = Math.Max(0, info?.TotalTracks ?? 0);
+        var verified = info?.Verified == true;
+        var score = ComputeShazamCandidateScore(votes, localAlbumOverlap, totalAlbums, totalTracks, verified);
+        return new ShazamCandidateScore(candidateId, score, totalAlbums, totalTracks, verified);
+    }
+
+    private static bool MatchesAnyAlias(string? candidateName, IReadOnlyCollection<string> aliasTargets)
+    {
+        if (string.IsNullOrWhiteSpace(candidateName))
+        {
+            return false;
+        }
+
+        return aliasTargets.Any(alias => IsEquivalentArtistName(candidateName, alias));
+    }
+
+    private static bool ShouldAcceptShazamCandidate(bool matchesAlias, int localAlbumOverlap, bool hasStrongVotes)
+        => matchesAlias || localAlbumOverlap > 0 || hasStrongVotes;
+
+    private static int ComputeShazamCandidateScore(
+        int votes,
+        int localAlbumOverlap,
+        int totalAlbums,
+        int totalTracks,
+        bool verified)
+    {
+        return (votes * 100)
+            + (localAlbumOverlap * 25)
+            + (totalAlbums * 20)
+            + totalTracks
+            + (verified ? 5 : 0);
+    }
+
+    private async Task<SpotifyPathfinderMetadataClient.SpotifyArtistCandidateInfo?> TryFetchArtistCandidateInfoAsync(
+        string candidateId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _pathfinderMetadataClient.GetArtistCandidateInfoAsync(candidateId, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed fetching Spotify candidate info while selecting fallback artist id. candidate={CandidateId}", candidateId);
+            }
+            return null;
+        }
+    }
+
     private async Task<string?> TryFetchSpotifyArtistNameAsync(string spotifyArtistId, CancellationToken cancellationToken)
     {
         if (!LooksLikeSpotifyEntityId(spotifyArtistId))
@@ -2618,7 +2691,7 @@ public sealed class SpotifyArtistService
         try
         {
             var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(
-                $"https://open.spotify.com/artist/{spotifyArtistId}",
+                BuildSpotifyArtistUrl(spotifyArtistId),
                 cancellationToken);
             return string.IsNullOrWhiteSpace(metadata?.Name) ? null : metadata.Name.Trim();
         }
@@ -3231,7 +3304,7 @@ public sealed class SpotifyArtistService
         try
         {
             var metadata = await _pathfinderMetadataClient.FetchByUrlAsync(
-                $"https://open.spotify.com/artist/{spotifyArtistId}",
+                BuildSpotifyArtistUrl(spotifyArtistId),
                 cancellationToken);
             return metadata?.Name?.Trim();
         }

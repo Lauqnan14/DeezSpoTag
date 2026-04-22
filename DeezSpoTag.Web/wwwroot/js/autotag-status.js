@@ -553,12 +553,19 @@
             return null;
         }
 
-        const logCount = typeof job.logCount === "number"
-            ? job.logCount
-            : (Array.isArray(job.logs) ? job.logs.length : 0);
-        const statusEntryCount = typeof job.statusEntryCount === "number"
-            ? job.statusEntryCount
-            : (Array.isArray(job.statusHistory) ? job.statusHistory.length : 0);
+        let logCount = 0;
+        if (typeof job.logCount === "number") {
+            logCount = job.logCount;
+        } else if (Array.isArray(job.logs)) {
+            logCount = job.logs.length;
+        }
+
+        let statusEntryCount = 0;
+        if (typeof job.statusEntryCount === "number") {
+            statusEntryCount = job.statusEntryCount;
+        } else if (Array.isArray(job.statusHistory)) {
+            statusEntryCount = job.statusHistory.length;
+        }
 
         return {
             id: job.id,

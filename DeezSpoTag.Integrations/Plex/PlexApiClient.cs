@@ -21,6 +21,15 @@ public class PlexApiClient
     private const string ParentThumbAttributeName = "parentThumb";
     private readonly ILogger<PlexApiClient> _logger;
     private readonly HttpClient _httpClient;
+    private sealed record SectionMediaRequest(
+        string ServerUrl,
+        string Token,
+        string SectionKey,
+        string PathSegment,
+        int Offset,
+        int Limit,
+        string OperationLabel,
+        bool SortByTitle);
 
     public PlexApiClient(ILogger<PlexApiClient> logger, HttpClient httpClient)
     {
@@ -1003,14 +1012,15 @@ public class PlexApiClient
         var normalizedOffset = Math.Max(offset, 0);
         var normalizedLimit = Math.Clamp(limit.GetValueOrDefault(200), 1, 500);
         return await FetchSectionMediaItemsAsync(
-            serverUrl,
-            token,
-            sectionKey,
-            pathSegment: "all",
-            offset: normalizedOffset,
-            limit: normalizedLimit,
-            operationLabel: "media items",
-            sortByTitle: true,
+            new SectionMediaRequest(
+                ServerUrl: serverUrl,
+                Token: token,
+                SectionKey: sectionKey,
+                PathSegment: "all",
+                Offset: normalizedOffset,
+                Limit: normalizedLimit,
+                OperationLabel: "media items",
+                SortByTitle: true),
             cancellationToken);
     }
 
@@ -1030,46 +1040,46 @@ public class PlexApiClient
 
         var normalizedLimit = Math.Clamp(limit.GetValueOrDefault(100), 1, 500);
         return await FetchSectionMediaItemsAsync(
-            serverUrl,
-            token,
-            sectionKey,
-            pathSegment: "recentlyAdded",
-            offset: 0,
-            limit: normalizedLimit,
-            operationLabel: "recently-added media items",
-            sortByTitle: false,
+            new SectionMediaRequest(
+                ServerUrl: serverUrl,
+                Token: token,
+                SectionKey: sectionKey,
+                PathSegment: "recentlyAdded",
+                Offset: 0,
+                Limit: normalizedLimit,
+                OperationLabel: "recently-added media items",
+                SortByTitle: false),
             cancellationToken);
     }
 
     private async Task<List<PlexMediaItem>> FetchSectionMediaItemsAsync(
-        string serverUrl,
-        string token,
-        string sectionKey,
-        string pathSegment,
-        int offset,
-        int limit,
-        string operationLabel,
-        bool sortByTitle,
+        SectionMediaRequest request,
         CancellationToken cancellationToken)
     {
         try
         {
-            var url = BuildSectionItemsUrl(serverUrl, token, sectionKey, pathSegment, offset, limit);
+            var url = BuildSectionItemsUrl(
+                request.ServerUrl,
+                request.Token,
+                request.SectionKey,
+                request.PathSegment,
+                request.Offset,
+                request.Limit);
             var response = await _httpClient.GetAsync(url, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning(
                     "Failed to load Plex {OperationLabel} for section {SectionKey}: {StatusCode}",
-                    operationLabel,
-                    sectionKey,
+                    request.OperationLabel,
+                    request.SectionKey,
                     response.StatusCode);
                 return new List<PlexMediaItem>();
             }
 
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
             var doc = XDocument.Parse(content);
-            var items = ParsePlexMediaItems(doc, serverUrl, token);
-            if (sortByTitle)
+            var items = ParsePlexMediaItems(doc, request.ServerUrl, request.Token);
+            if (request.SortByTitle)
             {
                 return items
                     .OrderBy(item => item.Title, StringComparer.OrdinalIgnoreCase)
@@ -1080,7 +1090,7 @@ public class PlexApiClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed reading Plex {OperationLabel} for section {SectionKey}", operationLabel, sectionKey);
+            _logger.LogWarning(ex, "Failed reading Plex {OperationLabel} for section {SectionKey}", request.OperationLabel, request.SectionKey);
             return new List<PlexMediaItem>();
         }
     }
@@ -1097,7 +1107,7 @@ public class PlexApiClient
         return $"{serverUrl.TrimEnd('/')}/library/sections/{encodedSection}/{pathSegment}?X-Plex-Token={Uri.EscapeDataString(token)}&X-Plex-Container-Start={offset}&X-Plex-Container-Size={limit}";
     }
 
-    private List<PlexMediaItem> ParsePlexMediaItems(XDocument doc, string serverUrl, string token)
+    private static List<PlexMediaItem> ParsePlexMediaItems(XDocument doc, string serverUrl, string token)
     {
         var mediaById = new Dictionary<string, PlexMediaItem>(StringComparer.OrdinalIgnoreCase);
 
