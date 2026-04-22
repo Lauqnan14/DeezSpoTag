@@ -29,6 +29,7 @@ public sealed class LibraryDbService
     private const string DownloadBlocklistTable = "download_blocklist";
     private const string TrackShazamCacheTable = "track_shazam_cache";
     private const string SongLinkCacheTable = "song_link_cache";
+    private const string LibrarySettingsTable = "library_settings";
     private const string TextType = "TEXT";
     private const string IntegerType = "INTEGER";
     private const string BigIntType = "BIGINT";
@@ -296,6 +297,7 @@ CREATE TABLE IF NOT EXISTS track_shazam_cache (
 );", cancellationToken);
         await EnsureIndexAsync(connection, "idx_track_shazam_cache_status", TrackShazamCacheTable, "status", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_track_shazam_cache_scanned", TrackShazamCacheTable, "scanned_at_utc", unique: false, cancellationToken);
+        await MigrateLibrarySettingsSchemaAsync(connection, cancellationToken);
 
         await MigrateSourceMappingTablesAsync(connection, cancellationToken);
 
@@ -513,6 +515,82 @@ WHERE library_id IS NULL;";
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    private static async Task MigrateLibrarySettingsSchemaAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        if (!await TableExistsAsync(connection, LibrarySettingsTable, cancellationToken))
+        {
+            return;
+        }
+
+        await EnsureColumnAsync(connection, LibrarySettingsTable, "live_preview_ingest", $"{IntegerType} NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(connection, LibrarySettingsTable, "enable_signal_analysis", $"{IntegerType} NOT NULL DEFAULT 0", cancellationToken);
+
+        var columns = await GetTableColumnsAsync(connection, LibrarySettingsTable, cancellationToken);
+        var hasLegacyColumns = columns.Contains("fuzzy_threshold") || columns.Contains("include_all_folders");
+        if (!hasLegacyColumns)
+        {
+            return;
+        }
+
+        var createdAtExpression = columns.Contains("created_at") ? "created_at" : "CURRENT_TIMESTAMP";
+        var updatedAtExpression = columns.Contains("updated_at") ? "updated_at" : "CURRENT_TIMESTAMP";
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+        const string dropTempSql = "DROP TABLE IF EXISTS library_settings_migrated;";
+        await using (var dropTempCommand = new SqliteCommand(dropTempSql, connection, transaction))
+        {
+            await dropTempCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string createTempSql = @"
+CREATE TABLE library_settings_migrated (
+    id SMALLINT PRIMARY KEY DEFAULT 1,
+    live_preview_ingest INTEGER NOT NULL DEFAULT FALSE,
+    enable_signal_analysis INTEGER NOT NULL DEFAULT FALSE,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);";
+        await using (var createTempCommand = new SqliteCommand(createTempSql, connection, transaction))
+        {
+            await createTempCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var copySql = $@"
+INSERT INTO library_settings_migrated (id, live_preview_ingest, enable_signal_analysis, created_at, updated_at)
+SELECT COALESCE(id, 1),
+       COALESCE(live_preview_ingest, 0),
+       COALESCE(enable_signal_analysis, 0),
+       COALESCE({createdAtExpression}, CURRENT_TIMESTAMP),
+       COALESCE({updatedAtExpression}, CURRENT_TIMESTAMP)
+FROM library_settings;";
+        await using (var copyCommand = new SqliteCommand(copySql, connection, transaction))
+        {
+            await copyCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string ensureRowSql = "INSERT INTO library_settings_migrated (id) VALUES (1) ON CONFLICT(id) DO NOTHING;";
+        await using (var ensureRowCommand = new SqliteCommand(ensureRowSql, connection, transaction))
+        {
+            await ensureRowCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string dropOldSql = "DROP TABLE library_settings;";
+        await using (var dropOldCommand = new SqliteCommand(dropOldSql, connection, transaction))
+        {
+            await dropOldCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string renameSql = "ALTER TABLE library_settings_migrated RENAME TO library_settings;";
+        await using (var renameCommand = new SqliteCommand(renameSql, connection, transaction))
+        {
+            await renameCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
     private static string ResolveCreateIndexSql(string indexName, string table, string column, bool unique)
     {
         if (!KnownIndexDefinitions.TryGetValue(indexName, out var definition)
@@ -590,6 +668,27 @@ WHERE {sourceValueColumn} IS NOT NULL AND {sourceValueColumn} <> '';";
         string column,
         CancellationToken cancellationToken)
         => await SqliteSchemaUtils.ColumnExistsAsync(connection, table, column, cancellationToken);
+
+    private static async Task<HashSet<string>> GetTableColumnsAsync(
+        SqliteConnection connection,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        const string sql = "SELECT name FROM pragma_table_info(@tableName);";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("@tableName", table);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (!await reader.IsDBNullAsync(0, cancellationToken))
+            {
+                columns.Add(reader.GetString(0));
+            }
+        }
+
+        return columns;
+    }
 
     private static async Task BackfillAudioFileRelativePathsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {

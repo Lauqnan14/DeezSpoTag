@@ -1357,8 +1357,6 @@
 let currentSettings = {};
 let defaultSettings = {};
 let currentLibraryScanSettings = {
-    fuzzyThreshold: 0.85,
-    includeAllFolders: true,
     livePreviewIngest: false,
     enableSignalAnalysis: false
 };
@@ -3053,8 +3051,6 @@ async function getSettingsData() {
 
 function applyLibraryScanSettings(settings) {
     currentLibraryScanSettings = {
-        fuzzyThreshold: settings?.fuzzyThreshold ?? settings?.FuzzyThreshold ?? 0.85,
-        includeAllFolders: settings?.includeAllFolders ?? settings?.IncludeAllFolders ?? true,
         livePreviewIngest: settings?.livePreviewIngest ?? settings?.LivePreviewIngest ?? false,
         enableSignalAnalysis: settings?.enableSignalAnalysis ?? settings?.EnableSignalAnalysis ?? false
     };
@@ -3077,8 +3073,6 @@ async function loadLibraryScanSettings() {
 
 function collectLibraryScanSettings() {
     return {
-        fuzzyThreshold: currentLibraryScanSettings.fuzzyThreshold ?? 0.85,
-        includeAllFolders: currentLibraryScanSettings.includeAllFolders ?? true,
         livePreviewIngest: document.getElementById('livePreviewIngest')?.checked ?? currentLibraryScanSettings.livePreviewIngest ?? false,
         enableSignalAnalysis: document.getElementById('enableSignalAnalysis')?.checked ?? currentLibraryScanSettings.enableSignalAnalysis ?? false
     };
@@ -3697,8 +3691,6 @@ async function resetSettings() {
         if (response.ok) {
             loadSettings(result.settings);
             await saveLibraryScanSettings({
-                fuzzyThreshold: 0.85,
-                includeAllFolders: true,
                 livePreviewIngest: false,
                 enableSignalAnalysis: false
             });

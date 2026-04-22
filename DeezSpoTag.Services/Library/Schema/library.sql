@@ -246,8 +246,6 @@ CREATE TABLE IF NOT EXISTS spotizerr_task_item (
 
 CREATE TABLE IF NOT EXISTS library_settings (
     id SMALLINT PRIMARY KEY DEFAULT 1,
-    fuzzy_threshold REAL NOT NULL DEFAULT 0.8500,
-    include_all_folders INTEGER NOT NULL DEFAULT TRUE,
     live_preview_ingest INTEGER NOT NULL DEFAULT FALSE,
     enable_signal_analysis INTEGER NOT NULL DEFAULT FALSE,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

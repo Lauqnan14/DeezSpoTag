@@ -2513,16 +2513,8 @@ async function logLibraryActivity(message, level = 'info') {
 
 async function loadLibrarySettings() {
     const settings = await fetchJson('/api/library/settings');
-    const fuzzyThreshold = document.getElementById('fuzzyThreshold');
-    const includeAllFolders = document.getElementById('includeAllFolders');
     const livePreviewIngest = document.getElementById('livePreviewIngest');
     const enableSignalAnalysis = document.getElementById('enableSignalAnalysis');
-    if (fuzzyThreshold) {
-        fuzzyThreshold.value = settings.fuzzyThreshold ?? settings.FuzzyThreshold ?? 0.85;
-    }
-    if (includeAllFolders) {
-        includeAllFolders.checked = settings.includeAllFolders ?? settings.IncludeAllFolders ?? true;
-    }
     if (livePreviewIngest) {
         livePreviewIngest.checked = settings.livePreviewIngest ?? settings.LivePreviewIngest ?? false;
     }
@@ -2793,17 +2785,9 @@ async function refreshArtistsDuringActiveScan(status) {
 }
 
 async function saveLibrarySettings() {
-    const fuzzyThreshold = document.getElementById('fuzzyThreshold');
-    const includeAllFolders = document.getElementById('includeAllFolders');
     const livePreviewIngest = document.getElementById('livePreviewIngest');
     const enableSignalAnalysis = document.getElementById('enableSignalAnalysis');
     const payload = {};
-    if (fuzzyThreshold) {
-        payload.fuzzyThreshold = Number.parseFloat(fuzzyThreshold.value || '0.85');
-    }
-    if (includeAllFolders) {
-        payload.includeAllFolders = includeAllFolders.checked;
-    }
     if (livePreviewIngest) {
         payload.livePreviewIngest = livePreviewIngest.checked;
     }
@@ -10122,7 +10106,7 @@ function getLibraryLoadTargets() {
     const shouldLoadViewFolders = document.getElementById('libraryViewSelect');
     const shouldLoadAlbumDestination = document.getElementById('downloadDestinationAlbum');
     return {
-        shouldLoadSettings: document.getElementById('fuzzyThreshold') && document.getElementById('includeAllFolders'),
+        shouldLoadSettings: document.getElementById('livePreviewIngest') || document.getElementById('enableSignalAnalysis'),
         shouldLoadFolders,
         shouldLoadViewFolders,
         shouldLoadArtists: document.getElementById('artistsGrid'),
