@@ -656,16 +656,28 @@ public sealed class SpotifyBlobService
             using var doc = JsonDocument.Parse(json);
             return ClassifyBlobKind(doc.RootElement) == SpotifyBlobKind.Librespot;
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify librespot blob is invalid JSON at {BlobPath}.", blobPath);
+            }
             return false;
         }
-        catch (IOException)
+        catch (IOException ex)
         {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to read Spotify librespot blob at {BlobPath}.", blobPath);
+            }
             return false;
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException ex)
         {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Access denied reading Spotify librespot blob at {BlobPath}.", blobPath);
+            }
             return false;
         }
     }
@@ -1212,13 +1224,15 @@ public sealed class SpotifyBlobService
     {
         if (element.ValueKind == JsonValueKind.Object)
         {
-            foreach (var property in element.EnumerateObject())
+            var matchingValue = element.EnumerateObject()
+                .Where(property => property.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase))
+                .Select(property => property.Value)
+                .FirstOrDefault();
+
+            if (matchingValue.ValueKind != JsonValueKind.Undefined)
             {
-                if (property.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase))
-                {
-                    value = property.Value;
-                    return true;
-                }
+                value = matchingValue;
+                return true;
             }
         }
 
@@ -1228,15 +1242,9 @@ public sealed class SpotifyBlobService
 
     private static bool HasWebPlayerCookie(IEnumerable<SpotifyBlobCookie> cookies, string cookieName)
     {
-        foreach (var cookie in cookies)
-        {
-            if (cookie.Name.Equals(cookieName, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(cookie.Value))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return cookies
+            .Where(cookie => cookie.Name.Equals(cookieName, StringComparison.OrdinalIgnoreCase))
+            .Any(cookie => !string.IsNullOrWhiteSpace(cookie.Value));
     }
 
     private static bool HasWebPlayerCookie(JsonElement cookiesElement, string cookieName)
