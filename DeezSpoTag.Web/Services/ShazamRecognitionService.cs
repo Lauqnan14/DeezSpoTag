@@ -13,13 +13,23 @@ public sealed class ShazamRecognitionService
     }
 
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan RuntimeProbeSuccessCacheTtl = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan RuntimeProbeFailureRetryTtl = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan RuntimeBootstrapCooldown = TimeSpan.FromMinutes(3);
+    private const int ProbeProcessTimeoutMs = 10000;
+    private const int BootstrapTimeoutMs = 300000;
     private static readonly Regex TrackIdRegex = new(@"/track/(?<id>\d+)", RegexOptions.IgnoreCase | RegexOptions.Compiled, RegexTimeout);
     private static string ReplaceWithTimeout(string input, string pattern, string replacement, RegexOptions options = RegexOptions.None)
         => Regex.Replace(input, pattern, replacement, options, RegexTimeout);
     private readonly IWebHostEnvironment _environment;
     private readonly ShazamDiscoveryService _discoveryService;
     private readonly ILogger<ShazamRecognitionService> _logger;
-    private readonly Lazy<RecognizerRuntimeProbe> _runtimeProbe;
+    private readonly object _runtimeProbeGate = new();
+    private RecognizerRuntimeProbe? _runtimeProbe;
+    private DateTimeOffset _runtimeProbeCheckedAtUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastBootstrapAttemptUtc = DateTimeOffset.MinValue;
+    private string? _lastProbeErrorLogged;
+    private bool _hasLoggedProbeRecovery;
 
     public ShazamRecognitionService(
         IWebHostEnvironment environment,
@@ -29,10 +39,60 @@ public sealed class ShazamRecognitionService
         _environment = environment;
         _discoveryService = discoveryService;
         _logger = logger;
-        _runtimeProbe = new Lazy<RecognizerRuntimeProbe>(ProbeRecognizerRuntime, LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
-    public bool IsAvailable => _runtimeProbe.Value.IsAvailable;
+    public bool IsAvailable => GetRuntimeProbe().IsAvailable;
+
+    public string? AvailabilityError => GetRuntimeProbe().Error;
+
+    private RecognizerRuntimeProbe GetRuntimeProbe(bool forceRefresh = false)
+    {
+        lock (_runtimeProbeGate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (!forceRefresh && _runtimeProbe != null)
+            {
+                var ttl = _runtimeProbe.IsAvailable
+                    ? RuntimeProbeSuccessCacheTtl
+                    : RuntimeProbeFailureRetryTtl;
+                if (now - _runtimeProbeCheckedAtUtc < ttl)
+                {
+                    return _runtimeProbe;
+                }
+            }
+
+            var previous = _runtimeProbe;
+            var refreshed = ProbeRecognizerRuntime(now);
+            _runtimeProbe = refreshed;
+            _runtimeProbeCheckedAtUtc = now;
+            LogRuntimeProbeTransition(previous, refreshed);
+            return refreshed;
+        }
+    }
+
+    private void LogRuntimeProbeTransition(RecognizerRuntimeProbe? previous, RecognizerRuntimeProbe current)
+    {
+        if (!current.IsAvailable)
+        {
+            if (!string.Equals(_lastProbeErrorLogged, current.Error, StringComparison.Ordinal))
+            {
+                _logger.LogWarning(
+                    "Shazam recognizer unavailable: {Reason}",
+                    string.IsNullOrWhiteSpace(current.Error) ? "unknown reason" : current.Error);
+                _lastProbeErrorLogged = current.Error;
+            }
+            _hasLoggedProbeRecovery = false;
+            return;
+        }
+
+        if (!_hasLoggedProbeRecovery && previous is { IsAvailable: false })
+        {
+            _logger.LogInformation("Shazam recognizer runtime recovered and is now available.");
+        }
+
+        _hasLoggedProbeRecovery = true;
+        _lastProbeErrorLogged = null;
+    }
 
     public ShazamRecognitionInfo? Recognize(string filePath, CancellationToken cancellationToken = default)
     {
@@ -262,10 +322,13 @@ public sealed class ShazamRecognitionService
             return explicitPython;
         }
 
-        var shazamRuntimePython = Path.Combine(_environment.ContentRootPath, "Tools", "shazam_port", ".venv", "bin", "python3");
-        if (File.Exists(shazamRuntimePython))
+        var shazamRuntimeRoot = Path.Combine(_environment.ContentRootPath, "Tools", "shazam_port", ".venv");
+        foreach (var candidate in EnumeratePythonCandidates(shazamRuntimeRoot))
         {
-            return shazamRuntimePython;
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
         }
 
         var vibePython = Environment.GetEnvironmentVariable("VIBE_ANALYZER_PYTHON");
@@ -274,13 +337,23 @@ public sealed class ShazamRecognitionService
             return vibePython;
         }
 
-        var localVenvPython = Path.Combine(_environment.ContentRootPath, "Tools", "venv", "bin", "python3");
-        if (File.Exists(localVenvPython))
+        var localVenvRoot = Path.Combine(_environment.ContentRootPath, "Tools", "venv");
+        foreach (var candidate in EnumeratePythonCandidates(localVenvRoot))
         {
-            return localVenvPython;
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
         }
 
         return "python3";
+    }
+
+    private static IEnumerable<string> EnumeratePythonCandidates(string venvRoot)
+    {
+        yield return Path.Combine(venvRoot, "bin", "python3");
+        yield return Path.Combine(venvRoot, "bin", "python");
+        yield return Path.Combine(venvRoot, "Scripts", "python.exe");
     }
 
     private PortedRecognizerExecution RunPortedRecognizer(
@@ -289,7 +362,7 @@ public sealed class ShazamRecognitionService
         CancellationToken cancellationToken)
     {
         var scriptPath = GetRecognizerScriptPath();
-        var runtimeProbe = _runtimeProbe.Value;
+        var runtimeProbe = GetRuntimeProbe();
         if (!runtimeProbe.IsAvailable)
         {
             return new PortedRecognizerExecution
@@ -388,7 +461,7 @@ public sealed class ShazamRecognitionService
         }
     }
 
-    private RecognizerRuntimeProbe ProbeRecognizerRuntime()
+    private RecognizerRuntimeProbe ProbeRecognizerRuntime(DateTimeOffset nowUtc)
     {
         var scriptPath = GetRecognizerScriptPath();
         if (!File.Exists(scriptPath))
@@ -396,19 +469,173 @@ public sealed class ShazamRecognitionService
             return new RecognizerRuntimeProbe(false, $"Shazam recognizer script not found at '{scriptPath}'.");
         }
 
+        if (TryProbeRecognizerRuntime(out var probe))
+        {
+            return probe;
+        }
+
+        if (!ShouldAttemptRuntimeBootstrap(nowUtc))
+        {
+            return probe;
+        }
+
+        if (!TryBootstrapShazamRuntime(out var bootstrapError))
+        {
+            return new RecognizerRuntimeProbe(
+                false,
+                FirstNonEmpty(
+                    probe.Error,
+                    bootstrapError,
+                    "Modern Shazam runtime dependencies are unavailable."));
+        }
+
+        if (TryProbeRecognizerRuntime(out var postBootstrapProbe))
+        {
+            return postBootstrapProbe;
+        }
+
+        return new RecognizerRuntimeProbe(
+            false,
+            FirstNonEmpty(
+                postBootstrapProbe.Error,
+                probe.Error,
+                "Modern Shazam runtime dependencies are unavailable."));
+    }
+
+    private bool TryProbeRecognizerRuntime(out RecognizerRuntimeProbe probe)
+    {
         var pythonExecutable = ResolvePythonExecutable();
         if (!CanRunProcess(pythonExecutable, "--version", out var pythonError))
         {
-            return new RecognizerRuntimeProbe(false, FirstNonEmpty(pythonError, $"Failed to start Shazam recognizer with '{pythonExecutable}'."));
+            probe = new RecognizerRuntimeProbe(
+                false,
+                FirstNonEmpty(pythonError, $"Failed to start Shazam recognizer with '{pythonExecutable}'."));
+            return false;
         }
 
         var runtimeImportCheckArgs = "-c \"import shazamio; import shazamio_core; from aiohttp_retry import ExponentialRetry; from shazamio import HTTPClient, SearchParams, Shazam\"";
         if (!CanRunProcess(pythonExecutable, runtimeImportCheckArgs, out var runtimeImportError, useShellArgumentParsing: true))
         {
-            return new RecognizerRuntimeProbe(false, FirstNonEmpty(runtimeImportError, "Modern Shazam runtime dependencies are unavailable."));
+            probe = new RecognizerRuntimeProbe(
+                false,
+                FirstNonEmpty(runtimeImportError, "Modern Shazam runtime dependencies are unavailable."));
+            return false;
         }
 
-        return new RecognizerRuntimeProbe(true, null);
+        probe = new RecognizerRuntimeProbe(true, null);
+        return true;
+    }
+
+    private bool ShouldAttemptRuntimeBootstrap(DateTimeOffset nowUtc)
+    {
+        if (nowUtc - _lastBootstrapAttemptUtc < RuntimeBootstrapCooldown)
+        {
+            return false;
+        }
+
+        var setupScriptPath = GetRuntimeSetupScriptPath();
+        return File.Exists(setupScriptPath);
+    }
+
+    private bool TryBootstrapShazamRuntime(out string? error)
+    {
+        _lastBootstrapAttemptUtc = DateTimeOffset.UtcNow;
+        var setupScriptPath = GetRuntimeSetupScriptPath();
+        if (!File.Exists(setupScriptPath))
+        {
+            error = $"Shazam runtime bootstrap script not found at '{setupScriptPath}'.";
+            return false;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            error = "Automatic Shazam runtime bootstrap is only supported on Unix-like hosts.";
+            return false;
+        }
+
+        var bootstrapPython = ResolveBootstrapPythonExecutable();
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "bash",
+            WorkingDirectory = Path.GetDirectoryName(setupScriptPath) ?? _environment.ContentRootPath,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add(setupScriptPath);
+        startInfo.Environment["PYTHONUNBUFFERED"] = "1";
+        if (!string.IsNullOrWhiteSpace(bootstrapPython))
+        {
+            startInfo.Environment["SHAZAM_BOOTSTRAP_PYTHON"] = bootstrapPython;
+        }
+
+        try
+        {
+            using var process = new Process { StartInfo = startInfo };
+            process.Start();
+            if (!process.WaitForExit(BootstrapTimeoutMs))
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (Exception)
+                {
+                    // best effort
+                }
+
+                error = "Timed out while bootstrapping Shazam runtime dependencies.";
+                return false;
+            }
+
+            var stdout = process.StandardOutput.ReadToEnd().Trim();
+            var stderr = process.StandardError.ReadToEnd().Trim();
+            if (process.ExitCode != 0)
+            {
+                error = FirstNonEmpty(
+                    stderr,
+                    stdout,
+                    $"Shazam runtime bootstrap exited with code {process.ExitCode}.");
+                return false;
+            }
+
+            _logger.LogInformation("Shazam runtime bootstrap completed successfully.");
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to execute Shazam runtime bootstrap script.");
+            }
+
+            error = $"Failed to execute Shazam runtime bootstrap script. {ex.Message}";
+            return false;
+        }
+    }
+
+    private string GetRuntimeSetupScriptPath()
+    {
+        return Path.Combine(_environment.ContentRootPath, "Tools", "shazam_port", "setup_runtime.sh");
+    }
+
+    private string ResolveBootstrapPythonExecutable()
+    {
+        var explicitBootstrap = Environment.GetEnvironmentVariable("SHAZAM_BOOTSTRAP_PYTHON");
+        if (!string.IsNullOrWhiteSpace(explicitBootstrap))
+        {
+            return explicitBootstrap.Trim();
+        }
+
+        var runtimePython = ResolvePythonExecutable();
+        if (!string.IsNullOrWhiteSpace(runtimePython))
+        {
+            return runtimePython;
+        }
+
+        return "python3";
     }
 
     private bool CanRunProcess(string fileName, string arguments, out string? error, bool useShellArgumentParsing = false)
@@ -434,7 +661,20 @@ public sealed class ShazamRecognitionService
             }
 
             process.Start();
-            process.WaitForExit();
+            if (!process.WaitForExit(ProbeProcessTimeoutMs))
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (Exception)
+                {
+                    // best effort
+                }
+
+                error = $"Command '{fileName} {arguments}' timed out.";
+                return false;
+            }
             if (process.ExitCode == 0)
             {
                 error = null;

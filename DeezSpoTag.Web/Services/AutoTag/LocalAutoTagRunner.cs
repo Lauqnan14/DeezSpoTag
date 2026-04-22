@@ -315,7 +315,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private readonly DownloadLyricsService _downloadLyricsService;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly PlatformCapabilitiesStore _capabilitiesStore;
-    private readonly bool _shazamRecognitionAvailable;
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -353,7 +352,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         _downloadLyricsService = collaborators.DownloadLyricsService;
         _settingsService = collaborators.SettingsService;
         _capabilitiesStore = collaborators.CapabilitiesStore;
-        _shazamRecognitionAvailable = _shazamRecognitionService.IsAvailable;
     }
 
     public async Task<AutoTagRunResult> RunAsync(
@@ -454,11 +452,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private void LogShazamAvailability(AutoTagRunPlan plan, Action<string> logCallback)
     {
+        var shazamRecognitionAvailable = IsShazamRecognitionAvailable();
         if ((plan.EnableShazamFallback
              || plan.ForceShazamMatch
              || plan.ShazamConflictResolution
              || plan.EffectivePlatforms.Contains(ShazamPlatform, StringComparer.OrdinalIgnoreCase))
-            && !_shazamRecognitionAvailable)
+            && !shazamRecognitionAvailable)
         {
             logCallback("onetagger_autotag: shazam unavailable");
         }
@@ -2423,7 +2422,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return new ShazamEnrichmentResult(false, null, false);
         }
 
-        if (!_shazamRecognitionAvailable)
+        if (!IsShazamRecognitionAvailable())
         {
             // Degrade gracefully when Shazam is unavailable so other platforms can still tag.
             return new ShazamEnrichmentResult(false, "shazam unavailable", false);
@@ -2531,6 +2530,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var legacyEnableFallback = config.EnableShazam || shazamEnabled;
         var legacyForceMatch = shazamEnabled && config.ForceShazam;
         return (legacyEnableFallback, legacyForceMatch);
+    }
+
+    private bool IsShazamRecognitionAvailable()
+    {
+        return _shazamRecognitionService.IsAvailable;
     }
 
     private static bool IsShazamConflictResolution(AutoTagRunnerConfig config)

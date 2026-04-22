@@ -12,9 +12,29 @@ if ! command -v "${python_bin}" >/dev/null 2>&1; then
   exit 1
 fi
 
-"${python_bin}" -m venv "${venv_dir}"
-"${venv_dir}/bin/pip" install --no-cache-dir --upgrade pip
-"${venv_dir}/bin/pip" install --no-cache-dir -r "${requirements_file}"
+if [[ -d "${venv_dir}" ]] && [[ ! -x "${venv_dir}/bin/python3" || ! -x "${venv_dir}/bin/pip" ]]; then
+  echo "Detected broken Shazam venv at ${venv_dir}; rebuilding."
+  rm -rf "${venv_dir}"
+fi
+
+"${python_bin}" -m venv --clear "${venv_dir}"
+
+venv_python="${venv_dir}/bin/python3"
+if [[ ! -x "${venv_python}" ]]; then
+  venv_python="${venv_dir}/bin/python"
+fi
+
+if [[ ! -x "${venv_python}" ]]; then
+  echo "Shazam venv python executable not found in ${venv_dir}/bin." >&2
+  exit 1
+fi
+
+if [[ ! -x "${venv_dir}/bin/pip" ]]; then
+  "${venv_python}" -m ensurepip --upgrade
+fi
+
+"${venv_python}" -m pip install --no-cache-dir --upgrade pip
+"${venv_python}" -m pip install --no-cache-dir -r "${requirements_file}"
 
 echo "Shazam runtime ready:"
-echo "  ${venv_dir}/bin/python3"
+echo "  ${venv_python}"
