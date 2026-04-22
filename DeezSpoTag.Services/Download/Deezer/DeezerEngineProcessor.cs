@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using System.Buffers;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
@@ -33,7 +34,7 @@ public interface IDeezerQueueContext
     Task UpdateWatchlistTrackStatusAsync(string payloadJson, string status, CancellationToken cancellationToken);
 }
 
-public sealed class DeezerEngineProcessor : IQueueEngineProcessor
+public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
 {
     private const string EngineName = "deezer";
     private const string FailedStatus = "failed";
@@ -49,6 +50,9 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
     private const string DeezerSource = "deezer";
     private const string SpotifySource = "spotify";
     private const string HearThisBrowserUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+    private const string HearThisDownloadPathSegment = "/download/";
+    private const string HearThisListenPathSegment = "/listen.mp3";
+    private const string HearThisStreamPathSegment = "/stream.mp3";
     private const int EpisodeParallelRangeDownloads = 6;
     private const long EpisodeParallelRangeMinimumBytes = 24L * 1024L * 1024L;
     private const long EpisodeRangeChunkBytes = 8L * 1024L * 1024L;
@@ -57,12 +61,6 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
     private static readonly TimeSpan EpisodeReadStallTimeout = TimeSpan.FromSeconds(20);
     private const int EpisodeGatewayCacheMaxEntries = 2048;
     private static readonly TimeSpan EpisodeGatewayCacheTtl = TimeSpan.FromMinutes(20);
-    private static readonly Regex HearThisDownloadHrefRegex = new(
-        "href\\s*=\\s*[\"'](?<url>[^\"']*/download/\\?[^\"'<>\r\n]+)[\"']",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex HearThisEscapedDownloadUrlRegex = new(
-        "https?:\\\\/\\\\/[^\"'\\s]+/download/\\?[^\"'\\s]+",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly ConcurrentDictionary<string, CachedEpisodeGatewayObject> EpisodeGatewayCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> EpisodeGatewayCacheGates = new(StringComparer.OrdinalIgnoreCase);
     private readonly DownloadQueueRepository _queueRepository;
@@ -1113,22 +1111,18 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
                 totalBytes,
                 progressReporter,
                 queueUuid,
-                cancellationToken))
+                cancellationToken)
+            && IsNonEmptyFile(outputPath))
         {
-            if (File.Exists(outputPath) && new FileInfo(outputPath).Length > 0)
-            {
-                return outputPath;
-            }
+            return outputPath;
         }
 
-        // Fallback path: single-stream copy when range download is unavailable or fails.
-        if (rangeSupported || !string.Equals(preferredStreamUrl, finalStreamUrl, StringComparison.OrdinalIgnoreCase))
+        var reuseInitialResponse = ShouldReuseInitialEpisodeResponse(rangeSupported, preferredStreamUrl, finalStreamUrl);
+        if (!reuseInitialResponse)
         {
             response.Dispose();
         }
 
-        var reuseInitialResponse = !rangeSupported
-            && string.Equals(preferredStreamUrl, finalStreamUrl, StringComparison.OrdinalIgnoreCase);
         using var fallbackResponse = reuseInitialResponse
             ? response
             : await OpenEpisodeResponseWithHostFallbackAsync(
@@ -1137,7 +1131,30 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
                 finalStreamUrl,
                 cancellationToken);
         fallbackResponse.EnsureSuccessStatusCode();
-        await using var contentStream = await fallbackResponse.Content.ReadAsStreamAsync(cancellationToken);
+        await CopyEpisodeResponseToFileAsync(fallbackResponse, outputPath, progressReporter, cancellationToken);
+
+        if (IsNonEmptyFile(outputPath))
+        {
+            return outputPath;
+        }
+
+        await FailQueueAsync(queueUuid, "Episode download failed", notify: true, cancellationToken);
+        return null;
+    }
+
+    private static bool ShouldReuseInitialEpisodeResponse(bool rangeSupported, string preferredStreamUrl, string finalStreamUrl) =>
+        !rangeSupported && string.Equals(preferredStreamUrl, finalStreamUrl, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsNonEmptyFile(string outputPath) =>
+        File.Exists(outputPath) && new FileInfo(outputPath).Length > 0;
+
+    private static async Task CopyEpisodeResponseToFileAsync(
+        HttpResponseMessage response,
+        string outputPath,
+        Func<double, double, Task> progressReporter,
+        CancellationToken cancellationToken)
+    {
+        await using var contentStream = await response.Content.ReadAsStreamAsync(cancellationToken);
         await using var fileStream = new FileStream(
             outputPath,
             FileMode.Create,
@@ -1147,13 +1164,14 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             FileOptions.Asynchronous | FileOptions.SequentialScan);
 
         await progressReporter(0, 0);
-        var fallbackTotalBytes = fallbackResponse.Content.Headers.ContentLength.GetValueOrDefault();
+        var fallbackTotalBytes = response.Content.Headers.ContentLength.GetValueOrDefault();
+        var totalRead = 0L;
+        var speedWindowBytes = 0L;
+        var lastReportAt = DateTimeOffset.UtcNow;
+
         var buffer = ArrayPool<byte>.Shared.Rent(EpisodeStreamBufferBytes);
         try
         {
-            long totalRead = 0;
-            long speedWindowBytes = 0;
-            var lastReportAt = DateTimeOffset.UtcNow;
             while (true)
             {
                 var readTask = contentStream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken).AsTask();
@@ -1166,25 +1184,17 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
                 await fileStream.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
                 totalRead += read;
                 speedWindowBytes += read;
-
                 if (fallbackTotalBytes > 0)
                 {
-                    var now = DateTimeOffset.UtcNow;
-                    if (totalRead == fallbackTotalBytes || (now - lastReportAt).TotalSeconds >= 1)
-                    {
-                        var elapsedSeconds = Math.Max((now - lastReportAt).TotalSeconds, 0.001d);
-                        var speedMbps = ((speedWindowBytes * 8d) / 1024d / 1024d) / elapsedSeconds;
-                        var progress = totalRead * 100d / fallbackTotalBytes;
-                        await progressReporter(progress, speedMbps);
-                        lastReportAt = now;
-                        speedWindowBytes = 0;
-                    }
+                    var progressState = await ReportEpisodeCopyProgressAsync(
+                        progressReporter,
+                        fallbackTotalBytes,
+                        totalRead,
+                        speedWindowBytes,
+                        lastReportAt);
+                    speedWindowBytes = progressState.SpeedWindowBytes;
+                    lastReportAt = progressState.LastReportAt;
                 }
-            }
-
-            if (totalRead > 0)
-            {
-                await progressReporter(100, 0);
             }
         }
         finally
@@ -1192,13 +1202,30 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             ArrayPool<byte>.Shared.Return(buffer);
         }
 
-        if (File.Exists(outputPath) && new FileInfo(outputPath).Length > 0)
+        if (totalRead > 0)
         {
-            return outputPath;
+            await progressReporter(100, 0);
+        }
+    }
+
+    private static async Task<(long SpeedWindowBytes, DateTimeOffset LastReportAt)> ReportEpisodeCopyProgressAsync(
+        Func<double, double, Task> progressReporter,
+        long fallbackTotalBytes,
+        long totalRead,
+        long speedWindowBytes,
+        DateTimeOffset lastReportAt)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (totalRead != fallbackTotalBytes && (now - lastReportAt).TotalSeconds < 1)
+        {
+            return (speedWindowBytes, lastReportAt);
         }
 
-        await FailQueueAsync(queueUuid, "Episode download failed", notify: true, cancellationToken);
-        return null;
+        var elapsedSeconds = Math.Max((now - lastReportAt).TotalSeconds, 0.001d);
+        var speedMbps = ((speedWindowBytes * 8d) / 1024d / 1024d) / elapsedSeconds;
+        var progress = totalRead * 100d / fallbackTotalBytes;
+        await progressReporter(progress, speedMbps);
+        return (0, now);
     }
 
     private async Task<HttpResponseMessage> OpenEpisodeInitialResponseAsync(
@@ -1260,7 +1287,7 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             return null;
         }
 
-        if (streamUri.AbsolutePath.Contains("/download/", StringComparison.OrdinalIgnoreCase))
+        if (streamUri.AbsolutePath.Contains(HearThisDownloadPathSegment, StringComparison.OrdinalIgnoreCase))
         {
             return streamUrl;
         }
@@ -1303,9 +1330,9 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
 
     private static Uri? BuildHearThisTrackPageUri(Uri streamUri)
     {
-        if (streamUri.AbsolutePath.Contains("/download/", StringComparison.OrdinalIgnoreCase))
+        if (streamUri.AbsolutePath.Contains(HearThisDownloadPathSegment, StringComparison.OrdinalIgnoreCase))
         {
-            var downloadIndex = streamUri.AbsolutePath.LastIndexOf("/download/", StringComparison.OrdinalIgnoreCase);
+            var downloadIndex = streamUri.AbsolutePath.LastIndexOf(HearThisDownloadPathSegment, StringComparison.OrdinalIgnoreCase);
             if (downloadIndex <= 0)
             {
                 return null;
@@ -1325,12 +1352,8 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             return downloadBuilder.Uri;
         }
 
-        var marker = streamUri.AbsolutePath.EndsWith("/listen.mp3", StringComparison.OrdinalIgnoreCase)
-            ? "/listen.mp3"
-            : streamUri.AbsolutePath.EndsWith("/stream.mp3", StringComparison.OrdinalIgnoreCase)
-                ? "/stream.mp3"
-                : string.Empty;
-        if (string.IsNullOrEmpty(marker))
+        var marker = ResolveHearThisStreamPathMarker(streamUri.AbsolutePath);
+        if (marker == null)
         {
             return null;
         }
@@ -1357,12 +1380,27 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
 
     private static bool IsHearThisTrackStreamPath(string absolutePath)
     {
-        return absolutePath.EndsWith("/listen.mp3", StringComparison.OrdinalIgnoreCase)
-               || absolutePath.EndsWith("/stream.mp3", StringComparison.OrdinalIgnoreCase)
-               || absolutePath.Contains("/download/", StringComparison.OrdinalIgnoreCase);
+        return absolutePath.EndsWith(HearThisListenPathSegment, StringComparison.OrdinalIgnoreCase)
+               || absolutePath.EndsWith(HearThisStreamPathSegment, StringComparison.OrdinalIgnoreCase)
+               || absolutePath.Contains(HearThisDownloadPathSegment, StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task<HttpResponseMessage> SendEpisodeRequestAsync(
+    private static string? ResolveHearThisStreamPathMarker(string absolutePath)
+    {
+        if (absolutePath.EndsWith(HearThisListenPathSegment, StringComparison.OrdinalIgnoreCase))
+        {
+            return HearThisListenPathSegment;
+        }
+
+        if (absolutePath.EndsWith(HearThisStreamPathSegment, StringComparison.OrdinalIgnoreCase))
+        {
+            return HearThisStreamPathSegment;
+        }
+
+        return null;
+    }
+
+    private static async Task<HttpResponseMessage> SendEpisodeRequestAsync(
         HttpClient client,
         string url,
         CancellationToken cancellationToken)
@@ -1386,7 +1424,7 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         }
 
         request.Headers.TryAddWithoutValidation("User-Agent", HearThisBrowserUserAgent);
-        if (uri.AbsolutePath.Contains("/download/", StringComparison.OrdinalIgnoreCase))
+        if (uri.AbsolutePath.Contains(HearThisDownloadPathSegment, StringComparison.OrdinalIgnoreCase))
         {
             var referer = BuildHearThisTrackPageUri(uri);
             if (referer != null)
@@ -1405,13 +1443,13 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             return null;
         }
 
-        var hrefMatch = HearThisDownloadHrefRegex.Match(html);
+        var hrefMatch = HearThisDownloadHrefRegex().Match(html);
         if (hrefMatch.Success)
         {
             return NormalizeHearThisUrl(hrefMatch.Groups["url"].Value, baseUri);
         }
 
-        var escapedMatch = HearThisEscapedDownloadUrlRegex.Match(html);
+        var escapedMatch = HearThisEscapedDownloadUrlRegex().Match(html);
         if (escapedMatch.Success)
         {
             return NormalizeHearThisUrl(escapedMatch.Value.Replace("\\/", "/", StringComparison.Ordinal), baseUri);
@@ -1506,116 +1544,29 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         try
         {
             await progressReporter(0, 0);
-
             var ranges = BuildEpisodeRanges(totalBytes, EpisodeParallelRangeDownloads);
-            await using (var preallocateStream = new FileStream(
-                             outputPath,
-                             FileMode.Create,
-                             FileAccess.Write,
-                             FileShare.None,
-                             EpisodeStreamBufferBytes,
-                             FileOptions.Asynchronous | FileOptions.SequentialScan))
-            {
-                preallocateStream.SetLength(totalBytes);
-            }
-
-            using var writeHandle = File.OpenHandle(
-                outputPath,
-                FileMode.Open,
-                FileAccess.Write,
-                FileShare.None,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-
-            var totalRead = 0L;
-            var speedWindowBytes = 0L;
+            await PreallocateEpisodeDownloadFileAsync(outputPath, totalBytes, cancellationToken);
+            using var writeHandle = OpenEpisodeWriteHandle(outputPath);
+            var counters = new EpisodeRangeTransferCounters();
             using var progressCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var progressLoop = Task.Run(async () =>
-            {
-                var lastReportedProgress = 0d;
-                using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
-                while (await timer.WaitForNextTickAsync(progressCts.Token))
-                {
-                    var read = Interlocked.Read(ref totalRead);
-                    if (read <= 0)
-                    {
-                        continue;
-                    }
-
-                    var windowBytes = Interlocked.Exchange(ref speedWindowBytes, 0);
-                    var progress = read * 100d / totalBytes;
-                    if (progress <= lastReportedProgress)
-                    {
-                        continue;
-                    }
-
-                    var speedMbps = (windowBytes * 8d) / 1024d / 1024d;
-                    await progressReporter(progress, speedMbps);
-                    lastReportedProgress = progress;
-                }
-            }, CancellationToken.None);
+            var progressLoop = StartEpisodeRangeProgressLoopAsync(
+                progressReporter,
+                totalBytes,
+                counters,
+                progressCts.Token);
 
             try
             {
-                await Parallel.ForEachAsync(ranges, new ParallelOptions
-                {
-                    CancellationToken = cancellationToken,
-                    MaxDegreeOfParallelism = Math.Min(EpisodeParallelRangeDownloads, ranges.Count)
-                }, async (range, token) =>
-                {
-                    using var request = CreateEpisodeRequest(streamUrl, new RangeHeaderValue(range.Start, range.End));
-                    using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
-                    if (response.StatusCode != HttpStatusCode.PartialContent)
-                    {
-                        throw new InvalidOperationException("Episode source ignored range request.");
-                    }
-                    response.EnsureSuccessStatusCode();
-
-                    await using var contentStream = await response.Content.ReadAsStreamAsync(token);
-                    var buffer = ArrayPool<byte>.Shared.Rent(EpisodeStreamBufferBytes);
-                    try
-                    {
-                        var offset = range.Start;
-                        while (true)
-                        {
-                            var readTask = contentStream.ReadAsync(buffer.AsMemory(0, buffer.Length), token).AsTask();
-                            var read = await readTask.WaitAsync(EpisodeReadStallTimeout, token);
-                            if (read <= 0)
-                            {
-                                break;
-                            }
-
-                            await RandomAccess.WriteAsync(
-                                writeHandle,
-                                buffer.AsMemory(0, read),
-                                offset,
-                                token);
-                            offset += read;
-                            Interlocked.Add(ref totalRead, read);
-                            Interlocked.Add(ref speedWindowBytes, read);
-                        }
-                    }
-                    finally
-                    {
-                        ArrayPool<byte>.Shared.Return(buffer);
-                    }
-                });
+                await DownloadEpisodeRangesAsync(client, streamUrl, ranges, writeHandle, counters, cancellationToken);
             }
             finally
             {
-                progressCts.Cancel();
-                try
-                {
-                    await progressLoop;
-                }
-                catch (OperationCanceledException)
-                {
-                    // Expected when shutting down progress loop.
-                }
+                await StopEpisodeRangeProgressLoopAsync(progressCts, progressLoop);
             }
 
-            if (totalRead < totalBytes)
+            if (counters.TotalRead < totalBytes)
             {
-                throw new IOException($"Episode range download incomplete for {queueUuid}: read={totalRead} expected={totalBytes}");
+                throw new IOException($"Episode range download incomplete for {queueUuid}: read={counters.TotalRead} expected={totalBytes}");
             }
 
             await progressReporter(100, 0);
@@ -1644,7 +1595,135 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
         }
     }
 
-    private static IReadOnlyList<(long Start, long End)> BuildEpisodeRanges(long totalBytes, int parallelism)
+    private static async Task PreallocateEpisodeDownloadFileAsync(string outputPath, long totalBytes, CancellationToken cancellationToken)
+    {
+        await using var preallocateStream = new FileStream(
+            outputPath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            EpisodeStreamBufferBytes,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        preallocateStream.SetLength(totalBytes);
+        await preallocateStream.FlushAsync(cancellationToken);
+    }
+
+    private static Microsoft.Win32.SafeHandles.SafeFileHandle OpenEpisodeWriteHandle(string outputPath) =>
+        File.OpenHandle(
+            outputPath,
+            FileMode.Open,
+            FileAccess.Write,
+            FileShare.None,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+    private static Task StartEpisodeRangeProgressLoopAsync(
+        Func<double, double, Task> progressReporter,
+        long totalBytes,
+        EpisodeRangeTransferCounters counters,
+        CancellationToken cancellationToken) =>
+        Task.Run(async () =>
+        {
+            var lastReportedProgress = 0d;
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                var read = Interlocked.Read(ref counters.TotalRead);
+                if (read <= 0)
+                {
+                    continue;
+                }
+
+                var windowBytes = Interlocked.Exchange(ref counters.SpeedWindowBytes, 0);
+                var progress = read * 100d / totalBytes;
+                if (progress <= lastReportedProgress)
+                {
+                    continue;
+                }
+
+                var speedMbps = (windowBytes * 8d) / 1024d / 1024d;
+                await progressReporter(progress, speedMbps);
+                lastReportedProgress = progress;
+            }
+        }, CancellationToken.None);
+
+    private static async Task StopEpisodeRangeProgressLoopAsync(CancellationTokenSource progressCts, Task progressLoop)
+    {
+        await progressCts.CancelAsync();
+        try
+        {
+            await progressLoop;
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected when shutting down progress loop.
+        }
+    }
+
+    private static async Task DownloadEpisodeRangesAsync(
+        HttpClient client,
+        string streamUrl,
+        List<(long Start, long End)> ranges,
+        Microsoft.Win32.SafeHandles.SafeFileHandle writeHandle,
+        EpisodeRangeTransferCounters counters,
+        CancellationToken cancellationToken)
+    {
+        await Parallel.ForEachAsync(ranges, new ParallelOptions
+        {
+            CancellationToken = cancellationToken,
+            MaxDegreeOfParallelism = Math.Min(EpisodeParallelRangeDownloads, ranges.Count)
+        }, async (range, token) =>
+        {
+            await DownloadEpisodeRangeAsync(client, streamUrl, range, writeHandle, counters, token);
+        });
+    }
+
+    private static async Task DownloadEpisodeRangeAsync(
+        HttpClient client,
+        string streamUrl,
+        (long Start, long End) range,
+        Microsoft.Win32.SafeHandles.SafeFileHandle writeHandle,
+        EpisodeRangeTransferCounters counters,
+        CancellationToken cancellationToken)
+    {
+        using var request = CreateEpisodeRequest(streamUrl, new RangeHeaderValue(range.Start, range.End));
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        if (response.StatusCode != HttpStatusCode.PartialContent)
+        {
+            throw new InvalidOperationException("Episode source ignored range request.");
+        }
+
+        response.EnsureSuccessStatusCode();
+        await using var contentStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        var buffer = ArrayPool<byte>.Shared.Rent(EpisodeStreamBufferBytes);
+        try
+        {
+            var offset = range.Start;
+            while (true)
+            {
+                var readTask = contentStream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken).AsTask();
+                var read = await readTask.WaitAsync(EpisodeReadStallTimeout, cancellationToken);
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                await RandomAccess.WriteAsync(
+                    writeHandle,
+                    buffer.AsMemory(0, read),
+                    offset,
+                    cancellationToken);
+                offset += read;
+                Interlocked.Add(ref counters.TotalRead, read);
+                Interlocked.Add(ref counters.SpeedWindowBytes, read);
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private static List<(long Start, long End)> BuildEpisodeRanges(long totalBytes, int parallelism)
     {
         var estimatedCount = (int)Math.Ceiling(totalBytes / (double)EpisodeRangeChunkBytes);
         var rangeCount = Math.Clamp(
@@ -2076,14 +2155,19 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             }
         }
 
-        if (!DateTime.TryParse(releaseValue, out var parsed))
+        if (!DateTimeOffset.TryParse(
+            releaseValue,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal,
+            out var parsed))
         {
             return;
         }
 
-        track.Date.Day = parsed.Day.ToString("D2");
-        track.Date.Month = parsed.Month.ToString("D2");
-        track.Date.Year = parsed.Year.ToString();
+        var parsedUtc = parsed.UtcDateTime;
+        track.Date.Day = parsedUtc.Day.ToString("D2");
+        track.Date.Month = parsedUtc.Month.ToString("D2");
+        track.Date.Year = parsedUtc.Year.ToString();
         track.Date.FixDayMonth();
     }
 
@@ -2250,18 +2334,8 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
             : $"{filename}{extension}";
     }
 
-    private static string? ResolveFirstNonEmpty(params string?[] values)
-    {
-        foreach (var value in values)
-        {
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
-        }
-
-        return null;
-    }
+    private static string? ResolveFirstNonEmpty(params string?[] values) =>
+        values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value));
 
     private async Task SyncEffectiveQualityAsync(
         string queueUuid,
@@ -2309,6 +2383,17 @@ public sealed class DeezerEngineProcessor : IQueueEngineProcessor
     }
 
     private sealed record CachedEpisodeGatewayObject(DateTimeOffset CachedAtUtc, Newtonsoft.Json.Linq.JObject Payload);
+    private sealed class EpisodeRangeTransferCounters
+    {
+        public long TotalRead;
+        public long SpeedWindowBytes;
+    }
+
+    [GeneratedRegex("href\\s*=\\s*[\"'](?<url>[^\"']*/download/\\?[^\"'<>\r\n]+)[\"']", RegexOptions.IgnoreCase)]
+    private static partial Regex HearThisDownloadHrefRegex();
+
+    [GeneratedRegex("https?:\\\\/\\\\/[^\"'\\s]+/download/\\?[^\"'\\s]+", RegexOptions.IgnoreCase)]
+    private static partial Regex HearThisEscapedDownloadUrlRegex();
 
     private static void UpdatePayloadFiles(DeezerQueueItem payload, string outputPath)
     {

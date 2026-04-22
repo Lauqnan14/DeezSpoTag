@@ -104,6 +104,80 @@
         });
     }
 
+    function isResolvedTrackPayload(payload) {
+        return payload?.type === 'track' && payload?.available === true && payload?.deezerId;
+    }
+
+    function cacheResolvedTrack(key, value) {
+        if (key) {
+            resolveCache.set(key, value);
+        }
+    }
+
+    async function tryResolveTrackViaUnifiedResolver(normalizedUrl, metadata) {
+        if (!global.DeezerResolver || typeof global.DeezerResolver.resolveTrack !== 'function') {
+            return { resolved: null, usedUnifiedResolver: false, unifiedResolverFailed: false };
+        }
+
+        try {
+            const resolved = await global.DeezerResolver.resolveTrack(
+                {
+                    source: 'spotify',
+                    url: normalizedUrl,
+                    title: metadata?.title || '',
+                    artist: metadata?.artist || '',
+                    album: metadata?.album || '',
+                    isrc: metadata?.isrc || '',
+                    durationMs: metadata?.durationMs || 0
+                },
+                {
+                    attempts: 2,
+                    baseDelayMs: 250,
+                    timeoutMs: 3000,
+                    spotifyResolverFirst: true
+                }
+            );
+            return { resolved, usedUnifiedResolver: true, unifiedResolverFailed: false };
+        } catch {
+            return { resolved: null, usedUnifiedResolver: true, unifiedResolverFailed: true };
+        }
+    }
+
+    async function tryResolveTrackViaLegacyEndpoint(normalizedUrl) {
+        const response = await fetch('/api/spotify/resolve-deezer?url=' + encodeURIComponent(normalizedUrl));
+        if (!response.ok) {
+            return null;
+        }
+        return await response.json();
+    }
+
+    async function resolveTrackBySpotifyUrlCore(normalizedUrl, metadata, key) {
+        let resolved = null;
+        const unifiedResult = await tryResolveTrackViaUnifiedResolver(normalizedUrl, metadata);
+        if (unifiedResult.usedUnifiedResolver) {
+            resolved = unifiedResult.resolved;
+        } else {
+            resolved = await tryResolveTrackViaLegacyEndpoint(normalizedUrl);
+        }
+
+        if (isResolvedTrackPayload(resolved)) {
+            cacheResolvedTrack(key, resolved);
+            return resolved;
+        }
+
+        // DeezerResolver.resolveTrack already performs metadata fallback internally.
+        // Avoid duplicate fallback calls unless the unified resolver is unavailable/failed.
+        if (!unifiedResult.usedUnifiedResolver || unifiedResult.unifiedResolverFailed) {
+            const fallbackResolved = await fetchResolveDeezerByMetadata(normalizedUrl, metadata);
+            if (fallbackResolved?.deezerId) {
+                cacheResolvedTrack(key, fallbackResolved);
+                return fallbackResolved;
+            }
+        }
+
+        return null;
+    }
+
     async function resolveTrackBySpotifyUrl(url, options = {}) {
         const normalizedUrl = String(url || '').trim();
         if (!normalizedUrl) {
@@ -121,59 +195,7 @@
 
         const request = (async function () {
             try {
-                let resolved = null;
-                let usedUnifiedResolver = false;
-                let unifiedResolverFailed = false;
-                if (global.DeezerResolver && typeof global.DeezerResolver.resolveTrack === 'function') {
-                    usedUnifiedResolver = true;
-                    try {
-                        resolved = await global.DeezerResolver.resolveTrack(
-                            {
-                                source: 'spotify',
-                                url: normalizedUrl,
-                                title: metadata?.title || '',
-                                artist: metadata?.artist || '',
-                                album: metadata?.album || '',
-                                isrc: metadata?.isrc || '',
-                                durationMs: metadata?.durationMs || 0
-                            },
-                            {
-                                attempts: 2,
-                                baseDelayMs: 250,
-                                timeoutMs: 3000,
-                                spotifyResolverFirst: true
-                            }
-                        );
-                    } catch {
-                        unifiedResolverFailed = true;
-                    }
-                } else {
-                    const response = await fetch('/api/spotify/resolve-deezer?url=' + encodeURIComponent(normalizedUrl));
-                    if (response.ok) {
-                        resolved = await response.json();
-                    }
-                }
-
-                if (resolved?.type === 'track' && resolved?.available === true && resolved?.deezerId) {
-                    if (key) {
-                        resolveCache.set(key, resolved);
-                    }
-                    return resolved;
-                }
-
-                // DeezerResolver.resolveTrack already performs metadata fallback internally.
-                // Avoid duplicate fallback calls unless the unified resolver is unavailable/failed.
-                if (!usedUnifiedResolver || unifiedResolverFailed) {
-                    const fallbackResolved = await fetchResolveDeezerByMetadata(normalizedUrl, metadata);
-                    if (fallbackResolved?.deezerId) {
-                        if (key) {
-                            resolveCache.set(key, fallbackResolved);
-                        }
-                        return fallbackResolved;
-                    }
-                }
-
-                return null;
+                return await resolveTrackBySpotifyUrlCore(normalizedUrl, metadata, key);
             } catch {
                 return null;
             } finally {

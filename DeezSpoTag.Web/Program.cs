@@ -46,6 +46,13 @@ public partial class Program
 
     private const string UnknownValue = "unknown";
     private const string MissingValue = "missing";
+    private static readonly string[] AdditionalCompressedMimeTypes =
+    {
+        "application/json",
+        "application/javascript",
+        "text/javascript",
+        "application/manifest+json"
+    };
     [GeneratedRegex(
         @"^v?(?<core>\d+\.\d+\.\d+\.\d+)(?:[-+][0-9A-Za-z][0-9A-Za-z.\-]*)?$",
         RegexOptions.CultureInvariant)]
@@ -233,13 +240,7 @@ public partial class Program
             options.EnableForHttps = true;
             options.Providers.Add<BrotliCompressionProvider>();
             options.Providers.Add<GzipCompressionProvider>();
-            options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(new[]
-            {
-                "application/json",
-                "application/javascript",
-                "text/javascript",
-                "application/manifest+json"
-            }).Distinct();
+            options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(AdditionalCompressedMimeTypes).Distinct();
         });
         services.Configure<BrotliCompressionProviderOptions>(options =>
         {
