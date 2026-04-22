@@ -88,21 +88,7 @@ function getBrowserTimeZone() {
     return timeZone || 'America/New_York';
 }
 
-function buildSpotifyWebUrl(uri) {
-    if (!uri) {
-        return '';
-    }
-    if (uri.startsWith('http://') || uri.startsWith('https://')) {
-        return uri;
-    }
-    if (uri.startsWith('spotify:')) {
-        const parts = uri.split(':');
-        if (parts.length >= 3) {
-            return `https://open.spotify.com/${parts[1]}/${parts[2]}`;
-        }
-    }
-    return '';
-}
+const spotifyUrlHelpers = globalThis.SpotifyUrlHelpers;
 
 async function openSpotifyItem(item) {
     if (!item) {
@@ -113,8 +99,8 @@ async function openSpotifyItem(item) {
         await openSpotifyBrowseCategory(item);
         return;
     }
-    const url = buildSpotifyWebUrl(item.uri || '');
-    const parsed = parseSpotifyUrl(url);
+    const url = spotifyUrlHelpers.buildSpotifyWebUrl(item.uri || '');
+    const parsed = spotifyUrlHelpers.parseSpotifyUrl(url);
     const fallbackId = item.id || '';
     const fallbackType = itemType || '';
     const resolvedType = parsed?.type || fallbackType;
@@ -144,33 +130,6 @@ async function openSpotifyBrowseCategory(item) {
     if (uri) params.set('uri', uri);
     if (title) params.set('title', title);
     globalThis.location.href = `/Spotify/Browse?${params.toString()}`;
-}
-
-function parseSpotifyUrl(url) {
-    if (!url) {
-        return null;
-    }
-    if (url.startsWith('spotify:')) {
-        const uriParts = url.split(':');
-        if (uriParts.length >= 3 && uriParts[1] && uriParts[2]) {
-            return { type: uriParts[1].toLowerCase(), id: uriParts[2] };
-        }
-    }
-    const directMatch = /open\.spotify\.com\/(?:intl-[a-z]+\/)?(album|playlist|track|show|episode|artist|station)\/([a-z0-9]+)/i.exec(url);
-    if (directMatch) {
-        return { type: directMatch[1].toLowerCase(), id: directMatch[2] };
-    }
-    try {
-        const parsed = new URL(url);
-        const segments = parsed.pathname.split('/').filter(Boolean);
-        const kindIndex = segments.findIndex(seg => /^(album|playlist|track|show|episode|artist|station)$/i.test(seg));
-        if (kindIndex >= 0 && segments[kindIndex + 1]) {
-            return { type: segments[kindIndex].toLowerCase(), id: segments[kindIndex + 1] };
-        }
-    } catch {
-        return null;
-    }
-    return null;
 }
 
 const setHomeTrendingPreviewButtonState = globalThis.HomeViewHelpers.setHomeTrendingPreviewButtonState;
@@ -603,14 +562,7 @@ async function startHomeTrendingPlaylistStyleMatching(pending) {
                 homeTrendingMatchButtonsBySpotifyId.set(spotifyId, entry.button);
             }
 
-            tracks.push({
-                link,
-                title: String(request?.title || '').trim(),
-                artist: String(request?.artist || '').trim(),
-                album: String(request?.album || '').trim(),
-                isrc: String(request?.isrc || '').trim(),
-                durationMs: Number.isFinite(Number(request?.durationMs)) ? Number(request.durationMs) : 0
-            });
+            tracks.push(spotifyUrlHelpers.buildSpotifyTrackMatchPayload(link, request));
         }
 
         if (tracks.length === 0) {

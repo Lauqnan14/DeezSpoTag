@@ -937,28 +937,10 @@ function getLibraryPlaybackFacade() {
     return facade;
 }
 
-function buildSpotifyWebUrl(uri) {
-    if (!uri) {
-        return '';
-    }
-    const value = String(uri).trim();
-    if (!value) {
-        return '';
-    }
-    if (value.startsWith('http://') || value.startsWith('https://')) {
-        return value;
-    }
-    if (value.startsWith('spotify:')) {
-        const parts = value.split(':');
-        if (parts.length >= 3 && parts[1] && parts[2]) {
-            return `https://open.spotify.com/${parts[1]}/${parts[2]}`;
-        }
-    }
-    return '';
-}
+const spotifyUrlHelpers = globalThis.SpotifyUrlHelpers;
 
 function normalizeSpotifyTrackSourceUrl(url, fallbackTrackId = '') {
-    const initial = buildSpotifyWebUrl(url);
+    const initial = spotifyUrlHelpers.buildSpotifyWebUrl(url);
     const fallbackId = String(fallbackTrackId || '').trim();
     if (!initial) {
         return fallbackId ? `https://open.spotify.com/track/${encodeURIComponent(fallbackId)}` : '';
@@ -1036,36 +1018,6 @@ async function resolveSpotifyUrlToDeezer(url) {
     } finally {
         libraryState.spotifyResolveInFlight.delete(metadataKey);
     }
-}
-
-function parseSpotifyUrl(url) {
-    if (!url) {
-        return null;
-    }
-    const trimmed = String(url).trim();
-    if (trimmed.startsWith('spotify:')) {
-        const uriParts = trimmed.split(':');
-        if (uriParts.length >= 3 && uriParts[1] && uriParts[2]) {
-            return { type: uriParts[1].toLowerCase(), id: uriParts[2] };
-        }
-    }
-
-    const directMatch = /open\.spotify\.com\/(?:intl-[a-z]+\/)?(album|playlist|track|show|episode|artist|station)\/([a-z0-9]+)/i.exec(trimmed);
-    if (directMatch) {
-        return { type: directMatch[1].toLowerCase(), id: directMatch[2] };
-    }
-
-    try {
-        const parsed = new URL(trimmed);
-        const segments = parsed.pathname.split('/').filter(Boolean);
-        const kindIndex = segments.findIndex(seg => /^(album|playlist|track|show|episode|artist|station)$/i.test(seg));
-        if (kindIndex >= 0 && segments[kindIndex + 1]) {
-            return { type: segments[kindIndex].toLowerCase(), id: segments[kindIndex + 1] };
-        }
-    } catch {
-        return null;
-    }
-    return null;
 }
 
 function normalizeAlbumTitle(value) {
@@ -2059,7 +2011,7 @@ async function ensureLocalArtistIndex() {
 }
 
 async function handleSpotifyRedirect(url, metadata = {}) {
-    const parsed = parseSpotifyUrl(url);
+    const parsed = spotifyUrlHelpers.parseSpotifyUrl(url);
     if (!parsed?.type || !parsed.id) {
         const safeUrl = toSafeHttpUrl(url);
         if (!safeUrl) {
@@ -4502,7 +4454,7 @@ function renderSpotifyRelatedArtists(artists) {
             }
 
             const spotifyUrl = button.dataset.spotifyUrl;
-            const parsed = parseSpotifyUrl(spotifyUrl || '');
+            const parsed = spotifyUrlHelpers.parseSpotifyUrl(spotifyUrl || '');
             if (parsed?.type === 'artist' && parsed.id) {
                 globalThis.location.href = `/Artist?id=${encodeURIComponent(parsed.id)}&source=spotify`;
                 return;
@@ -4742,7 +4694,7 @@ function scheduleSpotifyTopTrackPreviewWarmup() {
 }
 
 function extractSpotifyTopTrackIdFromUrl(url) {
-    const parsed = parseSpotifyUrl(url);
+    const parsed = spotifyUrlHelpers.parseSpotifyUrl(url);
     if (!parsed || parsed.type !== 'track') {
         return '';
     }
@@ -4847,14 +4799,7 @@ async function startSpotifyTopTrackPlaylistStyleMatching(pendingQueue) {
                 spotifyTopTrackMatchButtonsBySpotifyId.set(spotifyId, current.el);
             }
 
-            tracks.push({
-                link,
-                title: String(request?.title || '').trim(),
-                artist: String(request?.artist || '').trim(),
-                album: String(request?.album || '').trim(),
-                isrc: String(request?.isrc || '').trim(),
-                durationMs: Number.isFinite(Number(request?.durationMs)) ? Number(request.durationMs) : 0
-            });
+            tracks.push(spotifyUrlHelpers.buildSpotifyTrackMatchPayload(link, request));
         }
 
         if (tracks.length === 0) {
