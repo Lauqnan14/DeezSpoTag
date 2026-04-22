@@ -1816,12 +1816,23 @@ public sealed class SpotifyMetadataService
         {
             var resolvedAccounts = await ResolveActiveSpotifyAccountsAsync();
             var userBlobPath = resolvedAccounts.UserAccount?.LibrespotBlobPath ?? resolvedAccounts.UserAccount?.BlobPath;
-            if (!string.IsNullOrWhiteSpace(userBlobPath) && _blobService.BlobExists(userBlobPath))
+            if (!string.IsNullOrWhiteSpace(userBlobPath)
+                && _blobService.BlobExists(userBlobPath)
+                && await _blobService.IsLibrespotBlobAsync(userBlobPath))
             {
                 return userBlobPath;
             }
 
-            return NormalizeOptionalPath(resolvedAccounts.PlatformAccount?.BlobPath);
+            var platformBlobPath = NormalizeOptionalPath(resolvedAccounts.PlatformAccount?.LibrespotBlobPath)
+                ?? NormalizeOptionalPath(resolvedAccounts.PlatformAccount?.BlobPath);
+            if (!string.IsNullOrWhiteSpace(platformBlobPath)
+                && _blobService.BlobExists(platformBlobPath)
+                && await _blobService.IsLibrespotBlobAsync(platformBlobPath))
+            {
+                return platformBlobPath;
+            }
+
+            return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

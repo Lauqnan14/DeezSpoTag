@@ -545,7 +545,9 @@ public sealed class SpotifyPathfinderMetadataClient
             {
                 SpotifyUserAuthState userState = await _userAuthStore.LoadAsync(userId);
                 string? userBlob = SpotifyUserAuthStore.ResolveActiveLibrespotBlobPath(userState);
-                if (!string.IsNullOrWhiteSpace(userBlob) && _blobService.BlobExists(userBlob))
+                if (!string.IsNullOrWhiteSpace(userBlob)
+                    && _blobService.BlobExists(userBlob)
+                    && await _blobService.IsLibrespotBlobAsync(userBlob))
                 {
                     return userBlob;
                 }
@@ -556,14 +558,19 @@ public sealed class SpotifyPathfinderMetadataClient
             if (!string.IsNullOrWhiteSpace(active))
             {
                 SpotifyAccount? account = spotifyState?.Accounts.FirstOrDefault((SpotifyAccount a) => a.Name.Equals(active, StringComparison.OrdinalIgnoreCase));
-                if (!string.IsNullOrWhiteSpace(account?.BlobPath) && _blobService.BlobExists(account.BlobPath))
+                string? platformBlobPath = account?.LibrespotBlobPath ?? account?.BlobPath;
+                if (!string.IsNullOrWhiteSpace(platformBlobPath)
+                    && _blobService.BlobExists(platformBlobPath)
+                    && await _blobService.IsLibrespotBlobAsync(platformBlobPath))
                 {
-                    return account.BlobPath;
+                    return platformBlobPath;
                 }
             }
             string root = AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
             string fallback = Path.Join(root, "spotify", "blobs", "credentials.json");
-            return _blobService.BlobExists(fallback) ? fallback : null;
+            return _blobService.BlobExists(fallback) && await _blobService.IsLibrespotBlobAsync(fallback)
+                ? fallback
+                : null;
         }
         catch (Exception ex) when (!(ex is OperationCanceledException))
         {

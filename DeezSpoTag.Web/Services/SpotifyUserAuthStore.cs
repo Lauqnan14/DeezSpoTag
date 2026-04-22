@@ -341,7 +341,20 @@ public sealed class SpotifyUserAuthStore
 
     private static bool PathExists(string? path)
     {
-        return !string.IsNullOrWhiteSpace(path) && File.Exists(path);
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            var info = new FileInfo(path);
+            return info.Exists && info.Length > 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private bool NormalizeLegacyBlobPaths(string userId, SpotifyUserAuthState state)
@@ -457,6 +470,11 @@ public sealed class SpotifyUserAuthStore
             return null;
         }
 
+        if (LooksLikeWebPlayerBlobPath(account.BlobPath))
+        {
+            return null;
+        }
+
         return account.BlobPath;
     }
 
@@ -468,6 +486,17 @@ public sealed class SpotifyUserAuthStore
             return account!.WebPlayerBlobPath!;
         }
         return null;
+    }
+
+    private static bool LooksLikeWebPlayerBlobPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        var fileName = Path.GetFileName(path);
+        return fileName.EndsWith(".web.json", StringComparison.OrdinalIgnoreCase);
     }
 }
 

@@ -25,6 +25,7 @@ public sealed class SpotifyBlobService
     private const string UnknownError = "unknown_error";
     private const string MissingPayloadError = "missing_payload";
     private const string ExceptionError = "exception";
+    private const string InvalidLibrespotBlobError = "invalid_librespot_blob";
     private const string CredentialsArg = "--credentials";
     private const string SpotifyCookieDomain = ".spotify.com";
     private const string SpotifyDcCookie = "sp_dc";
@@ -51,7 +52,8 @@ public sealed class SpotifyBlobService
     {
         MissingBlobError,
         HelperNotFoundError,
-        CredentialsNotFoundError
+        CredentialsNotFoundError,
+        InvalidLibrespotBlobError
     };
     private static readonly Uri SpotifyOpenReferrerUri = BuildSpotifyUri("/");
     private static readonly Regex SpotifyIdRegex = new(
@@ -212,6 +214,11 @@ public sealed class SpotifyBlobService
         if (string.IsNullOrWhiteSpace(blobPath) || !File.Exists(blobPath))
         {
             return new SpotifyAccessTokenResult(null, null, MissingBlobError);
+        }
+
+        if (!await IsLibrespotBlobAsync(blobPath, cancellationToken))
+        {
+            return new SpotifyAccessTokenResult(null, null, InvalidLibrespotBlobError);
         }
 
         if (TokenCache.TryGetValue(blobPath, out var cached) && DateTimeOffset.UtcNow < cached.ExpiresAt)
@@ -601,13 +608,18 @@ public sealed class SpotifyBlobService
         {
             var json = await File.ReadAllTextAsync(blobPath, cancellationToken);
             using var jsonDoc = JsonDocument.Parse(json);
-            if (jsonDoc.RootElement.TryGetProperty("auth_type", out _) &&
-                jsonDoc.RootElement.TryGetProperty("auth_data", out _))
+            if (ClassifyBlobKind(jsonDoc.RootElement) != SpotifyBlobKind.WebPlayer)
             {
                 return null;
             }
 
-            return JsonSerializer.Deserialize<SpotifyBlobPayload>(json, _jsonOptions);
+            var payload = JsonSerializer.Deserialize<SpotifyBlobPayload>(json, _jsonOptions);
+            if (payload == null || !HasWebPlayerCookie(payload.Cookies, SpotifyDcCookie))
+            {
+                return null;
+            }
+
+            return payload;
         }
         catch (JsonException ex)
         {
@@ -629,6 +641,33 @@ public sealed class SpotifyBlobService
     public async Task<bool> IsWebPlayerBlobAsync(string blobPath, CancellationToken cancellationToken = default)
     {
         return await TryLoadBlobPayloadAsync(blobPath, cancellationToken) is not null;
+    }
+
+    public async Task<bool> IsLibrespotBlobAsync(string blobPath, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(blobPath) || !File.Exists(blobPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var json = await File.ReadAllTextAsync(blobPath, cancellationToken);
+            using var doc = JsonDocument.Parse(json);
+            return ClassifyBlobKind(doc.RootElement) == SpotifyBlobKind.Librespot;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     public async Task<SpotifyBlobResult> SaveWebPlayerBlobAsync(
@@ -1140,6 +1179,98 @@ public sealed class SpotifyBlobService
         return SpotifyIdRegex.IsMatch(value.Trim());
     }
 
+    private static SpotifyBlobKind ClassifyBlobKind(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return SpotifyBlobKind.Unknown;
+        }
+
+        if (TryGetPropertyIgnoreCase(root, "auth_type", out _) && TryGetPropertyIgnoreCase(root, "auth_data", out _))
+        {
+            return SpotifyBlobKind.Librespot;
+        }
+
+        if (TryGetPropertyIgnoreCase(root, "credentials", out var credentialsElement)
+            && credentialsElement.ValueKind == JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(credentialsElement.GetString()))
+        {
+            return SpotifyBlobKind.Librespot;
+        }
+
+        if (TryGetPropertyIgnoreCase(root, "cookies", out var cookiesElement)
+            && cookiesElement.ValueKind == JsonValueKind.Array
+            && HasWebPlayerCookie(cookiesElement, SpotifyDcCookie))
+        {
+            return SpotifyBlobKind.WebPlayer;
+        }
+
+        return SpotifyBlobKind.Unknown;
+    }
+
+    private static bool TryGetPropertyIgnoreCase(JsonElement element, string propertyName, out JsonElement value)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (property.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    value = property.Value;
+                    return true;
+                }
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    private static bool HasWebPlayerCookie(IEnumerable<SpotifyBlobCookie> cookies, string cookieName)
+    {
+        foreach (var cookie in cookies)
+        {
+            if (cookie.Name.Equals(cookieName, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(cookie.Value))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasWebPlayerCookie(JsonElement cookiesElement, string cookieName)
+    {
+        if (cookiesElement.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        foreach (var item in cookiesElement.EnumerateArray())
+        {
+            if (!TryGetPropertyIgnoreCase(item, "name", out var nameElement)
+                || nameElement.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var name = nameElement.GetString();
+            if (!string.Equals(name, cookieName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (TryGetPropertyIgnoreCase(item, "value", out var valueElement)
+                && valueElement.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(valueElement.GetString()))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static ProcessStartInfo CreatePythonScriptStartInfo(
         string pythonExecutable,
         string scriptPath,
@@ -1314,6 +1445,12 @@ public sealed class SpotifyBlobService
         [property: JsonPropertyName(ErrorField)] string? Error);
     private sealed record LibrespotPayloadResult(string? PayloadJson, string? Error);
     private sealed record ProcessOutputResult(int ExitCode, string StandardOutput, string StandardError);
+    private enum SpotifyBlobKind
+    {
+        Unknown = 0,
+        WebPlayer = 1,
+        Librespot = 2
+    }
 
     public sealed record SpotifyAccessTokenResult(string? AccessToken, long? ExpiresAtUnixMs, string? Error);
     public sealed record SpotifyWebPlayerTokenInfo(
