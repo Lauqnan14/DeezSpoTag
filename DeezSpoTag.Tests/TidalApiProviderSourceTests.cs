@@ -23,8 +23,10 @@ public sealed class TidalApiProviderSourceTests
 
         var providers = await service.GetRotatedProvidersAsync(CancellationToken.None);
 
-        Assert.Equal(8, providers.Count);
-        Assert.Equal("https://vogel.qqdl.site", providers[0]);
+        Assert.Equal(15, providers.Count);
+        Assert.Equal("https://eu-central.monochrome.tf", providers[0]);
+        Assert.Contains("https://api.monochrome.tf", providers);
+        Assert.Contains("https://monochrome-api.samidy.com", providers);
         Assert.Contains("https://triton.squid.wtf", providers);
     }
 
@@ -59,6 +61,40 @@ public sealed class TidalApiProviderSourceTests
         var providers = await service.GetRotatedProvidersAsync(CancellationToken.None);
 
         Assert.Equal(["https://one.example", "https://two.example"], providers);
+    }
+
+    [Fact]
+    public async Task GetRotatedProvidersAsync_MergesMonochromeInstances_WhenAvailable()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), "deezspotag-tests", Guid.NewGuid().ToString("N"));
+        using var scope = new TestConfigRootScope(rootPath);
+        var service = new TidalApiProviderSource(
+            new StubHttpClientFactory(request =>
+            {
+                var url = request.RequestUri?.ToString() ?? string.Empty;
+                if (url.Contains("gist.githubusercontent.com", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("[\"https://one.example\",\"https://two.example\"]")
+                    };
+                }
+
+                if (url.Contains("monochrome.tf/instances.json", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("{\"api\":[\"https://two.example\",\"https://three.example\"]}")
+                    };
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }),
+            NullLogger<TidalApiProviderSource>.Instance);
+
+        var providers = await service.GetRotatedProvidersAsync(CancellationToken.None);
+
+        Assert.Equal(["https://one.example", "https://two.example", "https://three.example"], providers);
     }
 
     private sealed class StubHttpClientFactory(Func<HttpRequestMessage, HttpResponseMessage> responder) : IHttpClientFactory
