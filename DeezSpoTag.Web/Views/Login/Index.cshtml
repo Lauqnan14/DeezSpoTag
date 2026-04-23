@@ -1147,7 +1147,9 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
 
-        element.addEventListener('click', async function() {
+        element.addEventListener('click', async function(event) {
+            event.preventDefault();
+            event.stopPropagation();
             await handler();
         });
     }
@@ -1377,6 +1379,22 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     bindPlatformDisconnect('jellyfinDisconnectBtn', '/api/platform-auth/jellyfin/disconnect', 'jellyfinStatus');
+
+    const spotifyApiCredentialsForm = document.getElementById('spotifyApiCredentialsForm');
+    if (spotifyApiCredentialsForm) {
+        spotifyApiCredentialsForm.addEventListener('submit', async function(event) {
+            event.preventDefault();
+            await saveSpotifyWebPlayerCookies();
+        });
+    }
+
+    const spotifyBlobForm = document.getElementById('spotifyBlobForm');
+    if (spotifyBlobForm) {
+        spotifyBlobForm.addEventListener('submit', async function(event) {
+            event.preventDefault();
+            await generateSpotifyBlob();
+        });
+    }
 
 });
 
@@ -2934,15 +2952,18 @@ async function refreshSpotifyConnectionStatus(data, active, activeAccountName, a
                 : (typeof connectionStatus?.ActiveAccount === 'string' ? connectionStatus.ActiveAccount : '')).trim();
             const hasKnownAccount = Boolean(active || activeAccountName || statusActiveAccount);
             const hasCredentialLogin = hasKnownAccount && hasAnyLibrespotBlob;
-            // Keep Login tab state tied to saved credentials; runtime checks are advisory and should not
-            // flip the account back to logged-out after a successful credentials generate/save flow.
+            // Keep Login tab state tied to saved librespot credentials; runtime checks are advisory.
             const isConnected = Boolean(connectionStatus && hasCredentialLogin);
 
-            if (isConnected || !accountHasLibrespotBlob || attempt >= settings.statusProbeAttempts - 1) {
+            const reachedFinalAttempt = attempt >= settings.statusProbeAttempts - 1;
+            if (isConnected || reachedFinalAttempt) {
                 applySpotifyConnectionUiState(data, active, activeAccountName, isConnected);
                 queueConnectedPlatformsRefresh();
                 if (hasCredentialLogin && !hasUsableSpotifySession) {
                     console.info('Spotify credentials are present, but live session check is not ready yet.');
+                }
+                if (hasKnownAccount && !isConnected && webPlayerOk && !librespotOk) {
+                    console.info('Spotify web-player cookies saved. Complete Spotify Login (blob/librespot) to switch to logged-in state.');
                 }
                 return;
             }

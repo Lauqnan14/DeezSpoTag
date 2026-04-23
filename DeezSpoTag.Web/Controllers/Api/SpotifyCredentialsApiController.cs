@@ -558,6 +558,8 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         string? lastKnownGood,
         DateTimeOffset now)
     {
+        account.BlobPath = null;
+        account.LibrespotBlobPath = null;
         account.WebPlayerBlobPath = blobPath;
         account.UpdatedAt = now;
         account.LastValidatedAt = now;
@@ -595,7 +597,8 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             spotify.Accounts.Add(new SpotifyAccount
             {
                 Name = accountName,
-                BlobPath = blobPath,
+                BlobPath = null,
+                LibrespotBlobPath = null,
                 WebPlayerBlobPath = blobPath,
                 CreatedAt = now,
                 UpdatedAt = now
@@ -603,6 +606,8 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             return;
         }
 
+        platformAccount.BlobPath = null;
+        platformAccount.LibrespotBlobPath = null;
         platformAccount.WebPlayerBlobPath = blobPath;
         platformAccount.UpdatedAt = now;
     }
@@ -657,6 +662,13 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             state.WebPlayerSpKey = spKey;
             state.WebPlayerUserAgent = userAgent;
 
+            var obsoleteBlobPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var replacedAccountNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var existingAccount in state.Accounts)
+            {
+                CollectAccountBlobPaths(existingAccount, obsoleteBlobPaths);
+            }
+
             var profile = await FetchSpotifyProfileAsync(
                 state.WebPlayerSpDc,
                 state.WebPlayerSpKey,
@@ -665,6 +677,18 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             var effectiveAccountName = ResolveEffectiveAccountName(profile?.Id, state.ActiveAccount);
 
             var account = GetOrCreateAccount(state, effectiveAccountName);
+            foreach (var existingAccount in state.Accounts)
+            {
+                if (existingAccount.Name.Equals(effectiveAccountName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                AddAccountName(replacedAccountNames, existingAccount.Name);
+            }
+            state.Accounts = [account];
+            account.BlobPath = null;
+            account.LibrespotBlobPath = null;
 
             state.ActiveAccount = effectiveAccountName;
             var targetBlobPath = ResolveWebPlayerBlobPath(userId, account, effectiveAccountName);
@@ -708,6 +732,10 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             {
                 await PersistWebPlayerPlatformStateAsync(effectiveAccountName, webPlayerBlobPath, state);
             }
+            RemoveAccountBlobArtifactsFromSet(account, obsoleteBlobPaths);
+            DeleteBlobArtifacts(obsoleteBlobPaths);
+            AddAccountName(replacedAccountNames, effectiveAccountName);
+            ClearSpotifySessionArtifacts(userId, replacedAccountNames);
 
             return Ok(new { saved = true, webPlayerBlobPath = blobResult.BlobPath });
         }
