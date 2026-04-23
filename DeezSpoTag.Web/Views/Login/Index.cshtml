@@ -2779,14 +2779,18 @@ async function generateSpotifyBlob() {
         }
 
         showToast('Spotify credentials generated', 'success');
-        await loadSpotifyConfig();
+        await loadSpotifyConfig({
+            forceStatus: true,
+            statusProbeAttempts: 20,
+            statusProbeDelayMs: 1200
+        });
     } catch (error) {
         console.error('Spotify credentials generation error:', error);
         showToast('Network error generating Spotify credentials', 'error');
     }
 }
 
-async function loadSpotifyConfig() {
+async function loadSpotifyConfig(options = {}) {
     const loadSequence = ++spotifyConfigLoadSequence;
     try {
         const apiCredentialsTask = loadSpotifyApiCredentials();
@@ -2808,15 +2812,30 @@ async function loadSpotifyConfig() {
         }
 
         const data = await accountsResponse.json();
-        const accounts = Array.isArray(data.accounts) ? data.accounts : [];
-        const activeAccountName = typeof data.activeAccount === 'string' ? data.activeAccount : '';
-        const active = accounts.find(account => account.name && account.name.toLowerCase() === activeAccountName.toLowerCase());
-        const accountHasBlob = Boolean(active?.blobPath || active?.librespotBlobPath || active?.webPlayerBlobPath);
-        const provisionalConnected = Boolean(active && accountHasBlob);
+        const accounts = Array.isArray(data?.accounts)
+            ? data.accounts
+            : (Array.isArray(data?.Accounts) ? data.Accounts : []);
+        const activeAccountNameRaw = typeof data?.activeAccount === 'string'
+            ? data.activeAccount
+            : (typeof data?.ActiveAccount === 'string' ? data.ActiveAccount : '');
+        const activeAccountName = activeAccountNameRaw.trim();
+        const active = accounts.find(account => {
+            const accountName = (account?.name ?? account?.Name ?? '').toString().trim();
+            return accountName && accountName.toLowerCase() === activeAccountName.toLowerCase();
+        }) || null;
+        const accountHasBlob = Boolean(
+            active?.blobPath ||
+            active?.BlobPath ||
+            active?.librespotBlobPath ||
+            active?.LibrespotBlobPath ||
+            active?.webPlayerBlobPath ||
+            active?.WebPlayerBlobPath
+        );
+        const provisionalConnected = Boolean(activeAccountName && accountHasBlob);
         applySpotifyConnectionUiState(data, active, activeAccountName, provisionalConnected);
         queueConnectedPlatformsRefresh();
 
-        void refreshSpotifyConnectionStatus(data, active, activeAccountName, accountHasBlob, loadSequence);
+        await refreshSpotifyConnectionStatus(data, active, activeAccountName, accountHasBlob, loadSequence, options);
         await apiCredentialsTask;
         if (loadSequence !== spotifyConfigLoadSequence) {
             return;
@@ -2837,9 +2856,10 @@ function applySpotifyConnectionUiState(data, active, activeAccountName, isConnec
     const showLoggedIn = Boolean(isConnected);
     setStatus('spotifyStatus', showLoggedIn);
     if (showLoggedIn) {
-        const accountName = active?.name || activeAccountName || 'Spotify';
-        const region = active?.region || 'UL';
-        const plan = data?.activeAccountPlan ? capitalizeSpotifyPlan(data.activeAccountPlan) : 'Unknown';
+        const accountName = active?.name || active?.Name || activeAccountName || 'Spotify';
+        const region = active?.region || active?.Region || 'UL';
+        const planValue = data?.activeAccountPlan ?? data?.ActiveAccountPlan;
+        const plan = planValue ? capitalizeSpotifyPlan(planValue) : 'Unknown';
         document.getElementById('spotifyLoggedInName').textContent = accountName;
         document.getElementById('spotifyLoggedInPlanLocation').textContent = `${plan} | ${region || 'UL'}`;
         const picture = document.getElementById('spotifyLoggedInPicture');
@@ -2853,41 +2873,80 @@ function applySpotifyConnectionUiState(data, active, activeAccountName, isConnec
     toggleSpotifyLoginState(showLoggedIn);
 }
 
-async function refreshSpotifyConnectionStatus(data, active, activeAccountName, accountHasBlob, loadSequence) {
-    try {
-        const response = await fetchWithTimeout('/api/spotify-credentials/status', {
-            cache: 'no-store',
-            credentials: 'same-origin',
-            headers: { Accept: 'application/json' }
-        }, 4500);
+async function refreshSpotifyConnectionStatus(data, active, activeAccountName, accountHasBlob, loadSequence, options = {}) {
+    const settings = {
+        forceStatus: options?.forceStatus === true,
+        statusProbeAttempts: Math.max(1, Number(options?.statusProbeAttempts ?? 1) || 1),
+        statusProbeDelayMs: Math.max(300, Number(options?.statusProbeDelayMs ?? 1000) || 1000)
+    };
 
-        if (!response || !response.ok) {
-            return;
+    for (let attempt = 0; attempt < settings.statusProbeAttempts; attempt++) {
+        try {
+            const forceRefresh = settings.forceStatus || attempt > 0;
+            const statusUrl = forceRefresh
+                ? '/api/spotify-credentials/status?force=1'
+                : '/api/spotify-credentials/status';
+            const response = await fetchWithTimeout(statusUrl, {
+                cache: 'no-store',
+                credentials: 'same-origin',
+                headers: { Accept: 'application/json' }
+            }, 4500);
+
+            if (!response || !response.ok) {
+                if (attempt < settings.statusProbeAttempts - 1) {
+                    await waitForStatusRetry(settings.statusProbeDelayMs);
+                }
+                continue;
+            }
+
+            const connectionStatus = await response.json();
+            if (loadSequence !== spotifyConfigLoadSequence) {
+                return;
+            }
+
+            const webPlayerOk = (connectionStatus?.webPlayerOk === true) || (connectionStatus?.WebPlayerOk === true);
+            const librespotOk = (connectionStatus?.librespotOk === true) || (connectionStatus?.LibrespotOk === true);
+            const backendOk = (connectionStatus?.ok === true) || (connectionStatus?.Ok === true);
+            const hasUsableSpotifySession = webPlayerOk || librespotOk || backendOk;
+            const hasBlobFromStatus = Boolean(
+                connectionStatus?.webPlayerBlobPath ||
+                connectionStatus?.WebPlayerBlobPath ||
+                connectionStatus?.librespotBlobPath ||
+                connectionStatus?.LibrespotBlobPath
+            );
+            const hasAnyBlob = accountHasBlob || hasBlobFromStatus;
+            const statusActiveAccount = (typeof connectionStatus?.activeAccount === 'string'
+                ? connectionStatus.activeAccount
+                : (typeof connectionStatus?.ActiveAccount === 'string' ? connectionStatus.ActiveAccount : '')).trim();
+            const hasKnownAccount = Boolean(active || activeAccountName || statusActiveAccount);
+            const hasCredentialLogin = hasKnownAccount && hasAnyBlob;
+            // Keep Login tab state tied to saved credentials; runtime checks are advisory and should not
+            // flip the account back to logged-out after a successful credentials generate/save flow.
+            const isConnected = Boolean(connectionStatus && hasCredentialLogin);
+
+            if (isConnected || !accountHasBlob || attempt >= settings.statusProbeAttempts - 1) {
+                applySpotifyConnectionUiState(data, active, activeAccountName, isConnected);
+                queueConnectedPlatformsRefresh();
+                if (hasCredentialLogin && !hasUsableSpotifySession) {
+                    console.info('Spotify credentials are present, but live session check is not ready yet.');
+                }
+                return;
+            }
+
+            await waitForStatusRetry(settings.statusProbeDelayMs);
+        } catch (error) {
+            if (attempt >= settings.statusProbeAttempts - 1) {
+                console.warn('Spotify status probe timed out or failed; keeping provisional UI state', error);
+                return;
+            }
+
+            await waitForStatusRetry(settings.statusProbeDelayMs);
         }
-
-        const connectionStatus = await response.json();
-        if (loadSequence !== spotifyConfigLoadSequence) {
-            return;
-        }
-
-        const webPlayerOk = connectionStatus?.webPlayerOk === true;
-        const librespotOk = connectionStatus?.librespotOk === true;
-        const backendOk = connectionStatus?.ok === true;
-        const hasUsableSpotifySession = webPlayerOk || librespotOk || backendOk;
-        const hasBlobFromStatus = Boolean(connectionStatus?.webPlayerBlobPath || connectionStatus?.librespotBlobPath);
-        const hasAnyBlob = accountHasBlob || hasBlobFromStatus;
-        const hasKnownAccount = Boolean(active || (typeof connectionStatus?.activeAccount === 'string' && connectionStatus.activeAccount.trim()));
-        const isConnected = Boolean(
-            connectionStatus &&
-            hasUsableSpotifySession &&
-            hasKnownAccount &&
-            hasAnyBlob
-        );
-        applySpotifyConnectionUiState(data, active, activeAccountName, isConnected);
-        queueConnectedPlatformsRefresh();
-    } catch (error) {
-        console.warn('Spotify status probe timed out or failed; keeping provisional UI state', error);
     }
+}
+
+function waitForStatusRetry(delayMs) {
+    return new Promise(resolve => window.setTimeout(resolve, delayMs));
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
@@ -2984,6 +3043,11 @@ async function saveSpotifyWebPlayerCookies() {
         if (spTInput) {
             spTInput.value = '';
         }
+        await loadSpotifyConfig({
+            forceStatus: true,
+            statusProbeAttempts: 3,
+            statusProbeDelayMs: 800
+        });
     } catch (error) {
         console.error('Spotify web player cookie save error:', error);
         showToast('Network error while saving Spotify web player cookies', 'error');

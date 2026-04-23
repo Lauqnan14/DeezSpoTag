@@ -267,10 +267,22 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         SpotifyUserAuthState state;
         var blobDir = _userAuthStore.GetUserBlobDir(userId);
         SpotifyBlobResult result;
+        var obsoleteBlobPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var replacedAccountNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
         {
             await _blobService.EnsureSpotifyAuthEnvironmentAsync(cancellationToken);
             state = await _userAuthStore.LoadAsync(userId);
+            foreach (var account in state.Accounts)
+            {
+                CollectAccountBlobPaths(account, obsoleteBlobPaths);
+                if (account.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                AddAccountName(replacedAccountNames, account.Name);
+            }
             result = await _blobService.GenerateBlobAsync(name, request?.Headless ?? false, blobDir, cancellationToken);
         }
         catch (Exception ex) when (TryMapGenerateAccountException(ex, name, cancellationToken, out var mappedResult))
@@ -281,28 +293,12 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         var librespotBlobPath = result.BlobPath;
         string? webPlayerBlobPath = null;
 
-        var cookieSpDc = state.WebPlayerSpDc;
-        if (!string.IsNullOrWhiteSpace(cookieSpDc))
-        {
-            webPlayerBlobPath = Path.Join(blobDir, $"{name}.web.json");
-            await _blobService.SaveWebPlayerBlobAsync(
-                webPlayerBlobPath,
-                cookieSpDc,
-                state.WebPlayerSpKey,
-                state.WebPlayerUserAgent,
-                cancellationToken);
-
-            if (!await _pathfinderMetadataClient.ValidateBlobAsync(webPlayerBlobPath, cancellationToken))
-            {
-                return BadRequest("Generated Spotify web-player blob failed validation.");
-            }
-        }
-
         var now = DateTimeOffset.UtcNow;
         var existing = state.Accounts.FirstOrDefault(a => a.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        SpotifyUserAccount currentAccount;
         if (existing == null)
         {
-            state.Accounts.Add(new SpotifyUserAccount
+            currentAccount = new SpotifyUserAccount
             {
                 Name = name,
                 Region = request?.Region?.Trim(),
@@ -312,7 +308,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
                 CreatedAt = now,
                 UpdatedAt = now,
                 LastValidatedAt = now
-            });
+            };
         }
         else
         {
@@ -323,18 +319,33 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             }
             existing.BlobPath = librespotBlobPath;
             existing.LibrespotBlobPath = librespotBlobPath;
-            existing.WebPlayerBlobPath = webPlayerBlobPath ?? existing.WebPlayerBlobPath;
+            existing.WebPlayerBlobPath = webPlayerBlobPath;
             existing.UpdatedAt = now;
             existing.LastValidatedAt = now;
+            currentAccount = existing;
         }
 
-        if (string.IsNullOrWhiteSpace(state.ActiveAccount))
-        {
-            state.ActiveAccount = name;
-        }
+        state.Accounts = [currentAccount];
+        state.WebPlayerSpDc = null;
+        state.WebPlayerSpKey = null;
+        state.WebPlayerUserAgent = null;
+
+        // A successful generate flow should always become the current account source of truth.
+        state.ActiveAccount = name;
 
         await _userAuthStore.SaveAsync(userId, state);
-        await UpdatePlatformSpotifyAccountAsync(name, librespotBlobPath, webPlayerBlobPath, state.ActiveAccount);
+        InvalidateSpotifyConnectionStatusCache(userId);
+        await UpdatePlatformSpotifyAccountAsync(
+            name,
+            librespotBlobPath,
+            webPlayerBlobPath,
+            state.ActiveAccount,
+            clearWebPlayerCredentials: true);
+        _blobService.InvalidateWebApiAccessToken(librespotBlobPath);
+        RemoveAccountBlobArtifactsFromSet(currentAccount, obsoleteBlobPaths);
+        DeleteBlobArtifacts(obsoleteBlobPaths);
+        AddAccountName(replacedAccountNames, name);
+        ClearSpotifySessionArtifacts(userId, replacedAccountNames);
 
         return Ok(new { generated = true, librespotBlobPath, webPlayerBlobPath });
     }
@@ -690,6 +701,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             }
 
             await _userAuthStore.SaveAsync(userId, state);
+            InvalidateSpotifyConnectionStatusCache(userId);
 
             var webPlayerBlobPath = account.WebPlayerBlobPath ?? blobResult.BlobPath;
             if (!string.IsNullOrWhiteSpace(webPlayerBlobPath))
@@ -737,12 +749,21 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
                 _logger.LogWarning(httpRequestException, "Spotify credentials generation request failed for account {AccountName}.", accountName);
                 mappedResult = StatusCode(StatusCodes.Status502BadGateway, "Spotify credentials generation request failed.");
                 return true;
+            case System.Text.Json.JsonException jsonException:
+                _logger.LogWarning(jsonException, "Spotify credentials generation returned malformed JSON for account {AccountName}.", accountName);
+                mappedResult = BadRequest("Spotify credentials generation returned malformed output.");
+                return true;
             case OperationCanceledException:
                 mappedResult = null!;
                 return false;
             default:
                 _logger.LogError(ex, "Spotify credentials generation failed unexpectedly for account {AccountName}.", accountName);
-                mappedResult = StatusCode(StatusCodes.Status500InternalServerError, "Spotify credentials generation failed unexpectedly.");
+                var detail = string.IsNullOrWhiteSpace(ex.Message)
+                    ? ex.GetType().Name
+                    : $"{ex.GetType().Name}: {ex.Message}";
+                mappedResult = StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    $"Spotify credentials generation failed unexpectedly ({detail}).");
                 return true;
         }
     }
@@ -845,6 +866,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         });
 
         ClearSpotifySessionArtifacts(userId, accountNames);
+        InvalidateSpotifyConnectionStatusCache(userId);
 
         return Ok(new { cleared = true, removedBlobPath });
     }
@@ -860,7 +882,8 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         string accountName,
         string librespotBlobPath,
         string? webPlayerBlobPath,
-        string? activeAccount)
+        string? activeAccount,
+        bool clearWebPlayerCredentials = false)
     {
         if (string.IsNullOrWhiteSpace(accountName) || string.IsNullOrWhiteSpace(librespotBlobPath))
         {
@@ -874,6 +897,12 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             platformState.Spotify ??= new SpotifyConfig();
             removedBlobPaths = RemoveNonTargetPlatformAccounts(platformState.Spotify, accountName);
             UpsertPlatformAccount(platformState.Spotify, accountName, librespotBlobPath, webPlayerBlobPath, now);
+            if (clearWebPlayerCredentials)
+            {
+                platformState.Spotify.WebPlayerSpDc = null;
+                platformState.Spotify.WebPlayerSpKey = null;
+                platformState.Spotify.WebPlayerUserAgent = null;
+            }
             if (!string.IsNullOrWhiteSpace(activeAccount))
             {
                 platformState.Spotify.ActiveAccount = activeAccount;
@@ -931,7 +960,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
 
         platformAccount.BlobPath = librespotBlobPath;
         platformAccount.LibrespotBlobPath = librespotBlobPath;
-        platformAccount.WebPlayerBlobPath = webPlayerBlobPath ?? platformAccount.WebPlayerBlobPath;
+        platformAccount.WebPlayerBlobPath = webPlayerBlobPath;
         platformAccount.UpdatedAt = now;
     }
 
@@ -1227,6 +1256,16 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         SpotifyConnectionStatusCache[cacheKey] = new CachedSpotifyConnectionStatus(
             CloneSpotifyConnectionStatus(response),
             DateTimeOffset.UtcNow.Add(SpotifyConnectionStatusCacheTtl));
+    }
+
+    private static void InvalidateSpotifyConnectionStatusCache(string? userId)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            return;
+        }
+
+        SpotifyConnectionStatusCache.TryRemove(userId.Trim(), out _);
     }
 
     private static SpotifyConnectionStatusResponse CloneSpotifyConnectionStatus(SpotifyConnectionStatusResponse source)
@@ -1655,6 +1694,29 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
     }
 
+    private static void RemoveAccountBlobArtifactsFromSet(SpotifyUserAccount account, HashSet<string> blobPaths)
+    {
+        if (!string.IsNullOrWhiteSpace(account.BlobPath))
+        {
+            blobPaths.Remove(account.BlobPath);
+        }
+
+        if (!string.IsNullOrWhiteSpace(account.LibrespotBlobPath))
+        {
+            blobPaths.Remove(account.LibrespotBlobPath);
+        }
+
+        if (!string.IsNullOrWhiteSpace(account.WebPlayerBlobPath))
+        {
+            blobPaths.Remove(account.WebPlayerBlobPath);
+        }
+
+        if (!string.IsNullOrWhiteSpace(account.LastKnownGoodBlobPath))
+        {
+            blobPaths.Remove(account.LastKnownGoodBlobPath);
+        }
+    }
+
     private static void RemovePlatformAccount(SpotifyConfig spotify, string name, HashSet<string> blobPaths)
     {
         for (var i = spotify.Accounts.Count - 1; i >= 0; i--)
@@ -1769,6 +1831,8 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
                 _logger.LogWarning(ex, "Failed to delete Spotify blob at {BlobPath}", blobPath);
             }
         }
+
+        InvalidateSpotifyConnectionStatusCache(userId);
 
         ClearSpotifySessionArtifacts(userId, accountNames);
 
