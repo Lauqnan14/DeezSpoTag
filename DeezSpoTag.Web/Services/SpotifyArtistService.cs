@@ -372,6 +372,12 @@ public sealed class SpotifyArtistService
         }
 
         var normalizedCachedPayload = EnsureArtistIdentity(cachedPayload, artistName);
+        normalizedCachedPayload = await TryHydrateCachedBiographyAsync(
+            spotifyId,
+            artistName,
+            normalizedCachedPayload,
+            cached.FetchedUtc,
+            cancellationToken);
         if (CachePayloadChanged(cachedPayload, normalizedCachedPayload))
         {
             var payloadJson = JsonSerializer.Serialize(new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, normalizedCachedPayload), _jsonOptions);
@@ -452,6 +458,12 @@ public sealed class SpotifyArtistService
         }
 
         var normalizedCachedPayload = EnsureArtistIdentity(cachedPayload, artistName);
+        normalizedCachedPayload = await TryHydrateCachedBiographyAsync(
+            spotifyId,
+            artistName,
+            normalizedCachedPayload,
+            cached.FetchedUtc,
+            cancellationToken);
         await UpsertNormalizedCachePayloadIfChangedAsync(
             spotifyId,
             cachedPayload,
@@ -496,6 +508,61 @@ public sealed class SpotifyArtistService
             normalizedPayloadJson,
             fetchedUtc,
             cancellationToken);
+    }
+
+    private async Task<SpotifyArtistPageResult> TryHydrateCachedBiographyAsync(
+        string spotifyId,
+        string artistName,
+        SpotifyArtistPageResult cachedPayload,
+        DateTimeOffset fetchedUtc,
+        CancellationToken cancellationToken)
+    {
+        if (!IsPlaceholderBiography(cachedPayload.Artist?.Biography))
+        {
+            return cachedPayload;
+        }
+
+        SpotifyArtistExtras? extras = await TryFetchSpotifyAsync(
+            ct => _pathfinderMetadataClient.FetchArtistExtrasAsync(spotifyId, ct),
+            artistName,
+            "artist biography",
+            cancellationToken);
+        if (extras is null || IsPlaceholderBiography(extras.Biography))
+        {
+            return cachedPayload;
+        }
+
+        var currentArtist = cachedPayload.Artist;
+        if (currentArtist is null)
+        {
+            return cachedPayload;
+        }
+        var hydratedPayload = cachedPayload with
+        {
+            Artist = currentArtist with
+            {
+                Biography = extras.Biography,
+                Verified = currentArtist.Verified ?? extras.Verified,
+                MonthlyListeners = currentArtist.MonthlyListeners ?? extras.MonthlyListeners,
+                Rank = currentArtist.Rank ?? extras.Rank
+            }
+        };
+
+        if (CachePayloadChanged(cachedPayload, hydratedPayload))
+        {
+            var payloadJson = JsonSerializer.Serialize(
+                new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, hydratedPayload),
+                _jsonOptions);
+            await _cacheRepository.UpsertAsync(
+                SpotifySource,
+                spotifyId,
+                payloadJson,
+                fetchedUtc,
+                cancellationToken);
+            AddActivity("info", $"[spotify] cache biography rehydrated: {artistName}.");
+        }
+
+        return hydratedPayload;
     }
 
     private async Task<SpotifyArtistPageResult> BuildArtistPageResultAsync(
