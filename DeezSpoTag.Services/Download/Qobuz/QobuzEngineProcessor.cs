@@ -495,7 +495,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             throw new InvalidOperationException($"Downloaded file missing or empty: {outputPath}");
         }
 
-        var prefetchFailure = await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(queueUuid, cancellationToken);
+        var prefetchFailure = await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(queueUuid, outputPath, cancellationToken);
         if (!string.IsNullOrWhiteSpace(prefetchFailure))
         {
             _logger.LogWarning(

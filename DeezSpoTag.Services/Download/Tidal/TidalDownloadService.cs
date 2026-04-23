@@ -9,6 +9,7 @@ using IOFile = System.IO.File;
 using Microsoft.Extensions.Logging;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Shared.Utils;
+using TagLib;
 
 namespace DeezSpoTag.Services.Download.Tidal;
 
@@ -128,7 +129,6 @@ public sealed class TidalDownloadService
                 trackInfo.Isrc);
         }
 
-        var downloadUrl = await GetDownloadUrlAsync(trackInfo.Id, request.Quality, cancellationToken);
         var outputPathContext = new AudioFilePathHelper.AudioPathContext
         {
             OutputDir = request.OutputDir,
@@ -146,8 +146,14 @@ public sealed class TidalDownloadService
             Sanitize = value => DownloadFileUtilities.SanitizeFilename(value)
         };
         var outputPath = AudioFilePathHelper.BuildOutputPath(outputPathContext, ".flac");
-
-        await DownloadFileAsync(downloadUrl, outputPath, progressCallback, cancellationToken);
+        var candidateUrls = await GetDownloadUrlCandidatesAsync(trackInfo.Id, request.Quality, cancellationToken);
+        var expectedDurationSeconds = ResolveExpectedDurationSeconds(request.DurationSeconds, trackInfo.Duration);
+        await DownloadValidatedFileAsync(
+            candidateUrls,
+            outputPath,
+            expectedDurationSeconds,
+            progressCallback,
+            cancellationToken);
         await AudioFileTaggingHelper.TryTagAsync(
             new AudioFileTaggingHelper.AudioTaggingRequest(
                 Logger: _logger,
@@ -351,7 +357,7 @@ public sealed class TidalDownloadService
         return track;
     }
 
-    private async Task<string> GetDownloadUrlAsync(long trackId, string quality, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<string>> GetDownloadUrlCandidatesAsync(long trackId, string quality, CancellationToken cancellationToken)
     {
         var apis = GetAvailableApis();
         if (apis.Count == 0)
@@ -359,25 +365,24 @@ public sealed class TidalDownloadService
             throw new InvalidOperationException("Tidal API pool is empty");
         }
 
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var tasks = apis
-            .Select(api => FetchManifestFromApiAsync(api, trackId, quality, linkedCts.Token))
-            .ToList();
-
-        while (tasks.Count > 0)
-        {
-            var completed = await Task.WhenAny(tasks);
-            tasks.Remove(completed);
-
-            var manifest = await completed;
-            if (!string.IsNullOrWhiteSpace(manifest))
+        var manifestResults = await Task.WhenAll(
+            apis.Select(async api => new
             {
-                await linkedCts.CancelAsync();
-                return manifest;
-            }
+                Api = api,
+                Manifest = await FetchManifestFromApiAsync(api, trackId, quality, cancellationToken)
+            }));
+        var manifests = manifestResults
+            .Select(result => result.Manifest?.Trim())
+            .Where(static manifest => !string.IsNullOrWhiteSpace(manifest))
+            .Distinct(StringComparer.Ordinal)
+            .Cast<string>()
+            .ToList();
+        if (manifests.Count == 0)
+        {
+            throw new InvalidOperationException("Tidal download URL not available");
         }
 
-        throw new InvalidOperationException("Tidal download URL not available");
+        return manifests;
     }
 
     private async Task<string?> FetchManifestFromApiAsync(
@@ -424,6 +429,59 @@ public sealed class TidalDownloadService
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         await using var file = IOFile.Create(outputPath);
         await DownloadStreamHelper.CopyToAsyncWithProgress(stream, file, response.Content.Headers.ContentLength, progressCallback, cancellationToken);
+    }
+
+    private async Task DownloadValidatedFileAsync(
+        IReadOnlyList<string> candidateUrls,
+        string outputPath,
+        int expectedDurationSeconds,
+        Func<double, double, Task>? progressCallback,
+        CancellationToken cancellationToken)
+    {
+        List<string>? mismatchSummaries = null;
+        for (var index = 0; index < candidateUrls.Count; index++)
+        {
+            var candidateUrl = candidateUrls[index];
+            var candidateOutputPath = candidateUrls.Count == 1
+                ? outputPath
+                : $"{outputPath}.candidate-{index + 1}.tmp";
+            try
+            {
+                await DownloadFileAsync(candidateUrl, candidateOutputPath, progressCallback, cancellationToken);
+                if (IsDurationAcceptable(candidateOutputPath, expectedDurationSeconds, out var actualDurationSeconds))
+                {
+                    if (!string.Equals(candidateOutputPath, outputPath, StringComparison.Ordinal))
+                    {
+                        IOFile.Move(candidateOutputPath, outputPath, overwrite: true);
+                    }
+
+                    return;
+                }
+
+                mismatchSummaries ??= new List<string>();
+                mismatchSummaries.Add($"{actualDurationSeconds:F1}s");
+                _logger.LogWarning(
+                    "Rejected Tidal download candidate for {Output}: expected about {ExpectedDuration}s, got {ActualDuration:F1}s.",
+                    outputPath,
+                    expectedDurationSeconds,
+                    actualDurationSeconds);
+            }
+            finally
+            {
+                if (!string.Equals(candidateOutputPath, outputPath, StringComparison.Ordinal))
+                {
+                    DownloadFileUtilities.TryDeleteFile(candidateOutputPath);
+                }
+            }
+        }
+
+        if (mismatchSummaries?.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Tidal download candidates resolved to the wrong duration. Expected about {expectedDurationSeconds}s, got {string.Join(", ", mismatchSummaries)}.");
+        }
+
+        throw new InvalidOperationException("Tidal download failed before any audio candidate completed.");
     }
 
     private async Task DownloadFromManifestAsync(string manifestB64, string outputPath, Func<double, double, Task>? progressCallback, CancellationToken cancellationToken)
@@ -850,6 +908,37 @@ public sealed class TidalDownloadService
     {
         return !string.IsNullOrWhiteSpace(mimeType)
             && mimeType.Contains("flac", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int ResolveExpectedDurationSeconds(int requestDurationSeconds, int trackInfoDurationSeconds)
+    {
+        return requestDurationSeconds > 0 ? requestDurationSeconds : Math.Max(0, trackInfoDurationSeconds);
+    }
+
+    private static bool IsDurationAcceptable(string filePath, int expectedDurationSeconds, out double actualDurationSeconds)
+    {
+        actualDurationSeconds = 0;
+        if (expectedDurationSeconds <= 0 || !IOFile.Exists(filePath))
+        {
+            return true;
+        }
+
+        try
+        {
+            using var file = TagLib.File.Create(filePath);
+            actualDurationSeconds = file.Properties.Duration.TotalSeconds;
+            if (actualDurationSeconds <= 0)
+            {
+                return false;
+            }
+
+            var allowedDelta = Math.Max(5d, expectedDurationSeconds * 0.12d);
+            return Math.Abs(actualDurationSeconds - expectedDurationSeconds) <= allowedDelta;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string? ResolveFfmpegPath() => ExternalToolResolver.ResolveFfmpegPath();
