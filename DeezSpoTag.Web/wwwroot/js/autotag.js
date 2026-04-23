@@ -3352,7 +3352,6 @@
 
         const hasCookieAuth = Boolean(
             String(spotify.webPlayerSpDc || "").trim()
-            && String(spotify.webPlayerSpKey || "").trim()
         );
         if (hasCookieAuth) {
             return true;

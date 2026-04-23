@@ -28,7 +28,7 @@ public sealed class TidalEngineProcessor : QueueEngineProcessorBase
             EngineName,
             CommonDependencies.CreateProcessorDeps(_logger),
             new EngineQueueProcessorHelper.ProcessorCallbacks<TidalQueueItem>(
-                payload => string.IsNullOrWhiteSpace(payload.TidalId) ? payload.SpotifyId : payload.TidalId,
+                ResolveTidalSourceId,
                 (payload, settings) =>
                 {
                     DownloadEngineSettingsHelper.ApplyQualityBucketToSettings(settings, payload.QualityBucket);
@@ -102,5 +102,52 @@ public sealed class TidalEngineProcessor : QueueEngineProcessorBase
     private static bool ShouldUseInEngineQualityFallback(TidalQueueItem payload)
     {
         return EngineFallbackPlanPolicy.ShouldUseInEngineFallback(payload, EngineName);
+    }
+
+    private static string ResolveTidalSourceId(TidalQueueItem payload)
+    {
+        if (!string.IsNullOrWhiteSpace(payload.TidalId))
+        {
+            return payload.TidalId.Trim();
+        }
+
+        var fromSource = TryExtractTrackId(payload.SourceUrl);
+        if (!string.IsNullOrWhiteSpace(fromSource))
+        {
+            return fromSource;
+        }
+
+        return TryExtractTrackId(payload.Url) ?? string.Empty;
+    }
+
+    private static string? TryExtractTrackId(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed))
+        {
+            return null;
+        }
+
+        var segments = parsed.AbsolutePath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            if (!segments[i].Equals("track", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var candidate = segments[i + 1];
+            if (candidate.All(char.IsDigit))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 }

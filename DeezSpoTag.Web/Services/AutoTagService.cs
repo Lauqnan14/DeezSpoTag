@@ -254,8 +254,6 @@ public class AutoTagService
         "client_secret",
         "sp_dc",
         "spdc",
-        "sp_key",
-        "spkey",
         "access_token",
         "accesstoken",
         "refresh_token",
@@ -3269,8 +3267,7 @@ public class AutoTagService
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(spotify.WebPlayerSpDc) &&
-            !string.IsNullOrWhiteSpace(spotify.WebPlayerSpKey))
+        if (!string.IsNullOrWhiteSpace(spotify.WebPlayerSpDc))
         {
             return true;
         }

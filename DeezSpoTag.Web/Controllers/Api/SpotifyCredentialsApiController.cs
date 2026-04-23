@@ -291,10 +291,14 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
 
         var librespotBlobPath = result.BlobPath;
-        string? webPlayerBlobPath = null;
 
         var now = DateTimeOffset.UtcNow;
         var existing = state.Accounts.FirstOrDefault(a => a.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        var preserveWebPlayerAuth = existing != null
+            && (!string.IsNullOrWhiteSpace(existing.WebPlayerBlobPath)
+                || !string.IsNullOrWhiteSpace(state.WebPlayerSpDc)
+                || !string.IsNullOrWhiteSpace(state.WebPlayerUserAgent));
+        var webPlayerBlobPath = preserveWebPlayerAuth ? existing?.WebPlayerBlobPath : null;
         SpotifyUserAccount currentAccount;
         if (existing == null)
         {
@@ -326,9 +330,11 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
 
         state.Accounts = [currentAccount];
-        state.WebPlayerSpDc = null;
-        state.WebPlayerSpKey = null;
-        state.WebPlayerUserAgent = null;
+        if (!preserveWebPlayerAuth)
+        {
+            state.WebPlayerSpDc = null;
+            state.WebPlayerUserAgent = null;
+        }
 
         // A successful generate flow should always become the current account source of truth.
         state.ActiveAccount = name;
@@ -340,7 +346,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             librespotBlobPath,
             webPlayerBlobPath,
             state.ActiveAccount,
-            clearWebPlayerCredentials: true);
+            clearWebPlayerCredentials: !preserveWebPlayerAuth);
         _blobService.InvalidateWebApiAccessToken(librespotBlobPath);
         RemoveAccountBlobArtifactsFromSet(currentAccount, obsoleteBlobPaths);
         DeleteBlobArtifacts(obsoleteBlobPaths);
@@ -370,7 +376,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
     public sealed class SpotifyWebPlayerCookieRequest
     {
         public string? SpDc { get; set; }
-        public string? SpKey { get; set; }
         public string? UserAgent { get; set; }
         public List<SpotifyBlobCookie>? Cookies { get; set; }
     }
@@ -426,40 +431,12 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
     }
 
-    private static (string? SpDc, string? SpKey, string? UserAgent, List<SpotifyBlobCookie>? Cookies) NormalizeWebPlayerCookieRequest(
+    private static (string? SpDc, string? UserAgent, List<SpotifyBlobCookie>? Cookies) NormalizeWebPlayerCookieRequest(
         SpotifyWebPlayerCookieRequest request)
     {
         var spDc = request.SpDc?.Trim();
-        var spKey = string.IsNullOrWhiteSpace(request.SpKey) ? null : request.SpKey.Trim();
         var userAgent = string.IsNullOrWhiteSpace(request.UserAgent) ? null : request.UserAgent.Trim();
-        return (spDc, spKey, userAgent, request.Cookies);
-    }
-
-    private static (string? SpDc, string? SpKey) ResolveCookieCredentials(
-        string? spDc,
-        string? spKey,
-        List<SpotifyBlobCookie>? providedCookies)
-    {
-        if (providedCookies == null || providedCookies.Count == 0)
-        {
-            return (spDc, spKey);
-        }
-
-        var spDcCookie = providedCookies.FirstOrDefault(cookie =>
-            cookie?.Name != null && cookie.Name.Equals("sp_dc", StringComparison.OrdinalIgnoreCase));
-        if (spDcCookie != null && !string.IsNullOrWhiteSpace(spDcCookie.Value))
-        {
-            spDc = spDcCookie.Value.Trim();
-        }
-
-        var spKeyCookie = providedCookies.FirstOrDefault(cookie =>
-            cookie?.Name != null && cookie.Name.Equals("sp_key", StringComparison.OrdinalIgnoreCase));
-        if (spKeyCookie != null && !string.IsNullOrWhiteSpace(spKeyCookie.Value))
-        {
-            spKey = spKeyCookie.Value.Trim();
-        }
-
-        return (spDc, spKey);
+        return (spDc, userAgent, request.Cookies);
     }
 
     private static string ResolveEffectiveAccountName(string? profileId, string? activeAccount)
@@ -531,7 +508,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         string targetBlobPath,
         List<SpotifyBlobCookie>? providedCookies,
         string spDc,
-        string? spKey,
         string? userAgent,
         CancellationToken cancellationToken)
     {
@@ -547,7 +523,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         return await _blobService.SaveWebPlayerBlobAsync(
             targetBlobPath,
             spDc,
-            spKey,
             userAgent,
             cancellationToken);
     }
@@ -558,8 +533,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         string? lastKnownGood,
         DateTimeOffset now)
     {
-        account.BlobPath = null;
-        account.LibrespotBlobPath = null;
         account.WebPlayerBlobPath = blobPath;
         account.UpdatedAt = now;
         account.LastValidatedAt = now;
@@ -597,8 +570,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             spotify.Accounts.Add(new SpotifyAccount
             {
                 Name = accountName,
-                BlobPath = null,
-                LibrespotBlobPath = null,
                 WebPlayerBlobPath = blobPath,
                 CreatedAt = now,
                 UpdatedAt = now
@@ -606,8 +577,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             return;
         }
 
-        platformAccount.BlobPath = null;
-        platformAccount.LibrespotBlobPath = null;
         platformAccount.WebPlayerBlobPath = blobPath;
         platformAccount.UpdatedAt = now;
     }
@@ -619,7 +588,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
     {
         spotify.ActiveAccount = accountName;
         spotify.WebPlayerSpDc = state.WebPlayerSpDc;
-        spotify.WebPlayerSpKey = state.WebPlayerSpKey;
         spotify.WebPlayerUserAgent = state.WebPlayerUserAgent;
     }
 
@@ -644,11 +612,17 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
 
         var normalizedRequest = NormalizeWebPlayerCookieRequest(request);
         var spDc = normalizedRequest.SpDc;
-        var spKey = normalizedRequest.SpKey;
         var userAgent = normalizedRequest.UserAgent;
         var providedCookies = normalizedRequest.Cookies;
-
-        (spDc, spKey) = ResolveCookieCredentials(spDc, spKey, providedCookies);
+        if (string.IsNullOrWhiteSpace(spDc) && providedCookies is { Count: > 0 })
+        {
+            var spDcCookie = providedCookies.FirstOrDefault(cookie =>
+                cookie?.Name != null && cookie.Name.Equals("sp_dc", StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(spDcCookie?.Value))
+            {
+                spDc = spDcCookie.Value.Trim();
+            }
+        }
 
         if (string.IsNullOrWhiteSpace(spDc))
         {
@@ -659,7 +633,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         {
             var state = await _userAuthStore.LoadAsync(userId);
             state.WebPlayerSpDc = spDc;
-            state.WebPlayerSpKey = spKey;
             state.WebPlayerUserAgent = userAgent;
 
             var obsoleteBlobPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -671,7 +644,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
 
             var profile = await FetchSpotifyProfileAsync(
                 state.WebPlayerSpDc,
-                state.WebPlayerSpKey,
                 state.WebPlayerUserAgent,
                 HttpContext.RequestAborted);
             var effectiveAccountName = ResolveEffectiveAccountName(profile?.Id, state.ActiveAccount);
@@ -687,8 +659,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
                 AddAccountName(replacedAccountNames, existingAccount.Name);
             }
             state.Accounts = [account];
-            account.BlobPath = null;
-            account.LibrespotBlobPath = null;
 
             state.ActiveAccount = effectiveAccountName;
             var targetBlobPath = ResolveWebPlayerBlobPath(userId, account, effectiveAccountName);
@@ -703,7 +673,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
                 targetBlobPath,
                 providedCookies,
                 spDc,
-                state.WebPlayerSpKey,
                 state.WebPlayerUserAgent,
                 HttpContext.RequestAborted);
             UpdateWebPlayerAccount(account, blobResult.BlobPath, lastKnownGood, DateTimeOffset.UtcNow);
@@ -854,7 +823,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
 
         state.WebPlayerSpDc = null;
-        state.WebPlayerSpKey = null;
         state.WebPlayerUserAgent = null;
         await _userAuthStore.SaveAsync(userId, state);
 
@@ -878,7 +846,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             }
 
             platformState.Spotify.WebPlayerSpDc = null;
-            platformState.Spotify.WebPlayerSpKey = null;
             platformState.Spotify.WebPlayerUserAgent = null;
             if (!string.IsNullOrWhiteSpace(removedBlobPath))
             {
@@ -928,7 +895,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             if (clearWebPlayerCredentials)
             {
                 platformState.Spotify.WebPlayerSpDc = null;
-                platformState.Spotify.WebPlayerSpKey = null;
                 platformState.Spotify.WebPlayerUserAgent = null;
             }
             if (!string.IsNullOrWhiteSpace(activeAccount))
@@ -1024,7 +990,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
 
     private async Task<SpotifyProfileResult?> FetchSpotifyProfileAsync(
         string? spDc,
-        string? spKey,
         string? userAgent,
         CancellationToken cancellationToken)
     {
@@ -1036,7 +1001,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         string? token;
         try
         {
-            token = await _blobService.GetWebPlayerAccessTokenFromCookiesAsync(spDc, spKey, userAgent, cancellationToken);
+            token = await _blobService.GetWebPlayerAccessTokenFromCookiesAsync(spDc, userAgent, cancellationToken);
         }
         catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
@@ -1080,29 +1045,27 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         return string.IsNullOrWhiteSpace(cookie?.Value) ? null : cookie.Value;
     }
 
-    private async Task<(string? SpDc, string? SpKey, string? UserAgent)> ResolveWebPlayerCredentialsAsync(
+    private async Task<(string? SpDc, string? UserAgent)> ResolveWebPlayerCredentialsAsync(
         SpotifyUserAuthState state,
         CancellationToken cancellationToken)
     {
         var spDc = state.WebPlayerSpDc;
-        var spKey = state.WebPlayerSpKey;
         var userAgent = state.WebPlayerUserAgent;
         if (!string.IsNullOrWhiteSpace(spDc))
         {
-            return (spDc, spKey, userAgent);
+            return (spDc, userAgent);
         }
 
         var blobPath = SpotifyUserAuthStore.ResolveActiveWebPlayerBlobPath(state);
         if (string.IsNullOrWhiteSpace(blobPath) || !System.IO.File.Exists(blobPath))
         {
-            return (spDc, spKey, userAgent);
+            return (spDc, userAgent);
         }
 
         var payload = await _blobService.TryLoadBlobPayloadAsync(blobPath, cancellationToken);
         if (payload?.Cookies?.Count > 0)
         {
             spDc = ReadCookieValue(payload.Cookies, "sp_dc") ?? spDc;
-            spKey = ReadCookieValue(payload.Cookies, "sp_key") ?? spKey;
         }
 
         if (string.IsNullOrWhiteSpace(userAgent) && !string.IsNullOrWhiteSpace(payload?.UserAgent))
@@ -1110,7 +1073,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             userAgent = payload.UserAgent;
         }
 
-        return (spDc, spKey, userAgent);
+        return (spDc, userAgent);
     }
 
     [HttpGet("web-player/test")]
@@ -1125,7 +1088,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         var state = await LoadUserStateWithFallbackAsync(userId);
         var credentials = await ResolveWebPlayerCredentialsAsync(state, cancellationToken);
         var spDc = credentials.SpDc;
-        var spKey = credentials.SpKey;
         var userAgent = credentials.UserAgent;
 
         if (string.IsNullOrWhiteSpace(spDc))
@@ -1135,7 +1097,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
 
         var result = await _blobService.TestWebPlayerAccessTokenFromCookiesAsync(
             spDc,
-            spKey,
             userAgent,
             cancellationToken);
 
@@ -1145,7 +1106,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
     public sealed class SpotifyWebPlayerStatusResponse
     {
         public bool HasSpDc { get; set; }
-        public bool HasSpKey { get; set; }
         public bool HasUserAgent { get; set; }
         public string? ActiveAccount { get; set; }
         public string? BlobPath { get; set; }
@@ -1195,14 +1155,9 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         var hasSpDcCookie = payload?.Cookies?.Any(cookie =>
             cookie.Name.Equals("sp_dc", StringComparison.OrdinalIgnoreCase) &&
             !string.IsNullOrWhiteSpace(cookie.Value)) == true;
-        var hasSpKeyCookie = payload?.Cookies?.Any(cookie =>
-            cookie.Name.Equals("sp_key", StringComparison.OrdinalIgnoreCase) &&
-            !string.IsNullOrWhiteSpace(cookie.Value)) == true;
-
         return Ok(new SpotifyWebPlayerStatusResponse
         {
             HasSpDc = !string.IsNullOrWhiteSpace(state.WebPlayerSpDc) || hasSpDcCookie,
-            HasSpKey = !string.IsNullOrWhiteSpace(state.WebPlayerSpKey) || hasSpKeyCookie,
             HasUserAgent = !string.IsNullOrWhiteSpace(state.WebPlayerUserAgent) || !string.IsNullOrWhiteSpace(payload?.UserAgent),
             ActiveAccount = activeAccount,
             BlobPath = blobPath,
@@ -1442,12 +1397,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             changed = true;
         }
 
-        if (string.IsNullOrWhiteSpace(state.WebPlayerSpKey) && !string.IsNullOrWhiteSpace(spotify.WebPlayerSpKey))
-        {
-            state.WebPlayerSpKey = spotify.WebPlayerSpKey;
-            changed = true;
-        }
-
         if (string.IsNullOrWhiteSpace(state.WebPlayerUserAgent) && !string.IsNullOrWhiteSpace(spotify.WebPlayerUserAgent))
         {
             state.WebPlayerUserAgent = spotify.WebPlayerUserAgent;
@@ -1672,7 +1621,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         {
             state.ActiveAccount = null;
             state.WebPlayerSpDc = null;
-            state.WebPlayerSpKey = null;
             state.WebPlayerUserAgent = null;
         }
 
@@ -1768,7 +1716,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         {
             spotify.ActiveAccount = null;
             spotify.WebPlayerSpDc = null;
-            spotify.WebPlayerSpKey = null;
             spotify.WebPlayerUserAgent = null;
         }
     }
@@ -1812,7 +1759,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         state.Accounts.Clear();
         state.ActiveAccount = null;
         state.WebPlayerSpDc = null;
-        state.WebPlayerSpKey = null;
         state.WebPlayerUserAgent = null;
         await _userAuthStore.SaveAsync(userId, state);
 
@@ -1827,7 +1773,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             platformState.Spotify.ActiveAccount = null;
             platformState.Spotify.Accounts.Clear();
             platformState.Spotify.WebPlayerSpDc = null;
-            platformState.Spotify.WebPlayerSpKey = null;
             platformState.Spotify.WebPlayerUserAgent = null;
             return 0;
         });

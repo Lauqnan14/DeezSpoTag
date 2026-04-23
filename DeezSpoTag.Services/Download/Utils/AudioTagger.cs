@@ -32,6 +32,7 @@ public class AudioTagger
     private const string LyricsKey = "lyrics";
     private const string DeezerSource = "deezer";
     private const string SpotifySource = "spotify";
+    private const string AppleSource = "apple";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private readonly ILogger<AudioTagger> _logger;
     private readonly PlatformCapabilitiesStore _capabilitiesStore;
@@ -447,21 +448,28 @@ public class AudioTagger
 
     private void ApplyMp3SourceMetadata(Tag tag, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
+        var sourceId = ResolveSourceId(track);
         if (save.Source)
         {
             SetCustomFrame(tag, "TXXX", "SOURCE", ResolveSourceName(track), save);
-            SetCustomFrame(tag, "TXXX", "SOURCEID", ResolveSourceId(track), save);
+            if (!string.IsNullOrWhiteSpace(sourceId))
+            {
+                SetCustomFrame(tag, "TXXX", "SOURCEID", sourceId, save);
+            }
         }
 
         SetId3FrameIf(tag, save.Url, "TXXX", "WWWAUDIOFILE", ResolveTrackUrl(track), save);
 
         if (save.TrackId)
         {
-            var sourceId = ResolveSourceId(track);
             if (!string.IsNullOrWhiteSpace(sourceId))
             {
                 SetCustomFrame(tag, "TXXX", $"{ResolveSourceTagPrefix(track)}_TRACK_ID", sourceId, save);
             }
+
+            SetCustomFrameIfPresent(tag, "TXXX", "SPOTIFY_TRACK_ID", ResolveSpotifyTrackId(track), save);
+            SetCustomFrameIfPresent(tag, "TXXX", "DEEZER_TRACK_ID", ResolveDeezerTrackId(track), save);
+            SetCustomFrameIfPresent(tag, "TXXX", "APPLE_TRACK_ID", ResolveAppleTrackId(track), save);
         }
 
         if (save.ReleaseId)
@@ -729,21 +737,28 @@ public class AudioTagger
 
     private void ApplyFlacSourceMetadata(Tag tag, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
+        var sourceId = ResolveSourceId(track);
         if (save.Source)
         {
             SetVorbisComment(tag, "SOURCE", new[] { ResolveSourceName(track) });
-            SetVorbisComment(tag, "SOURCEID", new[] { ResolveSourceId(track) });
+            if (!string.IsNullOrWhiteSpace(sourceId))
+            {
+                SetVorbisComment(tag, "SOURCEID", new[] { sourceId });
+            }
         }
 
         SetVorbisCommentIf(tag, save.Url, "WWWAUDIOFILE", ResolveTrackUrl(track));
 
         if (save.TrackId)
         {
-            var sourceId = ResolveSourceId(track);
             if (!string.IsNullOrWhiteSpace(sourceId))
             {
                 SetVorbisComment(tag, $"{ResolveSourceTagPrefix(track)}_TRACK_ID", new[] { sourceId });
             }
+
+            SetVorbisCommentIf(tag, true, "SPOTIFY_TRACK_ID", ResolveSpotifyTrackId(track));
+            SetVorbisCommentIf(tag, true, "DEEZER_TRACK_ID", ResolveDeezerTrackId(track));
+            SetVorbisCommentIf(tag, true, "APPLE_TRACK_ID", ResolveAppleTrackId(track));
         }
 
         if (save.ReleaseId)
@@ -912,21 +927,28 @@ public class AudioTagger
         DeezSpoTag.Core.Models.Track track,
         TagSettings save)
     {
+        var sourceId = ResolveSourceId(track);
         if (save.Source)
         {
             TrySetAppleDashBox(appleTag, "SOURCE", new[] { ResolveSourceName(track) });
-            TrySetAppleDashBox(appleTag, "SOURCEID", new[] { ResolveSourceId(track) });
+            if (!string.IsNullOrWhiteSpace(sourceId))
+            {
+                TrySetAppleDashBox(appleTag, "SOURCEID", new[] { sourceId });
+            }
         }
 
         TrySetAppleDashBoxIf(appleTag, save.Url, "WWWAUDIOFILE", ResolveTrackUrl(track));
 
         if (save.TrackId)
         {
-            var sourceId = ResolveSourceId(track);
             if (!string.IsNullOrWhiteSpace(sourceId))
             {
                 TrySetAppleDashBox(appleTag, $"{ResolveSourceTagPrefix(track)}_TRACK_ID", new[] { sourceId });
             }
+
+            TrySetAppleDashBoxIf(appleTag, true, "SPOTIFY_TRACK_ID", ResolveSpotifyTrackId(track));
+            TrySetAppleDashBoxIf(appleTag, true, "DEEZER_TRACK_ID", ResolveDeezerTrackId(track));
+            TrySetAppleDashBoxIf(appleTag, true, "APPLE_TRACK_ID", ResolveAppleTrackId(track));
         }
 
         if (save.ReleaseId)
@@ -1455,8 +1477,18 @@ public class AudioTagger
 
     private static string ResolveSourceId(DeezSpoTag.Core.Models.Track track)
     {
-        var sourceId = string.IsNullOrWhiteSpace(track.SourceId) ? track.Id ?? "" : track.SourceId;
-        return sourceId;
+        if (!string.IsNullOrWhiteSpace(track.SourceId))
+        {
+            return track.SourceId.Trim();
+        }
+
+        var source = ResolveSourceName(track).Trim().ToLowerInvariant();
+        if (source == DeezerSource && !string.IsNullOrWhiteSpace(track.Id) && track.Id.All(char.IsDigit))
+        {
+            return track.Id.Trim();
+        }
+
+        return string.Empty;
     }
 
     private static string ResolveSourceTagPrefix(DeezSpoTag.Core.Models.Track track)
@@ -1499,6 +1531,92 @@ public class AudioTagger
     private static string FormatAudioFeature(double value)
     {
         return value.ToString("0.###", CultureInfo.InvariantCulture);
+    }
+
+    private void SetCustomFrameIfPresent(
+        Tag tag,
+        string frameId,
+        string description,
+        string? value,
+        TagSettings save)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        SetCustomFrame(tag, frameId, description, value, save);
+    }
+
+    private static string? ResolveSpotifyTrackId(DeezSpoTag.Core.Models.Track track)
+    {
+        return ResolveTrackIdFromUrls(
+            track,
+            directKey: "spotify_track_id",
+            fallbackUrlKey: SpotifySource,
+            marker: "/track/");
+    }
+
+    private static string? ResolveDeezerTrackId(DeezSpoTag.Core.Models.Track track)
+    {
+        return ResolveTrackIdFromUrls(
+            track,
+            directKey: "deezer_track_id",
+            fallbackUrlKey: DeezerSource,
+            marker: "/track/");
+    }
+
+    private static string? ResolveAppleTrackId(DeezSpoTag.Core.Models.Track track)
+    {
+        return ResolveTrackIdFromUrls(
+            track,
+            directKey: "apple_track_id",
+            fallbackUrlKey: AppleSource,
+            marker: "?i=");
+    }
+
+    private static string? ResolveTrackIdFromUrls(
+        DeezSpoTag.Core.Models.Track track,
+        string directKey,
+        string fallbackUrlKey,
+        string marker)
+    {
+        if (track.Urls.TryGetValue(directKey, out var direct) && !string.IsNullOrWhiteSpace(direct))
+        {
+            return direct.Trim();
+        }
+
+        if (!track.Urls.TryGetValue(fallbackUrlKey, out var url) || string.IsNullOrWhiteSpace(url))
+        {
+            return null;
+        }
+
+        return ParseTrackIdFromUrl(url, marker);
+    }
+
+    private static string? ParseTrackIdFromUrl(string url, string marker)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return null;
+        }
+
+        var index = url.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (index < 0)
+        {
+            return null;
+        }
+
+        var start = index + marker.Length;
+        if (start >= url.Length)
+        {
+            return null;
+        }
+
+        var end = url.IndexOfAny(['&', '?', '/', '#'], start);
+        var id = end >= 0 ? url[start..end] : url[start..];
+        var trimmed = id.Trim();
+        return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
     }
 
     private static string? ResolveFfmpegPath() => ExternalToolResolver.ResolveFfmpegPath();

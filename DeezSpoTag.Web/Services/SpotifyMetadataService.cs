@@ -185,6 +185,12 @@ public sealed class SpotifyMetadataService
         var pathfinderMetadata = await _pathfinderMetadataClient.FetchByUrlAsync(url, cancellationToken);
         if (pathfinderMetadata is null)
         {
+            var fallbackMetadata = await TryFetchMetadataFallbackAsync(parsed, cancellationToken);
+            if (fallbackMetadata is not null)
+            {
+                return fallbackMetadata;
+            }
+
             return null;
         }
 
@@ -198,6 +204,84 @@ public sealed class SpotifyMetadataService
         }
 
         return pathfinderMetadata;
+    }
+
+    private async Task<SpotifyUrlMetadata?> TryFetchMetadataFallbackAsync(
+        ParsedSpotifyUrl parsed,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(parsed.Type, TrackType, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var fallbackTrack = await TryFetchTrackFallbackWithLibrespotAsync(parsed.Id, cancellationToken);
+        if (fallbackTrack is null)
+        {
+            return null;
+        }
+
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Spotify track metadata fallback used: source=librespot trackId={TrackId}.",
+                parsed.Id);
+        }
+
+        return new SpotifyUrlMetadata(
+            TrackType,
+            fallbackTrack.Id,
+            fallbackTrack.Name,
+            fallbackTrack.SourceUrl,
+            fallbackTrack.ImageUrl,
+            fallbackTrack.Artists,
+            1,
+            fallbackTrack.DurationMs,
+            new List<SpotifyTrackSummary> { fallbackTrack },
+            new List<SpotifyAlbumSummary>(),
+            null,
+            null,
+            null);
+    }
+
+    private async Task<SpotifyTrackSummary?> TryFetchTrackFallbackWithLibrespotAsync(
+        string trackId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(trackId))
+        {
+            return null;
+        }
+
+        if (TryGetLibrespotTrackCache(trackId, out var cachedTrack))
+        {
+            return cachedTrack;
+        }
+
+        var blobPath = await TryResolveActiveLibrespotBlobPathAsync();
+        if (string.IsNullOrWhiteSpace(blobPath))
+        {
+            return null;
+        }
+
+        var result = await _blobService.GetLibrespotTracksAsync(
+            blobPath,
+            new List<string> { trackId },
+            cancellationToken);
+        if (string.IsNullOrWhiteSpace(result.PayloadJson))
+        {
+            return null;
+        }
+
+        var parsedTracks = new Dictionary<string, SpotifyTrackSummary>(StringComparer.OrdinalIgnoreCase);
+        AppendLibrespotTrackResults(parsedTracks, result.PayloadJson);
+        if (!parsedTracks.TryGetValue(trackId, out var fallbackTrack))
+        {
+            return null;
+        }
+
+        CacheLibrespotTrack(fallbackTrack);
+        return fallbackTrack;
     }
 
     private async Task<SpotifyUrlMetadata?> FetchPlaylistUrlMetadataAsync(string playlistId, CancellationToken cancellationToken)

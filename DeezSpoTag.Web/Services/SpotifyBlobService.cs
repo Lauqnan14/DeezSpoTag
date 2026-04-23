@@ -697,7 +697,6 @@ public sealed class SpotifyBlobService
     public async Task<SpotifyBlobResult> SaveWebPlayerBlobAsync(
         string blobPath,
         string spDc,
-        string? spKey,
         string? userAgent,
         CancellationToken cancellationToken = default)
     {
@@ -735,20 +734,6 @@ public sealed class SpotifyBlobService
                 }
             }
         };
-
-        if (!string.IsNullOrWhiteSpace(spKey))
-        {
-            payload.Cookies.Add(new SpotifyBlobCookie
-            {
-                Name = "sp_key",
-                Value = spKey.Trim(),
-                Domain = SpotifyCookieDomain,
-                Path = "/",
-                Secure = true,
-                HttpOnly = true,
-                SameSite = "None"
-            });
-        }
 
         var json = JsonSerializer.Serialize(payload, _jsonOptions);
         await WriteTextAtomicallyAsync(blobPath, json, cancellationToken);
@@ -876,7 +861,6 @@ public sealed class SpotifyBlobService
 
     public async Task<SpotifyWebPlayerTokenCheck> TestWebPlayerAccessTokenFromCookiesAsync(
         string spDc,
-        string? spKey,
         string? userAgent,
         CancellationToken cancellationToken = default)
     {
@@ -889,7 +873,7 @@ public sealed class SpotifyBlobService
             };
         }
 
-        using var client = CreateCookieClientFromRawCookies(spDc, spKey, userAgent);
+        using var client = CreateCookieClientFromRawCookies(spDc, userAgent);
 
         var response = await RequestWebPlayerAccessTokenAsync(client, cancellationToken);
         if (!response.IsSuccess)
@@ -926,7 +910,6 @@ public sealed class SpotifyBlobService
 
     public async Task<string?> GetWebPlayerAccessTokenFromCookiesAsync(
         string spDc,
-        string? spKey,
         string? userAgent,
         CancellationToken cancellationToken = default)
     {
@@ -935,7 +918,7 @@ public sealed class SpotifyBlobService
             return null;
         }
 
-        using var client = CreateCookieClientFromRawCookies(spDc, spKey, userAgent);
+        using var client = CreateCookieClientFromRawCookies(spDc, userAgent);
 
         var response = await RequestWebPlayerAccessTokenAsync(client, cancellationToken);
         if (!response.IsSuccess)
@@ -1587,15 +1570,10 @@ public sealed class SpotifyBlobService
         return client;
     }
 
-    private static HttpClient CreateCookieClientFromRawCookies(string spDc, string? spKey, string? userAgent)
+    private static HttpClient CreateCookieClientFromRawCookies(string spDc, string? userAgent)
     {
         var cookieContainer = new CookieContainer();
         cookieContainer.Add(new Cookie(SpotifyDcCookie, spDc.Trim(), "/", SpotifyCookieDomain) { Secure = true, HttpOnly = true });
-
-        if (!string.IsNullOrWhiteSpace(spKey))
-        {
-            cookieContainer.Add(new Cookie("sp_key", spKey.Trim(), "/", SpotifyCookieDomain) { Secure = true, HttpOnly = true });
-        }
 
         var handler = new HttpClientHandler
         {

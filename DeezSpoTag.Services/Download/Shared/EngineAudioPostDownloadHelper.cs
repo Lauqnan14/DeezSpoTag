@@ -23,6 +23,7 @@ public static partial class EngineAudioPostDownloadHelper
     private const string AlbumType = "album";
     private const string TrackType = "track";
     private const string DeezerSource = "deezer";
+    private const string SpotifySource = "spotify";
     private const string AppleSource = "apple";
     private const string MzStaticHost = "mzstatic.com";
     private const string UnknownArtist = "Unknown Artist";
@@ -300,7 +301,7 @@ public static partial class EngineAudioPostDownloadHelper
             TimeSignature = payload.TimeSignature,
             Liveness = payload.Liveness,
             Source = source,
-            SourceId = !string.IsNullOrWhiteSpace(sourceId) ? sourceId : payload.SpotifyId,
+            SourceId = NormalizeSourceId(sourceId),
             DownloadURL = !string.IsNullOrWhiteSpace(payload.Url) ? payload.Url : payload.SourceUrl
         };
 
@@ -319,6 +320,12 @@ public static partial class EngineAudioPostDownloadHelper
 
     private static void PopulateTrackUrls(Track track, EngineQueueItemBase payload)
     {
+        if (!string.IsNullOrWhiteSpace(payload.SpotifyId))
+        {
+            track.Urls["spotify_track_id"] = payload.SpotifyId;
+            track.Urls[SpotifySource] = $"https://open.spotify.com/track/{payload.SpotifyId}";
+        }
+
         if (!string.IsNullOrWhiteSpace(payload.DeezerId))
         {
             track.Urls["deezer_track_id"] = payload.DeezerId;
@@ -336,6 +343,17 @@ public static partial class EngineAudioPostDownloadHelper
         {
             track.Urls["source_url"] = payload.SourceUrl;
         }
+    }
+
+    private static string? NormalizeSourceId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
     }
 
     private static void PopulateTrackMetadata(Track track, EngineQueueItemBase payload, string artistName)

@@ -131,14 +131,6 @@
                                 <input type="text" id="spotifySpDc" placeholder="sp_dc cookie value" class="w-full" />
                             </label>
                             <label class="block mb-4">
-                                <span class="block mb-2">sp_key</span>
-                                <input type="text" id="spotifySpKey" placeholder="sp_key cookie value" class="w-full" />
-                            </label>
-                            <label class="block mb-4">
-                                <span class="block mb-2">sp_t (device id cookie)</span>
-                                <input type="text" id="spotifySpT" placeholder="sp_t cookie value" class="w-full" />
-                            </label>
-                            <label class="block mb-4">
                                 <span class="block mb-2">User Agent</span>
                                 <input type="text" id="spotifyUserAgent" placeholder="Leave blank to use this browser's user agent" class="w-full" />
                             </label>
@@ -2842,8 +2834,7 @@ async function loadSpotifyConfig(options = {}) {
             return accountName && accountName.toLowerCase() === activeAccountName.toLowerCase();
         }) || null;
         const accountHasLibrespotBlob = Boolean(resolveSpotifyAccountLibrespotBlobPath(active));
-        const provisionalConnected = Boolean(activeAccountName && accountHasLibrespotBlob);
-        applySpotifyConnectionUiState(data, active, activeAccountName, provisionalConnected);
+        applySpotifyConnectionUiState(data, active, activeAccountName, false);
         queueConnectedPlatformsRefresh();
 
         await refreshSpotifyConnectionStatus(data, active, activeAccountName, accountHasLibrespotBlob, loadSequence, options);
@@ -2863,11 +2854,31 @@ async function loadSpotifyConfig(options = {}) {
     }
 }
 
-function applySpotifyConnectionUiState(data, active, activeAccountName, isConnected) {
-    const showLoggedIn = Boolean(isConnected);
+function resolveSpotifyStatusActiveAccount(connectionStatus) {
+    return (typeof connectionStatus?.activeAccount === 'string'
+        ? connectionStatus.activeAccount
+        : (typeof connectionStatus?.ActiveAccount === 'string' ? connectionStatus.ActiveAccount : '')).trim();
+}
+
+function resolveSpotifyConnectedAccountName(active, activeAccountName, connectionStatus) {
+    const activeName = (active?.name || active?.Name || '').toString().trim();
+    if (activeName) {
+        return activeName;
+    }
+
+    const statusActiveAccount = resolveSpotifyStatusActiveAccount(connectionStatus);
+    if (statusActiveAccount) {
+        return statusActiveAccount;
+    }
+
+    return (activeAccountName || '').toString().trim();
+}
+
+function applySpotifyConnectionUiState(data, active, activeAccountName, isConnected, connectionStatus = null) {
+    const accountName = resolveSpotifyConnectedAccountName(active, activeAccountName, connectionStatus);
+    const showLoggedIn = Boolean(isConnected && accountName);
     setStatus('spotifyStatus', showLoggedIn);
     if (showLoggedIn) {
-        const accountName = active?.name || active?.Name || activeAccountName || 'Spotify';
         const region = active?.region || active?.Region || 'UL';
         const planValue = data?.activeAccountPlan ?? data?.ActiveAccountPlan;
         const plan = planValue ? capitalizeSpotifyPlan(planValue) : 'Unknown';
@@ -2947,9 +2958,7 @@ async function refreshSpotifyConnectionStatus(data, active, activeAccountName, a
             const backendOk = (connectionStatus?.ok === true) || (connectionStatus?.Ok === true);
             const hasUsableSpotifySession = webPlayerOk || librespotOk || backendOk;
             const hasAnyLibrespotBlob = accountHasLibrespotBlob || Boolean(resolveSpotifyStatusLibrespotBlobPath(connectionStatus));
-            const statusActiveAccount = (typeof connectionStatus?.activeAccount === 'string'
-                ? connectionStatus.activeAccount
-                : (typeof connectionStatus?.ActiveAccount === 'string' ? connectionStatus.ActiveAccount : '')).trim();
+            const statusActiveAccount = resolveSpotifyStatusActiveAccount(connectionStatus);
             const hasKnownAccount = Boolean(active || activeAccountName || statusActiveAccount);
             const hasCredentialLogin = hasKnownAccount && hasAnyLibrespotBlob;
             // Keep Login tab state tied to saved librespot credentials; runtime checks are advisory.
@@ -2957,7 +2966,7 @@ async function refreshSpotifyConnectionStatus(data, active, activeAccountName, a
 
             const reachedFinalAttempt = attempt >= settings.statusProbeAttempts - 1;
             if (isConnected || reachedFinalAttempt) {
-                applySpotifyConnectionUiState(data, active, activeAccountName, isConnected);
+                applySpotifyConnectionUiState(data, active, activeAccountName, isConnected, connectionStatus);
                 queueConnectedPlatformsRefresh();
                 if (hasCredentialLogin && !hasUsableSpotifySession) {
                     console.info('Spotify credentials are present, but live session check is not ready yet.');
@@ -3010,10 +3019,8 @@ async function loadSpotifyApiCredentials() {
         }
         const bits = [];
         const hasSpDc = data?.hasSpDc ?? data?.HasSpDc;
-        const hasSpKey = data?.hasSpKey ?? data?.HasSpKey;
         const hasUserAgent = data?.hasUserAgent ?? data?.HasUserAgent;
         if (hasSpDc) bits.push('sp_dc saved');
-        if (hasSpKey) bits.push('sp_key saved');
         if (hasUserAgent) bits.push('user agent saved');
         statusEl.textContent = bits.length ? bits.join(' • ') : 'Web player cookies not saved yet.';
         return data;
@@ -3028,22 +3035,14 @@ async function loadSpotifyApiCredentials() {
 
 async function saveSpotifyWebPlayerCookies() {
     const spDc = document.getElementById('spotifySpDc')?.value?.trim();
-    const spKey = document.getElementById('spotifySpKey')?.value?.trim();
-    const spT = document.getElementById('spotifySpT')?.value?.trim();
     const userAgentInput = document.getElementById('spotifyUserAgent')?.value?.trim();
     if (!spDc) {
         showToast('sp_dc is required', 'error');
         return;
     }
-    if (!spT) {
-        showToast('sp_t is required', 'error');
-        return;
-    }
     const userAgent = userAgentInput || navigator.userAgent;
     const cookies = [
-        { name: 'sp_dc', value: spDc },
-        { name: 'sp_key', value: spKey || '' },
-        { name: 'sp_t', value: spT }
+        { name: 'sp_dc', value: spDc }
     ];
 
     try {
@@ -3054,7 +3053,7 @@ async function saveSpotifyWebPlayerCookies() {
                 'Content-Type': 'application/json',
                 Accept: 'application/json'
             },
-            body: JSON.stringify({ spDc, spKey, userAgent, cookies })
+            body: JSON.stringify({ spDc, userAgent, cookies })
         });
         if (isAuthRedirectResponse(response)) {
             showToast('Login required to save Spotify web player cookies', 'error');
@@ -3067,22 +3066,10 @@ async function saveSpotifyWebPlayerCookies() {
         }
         showToast('Spotify web player cookies saved', 'success');
         const spDcInput = document.getElementById('spotifySpDc');
-        const spKeyInput = document.getElementById('spotifySpKey');
-        const spTInput = document.getElementById('spotifySpT');
         if (spDcInput) {
             spDcInput.value = '';
         }
-        if (spKeyInput) {
-            spKeyInput.value = '';
-        }
-        if (spTInput) {
-            spTInput.value = '';
-        }
-        await loadSpotifyConfig({
-            forceStatus: true,
-            statusProbeAttempts: 3,
-            statusProbeDelayMs: 800
-        });
+        await loadSpotifyApiCredentials();
     } catch (error) {
         console.error('Spotify web player cookie save error:', error);
         showToast('Network error while saving Spotify web player cookies', 'error');
