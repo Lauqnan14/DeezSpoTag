@@ -164,24 +164,36 @@ public sealed class SpotifyBlobService
                 throw new InvalidOperationException("Spotify credentials generator produced no output.");
             }
 
-            using var doc = JsonDocument.Parse(stdout);
-            var root = doc.RootElement;
-            if (!root.TryGetProperty("ok", out var okElement) || !okElement.GetBoolean())
+            if (!TryParseJsonFromStdout(stdout, out var doc, out var parseError))
             {
-                var errorMessage = root.TryGetProperty(ErrorField, out var errorElement) ? errorElement.GetString() : "Unknown error";
-                throw new InvalidOperationException($"Spotify credentials generator failed: {errorMessage}");
+                throw new InvalidOperationException(
+                    $"Spotify credentials generator returned malformed JSON output. {parseError}");
             }
 
-            if (!File.Exists(blobPath))
+            using (doc)
             {
-                throw new InvalidOperationException("Spotify credentials generator did not create credentials.json.");
-            }
+                var root = doc.RootElement;
+                if (!root.TryGetProperty("ok", out var okElement) || !okElement.GetBoolean())
+                {
+                    var errorMessage = root.TryGetProperty(ErrorField, out var errorElement) ? errorElement.GetString() : "Unknown error";
+                    throw new InvalidOperationException($"Spotify credentials generator failed: {errorMessage}");
+                }
 
-            return new SpotifyBlobResult
-            {
-                BlobPath = blobPath,
-                CreatedAt = DateTimeOffset.UtcNow
-            };
+                if (!File.Exists(blobPath))
+                {
+                    throw new InvalidOperationException("Spotify credentials generator did not create credentials.json.");
+                }
+
+                // A newly generated blob can reuse the same file path as a prior login.
+                // Ensure stale token cache for that path is dropped immediately.
+                InvalidateWebApiAccessToken(blobPath);
+
+                return new SpotifyBlobResult
+                {
+                    BlobPath = blobPath,
+                    CreatedAt = DateTimeOffset.UtcNow
+                };
+            }
         }
         finally
         {
@@ -1334,6 +1346,68 @@ public sealed class SpotifyBlobService
         {
             // Best effort only.
         }
+    }
+
+    private static bool TryParseJsonFromStdout(string stdout, out JsonDocument document, out string parseError)
+    {
+        try
+        {
+            document = JsonDocument.Parse(stdout);
+            parseError = string.Empty;
+            return true;
+        }
+        catch (JsonException ex)
+        {
+            parseError = $"Full output parse failed: {ClipForError(ex.Message)}.";
+        }
+
+        var lines = stdout
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (int i = lines.Length - 1; i >= 0; i--)
+        {
+            var candidate = lines[i];
+            if (string.IsNullOrWhiteSpace(candidate))
+            {
+                continue;
+            }
+
+            var first = candidate[0];
+            if (first is not '{' and not '[')
+            {
+                continue;
+            }
+
+            try
+            {
+                document = JsonDocument.Parse(candidate);
+                parseError = string.Empty;
+                return true;
+            }
+            catch (JsonException)
+            {
+                // Continue scanning earlier lines. Some helpers log text before the final JSON line.
+            }
+        }
+
+        parseError += $" Output tail: {ClipForError(stdout)}.";
+        document = null!;
+        return false;
+    }
+
+    private static string ClipForError(string value, int maxLength = 240)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "(empty)";
+        }
+
+        var normalized = value.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        if (normalized.Length <= maxLength)
+        {
+            return normalized;
+        }
+
+        return normalized[..maxLength] + "...";
     }
 
     private void RemoveExistingBlobs(string blobDir)

@@ -22,8 +22,10 @@ import defusedxml.ElementTree
 import requests
 import websocket
 from Cryptodome import Random
+from Cryptodome.Cipher import AES
 from Cryptodome.Hash import HMAC
 from Cryptodome.Hash import SHA1
+from Cryptodome.Protocol.KDF import PBKDF2
 from Cryptodome.PublicKey import RSA
 from Cryptodome.Signature import PKCS1_v1_5
 from requests.structures import CaseInsensitiveDict
@@ -1433,7 +1435,7 @@ class Session(Closeable, MessageListener, SubListener):
         """ """
         login_credentials: Authentication.LoginCredentials = None
 
-        def blob(self, _username: str, _blob: bytes) -> Session.Builder:
+        def blob(self, username: str, blob: bytes) -> Session.Builder:
             """
 
             :param username: str:
@@ -1442,14 +1444,13 @@ class Session(Closeable, MessageListener, SubListener):
             """
             if self.device_id is None:
                 raise TypeError("You must specify the device ID first.")
-            raise RuntimeError(
-                "Insecure legacy blob authentication is disabled. "
-                "Use stored credentials or username/password authentication."
-            )
+            self.login_credentials = self.decrypt_blob(self.device_id,
+                                                       username, blob)
+            return self
 
         def decrypt_blob(
-                self, _device_id: str, _username: str,
-                _encrypted_blob: bytes) -> Authentication.LoginCredentials:
+                self, device_id: str, username: str,
+                encrypted_blob: bytes) -> Authentication.LoginCredentials:
             """
 
             :param device_id: str:
@@ -1457,10 +1458,67 @@ class Session(Closeable, MessageListener, SubListener):
             :param encrypted_blob: bytes:
 
             """
-            raise RuntimeError(
-                "Insecure legacy blob decryption is disabled. "
-                "Use stored credentials or username/password authentication."
+            encrypted_blob = self._maybe_base64_decode_blob(encrypted_blob)
+            sha1 = SHA1.new()
+            sha1.update(device_id.encode())
+            secret = sha1.digest()
+            base_key = PBKDF2(secret,
+                              username.encode(),
+                              20,
+                              0x100,
+                              hmac_hash_module=SHA1)
+            sha1 = SHA1.new()
+            sha1.update(base_key)
+            key = sha1.digest() + b"\x00\x00\x00\x14"
+            aes = AES.new(key, AES.MODE_ECB)
+            decrypted_blob = bytearray(aes.decrypt(encrypted_blob))
+            l = len(decrypted_blob)
+            for i in range(0, l - 0x10):
+                decrypted_blob[l - i - 1] ^= decrypted_blob[l - i - 0x11]
+            blob = io.BytesIO(decrypted_blob)
+            blob.read(1)
+            le = self.read_blob_int(blob)
+            blob.read(le)
+            blob.read(1)
+            type_int = self.read_blob_int(blob)
+            type_ = Authentication.AuthenticationType.Name(type_int)
+            if type_ is None:
+                raise IOError(
+                    TypeError(
+                        "Unknown AuthenticationType: {}".format(type_int)))
+            blob.read(1)
+            l = self.read_blob_int(blob)
+            auth_data = blob.read(l)
+            return Authentication.LoginCredentials(
+                auth_data=auth_data,
+                typ=type_,
+                username=username,
             )
+
+        def _maybe_base64_decode_blob(self, encrypted_blob: typing.Union[str, bytes]) -> bytes:
+            if isinstance(encrypted_blob, str):
+                return base64.b64decode(encrypted_blob)
+            if not isinstance(encrypted_blob, (bytes, bytearray)):
+                return encrypted_blob
+            try:
+                decoded = base64.b64decode(encrypted_blob, validate=True)
+            except binascii.Error:
+                return encrypted_blob
+            if len(decoded) < 16 and len(encrypted_blob) >= 16:
+                return encrypted_blob
+            return decoded
+
+        def read_blob_int(self, buffer: io.BytesIO) -> int:
+            """
+
+            :param buffer: io.BytesIO:
+
+            """
+            lo = buffer.read(1)
+            if (int(lo[0]) & 0x80) == 0:
+                return int(lo[0])
+            hi = buffer.read(1)
+            return int(lo[0]) & 0x7F | int(hi[0]) << 7
 
         def stored(self, stored_credentials_str: str):
             """Create credential from stored string
