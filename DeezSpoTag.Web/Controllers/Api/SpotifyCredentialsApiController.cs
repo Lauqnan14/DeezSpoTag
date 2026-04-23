@@ -294,11 +294,19 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
 
         var now = DateTimeOffset.UtcNow;
         var existing = state.Accounts.FirstOrDefault(a => a.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
-        var preserveWebPlayerAuth = existing != null
-            && (!string.IsNullOrWhiteSpace(existing.WebPlayerBlobPath)
-                || !string.IsNullOrWhiteSpace(state.WebPlayerSpDc)
-                || !string.IsNullOrWhiteSpace(state.WebPlayerUserAgent));
-        var webPlayerBlobPath = preserveWebPlayerAuth ? existing?.WebPlayerBlobPath : null;
+        var existingWebPlayerAccount = state.Accounts.FirstOrDefault(account =>
+            !string.IsNullOrWhiteSpace(account.WebPlayerBlobPath));
+        var preserveWebPlayerAuth =
+            !string.IsNullOrWhiteSpace(state.WebPlayerSpDc) ||
+            !string.IsNullOrWhiteSpace(state.WebPlayerUserAgent) ||
+            !string.IsNullOrWhiteSpace(existing?.WebPlayerBlobPath) ||
+            !string.IsNullOrWhiteSpace(existingWebPlayerAccount?.WebPlayerBlobPath);
+        var webPlayerBlobPath = preserveWebPlayerAuth
+            ? existing?.WebPlayerBlobPath ?? existingWebPlayerAccount?.WebPlayerBlobPath
+            : null;
+        var lastKnownGoodWebPlayerBlobPath = preserveWebPlayerAuth
+            ? existing?.LastKnownGoodBlobPath ?? existingWebPlayerAccount?.LastKnownGoodBlobPath
+            : null;
         SpotifyUserAccount currentAccount;
         if (existing == null)
         {
@@ -311,7 +319,8 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
                 WebPlayerBlobPath = webPlayerBlobPath,
                 CreatedAt = now,
                 UpdatedAt = now,
-                LastValidatedAt = now
+                LastValidatedAt = now,
+                LastKnownGoodBlobPath = lastKnownGoodWebPlayerBlobPath
             };
         }
         else
@@ -326,6 +335,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             existing.WebPlayerBlobPath = webPlayerBlobPath;
             existing.UpdatedAt = now;
             existing.LastValidatedAt = now;
+            existing.LastKnownGoodBlobPath = lastKnownGoodWebPlayerBlobPath;
             currentAccount = existing;
         }
 
