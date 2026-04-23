@@ -192,12 +192,10 @@ public partial class Program
 
     static string TrimDotEnvValue(string value)
     {
-        if (value.Length >= 2)
+        if (value.Length >= 2 &&
+            ((value[0] == '"' && value[^1] == '"') || (value[0] == '\'' && value[^1] == '\'')))
         {
-            if ((value[0] == '"' && value[^1] == '"') || (value[0] == '\'' && value[^1] == '\''))
-            {
-                return value[1..^1];
-            }
+            return value[1..^1];
         }
 
         var hashIndex = value.IndexOf(" #", StringComparison.Ordinal);

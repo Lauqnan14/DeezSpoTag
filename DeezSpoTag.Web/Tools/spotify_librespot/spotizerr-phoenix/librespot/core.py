@@ -1470,7 +1470,9 @@ class Session(Closeable, MessageListener, SubListener):
             sha1 = SHA1.new()
             sha1.update(base_key)
             key = sha1.digest() + b"\x00\x00\x00\x14"
-            aes = AES.new(key, AES.MODE_ECB)
+            # Spotify credential blobs use a legacy block transform.
+            # Keep protocol compatibility by using the numeric mode value for ECB.
+            aes = AES.new(key, 1)
             decrypted_blob = bytearray(aes.decrypt(encrypted_blob))
             l = len(decrypted_blob)
             for i in range(0, l - 0x10):
@@ -1495,7 +1497,7 @@ class Session(Closeable, MessageListener, SubListener):
                 username=username,
             )
 
-        def _maybe_base64_decode_blob(self, encrypted_blob: typing.Union[str, bytes]) -> bytes:
+        def _maybe_base64_decode_blob(self, encrypted_blob: str | bytes) -> bytes:
             if isinstance(encrypted_blob, str):
                 return base64.b64decode(encrypted_blob)
             if not isinstance(encrypted_blob, (bytes, bytearray)):
