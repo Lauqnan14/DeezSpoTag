@@ -9,12 +9,21 @@ public sealed class TidalApiProviderSource
     private const string HttpsScheme = "https";
     private const string GistHost = "gist.githubusercontent.com";
     private const string GistPath = "afkarxyz/2ce772b943321b9448b454f39403ce25/raw";
+    private const string MonochromeInstancesHost = "monochrome.tf";
+    private const string MonochromeInstancesPath = "instances.json";
     private const string CacheFileName = "tidal-api-urls.json";
     private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(24);
     private static readonly TimeSpan FetchTimeout = TimeSpan.FromSeconds(12);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly string[] SeedProviderHosts =
     [
+        "eu-central.monochrome.tf",
+        "us-west.monochrome.tf",
+        "arran.monochrome.tf",
+        "api.monochrome.tf",
+        "monochrome-api.samidy.com",
+        "hifi.geeked.wtf",
+        "hifi.p1nkhamster.xyz",
         "vogel.qqdl.site",
         "maus.qqdl.site",
         "hund.qqdl.site",
@@ -146,7 +155,7 @@ public sealed class TidalApiProviderSource
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogWarning(ex, "Failed to refresh Tidal provider list from gist.");
+                _logger.LogWarning(ex, "Failed to refresh Tidal provider list from remote sources.");
             }
 
             if (state.Urls.Count == 0)
@@ -248,6 +257,46 @@ public sealed class TidalApiProviderSource
 
     private async Task<List<string>> FetchProviderUrlsAsync(CancellationToken cancellationToken)
     {
+        var merged = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddRange(IEnumerable<string> urls)
+        {
+            foreach (var value in urls)
+            {
+                var normalized = NormalizeUrl(value);
+                if (string.IsNullOrWhiteSpace(normalized) || !seen.Add(normalized))
+                {
+                    continue;
+                }
+
+                merged.Add(normalized);
+            }
+        }
+
+        try
+        {
+            AddRange(await FetchProviderUrlsFromGistAsync(cancellationToken));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to refresh Tidal provider list from gist.");
+        }
+
+        try
+        {
+            AddRange(await FetchProviderUrlsFromMonochromeInstancesAsync(cancellationToken));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to refresh Tidal provider list from Monochrome instances manifest.");
+        }
+
+        return merged;
+    }
+
+    private async Task<List<string>> FetchProviderUrlsFromGistAsync(CancellationToken cancellationToken)
+    {
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         linkedCts.CancelAfter(FetchTimeout);
 
@@ -258,6 +307,20 @@ public sealed class TidalApiProviderSource
         var body = await response.Content.ReadAsStringAsync(linkedCts.Token);
         var urls = JsonSerializer.Deserialize<List<string>>(body, JsonOptions);
         return NormalizeUrls(urls);
+    }
+
+    private async Task<List<string>> FetchProviderUrlsFromMonochromeInstancesAsync(CancellationToken cancellationToken)
+    {
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        linkedCts.CancelAfter(FetchTimeout);
+
+        using var client = _httpClientFactory.CreateClient("TidalProviderList");
+        using var response = await client.GetAsync(BuildMonochromeInstancesUrl(), linkedCts.Token);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(linkedCts.Token);
+        var manifest = await JsonSerializer.DeserializeAsync<MonochromeInstancesManifest>(stream, JsonOptions, linkedCts.Token);
+        return NormalizeUrls(manifest?.Api);
     }
 
     private static List<string> NormalizeUrls(IEnumerable<string>? urls)
@@ -288,6 +351,11 @@ public sealed class TidalApiProviderSource
     private static string BuildHttpsBaseUrl(string host) => new UriBuilder(HttpsScheme, host).Uri.ToString().TrimEnd('/');
 
     private static string BuildProviderListGistUrl() => new UriBuilder(HttpsScheme, GistHost) { Path = GistPath }.Uri.ToString();
+
+    private static string BuildMonochromeInstancesUrl() => new UriBuilder(HttpsScheme, MonochromeInstancesHost)
+    {
+        Path = MonochromeInstancesPath
+    }.Uri.ToString();
 
     private static List<string> RotateUrls(List<string> urls, string? lastUsedUrl)
     {
@@ -345,5 +413,10 @@ public sealed class TidalApiProviderSource
             UpdatedAtUnix = UpdatedAtUnix,
             Source = Source
         };
+    }
+
+    private sealed class MonochromeInstancesManifest
+    {
+        public List<string> Api { get; set; } = new();
     }
 }
