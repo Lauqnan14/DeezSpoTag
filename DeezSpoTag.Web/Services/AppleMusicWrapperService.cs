@@ -1386,7 +1386,13 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         var configured = Environment.GetEnvironmentVariable(ExternalWrapperSharedDataDirEnv);
         if (!string.IsNullOrWhiteSpace(configured))
         {
-            return NormalizePath(configured.Trim());
+            var configuredPath = NormalizePath(configured.Trim());
+            if (ShouldMapContainerSharedPathToHost(configuredPath, DefaultSharedDataDir))
+            {
+                return ResolveHostSharedDataDirFallback();
+            }
+
+            return configuredPath;
         }
 
         if (IsRunningInContainer())
@@ -1394,6 +1400,33 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             return DefaultSharedDataDir;
         }
 
+        return ResolveHostSharedDataDirFallback();
+    }
+
+    private static string ResolveExternalWrapperSharedSessionDir()
+    {
+        var configured = Environment.GetEnvironmentVariable(ExternalWrapperSharedSessionDirEnv);
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            var configuredPath = NormalizePath(configured.Trim());
+            if (ShouldMapContainerSharedPathToHost(configuredPath, DefaultSharedSessionDir))
+            {
+                return ResolveHostSharedSessionDirFallback();
+            }
+
+            return configuredPath;
+        }
+
+        if (IsRunningInContainer())
+        {
+            return DefaultSharedSessionDir;
+        }
+
+        return ResolveHostSharedSessionDirFallback();
+    }
+
+    private static string ResolveHostSharedDataDirFallback()
+    {
         var composePath = Environment.GetEnvironmentVariable(ComposeAppleWrapperDataPathEnv);
         if (!string.IsNullOrWhiteSpace(composePath))
         {
@@ -1409,19 +1442,8 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         return NormalizePath(DefaultHostSharedDataDir);
     }
 
-    private static string ResolveExternalWrapperSharedSessionDir()
+    private static string ResolveHostSharedSessionDirFallback()
     {
-        var configured = Environment.GetEnvironmentVariable(ExternalWrapperSharedSessionDirEnv);
-        if (!string.IsNullOrWhiteSpace(configured))
-        {
-            return NormalizePath(configured.Trim());
-        }
-
-        if (IsRunningInContainer())
-        {
-            return DefaultSharedSessionDir;
-        }
-
         var composePath = Environment.GetEnvironmentVariable(ComposeAppleWrapperSessionPathEnv);
         if (!string.IsNullOrWhiteSpace(composePath))
         {
@@ -1435,6 +1457,19 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         }
 
         return NormalizePath(DefaultHostSharedSessionDir);
+    }
+
+    private static bool ShouldMapContainerSharedPathToHost(string configuredPath, string containerSharedPath)
+    {
+        if (IsRunningInContainer())
+        {
+            return false;
+        }
+
+        return string.Equals(
+            configuredPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            containerSharedPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private static string ResolveExternalWrapperSharedLoginFilePath()
