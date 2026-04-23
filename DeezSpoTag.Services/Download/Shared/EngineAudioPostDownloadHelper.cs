@@ -1408,6 +1408,7 @@ public static partial class EngineAudioPostDownloadHelper
 
     public static async Task<string?> EnsureArtworkPrefetchCompletedAsync(
         string queueUuid,
+        string? outputPath = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(queueUuid)
@@ -1431,9 +1432,33 @@ public static partial class EngineAudioPostDownloadHelper
             return null;
         }
 
+        if (HasEmbeddedArtwork(outputPath))
+        {
+            return null;
+        }
+
         return string.IsNullOrWhiteSpace(result.ArtworkFailureReason)
             ? "Artwork prefetch did not complete successfully."
             : result.ArtworkFailureReason;
+    }
+
+    private static bool HasEmbeddedArtwork(string? outputPath)
+    {
+        if (string.IsNullOrWhiteSpace(outputPath)
+            || !File.Exists(outputPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var file = TagLib.File.Create(outputPath);
+            return file.Tag.Pictures?.Any(pic => pic?.Data != null && pic.Data.Count > 0) == true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public static void ClearPrefetchState(string queueUuid)

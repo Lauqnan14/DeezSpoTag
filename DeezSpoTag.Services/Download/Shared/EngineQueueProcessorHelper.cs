@@ -317,6 +317,7 @@ internal static class EngineQueueProcessorHelper
 
         var prefetchFailure = await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(
             workContext.Item.QueueUuid,
+            outputPath,
             workContext.ItemToken);
         if (!string.IsNullOrWhiteSpace(prefetchFailure))
         {

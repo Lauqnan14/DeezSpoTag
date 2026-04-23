@@ -86,7 +86,7 @@ public sealed class TidalEngineProcessor : QueueEngineProcessorBase
                         payload.Title ?? string.Empty,
                         payload.Artist ?? string.Empty,
                         payload.Isrc ?? string.Empty,
-                        payload.DurationSeconds * 1000,
+                        payload.DurationSeconds,
                         cancellationToken);
                     if (!string.IsNullOrWhiteSpace(resolvedUrl))
                     {

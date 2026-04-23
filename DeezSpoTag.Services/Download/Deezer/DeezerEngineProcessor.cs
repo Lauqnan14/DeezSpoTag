@@ -537,13 +537,13 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
                 EngineName),
             cancellationToken);
 
-        await LogTrackPrefetchFailureIfAnyAsync(request.QueueUuid, cancellationToken);
+        await LogTrackPrefetchFailureIfAnyAsync(request.QueueUuid, expectedOutputPath, cancellationToken);
         EngineAudioPostDownloadHelper.UpdateAudioPayloadFiles(request.Payload, result.GeneratedPathResult, result.Path!);
     }
 
-    private async Task LogTrackPrefetchFailureIfAnyAsync(string queueUuid, CancellationToken cancellationToken)
+    private async Task LogTrackPrefetchFailureIfAnyAsync(string queueUuid, string outputPath, CancellationToken cancellationToken)
     {
-        var prefetchFailure = await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(queueUuid, cancellationToken);
+        var prefetchFailure = await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(queueUuid, outputPath, cancellationToken);
         if (string.IsNullOrWhiteSpace(prefetchFailure))
         {
             return;
