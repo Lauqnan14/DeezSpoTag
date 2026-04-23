@@ -2823,19 +2823,12 @@ async function loadSpotifyConfig(options = {}) {
             const accountName = (account?.name ?? account?.Name ?? '').toString().trim();
             return accountName && accountName.toLowerCase() === activeAccountName.toLowerCase();
         }) || null;
-        const accountHasBlob = Boolean(
-            active?.blobPath ||
-            active?.BlobPath ||
-            active?.librespotBlobPath ||
-            active?.LibrespotBlobPath ||
-            active?.webPlayerBlobPath ||
-            active?.WebPlayerBlobPath
-        );
-        const provisionalConnected = Boolean(activeAccountName && accountHasBlob);
+        const accountHasLibrespotBlob = Boolean(resolveSpotifyAccountLibrespotBlobPath(active));
+        const provisionalConnected = Boolean(activeAccountName && accountHasLibrespotBlob);
         applySpotifyConnectionUiState(data, active, activeAccountName, provisionalConnected);
         queueConnectedPlatformsRefresh();
 
-        await refreshSpotifyConnectionStatus(data, active, activeAccountName, accountHasBlob, loadSequence, options);
+        await refreshSpotifyConnectionStatus(data, active, activeAccountName, accountHasLibrespotBlob, loadSequence, options);
         await apiCredentialsTask;
         if (loadSequence !== spotifyConfigLoadSequence) {
             return;
@@ -2873,7 +2866,34 @@ function applySpotifyConnectionUiState(data, active, activeAccountName, isConnec
     toggleSpotifyLoginState(showLoggedIn);
 }
 
-async function refreshSpotifyConnectionStatus(data, active, activeAccountName, accountHasBlob, loadSequence, options = {}) {
+function resolveSpotifyAccountLibrespotBlobPath(account) {
+    if (!account || typeof account !== 'object') {
+        return null;
+    }
+
+    const explicit = (account?.librespotBlobPath ?? account?.LibrespotBlobPath ?? '').toString().trim();
+    if (explicit) {
+        return explicit;
+    }
+
+    const legacy = (account?.blobPath ?? account?.BlobPath ?? '').toString().trim();
+    if (!legacy || legacy.toLowerCase().endsWith('.web.json')) {
+        return null;
+    }
+
+    return legacy;
+}
+
+function resolveSpotifyStatusLibrespotBlobPath(connectionStatus) {
+    if (!connectionStatus || typeof connectionStatus !== 'object') {
+        return null;
+    }
+
+    const blobPath = (connectionStatus?.librespotBlobPath ?? connectionStatus?.LibrespotBlobPath ?? '').toString().trim();
+    return blobPath || null;
+}
+
+async function refreshSpotifyConnectionStatus(data, active, activeAccountName, accountHasLibrespotBlob, loadSequence, options = {}) {
     const settings = {
         forceStatus: options?.forceStatus === true,
         statusProbeAttempts: Math.max(1, Number(options?.statusProbeAttempts ?? 1) || 1),
@@ -2908,23 +2928,17 @@ async function refreshSpotifyConnectionStatus(data, active, activeAccountName, a
             const librespotOk = (connectionStatus?.librespotOk === true) || (connectionStatus?.LibrespotOk === true);
             const backendOk = (connectionStatus?.ok === true) || (connectionStatus?.Ok === true);
             const hasUsableSpotifySession = webPlayerOk || librespotOk || backendOk;
-            const hasBlobFromStatus = Boolean(
-                connectionStatus?.webPlayerBlobPath ||
-                connectionStatus?.WebPlayerBlobPath ||
-                connectionStatus?.librespotBlobPath ||
-                connectionStatus?.LibrespotBlobPath
-            );
-            const hasAnyBlob = accountHasBlob || hasBlobFromStatus;
+            const hasAnyLibrespotBlob = accountHasLibrespotBlob || Boolean(resolveSpotifyStatusLibrespotBlobPath(connectionStatus));
             const statusActiveAccount = (typeof connectionStatus?.activeAccount === 'string'
                 ? connectionStatus.activeAccount
                 : (typeof connectionStatus?.ActiveAccount === 'string' ? connectionStatus.ActiveAccount : '')).trim();
             const hasKnownAccount = Boolean(active || activeAccountName || statusActiveAccount);
-            const hasCredentialLogin = hasKnownAccount && hasAnyBlob;
+            const hasCredentialLogin = hasKnownAccount && hasAnyLibrespotBlob;
             // Keep Login tab state tied to saved credentials; runtime checks are advisory and should not
             // flip the account back to logged-out after a successful credentials generate/save flow.
             const isConnected = Boolean(connectionStatus && hasCredentialLogin);
 
-            if (isConnected || !accountHasBlob || attempt >= settings.statusProbeAttempts - 1) {
+            if (isConnected || !accountHasLibrespotBlob || attempt >= settings.statusProbeAttempts - 1) {
                 applySpotifyConnectionUiState(data, active, activeAccountName, isConnected);
                 queueConnectedPlatformsRefresh();
                 if (hasCredentialLogin && !hasUsableSpotifySession) {
