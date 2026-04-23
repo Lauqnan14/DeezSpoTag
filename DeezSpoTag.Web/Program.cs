@@ -46,6 +46,17 @@ public partial class Program
 
     private const string UnknownValue = "unknown";
     private const string MissingValue = "missing";
+    private const string DataDirEnv = "DEEZSPOTAG_DATA_DIR";
+    private const string ConfigDirEnv = "DEEZSPOTAG_CONFIG_DIR";
+    private const string DataPathAliasEnv = "DEEZSPOTAG_DATA_PATH";
+    private const string DataProtectionKeysEnv = "DEEZSPOTAG_DATA_PROTECTION_KEYS_DIR";
+    private const string WrapperModeEnv = "DEEZSPOTAG_APPLE_WRAPPER_MODE";
+    private const string WrapperControlModeEnv = "DEEZSPOTAG_APPLE_WRAPPER_CONTROL_MODE";
+    private const string WrapperSharedDataEnv = "DEEZSPOTAG_APPLE_WRAPPER_SHARED_DATA_DIR";
+    private const string WrapperSharedSessionEnv = "DEEZSPOTAG_APPLE_WRAPPER_SHARED_SESSION_DIR";
+    private const string WrapperDataAliasEnv = "APPLE_WRAPPER_DATA_PATH";
+    private const string WrapperSessionAliasEnv = "APPLE_WRAPPER_SESSION_PATH";
+    private const string ContainerDataRoot = "/data";
     private static readonly string[] AdditionalCompressedMimeTypes =
     {
         "application/json",
@@ -59,6 +70,8 @@ public partial class Program
     private static partial Regex BuildVersionPatternRegex();
     public static async Task Main(string[] args)
     {
+        ApplyLocalRuntimeParityEnvironment();
+
         var builder = WebApplication.CreateBuilder(args);
         var libraryDataDir = ConfigureDataDirectories();
         ConfigureDataProtection(builder.Services, libraryDataDir);
@@ -81,6 +94,227 @@ public partial class Program
         Console.WriteLine("🚀 DeezSpoTag is running!");
         Console.WriteLine("🌐 Access the application at: http://localhost:8668");
         await app.RunAsync();
+    }
+
+    static void ApplyLocalRuntimeParityEnvironment()
+    {
+        string? envFile = FindNearestEnvFile();
+        string? envBaseDir = null;
+        if (!string.IsNullOrWhiteSpace(envFile))
+        {
+            envBaseDir = Path.GetDirectoryName(envFile);
+            LoadDotEnvWithoutOverridingExisting(envFile);
+        }
+
+        ApplyPathAliasFallback(DataDirEnv, DataPathAliasEnv, envBaseDir);
+        ApplyPathAliasFallback(ConfigDirEnv, DataPathAliasEnv, envBaseDir);
+        ApplyPathAliasFallback(WrapperSharedDataEnv, WrapperDataAliasEnv, envBaseDir);
+        ApplyPathAliasFallback(WrapperSharedSessionEnv, WrapperSessionAliasEnv, envBaseDir);
+
+        RemapContainerOnlyDataPathsForHostRuntime(envBaseDir);
+
+        var configuredKeysDir = Environment.GetEnvironmentVariable(DataProtectionKeysEnv);
+        if (!string.IsNullOrWhiteSpace(configuredKeysDir))
+        {
+            var normalizedKeysDir = ResolveConfiguredPath(configuredKeysDir, envBaseDir);
+            Environment.SetEnvironmentVariable(DataProtectionKeysEnv, normalizedKeysDir);
+        }
+
+        var hasWrapperSharedPaths =
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(WrapperSharedDataEnv)) ||
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(WrapperSharedSessionEnv));
+
+        if (hasWrapperSharedPaths && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(WrapperControlModeEnv)))
+        {
+            Environment.SetEnvironmentVariable(WrapperControlModeEnv, "shared");
+        }
+
+        if (hasWrapperSharedPaths && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(WrapperModeEnv)))
+        {
+            Environment.SetEnvironmentVariable(WrapperModeEnv, "external");
+        }
+    }
+
+    static string? FindNearestEnvFile()
+    {
+        var current = new DirectoryInfo(Path.GetFullPath(Directory.GetCurrentDirectory()));
+        for (var depth = 0; depth < 10 && current != null; depth++)
+        {
+            var candidate = Path.Join(current.FullName, ".env");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            current = current.Parent;
+        }
+
+        return null;
+    }
+
+    static void LoadDotEnvWithoutOverridingExisting(string envFilePath)
+    {
+        foreach (var rawLine in File.ReadLines(envFilePath))
+        {
+            var line = rawLine.Trim();
+            if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#'))
+            {
+                continue;
+            }
+
+            if (line.StartsWith("export ", StringComparison.OrdinalIgnoreCase))
+            {
+                line = line[7..].TrimStart();
+            }
+
+            var separatorIndex = line.IndexOf('=');
+            if (separatorIndex <= 0)
+            {
+                continue;
+            }
+
+            var key = line[..separatorIndex].Trim();
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(key)))
+            {
+                continue;
+            }
+
+            var value = line[(separatorIndex + 1)..].Trim();
+            value = TrimDotEnvValue(value);
+            Environment.SetEnvironmentVariable(key, value);
+        }
+    }
+
+    static string TrimDotEnvValue(string value)
+    {
+        if (value.Length >= 2)
+        {
+            if ((value[0] == '"' && value[^1] == '"') || (value[0] == '\'' && value[^1] == '\''))
+            {
+                return value[1..^1];
+            }
+        }
+
+        var hashIndex = value.IndexOf(" #", StringComparison.Ordinal);
+        if (hashIndex >= 0)
+        {
+            value = value[..hashIndex].TrimEnd();
+        }
+
+        return value;
+    }
+
+    static void ApplyPathAliasFallback(string targetEnv, string aliasEnv, string? envBaseDir)
+    {
+        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(targetEnv)))
+        {
+            return;
+        }
+
+        var aliasValue = Environment.GetEnvironmentVariable(aliasEnv);
+        if (string.IsNullOrWhiteSpace(aliasValue))
+        {
+            return;
+        }
+
+        Environment.SetEnvironmentVariable(targetEnv, ResolveConfiguredPath(aliasValue, envBaseDir));
+    }
+
+    static string ResolveConfiguredPath(string pathValue, string? envBaseDir)
+    {
+        var trimmed = pathValue.Trim();
+        if (Path.IsPathRooted(trimmed))
+        {
+            return Path.GetFullPath(trimmed);
+        }
+
+        var baseDir = string.IsNullOrWhiteSpace(envBaseDir)
+            ? Directory.GetCurrentDirectory()
+            : envBaseDir;
+        return Path.GetFullPath(trimmed, baseDir);
+    }
+
+    static void RemapContainerOnlyDataPathsForHostRuntime(string? envBaseDir)
+    {
+        if (IsRunningInContainer())
+        {
+            return;
+        }
+
+        var dataPathAlias = Environment.GetEnvironmentVariable(DataPathAliasEnv);
+        if (string.IsNullOrWhiteSpace(dataPathAlias))
+        {
+            return;
+        }
+
+        var hostDataRoot = ResolveConfiguredPath(dataPathAlias, envBaseDir);
+        RemapContainerDataRootEnv(DataDirEnv, hostDataRoot);
+        RemapContainerDataRootEnv(ConfigDirEnv, hostDataRoot);
+        RemapContainerDataProtectionKeys(hostDataRoot);
+    }
+
+    static void RemapContainerDataRootEnv(string envKey, string hostDataRoot)
+    {
+        var value = Environment.GetEnvironmentVariable(envKey);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        var trimmed = value.Trim();
+        if (string.Equals(trimmed, ContainerDataRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            Environment.SetEnvironmentVariable(envKey, hostDataRoot);
+        }
+    }
+
+    static void RemapContainerDataProtectionKeys(string hostDataRoot)
+    {
+        var value = Environment.GetEnvironmentVariable(DataProtectionKeysEnv);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        var trimmed = value.Trim();
+        if (!trimmed.StartsWith(ContainerDataRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (trimmed.Length == ContainerDataRoot.Length)
+        {
+            Environment.SetEnvironmentVariable(DataProtectionKeysEnv, hostDataRoot);
+            return;
+        }
+
+        var nextChar = trimmed[ContainerDataRoot.Length];
+        if (nextChar != '/' && nextChar != '\\')
+        {
+            return;
+        }
+
+        var relative = trimmed[(ContainerDataRoot.Length + 1)..]
+            .Replace('\\', Path.DirectorySeparatorChar)
+            .Replace('/', Path.DirectorySeparatorChar);
+        var mapped = Path.GetFullPath(Path.Combine(hostDataRoot, relative));
+        Environment.SetEnvironmentVariable(DataProtectionKeysEnv, mapped);
+    }
+
+    static bool IsRunningInContainer()
+    {
+        var env = Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER");
+        if (string.Equals(env, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return File.Exists("/.dockerenv");
     }
 
     static string ConfigureDataDirectories()
