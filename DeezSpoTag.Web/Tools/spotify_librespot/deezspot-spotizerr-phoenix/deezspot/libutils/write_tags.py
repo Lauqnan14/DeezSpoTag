@@ -22,6 +22,7 @@ import unicodedata
 logger = logging.getLogger("deezspot.taggers")
 JPEG_MIME = "image/jpeg"
 ITUNES_ISRC_TAG = "----:com.apple.iTunes:ISRC"
+REQUEST_TIMEOUT_SECONDS = 20
 
 # Helper: wait for a file to appear on disk (and preferably become non-empty)
 def _wait_for_file(path: str, timeout: float = 3.0, interval: float = 0.1) -> bool:
@@ -36,8 +37,8 @@ def _wait_for_file(path: str, timeout: float = 3.0, interval: float = 0.1) -> bo
 				except OSError:
 					# If stat fails intermittently, but path exists, allow another cycle
 					pass
-		except Exception:
-			pass
+		except Exception as exc:
+			logger.debug("Transient file existence check failure for %s: %s", path, exc)
 		time.sleep(interval)
 	# One last check
 	return os.path.exists(path)
@@ -53,7 +54,7 @@ def _safe_dir_snapshot(path: str, limit: int = 25):
 
 
 def request(url):
-    response = requests.get(url)
+    response = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
     response.raise_for_status()
     return response
 
@@ -378,8 +379,8 @@ def write_tags(media):
 		logger.debug(f"Tagging probe: path={repr(filepath)}, exists={os.path.exists(filepath)}, dir={repr(dirname)}")
 		logger.debug(f"Tagging probe: basename={repr(basename)}, NFC==basename? {nfc==basename}, NFKC==basename? {nfkc==basename}")
 		logger.debug(f"Directory sample: {_safe_dir_snapshot(filepath, limit=25)}")
-	except Exception:
-		pass
+	except Exception as exc:
+		logger.debug("Tagging diagnostics probe failed for %s: %s", filepath, exc)
 
 	# If the file isn't visible yet, wait briefly to avoid races
 	if not _wait_for_file(filepath, timeout=3.0, interval=0.1):

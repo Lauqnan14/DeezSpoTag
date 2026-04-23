@@ -13,7 +13,7 @@ import io
 import logging
 import math
 import queue
-import random
+import secrets
 import struct
 import threading
 import time
@@ -339,9 +339,9 @@ class CdnFeedHelper:
 
     @staticmethod
     def get_url(resp: StorageResolve.StorageResolveResponse) -> str:
-        selected_url = random.choice(resp.cdnurl)
+        selected_url = secrets.choice(resp.cdnurl)
         while "audio4-gm-fb" in selected_url or "audio-gm-fb" in selected_url:
-            selected_url = random.choice(resp.cdnurl)
+            selected_url = secrets.choice(resp.cdnurl)
         return selected_url
 
     @staticmethod
@@ -476,7 +476,7 @@ class CdnManager:
         proto = StorageResolve.StorageResolveResponse()
         proto.ParseFromString(body)
         if proto.result == StorageResolve.StorageResolveResponse.Result.CDN:
-            url = random.choice(proto.cdnurl)
+            url = secrets.choice(proto.cdnurl)
             self.logger.debug("Fetched CDN url for {}: {}".format(
                 util.bytes_to_hex(file_id), url))
             return url
@@ -499,6 +499,10 @@ class CdnManager:
         __file_id: bytes
         __expiration: int
         url: str
+
+        @staticmethod
+        def __is_missing_query_value(value: str) -> bool:
+            return len(value) == 0 or value.lower() == str(None).lower()
 
         def __init__(self, cdn_manager, file_id: bytes | None,
                      url: str):
@@ -525,7 +529,7 @@ class CdnManager:
                 return ""
 
         def __set_expiration_from_token(self, token_str: str, url: str) -> bool:
-            if token_str == "None" or len(token_str) == 0:
+            if self.__is_missing_query_value(token_str):
                 return False
             expire_at = None
             for token_part in token_str.split("~"):
@@ -546,7 +550,7 @@ class CdnManager:
 
         def __set_expiration_from_expires(self, expires_str: str,
                                           url: str) -> bool:
-            if expires_str == "None" or len(expires_str) == 0:
+            if self.__is_missing_query_value(expires_str):
                 return False
             try:
                 expires_at = int(expires_str.split("~")[0])

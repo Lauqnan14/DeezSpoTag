@@ -6,6 +6,8 @@ from deezspot.exceptions import NoDataApi
 from deezspot.libutils.logging_utils import logger
 from .__dee_api__ import tracking, tracking_album, tracking_playlist
 
+REQUEST_TIMEOUT_SECONDS = 20
+
 class API:
 	__api_link = "https://api.deezer.com/"
 	__cover = "https://e-cdns-images.dzcdn.net/images/cover/%s/{}-000000-80-0-0.jpg"
@@ -17,7 +19,12 @@ class API:
 	@classmethod
 	def __get_api(cls, url, params=None):
 		try:
-			response = req_get(url, headers=cls.headers, params=params)
+			response = req_get(
+				url,
+				headers=cls.headers,
+				params=params,
+				timeout=REQUEST_TIMEOUT_SECONDS,
+			)
 			response.raise_for_status()
 			data = response.json()
 			if data.get("error"):
@@ -242,8 +249,8 @@ class API:
 	@classmethod
 	def choose_img(cls, md5_image, size = "1200x1200"):
 		image_url = cls.get_img_url(md5_image, size)
-		image = req_get(image_url).content
+		image = req_get(image_url, timeout=REQUEST_TIMEOUT_SECONDS).content
 		if len(image) == 13:
 			image_url = cls.get_img_url("", size)
-			image = req_get(image_url).content
+			image = req_get(image_url, timeout=REQUEST_TIMEOUT_SECONDS).content
 		return image

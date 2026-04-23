@@ -252,13 +252,15 @@ class DeeLogin:
 
     def _ensure_spotify_session(self) -> None:
         """Ensure Spo has an attached librespot Session. Used only by spo->dee flows."""
+        has_session = False
         try:
             # Check if Spo already has a session (accessing private attr is ok internally)
             has_session = getattr(Spo, f"_{Spo.__name__}__session", None) is not None
-            if has_session:
-                return
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Unable to inspect current Spotify session state: %s", exc)
+
+        if has_session:
+            return
 
         cred_path = self.spotify_credentials_path
         if not os.path.isfile(cred_path):
@@ -452,9 +454,12 @@ class DeeLogin:
             c_id = cand.get('id')
             if not c_id:
                 continue
+            dzc = None
             try:
                 dzc = API.get_track_json(str(c_id))
-            except Exception:
+            except Exception as exc:
+                logger.debug("Could not fetch Deezer track candidate %s: %s", c_id, exc)
+            if not isinstance(dzc, dict):
                 continue
 
             tn = (dzc.get('track_position') or dzc.get('track_number') or 0)
@@ -495,9 +500,12 @@ class DeeLogin:
             c_id = cand.get('id')
             if not c_id:
                 continue
+            dzc = None
             try:
                 dzc = API.get_album_json(str(c_id))
-            except Exception:
+            except Exception as exc:
+                logger.debug("Could not fetch Deezer album candidate %s: %s", c_id, exc)
+            if not isinstance(dzc, dict):
                 continue
             upc = str(dzc.get('upc') or '').strip().lstrip('0')
             if spo_upc and upc and spo_upc != upc:
@@ -897,8 +905,8 @@ class DeeLogin:
                         playlist_context = {}
                     playlist_context = dict(playlist_context)
                     playlist_context['spotify_track_obj'] = spo_track_obj
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Unable to fetch Spotify track metadata for tagging: %s", exc)
 
         dee_track_options = dict(options)
         dee_track_options["playlist_context"] = playlist_context

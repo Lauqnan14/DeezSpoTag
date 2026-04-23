@@ -1,9 +1,9 @@
 #!/usr/bin/python3
 
-from hashlib import md5 as __md5
+import hashlib
 
-from Crypto.Cipher import AES
-from Crypto.Util import Counter
+from Cryptodome.Cipher import AES
+from Cryptodome.Util import Counter
 import os
 from deezspot.libutils.logging_utils import logger
 
@@ -11,8 +11,9 @@ class InsecureCipherError(RuntimeError):
     """Raised when legacy insecure ciphers are requested."""
 
 def md5hex(data: str):
-	hashed = __md5(
-		data.encode()
+	hashed = hashlib.md5(
+		data.encode(),
+		usedforsecurity=False,
 	).hexdigest()
 
 	return hashed
@@ -35,7 +36,7 @@ def gen_song_hash(song_id, song_md5, media_version):
         
         # Generate hash using SHA1
         import hashlib
-        hash_obj = hashlib.sha1()
+        hash_obj = hashlib.sha1(usedforsecurity=False)
         hash_obj.update(data.encode('utf-8'))
         return hash_obj.hexdigest()
         

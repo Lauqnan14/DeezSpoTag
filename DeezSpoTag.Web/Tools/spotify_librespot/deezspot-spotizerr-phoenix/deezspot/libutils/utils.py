@@ -17,6 +17,8 @@ from os.path import (
     join, isfile, dirname
 )
 
+REQUEST_TIMEOUT_SECONDS = 20
+
 def link_is_valid(link):
     netloc = urlparse(link).netloc
 
@@ -34,7 +36,7 @@ def get_ids(link):
     return ids
 
 def request(url):
-    thing = req_get(url, headers=header)
+    thing = req_get(url, headers=header, timeout=REQUEST_TIMEOUT_SECONDS)
     return thing
 
 def __check_dir(directory):

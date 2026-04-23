@@ -2,7 +2,6 @@
 
 import os
 import re
-import subprocess
 import logging
 from os.path import exists, basename, dirname
 from shutil import which
@@ -173,12 +172,22 @@ def _build_ffmpeg_command(ffmpeg_path, input_path, format_name_upper, format_det
     return cmd
 
 
+def _run_command(argv):
+    pid = os.posix_spawn(argv[0], argv, os.environ.copy())
+    _, status = os.waitpid(pid, 0)
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return 128 + os.WTERMSIG(status)
+    return 1
+
+
 def _cleanup_temp_file(temp_output):
     if exists(temp_output):
         try:
             os.remove(temp_output)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to cleanup temporary conversion file %s: %s", temp_output, exc)
         unregister_active_download(temp_output)
 
 
@@ -230,10 +239,10 @@ def convert_audio(input_path, format_name=None, bitrate=None, register_func=None
             ffmpeg_path, input_path, format_name_upper, format_details, effective_bitrate, temp_output
         )
         logger.info(f"Converting {input_path} to {format_name_upper}" + (f" at {effective_bitrate}" if effective_bitrate else ""))
-        process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return_code = _run_command(cmd)
         
-        if process.returncode != 0:
-            logger.error(f"Audio conversion failed: {process.stderr}")
+        if return_code != 0:
+            logger.error(f"Audio conversion failed with exit code {return_code}")
             _cleanup_temp_file(temp_output)
             return input_path
 

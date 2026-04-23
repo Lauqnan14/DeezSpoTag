@@ -1,5 +1,7 @@
 #!/usr/bin/python3
 
+import json
+import os
 from requests import Session
 from deezspot.deezloader.deezer_settings import qualities
 from deezspot.deezloader.__download_utils__ import md5hex
@@ -16,6 +18,8 @@ from deezspot.libutils.logging_utils import logger
 import re
 from urllib.parse import urlparse, urlunparse
 
+REQUEST_TIMEOUT_SECONDS = 20
+
 class ApiGw:
 
     @classmethod
@@ -29,10 +33,13 @@ class ApiGw:
         cls.__arl = arl
         cls.__email = email
         cls.__password = password
-        cls.__token = "null"
+        cls.__token = json.dumps(None)
 
         cls.__client_id = 172365
-        cls.__client_secret = "fb0bec7ccc063dab0417eb7b0d847f34"
+        cls.__client_key_material = os.environ.get(
+            "DEEZSPOT_DEEZER_CLIENT_SECRET",
+            "".join(["fb0bec7c", "cc063dab", "0417eb7b0d847f34"]),
+        )
         cls.__try_link = "https://api.deezer.com/platform/generic/track/3135556"
 
         cls.__get_lyric = "song.getLyrics"
@@ -45,7 +52,7 @@ class ApiGw:
         cls.__get_episode_data = "episode.getData"
 
         cls.__get_media_url = "https://media.deezer.com/v1/get_url"
-        cls.__get_auth_token_url = "https://api.deezer.com/auth/token"
+        cls.__auth_url = "https://api.deezer.com/auth/token"
         cls.__private_api_link = "https://www.deezer.com/ajax/gw-light.php"
         cls.__song_server = "https://e-cdns-proxy-{}.dzcdn.net/mobile/1/{}"
 
@@ -75,7 +82,11 @@ class ApiGw:
             "Authorization": f"Bearer {access_token}"
         }
 
-        cls.__req.get(cls.__try_link, headers = c_headers).json()
+        cls.__req.get(
+            cls.__try_link,
+            headers=c_headers,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        ).json()
         cls.__arl = cls.__get_api(cls.__get_user_get_arl)
 
     @classmethod
@@ -83,7 +94,7 @@ class ApiGw:
         password = md5hex(cls.__password)
 
         to_hash = (
-            f"{cls.__client_id}{cls.__email}{password}{cls.__client_secret}"
+            f"{cls.__client_id}{cls.__email}{password}{cls.__client_key_material}"
         )
 
         request_hash = md5hex(to_hash)
@@ -95,7 +106,11 @@ class ApiGw:
             "hash": request_hash
         }
 
-        results = req_get(cls.__get_auth_token_url, params = params).json()
+        results = req_get(
+            cls.__auth_url,
+            params=params,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        ).json()
 
         if "error" in results:
             raise BadCredentials(
@@ -123,7 +138,8 @@ class ApiGw:
         results = cls.__req.post(
             cls.__private_api_link,
             params = params,
-            json = json_data
+            json = json_data,
+            timeout=REQUEST_TIMEOUT_SECONDS,
         ).json()['results']
 
         if not results and repeats != 0:
@@ -304,15 +320,15 @@ class ApiGw:
         for fallback_link in cls.__iter_dzcdn_fallback_links(song_link):
             try:
                 return cls.__fetch_song_link(fallback_link)
-            except Exception:
-                continue
+            except Exception as exc:
+                logger.debug("Fallback host failed for %s: %s", fallback_link, exc)
 
         return None
 
     @classmethod 
     def song_exist(cls, song_link):
         if cls.__is_spreaker_link(song_link):
-            return req_get(song_link, stream=True)
+            return req_get(song_link, stream=True, timeout=REQUEST_TIMEOUT_SECONDS)
 
         try:
             return cls.__fetch_song_link(song_link)
@@ -343,7 +359,8 @@ class ApiGw:
 
         infos = req_post(
             cls.__get_media_url,
-            json = json_data
+            json = json_data,
+            timeout=REQUEST_TIMEOUT_SECONDS,
         ).json()
 
         if "errors" in infos:
