@@ -9,7 +9,7 @@ import io
 import json
 import logging
 import os
-import random
+import secrets
 import sched
 import socket
 import struct
@@ -71,6 +71,7 @@ class ApiClient(Closeable):
     """ """
     logger = logging.getLogger("Librespot:ApiClient")
     CONTENT_TYPE_PROTOBUF = "application/x-protobuf"
+    REQUEST_TIMEOUT_SECONDS = 15
     __base_url: str
     __client_token_str: str | None = None
     __session: Session
@@ -237,6 +238,7 @@ class ApiClient(Closeable):
                 "Accept": ApiClient.CONTENT_TYPE_PROTOBUF,
                 "Content-Encoding": "",
             },
+            timeout=ApiClient.REQUEST_TIMEOUT_SECONDS,
         )
 
         ApiClient.StatusCodeException.check_status(resp)
@@ -271,7 +273,8 @@ class ApResolver:
 
         """
         response = requests.get("{}?type={}".format(ApResolver.base_url,
-                                                    service_type))
+                                                    service_type),
+                                timeout=ApiClient.REQUEST_TIMEOUT_SECONDS)
         if response.status_code == 502:
             raise RuntimeError(
                 f"ApResolve request failed with the following return value: {response.content}. Servers might be down!"
@@ -290,7 +293,7 @@ class ApResolver:
         urls = pool.get(service_type)
         if urls is None or len(urls) == 0:
             raise RuntimeError("No ApResolve url available")
-        return random.choice(urls)
+        return secrets.choice(urls)
 
     @staticmethod
     def get_random_dealer() -> str:
@@ -1241,15 +1244,16 @@ class Session(Closeable, MessageListener, SubListener):
             self.__ap_welcome.reusable_auth_credentials_type)
         if self.__inner.conf.stored_credentials_file is None:
             raise TypeError("The file path to be saved is not specified")
+        logger = logging.getLogger(Session.LOGGER_NAME)
         try:
-            logging.getLogger(Session.LOGGER_NAME).info(
+            logger.info(
                 "Storing credentials to %s for user %s (type=%s)",
                 self.__inner.conf.stored_credentials_file,
                 self.__ap_welcome.canonical_username,
                 reusable_type,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Unable to log credential store start: %s", exc)
 
         credentials_payload = {
             "username": self.__ap_welcome.canonical_username,
@@ -1261,12 +1265,12 @@ class Session(Closeable, MessageListener, SubListener):
         with open(self.__inner.conf.stored_credentials_file, "w") as f:
             json.dump(credentials_payload, f)
         try:
-            logging.getLogger(Session.LOGGER_NAME).info(
+            logger.info(
                 "Stored credentials written for user %s",
                 self.__ap_welcome.canonical_username,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Unable to log credential store completion: %s", exc)
 
     def __handle_ap_welcome(self, payload: bytes, remove_lock: bool) -> None:
         self.__ap_welcome = Authentication.APWelcome()
@@ -2230,7 +2234,8 @@ class TokenProvider:
                 headers=CaseInsensitiveDict({
                     "Content-Type": ApiClient.CONTENT_TYPE_PROTOBUF,
                     "Accept": ApiClient.CONTENT_TYPE_PROTOBUF
-                    }))
+                    }),
+                timeout=ApiClient.REQUEST_TIMEOUT_SECONDS)
 
             if response.status_code == 200:
                 login5_response = Login5.LoginResponse()

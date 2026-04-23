@@ -80,6 +80,7 @@ from deezspot.models.callback.user import UserObject
 
 UNKNOWN_ARTIST_NAME = "Unknown Artist"
 UNKNOWN_EPISODE_TITLE = "Unknown Episode"
+REQUEST_TIMEOUT_SECONDS = 20
 
 # Use unified metadata converter
 def _track_object_to_dict(track_obj: trackCbObject) -> dict:
@@ -287,8 +288,8 @@ class EasyDw:
                 image_url = _get_best_image_url(spotify_album.images, 'spotify')
                 if image_url:
                     self.__song_metadata_dict['image'] = image_url
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Unable to backfill Spotify album fields: %s", exc)
 
     def _initialize_song_metadata(self, preferences: Preferences) -> None:
         if self.__infos_dw.get('__TYPE__') == 'episode':
@@ -900,7 +901,11 @@ class EasyDw:
             
             register_active_download(self.__song_path)
             try:
-                response = requests.get(direct_url, stream=True)
+                response = requests.get(
+                    direct_url,
+                    stream=True,
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                )
                 response.raise_for_status()
 
                 with open(self.__song_path, 'wb') as f:
@@ -1098,12 +1103,10 @@ class DwAlbum:
             return by_isrc, ordered
         for spotify_track in self.__spotify_album_obj.tracks:
             ordered.append(spotify_track)
-            try:
-                isrc_val = getattr(spotify_track.ids, 'isrc', None)
-                if isrc_val:
-                    by_isrc[isrc_val.upper()] = spotify_track
-            except Exception:
-                continue
+            spotify_ids = getattr(spotify_track, 'ids', None)
+            isrc_val = getattr(spotify_ids, 'isrc', None) if spotify_ids else None
+            if isrc_val:
+                by_isrc[isrc_val.upper()] = spotify_track
         return by_isrc, ordered
 
     @staticmethod
@@ -1517,7 +1520,11 @@ class DwEpisode:
             Path(self.__output_dir).mkdir(parents=True, exist_ok=True)
             output_path = os.path.join(self.__output_dir, f"{safe_filename}.mp3")
             
-            response = requests.get(direct_url, stream=True)
+            response = requests.get(
+                direct_url,
+                stream=True,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
             response.raise_for_status()
 
             # Send initial progress status

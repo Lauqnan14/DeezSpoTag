@@ -187,8 +187,8 @@ def apply_tags_to_track(track: Track, metadata_dict: Dict[str, Any]) -> None:
             import os
             path = getattr(track, 'song_path', None)
             logger.debug(f"Pre-tagging: path={repr(path)}, exists={os.path.exists(path) if path else None}")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Unable to collect pre-tagging diagnostics: %s", exc)
         write_tags(track)
         logger.debug(f"Successfully applied tags to track: {metadata_dict.get('music', 'Unknown')}")
     except Exception as e:

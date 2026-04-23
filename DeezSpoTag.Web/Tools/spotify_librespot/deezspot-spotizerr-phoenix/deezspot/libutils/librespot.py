@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import datetime
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
@@ -16,6 +17,7 @@ from librespot.proto import Metadata_pb2 as Metadata
 from librespot.proto import Playlist4External_pb2 as P4
 
 SPOTIFY_TRACK_URI_PREFIX = "spotify:track:"
+logger = logging.getLogger("deezspot.librespot")
 
 
 class LibrespotClient:
@@ -48,8 +50,8 @@ class LibrespotClient:
         if hasattr(self, "_session") and self._session is not None:
             try:
                 self._session.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Error while closing librespot session: %s", exc)
 
     def get_album(self, album: str | AlbumId, include_tracks: bool = False) -> Dict[str, Any]:
         album_id = self._ensure_album_id(album)
@@ -165,8 +167,8 @@ class LibrespotClient:
             cc2 = getattr(self._session, "country_code", None)
             if isinstance(cc2, str) and len(cc2) == 2:
                 return cc2
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Unable to resolve session country code: %s", exc)
         return ""
 
     # ---------- Private: ID coercion ----------
@@ -290,7 +292,7 @@ class LibrespotClient:
             if image_id:
                 return f"https://i.scdn.co/image/{util.bytes_to_hex(image_id)}"
         except Exception:
-            pass
+            logger.debug("Failed to derive playlist picture URL", exc_info=True)
         return None
 
     @staticmethod
@@ -391,8 +393,8 @@ class LibrespotClient:
                 aid = ArtistId.from_hex(hex_id)
                 uri = aid.to_spotify_uri()
                 base62 = uri.split(":")[-1]
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to convert artist gid '%s' to Spotify URI: %s", hex_id, exc)
         return {
             "external_urls": {"spotify": f"https://open.spotify.com/artist/{base62}" if base62 else ""},
             "id": base62,
@@ -421,14 +423,15 @@ class LibrespotClient:
                 track_gid = getattr(track, "gid", b"")
                 if not track_gid:
                     continue
+                base62 = ""
                 try:
                     track_id = TrackId.from_hex(util.bytes_to_hex(track_gid))
                     track_uri = track_id.to_spotify_uri()
                     base62 = track_uri.split(":")[-1]
-                    if base62:
-                        track_ids.append(base62)
-                except Exception:
-                    continue
+                except Exception as exc:
+                    logger.debug("Failed to convert album track gid to base62 id: %s", exc)
+                if base62:
+                    track_ids.append(base62)
         return track_ids
 
     @staticmethod

@@ -14,7 +14,7 @@ import io
 import json
 import logging
 import os
-import random
+import secrets
 import socket
 import threading
 import time
@@ -66,12 +66,16 @@ class ZeroconfServer(Closeable):
     __session: Session | None = None
     __session_listeners: typing.List[SessionListener] = []
     __zeroconf: zeroconf.Zeroconf
+    __any_interface_ip = ""
+    __any_interface_label = "all-interfaces"
 
     def __init__(self, inner: Inner, listen_port):
         self.__inner = inner
         self.__keys = DiffieHellman()
         if listen_port == -1:
-            listen_port = random.randint(self.__min_port + 1, self.__max_port)
+            listen_port = self.__min_port + 1 + secrets.randbelow(
+                self.__max_port - self.__min_port
+            )
         self.__runner = ZeroconfServer.HttpRunner(self, listen_port)
         threading.Thread(target=self.__runner.run,
                          name="zeroconf-http-server",
@@ -90,7 +94,7 @@ class ZeroconfServer(Closeable):
             )
 
         service_addresses = None
-        if advertised_ip_str != "0.0.0.0":
+        if advertised_ip_str:
             try:
                 service_addresses = [socket.inet_aton(advertised_ip_str)]
             except socket.error: # Catches errors like invalid IP string format
@@ -108,7 +112,7 @@ class ZeroconfServer(Closeable):
                 "STACK": "SP",
             },
             server=f"{server_hostname}.local.", # server FQDN
-            addresses=service_addresses # Pass resolved IP, or None if 0.0.0.0 or conversion failed
+            addresses=service_addresses # Pass resolved IP, or None if all-interfaces address or conversion failed
         )
         
         self.__zeroconf.register_service(self.__service_info)
@@ -141,7 +145,7 @@ class ZeroconfServer(Closeable):
     def _get_local_ip(self) -> str:
         """Tries to determine a non-loopback local IP address for network advertisement."""
         s = None
-        ip_address = "0.0.0.0" # Default to all interfaces if specific IP cannot be found
+        ip_address = self.__any_interface_ip # Default to all interfaces if specific IP cannot be found
         try:
             # Attempt to connect to an external address to find the appropriate local IP
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -158,17 +162,17 @@ class ZeroconfServer(Closeable):
                 self.logger.info(f"IP from socket.gethostname('{hostname}'): {ip_address}")
             except socket.gaierror:
                 self.logger.error(
-                    f"socket.gaierror resolving hostname '{socket.gethostname()}'. Falling back to 0.0.0.0."
+                    f"socket.gaierror resolving hostname '{socket.gethostname()}'. Falling back to {self.__any_interface_label}."
                 )
-                ip_address = "0.0.0.0"
+                ip_address = self.__any_interface_ip
         finally:
             if s:
                 s.close()
 
-        # If the IP is loopback (127.x.x.x) or still 0.0.0.0, try to find a better one from all interfaces
-        if ip_address.startswith("127.") or ip_address == "0.0.0.0":
+        # If the IP is loopback (127.x.x.x) or still the all-interfaces default, try to find a better one.
+        if ip_address.startswith("127.") or not ip_address:
             self.logger.warning(
-                f"Current IP ('{ip_address}') is loopback or 0.0.0.0. Attempting to find a non-loopback IP from host interfaces."
+                f"Current IP ('{ip_address or self.__any_interface_label}') is loopback or all-interfaces default. Attempting to find a non-loopback IP from host interfaces."
             )
             try:
                 current_hostname = socket.gethostname()
@@ -183,13 +187,13 @@ class ZeroconfServer(Closeable):
                     self.logger.warning(
                         f"No non-loopback IPs found for hostname '{current_hostname}'. Retaining '{ip_address}'."
                     )
-                    # If ip_address was 0.0.0.0, it remains so. If it was 127.0.0.1, it remains so.
+                    # If ip_address was all-interfaces, it remains so. If it was 127.0.0.1, it remains so.
             except socket.gaierror:
                 self.logger.error(
                     f"socket.gaierror during fallback IP search for hostname '{socket.gethostname()}'. Retaining '{ip_address}'."
                 )
         
-        if ip_address == "0.0.0.0":
+        if not ip_address:
             self.logger.warning("Failed to determine a specific non-loopback IP. Zeroconf will attempt to use all available interfaces.")
         elif ip_address.startswith("127."):
              self.logger.warning(f"Final IP for advertisement is loopback ('{ip_address}'). Service discovery may not work correctly on the network.")

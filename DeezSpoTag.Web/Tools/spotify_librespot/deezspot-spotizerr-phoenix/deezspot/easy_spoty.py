@@ -406,8 +406,8 @@ class Spo:
                 show_id = cls.__base62_from_gid(sgid, 'show') if sgid else None
                 show_name = getattr(show_proto, 'name', '') if show_proto else ''
                 publisher = getattr(show_proto, 'publisher', '') if show_proto else ''
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Could not parse Spotify show metadata: %s", exc)
             images: List[Dict[str, Any]] = []
             try:
                 # cover_image is an ImageGroup

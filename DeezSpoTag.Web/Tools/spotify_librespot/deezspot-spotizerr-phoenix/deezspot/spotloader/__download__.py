@@ -14,10 +14,8 @@ from librespot.audio.decoders import AudioQuality, VorbisOnlyAudioQuality
 from deezspot.libutils.audio_converter import convert_audio, AUDIO_FORMATS, get_output_path
 from os import (
     remove,
-    system,
     replace as os_replace,
 )
-import subprocess
 import shutil
 from deezspot.models.download import (
     Track,
@@ -86,6 +84,16 @@ def _track_object_to_dict(track_obj: TrackObject) -> dict:
 def _album_object_to_dict(album_obj: AlbumObject) -> dict:
     """Converts an AlbumObject into a dictionary for legacy functions."""
     return album_object_to_dict(album_obj, source_type='spotify')
+
+
+def _run_process(argv: list[str]) -> int:
+    pid = os.posix_spawn(argv[0], argv, os.environ.copy())
+    _, status = os.waitpid(pid, 0)
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return 128 + os.WTERMSIG(status)
+    return 1
 
 class DownloadJob:
     session = None
@@ -220,29 +228,24 @@ class EasyDw:
     @staticmethod
     def _run_ffmpeg_remux(temp_filename: str, output_path: str) -> None:
         ffmpeg_path = shutil.which("ffmpeg") or "/usr/local/bin/ffmpeg"
+        command = [
+            ffmpeg_path,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            temp_filename,
+            "-c:a",
+            "copy",
+            output_path,
+        ]
         try:
-            result = subprocess.run(
-                [
-                    ffmpeg_path,
-                    "-y",
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-i",
-                    temp_filename,
-                    "-c:a",
-                    "copy",
-                    output_path,
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-            )
+            return_code = _run_process(command)
         except FileNotFoundError as fnf:
             raise RuntimeError(f"ffmpeg not found: attempted '{ffmpeg_path}'. Ensure it is present in PATH.") from fnf
-        if result.returncode != 0 or not os.path.exists(output_path):
-            raise RuntimeError(f"ffmpeg remux failed (rc={result.returncode}). stderr: {result.stderr.strip()}")
+        if return_code != 0 or not os.path.exists(output_path):
+            raise RuntimeError(f"ffmpeg remux failed (rc={return_code}).")
 
     def _update_media_path_after_conversion(self, converted_path: str) -> None:
         self.__song_path = converted_path
@@ -450,8 +453,8 @@ class EasyDw:
             return
         try:
             stream_obj.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to close stream cleanly: %s", exc)
 
     @staticmethod
     def _safe_remove_file(path: str) -> None:
@@ -459,8 +462,8 @@ class EasyDw:
             return
         try:
             os.remove(path)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to remove temporary file %s: %s", path, exc)
 
     def _ensure_session_ready(self) -> None:
         if Download_JOB.session is None:
@@ -948,9 +951,9 @@ def download_cli(preferences: Preferences) -> None:
         return
     argv[0] = prog
     try:
-        result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if result.returncode != 0:
-            logger.error(f"deez-dw.py exited with {result.returncode}: {result.stderr.strip()}")
+        return_code = _run_process(argv)
+        if return_code != 0:
+            logger.error(f"deez-dw.py exited with {return_code}.")
     except Exception as e:
         logger.error(f"Failed to execute deez-dw.py: {e}")
 
