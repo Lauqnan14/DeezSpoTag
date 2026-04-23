@@ -937,7 +937,63 @@ function getLibraryPlaybackFacade() {
     return facade;
 }
 
-const spotifyUrlHelpers = globalThis.SpotifyUrlHelpers;
+function getSpotifyUrlHelpers() {
+    const helpers = globalThis.SpotifyUrlHelpers;
+    if (helpers && typeof helpers.buildSpotifyWebUrl === 'function' && typeof helpers.parseSpotifyUrl === 'function') {
+        return helpers;
+    }
+
+    return {
+        buildSpotifyWebUrl(uri) {
+            if (!uri) {
+                return '';
+            }
+            const value = String(uri).trim();
+            if (!value) {
+                return '';
+            }
+            if (value.startsWith('http://') || value.startsWith('https://')) {
+                return value;
+            }
+            if (value.startsWith('spotify:')) {
+                const parts = value.split(':');
+                if (parts.length >= 3 && parts[1] && parts[2]) {
+                    return `https://open.spotify.com/${parts[1]}/${parts[2]}`;
+                }
+            }
+            return '';
+        },
+        parseSpotifyUrl(url) {
+            if (!url) {
+                return null;
+            }
+            const trimmed = String(url).trim();
+            if (trimmed.startsWith('spotify:')) {
+                const parts = trimmed.split(':');
+                if (parts.length >= 3 && parts[1] && parts[2]) {
+                    return { type: parts[1].toLowerCase(), id: parts[2] };
+                }
+            }
+            const directMatch = /open\.spotify\.com\/(?:intl-[a-z]+\/)?(album|playlist|track|show|episode|artist|station)\/([a-z0-9]+)/i.exec(trimmed);
+            if (directMatch) {
+                return { type: directMatch[1].toLowerCase(), id: directMatch[2] };
+            }
+            try {
+                const parsed = new URL(trimmed);
+                const segments = parsed.pathname.split('/').filter(Boolean);
+                const kindIndex = segments.findIndex((segment) => /^(album|playlist|track|show|episode|artist|station)$/i.test(segment));
+                if (kindIndex >= 0 && segments[kindIndex + 1]) {
+                    return { type: segments[kindIndex].toLowerCase(), id: segments[kindIndex + 1] };
+                }
+            } catch {
+                return null;
+            }
+            return null;
+        }
+    };
+}
+
+const spotifyUrlHelpers = getSpotifyUrlHelpers();
 
 function normalizeSpotifyTrackSourceUrl(url, fallbackTrackId = '') {
     const initial = spotifyUrlHelpers.buildSpotifyWebUrl(url);
@@ -2640,7 +2696,7 @@ function getLibrarySpotifyBrowserCacheState(artistId, forceRefresh, forceRematch
 }
 
 function handleUnavailableSpotifyArtistResponse(hasBrowserCached, cacheOnly) {
-    if (hasBrowserCached) {
+    if (hasBrowserCached || libraryState.currentSpotifyArtist || (Array.isArray(libraryState.spotifyAlbums) && libraryState.spotifyAlbums.length > 0)) {
         setSpotifyCacheStatus('Spotify refresh: using cached');
         return;
     }
@@ -2654,7 +2710,7 @@ function handleUnavailableSpotifyArtistResponse(hasBrowserCached, cacheOnly) {
 
 function handleSpotifyArtistRequestFailure(error, hasBrowserCached, cacheOnly) {
     console.warn('Spotify artist fetch failed.', error);
-    if (hasBrowserCached) {
+    if (hasBrowserCached || libraryState.currentSpotifyArtist || (Array.isArray(libraryState.spotifyAlbums) && libraryState.spotifyAlbums.length > 0)) {
         setSpotifyCacheStatus('Spotify refresh: fallback cache');
         return;
     }

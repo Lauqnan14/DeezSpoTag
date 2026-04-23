@@ -37,10 +37,17 @@ public sealed class SpotifyCentralMetadataService
         var cached = await _cacheRepository.TryGetAsync("artist", spotifyId, cancellationToken);
         if (cached != null)
         {
+            var cachedPayload = Deserialize<SpotifyArtistPageResult>(cached.PayloadJson);
+            cachedPayload = await TryHydrateCachedBiographyAsync(
+                spotifyId,
+                artistName,
+                cachedPayload,
+                cached.FetchedUtc,
+                cancellationToken);
             if (allowCache)
             {
                 AddActivity("info", $"[spotify-central] cache hit (manual refresh required): {artistName}.");
-                return Deserialize<SpotifyArtistPageResult>(cached.PayloadJson);
+                return cachedPayload;
             }
 
             AddActivity("info", $"[spotify-central] cache bypassed due force refresh: {artistName}.");
@@ -114,6 +121,67 @@ public sealed class SpotifyCentralMetadataService
         await _cacheRepository.UpsertAsync("artist", spotifyId, payloadJson, DateTimeOffset.UtcNow, cancellationToken);
         AddActivity("info", $"[spotify-central] data stored: {artistName} (id={spotifyId}).");
         return result;
+    }
+
+    private async Task<SpotifyArtistPageResult?> TryHydrateCachedBiographyAsync(
+        string spotifyId,
+        string artistName,
+        SpotifyArtistPageResult? cachedPayload,
+        DateTimeOffset fetchedUtc,
+        CancellationToken cancellationToken)
+    {
+        if (cachedPayload is null || !IsPlaceholderBiography(cachedPayload.Artist?.Biography))
+        {
+            return cachedPayload;
+        }
+
+        var extras = await _pathfinderMetadataClient.FetchArtistExtrasAsync(spotifyId, cancellationToken);
+        if (extras is null || IsPlaceholderBiography(extras.Biography))
+        {
+            return cachedPayload;
+        }
+
+        var currentArtist = cachedPayload.Artist;
+        if (currentArtist is null)
+        {
+            return cachedPayload;
+        }
+        var hydratedPayload = cachedPayload with
+        {
+            Artist = currentArtist with
+            {
+                Biography = extras.Biography,
+                Verified = currentArtist.Verified ?? extras.Verified,
+                MonthlyListeners = currentArtist.MonthlyListeners ?? extras.MonthlyListeners,
+                Rank = currentArtist.Rank ?? extras.Rank
+            }
+        };
+
+        if (!JsonSerializer.Serialize(hydratedPayload, _jsonOptions).Equals(
+            JsonSerializer.Serialize(cachedPayload, _jsonOptions),
+            StringComparison.Ordinal))
+        {
+            await _cacheRepository.UpsertAsync(
+                "artist",
+                spotifyId,
+                JsonSerializer.Serialize(hydratedPayload, _jsonOptions),
+                fetchedUtc,
+                cancellationToken);
+            AddActivity("info", $"[spotify-central] cache biography rehydrated: {artistName}.");
+        }
+
+        return hydratedPayload;
+    }
+
+    private static bool IsPlaceholderBiography(string? biography)
+    {
+        var normalized = (biography ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return true;
+        }
+
+        return normalized.Equals("N/A", StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task<SpotifyAlbumDetails?> GetAlbumDetailsAsync(
