@@ -1843,15 +1843,19 @@ public class AutoTagService
             configPath,
             includesEnhancementStage,
             CancellationToken.None);
-        await TriggerLibraryScanAfterEnhancementAsync(job, includesEnhancementStage, CancellationToken.None);
         var plexTriggeredByEnhancement = await TriggerPlexMetadataRefreshAfterEnhancementAsync(
             job,
             includesEnhancementStage,
             CancellationToken.None);
+        var plexRefreshRequestedAfterMove = false;
         if (autoMove.Completed && !plexTriggeredByEnhancement)
         {
-            await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
+            plexRefreshRequestedAfterMove = await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
         }
+        await TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync(
+            job,
+            autoMove.Completed && (plexTriggeredByEnhancement || plexRefreshRequestedAfterMove),
+            CancellationToken.None);
     }
 
     private async Task HandleRunJobFailureAsync(
@@ -1876,7 +1880,11 @@ public class AutoTagService
         await OrganizeJobAsync(job, path, configPath);
         if (autoMove.Completed)
         {
-            await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
+            var plexRefreshRequestedAfterMove = await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
+            await TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync(
+                job,
+                plexRefreshRequestedAfterMove,
+                CancellationToken.None);
         }
 
         NotifyCompleted(job);
@@ -1972,34 +1980,31 @@ public class AutoTagService
         await RunConfiguredQualityChecksAsync(job, rootPath, enhancementRoot, enhancementLyricsSettings, enabledFolders, cancellationToken);
     }
 
-    private async Task TriggerLibraryScanAfterEnhancementAsync(
+    private async Task TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync(
         AutoTagJob job,
-        bool includesEnhancementStage,
+        bool plexRefreshRequested,
         CancellationToken cancellationToken)
     {
-        if (!includesEnhancementStage
-            || !ShouldRunEnhancementForIntent(job.RunIntent)
-            || !string.Equals(job.Status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase)
-            || !IsEnhancementWorkflowTrigger(job.Trigger))
+        if (!plexRefreshRequested)
         {
             return;
         }
 
         if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
         {
-            AppendLog(job, "enhancement workflow: library scan skipped (downloads active).");
+            AppendLog(job, "post auto-move library scan skipped (downloads active).");
             _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
-                "Enhancement library scan skipped because downloads became active."));
+                "Post auto-move library scan skipped because downloads became active."));
             return;
         }
 
         _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            "Enhancement library scan enqueued after enhancement run."));
-        AppendLog(job, "enhancement workflow: library scan enqueued.");
+            "Post auto-move library scan enqueued after Plex metadata refresh request."));
+        AppendLog(job, "post auto-move library scan enqueued (Spotify artist metadata fetch enabled).");
 
         _ = _libraryScanRunner.EnqueueAsync(
             refreshImages: false,
@@ -3652,15 +3657,15 @@ public class AutoTagService
         SaveJob(job);
     }
 
-    private async Task TriggerPlexScanAfterMoveAsync(AutoTagJob job, CancellationToken cancellationToken)
+    private async Task<bool> TriggerPlexScanAfterMoveAsync(AutoTagJob job, CancellationToken cancellationToken)
     {
         var plex = await LoadConfiguredPlexForScanAsync(job);
         if (plex == null)
         {
-            return;
+            return false;
         }
 
-        await TriggerPlexScanAsync(job, plex, "after auto-move", cancellationToken);
+        return await TriggerPlexScanAsync(job, plex, "after auto-move", cancellationToken);
     }
 
     private async Task<bool> TriggerPlexMetadataRefreshAfterEnhancementAsync(
@@ -3681,8 +3686,7 @@ public class AutoTagService
             return false;
         }
 
-        await TriggerPlexScanAsync(job, plex, "after enhancement run", cancellationToken);
-        return true;
+        return await TriggerPlexScanAsync(job, plex, "after enhancement run", cancellationToken);
     }
 
     private async Task<PlexAuth?> LoadConfiguredPlexForScanAsync(AutoTagJob job)
@@ -3705,7 +3709,7 @@ public class AutoTagService
         }
     }
 
-    private async Task TriggerPlexScanAsync(
+    private async Task<bool> TriggerPlexScanAsync(
         AutoTagJob job,
         PlexAuth plex,
         string reason,
@@ -3717,7 +3721,7 @@ public class AutoTagService
             var plexToken = plex.Token;
             if (string.IsNullOrWhiteSpace(plexUrl) || string.IsNullOrWhiteSpace(plexToken))
             {
-                return;
+                return false;
             }
 
             AppendLog(job, $"plex scan starting {reason}");
@@ -3730,7 +3734,7 @@ public class AutoTagService
             if (musicSections.Count == 0)
             {
                 AppendLog(job, "plex scan skipped: no music libraries found");
-                return;
+                return false;
             }
 
             var refreshed = 0;
@@ -3743,11 +3747,13 @@ public class AutoTagService
             }
 
             AppendLog(job, $"plex scan requested: {musicSections.Count} libraries (refreshed={refreshed})");
+            return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "AutoTag job {JobId}: Plex scan {Reason} failed.", job.Id, reason);
             AppendLog(job, $"plex scan failed: {ex.Message}");
+            return false;
         }
     }
 
@@ -6324,7 +6330,11 @@ public class AutoTagService
 
             if (summary.MovedCount > 0 && string.IsNullOrWhiteSpace(summary.Error))
             {
-                await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
+                var plexRefreshRequestedAfterMove = await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
+                await TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync(
+                    job,
+                    plexRefreshRequestedAfterMove,
+                    CancellationToken.None);
             }
         }
         catch (OperationCanceledException)
