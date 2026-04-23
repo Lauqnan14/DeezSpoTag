@@ -302,4 +302,23 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         var result = InvokeStatic<bool>("IsAnimatedArtworkFile", fileName);
         Assert.Equal(expected, result);
     }
+
+    [Theory]
+    [InlineData("shazam", 5, true)]
+    [InlineData("ShAzAm", 2, true)]
+    [InlineData("spotify", 1, true)]
+    [InlineData("spotify", 3, false)]
+    [InlineData("deezer", 2, false)]
+    public void ShouldShortCircuitOnShazamIdentifyFailure_OnlyForShazamOrSinglePlatform(
+        string platform,
+        int platformCount,
+        bool expected)
+    {
+        var result = InvokeStatic<bool>(
+            "ShouldShortCircuitOnShazamIdentifyFailure",
+            platform,
+            platformCount);
+
+        Assert.Equal(expected, result);
+    }
 }

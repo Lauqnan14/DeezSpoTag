@@ -16,6 +16,8 @@ public sealed class ShazamRecognitionService
     private static readonly TimeSpan RuntimeProbeSuccessCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan RuntimeProbeFailureRetryTtl = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan RuntimeBootstrapCooldown = TimeSpan.FromMinutes(3);
+    private static readonly int[] AudioOnlySignatureRetryWindowsSeconds = [10, 14, 18];
+    private const bool UseSearchAssistedFallbackAfterAudioOnlyMiss = true;
     private const string ToolsDirectory = "Tools";
     private const string ShazamPortDirectory = "shazam_port";
     private static readonly string[] BashExecutableCandidates =
@@ -103,8 +105,69 @@ public sealed class ShazamRecognitionService
 
     public ShazamRecognitionInfo? Recognize(string filePath, CancellationToken cancellationToken = default)
     {
-        var attempt = RecognizeWithDetails(filePath, cancellationToken: cancellationToken);
+        var attempt = RecognizeWithResilience(filePath, cancellationToken);
         return attempt.Matched ? attempt.Recognition : null;
+    }
+
+    private ShazamRecognitionAttempt RecognizeWithResilience(string filePath, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var invalidInputAttempt = BuildInvalidInputAttempt(filePath);
+        if (invalidInputAttempt != null)
+        {
+            return invalidInputAttempt;
+        }
+
+        ShazamRecognitionAttempt? firstRecognizerFailure = null;
+        foreach (var signatureWindowSeconds in AudioOnlySignatureRetryWindowsSeconds)
+        {
+            var attempt = RecognizeWithDetails(
+                filePath,
+                signatureWindowSeconds: signatureWindowSeconds,
+                mode: RecognitionMode.AudioOnly,
+                cancellationToken: cancellationToken);
+            if (attempt.Matched)
+            {
+                return attempt;
+            }
+
+            if (attempt.Outcome == ShazamRecognitionOutcome.RecognizerUnavailable)
+            {
+                return attempt;
+            }
+
+            if (attempt.Outcome == ShazamRecognitionOutcome.RecognizerError
+                && firstRecognizerFailure == null)
+            {
+                firstRecognizerFailure = attempt;
+            }
+        }
+
+        if (UseSearchAssistedFallbackAfterAudioOnlyMiss)
+        {
+            var assistedAttempt = RecognizeWithDetails(
+                filePath,
+                mode: RecognitionMode.SearchAssisted,
+                cancellationToken: cancellationToken);
+            if (assistedAttempt.Matched)
+            {
+                _logger.LogDebug(
+                    "Shazam search-assisted fallback matched after audio-only retries for {Path}.",
+                    filePath);
+                return assistedAttempt;
+            }
+
+            if (assistedAttempt.Outcome != ShazamRecognitionOutcome.NoMatch)
+            {
+                return assistedAttempt;
+            }
+        }
+
+        return firstRecognizerFailure ?? new ShazamRecognitionAttempt
+        {
+            Outcome = ShazamRecognitionOutcome.NoMatch
+        };
     }
 
     public ShazamRecognitionAttempt RecognizeWithDetails(
