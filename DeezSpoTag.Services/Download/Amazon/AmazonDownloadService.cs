@@ -16,6 +16,9 @@ namespace DeezSpoTag.Services.Download.Amazon;
 
 public sealed class AmazonDownloadService : IAmazonDownloadService
 {
+    private const string HttpsScheme = "https";
+    private const string AmazonAfkarHost = "amazon.afkarxyz.fun";
+    private const string AmazonSpotByeHost = "amazon.spotbye.qzz.io";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private const string FlacExtension = ".flac";
     private const string ErrorLogLevel = "error";
@@ -26,6 +29,11 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
     private static readonly string[] FfmpegExecutableNamesUnix = ["ffmpeg"];
     private static readonly string[] FfprobeExecutableNamesWindows = ["ffprobe.exe", "ffprobe"];
     private static readonly string[] FfprobeExecutableNamesUnix = ["ffprobe"];
+    private static readonly string[] StreamProviderHosts =
+    [
+        AmazonAfkarHost,
+        AmazonSpotByeHost
+    ];
     private static readonly string[] LucidaTokenPatterns =
     [
         "token:\"([^\"]+)\"",
@@ -167,18 +175,21 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         var regions = new[] { "us", "eu" };
         Exception? lastError = null;
 
-        try
+        foreach (var providerHost in StreamProviderHosts)
         {
-            var afkarPath = await DownloadFromAfkarAsync(amazonUrl, outputDir, progressCallback, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(afkarPath))
+            try
             {
-                return afkarPath;
+                var providerPath = await DownloadFromStreamProviderAsync(providerHost, amazonUrl, outputDir, progressCallback, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(providerPath))
+                {
+                    return providerPath;
+                }
             }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Amazon afkarxyz download failed; falling back to Lucida/DoubleDouble");
-            lastError = ex;
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Amazon direct stream provider {Provider} failed; trying next provider", providerHost);
+                lastError = ex;
+            }
         }
 
         try
@@ -276,7 +287,8 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         return fileUrl;
     }
 
-    private async Task<string?> DownloadFromAfkarAsync(
+    private async Task<string?> DownloadFromStreamProviderAsync(
+        string providerHost,
         string amazonUrl,
         string outputDir,
         Func<double, double, Task>? progressCallback,
@@ -288,25 +300,26 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
             return null;
         }
 
-        var apiUrl = $"https://amazon.afkarxyz.fun/api/track/{asin}";
+        var normalizedBaseUrl = BuildHttpsBaseUrl(providerHost);
+        var apiUrl = $"{normalizedBaseUrl}/api/track/{asin}";
         using var request = new HttpRequestMessage(HttpMethod.Get, apiUrl);
         request.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36");
         using var response = await _client.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException($"Afkar API failed ({(int)response.StatusCode})");
+            throw new InvalidOperationException($"{normalizedBaseUrl} failed ({(int)response.StatusCode})");
         }
 
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(body))
         {
-            throw new InvalidOperationException("Afkar API returned empty response.");
+            throw new InvalidOperationException($"{normalizedBaseUrl} returned empty response.");
         }
 
         var payload = JsonSerializer.Deserialize<AfkarStreamResponse>(body, SerializerOptions);
         if (string.IsNullOrWhiteSpace(payload?.StreamUrl))
         {
-            throw new InvalidOperationException("Afkar response missing stream URL.");
+            throw new InvalidOperationException($"{normalizedBaseUrl} response missing stream URL.");
         }
 
         var sourceExtension = InferAudioExtension(payload.StreamUrl, ".m4a");
@@ -320,6 +333,8 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
 
         return await DecryptAmazonMediaAsync(encryptedPath, payload.DecryptionKey, outputDir, cancellationToken);
     }
+
+    private static string BuildHttpsBaseUrl(string host) => new UriBuilder(HttpsScheme, host).Uri.ToString().TrimEnd('/');
 
     private static async Task<string> DecryptAmazonMediaAsync(
         string encryptedPath,

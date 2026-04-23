@@ -28,10 +28,14 @@ public sealed class TidalDownloadService
 
     private readonly ILogger<TidalDownloadService> _logger;
     private readonly HttpClient _client;
+    private readonly TidalApiProviderSource _providerSource;
 
-    public TidalDownloadService(ILogger<TidalDownloadService> logger)
+    public TidalDownloadService(
+        ILogger<TidalDownloadService> logger,
+        TidalApiProviderSource providerSource)
     {
         _logger = logger;
+        _providerSource = providerSource;
         _client = new HttpClient
         {
             Timeout = TimeSpan.FromSeconds(15)
@@ -355,34 +359,6 @@ public sealed class TidalDownloadService
             throw new InvalidOperationException("Tidal track not found");
         }
         return track;
-    }
-
-    private async Task<IReadOnlyList<string>> GetDownloadUrlCandidatesAsync(long trackId, string quality, CancellationToken cancellationToken)
-    {
-        var apis = GetAvailableApis();
-        if (apis.Count == 0)
-        {
-            throw new InvalidOperationException("Tidal API pool is empty");
-        }
-
-        var manifestResults = await Task.WhenAll(
-            apis.Select(async api => new
-            {
-                Api = api,
-                Manifest = await FetchManifestFromApiAsync(api, trackId, quality, cancellationToken)
-            }));
-        var manifests = manifestResults
-            .Select(result => result.Manifest?.Trim())
-            .Where(static manifest => !string.IsNullOrWhiteSpace(manifest))
-            .Distinct(StringComparer.Ordinal)
-            .Cast<string>()
-            .ToList();
-        if (manifests.Count == 0)
-        {
-            throw new InvalidOperationException("Tidal download URL not available");
-        }
-
-        return manifests;
     }
 
     private async Task<string?> FetchManifestFromApiAsync(
@@ -1042,24 +1018,53 @@ public sealed class TidalDownloadService
         }
     }
 
-    private static List<string> GetAvailableApis()
+    private async Task<IReadOnlyList<string>> GetDownloadUrlCandidatesAsync(long trackId, string quality, CancellationToken cancellationToken)
     {
-        var encoded = new[]
-        {
-            "dm9nZWwucXFkbC5zaXRl",
-            "bWF1cy5xcWRsLnNpdGU=",
-            "aHVuZC5xcWRsLnNpdGU=",
-            "a2F0emUucXFkbC5zaXRl",
-            "d29sZi5xcWRsLnNpdGU=",
-            "dGlkYWwua2lub3BsdXMub25saW5l",
-            "dGlkYWwtYXBpLmJpbmltdW0ub3Jn",
-            "dHJpdG9uLnNxdWlkLnd0Zg=="
-        };
+        return await GetDownloadUrlCandidatesAsync(trackId, quality, allowRefresh: true, cancellationToken);
+    }
 
-        return encoded
-            .Select(value => Encoding.UTF8.GetString(Convert.FromBase64String(value)))
-            .Select(decoded => $"https://{decoded}")
+    private async Task<IReadOnlyList<string>> GetDownloadUrlCandidatesAsync(
+        long trackId,
+        string quality,
+        bool allowRefresh,
+        CancellationToken cancellationToken)
+    {
+        var apis = await _providerSource.GetRotatedProvidersAsync(cancellationToken);
+        if (apis.Count == 0)
+        {
+            throw new InvalidOperationException("Tidal API pool is empty");
+        }
+
+        var manifestResults = await Task.WhenAll(
+            apis.Select(async api => new
+            {
+                Api = api,
+                Manifest = await FetchManifestFromApiAsync(api, trackId, quality, cancellationToken)
+            }));
+        var manifests = manifestResults
+            .Select(result => result.Manifest?.Trim())
+            .Where(static manifest => !string.IsNullOrWhiteSpace(manifest))
+            .Distinct(StringComparer.Ordinal)
+            .Cast<string>()
             .ToList();
+        if (manifests.Count > 0)
+        {
+            var successfulProvider = manifestResults.FirstOrDefault(result => !string.IsNullOrWhiteSpace(result.Manifest))?.Api;
+            if (!string.IsNullOrWhiteSpace(successfulProvider))
+            {
+                await _providerSource.RememberSuccessAsync(successfulProvider, cancellationToken);
+            }
+
+            return manifests;
+        }
+
+        if (allowRefresh)
+        {
+            await _providerSource.RefreshAsync(force: true, cancellationToken);
+            return await GetDownloadUrlCandidatesAsync(trackId, quality, allowRefresh: false, cancellationToken);
+        }
+
+        throw new InvalidOperationException("Tidal download URL not available");
     }
 
     private sealed class TidalTokenResponse

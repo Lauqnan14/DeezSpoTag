@@ -33,23 +33,28 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
     private DateTimeOffset _lastAuthUnavailableLogUtc = DateTimeOffset.MinValue;
     private string QueuePath => Path.Join(AppDataPaths.GetDataRoot(_environment), "spotify-artist-queue.json");
 
+    public sealed class Dependencies
+    {
+        public required LibraryRepository Repository { get; init; }
+        public required ArtistPageCacheRepository CacheRepository { get; init; }
+        public required SpotifyArtistService SpotifyArtistService { get; init; }
+        public required SpotifyPathfinderMetadataClient PathfinderMetadataClient { get; init; }
+        public required DeezSpoTagSettingsService SettingsService { get; init; }
+        public required LibraryConfigStore ConfigStore { get; init; }
+        public required IWebHostEnvironment Environment { get; init; }
+    }
+
     public LibrarySpotifyArtistQueueService(
-        LibraryRepository repository,
-        ArtistPageCacheRepository cacheRepository,
-        SpotifyArtistService spotifyArtistService,
-        SpotifyPathfinderMetadataClient pathfinderMetadataClient,
-        DeezSpoTagSettingsService settingsService,
-        LibraryConfigStore configStore,
-        IWebHostEnvironment environment,
+        Dependencies dependencies,
         ILogger<LibrarySpotifyArtistQueueService> logger)
     {
-        _repository = repository;
-        _cacheRepository = cacheRepository;
-        _spotifyArtistService = spotifyArtistService;
-        _pathfinderMetadataClient = pathfinderMetadataClient;
-        _settingsService = settingsService;
-        _configStore = configStore;
-        _environment = environment;
+        _repository = dependencies.Repository;
+        _cacheRepository = dependencies.CacheRepository;
+        _spotifyArtistService = dependencies.SpotifyArtistService;
+        _pathfinderMetadataClient = dependencies.PathfinderMetadataClient;
+        _settingsService = dependencies.SettingsService;
+        _configStore = dependencies.ConfigStore;
+        _environment = dependencies.Environment;
         _logger = logger;
     }
 

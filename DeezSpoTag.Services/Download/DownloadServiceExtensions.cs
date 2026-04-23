@@ -77,6 +77,7 @@ public static class DownloadServiceExtensions
         services.AddSingleton<SongLinkResolver>();
         services.AddSingleton<EngineFallbackCoordinator>();
         services.AddSingleton<DeezerIsrcResolver>();
+        services.AddSingleton<Download.Tidal.TidalApiProviderSource>();
 
         services.AddOptions<QobuzApiConfig>();
         services.AddHttpClient<IQobuzApiClient, QobuzApiClient>();
@@ -112,6 +113,12 @@ public static class DownloadServiceExtensions
         services.AddHttpClient("SongLink", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(30);
+        });
+
+        services.AddHttpClient("TidalProviderList", client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(15);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(DesktopChromeUserAgent);
         });
 
         services.AddHttpClient("SpotifyPublic", client =>

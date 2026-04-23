@@ -21,6 +21,7 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class SpotifyPathfinderMetadataClient
 {
+    private const string SpotifyDirectoryName = "spotify";
     private sealed record SpotifyAlbumReference(string? Name, string? ReleaseDate, string? ReleaseType, string? AlbumGroup, int? TotalTracks);
 
     private readonly record struct SpotiFlacCoverUrls(string? Small, string? Medium, string? Large);
@@ -576,7 +577,7 @@ public sealed class SpotifyPathfinderMetadataClient
                 }
             }
             string root = AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
-            string fallback = Path.Join(root, "spotify", "blobs", "credentials.json");
+            string fallback = Path.Join(root, SpotifyDirectoryName, "blobs", "credentials.json");
             return _blobService.BlobExists(fallback) && await _blobService.IsLibrespotBlobAsync(fallback)
                 ? fallback
                 : null;
@@ -1509,71 +1510,31 @@ public sealed class SpotifyPathfinderMetadataClient
             }
 
             string root = AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
-            string usersRoot = Path.Join(root, "spotify", "users");
+            string usersRoot = Path.Join(root, SpotifyDirectoryName, "users");
             if (!Directory.Exists(usersRoot))
             {
-                _backgroundUserBlobCachedPath = null;
-                _backgroundUserBlobCheckedAt = now;
-                return null;
+                return CacheBackgroundUserBlobPath(now, null);
             }
 
-            List<string> userIds = Directory.EnumerateDirectories(usersRoot)
-                .Select(Path.GetFileName)
-                .Where(id => !string.IsNullOrWhiteSpace(id))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList()!;
-
+            List<string> userIds = EnumerateSpotifyUserIds(usersRoot);
             if (userIds.Count == 0)
             {
-                _backgroundUserBlobCachedPath = null;
-                _backgroundUserBlobCheckedAt = now;
-                return null;
+                return CacheBackgroundUserBlobPath(now, null);
             }
 
-            var resolved = new List<string>();
-            foreach (var id in userIds)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                SpotifyUserAuthState userState = await _userAuthStore.LoadAsync(id);
-                List<string?> candidates = new List<string?>();
-                candidates.Add(SpotifyUserAuthStore.ResolveActiveWebPlayerBlobPath(userState));
-                candidates.Add(SpotifyUserAuthStore.ResolveActiveBlobPath(userState));
-                candidates.AddRange(userState.Accounts
-                    .OrderByDescending(account =>
-                    {
-                        DateTimeOffset updated = account.UpdatedAt == default(DateTimeOffset) ? account.CreatedAt : account.UpdatedAt;
-                        return updated == default(DateTimeOffset) ? DateTimeOffset.MinValue : updated;
-                    })
-                    .SelectMany(account => new[] { account.WebPlayerBlobPath, account.BlobPath }));
-
-                string? resolvedPath = await TryResolveFirstValidWebPlayerBlobPathAsync(candidates, cancellationToken);
-                if (!string.IsNullOrWhiteSpace(resolvedPath))
-                {
-                    resolved.Add(resolvedPath);
-                }
-            }
-
-            string? selected = null;
-            if (resolved.Count == 1)
-            {
-                selected = resolved[0];
-            }
-            else if (resolved.Count > 1)
+            List<string> resolved = await ResolveBackgroundUserBlobCandidatesAsync(userIds, cancellationToken);
+            if (resolved.Count > 1)
             {
                 _logger.LogDebug(
                     "Spotify Pathfinder background auth unresolved: found multiple user web-player blobs without request user context.");
             }
 
-            _backgroundUserBlobCachedPath = selected;
-            _backgroundUserBlobCheckedAt = now;
-            return selected;
+            return CacheBackgroundUserBlobPath(now, resolved.Count == 1 ? resolved[0] : null);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Failed to resolve Spotify background user web-player blob path.");
-            _backgroundUserBlobCachedPath = null;
-            _backgroundUserBlobCheckedAt = DateTimeOffset.UtcNow;
-            return null;
+            return CacheBackgroundUserBlobPath(DateTimeOffset.UtcNow, null);
         }
         finally
         {
@@ -1586,16 +1547,7 @@ public sealed class SpotifyPathfinderMetadataClient
         try
         {
             SpotifyUserAuthState userState = await _userAuthStore.LoadAsync(userId);
-            List<string?> candidates = new List<string?>();
-            candidates.Add(SpotifyUserAuthStore.ResolveActiveWebPlayerBlobPath(userState));
-            candidates.Add(SpotifyUserAuthStore.ResolveActiveBlobPath(userState));
-            candidates.AddRange(userState.Accounts
-                .OrderByDescending(account =>
-                {
-                    DateTimeOffset updated = account.UpdatedAt == default(DateTimeOffset) ? account.CreatedAt : account.UpdatedAt;
-                    return updated == default(DateTimeOffset) ? DateTimeOffset.MinValue : updated;
-                })
-                .SelectMany(account => new[] { account.WebPlayerBlobPath, account.BlobPath }));
+            List<string?> candidates = BuildWebPlayerBlobCandidates(userState);
 
             string? resolvedPath = await TryResolveFirstValidWebPlayerBlobPathAsync(candidates, cancellationToken);
             if (!string.IsNullOrWhiteSpace(resolvedPath))
@@ -1610,6 +1562,59 @@ public sealed class SpotifyPathfinderMetadataClient
             _logger.LogDebug(ex, "Failed to resolve Spotify user blob path for Pathfinder.");
             return null;
         }
+    }
+
+    private string? CacheBackgroundUserBlobPath(DateTimeOffset checkedAt, string? path)
+    {
+        _backgroundUserBlobCachedPath = path;
+        _backgroundUserBlobCheckedAt = checkedAt;
+        return path;
+    }
+
+    private static List<string> EnumerateSpotifyUserIds(string usersRoot) => Directory.EnumerateDirectories(usersRoot)
+        .Select(Path.GetFileName)
+        .Where(id => !string.IsNullOrWhiteSpace(id))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList()!;
+
+    private async Task<List<string>> ResolveBackgroundUserBlobCandidatesAsync(
+        IEnumerable<string> userIds,
+        CancellationToken cancellationToken)
+    {
+        var resolved = new List<string>();
+        foreach (var id in userIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            SpotifyUserAuthState userState = await _userAuthStore.LoadAsync(id);
+            string? resolvedPath = await TryResolveFirstValidWebPlayerBlobPathAsync(
+                BuildWebPlayerBlobCandidates(userState),
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(resolvedPath))
+            {
+                resolved.Add(resolvedPath);
+            }
+        }
+
+        return resolved;
+    }
+
+    private static List<string?> BuildWebPlayerBlobCandidates(SpotifyUserAuthState userState)
+    {
+        List<string?> candidates = new List<string?>
+        {
+            SpotifyUserAuthStore.ResolveActiveWebPlayerBlobPath(userState),
+            SpotifyUserAuthStore.ResolveActiveBlobPath(userState)
+        };
+        candidates.AddRange(userState.Accounts
+            .OrderByDescending(GetAccountUpdatedAtOrMinValue)
+            .SelectMany(account => new[] { account.WebPlayerBlobPath, account.BlobPath }));
+        return candidates;
+    }
+
+    private static DateTimeOffset GetAccountUpdatedAtOrMinValue(SpotifyUserAccount account)
+    {
+        DateTimeOffset updated = account.UpdatedAt == default(DateTimeOffset) ? account.CreatedAt : account.UpdatedAt;
+        return updated == default(DateTimeOffset) ? DateTimeOffset.MinValue : updated;
     }
 
     private async Task<string?> TryResolvePlatformWebPlayerBlobPathAsync(CancellationToken cancellationToken)
