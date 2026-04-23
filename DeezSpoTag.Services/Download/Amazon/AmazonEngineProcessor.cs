@@ -26,7 +26,7 @@ public sealed class AmazonEngineProcessor : QueueEngineProcessorBase
             EngineName,
             CommonDependencies.CreateProcessorDeps(_logger),
             new EngineQueueProcessorHelper.ProcessorCallbacks<AmazonQueueItem>(
-                payload => string.IsNullOrWhiteSpace(payload.AmazonId) ? payload.SpotifyId : payload.AmazonId,
+                ResolveAmazonSourceId,
                 (payload, settings) =>
                 {
                     DownloadEngineSettingsHelper.ApplyQualityBucketToSettings(settings, payload.QualityBucket);
@@ -53,5 +53,78 @@ public sealed class AmazonEngineProcessor : QueueEngineProcessorBase
                 payload => payload.Title,
                 static payload => payload.ToQueuePayload()),
             cancellationToken);
+    }
+
+    private static string ResolveAmazonSourceId(AmazonQueueItem payload)
+    {
+        if (!string.IsNullOrWhiteSpace(payload.AmazonId))
+        {
+            return payload.AmazonId.Trim();
+        }
+
+        var fromSource = TryExtractAmazonTrackId(payload.SourceUrl);
+        if (!string.IsNullOrWhiteSpace(fromSource))
+        {
+            return fromSource;
+        }
+
+        return TryExtractAmazonTrackId(payload.Url) ?? string.Empty;
+    }
+
+    private static string? TryExtractAmazonTrackId(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed))
+        {
+            return null;
+        }
+
+        var query = parsed.Query ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            var trimmed = query.TrimStart('?');
+            var tokens = trimmed.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            foreach (var token in tokens)
+            {
+                var pair = token.Split('=', 2, StringSplitOptions.TrimEntries);
+                if (pair.Length != 2)
+                {
+                    continue;
+                }
+
+                if (!pair[0].Equals("trackAsin", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var value = Uri.UnescapeDataString(pair[1]);
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    return value;
+                }
+            }
+        }
+
+        var segments = parsed.AbsolutePath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            if (!segments[i].Equals("tracks", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var candidate = segments[i + 1];
+            if (!string.IsNullOrWhiteSpace(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 }

@@ -20,7 +20,6 @@ public class SpotifyConfig
     public string? ClientSecret { get; set; }
     public List<SpotifyAccount> Accounts { get; set; } = new();
     public string? WebPlayerSpDc { get; set; }
-    public string? WebPlayerSpKey { get; set; }
     public string? WebPlayerUserAgent { get; set; }
 }
 

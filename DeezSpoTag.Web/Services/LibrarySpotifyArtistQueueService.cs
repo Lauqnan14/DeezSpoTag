@@ -172,8 +172,9 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
 
             if (!await _pathfinderMetadataClient.HasBlobBackedAuthContextAsync(cancellationToken))
             {
+                var hasLibrespotAuth = await _pathfinderMetadataClient.HasLibrespotAuthContextAsync(cancellationToken);
                 RequeueWithoutRetry(item, TimeSpan.FromSeconds(45));
-                MaybeLogAuthUnavailable();
+                MaybeLogAuthUnavailable(hasLibrespotAuth);
                 return;
             }
 
@@ -299,7 +300,7 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
         });
     }
 
-    private void MaybeLogAuthUnavailable()
+    private void MaybeLogAuthUnavailable(bool hasLibrespotAuth)
     {
         var now = DateTimeOffset.UtcNow;
         if (now - _lastAuthUnavailableLogUtc < TimeSpan.FromMinutes(2))
@@ -308,6 +309,20 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
         }
 
         _lastAuthUnavailableLogUtc = now;
+        if (hasLibrespotAuth)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                now,
+                "info",
+                "Spotify artist queue paused: librespot is connected, but web-player cookies are required for artist metadata."));
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Spotify artist queue paused: librespot is connected, but web-player auth context is required for artist metadata.");
+            }
+            return;
+        }
+
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             now,
             "info",

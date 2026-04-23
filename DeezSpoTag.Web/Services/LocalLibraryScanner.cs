@@ -980,7 +980,7 @@ public sealed class LocalLibraryScanner
             var deezerRaw = GetCustomValue(file, "DEEZER_TRACK_ID")
                 ?? GetCustomValue(file, "DEEZERID")
                 ?? GetCustomValue(file, "DEEZER_ID");
-            deezerId = ParseDeezerId(deezerRaw ?? sourceId);
+            deezerId = ParseDeezerId(deezerRaw);
         }
 
         return new SourceInfo(
@@ -1198,7 +1198,7 @@ public sealed class LocalLibraryScanner
             return value;
         }
 
-        return NormalizeSourceId(value);
+        return null;
     }
 
     private static string? NormalizeSourceId(string? value)

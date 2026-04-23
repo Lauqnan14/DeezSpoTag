@@ -1195,7 +1195,7 @@ public class LyricsService
 
         if (!string.IsNullOrWhiteSpace(state.SpDc))
         {
-            return new SpotifyAuthContext(state.SpDc, state.SpKey, defaultUserAgent);
+            return new SpotifyAuthContext(state.SpDc, defaultUserAgent);
         }
 
         foreach (var rawBlobPath in state.BlobPaths)
@@ -1235,12 +1235,11 @@ public class LyricsService
             }
 
             var spDc = TryReadJsonString(spotify, "webPlayerSpDc");
-            var spKey = TryReadJsonString(spotify, "webPlayerSpKey");
             var userAgent = TryReadJsonString(spotify, "webPlayerUserAgent");
             var activeAccount = TryReadJsonString(spotify, "activeAccount");
             var blobPaths = ReadSpotifyBlobPaths(spotify, activeAccount);
 
-            return new SpotifyAuthState(spDc, spKey, userAgent, blobPaths);
+            return new SpotifyAuthState(spDc, userAgent, blobPaths);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1334,7 +1333,7 @@ public class LyricsService
                 return null;
             }
 
-            var (spDc, spKey) = ReadSpotifyCookies(cookies);
+            var spDc = ReadSpotifyCookies(cookies);
 
             if (string.IsNullOrWhiteSpace(spDc))
             {
@@ -1347,7 +1346,7 @@ public class LyricsService
                 userAgent = fallbackUserAgent;
             }
 
-            return new SpotifyAuthContext(spDc, spKey, userAgent!);
+            return new SpotifyAuthContext(spDc, userAgent!);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1358,10 +1357,9 @@ public class LyricsService
         }
     }
 
-    private static (string? SpDc, string? SpKey) ReadSpotifyCookies(JsonElement cookies)
+    private static string? ReadSpotifyCookies(JsonElement cookies)
     {
         string? spDc = null;
-        string? spKey = null;
         foreach (var cookie in cookies.EnumerateArray())
         {
             var name = TryReadJsonString(cookie, "name");
@@ -1374,23 +1372,17 @@ public class LyricsService
             if (name.Equals("sp_dc", StringComparison.OrdinalIgnoreCase))
             {
                 spDc = value;
-                continue;
-            }
-
-            if (name.Equals("sp_key", StringComparison.OrdinalIgnoreCase))
-            {
-                spKey = value;
             }
         }
 
-        return (spDc, spKey);
+        return spDc;
     }
 
     private async Task<string?> ResolveSpotifyWebPlayerAccessTokenAsync(
         SpotifyAuthContext context,
         CancellationToken cancellationToken)
     {
-        var cacheKey = $"{context.SpDc}|{context.SpKey}";
+        var cacheKey = context.SpDc;
         if (string.Equals(cacheKey, _cachedSpotifyAccessTokenKey, StringComparison.Ordinal)
             && DateTimeOffset.UtcNow < _cachedSpotifyAccessTokenExpiry
             && !string.IsNullOrWhiteSpace(_cachedSpotifyAccessToken))
@@ -1441,14 +1433,6 @@ public class LyricsService
             Secure = true,
             HttpOnly = true
         });
-        if (!string.IsNullOrWhiteSpace(context.SpKey))
-        {
-            cookieContainer.Add(new Cookie("sp_key", context.SpKey, "/", ".spotify.com")
-            {
-                Secure = true,
-                HttpOnly = true
-            });
-        }
 
         using var handler = new HttpClientHandler
         {
@@ -1801,8 +1785,8 @@ public class LyricsService
         return lyrics;
     }
 
-    private sealed record SpotifyAuthState(string? SpDc, string? SpKey, string? UserAgent, List<string> BlobPaths);
-    private sealed record SpotifyAuthContext(string SpDc, string? SpKey, string UserAgent);
+    private sealed record SpotifyAuthState(string? SpDc, string? UserAgent, List<string> BlobPaths);
+    private sealed record SpotifyAuthContext(string SpDc, string UserAgent);
     private sealed record SpotifyTokenResponse(string AccessToken, long? ExpiresAtUnixMs, string? Country, bool? IsAnonymous);
 
     /// <summary>

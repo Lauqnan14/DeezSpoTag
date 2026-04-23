@@ -313,7 +313,6 @@ public sealed class SpotifySearchService
             {
                 var userToken = await _blobService.GetWebPlayerAccessTokenFromCookiesAsync(
                     userState.WebPlayerSpDc,
-                    userState.WebPlayerSpKey,
                     userState.WebPlayerUserAgent,
                     cancellationToken);
                 if (string.IsNullOrWhiteSpace(userToken))
@@ -332,7 +331,6 @@ public sealed class SpotifySearchService
                     "webplayer",
                     null,
                     userState.WebPlayerSpDc,
-                    userState.WebPlayerSpKey,
                     userState.WebPlayerUserAgent);
             }
 
@@ -345,7 +343,6 @@ public sealed class SpotifySearchService
 
             var token = await _blobService.GetWebPlayerAccessTokenFromCookiesAsync(
                 spotify.WebPlayerSpDc,
-                spotify.WebPlayerSpKey,
                 spotify.WebPlayerUserAgent,
                 cancellationToken);
             if (string.IsNullOrWhiteSpace(token))
@@ -364,7 +361,6 @@ public sealed class SpotifySearchService
                 "webplayer",
                 null,
                 spotify.WebPlayerSpDc,
-                spotify.WebPlayerSpKey,
                 spotify.WebPlayerUserAgent);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -394,7 +390,7 @@ public sealed class SpotifySearchService
                     webPlayerToken.AccessToken.Length,
                     market);
             }
-            return new SearchContext(webPlayerToken.AccessToken, market, "webplayer", webPlayerBlobPath, null, null, null);
+            return new SearchContext(webPlayerToken.AccessToken, market, "webplayer", webPlayerBlobPath, null, null);
         }
 
         var librespotBlobPath = await TryResolveActiveLibrespotBlobPathAsync(cancellationToken);
@@ -418,7 +414,7 @@ public sealed class SpotifySearchService
                 tokenResult.AccessToken.Length,
                 fallbackMarket);
         }
-        return new SearchContext(tokenResult.AccessToken, fallbackMarket, "librespot", librespotBlobPath, null, null, null);
+        return new SearchContext(tokenResult.AccessToken, fallbackMarket, "librespot", librespotBlobPath, null, null);
     }
 
     private async Task<string> ResolveMarketAsync()
@@ -636,7 +632,6 @@ public sealed class SpotifySearchService
         string Source,
         string? BlobPath,
         string? WebPlayerSpDc,
-        string? WebPlayerSpKey,
         string? WebPlayerUserAgent);
 
     public sealed record SpotifySearchAuthContext(string AccessToken, string Market, string Source);

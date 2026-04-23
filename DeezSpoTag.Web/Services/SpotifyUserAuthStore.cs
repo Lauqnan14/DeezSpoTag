@@ -505,7 +505,6 @@ public sealed class SpotifyUserAuthState
     public string? ActiveAccount { get; set; }
     public List<SpotifyUserAccount> Accounts { get; set; } = new();
     public string? WebPlayerSpDc { get; set; }
-    public string? WebPlayerSpKey { get; set; }
     public string? WebPlayerUserAgent { get; set; }
 }
 
