@@ -1463,6 +1463,9 @@ class Session(Closeable, MessageListener, SubListener):
 
             """
             encrypted_blob = self._maybe_base64_decode_blob(encrypted_blob)
+            # Spotify's stored credential-blob format derives keys with SHA-1.
+            # This is legacy protocol compatibility logic, not a general-purpose
+            # hashing choice that can be upgraded independently here.
             sha1 = SHA1.new()
             sha1.update(device_id.encode())
             secret = sha1.digest()
@@ -1471,6 +1474,9 @@ class Session(Closeable, MessageListener, SubListener):
                               20,
                               0x100,
                               hmac_hash_module=SHA1)
+            # The follow-up digest is part of the same blob-decryption scheme.
+            # Changing the algorithm would break interoperability with Spotify
+            # credential blobs produced by the upstream protocol.
             sha1 = SHA1.new()
             sha1.update(base_key)
             key = sha1.digest() + b"\x00\x00\x00\x14"

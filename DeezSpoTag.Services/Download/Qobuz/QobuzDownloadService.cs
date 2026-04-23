@@ -846,12 +846,14 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         var primaryBase = DecodeBase64("aHR0cHM6Ly9kYWIueWVldC5zdS9hcGkvc3RyZWFtP3RyYWNrSWQ9");
         var fallbackBase = DecodeBase64("aHR0cHM6Ly9kYWJtdXNpYy54eXovYXBpL3N0cmVhbT90cmFja0lkPQ==");
         var squidBase = DecodeBase64("aHR0cHM6Ly9xb2J1ei5zcXVpZC53dGYvYXBpL2Rvd25sb2FkLW11c2ljP3RyYWNrX2lkPQ==");
+        var spotByeBase = "https://qobuz.spotbye.qzz.io/api/track/";
         var qbzBase = "https://qbz.afkarxyz.qzz.io/api/track/";
 
         return
         [
             new ProviderCandidate("dab.yeet.su", ct => TryGetStreamUrlAsync($"{primaryBase}{trackId}&quality={qualityCode}", ct)),
             new ProviderCandidate("dabmusic.xyz", ct => TryGetStreamUrlAsync($"{fallbackBase}{trackId}&quality={qualityCode}", ct)),
+            new ProviderCandidate("qobuz.spotbye.qzz.io", ct => TryGetStreamUrlAsync($"{spotByeBase}{trackId}?quality={qualityCode}", ct)),
             new ProviderCandidate("qbz.afkarxyz.qzz.io", ct => TryGetStreamUrlAsync($"{qbzBase}{trackId}?quality={qualityCode}", ct)),
             new ProviderCandidate("qobuz.squid.wtf/us", ct => TryGetStreamUrlAsync($"{squidBase}{trackId}&quality={qualityCode}&country=US", ct)),
             new ProviderCandidate("qobuz.squid.wtf/fr", ct => TryGetStreamUrlAsync($"{squidBase}{trackId}&quality={qualityCode}&country=FR", ct)),

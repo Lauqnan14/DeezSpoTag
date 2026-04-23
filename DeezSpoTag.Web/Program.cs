@@ -1351,6 +1351,17 @@ public partial class Program
         services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryArtistImageQueueService>());
         services.AddSingleton<DeezSpoTag.Web.Services.LyricsRefreshQueueService>();
         services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.LyricsRefreshQueueService>());
+        services.AddSingleton<DeezSpoTag.Web.Services.LibrarySpotifyArtistQueueService.Dependencies>(sp =>
+            new DeezSpoTag.Web.Services.LibrarySpotifyArtistQueueService.Dependencies
+            {
+                Repository = sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
+                CacheRepository = sp.GetRequiredService<DeezSpoTag.Services.Library.ArtistPageCacheRepository>(),
+                SpotifyArtistService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyArtistService>(),
+                PathfinderMetadataClient = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyPathfinderMetadataClient>(),
+                SettingsService = sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(),
+                ConfigStore = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryConfigStore>(),
+                Environment = sp.GetRequiredService<IWebHostEnvironment>()
+            });
         services.AddSingleton<DeezSpoTag.Web.Services.LibrarySpotifyArtistQueueService>();
         services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.LibrarySpotifyArtistQueueService>());
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyArtistImageCacheService>();

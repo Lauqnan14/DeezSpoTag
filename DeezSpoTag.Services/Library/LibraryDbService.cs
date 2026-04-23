@@ -535,8 +535,8 @@ WHERE library_id IS NULL;";
             return;
         }
 
-        var createdAtExpression = columns.Contains(CreatedAtColumn) ? CreatedAtColumn : "CURRENT_TIMESTAMP";
-        var updatedAtExpression = columns.Contains("updated_at") ? "updated_at" : "CURRENT_TIMESTAMP";
+        var preserveCreatedAt = columns.Contains(CreatedAtColumn);
+        var preserveUpdatedAt = columns.Contains("updated_at");
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
 
         const string dropTempSql = "DROP TABLE IF EXISTS library_settings_migrated;";
@@ -558,14 +558,7 @@ CREATE TABLE library_settings_migrated (
             await createTempCommand.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        var copySql = $@"
-INSERT INTO library_settings_migrated (id, live_preview_ingest, enable_signal_analysis, created_at, updated_at)
-SELECT COALESCE(id, 1),
-       COALESCE(live_preview_ingest, 0),
-       COALESCE(enable_signal_analysis, 0),
-       COALESCE({createdAtExpression}, CURRENT_TIMESTAMP),
-       COALESCE({updatedAtExpression}, CURRENT_TIMESTAMP)
-FROM library_settings;";
+        var copySql = ResolveLibrarySettingsCopySql(preserveCreatedAt, preserveUpdatedAt);
         await using (var copyCommand = new SqliteCommand(copySql, connection, transaction))
         {
             await copyCommand.ExecuteNonQueryAsync(cancellationToken);
@@ -605,6 +598,54 @@ FROM library_settings;";
 
         var uniqueSql = unique ? "UNIQUE " : string.Empty;
         return $"CREATE {uniqueSql}INDEX IF NOT EXISTS {indexName} ON {table} ({column});";
+    }
+
+    private static string ResolveLibrarySettingsCopySql(bool preserveCreatedAt, bool preserveUpdatedAt)
+    {
+        if (preserveCreatedAt && preserveUpdatedAt)
+        {
+            return @"
+INSERT INTO library_settings_migrated (id, live_preview_ingest, enable_signal_analysis, created_at, updated_at)
+SELECT COALESCE(id, 1),
+       COALESCE(live_preview_ingest, 0),
+       COALESCE(enable_signal_analysis, 0),
+       COALESCE(created_at, CURRENT_TIMESTAMP),
+       COALESCE(updated_at, CURRENT_TIMESTAMP)
+FROM library_settings;";
+        }
+
+        if (preserveCreatedAt)
+        {
+            return @"
+INSERT INTO library_settings_migrated (id, live_preview_ingest, enable_signal_analysis, created_at, updated_at)
+SELECT COALESCE(id, 1),
+       COALESCE(live_preview_ingest, 0),
+       COALESCE(enable_signal_analysis, 0),
+       COALESCE(created_at, CURRENT_TIMESTAMP),
+       CURRENT_TIMESTAMP
+FROM library_settings;";
+        }
+
+        if (preserveUpdatedAt)
+        {
+            return @"
+INSERT INTO library_settings_migrated (id, live_preview_ingest, enable_signal_analysis, created_at, updated_at)
+SELECT COALESCE(id, 1),
+       COALESCE(live_preview_ingest, 0),
+       COALESCE(enable_signal_analysis, 0),
+       CURRENT_TIMESTAMP,
+       COALESCE(updated_at, CURRENT_TIMESTAMP)
+FROM library_settings;";
+        }
+
+        return @"
+INSERT INTO library_settings_migrated (id, live_preview_ingest, enable_signal_analysis, created_at, updated_at)
+SELECT COALESCE(id, 1),
+       COALESCE(live_preview_ingest, 0),
+       COALESCE(enable_signal_analysis, 0),
+       CURRENT_TIMESTAMP,
+       CURRENT_TIMESTAMP
+FROM library_settings;";
     }
 
     private static string ResolveBackfillLegacySql(string table, string column, string legacyColumn)

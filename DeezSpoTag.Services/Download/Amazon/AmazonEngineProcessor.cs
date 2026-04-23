@@ -1,5 +1,6 @@
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Core.Models.Settings;
 using Microsoft.Extensions.Logging;
 
 namespace DeezSpoTag.Services.Download.Amazon;
@@ -25,33 +26,47 @@ public sealed class AmazonEngineProcessor : QueueEngineProcessorBase
             item,
             EngineName,
             CommonDependencies.CreateProcessorDeps(_logger),
-            new EngineQueueProcessorHelper.ProcessorCallbacks<AmazonQueueItem>(
-                ResolveAmazonSourceId,
-                (payload, settings) =>
-                {
-                    DownloadEngineSettingsHelper.ApplyQualityBucketToSettings(settings, payload.QualityBucket);
-                    return AmazonRequestBuilder.BuildRequest(payload, settings);
-                },
-                static (request, context) =>
-                {
-                    var amazonRequest = (AmazonDownloadRequest)request;
-                    amazonRequest.OutputDir = context.OutputDir;
-                    amazonRequest.FilenameFormat = context.FilenameFormat;
-                },
-                async (payload, request, settings, progressReporter, cancellationToken) =>
-                {
-                    var amazonRequest = (AmazonDownloadRequest)request;
-                    return await _amazonDownloader.DownloadAsync(
-                        amazonRequest,
-                        settings.EmbedMaxQualityCover,
-                        settings.Tags,
-                        progressReporter,
-                        cancellationToken);
-                },
-                null,
-                request => $"Download start: {item.QueueUuid} engine=amazon",
-                payload => payload.Title,
-                static payload => payload.ToQueuePayload()),
+            BuildCallbacks(item),
+            cancellationToken);
+    }
+
+    private EngineQueueProcessorHelper.ProcessorCallbacks<AmazonQueueItem> BuildCallbacks(DownloadQueueItem item) =>
+        new(
+            ResolveAmazonSourceId,
+            BuildRequest,
+            ApplyRequestContext,
+            DownloadAsync,
+            null,
+            _ => $"Download start: {item.QueueUuid} engine=amazon",
+            payload => payload.Title,
+            static payload => payload.ToQueuePayload());
+
+    private static AmazonDownloadRequest BuildRequest(AmazonQueueItem payload, DeezSpoTagSettings settings)
+    {
+        DownloadEngineSettingsHelper.ApplyQualityBucketToSettings(settings, payload.QualityBucket);
+        return AmazonRequestBuilder.BuildRequest(payload, settings);
+    }
+
+    private static void ApplyRequestContext(object request, EngineAudioPostDownloadHelper.EngineTrackContext context)
+    {
+        var amazonRequest = (AmazonDownloadRequest)request;
+        amazonRequest.OutputDir = context.OutputDir;
+        amazonRequest.FilenameFormat = context.FilenameFormat;
+    }
+
+    private async Task<string> DownloadAsync(
+        AmazonQueueItem payload,
+        object request,
+        DeezSpoTagSettings settings,
+        Func<double, double, Task>? progressReporter,
+        CancellationToken cancellationToken)
+    {
+        var amazonRequest = (AmazonDownloadRequest)request;
+        return await _amazonDownloader.DownloadAsync(
+            amazonRequest,
+            settings.EmbedMaxQualityCover,
+            settings.Tags,
+            progressReporter,
             cancellationToken);
     }
 
@@ -83,48 +98,45 @@ public sealed class AmazonEngineProcessor : QueueEngineProcessorBase
             return null;
         }
 
-        var query = parsed.Query ?? string.Empty;
-        if (!string.IsNullOrWhiteSpace(query))
+        return TryExtractTrackAsinFromQuery(parsed.Query)
+            ?? TryExtractTrackIdFromPath(parsed.AbsolutePath);
+    }
+
+    private static string? TryExtractTrackAsinFromQuery(string? query)
+    {
+        if (string.IsNullOrWhiteSpace(query))
         {
-            var trimmed = query.TrimStart('?');
-            var tokens = trimmed.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            foreach (var token in tokens)
-            {
-                var pair = token.Split('=', 2, StringSplitOptions.TrimEntries);
-                if (pair.Length != 2)
-                {
-                    continue;
-                }
-
-                if (!pair[0].Equals("trackAsin", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                var value = Uri.UnescapeDataString(pair[1]);
-                if (!string.IsNullOrWhiteSpace(value))
-                {
-                    return value;
-                }
-            }
+            return null;
         }
 
-        var segments = parsed.AbsolutePath
+        var token = query.TrimStart('?')
+            .Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(value => value.Split('=', 2, StringSplitOptions.TrimEntries))
+            .FirstOrDefault(pair =>
+                pair.Length == 2 &&
+                pair[0].Equals("trackAsin", StringComparison.OrdinalIgnoreCase));
+
+        if (token == null || token.Length != 2)
+        {
+            return null;
+        }
+
+        var value = Uri.UnescapeDataString(token[1]);
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
+    private static string? TryExtractTrackIdFromPath(string absolutePath)
+    {
+        var segments = absolutePath
             .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        for (var i = 0; i < segments.Length - 1; i++)
+        var trackIndex = Array.FindIndex(segments, segment =>
+            segment.Equals("tracks", StringComparison.OrdinalIgnoreCase));
+        if (trackIndex < 0 || trackIndex >= segments.Length - 1)
         {
-            if (!segments[i].Equals("tracks", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var candidate = segments[i + 1];
-            if (!string.IsNullOrWhiteSpace(candidate))
-            {
-                return candidate;
-            }
+            return null;
         }
 
-        return null;
+        var candidate = segments[trackIndex + 1];
+        return string.IsNullOrWhiteSpace(candidate) ? null : candidate;
     }
 }

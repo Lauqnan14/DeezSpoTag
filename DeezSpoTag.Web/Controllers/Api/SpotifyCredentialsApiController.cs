@@ -264,25 +264,14 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             return BadRequest("Account name must be 1-64 chars: letters, numbers, dot, underscore, hyphen.");
         }
 
-        SpotifyUserAuthState state;
         var blobDir = _userAuthStore.GetUserBlobDir(userId);
+        SpotifyUserAuthState state;
         SpotifyBlobResult result;
-        var obsoleteBlobPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var replacedAccountNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> obsoleteBlobPaths;
+        HashSet<string> replacedAccountNames;
         try
         {
-            await _blobService.EnsureSpotifyAuthEnvironmentAsync(cancellationToken);
-            state = await _userAuthStore.LoadAsync(userId);
-            foreach (var account in state.Accounts)
-            {
-                CollectAccountBlobPaths(account, obsoleteBlobPaths);
-                if (account.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                AddAccountName(replacedAccountNames, account.Name);
-            }
+            (state, obsoleteBlobPaths, replacedAccountNames) = await PrepareGeneratedAccountStateAsync(userId, name, cancellationToken);
             result = await _blobService.GenerateBlobAsync(name, request?.Headless ?? false, blobDir, cancellationToken);
         }
         catch (Exception ex) when (TryMapGenerateAccountException(ex, name, cancellationToken, out var mappedResult))
@@ -294,53 +283,17 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
 
         var now = DateTimeOffset.UtcNow;
         var existing = state.Accounts.FirstOrDefault(a => a.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
-        var existingWebPlayerAccount = state.Accounts.FirstOrDefault(account =>
-            !string.IsNullOrWhiteSpace(account.WebPlayerBlobPath));
-        var preserveWebPlayerAuth =
-            !string.IsNullOrWhiteSpace(state.WebPlayerSpDc) ||
-            !string.IsNullOrWhiteSpace(state.WebPlayerUserAgent) ||
-            !string.IsNullOrWhiteSpace(existing?.WebPlayerBlobPath) ||
-            !string.IsNullOrWhiteSpace(existingWebPlayerAccount?.WebPlayerBlobPath);
-        var webPlayerBlobPath = preserveWebPlayerAuth
-            ? existing?.WebPlayerBlobPath ?? existingWebPlayerAccount?.WebPlayerBlobPath
-            : null;
-        var lastKnownGoodWebPlayerBlobPath = preserveWebPlayerAuth
-            ? existing?.LastKnownGoodBlobPath ?? existingWebPlayerAccount?.LastKnownGoodBlobPath
-            : null;
-        SpotifyUserAccount currentAccount;
-        if (existing == null)
-        {
-            currentAccount = new SpotifyUserAccount
-            {
-                Name = name,
-                Region = request?.Region?.Trim(),
-                BlobPath = librespotBlobPath,
-                LibrespotBlobPath = librespotBlobPath,
-                WebPlayerBlobPath = webPlayerBlobPath,
-                CreatedAt = now,
-                UpdatedAt = now,
-                LastValidatedAt = now,
-                LastKnownGoodBlobPath = lastKnownGoodWebPlayerBlobPath
-            };
-        }
-        else
-        {
-            var trimmedRegion = request?.Region?.Trim();
-            if (!string.IsNullOrWhiteSpace(trimmedRegion))
-            {
-                existing.Region = trimmedRegion;
-            }
-            existing.BlobPath = librespotBlobPath;
-            existing.LibrespotBlobPath = librespotBlobPath;
-            existing.WebPlayerBlobPath = webPlayerBlobPath;
-            existing.UpdatedAt = now;
-            existing.LastValidatedAt = now;
-            existing.LastKnownGoodBlobPath = lastKnownGoodWebPlayerBlobPath;
-            currentAccount = existing;
-        }
+        var preserveWebPlayerState = ResolvePreservedWebPlayerState(state, existing);
+        SpotifyUserAccount currentAccount = UpsertGeneratedAccount(
+            existing,
+            name,
+            request?.Region,
+            librespotBlobPath,
+            preserveWebPlayerState,
+            now);
 
         state.Accounts = [currentAccount];
-        if (!preserveWebPlayerAuth)
+        if (!preserveWebPlayerState.PreserveWebPlayerAuth)
         {
             state.WebPlayerSpDc = null;
             state.WebPlayerUserAgent = null;
@@ -354,16 +307,16 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         await UpdatePlatformSpotifyAccountAsync(
             name,
             librespotBlobPath,
-            webPlayerBlobPath,
+            preserveWebPlayerState.WebPlayerBlobPath,
             state.ActiveAccount,
-            clearWebPlayerCredentials: !preserveWebPlayerAuth);
+            clearWebPlayerCredentials: !preserveWebPlayerState.PreserveWebPlayerAuth);
         _blobService.InvalidateWebApiAccessToken(librespotBlobPath);
         RemoveAccountBlobArtifactsFromSet(currentAccount, obsoleteBlobPaths);
         DeleteBlobArtifacts(obsoleteBlobPaths);
         AddAccountName(replacedAccountNames, name);
         ClearSpotifySessionArtifacts(userId, replacedAccountNames);
 
-        return Ok(new { generated = true, librespotBlobPath, webPlayerBlobPath });
+        return Ok(new { generated = true, librespotBlobPath, webPlayerBlobPath = preserveWebPlayerState.WebPlayerBlobPath });
     }
 
     [HttpPost("accounts/{name}/regenerate")]
@@ -447,6 +400,20 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         var spDc = request.SpDc?.Trim();
         var userAgent = string.IsNullOrWhiteSpace(request.UserAgent) ? null : request.UserAgent.Trim();
         return (spDc, userAgent, request.Cookies);
+    }
+
+    private static string? ResolveEffectiveSpDc(string? spDc, List<SpotifyBlobCookie>? providedCookies)
+    {
+        if (!string.IsNullOrWhiteSpace(spDc) || providedCookies is not { Count: > 0 })
+        {
+            return spDc;
+        }
+
+        var spDcCookie = providedCookies.FirstOrDefault(cookie =>
+            cookie?.Name != null && cookie.Name.Equals("sp_dc", StringComparison.OrdinalIgnoreCase));
+        return string.IsNullOrWhiteSpace(spDcCookie?.Value)
+            ? spDc
+            : spDcCookie.Value.Trim();
     }
 
     private static string ResolveEffectiveAccountName(string? profileId, string? activeAccount)
@@ -624,15 +591,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         var spDc = normalizedRequest.SpDc;
         var userAgent = normalizedRequest.UserAgent;
         var providedCookies = normalizedRequest.Cookies;
-        if (string.IsNullOrWhiteSpace(spDc) && providedCookies is { Count: > 0 })
-        {
-            var spDcCookie = providedCookies.FirstOrDefault(cookie =>
-                cookie?.Name != null && cookie.Name.Equals("sp_dc", StringComparison.OrdinalIgnoreCase));
-            if (!string.IsNullOrWhiteSpace(spDcCookie?.Value))
-            {
-                spDc = spDcCookie.Value.Trim();
-            }
-        }
+        spDc = ResolveEffectiveSpDc(spDc, providedCookies);
 
         if (string.IsNullOrWhiteSpace(spDc))
         {
@@ -659,15 +618,11 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             var effectiveAccountName = ResolveEffectiveAccountName(profile?.Id, state.ActiveAccount);
 
             var account = GetOrCreateAccount(state, effectiveAccountName);
-            foreach (var existingAccount in state.Accounts)
-            {
-                if (existingAccount.Name.Equals(effectiveAccountName, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                AddAccountName(replacedAccountNames, existingAccount.Name);
-            }
+            AddAccountNames(
+                replacedAccountNames,
+                state.Accounts
+                    .Where(existingAccount => !existingAccount.Name.Equals(effectiveAccountName, StringComparison.OrdinalIgnoreCase))
+                    .Select(existingAccount => existingAccount.Name));
             state.Accounts = [account];
 
             state.ActiveAccount = effectiveAccountName;
@@ -687,19 +642,8 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
                 HttpContext.RequestAborted);
             UpdateWebPlayerAccount(account, blobResult.BlobPath, lastKnownGood, DateTimeOffset.UtcNow);
 
-            if (!await _pathfinderMetadataClient.ValidateBlobAsync(blobResult.BlobPath, HttpContext.RequestAborted))
+            if (!await ValidateSavedWebPlayerBlobAsync(state, blobResult.BlobPath))
             {
-                var activeAccount = state.ActiveAccount;
-                if (!string.IsNullOrWhiteSpace(activeAccount))
-                {
-                    var activeAccountEntry = state.Accounts.FirstOrDefault(a =>
-                        a.Name.Equals(activeAccount, StringComparison.OrdinalIgnoreCase));
-                    if (!string.IsNullOrWhiteSpace(activeAccountEntry?.LastKnownGoodBlobPath)
-                        && System.IO.File.Exists(activeAccountEntry.LastKnownGoodBlobPath))
-                    {
-                        System.IO.File.Copy(activeAccountEntry.LastKnownGoodBlobPath, blobResult.BlobPath, overwrite: true);
-                    }
-                }
                 return BadRequest("Web player cookies failed validation.");
             }
 
@@ -722,6 +666,112 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         {
             return mappedResult;
         }
+    }
+
+    private async Task<(SpotifyUserAuthState State, HashSet<string> ObsoleteBlobPaths, HashSet<string> ReplacedAccountNames)>
+        PrepareGeneratedAccountStateAsync(
+            string userId,
+            string accountName,
+            CancellationToken cancellationToken)
+    {
+        await _blobService.EnsureSpotifyAuthEnvironmentAsync(cancellationToken);
+        var state = await _userAuthStore.LoadAsync(userId);
+        var obsoleteBlobPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var replacedAccountNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var account in state.Accounts)
+        {
+            CollectAccountBlobPaths(account, obsoleteBlobPaths);
+        }
+
+        AddAccountNames(
+            replacedAccountNames,
+            state.Accounts
+                .Where(account => !account.Name.Equals(accountName, StringComparison.OrdinalIgnoreCase))
+                .Select(account => account.Name));
+
+        return (state, obsoleteBlobPaths, replacedAccountNames);
+    }
+
+    private static PreservedWebPlayerState ResolvePreservedWebPlayerState(
+        SpotifyUserAuthState state,
+        SpotifyUserAccount? existing)
+    {
+        var existingWebPlayerAccount = state.Accounts.FirstOrDefault(account =>
+            !string.IsNullOrWhiteSpace(account.WebPlayerBlobPath));
+        var preserveWebPlayerAuth =
+            !string.IsNullOrWhiteSpace(state.WebPlayerSpDc) ||
+            !string.IsNullOrWhiteSpace(state.WebPlayerUserAgent) ||
+            !string.IsNullOrWhiteSpace(existing?.WebPlayerBlobPath) ||
+            !string.IsNullOrWhiteSpace(existingWebPlayerAccount?.WebPlayerBlobPath);
+
+        return new PreservedWebPlayerState(
+            preserveWebPlayerAuth,
+            preserveWebPlayerAuth ? existing?.WebPlayerBlobPath ?? existingWebPlayerAccount?.WebPlayerBlobPath : null,
+            preserveWebPlayerAuth ? existing?.LastKnownGoodBlobPath ?? existingWebPlayerAccount?.LastKnownGoodBlobPath : null);
+    }
+
+    private static SpotifyUserAccount UpsertGeneratedAccount(
+        SpotifyUserAccount? existing,
+        string accountName,
+        string? region,
+        string librespotBlobPath,
+        PreservedWebPlayerState preservedWebPlayerState,
+        DateTimeOffset now)
+    {
+        if (existing == null)
+        {
+            return new SpotifyUserAccount
+            {
+                Name = accountName,
+                Region = region?.Trim(),
+                BlobPath = librespotBlobPath,
+                LibrespotBlobPath = librespotBlobPath,
+                WebPlayerBlobPath = preservedWebPlayerState.WebPlayerBlobPath,
+                CreatedAt = now,
+                UpdatedAt = now,
+                LastValidatedAt = now,
+                LastKnownGoodBlobPath = preservedWebPlayerState.LastKnownGoodBlobPath
+            };
+        }
+
+        var trimmedRegion = region?.Trim();
+        if (!string.IsNullOrWhiteSpace(trimmedRegion))
+        {
+            existing.Region = trimmedRegion;
+        }
+
+        existing.BlobPath = librespotBlobPath;
+        existing.LibrespotBlobPath = librespotBlobPath;
+        existing.WebPlayerBlobPath = preservedWebPlayerState.WebPlayerBlobPath;
+        existing.UpdatedAt = now;
+        existing.LastValidatedAt = now;
+        existing.LastKnownGoodBlobPath = preservedWebPlayerState.LastKnownGoodBlobPath;
+        return existing;
+    }
+
+    private async Task<bool> ValidateSavedWebPlayerBlobAsync(SpotifyUserAuthState state, string blobPath)
+    {
+        if (await _pathfinderMetadataClient.ValidateBlobAsync(blobPath, HttpContext.RequestAborted))
+        {
+            return true;
+        }
+
+        var activeAccount = state.ActiveAccount;
+        if (string.IsNullOrWhiteSpace(activeAccount))
+        {
+            return false;
+        }
+
+        var activeAccountEntry = state.Accounts.FirstOrDefault(a =>
+            a.Name.Equals(activeAccount, StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(activeAccountEntry?.LastKnownGoodBlobPath)
+            || !System.IO.File.Exists(activeAccountEntry.LastKnownGoodBlobPath))
+        {
+            return false;
+        }
+
+        System.IO.File.Copy(activeAccountEntry.LastKnownGoodBlobPath, blobPath, overwrite: true);
+        return false;
     }
 
     private bool TryMapGenerateAccountException(
@@ -1831,6 +1881,19 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
 
         accountNames.Add(accountName.Trim());
     }
+
+    private static void AddAccountNames(HashSet<string> accountNames, IEnumerable<string?> accountNamesToAdd)
+    {
+        foreach (var accountName in accountNamesToAdd)
+        {
+            AddAccountName(accountNames, accountName);
+        }
+    }
+
+    private readonly record struct PreservedWebPlayerState(
+        bool PreserveWebPlayerAuth,
+        string? WebPlayerBlobPath,
+        string? LastKnownGoodBlobPath);
 
     private void CollectUserBlobArtifacts(string userId, HashSet<string> blobPaths, HashSet<string> accountNames)
     {
