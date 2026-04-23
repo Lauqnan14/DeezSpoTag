@@ -20,6 +20,7 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
     private readonly LibraryRepository _repository;
     private readonly ArtistPageCacheRepository _cacheRepository;
     private readonly SpotifyArtistService _spotifyArtistService;
+    private readonly SpotifyPathfinderMetadataClient _pathfinderMetadataClient;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly LibraryConfigStore _configStore;
     private readonly IWebHostEnvironment _environment;
@@ -29,12 +30,14 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
     private readonly object _queueLock = new();
     private readonly SemaphoreSlim _dispatchGate = new(1, 1);
     private DateTimeOffset _lastDispatchUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastAuthUnavailableLogUtc = DateTimeOffset.MinValue;
     private string QueuePath => Path.Join(AppDataPaths.GetDataRoot(_environment), "spotify-artist-queue.json");
 
     public LibrarySpotifyArtistQueueService(
         LibraryRepository repository,
         ArtistPageCacheRepository cacheRepository,
         SpotifyArtistService spotifyArtistService,
+        SpotifyPathfinderMetadataClient pathfinderMetadataClient,
         DeezSpoTagSettingsService settingsService,
         LibraryConfigStore configStore,
         IWebHostEnvironment environment,
@@ -43,6 +46,7 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
         _repository = repository;
         _cacheRepository = cacheRepository;
         _spotifyArtistService = spotifyArtistService;
+        _pathfinderMetadataClient = pathfinderMetadataClient;
         _settingsService = settingsService;
         _configStore = configStore;
         _environment = environment;
@@ -166,6 +170,13 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
                 return;
             }
 
+            if (!await _pathfinderMetadataClient.HasBlobBackedAuthContextAsync(cancellationToken))
+            {
+                RequeueWithoutRetry(item, TimeSpan.FromSeconds(45));
+                MaybeLogAuthUnavailable();
+                return;
+            }
+
             await WaitForDispatchSlotAsync(cancellationToken);
             var result = await _spotifyArtistService.GetArtistPageAsync(
                 item.ArtistId,
@@ -271,6 +282,37 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
             await Task.Delay(delay);
             _channel.Writer.TryWrite(retryItem);
         });
+    }
+
+    private void RequeueWithoutRetry(QueueItem item, TimeSpan delay)
+    {
+        lock (_queueLock)
+        {
+            _queueItems[item.ArtistId] = item;
+            PersistentArtistQueueStore.PersistQueueSnapshot(_queueItems, _queueLock, QueuePath);
+        }
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(delay);
+            _channel.Writer.TryWrite(item);
+        });
+    }
+
+    private void MaybeLogAuthUnavailable()
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastAuthUnavailableLogUtc < TimeSpan.FromMinutes(2))
+        {
+            return;
+        }
+
+        _lastAuthUnavailableLogUtc = now;
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            now,
+            "info",
+            "Spotify artist queue paused: waiting for valid Spotify web-player auth context."));
+        _logger.LogWarning("Spotify artist queue paused: no valid Spotify web-player auth context.");
     }
 
     private async Task<bool> ShouldSkipAsync(long artistId, CancellationToken cancellationToken)

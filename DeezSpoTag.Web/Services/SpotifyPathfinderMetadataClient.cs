@@ -272,6 +272,8 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private readonly SemaphoreSlim _authGate = new SemaphoreSlim(1, 1);
 
+    private DateTimeOffset _lastBlobAuthMissingWarningUtc = DateTimeOffset.MinValue;
+
     private string? _clientToken;
 
     private DateTimeOffset _clientTokenExpiresAt;
@@ -1235,8 +1237,35 @@ public sealed class SpotifyPathfinderMetadataClient
             _logger.LogInformation("Spotify Pathfinder auth: using blob context.");
             return blobContext;
         }
-        _logger.LogWarning("Spotify Pathfinder auth unavailable: no blob-backed auth context resolved.");
+        LogBlobAuthMissingWarningThrottled();
         return null;
+    }
+
+    public async Task<bool> HasBlobBackedAuthContextAsync(CancellationToken cancellationToken)
+    {
+        string? blobPath = await TryResolveActiveSpotifyBlobPathAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(blobPath))
+        {
+            return false;
+        }
+
+        return await IsUsableWebPlayerBlobPathAsync(blobPath, cancellationToken);
+    }
+
+    private void LogBlobAuthMissingWarningThrottled()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        if (now - _lastBlobAuthMissingWarningUtc >= TimeSpan.FromMinutes(2.0))
+        {
+            _lastBlobAuthMissingWarningUtc = now;
+            _logger.LogWarning("Spotify Pathfinder auth unavailable: no blob-backed auth context resolved.");
+            return;
+        }
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Spotify Pathfinder auth unavailable: no blob-backed auth context resolved (throttled).");
+        }
     }
 
     private async Task<PathfinderAuthContext?> BuildBlobAuthContextAsync(CancellationToken cancellationToken)
