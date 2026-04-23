@@ -594,11 +594,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (shazamResult.IsFatal)
         {
-            EmitSkippedStatus(
-                context,
-                shazamResult.Error ?? "shazam identify failed",
-                shazamResult.UsedShazam);
-            return;
+            if (ShouldShortCircuitOnShazamIdentifyFailure(context.Platform, context.Plan.PlatformCount))
+            {
+                EmitSkippedStatus(
+                    context,
+                    shazamResult.Error ?? "shazam identify failed",
+                    shazamResult.UsedShazam);
+                return;
+            }
+
+            context.LogCallback(
+                $"onetagger_autotag: shazam identify failed for {Path.GetFileName(context.File)}; continuing with {context.Platform} fallback");
         }
 
         var match = await ResolvePlatformMatchAsync(context, info, usedShazamForStatus);
@@ -624,6 +630,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return true;
+    }
+
+    private static bool ShouldShortCircuitOnShazamIdentifyFailure(string platform, int platformCount)
+    {
+        if (platformCount <= 1)
+        {
+            return true;
+        }
+
+        return string.Equals(platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<AutoTagMatchResult?> ResolvePlatformMatchAsync(
