@@ -132,7 +132,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         DeezSpoTagSettings settings,
         CancellationToken itemToken)
     {
-        var context = BuildTrackContext(payload, settings);
+        var context = await BuildTrackContextAsync(payload, settings, itemToken);
         var request = BuildRequest(payload, settings, context);
         payload.QobuzRequestedQuality = request.Quality;
         var progressReporter = CreateProgressReporter(next.QueueUuid, itemToken);
@@ -253,13 +253,37 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         return payload;
     }
 
-    private EngineAudioPostDownloadHelper.EngineTrackContext BuildTrackContext(
+    private async Task<EngineAudioPostDownloadHelper.EngineTrackContext> BuildTrackContextAsync(
         QobuzQueueItem payload,
-        DeezSpoTagSettings settings)
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
     {
         using var scope = _serviceProvider.CreateScope();
         var pathProcessor = scope.ServiceProvider.GetRequiredService<EnhancedPathTemplateProcessor>();
-        return BuildTrackContext(payload, settings, pathProcessor);
+        var context = BuildTrackContext(payload, settings, pathProcessor);
+        var resolvedSource = await EngineAudioPostDownloadHelper.ResolveProfileDownloadTagSourceAsync(
+            _tagSettingsResolver,
+            payload.DestinationFolderId,
+            settings,
+            EngineName,
+            _logger,
+            cancellationToken);
+        var applied = await EngineAudioPostDownloadHelper.ApplyProfileMetadataOverrideAsync(
+            context.Track,
+            payload,
+            settings,
+            _serviceProvider,
+            EngineName,
+            resolvedSource,
+            _logger,
+            cancellationToken);
+        return applied
+            ? EngineAudioPostDownloadHelper.BuildTrackContextFromTrack(
+                context.Track,
+                payload,
+                settings,
+                pathProcessor)
+            : context;
     }
 
     private static QobuzDownloadRequest BuildRequest(
