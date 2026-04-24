@@ -29,10 +29,10 @@ public sealed class SpotifyMatcher
 
     public async Task<AutoTagMatchResult?> MatchAsync(AutoTagAudioInfo info, AutoTagMatchingConfig config, CancellationToken cancellationToken)
     {
-        var trackId = TryResolveTrackId(info);
-        if (!string.IsNullOrWhiteSpace(trackId))
+        var seededTrackId = TryResolveTrackId(info);
+        if (!string.IsNullOrWhiteSpace(seededTrackId))
         {
-            var byTrackId = await MatchByTrackIdAsync(trackId, cancellationToken);
+            var byTrackId = await MatchByTrackIdAsync(seededTrackId, info, cancellationToken);
             if (byTrackId != null)
             {
                 return byTrackId;
@@ -46,6 +46,7 @@ public sealed class SpotifyMatcher
             if (byIsrc != null)
             {
                 byIsrc = await _client.EnrichTrackWithPathfinderAsync(byIsrc, cancellationToken);
+                EnsureTrackIdentity(byIsrc, seededTrackId, info);
                 return new AutoTagMatchResult { Accuracy = 1.0, Track = ToAutoTagTrack(byIsrc) };
             }
         }
@@ -75,19 +76,22 @@ public sealed class SpotifyMatcher
         }
 
         var enriched = await _client.EnrichTrackWithPathfinderAsync(match.Track, cancellationToken);
+        EnsureTrackIdentity(enriched, seededTrackId, info);
         return new AutoTagMatchResult { Accuracy = match.Accuracy, Track = ToAutoTagTrack(enriched) };
     }
 
-    private async Task<AutoTagMatchResult?> MatchByTrackIdAsync(string trackId, CancellationToken cancellationToken)
+    private async Task<AutoTagMatchResult?> MatchByTrackIdAsync(string trackId, AutoTagAudioInfo info, CancellationToken cancellationToken)
     {
         var seeded = new SpotifyTrackInfo
         {
             TrackId = trackId,
-            Url = $"https://open.spotify.com/track/{trackId}"
+            Url = $"https://open.spotify.com/track/{trackId}",
+            Isrc = info.Isrc
         };
 
         var enriched = await _client.EnrichTrackWithPathfinderAsync(seeded, cancellationToken);
-        if (string.IsNullOrWhiteSpace(enriched.Title) || enriched.Artists.Count == 0)
+        EnsureTrackIdentity(enriched, trackId, info);
+        if (string.IsNullOrWhiteSpace(enriched.TrackId))
         {
             return null;
         }
@@ -138,14 +142,19 @@ public sealed class SpotifyMatcher
 
     private static AutoTagTrack ToAutoTagTrack(SpotifyTrackInfo track)
     {
-        return new AutoTagTrack
+        var normalizedTrackId = NormalizeTrackId(track.TrackId) ?? NormalizeTrackId(track.Url);
+        var normalizedUrl = !string.IsNullOrWhiteSpace(track.Url)
+            ? track.Url
+            : (!string.IsNullOrWhiteSpace(normalizedTrackId) ? $"https://open.spotify.com/track/{normalizedTrackId}" : string.Empty);
+
+        var mapped = new AutoTagTrack
         {
             Title = track.Title,
             Artists = track.Artists.ToList(),
             Album = track.Album,
             AlbumArtists = string.IsNullOrWhiteSpace(track.AlbumArtist) ? new List<string>() : new List<string> { track.AlbumArtist },
-            Url = track.Url,
-            TrackId = track.TrackId,
+            Url = normalizedUrl,
+            TrackId = normalizedTrackId ?? string.Empty,
             ReleaseId = track.ReleaseId,
             Duration = track.Duration,
             Art = track.Art,
@@ -170,5 +179,66 @@ public sealed class SpotifyMatcher
             Key = track.Key,
             Bpm = track.Tempo.HasValue ? (long?)Math.Round(track.Tempo.Value) : null
         };
+
+        if (!string.IsNullOrWhiteSpace(normalizedTrackId))
+        {
+            mapped.Other["SPOTIFY_TRACK_ID"] = new List<string> { normalizedTrackId };
+            mapped.Other["SOURCE"] = new List<string> { "SPOTIFY" };
+            mapped.Other["SOURCEID"] = new List<string> { normalizedTrackId };
+        }
+
+        if (!string.IsNullOrWhiteSpace(normalizedUrl))
+        {
+            mapped.Other["SPOTIFY_URL"] = new List<string> { normalizedUrl };
+        }
+
+        return mapped;
+    }
+
+    private static void EnsureTrackIdentity(SpotifyTrackInfo track, string? preferredTrackId, AutoTagAudioInfo source)
+    {
+        var normalizedTrackId = NormalizeTrackId(track.TrackId)
+            ?? NormalizeTrackId(track.Url)
+            ?? NormalizeTrackId(preferredTrackId)
+            ?? TryResolveTrackId(source);
+        if (!string.IsNullOrWhiteSpace(normalizedTrackId))
+        {
+            track.TrackId = normalizedTrackId;
+            if (string.IsNullOrWhiteSpace(track.Url))
+            {
+                track.Url = $"https://open.spotify.com/track/{normalizedTrackId}";
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(track.Isrc) && !string.IsNullOrWhiteSpace(source.Isrc))
+        {
+            track.Isrc = source.Isrc;
+        }
+
+        if (string.IsNullOrWhiteSpace(track.Title) && !string.IsNullOrWhiteSpace(source.Title))
+        {
+            track.Title = source.Title;
+        }
+
+        if (track.Artists.Count == 0)
+        {
+            if (source.Artists.Count > 0)
+            {
+                track.Artists = source.Artists
+                    .Where(artist => !string.IsNullOrWhiteSpace(artist))
+                    .Select(artist => artist.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+            else if (!string.IsNullOrWhiteSpace(source.Artist))
+            {
+                track.Artists = new List<string> { source.Artist.Trim() };
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(track.Album) && !string.IsNullOrWhiteSpace(source.Album))
+        {
+            track.Album = source.Album;
+        }
     }
 }
