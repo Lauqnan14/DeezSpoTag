@@ -7,6 +7,7 @@ using DeezSpoTag.Services.Crypto;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Services.Library;
 using Microsoft.Extensions.Logging;
 using System.IO;
 using System.Diagnostics;
@@ -560,28 +561,40 @@ public class AudioTagger
     {
         var ffmpegPath = FfmpegPath.Value;
         var isAtmos = IsAtmosCodecMp4(path);
+        var isFragmented = FragmentedMp4DurationReader.IsFragmentedMp4(path);
 
-        if (isAtmos)
+        if (isAtmos || isFragmented)
         {
             if (string.IsNullOrWhiteSpace(ffmpegPath))
             {
-                throw new IOException($"ffmpeg is required for Atmos MP4 tagging: {path}");
+                var reason = isAtmos ? "Atmos" : "fragmented";
+                throw new IOException($"ffmpeg is required for {reason} MP4 tagging: {path}");
             }
 
             var taggedWithFfmpeg = await TryTagMP4WithFfmpegAsync(ffmpegPath, path, track, save);
             if (!taggedWithFfmpeg)
             {
-                throw new IOException($"Failed to persist Atmos MP4 tags with ffmpeg for {path}");
+                var reason = isAtmos ? "Atmos" : "fragmented";
+                throw new IOException($"Failed to persist {reason} MP4 tags with ffmpeg for {path}");
             }
 
             if (!VerifyMp4TagPersistence(path, track, save))
             {
-                throw new IOException($"Atmos MP4 tag verification failed for {path}");
+                var reason = isAtmos ? "Atmos" : "fragmented";
+                throw new IOException($"{reason} MP4 tag verification failed for {path}");
             }
 
             if (_logger.IsEnabled(LogLevel.Information))
             {
-                _logger.LogInformation("Successfully tagged Atmos MP4 file with ffmpeg: {Path}", path);            }
+                if (isAtmos)
+                {
+                    _logger.LogInformation("Successfully tagged Atmos MP4 file with ffmpeg: {Path}", path);
+                }
+                else
+                {
+                    _logger.LogInformation("Successfully tagged fragmented MP4 file with ffmpeg: {Path}", path);
+                }
+            }
             return;
         }
 
@@ -1062,6 +1075,13 @@ public class AudioTagger
         var coverPath = save.Cover ? track.Album?.EmbeddedCoverPath : null;
         var hasCover = !string.IsNullOrWhiteSpace(coverPath) && System.IO.File.Exists(coverPath);
         var metadata = BuildMP4FfmpegMetadata(track, save);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "ffmpeg MP4 metadata map for {Path}: {Keys}",
+                path,
+                string.Join(", ", metadata.Keys.OrderBy(static key => key, StringComparer.OrdinalIgnoreCase)));
+        }
 
         if (!hasCover && metadata.Count == 0)
         {
@@ -1286,6 +1306,7 @@ public class AudioTagger
         AddTrackNumberMp4Metadata(metadata, track, save);
         AddAlbumAndDateMp4Metadata(metadata, track, save);
         AddAdditionalMp4Metadata(metadata, track, save);
+        AddSourceMp4Metadata(metadata, track, save);
         return metadata;
     }
 
@@ -1399,6 +1420,35 @@ public class AudioTagger
         if (save.Url)
         {
             AddMetadataValue(metadata, "purl", ResolveTrackUrl(track));
+            AddMetadataValue(metadata, "WWWAUDIOFILE", ResolveTrackUrl(track));
+        }
+
+        if (save.Explicit)
+        {
+            AddMetadataValue(metadata, "ITUNESADVISORY", track.Explicit ? "1" : "0");
+        }
+    }
+
+    private static void AddSourceMp4Metadata(Dictionary<string, string> metadata, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        var sourceId = ResolveSourceId(track);
+        if (save.Source)
+        {
+            AddMetadataValue(metadata, "SOURCE", ResolveSourceName(track));
+            AddMetadataValue(metadata, "SOURCEID", sourceId);
+        }
+
+        if (save.TrackId)
+        {
+            AddMetadataValue(metadata, $"{ResolveSourceTagPrefix(track)}_TRACK_ID", sourceId);
+            AddMetadataValue(metadata, "SPOTIFY_TRACK_ID", ResolveSpotifyTrackId(track));
+            AddMetadataValue(metadata, "DEEZER_TRACK_ID", ResolveDeezerTrackId(track));
+            AddMetadataValue(metadata, "APPLE_TRACK_ID", ResolveAppleTrackId(track));
+        }
+
+        if (save.ReleaseId)
+        {
+            AddMetadataValue(metadata, $"{ResolveSourceTagPrefix(track)}_RELEASE_ID", ResolveReleaseId(track));
         }
     }
 
