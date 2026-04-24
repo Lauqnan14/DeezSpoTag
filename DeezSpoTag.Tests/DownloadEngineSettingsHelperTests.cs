@@ -67,7 +67,7 @@ public sealed class DownloadEngineSettingsHelperTests
     }
 
     [Fact]
-    public void ApplyResolvedProfileToSettings_PreservesEngineMode_WhenCurrentEngineIsUnknown()
+    public void ApplyResolvedProfileToSettings_DefaultsToDeezer_WhenCurrentEngineIsUnknown()
     {
         var settings = new DeezSpoTagSettings
         {
@@ -81,6 +81,24 @@ public sealed class DownloadEngineSettingsHelperTests
 
         var resolved = DownloadEngineSettingsHelper.ApplyResolvedProfileToSettings(settings, profile, currentEngine: "unknown-engine");
 
-        Assert.Equal(DownloadTagSourceHelper.FollowDownloadEngineSource, resolved);
+        Assert.Equal(DownloadTagSourceHelper.DeezerSource, resolved);
+    }
+
+    [Fact]
+    public void ApplyResolvedProfileToSettings_DefaultsToDeezer_WhenProfileDownloadTagSourceIsMissing()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            Service = "auto"
+        };
+        var profile = new DownloadTagProfileSettings(
+            TagSettings: new TagSettings(),
+            DownloadTagSource: null,
+            FolderStructure: null,
+            Technical: null);
+
+        var resolved = DownloadEngineSettingsHelper.ApplyResolvedProfileToSettings(settings, profile, currentEngine: "apple");
+
+        Assert.Equal(DownloadTagSourceHelper.DeezerSource, resolved);
     }
 }

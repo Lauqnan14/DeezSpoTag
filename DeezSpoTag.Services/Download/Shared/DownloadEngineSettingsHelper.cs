@@ -125,6 +125,10 @@ public static class DownloadEngineSettingsHelper
             settings.Service);
         if (string.IsNullOrWhiteSpace(normalizedSource))
         {
+            normalizedSource = DownloadTagSourceHelper.DeezerSource;
+        }
+        if (string.IsNullOrWhiteSpace(normalizedSource))
+        {
             var storedSource = DownloadTagSourceHelper.NormalizeStoredSource(
                 profile.DownloadTagSource,
                 DownloadTagSourceHelper.DeezerSource);

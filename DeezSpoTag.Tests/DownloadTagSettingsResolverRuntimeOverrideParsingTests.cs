@@ -11,6 +11,11 @@ namespace DeezSpoTag.Tests;
 
 public sealed class DownloadTagSettingsResolverRuntimeOverrideParsingTests
 {
+    private static readonly MethodInfo ExtractDownloadTagSourceMethod =
+        typeof(DownloadTagSettingsResolver).GetMethod(
+            "ExtractDownloadTagSource",
+            BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("DownloadTagSettingsResolver.ExtractDownloadTagSource not found.");
     private static readonly MethodInfo ExtractRuntimeOverridesMethod =
         typeof(DownloadTagSettingsResolver).GetMethod(
             "ExtractRuntimeOverrides",
@@ -59,9 +64,30 @@ public sealed class DownloadTagSettingsResolverRuntimeOverrideParsingTests
         Assert.Null(runtimeOverrides);
     }
 
+    [Fact]
+    public void ExtractDownloadTagSource_DefaultsToDeezer_WhenAutoTagDataIsMissing()
+    {
+        var source = ExtractDownloadTagSource(new AutoTagSettings { Data = null });
+
+        Assert.Equal(DownloadTagSourceHelper.DeezerSource, source);
+    }
+
+    [Fact]
+    public void ExtractDownloadTagSource_DefaultsToDeezer_WhenDownloadTagSourceKeyIsMissing()
+    {
+        var source = ExtractDownloadTagSource(CreateAutoTagSettings(("saveArtwork", true)));
+
+        Assert.Equal(DownloadTagSourceHelper.DeezerSource, source);
+    }
+
     private static DownloadProfileRuntimeOverrides? ExtractRuntimeOverrides(AutoTagSettings autoTag)
     {
         return ExtractRuntimeOverridesMethod.Invoke(null, new object?[] { autoTag }) as DownloadProfileRuntimeOverrides;
+    }
+
+    private static string? ExtractDownloadTagSource(AutoTagSettings autoTag)
+    {
+        return ExtractDownloadTagSourceMethod.Invoke(null, new object?[] { autoTag }) as string;
     }
 
     private static AutoTagSettings CreateAutoTagSettings(params (string Key, object? Value)[] entries)
