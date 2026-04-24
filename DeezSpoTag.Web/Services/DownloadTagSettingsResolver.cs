@@ -102,7 +102,7 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
             || !autoTag.Data.TryGetValue("downloadTagSource", out var sourceElement)
             || sourceElement.ValueKind != JsonValueKind.String)
         {
-            return null;
+            return DownloadTagSourceHelper.DeezerSource;
         }
 
         return DownloadTagSourceHelper.NormalizeStoredSource(sourceElement.GetString(), DownloadTagSourceHelper.DeezerSource);
