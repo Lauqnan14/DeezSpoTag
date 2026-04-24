@@ -847,7 +847,9 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogWarning(ex, "Apple post-download settings failed for {QueueUuid}", queueUuid);
-                return outputPath;
+                throw new InvalidOperationException(
+                    $"Apple post-download profile tagging failed for queue item {queueUuid}.",
+                    ex);
             }
         }
 
@@ -1315,6 +1317,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Apple tagging failed for {Path}", outputPath);
+            throw new InvalidOperationException($"Apple tagging failed for '{outputPath}'.", ex);
         }
 
         UpdateAudioPayloadFiles(payload, context.PathResult, outputPath);

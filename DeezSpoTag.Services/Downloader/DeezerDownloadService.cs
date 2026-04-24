@@ -141,7 +141,7 @@ public class DeezerDownloadService
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     _logger.LogError(ex, "Failed to tag track: {TrackId}", track.Id);
-                    // Don't throw - tagging failure shouldn't fail the download
+                    throw new InvalidOperationException($"Failed to tag downloaded track '{track.Id}'.", ex);
                 }
             }
 

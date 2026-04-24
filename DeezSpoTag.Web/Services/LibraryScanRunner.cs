@@ -21,6 +21,7 @@ public sealed class LibraryScanRunner
     private readonly object _scanLock = new();
     private readonly object _previewIngestLock = new();
     private CancellationTokenSource? _activeScanCts;
+    private TaskCompletionSource<object?>? _activeScanCompletion;
     private ScanStatus _status = new(false, null, 0, 0, 0, null, 0, 0, 0);
 
     public LibraryScanRunner(
@@ -93,6 +94,22 @@ public sealed class LibraryScanRunner
             _activeScanCts.Cancel();
             return true;
         }
+    }
+
+    public async Task WaitForCurrentScanAsync(CancellationToken cancellationToken)
+    {
+        Task? activeScanTask;
+        lock (_scanLock)
+        {
+            activeScanTask = _activeScanCompletion?.Task;
+        }
+
+        if (activeScanTask == null)
+        {
+            return;
+        }
+
+        await activeScanTask.WaitAsync(cancellationToken);
     }
 
     public Task EnqueueAsync(
@@ -214,6 +231,8 @@ public sealed class LibraryScanRunner
                 if (ownsActiveScan && cts != null && ReferenceEquals(_activeScanCts, cts))
                 {
                     _activeScanCts = null;
+                    _activeScanCompletion?.TrySetResult(null);
+                    _activeScanCompletion = null;
                     _status = _status with { IsRunning = false, CurrentFile = null };
                 }
             }
@@ -232,6 +251,7 @@ public sealed class LibraryScanRunner
 
             cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             _activeScanCts = cts;
+            _activeScanCompletion = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
             ownsActiveScan = true;
             _status = new ScanStatus(true, DateTimeOffset.UtcNow, 0, 0, 0, null, 0, 0, 0);
             return true;

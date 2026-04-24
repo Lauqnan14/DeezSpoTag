@@ -320,7 +320,9 @@ internal static class EngineQueueProcessorHelper
                 "{Engine} post-download settings failed for {QueueUuid}",
                 workContext.EngineName,
                 workContext.Item.QueueUuid);
-            return outputPath;
+            throw new InvalidOperationException(
+                $"{workContext.EngineName} post-download profile tagging failed for queue item {workContext.Item.QueueUuid}.",
+                ex);
         }
     }
 
