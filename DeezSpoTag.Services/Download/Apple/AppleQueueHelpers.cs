@@ -905,6 +905,22 @@ public static class AppleQueueHelpers
         if (isRawItunesArtwork)
         {
             var (preferredWidth, preferredHeight, preferredSizeText) = GetAppleArtworkDimensions(settings);
+            if (ShouldPreserveRawArtworkSize(sourceUrl))
+            {
+                var safeSize = size > 0
+                    ? size
+                    : (settings.AppleArtworkSize > 0 ? settings.AppleArtworkSize : 1200);
+                preferredWidth = safeSize;
+                preferredHeight = safeSize;
+                preferredSizeText = $"{safeSize}x{safeSize}";
+                if (logger.IsEnabled(LogLevel.Debug))
+                {
+                    logger.LogDebug(
+                        "Apple raw artwork uses presentation crop suffix; preserving requested size {Size} for {Url}",
+                        safeSize,
+                        sourceUrl);
+                }
+            }
             var preferredUrl = NormalizeArtworkUrl(sourceUrl, preferredSizeText, preferredWidth, preferredHeight);
             var effectivePath = outputPath;
             var requestedExtension = Path.GetExtension(outputPath).TrimStart('.');
@@ -966,6 +982,40 @@ public static class AppleQueueHelpers
         }
 
         return null;
+    }
+
+    private static bool ShouldPreserveRawArtworkSize(string sourceUrl)
+    {
+        if (!TryExtractArtworkDimensionSuffix(sourceUrl, out var suffix))
+        {
+            return false;
+        }
+
+        // Apple "ac"/"cw" variants are presentation-style assets. Upscaling those to
+        // 5000x5000 can produce mostly blank canvases with a tiny cropped corner.
+        return suffix.Contains("ac", StringComparison.OrdinalIgnoreCase)
+            || suffix.Contains("cw", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryExtractArtworkDimensionSuffix(string sourceUrl, out string suffix)
+    {
+        suffix = string.Empty;
+        if (string.IsNullOrWhiteSpace(sourceUrl))
+        {
+            return false;
+        }
+
+        var match = MatchWithTimeout(
+            sourceUrl,
+            @"/\d{2,5}x\d{2,5}(?<suffix>[a-z]{0,8})\.[a-z0-9]+(?:$|\?)",
+            RegexOptions.IgnoreCase);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        suffix = match.Groups["suffix"].Value;
+        return !string.IsNullOrWhiteSpace(suffix);
     }
 
     public static bool IsRawItunesArtworkUrl(string? rawUrl)
