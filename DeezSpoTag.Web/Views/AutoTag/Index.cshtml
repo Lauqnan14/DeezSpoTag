@@ -467,13 +467,27 @@
                                         <label for="folderConvertFormat">Convert format (optional)</label>
                                         <select id="folderConvertFormat">
                                             <option value="">Use global/default</option>
-                                            <option value="mp3">MP3</option>
-                                            <option value="aac">AAC (M4A)</option>
-                                            <option value="alac">ALAC (M4A)</option>
-                                            <option value="ogg">OGG</option>
-                                            <option value="opus">OPUS</option>
+                                            <option value="aa">AA</option>
+                                            <option value="aax">AAX</option>
+                                            <option value="aac">AAC</option>
+                                            <option value="aiff">AIFF</option>
+                                            <option value="ape">APE</option>
+                                            <option value="dsf">DSF</option>
                                             <option value="flac">FLAC</option>
+                                            <option value="m4a">M4A</option>
+                                            <option value="m4b">M4B</option>
+                                            <option value="m4p">M4P</option>
+                                            <option value="mp3">MP3</option>
+                                            <option value="mpc">MPC</option>
+                                            <option value="mpp">MPP</option>
+                                            <option value="ogg">OGG</option>
+                                            <option value="oga">OGA</option>
                                             <option value="wav">WAV</option>
+                                            <option value="wma">WMA</option>
+                                            <option value="wv">WV</option>
+                                            <option value="webm">WEBM</option>
+                                            <option value="alac">ALAC (M4A)</option>
+                                            <option value="opus">OPUS</option>
                                         </select>
                                     </div>
                                     <div class="form-group">
@@ -694,26 +708,6 @@
                                 <input type="text" id="autotag-trackname-template" placeholder="%artist% - %title%" />
                                 <details class="template-variables" data-template-variables data-variables="track" data-input="autotag-trackname-template">
                                     <summary>Available track variables</summary>
-                                    <div class="template-variables-content">
-                                        <div class="template-variables-list"></div>
-                                    </div>
-                                </details>
-                            </div>
-                            <div class="form-group">
-                                <label for="autotag-album-trackname-template">Album track name template</label>
-                                <input type="text" id="autotag-album-trackname-template" placeholder="%tracknumber% - %title%" />
-                                <details class="template-variables" data-template-variables data-variables="album" data-input="autotag-album-trackname-template">
-                                    <summary>Available album track variables</summary>
-                                    <div class="template-variables-content">
-                                        <div class="template-variables-list"></div>
-                                    </div>
-                                </details>
-                            </div>
-                            <div class="form-group">
-                                <label for="autotag-playlist-trackname-template">Playlist track name template</label>
-                                <input type="text" id="autotag-playlist-trackname-template" placeholder="%artist% - %title%" />
-                                <details class="template-variables" data-template-variables data-variables="playlist" data-input="autotag-playlist-trackname-template">
-                                    <summary>Available playlist track variables</summary>
                                     <div class="template-variables-content">
                                         <div class="template-variables-list"></div>
                                     </div>
@@ -1348,10 +1342,6 @@
                                         <i class="fas fa-question-circle"></i>
                                     </span>
                                 </label>
-                            </div>
-                            <div class="form-group" id="autotag-filename-template-group">
-                                <label for="autotag-filename-template">Filename parse template</label>
-                                <input type="text" id="autotag-filename-template" placeholder="%artists% - %title%" />
                             </div>
                         </div>
                     </div>

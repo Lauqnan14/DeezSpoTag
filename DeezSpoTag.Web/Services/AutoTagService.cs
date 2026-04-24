@@ -2067,8 +2067,8 @@ public class AutoTagService
         }
 
         ApplyTemplateIfPresent(enhancementRoot, "tracknameTemplate", value => settings.TracknameTemplate = value);
-        ApplyTemplateIfPresent(enhancementRoot, "albumTracknameTemplate", value => settings.AlbumTracknameTemplate = value);
-        ApplyTemplateIfPresent(enhancementRoot, "playlistTracknameTemplate", value => settings.PlaylistTracknameTemplate = value);
+        settings.AlbumTracknameTemplate = settings.TracknameTemplate;
+        settings.PlaylistTracknameTemplate = settings.TracknameTemplate;
     }
 
     private static void ApplyTemplateIfPresent(JsonObject source, string key, Action<string> assign)
@@ -2962,7 +2962,6 @@ public class AutoTagService
             AutoTagLiterals.IncludeSubfoldersKey,
             AutoTagLiterals.MultiPlatformKey,
             "parseFilename",
-            "filenameTemplate",
             "id3v24",
             "trackNumberLeadingZeroes",
             "stylesOptions",
@@ -2975,8 +2974,6 @@ public class AutoTagService
             "capitalizeGenres",
             AutoTagLiterals.DownloadTagSourceKey,
             "tracknameTemplate",
-            "albumTracknameTemplate",
-            "playlistTracknameTemplate",
             "saveArtwork",
             "dlAlbumcoverForPlaylist",
             "saveArtworkArtist",
