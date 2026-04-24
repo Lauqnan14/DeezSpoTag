@@ -810,18 +810,14 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
                 TagSettings: request.TagSettings),
             cancellationToken);
 
+        if (!taggingSucceeded)
+        {
+            throw new InvalidOperationException($"Amazon tagging failed for '{newPath}'.");
+        }
+
         if (!string.IsNullOrWhiteSpace(request.Isrc))
         {
-            if (taggingSucceeded)
-            {
-                AudioFilePathHelper.EnsureIsrcMatchOrThrow(newPath, request.Isrc);
-            }
-            else
-            {
-                _logger.LogWarning(
-                    "Skipping strict ISRC verification for Amazon download at {Path} because tagging failed.",
-                    newPath);
-            }
+            AudioFilePathHelper.EnsureIsrcMatchOrThrow(newPath, request.Isrc);
         }
 
         return newPath;

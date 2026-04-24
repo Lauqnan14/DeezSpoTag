@@ -85,6 +85,10 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
     private const string FallbackSolution = "fallback";
     private const string SearchSolution = "search";
 
+    private sealed class MetadataOverridePayload : EngineQueueItemBase
+    {
+    }
+
     private static int? GetNextLowerDeezerQuality(int current)
     {
         var index = Array.IndexOf(DeezerQualityOrder, current);
@@ -246,6 +250,7 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
 
         var track = BuildTrackFromApi(trackApi);
         track.DownloadURL = streamUrl;
+        await ResolveTagSettingsAsync();
         track.ApplySettings(Settings);
         await ApplyMetadataOverridesAsync(track);
         track.ApplySettings(Settings);
@@ -412,15 +417,10 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            if (ex is InvalidOperationException invalidOperationException
-                && IsProfileResolutionValidationException(invalidOperationException))
-            {
-                throw;
-            }
-
-            if (_logger?.IsEnabled(LogLevel.Debug) == true)
-            {
-                _logger?.LogDebug(ex, "Failed to resolve tag settings for download {Uuid}", DownloadObject.UUID);            }
+            _logger?.LogWarning(ex, "Failed to apply download profile for download {Uuid}", DownloadObject.UUID);
+            throw new InvalidOperationException(
+                $"Failed to apply download profile for download {DownloadObject.UUID}.",
+                ex);
         }
 
         return _resolvedTagSettings ?? Settings.Tags ?? new TagSettings();
@@ -434,25 +434,16 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
             return;
         }
 
-        var profile = await resolver.ResolveProfileAsync(DownloadObject.DestinationFolderId, _cancellationTokenSource.Token);
-        if (profile == null && DownloadObject.DestinationFolderId.HasValue)
-        {
-            throw new InvalidOperationException("Destination music folder requires a valid AutoTag profile.");
-        }
-
-        _resolvedTagSettings = TagSettingsMerge.UseProfileOnly(profile?.TagSettings);
-        _resolvedDownloadTagSource = DownloadTagSourceHelper.ResolveDownloadTagSource(
-            profile?.DownloadTagSource,
-            DeezerSource,
-            Settings.Service);
-        if (profile == null || !string.IsNullOrWhiteSpace(_resolvedDownloadTagSource))
-        {
-            return;
-        }
-
-        var configuredSource = profile.DownloadTagSource?.Trim();
-        throw new InvalidOperationException(
-            $"Download profile source resolution failed: downloadTagSource '{configuredSource}' is invalid for engine '{Settings.Service ?? "unknown"}'.");
+        _resolvedDownloadTagSource = await DownloadEngineSettingsHelper.ResolveAndApplyProfileAsync(
+            resolver,
+            Settings,
+            DownloadObject.DestinationFolderId,
+            _logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
+            _cancellationTokenSource.Token,
+            new DownloadEngineSettingsHelper.ProfileResolutionOptions(
+                CurrentEngine: DeezerSource,
+                RequireProfile: DownloadObject.DestinationFolderId.HasValue));
+        _resolvedTagSettings = Settings.Tags ?? new TagSettings();
     }
 
     private async Task ApplyFolderConversionOverlayAsync(IServiceProvider provider)
@@ -466,11 +457,6 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
         await conversionOverlay.ApplyAsync(Settings, DownloadObject.DestinationFolderId, _cancellationTokenSource.Token);
     }
 
-    private static bool IsProfileResolutionValidationException(InvalidOperationException exception)
-    {
-        return exception.Message.StartsWith("Destination music folder requires a valid AutoTag profile.", StringComparison.Ordinal)
-            || exception.Message.StartsWith("Download profile source resolution failed:", StringComparison.Ordinal);
-    }
     private async Task<string?> ResolveEpisodeStreamUrlAsync(string? episodeId, string? showId)
     {
         if (string.IsNullOrWhiteSpace(episodeId))
@@ -612,29 +598,27 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
 
     private async Task ApplyMetadataOverridesAsync(CoreTrack track)
     {
-        try
+        if (string.IsNullOrWhiteSpace(_resolvedDownloadTagSource))
         {
-            if (string.IsNullOrWhiteSpace(_resolvedDownloadTagSource))
-            {
-                return;
-            }
-
-            using var scope = _serviceProvider.CreateScope();
-            var registry = scope.ServiceProvider.GetService<DeezSpoTag.Services.Metadata.IMetadataResolverRegistry>();
-            var resolver = registry?.GetResolver(_resolvedDownloadTagSource);
-            if (resolver == null)
-            {
-                return;
-            }
-
-            await resolver.ResolveTrackAsync(track, Settings, _cancellationTokenSource.Token);
+            return;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger?.IsEnabled(LogLevel.Debug) == true)
+
+        await EngineAudioPostDownloadHelper.ApplyProfileMetadataOverrideAsync(
+            track,
+            new MetadataOverridePayload
             {
-                _logger?.LogDebug(ex, "Metadata resolver failed for track {TrackId}", track.Id);            }
-        }
+                DeezerId = track.Id ?? string.Empty,
+                Title = track.Title ?? string.Empty,
+                Artist = track.MainArtist?.Name ?? string.Empty,
+                Album = track.Album?.Title ?? string.Empty,
+                Isrc = track.ISRC ?? string.Empty
+            },
+            Settings,
+            _serviceProvider,
+            DeezerSource,
+            _resolvedDownloadTagSource,
+            _logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
+            _cancellationTokenSource.Token);
     }
 
     private static CoreTrack BuildTrackFromApi(Dictionary<string, object> trackApi)
@@ -1222,6 +1206,7 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
         var selectedFormat = await ResolvePreferredBitrateAsync(track, trackId);
         ApplyTrackBitrate(track, selectedFormat);
 
+        await ResolveTagSettingsAsync();
         track.ApplySettings(Settings);
         await ApplyMetadataOverridesAsync(track);
         track.ApplySettings(Settings);
@@ -1752,7 +1737,7 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
                 title = track.Title,
                 artist = track.MainArtist?.Name ?? UnknownValue
             }, "taggingFailed", "tag");
-            return false;
+            throw new InvalidOperationException($"Download tagging failed for track '{track.Id}' ({track.Title}).", ex);
         }
     }
 

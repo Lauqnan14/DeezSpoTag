@@ -53,6 +53,7 @@ public class TrackDownloader
     private readonly IDownloadTagSettingsResolver _tagSettingsResolver;
     private readonly IPostDownloadTaskScheduler _postDownloadTaskScheduler;
     private readonly IDeezSpoTagListener _deezspotagListener;
+    private readonly IServiceProvider _serviceProvider;
 
     // File extensions mapping (ported from deezspotag extensions)
     private static readonly Dictionary<int, string> Extensions = new()
@@ -232,6 +233,7 @@ public class TrackDownloader
         IServiceProvider serviceProvider)
     {
         _logger = logger;
+        _serviceProvider = serviceProvider;
         _httpClientFactory = serviceProvider.GetRequiredService<IHttpClientFactory>();
         _pathProcessor = serviceProvider.GetRequiredService<EnhancedPathTemplateProcessor>();
         _audioTagger = serviceProvider.GetRequiredService<AudioTagger>();
@@ -288,12 +290,13 @@ public class TrackDownloader
                 listener,
                 allowInEngineBitrateFallback);
 
-            // Apply settings to track (port from deezspotag: track.applySettings(this.settings))
+            var resolvedDownloadTagSource = await ResolveAndApplyDownloadProfileAsync(
+                downloadObject.DestinationFolderId,
+                settings,
+                cancellationToken);
+            await ApplyProfileMetadataOverrideAsync(track, settings, resolvedDownloadTagSource, cancellationToken);
             track.ApplySettings(settings);
-
-            // Resolve destination-profile settings before any prefetch/tagging work so
-            // deferred lyrics/artwork and final tagging use the same effective profile.
-            var tagSettings = await ResolveTagSettingsAsync(downloadObject.DestinationFolderId, settings, cancellationToken);
+            var tagSettings = settings.Tags ?? new TagSettings();
 
             // Generate file paths
             var pathResult = _pathProcessor.GeneratePaths(track, downloadObject.Type, settings);
@@ -619,6 +622,10 @@ public class TrackDownloader
 
             _logger.LogWarning(ex, "Tagging Deezer download failed for {Path}; keeping audio file.", context.WritePath);
             context.Listener?.OnDownloadInfo(context.DownloadObject, "Track tagging failed; keeping audio file", "tagWarning");
+            throw new DownloadException(
+                $"Download tagging failed for {context.WritePath}",
+                "taggingFailed",
+                context.Track);
         }
     }
 
@@ -661,46 +668,63 @@ public class TrackDownloader
         }
     }
 
-    private async Task<TagSettings> ResolveTagSettingsAsync(long? destinationFolderId, DeezSpoTagSettings settings, CancellationToken cancellationToken)
+    private async Task<string?> ResolveAndApplyDownloadProfileAsync(
+        long? destinationFolderId,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
     {
         try
         {
-            var profile = await _tagSettingsResolver.ResolveProfileAsync(destinationFolderId, cancellationToken);
-            if (profile == null)
-            {
-                if (destinationFolderId.HasValue)
-                {
-                    throw new InvalidOperationException("Destination music folder requires a valid AutoTag profile.");
-                }
-            }
-            else
-            {
-                _ = DownloadEngineSettingsHelper.ApplyResolvedProfileToSettings(
-                    settings,
-                    profile,
-                    currentEngine: DeezerSource);
-
-                if (profile.TagSettings != null)
-                {
-                    return TagSettingsMerge.UseProfileOnly(profile.TagSettings);
-                }
-            }
+            return await DownloadEngineSettingsHelper.ResolveAndApplyProfileAsync(
+                _tagSettingsResolver,
+                settings,
+                destinationFolderId,
+                _logger,
+                cancellationToken,
+                new DownloadEngineSettingsHelper.ProfileResolutionOptions(
+                    CurrentEngine: DeezerSource,
+                    RequireProfile: destinationFolderId.HasValue));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            if (ex is InvalidOperationException invalidOperationException
-                && (invalidOperationException.Message.StartsWith("Destination music folder requires a valid AutoTag profile.", StringComparison.Ordinal)
-                    || invalidOperationException.Message.StartsWith("Download profile source resolution failed:", StringComparison.Ordinal)))
-            {
-                throw;
-            }
+            _logger.LogWarning(ex, "Failed to apply download profile for folder {FolderId}", destinationFolderId);
+            throw new InvalidOperationException(
+                $"Failed to apply download profile for folder {destinationFolderId}.",
+                ex);
+        }
+    }
 
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to resolve tag settings for folder {FolderId}", destinationFolderId);            }
+    private async Task ApplyProfileMetadataOverrideAsync(
+        Track track,
+        DeezSpoTagSettings settings,
+        string? resolvedDownloadTagSource,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(resolvedDownloadTagSource))
+        {
+            return;
         }
 
-        return settings.Tags ?? new TagSettings();
+        await EngineAudioPostDownloadHelper.ApplyProfileMetadataOverrideAsync(
+            track,
+            new TrackDownloaderMetadataPayload
+            {
+                DeezerId = track.Id ?? string.Empty,
+                Title = track.Title ?? string.Empty,
+                Artist = track.MainArtist?.Name ?? string.Empty,
+                Album = track.Album?.Title ?? string.Empty,
+                Isrc = track.ISRC ?? string.Empty
+            },
+            settings,
+            _serviceProvider,
+            DeezerSource,
+            resolvedDownloadTagSource,
+            _logger,
+            cancellationToken);
+    }
+
+    private sealed class TrackDownloaderMetadataPayload : EngineQueueItemBase
+    {
     }
 
     private static string NormalizeBitrateErrorCode(string? errorCode)

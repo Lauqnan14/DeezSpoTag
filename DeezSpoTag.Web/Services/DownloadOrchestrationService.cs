@@ -1246,13 +1246,24 @@ public sealed class DownloadOrchestrationService : BackgroundService
             "info",
             "Automation: library scan starting after AutoTag."));
 
-        await _scanRunner.RunAsync(
-            refreshImages: false,
-            reset: false,
-            folderId: null,
-            skipSpotifyFetch: false,
-            cacheSpotifyImages: false,
-            cancellationToken: cancellationToken);
+        if (_scanRunner.GetStatus().IsRunning)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                "Automation: waiting for active library scan before post-scan stages."));
+            await _scanRunner.WaitForCurrentScanAsync(cancellationToken);
+        }
+        else
+        {
+            await _scanRunner.RunAsync(
+                refreshImages: false,
+                reset: false,
+                folderId: null,
+                skipSpotifyFetch: false,
+                cacheSpotifyImages: false,
+                cancellationToken: cancellationToken);
+        }
 
         await TriggerPlexScanAsync(cancellationToken);
 

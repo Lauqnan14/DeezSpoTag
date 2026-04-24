@@ -298,7 +298,8 @@ public static partial class EngineAudioPostDownloadHelper
         var resolver = registry?.GetResolver(source);
         if (resolver == null)
         {
-            return false;
+            throw new InvalidOperationException(
+                $"{engineName} download profile metadata source '{source}' is not registered.");
         }
 
         ApplyResolvedTagSourceIdentity(track, payload, source);
@@ -311,17 +312,15 @@ public static partial class EngineAudioPostDownloadHelper
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            if (logger.IsEnabled(LogLevel.Debug))
-            {
-                logger.LogDebug(
-                    ex,
-                    "{Engine} profile metadata resolver failed for source {Source} and track {TrackId}",
-                    engineName,
-                    source,
-                    track.Id);
-            }
-
-            return false;
+            logger.LogWarning(
+                ex,
+                "{Engine} profile metadata resolver failed for source {Source} and track {TrackId}",
+                engineName,
+                source,
+                track.Id);
+            throw new InvalidOperationException(
+                $"{engineName} download profile metadata source '{source}' failed for track '{track.Title}'.",
+                ex);
         }
     }
 

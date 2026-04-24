@@ -109,7 +109,7 @@ public sealed class LocalLibraryScanner
 
     private static readonly string[] AudioExtensions = new[]
     {
-        ".mp3", FlacExtension, ".m4a", ".m4b", ".wav", ".ogg", AiffExtension, AlacExtension, ".aac"
+        ".mp3", FlacExtension, ".m4a", ".m4b", ".wav", ".ogg", ".opus", AiffExtension, AlacExtension, ".aac"
     };
 
     private static readonly string[] ImageExtensions = new[]

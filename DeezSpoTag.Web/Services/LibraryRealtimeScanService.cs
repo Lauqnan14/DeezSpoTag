@@ -15,6 +15,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         ".m4b",
         ".wav",
         ".ogg",
+        ".opus",
         ".aiff",
         ".alac",
         ".aac"

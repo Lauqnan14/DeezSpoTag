@@ -503,7 +503,9 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Qobuz post-download settings failed for {QueueUuid}", queueUuid);
-            return outputPath;
+            throw new InvalidOperationException(
+                $"Qobuz post-download profile tagging failed for queue item {queueUuid}.",
+                ex);
         }
     }
 
