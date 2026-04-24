@@ -25,21 +25,4 @@ public sealed class MultiQualityDownloadSettings
     /// </summary>
     public long? SecondaryDestinationFolderId { get; set; }
 
-    /// <summary>
-    /// Secondary source preference. Common values: auto, tidal, qobuz, amazon, deezer, apple.
-    /// </summary>
-    public string SecondaryService { get; set; } = "auto";
-
-    /// <summary>
-    /// Secondary quality selector (engine-specific value), or blank to use engine defaults.
-    /// Examples: HI_RES_LOSSLESS (tidal), 27 (qobuz), 9/3/1 (deezer), ALAC/AAC/ATMOS (apple).
-    /// </summary>
-    public string SecondaryQuality { get; set; } = string.Empty;
-
-    /// <summary>
-    /// If true, the secondary auto chain excludes Apple steps.
-    /// This supports "Atmos from Apple, stereo from elsewhere" patterns.
-    /// </summary>
-    public bool SecondaryExcludeApple { get; set; } = true;
 }
-
