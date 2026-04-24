@@ -22,7 +22,6 @@
         mergeGenres: true,
         camelot: false,
         parseFilename: false,
-        filenameTemplate: "%artists% - %title%",
         shortTitle: false,
         downloadTagSource: "engine",
         matchDuration: false,
@@ -2670,9 +2669,6 @@
         if (el("autotag-parse-filename")) {
             setChecked("autotag-parse-filename", state.config.parseFilename);
         }
-        if (el("autotag-filename-template")) {
-            setValue("autotag-filename-template", state.config.filenameTemplate || "%artists% - %title%");
-        }
         setValue("autotag-title-regex", state.config.titleRegex || "");
         // Manual custom intake path is intentionally disabled.
         // if (el("autotag-custom-path")) {
@@ -3624,9 +3620,6 @@
             : DEFAULT_CONFIG.includeSubfolders;
         if (el("autotag-parse-filename")) {
             state.config.parseFilename = getChecked("autotag-parse-filename", state.config.parseFilename);
-        }
-        if (el("autotag-filename-template")) {
-            state.config.filenameTemplate = getValue("autotag-filename-template", state.config.filenameTemplate || "%artists% - %title%").trim();
         }
         state.config.titleRegex = getValue("autotag-title-regex", state.config.titleRegex || "").trim() || null;
         // Manual custom intake path is intentionally disabled.
@@ -4653,8 +4646,8 @@
             albumName: renderTemplatePreview(el("albumNameTemplate")?.value, "%album%"),
             playlistName: renderTemplatePreview(el("playlistNameTemplate")?.value, "%playlist%"),
             defaultTrackName: `${renderTemplatePreview(el("autotag-trackname-template")?.value, "%artist% - %title%")}.flac`,
-            albumTrackName: `${renderTemplatePreview(el("autotag-album-trackname-template")?.value, "%tracknumber% - %title%")}.flac`,
-            playlistTrackName: `${renderTemplatePreview(el("autotag-playlist-trackname-template")?.value, "%artist% - %title%")}.flac`
+            albumTrackName: `${renderTemplatePreview(el("autotag-trackname-template")?.value, "%artist% - %title%")}.flac`,
+            playlistTrackName: `${renderTemplatePreview(el("autotag-trackname-template")?.value, "%artist% - %title%")}.flac`
         };
 
         appendAlbumPathPreview(tree, previewOptions);
@@ -4746,8 +4739,6 @@
         updateToggleGroupVisibility("autotag-move-failed-group", "autotag-move-failed", {
             inputId: "autotag-move-failed-path"
         });
-        updateToggleGroupVisibility("autotag-filename-template-group", "autotag-parse-filename");
-
         syncFallbackSourceControls();
         syncMultiArtistHandlingState();
         syncMatchingSettingsState();
@@ -5461,16 +5452,6 @@
             trackTemplate.value = settings.tracknameTemplate || "";
         }
 
-        const albumTemplate = document.getElementById("autotag-album-trackname-template");
-        if (albumTemplate) {
-            albumTemplate.value = settings.albumTracknameTemplate || "";
-        }
-
-        const playlistTemplate = document.getElementById("autotag-playlist-trackname-template");
-        if (playlistTemplate) {
-            playlistTemplate.value = settings.playlistTracknameTemplate || "";
-        }
-
         renderFolderStructurePreview();
     }
 
@@ -5780,8 +5761,6 @@
 
         const profileScoped = {
             tracknameTemplate: getInputValue("autotag-trackname-template", getBaseString("tracknameTemplate", "")),
-            albumTracknameTemplate: getInputValue("autotag-album-trackname-template", getBaseString("albumTracknameTemplate", "")),
-            playlistTracknameTemplate: getInputValue("autotag-playlist-trackname-template", getBaseString("playlistTracknameTemplate", "")),
             renameSpotifyArtistFolders: getInputChecked(
                 "enhancementRenameSpotifyArtistFolders",
                 getBaseBool("renameSpotifyArtistFolders", state.autoTagDefaults?.renameSpotifyArtistFolders !== false)
@@ -5851,8 +5830,6 @@
         }
 
         applyFieldValueIfPresent("autotag-trackname-template", source.tracknameTemplate);
-        applyFieldValueIfPresent("autotag-album-trackname-template", source.albumTracknameTemplate);
-        applyFieldValueIfPresent("autotag-playlist-trackname-template", source.playlistTracknameTemplate);
         applyFieldCheckedWhenBoolean("enhancementRenameSpotifyArtistFolders", source.renameSpotifyArtistFolders);
 
         applyFieldCheckedWhenBoolean("saveArtwork", source.saveArtwork);
@@ -7103,9 +7080,7 @@
         "artistNameTemplate",
         "albumNameTemplate",
         "illegalCharacterReplacer",
-        "autotag-trackname-template",
-        "autotag-album-trackname-template",
-        "autotag-playlist-trackname-template"
+        "autotag-trackname-template"
     ].forEach((id) => {
         const field = el(id);
         if (field) {

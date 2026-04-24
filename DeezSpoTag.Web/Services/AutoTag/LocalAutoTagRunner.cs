@@ -579,7 +579,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             context.File,
             context.Plan.TargetPath,
             context.Plan.Config.ParseFilename,
-            context.Plan.Config.FilenameTemplate,
+            context.Plan.Config.TracknameTemplate,
             context.Plan.Config.TitleRegex);
         var shazamResult = TryApplyShazam(
             context.File,
@@ -1103,16 +1103,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (!string.IsNullOrWhiteSpace(config.TracknameTemplate))
         {
             settings.TracknameTemplate = config.TracknameTemplate.Trim();
-        }
-
-        if (!string.IsNullOrWhiteSpace(config.AlbumTracknameTemplate))
-        {
-            settings.AlbumTracknameTemplate = config.AlbumTracknameTemplate.Trim();
-        }
-
-        if (!string.IsNullOrWhiteSpace(config.PlaylistTracknameTemplate))
-        {
-            settings.PlaylistTracknameTemplate = config.PlaylistTracknameTemplate.Trim();
+            settings.AlbumTracknameTemplate = settings.TracknameTemplate;
+            settings.PlaylistTracknameTemplate = settings.TracknameTemplate;
         }
 
         if (config.SaveArtwork.HasValue)
@@ -2604,7 +2596,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             IncludeSubfolders = raw.IncludeSubfolders,
             Multiplatform = raw.Multiplatform,
             ParseFilename = raw.ParseFilename,
-            FilenameTemplate = raw.FilenameTemplate,
             Id3v24 = raw.Id3v24,
             TrackNumberLeadingZeroes = raw.TrackNumberLeadingZeroes,
             StylesOptions = raw.StylesOptions,
@@ -2623,8 +2614,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             WriteLrc = raw.WriteLrc,
             CapitalizeGenres = raw.CapitalizeGenres,
             TracknameTemplate = raw.TracknameTemplate,
-            AlbumTracknameTemplate = raw.AlbumTracknameTemplate,
-            PlaylistTracknameTemplate = raw.PlaylistTracknameTemplate,
+            AlbumTracknameTemplate = raw.TracknameTemplate,
+            PlaylistTracknameTemplate = raw.TracknameTemplate,
             SaveArtwork = effectiveSaveArtwork,
             DlAlbumcoverForPlaylist = raw.DlAlbumcoverForPlaylist,
             SaveArtworkArtist = raw.SaveArtworkArtist,
@@ -3667,33 +3658,26 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var context = BuildTagWriteExecutionContext(request);
         var chapterSnapshot = AtlTagHelper.CaptureChapters(context.FilePath, context.Extension, _logger);
 
-        if (IsMp4Family(context.Extension))
-        {
-            WriteMp4TagsWithAtl(context);
-        }
-        else
-        {
-            using var file = TagLib.File.Create(context.FilePath);
-            PrepareId3Version(file, context);
+        using var file = TagLib.File.Create(context.FilePath);
+        PrepareId3Version(file, context);
 
-            var tagWriteContext = new TagWriteContext(
-                file,
-                context.Extension,
-                context.Config,
-                context.Separator,
-                context.PlatformId,
-                context.EffectiveTagSettings.UseNullSeparator,
-                context.GenreAliasMap,
-                context.SplitCompositeGenres);
-            ApplyPrimaryTagWrites(tagWriteContext, context);
-            ApplyAudioFeatureTagWrites(tagWriteContext, context);
-            ApplyGenreAndStyleTagWrites(file, tagWriteContext, context);
-            ApplyReleaseAndMetadataTagWrites(file, tagWriteContext, context);
-            ApplyTrackAndLyricsTagWrites(file, tagWriteContext, context);
-            ApplyAlbumArtTagWrite(file, context);
-            file.Save();
-            RemoveId3v1TagIfDisabled(file, context);
-        }
+        var tagWriteContext = new TagWriteContext(
+            file,
+            context.Extension,
+            context.Config,
+            context.Separator,
+            context.PlatformId,
+            context.EffectiveTagSettings.UseNullSeparator,
+            context.GenreAliasMap,
+            context.SplitCompositeGenres);
+        ApplyPrimaryTagWrites(tagWriteContext, context);
+        ApplyAudioFeatureTagWrites(tagWriteContext, context);
+        ApplyGenreAndStyleTagWrites(file, tagWriteContext, context);
+        ApplyReleaseAndMetadataTagWrites(file, tagWriteContext, context);
+        ApplyTrackAndLyricsTagWrites(file, tagWriteContext, context);
+        ApplyAlbumArtTagWrite(file, context);
+        file.Save();
+        RemoveId3v1TagIfDisabled(file, context);
 
         AtlTagHelper.RestoreChapters(context.FilePath, chapterSnapshot, _logger);
 
@@ -4012,7 +3996,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             atlTrack.DiscTotal = discTotal.Value;
         }
 
-        if (context.EnabledTags.Contains(SourceTag) && context.EffectiveTagSettings.Source)
+        if (context.EnabledTags.Contains(SourceTag)
+            && context.EffectiveTagSettings.Source
+            && !string.Equals(context.PlatformId, ShazamPlatform, StringComparison.OrdinalIgnoreCase))
         {
             var sourceValues = ResolveOtherValues(context.SourceTrack, SourceTag);
             var sourceValue = sourceValues.Count > 0
@@ -4053,7 +4039,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             WriteMp4AtlRaw(
                 additional,
                 ItunesAdvisoryTag,
-                context.SourceTrack.Explicit.Value ? "1" : "2",
+                context.SourceTrack.Explicit.Value ? "1" : "0",
                 context.Config,
                 SupportedTag.Explicit);
         }
@@ -4744,11 +4730,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        var totalSeconds = ((int)context.SourceTrack.Duration.Value.TotalSeconds).ToString(CultureInfo.InvariantCulture);
+        var totalMilliseconds = ((int)Math.Round(context.SourceTrack.Duration.Value.TotalMilliseconds)).ToString(CultureInfo.InvariantCulture);
         SetField(
             tagWriteContext,
             new TagFieldBinding("TLEN", LengthUpperTag, LengthUpperTag, SupportedTag.Duration),
-            new List<string> { totalSeconds });
+            new List<string> { totalMilliseconds });
     }
 
     private static void WriteRemixerTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -4934,6 +4920,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
+        if (string.Equals(context.PlatformId, ShazamPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
         var sourceValues = ResolveOtherValues(context.SourceTrack, SourceTag);
         if (sourceValues.Count == 0)
         {
@@ -5016,7 +5007,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             tagWriteContext,
             ItunesAdvisoryTag,
             SupportedTag.Explicit,
-            new List<string> { context.SourceTrack.Explicit.Value ? "1" : "2" });
+            new List<string> { context.SourceTrack.Explicit.Value ? "1" : "0" });
     }
 
     private static void WriteOtherTags(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -5761,7 +5752,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Mood => Mp4TagHelper.HasRaw(file, "MOOD"),
             SupportedTag.Key => Mp4TagHelper.HasRaw(file, "initialkey"),
             SupportedTag.ReleaseDate => Mp4TagHelper.HasRaw(file, "©day"),
-            SupportedTag.PublishDate => false,
+            SupportedTag.PublishDate => Mp4TagHelper.HasRaw(file, "ORIGINALDATE"),
             SupportedTag.URL => Mp4TagHelper.HasRaw(file, WwwAudioFileTag),
             SupportedTag.TrackId => Mp4TagHelper.HasRaw(file, $"{platformId.ToUpperInvariant()}_TRACK_ID"),
             SupportedTag.ReleaseId => Mp4TagHelper.HasRaw(file, $"{platformId.ToUpperInvariant()}_RELEASE_ID"),
@@ -6261,17 +6252,34 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagRunnerConfig config,
         string dateString)
     {
-        if (!IsMp4Family(extension) || kind != ReleaseDateTag)
+        if (!IsMp4Family(extension))
         {
             return;
         }
 
-        if (!ShouldOverwriteTag(config, tag) && Mp4TagHelper.HasRaw(file, "©day"))
+        if (kind == ReleaseDateTag)
+        {
+            if (!ShouldOverwriteTag(config, tag) && Mp4TagHelper.HasRaw(file, "©day"))
+            {
+                return;
+            }
+
+            Mp4TagHelper.SetDate(file, dateString);
+            return;
+        }
+
+        if (kind != PublishDateTag)
         {
             return;
         }
 
-        Mp4TagHelper.SetDate(file, dateString);
+        if (!ShouldOverwriteTag(config, tag) && Mp4TagHelper.HasRaw(file, "ORIGINALDATE"))
+        {
+            return;
+        }
+
+        var apple = (TagLib.Mpeg4.AppleTag)file.GetTag(TagTypes.Apple, true);
+        TrySetAppleDashBox(apple, "ORIGINALDATE", new[] { dateString });
     }
 
     private static bool IsYearOnlyDateFormat(string? dateFormat)
@@ -6823,7 +6831,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             Data = data,
             Type = TagLib.PictureType.FrontCover,
-            MimeType = "image/jpeg",
+            MimeType = CoverArtMimeTypeResolver.Resolve(imagePath, data),
             Description = "Cover"
         };
 
@@ -7513,7 +7521,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             }
 
             values = values
-                .Concat(keyValues)
+                .Concat(keyValues.SelectMany(SplitCompositeRawValues))
                 .Where(static value => !string.IsNullOrWhiteSpace(value))
                 .Select(static value => value.Trim())
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -7521,6 +7529,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return values;
+    }
+
+    private static IEnumerable<string> SplitCompositeRawValues(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return Array.Empty<string>();
+        }
+
+        return raw.Split([';', '\0'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
     private static int? ResolveFirstPositiveInt(AutoTagTrack track, params string[] keys)
@@ -7971,7 +7989,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static void TrySetAppleDashBox(TagLib.Mpeg4.AppleTag? tag, string name, string[] values)
     {
-        AppleDashBoxReflectionHelper.TrySetValues(tag, name, values);
+        if (!AppleDashBoxReflectionHelper.TrySetValues(tag, name, values))
+        {
+            throw new InvalidOperationException($"Failed to set MP4 dash box {name}.");
+        }
     }
 
     private sealed class AutoTagRunPlan
@@ -8064,7 +8085,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public bool IncludeSubfolders { get; set; } = true;
         public bool Multiplatform { get; set; }
         public bool ParseFilename { get; set; }
-        public string? FilenameTemplate { get; set; } = "%artists% - %title%";
         public bool Id3v24 { get; set; } = true;
         public int TrackNumberLeadingZeroes { get; set; }
         public string StylesOptions { get; set; } = "default";

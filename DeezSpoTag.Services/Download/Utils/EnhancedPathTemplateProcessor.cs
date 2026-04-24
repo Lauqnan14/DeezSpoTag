@@ -504,14 +504,7 @@ public class EnhancedPathTemplateProcessor
 
     private static string ResolveFilenameTemplate(string downloadObjectType, DeezSpoTagSettings settings)
     {
-        return downloadObjectType switch
-        {
-            "track" or "episode" => settings.CreateSingleFolder
-                ? settings.AlbumTracknameTemplate
-                : settings.TracknameTemplate,
-            "album" => settings.AlbumTracknameTemplate,
-            _ => settings.PlaylistTracknameTemplate
-        };
+        return settings.TracknameTemplate;
     }
 
     private static Artist? ResolveArtistForFolder(Track track)

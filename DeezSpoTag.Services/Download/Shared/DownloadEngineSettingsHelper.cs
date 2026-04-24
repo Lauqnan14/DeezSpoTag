@@ -198,16 +198,8 @@ public static class DownloadEngineSettingsHelper
         if (!string.IsNullOrWhiteSpace(overrides.TracknameTemplate))
         {
             settings.TracknameTemplate = overrides.TracknameTemplate.Trim();
-        }
-
-        if (!string.IsNullOrWhiteSpace(overrides.AlbumTracknameTemplate))
-        {
-            settings.AlbumTracknameTemplate = overrides.AlbumTracknameTemplate.Trim();
-        }
-
-        if (!string.IsNullOrWhiteSpace(overrides.PlaylistTracknameTemplate))
-        {
-            settings.PlaylistTracknameTemplate = overrides.PlaylistTracknameTemplate.Trim();
+            settings.AlbumTracknameTemplate = settings.TracknameTemplate;
+            settings.PlaylistTracknameTemplate = settings.TracknameTemplate;
         }
 
         if (overrides.SaveArtwork.HasValue)

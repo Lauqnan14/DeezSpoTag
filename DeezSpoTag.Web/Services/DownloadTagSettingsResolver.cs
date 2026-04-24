@@ -116,10 +116,11 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
         }
 
         var data = autoTag.Data;
+        var unifiedTrackTemplate = ReadStringValue(data, "tracknameTemplate");
         var runtime = new DownloadProfileRuntimeOverrides(
-            TracknameTemplate: ReadStringValue(data, "tracknameTemplate"),
-            AlbumTracknameTemplate: ReadStringValue(data, "albumTracknameTemplate"),
-            PlaylistTracknameTemplate: ReadStringValue(data, "playlistTracknameTemplate"),
+            TracknameTemplate: unifiedTrackTemplate,
+            AlbumTracknameTemplate: unifiedTrackTemplate,
+            PlaylistTracknameTemplate: unifiedTrackTemplate,
             SaveArtwork: ReadBooleanValue(data, "saveArtwork"),
             DlAlbumcoverForPlaylist: ReadBooleanValue(data, "dlAlbumcoverForPlaylist"),
             SaveArtworkArtist: ReadBooleanValue(data, "saveArtworkArtist"),
@@ -131,8 +132,6 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
 
         var hasAnyValue =
             !string.IsNullOrWhiteSpace(runtime.TracknameTemplate)
-            || !string.IsNullOrWhiteSpace(runtime.AlbumTracknameTemplate)
-            || !string.IsNullOrWhiteSpace(runtime.PlaylistTracknameTemplate)
             || runtime.SaveArtwork.HasValue
             || runtime.DlAlbumcoverForPlaylist.HasValue
             || runtime.SaveArtworkArtist.HasValue

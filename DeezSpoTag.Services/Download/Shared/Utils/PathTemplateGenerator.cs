@@ -49,23 +49,12 @@ public class PathTemplateGenerator
     /// </summary>
     public static TrackPathInfo GeneratePath(Track track, string downloadObjectType, DeezSpoTagSettings settings)
     {
-        string filenameTemplate;
+        var filenameTemplate = settings.TracknameTemplate;
         var singleTrack = false;
 
         if (downloadObjectType == TrackType || downloadObjectType == EpisodeType)
         {
-            filenameTemplate = settings.CreateSingleFolder
-                ? settings.AlbumTracknameTemplate
-                : settings.TracknameTemplate;
             singleTrack = true;
-        }
-        else if (downloadObjectType == AlbumType)
-        {
-            filenameTemplate = settings.AlbumTracknameTemplate;
-        }
-        else
-        {
-            filenameTemplate = settings.PlaylistTracknameTemplate;
         }
 
         var filename = GenerateTrackName(filenameTemplate, track, settings);
